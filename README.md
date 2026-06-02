@@ -6,7 +6,7 @@
 <p align="center"><strong>High-performance Rust and layer-aware distributed filesystem</strong></p>
 <p align="center"><a href="README.md"><b>English</b></a> | <a href="brewfs/README_CN.md">中文</a></p>
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 
 BrewFS is a Rust filesystem for container, AI, and object-storage-heavy workloads. It exposes a POSIX-like FUSE interface, stores file data as chunked objects, and keeps namespace and slice metadata in a pluggable transactional metadata backend.

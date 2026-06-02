@@ -6,7 +6,7 @@
 <p align="center"><strong>高性能 Rust &amp; 层感知分布式文件系统</strong></p>
 <p align="center"><a href="README.md">English</a> | <a href="README_CN.md"><b>中文</b></a></p>
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](../LICENSE)
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 
 

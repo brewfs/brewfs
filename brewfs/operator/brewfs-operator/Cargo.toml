@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["rk8s-dev team"]
 description = "Independent Kubernetes operator for BrewFS"
+license = "MIT"
 
 [workspace]
 

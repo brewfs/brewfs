@@ -3,6 +3,7 @@ name = "brewfs-stats"
 version = "0.1.0"
 edition = "2024"
 description = "Real-time performance stats viewer for BrewFS (like juicefs stats)"
+license = "MIT"
 
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
