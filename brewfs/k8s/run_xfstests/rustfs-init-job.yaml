@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-init
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: rustfs-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: rustfs-init
+          image: __AWSCLI_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              mkdir -p /root/.aws
+              printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+              timeout 180 sh -ec '
+                while true; do
+                  aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+                  aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+                  sleep 2
+                done
+              '
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: rustfsadmin
+            - name: AWS_SECRET_ACCESS_KEY
+              value: rustfsadmin
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+            - name: BREWFS_S3_BUCKET
+              value: brewfs-data

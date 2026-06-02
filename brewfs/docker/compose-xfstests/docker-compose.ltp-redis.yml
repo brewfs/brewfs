@@ -1,0 +1,130 @@
+services:
+  redis:
+    image: docker.io/library/redis:7.2-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      - brewfs-ltp
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    expose:
+      - "9000"
+      - "9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+      RUSTFS_SERVER_DOMAINS: ${RUSTFS_SERVER_DOMAINS:-rustfs}
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --server-domains
+      - ${RUSTFS_SERVER_DOMAINS:-rustfs}
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    volumes:
+      - rustfs-data-ltp:/data
+    networks:
+      - brewfs-ltp
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 180 sh -ec '
+          while true; do
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+    networks:
+      - brewfs-ltp
+
+  ltp:
+    image: brewfs-ltp:local
+    build:
+      context: ../../..
+      dockerfile: brewfs/docker/compose-xfstests/Dockerfile.ltp
+    depends_on:
+      redis:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      BREWFS_META_BACKEND: redis
+      BREWFS_META_URL: redis://redis:6379/0
+      BREWFS_DATA_BACKEND: s3
+      BREWFS_DATA_DIR: /var/lib/brewfs/data
+      BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
+      BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
+      BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
+      BREWFS_LOG_FILE: /artifacts/brewfs.log
+      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+      BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
+      BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
+      BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
+      BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      LTP_SCENARIOS: fs
+      LTP_EXTRA_ARGS: ${LTP_EXTRA_ARGS:-}
+      LTP_SKIP_FILES: ${LTP_SKIP_FILES:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-brewfs=info}
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - ./artifacts:/artifacts
+      - brewfs-state-ltp:/var/lib/brewfs
+    networks:
+      - brewfs-ltp
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+networks:
+  brewfs-ltp:
+    driver: bridge
+
+volumes:
+  brewfs-state-ltp:
+  rustfs-data-ltp:

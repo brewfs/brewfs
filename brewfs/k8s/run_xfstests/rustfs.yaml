@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      containers:
+        - name: rustfs
+          image: __RUSTFS_IMAGE__
+          imagePullPolicy: IfNotPresent
+          args:
+            - --address
+            - :9000
+            - --console-enable
+            - --server-domains
+            - rustfs
+            - --access-key
+            - rustfsadmin
+            - --secret-key
+            - rustfsadmin
+            - /data
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              value: rustfsadmin
+            - name: RUSTFS_SECRET_KEY
+              value: rustfsadmin
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_SERVER_DOMAINS
+              value: rustfs
+          ports:
+            - containerPort: 9000
+              name: s3
+            - containerPort: 9001
+              name: console
+          volumeMounts:
+            - name: rustfs-data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: s3
+            initialDelaySeconds: 2
+            periodSeconds: 2
+      volumes:
+        - name: rustfs-data
+          persistentVolumeClaim:
+            claimName: rustfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+spec:
+  selector:
+    app: rustfs
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+    - name: console
+      port: 9001
+      targetPort: console

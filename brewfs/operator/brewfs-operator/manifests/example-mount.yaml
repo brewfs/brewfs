@@ -1,0 +1,119 @@
+apiVersion: storage.brewfs.io/v1alpha1
+kind: BrewFSMount
+metadata:
+  name: demo-mount
+spec:
+  clusterRef:
+    name: demo
+  workloadKind: DaemonSet
+  image: brewfs:local
+  imagePullPolicy: IfNotPresent
+  mountPath: /mnt/brewfs
+  hostMountPath: /var/lib/brewfs/mounts/demo
+  mountPropagation: Bidirectional
+  configPath: /run/brewfs/config.yaml
+  statePath: /var/lib/brewfs
+  logLevel: brewfs=info
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - operator: Exists
+  consumer:
+    workloadKind: StatefulSet
+    workloadLabels:
+      app.kubernetes.io/name: demo-app
+      app.kubernetes.io/component: api
+    workloadAnnotations:
+      storage.brewfs.io/template-source: migrated-from-existing-statefulset
+    imagePullSecrets:
+      - demo-regcred
+    mountPath: /data
+    priorityClassName: brewfs-demo
+    dnsPolicy: ClusterFirst
+    terminationGracePeriodSeconds: 30
+    podSecurityContext:
+      runAsNonRoot: true
+      fsGroup: 1000
+    podLabels:
+      app.kubernetes.io/part-of: brewfs-demo
+    initContainers:
+      - name: init-check
+        image: busybox:1.36
+        command:
+          - /bin/sh
+          - -ec
+        args:
+          - "echo preparing consumer; ls -al /data || true"
+    containers:
+      - name: app
+        image: busybox:1.36
+        workingDir: /data
+        command:
+          - /bin/sh
+          - -ec
+        args:
+          - "mkdir -p /tmp/app && while true; do date; ls -al /data; nc -l -p 8080 -e echo ok >/dev/null 2>&1 || true; sleep 30; done"
+        env:
+          APP_MODE: demo
+        envFrom:
+          - configMapName: demo-app-config
+            prefix: APP_
+          - secretName: demo-app-secret
+        ports:
+          - name: http
+            containerPort: 8080
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          readOnlyRootFilesystem: false
+        readinessProbe:
+          execCommand:
+            - /bin/sh
+            - -ec
+            - test -d /data
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        startupProbe:
+          execCommand:
+            - /bin/sh
+            - -ec
+            - test -d /data
+          failureThreshold: 12
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        lifecycle:
+          preStop:
+            execCommand:
+              - /bin/sh
+              - -ec
+              - echo stopping app
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+          - name: scratch
+            mountPath: /scratch
+      - name: sidecar
+        image: busybox:1.36
+        command:
+          - /bin/sh
+          - -ec
+        args:
+          - "while true; do echo sidecar alive; sleep 60; done"
+        mountPath: /brewfs
+        stdin: true
+        tty: true
+    volumes:
+      - name: scratch
+        emptyDir: true

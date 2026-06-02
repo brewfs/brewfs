@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: xfstests
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: xfstests
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: xfstests
+          image: __XFSTESTS_IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+          env:
+            - name: BREWFS_META_BACKEND
+              value: redis
+            - name: BREWFS_META_URL
+              value: redis://redis:6379/0
+            - name: BREWFS_DATA_BACKEND
+              value: s3
+            - name: BREWFS_DATA_DIR
+              value: /var/lib/brewfs/data
+            - name: BREWFS_S3_BUCKET
+              value: brewfs-data
+            - name: BREWFS_S3_ENDPOINT
+              value: http://rustfs:9000
+            - name: BREWFS_S3_REGION
+              value: us-east-1
+            - name: BREWFS_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: BREWFS_CONFIG_PATH
+              value: /run/brewfs/config.yaml
+            - name: BREWFS_LOG_FILE
+              value: /artifacts/brewfs.log
+            - name: BREWFS_FUSE_OP_LOG
+              value: "__BREWFS_FUSE_OP_LOG__"
+            - name: BREWFS_FUSE_LOG_FILE
+              value: /artifacts/brewfs_fuse_ops.log
+            - name: BREWFS_ARTIFACT_ROOT
+              value: /artifacts
+            - name: XFSTESTS_CASES
+              value: "__XFSTESTS_CASES__"
+            - name: XFSTESTS_SKIP_CASES
+              value: "__XFSTESTS_SKIP_CASES__"
+            - name: XFSTESTS_CHECK_ARGS
+              value: "__XFSTESTS_CHECK_ARGS__"
+            - name: RUST_LOG
+              value: __RUST_LOG__
+            - name: AWS_ACCESS_KEY_ID
+              value: rustfsadmin
+            - name: AWS_SECRET_ACCESS_KEY
+              value: rustfsadmin
+            - name: AWS_DEFAULT_REGION
+              value: us-east-1
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+          volumeMounts:
+            - name: fuse-device
+              mountPath: /dev/fuse
+            - name: brewfs-state
+              mountPath: /var/lib/brewfs
+            - name: artifacts
+              mountPath: /artifacts
+      volumes:
+        - name: fuse-device
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice
+        - name: brewfs-state
+          persistentVolumeClaim:
+            claimName: brewfs-state
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: artifacts

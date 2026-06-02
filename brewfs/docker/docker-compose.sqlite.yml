@@ -1,0 +1,105 @@
+x-brewfs-image: &brewfs-image
+  image: brewfs:local
+  build:
+    context: ../..
+    dockerfile: brewfs/docker/Dockerfile
+
+x-brewfs-rustfs-env: &brewfs-rustfs-env
+  AWS_ACCESS_KEY_ID: rustfsadmin
+  AWS_SECRET_ACCESS_KEY: rustfsadmin
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_EC2_METADATA_DISABLED: "true"
+  BREWFS_DATA_BACKEND: s3
+  BREWFS_S3_BUCKET: brewfs-data
+  BREWFS_S3_ENDPOINT: http://rustfs:9000
+  BREWFS_S3_REGION: us-east-1
+  BREWFS_S3_FORCE_PATH_STYLE: "true"
+
+services:
+  brewfs-image:
+    <<: *brewfs-image
+    profiles:
+      - image-maintenance
+    entrypoint: ["bash", "-lc", "true"]
+    environment:
+      <<: *brewfs-rustfs-env
+      BREWFS_META_BACKEND: sqlite
+      BREWFS_SQLITE_PATH: /var/lib/brewfs/metadata.db
+    networks:
+      - brewfs-network
+
+  rustfs:
+    profiles:
+      - s3-stack
+    image: rustfs/rustfs:latest
+    container_name: rustfs-brewfs-sqlite
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: ["/data"]
+    environment:
+      - RUSTFS_ADDRESS=:9000
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+    volumes:
+      - rustfs-data-sqlite:/data
+    networks:
+      - brewfs-network
+
+  rustfs-init:
+    profiles:
+      - s3-stack
+    image: amazon/aws-cli:2
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      mkdir -p /root/.aws
+      printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+      until aws --endpoint-url http://rustfs:9000 s3api list-buckets >/dev/null 2>&1; do
+        sleep 2
+      done
+      aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket brewfs-data >/dev/null 2>&1 || \
+        aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket brewfs-data
+    environment:
+      - AWS_ACCESS_KEY_ID=rustfsadmin
+      - AWS_SECRET_ACCESS_KEY=rustfsadmin
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_EC2_METADATA_DISABLED=true
+    networks:
+      - brewfs-network
+
+  brewfs:
+    <<: *brewfs-image
+    profiles:
+      - s3-stack
+    container_name: brewfs-rustfs-sqlite
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *brewfs-rustfs-env
+      BREWFS_META_BACKEND: sqlite
+      BREWFS_SQLITE_PATH: /var/lib/brewfs/metadata.db
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - brewfs-state-sqlite:/var/lib/brewfs
+      - brewfs-mount-sqlite:/mnt/brewfs
+    networks:
+      - brewfs-network
+
+networks:
+  brewfs-network:
+    driver: bridge
+
+volumes:
+  rustfs-data-sqlite:
+  brewfs-state-sqlite:
+  brewfs-mount-sqlite:

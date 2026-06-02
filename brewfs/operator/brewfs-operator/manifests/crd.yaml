@@ -1,0 +1,1441 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: brewfsclusters.storage.brewfs.io
+spec:
+  group: storage.brewfs.io
+  names:
+    categories: []
+    kind: BrewFSCluster
+    plural: brewfsclusters
+    shortNames:
+    - sfs
+    singular: brewfscluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BrewFSClusterSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              mountConfig:
+                default:
+                  blockSize: 4194304
+                  chunkSize: 67108864
+                  forcePathStyle: true
+                  maxConcurrency: 8
+                  mountPoint: /mnt/brewfs
+                  partSize: 16777216
+                properties:
+                  blockSize:
+                    default: 4194304
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  chunkSize:
+                    default: 67108864
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  forcePathStyle:
+                    default: true
+                    type: boolean
+                  maxConcurrency:
+                    default: 8
+                    format: uint
+                    minimum: 0.0
+                    type: integer
+                  mountPoint:
+                    default: /mnt/brewfs
+                    type: string
+                  partSize:
+                    default: 16777216
+                    format: uint
+                    minimum: 0.0
+                    type: integer
+                type: object
+              redis:
+                default:
+                  image: redis:7.2-alpine
+                  port: 6379
+                properties:
+                  image:
+                    default: redis:7.2-alpine
+                    type: string
+                  port:
+                    default: 6379
+                    format: int32
+                    type: integer
+                type: object
+              rustfs:
+                default:
+                  accessKey: rustfsadmin
+                  bucket: brewfs-data
+                  consolePort: 9001
+                  image: rustfs/rustfs:latest
+                  port: 9000
+                  region: us-east-1
+                  secretKey: rustfsadmin
+                  storageSize: 20Gi
+                properties:
+                  accessKey:
+                    default: rustfsadmin
+                    type: string
+                  bucket:
+                    default: brewfs-data
+                    type: string
+                  consolePort:
+                    default: 9001
+                    format: int32
+                    type: integer
+                  image:
+                    default: rustfs/rustfs:latest
+                    type: string
+                  port:
+                    default: 9000
+                    format: int32
+                    type: integer
+                  region:
+                    default: us-east-1
+                    type: string
+                  secretKey:
+                    default: rustfsadmin
+                    type: string
+                  storageSize:
+                    default: 20Gi
+                    type: string
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              bucket:
+                nullable: true
+                type: string
+              configMap:
+                nullable: true
+                type: string
+              lastReconciledAt:
+                format: date-time
+                nullable: true
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                type: string
+              redisService:
+                nullable: true
+                type: string
+              rustfsService:
+                nullable: true
+                type: string
+            required:
+            - message
+            - phase
+            type: object
+        required:
+        - spec
+        title: BrewFSCluster
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: brewfsmounts.storage.brewfs.io
+spec:
+  group: storage.brewfs.io
+  names:
+    categories: []
+    kind: BrewFSMount
+    plural: brewfsmounts
+    shortNames:
+    - sfsm
+    singular: brewfsmount
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BrewFSMountSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              clusterRef:
+                properties:
+                  name:
+                    type: string
+                required:
+                - name
+                type: object
+              configPath:
+                default: /run/brewfs/config.yaml
+                type: string
+              consumer:
+                nullable: true
+                properties:
+                  args:
+                    default:
+                    - sleep infinity
+                    items:
+                      type: string
+                    type: array
+                  command:
+                    default:
+                    - /bin/sh
+                    - -ec
+                    items:
+                      type: string
+                    type: array
+                  containers:
+                    default: []
+                    items:
+                      properties:
+                        args:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        env:
+                          additionalProperties:
+                            type: string
+                          default: {}
+                          type: object
+                        envFrom:
+                          default: []
+                          items:
+                            properties:
+                              configMapName:
+                                nullable: true
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                              prefix:
+                                nullable: true
+                                type: string
+                              secretName:
+                                nullable: true
+                                type: string
+                            type: object
+                          type: array
+                        image:
+                          type: string
+                        imagePullPolicy:
+                          default: IfNotPresent
+                          type: string
+                        lifecycle:
+                          nullable: true
+                          properties:
+                            postStart:
+                              nullable: true
+                              properties:
+                                execCommand:
+                                  default: []
+                                  items:
+                                    type: string
+                                  type: array
+                                httpGet:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    httpHeaders:
+                                      default: []
+                                      items:
+                                        properties:
+                                          name:
+                                            type: string
+                                          value:
+                                            type: string
+                                        required:
+                                        - name
+                                        - value
+                                        type: object
+                                      type: array
+                                    path:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                    scheme:
+                                      nullable: true
+                                      type: string
+                                  required:
+                                  - port
+                                  type: object
+                                tcpSocket:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                  required:
+                                  - port
+                                  type: object
+                              type: object
+                            preStop:
+                              nullable: true
+                              properties:
+                                execCommand:
+                                  default: []
+                                  items:
+                                    type: string
+                                  type: array
+                                httpGet:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    httpHeaders:
+                                      default: []
+                                      items:
+                                        properties:
+                                          name:
+                                            type: string
+                                          value:
+                                            type: string
+                                        required:
+                                        - name
+                                        - value
+                                        type: object
+                                      type: array
+                                    path:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                    scheme:
+                                      nullable: true
+                                      type: string
+                                  required:
+                                  - port
+                                  type: object
+                                tcpSocket:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                  required:
+                                  - port
+                                  type: object
+                              type: object
+                          type: object
+                        livenessProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        mountPath:
+                          nullable: true
+                          type: string
+                        name:
+                          type: string
+                        ports:
+                          default: []
+                          items:
+                            properties:
+                              containerPort:
+                                format: int32
+                                type: integer
+                              name:
+                                nullable: true
+                                type: string
+                              protocol:
+                                nullable: true
+                                type: string
+                            required:
+                            - containerPort
+                            type: object
+                          type: array
+                        readinessProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        resources:
+                          nullable: true
+                          properties:
+                            limits:
+                              additionalProperties:
+                                type: string
+                              default: {}
+                              type: object
+                            requests:
+                              additionalProperties:
+                                type: string
+                              default: {}
+                              type: object
+                          type: object
+                        securityContext:
+                          nullable: true
+                          properties:
+                            allowPrivilegeEscalation:
+                              nullable: true
+                              type: boolean
+                            capabilitiesAdd:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            capabilitiesDrop:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            privileged:
+                              nullable: true
+                              type: boolean
+                            readOnlyRootFilesystem:
+                              nullable: true
+                              type: boolean
+                            runAsGroup:
+                              format: int64
+                              nullable: true
+                              type: integer
+                            runAsNonRoot:
+                              nullable: true
+                              type: boolean
+                            runAsUser:
+                              format: int64
+                              nullable: true
+                              type: integer
+                          type: object
+                        startupProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        stdin:
+                          default: false
+                          type: boolean
+                        terminationMessagePolicy:
+                          nullable: true
+                          type: string
+                        tty:
+                          default: false
+                          type: boolean
+                        volumeMounts:
+                          default: []
+                          items:
+                            properties:
+                              mountPath:
+                                type: string
+                              name:
+                                type: string
+                              readOnly:
+                                default: false
+                                type: boolean
+                              subPath:
+                                nullable: true
+                                type: string
+                            required:
+                            - mountPath
+                            - name
+                            type: object
+                          type: array
+                        workingDir:
+                          nullable: true
+                          type: string
+                      required:
+                      - image
+                      - name
+                      type: object
+                    type: array
+                  dnsPolicy:
+                    nullable: true
+                    type: string
+                  env:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  hostNetwork:
+                    default: false
+                    type: boolean
+                  image:
+                    default: busybox:1.36
+                    type: string
+                  imagePullPolicy:
+                    default: IfNotPresent
+                    type: string
+                  imagePullSecrets:
+                    default: []
+                    items:
+                      type: string
+                    type: array
+                  initContainers:
+                    default: []
+                    items:
+                      properties:
+                        args:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        command:
+                          default: []
+                          items:
+                            type: string
+                          type: array
+                        env:
+                          additionalProperties:
+                            type: string
+                          default: {}
+                          type: object
+                        envFrom:
+                          default: []
+                          items:
+                            properties:
+                              configMapName:
+                                nullable: true
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                              prefix:
+                                nullable: true
+                                type: string
+                              secretName:
+                                nullable: true
+                                type: string
+                            type: object
+                          type: array
+                        image:
+                          type: string
+                        imagePullPolicy:
+                          default: IfNotPresent
+                          type: string
+                        lifecycle:
+                          nullable: true
+                          properties:
+                            postStart:
+                              nullable: true
+                              properties:
+                                execCommand:
+                                  default: []
+                                  items:
+                                    type: string
+                                  type: array
+                                httpGet:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    httpHeaders:
+                                      default: []
+                                      items:
+                                        properties:
+                                          name:
+                                            type: string
+                                          value:
+                                            type: string
+                                        required:
+                                        - name
+                                        - value
+                                        type: object
+                                      type: array
+                                    path:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                    scheme:
+                                      nullable: true
+                                      type: string
+                                  required:
+                                  - port
+                                  type: object
+                                tcpSocket:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                  required:
+                                  - port
+                                  type: object
+                              type: object
+                            preStop:
+                              nullable: true
+                              properties:
+                                execCommand:
+                                  default: []
+                                  items:
+                                    type: string
+                                  type: array
+                                httpGet:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    httpHeaders:
+                                      default: []
+                                      items:
+                                        properties:
+                                          name:
+                                            type: string
+                                          value:
+                                            type: string
+                                        required:
+                                        - name
+                                        - value
+                                        type: object
+                                      type: array
+                                    path:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                    scheme:
+                                      nullable: true
+                                      type: string
+                                  required:
+                                  - port
+                                  type: object
+                                tcpSocket:
+                                  nullable: true
+                                  properties:
+                                    host:
+                                      nullable: true
+                                      type: string
+                                    port:
+                                      format: int32
+                                      type: integer
+                                  required:
+                                  - port
+                                  type: object
+                              type: object
+                          type: object
+                        livenessProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        mountPath:
+                          nullable: true
+                          type: string
+                        name:
+                          type: string
+                        ports:
+                          default: []
+                          items:
+                            properties:
+                              containerPort:
+                                format: int32
+                                type: integer
+                              name:
+                                nullable: true
+                                type: string
+                              protocol:
+                                nullable: true
+                                type: string
+                            required:
+                            - containerPort
+                            type: object
+                          type: array
+                        readinessProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        resources:
+                          nullable: true
+                          properties:
+                            limits:
+                              additionalProperties:
+                                type: string
+                              default: {}
+                              type: object
+                            requests:
+                              additionalProperties:
+                                type: string
+                              default: {}
+                              type: object
+                          type: object
+                        securityContext:
+                          nullable: true
+                          properties:
+                            allowPrivilegeEscalation:
+                              nullable: true
+                              type: boolean
+                            capabilitiesAdd:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            capabilitiesDrop:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            privileged:
+                              nullable: true
+                              type: boolean
+                            readOnlyRootFilesystem:
+                              nullable: true
+                              type: boolean
+                            runAsGroup:
+                              format: int64
+                              nullable: true
+                              type: integer
+                            runAsNonRoot:
+                              nullable: true
+                              type: boolean
+                            runAsUser:
+                              format: int64
+                              nullable: true
+                              type: integer
+                          type: object
+                        startupProbe:
+                          nullable: true
+                          properties:
+                            execCommand:
+                              default: []
+                              items:
+                                type: string
+                              type: array
+                            failureThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            httpGet:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                httpHeaders:
+                                  default: []
+                                  items:
+                                    properties:
+                                      name:
+                                        type: string
+                                      value:
+                                        type: string
+                                    required:
+                                    - name
+                                    - value
+                                    type: object
+                                  type: array
+                                path:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                                scheme:
+                                  nullable: true
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            initialDelaySeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            periodSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            successThreshold:
+                              format: int32
+                              nullable: true
+                              type: integer
+                            tcpSocket:
+                              nullable: true
+                              properties:
+                                host:
+                                  nullable: true
+                                  type: string
+                                port:
+                                  format: int32
+                                  type: integer
+                              required:
+                              - port
+                              type: object
+                            timeoutSeconds:
+                              format: int32
+                              nullable: true
+                              type: integer
+                          type: object
+                        stdin:
+                          default: false
+                          type: boolean
+                        terminationMessagePolicy:
+                          nullable: true
+                          type: string
+                        tty:
+                          default: false
+                          type: boolean
+                        volumeMounts:
+                          default: []
+                          items:
+                            properties:
+                              mountPath:
+                                type: string
+                              name:
+                                type: string
+                              readOnly:
+                                default: false
+                                type: boolean
+                              subPath:
+                                nullable: true
+                                type: string
+                            required:
+                            - mountPath
+                            - name
+                            type: object
+                          type: array
+                        workingDir:
+                          nullable: true
+                          type: string
+                      required:
+                      - image
+                      - name
+                      type: object
+                    type: array
+                  mountPath:
+                    default: /data
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  podAnnotations:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  podLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  podSecurityContext:
+                    nullable: true
+                    properties:
+                      fsGroup:
+                        format: int64
+                        nullable: true
+                        type: integer
+                      runAsGroup:
+                        format: int64
+                        nullable: true
+                        type: integer
+                      runAsNonRoot:
+                        nullable: true
+                        type: boolean
+                      runAsUser:
+                        format: int64
+                        nullable: true
+                        type: integer
+                      supplementalGroups:
+                        default: []
+                        items:
+                          format: int64
+                          type: integer
+                        type: array
+                    type: object
+                  priorityClassName:
+                    nullable: true
+                    type: string
+                  replicas:
+                    default: 1
+                    format: int32
+                    type: integer
+                  serviceAccountName:
+                    nullable: true
+                    type: string
+                  terminationGracePeriodSeconds:
+                    format: int64
+                    nullable: true
+                    type: integer
+                  tolerations:
+                    default: []
+                    items:
+                      properties:
+                        effect:
+                          nullable: true
+                          type: string
+                        key:
+                          nullable: true
+                          type: string
+                        operator:
+                          nullable: true
+                          type: string
+                        tolerationSeconds:
+                          format: int64
+                          nullable: true
+                          type: integer
+                        value:
+                          nullable: true
+                          type: string
+                      type: object
+                    type: array
+                  volumes:
+                    default: []
+                    items:
+                      properties:
+                        configMapName:
+                          nullable: true
+                          type: string
+                        emptyDir:
+                          default: false
+                          type: boolean
+                        hostPath:
+                          nullable: true
+                          type: string
+                        hostPathType:
+                          nullable: true
+                          type: string
+                        name:
+                          type: string
+                        secretName:
+                          nullable: true
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  workloadAnnotations:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  workloadKind:
+                    default: Deployment
+                    enum:
+                    - Deployment
+                    - DaemonSet
+                    - StatefulSet
+                    type: string
+                  workloadLabels:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                type: object
+              hostMountPath:
+                nullable: true
+                type: string
+              image:
+                default: brewfs:local
+                type: string
+              imagePullPolicy:
+                default: IfNotPresent
+                type: string
+              logLevel:
+                default: brewfs=info
+                type: string
+              mountPath:
+                default: /mnt/brewfs
+                type: string
+              mountPropagation:
+                default: None
+                enum:
+                - None
+                - HostToContainer
+                - Bidirectional
+                type: string
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                default: {}
+                type: object
+              replicas:
+                default: 1
+                format: int32
+                type: integer
+              serviceAccountName:
+                nullable: true
+                type: string
+              statePath:
+                default: /var/lib/brewfs
+                type: string
+              statePvcName:
+                nullable: true
+                type: string
+              tolerations:
+                default: []
+                items:
+                  properties:
+                    effect:
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
+              workloadKind:
+                default: Deployment
+                enum:
+                - Deployment
+                - DaemonSet
+                type: string
+            required:
+            - clusterRef
+            type: object
+          status:
+            nullable: true
+            properties:
+              cluster:
+                nullable: true
+                type: string
+              configMap:
+                nullable: true
+                type: string
+              consumerDesiredReplicas:
+                format: int32
+                nullable: true
+                type: integer
+              consumerMountPath:
+                nullable: true
+                type: string
+              consumerReadyReplicas:
+                format: int32
+                nullable: true
+                type: integer
+              consumerWorkloadKind:
+                enum:
+                - Deployment
+                - DaemonSet
+                - StatefulSet
+                nullable: true
+                type: string
+              consumerWorkloadName:
+                nullable: true
+                type: string
+              desiredReplicas:
+                format: int32
+                nullable: true
+                type: integer
+              hostMountPath:
+                nullable: true
+                type: string
+              lastReconciledAt:
+                format: date-time
+                nullable: true
+                type: string
+              message:
+                type: string
+              mountPropagation:
+                enum:
+                - None
+                - HostToContainer
+                - Bidirectional
+                nullable: true
+                type: string
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                type: string
+              readyReplicas:
+                format: int32
+                nullable: true
+                type: integer
+              workloadKind:
+                enum:
+                - Deployment
+                - DaemonSet
+                nullable: true
+                type: string
+              workloadName:
+                nullable: true
+                type: string
+            required:
+            - message
+            - phase
+            type: object
+        required:
+        - spec
+        title: BrewFSMount
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+

@@ -1,0 +1,84 @@
+# BrewFS performance profiling infrastructure
+# Start with: docker compose up -d
+# Then run:  ./run_perf.sh
+
+services:
+  redis:
+    image: docker.io/library/redis:7.2-alpine
+    container_name: brewfs-perf-redis
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    networks:
+      - brewfs-perf
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: brewfs-perf-rustfs
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${RUSTFS_S3_PORT:-19000}:9000"
+      - "${RUSTFS_CONSOLE_PORT:-19001}:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_SERVER_DOMAINS: rustfs
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --server-domains
+      - rustfs
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    volumes:
+      - rustfs-data-perf:/data
+    networks:
+      - brewfs-perf
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 120 sh -ec '
+          while true; do
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${S3_BUCKET:-brewfs-perf-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${S3_BUCKET:-brewfs-perf-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    networks:
+      - brewfs-perf
+
+volumes:
+  rustfs-data-perf:
+
+networks:
+  brewfs-perf:
+    driver: bridge

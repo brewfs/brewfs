@@ -1,0 +1,33 @@
+FROM golang:1.25-bookworm AS builder
+WORKDIR /build
+COPY brewfs/juicefs/ ./
+RUN make juicefs && cp juicefs /usr/local/bin/juicefs
+
+FROM debian:trixie-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        fuse3 \
+        fio \
+        procps && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/juicefs /usr/local/bin/juicefs
+COPY brewfs/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /opt/xfstests-prebuilt.tar.gz
+COPY brewfs/docker/compose-xfstests/run_juicefs_perf_in_container.sh /usr/local/bin/run_juicefs_perf_in_container.sh
+
+RUN set -e; \
+    chmod +x /usr/local/bin/juicefs /usr/local/bin/run_juicefs_perf_in_container.sh; \
+    mkdir -p /opt/xfstests-dev /mnt/juicefs /artifacts; \
+    tar -xzf /opt/xfstests-prebuilt.tar.gz -C /opt --transform 's|^xfstests|xfstests-dev|'; \
+    chmod +x /opt/xfstests-dev/src/* 2>/dev/null || true; \
+    rm -f /opt/xfstests-prebuilt.tar.gz; \
+    grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
+
+ENV JFS_MOUNT_POINT=/mnt/juicefs \
+    JFS_META_URL=redis://redis:6379/0 \
+    JFS_S3_BUCKET=brewfs-data \
+    JFS_S3_ENDPOINT=http://rustfs:9000 \
+    JFS_S3_REGION=us-east-1
+
+ENTRYPOINT ["/usr/local/bin/run_juicefs_perf_in_container.sh"]

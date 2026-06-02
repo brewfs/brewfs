@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JuiceFS 架构可视化 — 读写路径 & 缓存 & 事务</title>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --orange: #d2991d; --red: #f85149;
+  --purple: #a371f7; --cyan: #39c5cf;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:var(--bg); color:var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  line-height:1.6;
+}
+header {
+  background: var(--surface); border-bottom:1px solid var(--border);
+  padding: 20px 32px; position:sticky; top:0; z-index:100;
+}
+header h1 { font-size:1.5rem; color:var(--accent); }
+header p { color:var(--muted); font-size:0.9rem; margin-top:4px; }
+nav {
+  display:flex; gap:8px; padding:12px 32px; background:var(--surface);
+  border-bottom:1px solid var(--border); flex-wrap:wrap;
+}
+nav button {
+  background:transparent; color:var(--muted); border:1px solid var(--border);
+  padding:6px 16px; border-radius:6px; cursor:pointer; font-size:0.85rem;
+  transition: all .2s;
+}
+nav button:hover, nav button.active {
+  color:var(--text); border-color:var(--accent); background:rgba(88,166,255,.1);
+}
+main { max-width:1400px; margin:0 auto; padding:32px; }
+section { display:none; }
+section.active { display:block; }
+h2 { font-size:1.3rem; color:var(--accent); margin-bottom:16px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+h3 { font-size:1rem; color:var(--text); margin:20px 0 10px; }
+.card {
+  background:var(--surface); border:1px solid var(--border); border-radius:8px;
+  padding:20px; margin-bottom:20px;
+}
+.row { display:flex; gap:20px; flex-wrap:wrap; }
+.col { flex:1; min-width:300px; }
+svg { width:100%; height:auto; }
+text.title { fill:var(--accent); font-size:14px; font-weight:600; }
+text.label { fill:var(--text); font-size:12px; }
+text.small { fill:var(--muted); font-size:10px; }
+text.mono { font-family:'Cascadia Code', 'Fira Code', monospace; font-size:11px; }
+rect.box { fill:var(--surface); stroke:var(--border); stroke-width:1.5; rx:6; }
+rect.highlight { fill:rgba(88,166,255,.1); stroke:var(--accent); stroke-width:2; rx:6; }
+rect.green-box { fill:rgba(63,185,80,.1); stroke:var(--green); stroke-width:1.5; rx:6; }
+rect.orange-box { fill:rgba(210,153,29,.1); stroke:var(--orange); stroke-width:1.5; rx:6; }
+rect.red-box { fill:rgba(248,81,73,.1); stroke:var(--red); stroke-width:1.5; rx:6; }
+rect.purple-box { fill:rgba(163,113,247,.1); stroke:var(--purple); stroke-width:1.5; rx:6; }
+rect.cyan-box { fill:rgba(57,197,207,.1); stroke:var(--cyan); stroke-width:1.5; rx:6; }
+path.arrow { stroke:var(--muted); stroke-width:1.2; fill:none; marker-end:url(#arrowhead); }
+path.arrow-bold { stroke:var(--accent); stroke-width:2; fill:none; marker-end:url(#arrowhead-blue); }
+path.arrow-warn { stroke:var(--orange); stroke-width:1.5; fill:none; marker-end:url(#arrowhead-orange); stroke-dasharray:5,3; }
+table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+th, td { padding:8px 12px; text-align:left; border-bottom:1px solid var(--border); }
+th { color:var(--accent); font-weight:600; }
+.metric-good { color:var(--green); font-weight:600; }
+.metric-bad { color:var(--red); font-weight:600; }
+.legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; }
+.legend span { display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--muted); }
+.legend .swatch { width:12px; height:12px; border-radius:3px; }
+.step-indicator { display:flex; gap:4px; margin:10px 0; flex-wrap:wrap; }
+.step-indicator .step {
+  padding:4px 10px; background:var(--surface); border:1px solid var(--border);
+  border-radius:4px; font-size:0.75rem; color:var(--muted); cursor:pointer;
+  transition: all .2s;
+}
+.step-indicator .step.active { background:rgba(88,166,255,.15); border-color:var(--accent); color:var(--accent); }
+.step-detail {
+  background:var(--surface); border:1px solid var(--border); border-radius:8px;
+  padding:16px; margin-top:12px; font-size:0.85rem;
+}
+.step-detail h4 { color:var(--accent); margin-bottom:8px; }
+.step-detail code {
+  background:rgba(88,166,255,.1); color:var(--cyan); padding:2px 6px; border-radius:4px;
+  font-family:'Cascadia Code', monospace; font-size:0.8rem;
+}
+code.block {
+  display:block; padding:12px; background:rgba(0,0,0,.3); border-radius:6px;
+  overflow-x:auto; white-space:pre; margin:8px 0; line-height:1.5;
+}
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+.grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+@media (max-width:768px) { .grid-2, .grid-3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>JuiceFS 架构可视化</h1>
+  <p>读写路径 · 5层缓存体系 · 事务并发控制 · Slice 压缩 · BrewFS 对比</p>
+</header>
+
+<nav>
+  <button class="active" onclick="switchTab('overview')">架构总览</button>
+  <button onclick="switchTab('read')">读路径</button>
+  <button onclick="switchTab('write')">写路径</button>
+  <button onclick="switchTab('cache')">缓存体系</button>
+  <button onclick="switchTab('txn')">事务引擎</button>
+  <button onclick="switchTab('compact')">Slice 压缩</button>
+  <button onclick="switchTab('perf')">性能对比</button>
+</nav>
+
+<main>
+<!-- ============================================================ -->
+<!-- OVERVIEW -->
+<!-- ============================================================ -->
+<section id="overview" class="active">
+<h2>I/O 栈全景图</h2>
+<div class="card">
+<svg viewBox="0 0 1200 700" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+  <marker id="arrowhead-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+  <marker id="arrowhead-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#3fb950"/></marker>
+  <marker id="arrowhead-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#d2991d"/></marker>
+  <marker id="arrowhead-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#a371f7"/></marker>
+</defs>
+
+<!-- Layer 1: User / Kernel -->
+<rect class="box" x="40" y="20" width="1120" height="70" rx="8"/>
+<text class="title" x="60" y="45">Layer 0: User Application</text>
+<text class="small" x="60" y="65">fio / dirstress / metaperf / any POSIX app → read() / write() / stat() syscalls</text>
+
+<path class="arrow" d="M600,90 L600,115"/>
+
+<!-- Layer 2: FUSE Kernel -->
+<rect class="orange-box" x="40" y="115" width="1120" height="55" rx="8"/>
+<text class="title" x="60" y="138">Layer 1: Linux Kernel VFS → FUSE (/dev/fuse)</text>
+<text class="small" x="60" y="155">Kernel page cache → FUSE protocol messages → dispatched to userspace daemon</text>
+
+<path class="arrow" d="M600,170 L600,195"/>
+
+<!-- Layer 3: VFS Layer -->
+<rect class="highlight" x="40" y="195" width="540" height="100" rx="8"/>
+<text class="title" x="60" y="218">Layer 2: JuiceFS VFS (vfs/vfs.go)</text>
+<text class="small" x="60" y="235">VFS.Read / VFS.Write / VFS.Flush</text>
+<text class="small" x="60" y="250">handle.Wlock/Rlock — 悲观读写锁</text>
+<text class="small" x="60" y="265">modifiedAt tracking → FUSE attr invalidation</text>
+
+<rect class="box" x="620" y="195" width="540" height="100" rx="8"/>
+<text class="title" x="640" y="218">Layer 2: Internal Nodes</text>
+<text class="small" x="640" y="235">.accesslog (ino 0x7FFFFFFF00000001)</text>
+<text class="small" x="640" y="250">.control / .stats / .config</text>
+<text class="small" x="640" y="265">.trash (TrashInode)</text>
+
+<path class="arrow" d="M310,295 L310,330"/>
+<path class="arrow" d="M890,295 L890,330"/>
+
+<!-- Layer 4: Data Layer -->
+<rect class="green-box" x="40" y="330" width="540" height="100" rx="8"/>
+<text class="title" x="60" y="353">Layer 3a: Data Layer (vfs/reader.go, writer.go)</text>
+<text class="small" x="60" y="370">fileReader → sliceReader → adaptive readahead</text>
+<text class="small" x="60" y="385">fileWriter → chunkWriter → sliceWriter → commitThread</text>
+<text class="small" x="60" y="400">async prefetch / periodic flush / upload scheduling</text>
+
+<rect class="purple-box" x="620" y="330" width="540" height="100" rx="8"/>
+<text class="title" x="640" y="353">Layer 3b: Metadata Layer (meta/)</text>
+<text class="small" x="640" y="370">Redis: WATCH/MULTI/EXEC optimistic txn (50 retry max)</text>
+<text class="small" x="640" y="385">CSC: RESP3 client-side caching (inode+entry)</text>
+<text class="small" x="640" y="400">OpenFile Cache: attr + chunk slices per open fd</text>
+
+<path class="arrow" d="M310,430 L310,465"/>
+<path class="arrow" d="M890,430 L890,465"/>
+
+<!-- Layer 5: Chunk Store -->
+<rect class="cyan-box" x="40" y="465" width="540" height="90" rx="8"/>
+<text class="title" x="60" y="488">Layer 4a: Chunk Store (chunk/cached_store.go)</text>
+<text class="small" x="60" y="505">wSlice / rSlice → block upload/download</text>
+<text class="small" x="60" y="520">compress (LZ4/Zstd) → PUT/GET → retry w/ jitter</text>
+<text class="small" x="60" y="535">Singleflight dedup (group.Execute) | Writeback staging</text>
+
+<rect class="box" x="620" y="465" width="540" height="90" rx="8"/>
+<text class="title" x="640" y="488">Layer 4b: Disk Cache (chunk/disk_cache.go)</text>
+<text class="small" x="640" y="505">multi-dir consistent hashing (murmur3)</text>
+<text class="small" x="640" y="520">pending → flush pipeline (async writes)</text>
+<text class="small" x="640" y="535">normal/unstable/down state machine</text>
+
+<path class="arrow" d="M310,555 L310,590"/>
+<path class="arrow" d="M890,555 L890,590"/>
+
+<!-- Layer 6: Object Store + Redis -->
+<rect class="box" x="40" y="590" width="540" height="70" rx="8"/>
+<text class="title" x="60" y="613">Layer 5a: Object Storage</text>
+<text class="small" x="60" y="630">S3 / GCS / OSS / local disk / ... — blob GET/PUT</text>
+<text class="small" x="60" y="645">Endpoint resolution via bucket URL parsing</text>
+
+<rect class="red-box" x="620" y="590" width="540" height="70" rx="8"/>
+<text class="title" x="640" y="613">Layer 5b: Redis Cluster</text>
+<text class="small" x="640" y="630">Standalone / Sentinel / Cluster — auto-detect</text>
+<text class="small" x="640" y="645">28 key patterns, all operations via txn()</text>
+</svg>
+</div>
+
+<div class="card">
+<h3>核心设计原则</h3>
+<div class="grid-3">
+  <div><strong style="color:var(--green)">Data-First, Metadata-Later</strong>
+    <p style="color:var(--muted);margin-top:4px">数据先上传到 S3，确认成功后，再通过 Redis 事务提交切片元数据。崩溃场景下最多留下孤儿 block，由 sliceRefs GC 清理，绝不丢已提交数据。</p>
+  </div>
+  <div><strong style="color:var(--accent)">Append-Only Slice Log</strong>
+    <p style="color:var(--muted);margin-top:4px">每个 64MB chunk 是一个 Redis List，新切片永远 RPUSH 到末尾。从不修改已有元素，压缩通过 LTRIM+LPUSH 原子替换整个列表。</p>
+  </div>
+  <div><strong style="color:var(--purple)">5-Level Cache Hierarchy</strong>
+    <p style="color:var(--muted);margin-top:4px">Redis CSC → OpenFile → Memory Pages → Disk Cache Files → Object Store。每一层独立管理，上层命中率决定性能天花板。</p>
+  </div>
+</div>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- READ PATH -->
+<!-- ============================================================ -->
+<section id="read">
+<h2>读路径详解</h2>
+<div class="card">
+<svg viewBox="0 0 1200 820" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+  <marker id="ab" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#3fb950"/></marker>
+</defs>
+
+<!-- Step boxes -->
+<rect class="box" x="20" y="10" width="200" height="60"/>
+<text class="title" x="35" y="35">① FUSE Read(ino,off,buf)</text>
+<text class="small" x="35" y="55">vfs/vfs.go:693</text>
+
+<path class="arrow" d="M220,40 L260,40"/>
+
+<rect class="orange-box" x="260" y="10" width="200" height="60"/>
+<text class="title" x="275" y="35">② handle.Rlock()</text>
+<text class="small" x="275" y="55">等待并发写完成</text>
+
+<path class="arrow" d="M460,40 L500,40"/>
+
+<rect class="orange-box" x="500" y="10" width="200" height="60"/>
+<text class="title" x="515" y="35">③ writer.Flush(ino)</text>
+<text class="small" x="515" y="55">保证读己之所写</text>
+
+<path class="arrow" d="M700,40 L740,40"/>
+
+<rect class="highlight" x="740" y="10" width="200" height="60"/>
+<text class="title" x="755" y="35">④ fileReader.Read()</text>
+<text class="small" x="755" y="55">vfs/reader.go:626</text>
+
+<path class="arrow" d="M840,70 L840,105"/>
+
+<rect class="box" x="740" y="105" width="440" height="130"/>
+<text class="title" x="755" y="125">fileReader.Read() 内部流程</text>
+<text class="small" x="755" y="142">cleanupRequests() — 清理 BREAK/INVALID/30s 未访问的 sliceReader</text>
+<text class="small" x="755" y="158">splitRange() — 将读取范围对齐到已有 slice 边界</text>
+<text class="small" x="755" y="174">prepareRequests() — 复用已有或创建新 sliceReader (goroutine)</text>
+<text class="small" x="755" y="190">checkReadahead() — 连续模式翻倍预读 / 随机模式减半</text>
+<text class="small" x="755" y="206">waitForIO() — 阻塞等待所有 slice 状态 → READY</text>
+<text class="small" x="755" y="222">⚠ bufferUsed > bufferSize: sleep 10ms / > 2x: sleep 100ms</text>
+
+<path class="arrow" d="M840,235 L840,270"/>
+
+<!-- SliceReader goroutine -->
+<rect class="green-box" x="400" y="270" width="500" height="120"/>
+<text class="title" x="415" y="293">⑤ 异步: sliceReader.run() goroutine (per slice)</text>
+<text class="small" x="415" y="310">状态机: NEW → BUSY (读 meta+data) → READY (就绪) | REFRESH → NEW (重试)</text>
+<text class="small" x="415" y="326">meta.Read(ino, indx, &amp;slices): openfiles cache 命中 → 免 Redis | miss → LRange</text>
+<text class="small" x="415" y="342">dataReader.Read(page, slices): ≤16 slice → goroutine per slice | >16 → readManySlices(concurrency=16)</text>
+<text class="small" x="415" y="358">slice.id == 0 → 空洞 (sparse file) → 零填充, 跳过对象存储</text>
+<text class="small" x="415" y="374">失败: InvalidateChunkCache → 指数退避重试 (maxRetries, 默认 50)</text>
+
+<path class="arrow" d="M650,390 L650,425"/>
+
+<!-- Layer 5: Chunk read -->
+<rect class="cyan-box" x="200" y="425" width="700" height="140"/>
+<text class="title" x="215" y="448">⑥ rSlice.ReadAt(page, off) — chunk/cached_store.go:97</text>
+<text class="small" x="215" y="465">跨 block 边界 → 递归读取各 block (每 block = BlockSize, 默认 4MB)</text>
+<text class="small" x="215" y="482">
+  <tspan fill="var(--accent)">❶ bcache.load(key)</tspan> → memory pages map → KeyIndex lookup → disk cache file (CRC32C verify)
+</text>
+<text class="small" x="215" y="499">
+  <tspan fill="var(--orange)">❷ loadRange(key, off, len)</tspan> — seekable store 且 offset>0 且 len≤25% block → HTTP Range GET
+</text>
+<text class="small" x="215" y="516">
+  <tspan fill="var(--red)">❸ group.Execute(key, fn)</tspan> — singleflight: 同 key 仅一个 goroutine 下载，其余等待结果
+</text>
+<text class="small" x="215" y="533">❹ store.load(key, page, cache=true): acquire download slot → GET /{key} → decompress → cache to disk</text>
+<text class="small" x="215" y="550">cache 决策: shouldCache(size) = CacheFullBlock || size < BlockSize</text>
+
+<path class="arrow" d="M550,565 L550,600"/>
+
+<rect class="box" x="350" y="600" width="400" height="50"/>
+<text class="title" x="365" y="622">⑦ 拷贝数据到用户 buf → 返回字节数</text>
+<text class="small" x="365" y="638">waitForIO: 1s timeout per slice, check cancel, copy from pages</text>
+</svg>
+</div>
+
+<div class="card">
+<h3>自适应预读 (Adaptive Readahead)</h3>
+<div class="step-indicator" id="readahead-steps">
+  <span class="step active" onclick="showRA(0)">初始状态</span>
+  <span class="step" onclick="showRA(1)">连续读命中</span>
+  <span class="step" onclick="showRA(2)">翻倍</span>
+  <span class="step" onclick="showRA(3)">缓冲反压</span>
+  <span class="step" onclick="showRA(4)">随机读</span>
+</div>
+<div class="step-detail" id="ra-detail">
+  <h4>初始状态</h4>
+  <p>预读窗口 = <code>blockSize</code> (默认 4MB)。两个 session slot 轮流使用，按最后一个 offset 匹配最近的 session。</p>
+</div>
+<script>
+const raDetails = [
+  '<h4>初始状态</h4><p>预读窗口 = <code>blockSize</code> (默认 4MB)。两个 session slot 轮流使用。</p>',
+  '<h4>连续读命中窗口 80%+</h4><p><code>session.total += readSize</code>。当 <code>total >= readahead</code> 时触发翻倍。</p>',
+  '<h4>翻倍</h4><p><code>session.readahead *= 2</code>，上限 <code>readAheadMax = 80% × BufferSize</code> (默认 300MB → 240MB)。为后续 block 创建预读 sliceReader。</p>',
+  '<h4>缓冲压力反压</h4><p><code>readBufferUsed > bufferSize</code>: sleep 10ms, > 2×: sleep 100ms。预读窗口减半。</p>',
+  '<h4>随机访问 (< 25% 窗口)</h4><p>预读窗口减半，避免污染缓存。Session 检测: 连续读量 < 窗口的 1/4。</p>'
+];
+function showRA(i) {
+  document.getElementById('ra-detail').innerHTML = raDetails[i];
+  document.querySelectorAll('#readahead-steps .step').forEach((el,j)=>el.classList.toggle('active',j===i));
+}
+</script>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- WRITE PATH -->
+<!-- ============================================================ -->
+<section id="write">
+<h2>写路径详解</h2>
+<div class="card">
+<svg viewBox="0 0 1200 950" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="aw" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+  <marker id="awb" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+  <marker id="awg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#3fb950"/></marker>
+  <marker id="awo" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#d2991d"/></marker>
+</defs>
+
+<!-- FUSE write -->
+<rect class="box" x="20" y="10" width="220" height="55"/>
+<text class="title" x="35" y="35">① FUSE Write(ino,off,buf)</text>
+<text class="small" x="35" y="50">vfs/vfs.go:801</text>
+<path class="arrow" d="M240,37 L280,37"/>
+
+<rect class="orange-box" x="280" y="10" width="200" height="55"/>
+<text class="title" x="295" y="35">② handle.Wlock()</text>
+<text class="small" x="295" y="50">悲观写锁，阻塞 reader</text>
+<path class="arrow" d="M480,37 L520,37"/>
+
+<rect class="highlight" x="520" y="10" width="220" height="55"/>
+<text class="title" x="535" y="35">③ fileWriter.Write()</text>
+<text class="small" x="535" y="50">vfs/writer.go:330</text>
+<path class="arrow" d="M630,65 L630,95"/>
+
+<!-- Backpressure -->
+<rect class="red-box" x="400" y="95" width="500" height="60"/>
+<text class="title" x="415" y="115">④ 反压检查</text>
+<text class="small" x="415" y="130">pending slices > 1000 → 阻塞等待 commitThread</text>
+<text class="small" x="415" y="145">bufferUsed > bufferSize → sleep 10ms / > 2× → sleep 100ms</text>
+<path class="arrow" d="M650,155 L650,185"/>
+
+<!-- Split by chunk -->
+<rect class="box" x="400" y="185" width="500" height="50"/>
+<text class="title" x="415" y="207">⑤ 按 64MB chunk 边界拆分 → writeChunk()</text>
+<path class="arrow" d="M650,235 L650,265"/>
+
+<!-- findWritableSlice -->
+<rect class="green-box" x="300" y="265" width="600" height="70"/>
+<text class="title" x="315" y="288">⑥ chunkWriter.findWritableSlice(pos, size)</text>
+<text class="small" x="315" y="303">反向搜索 slices 列表 → 找到包含 pos 的未冻结 slice</text>
+<text class="small" x="315" y="318">如果 pos 与已有 slice 重叠 (且未 flush) → 返回 nil (不覆盖)</text>
+<text class="small" x="315" y="328">搜索深度 > 3 → 自动冻结老 slice</text>
+<path class="arrow" d="M600,335 L600,365"/>
+
+<!-- wSlice.WriteAt -->
+<rect class="cyan-box" x="250" y="365" width="700" height="75"/>
+<text class="title" x="265" y="388">⑦ sliceWriter.write() → wSlice.WriteAt() (chunk/cached_store.go:267)</text>
+<text class="small" x="265" y="403">数据写入 64KB 子页 → 按 4MB block 分组 → pages[indx][]*Page</text>
+<text class="small" x="265" y="418">block 满 → FlushTo(off) 立即触发上传 | slice 达 64MB → 自动 freeze</text>
+<path class="arrow" d="M600,440 L600,475"/>
+
+<!-- Upload triggers -->
+<rect class="orange-box" x="150" y="475" width="900" height="90"/>
+<text class="title" x="165" y="498">⑧ 上传触发条件 (多路径)</text>
+<text class="small" x="165" y="515"><tspan fill="var(--green)">● block 满 (4MB)</tspan>: FlushTo(off) — 立即 goroutine 上传 | <tspan fill="var(--accent)">● slice 达 ChunkSize (64MB)</tspan>: 自动 freeze + flushData()</text>
+<text class="small" x="165" y="532"><tspan fill="var(--orange)">● idle > 1s 且 age > 1s</tspan>: flushAll() 后台 (每 100ms) | <tspan fill="var(--purple)">● age > 5s (flushDuration)</tspan>: flushAll() 强制冻结</text>
+<text class="small" x="165" y="549"><tspan fill="var(--red)">● file slices > 800</tspan>: 标记一半 chunk 刷新 | <tspan fill="var(--red)">● Flush/Fsync/Close</tspan>: 全部冻结 + 等待 commitThread 完成</text>
+<path class="arrow" d="M600,565 L600,600"/>
+
+<!-- Upload flow -->
+<rect class="purple-box" x="100" y="600" width="1000" height="110"/>
+<text class="title" x="115" y="623">⑨ wSlice.upload(indx) — chunk/cached_store.go:400</text>
+<text class="small" x="115" y="640">合并 block 页面 → 判断 writeback 模式:</text>
+<text class="small" x="115" y="657">  <tspan fill="var(--green)">Writeback &amp;&amp; blen < WritebackThresholdSize:</tspan> bcache.stage(key, data) → 本地磁盘 → UploadDelay 到期 → upload to S3</text>
+<text class="small" x="115" y="674">  <tspan fill="var(--accent)">直传 (非 writeback 或 block 太大):</tspan> currentUpload semaphore (MaxUpload 并发达上限) → compress → PUT</text>
+<text class="small" x="115" y="691">  重试: sync → MaxRetries+1 次, async → 3 次; 退避: sleep(try²) 秒; 超时: PutTimeout (默认 60s)</text>
+<path class="arrow" d="M600,710 L600,745"/>
+
+<!-- Commit -->
+<rect class="green-box" x="200" y="745" width="800" height="80"/>
+<text class="title" x="215" y="768">⑩ commitThread (per chunk goroutine) → meta.Write() → redis txn</text>
+<text class="small" x="215" y="785">等待 s.done (100ms timeout) → 等待 dep.committed (跨 chunk 依赖) → RPUSH slice record</text>
+<text class="small" x="215" y="802">reader.Invalidate(ino, off, size) — 使 reader 缓存失效 | 每 100 slice 触发压缩检查</text>
+</svg>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- CACHE SYSTEM -->
+<!-- ============================================================ -->
+<section id="cache">
+<h2>5 层缓存体系</h2>
+<div class="card">
+<svg viewBox="0 0 1200 580" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="ac" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+</defs>
+
+<!-- Row 1: Metadata caches -->
+<text class="title" x="30" y="30">元数据缓存 (Metadata Cache)</text>
+
+<rect class="highlight" x="30" y="45" width="350" height="130"/>
+<text class="title" x="45" y="68">L1: Redis CSC (redis_csc.go)</text>
+<text class="small" x="45" y="85">CLIENT TRACKING BCAST PREFIX i PREFIX d</text>
+<text class="small" x="45" y="100">inodeCache: ExpirableLRU[Ino, []byte]</text>
+<text class="small" x="45" y="115">entryCache: ExpirableLRU[string, cachedEntry]</text>
+<text class="small" x="45" y="130">失效: RESP3 PUSH msg + process hooks (after SET/HSET/HDEL)</text>
+<text class="small" x="45" y="145">重连: 全量清空 + 重新注册 tracking</text>
+<text class="small" x="45" y="160">capacity: 12800 entries (client-cache-size)</text>
+
+<rect class="green-box" x="425" y="45" width="350" height="130"/>
+<text class="title" x="440" y="68">L2: OpenFile Cache (openfile.go)</text>
+<text class="small" x="440" y="85">openFile{attr, refs, lastCheck, chunks map}</text>
+<text class="small" x="440" y="100">对象池: sync.Pool 复用 openFile</text>
+<text class="small" x="440" y="115">缓存: 属性 + chunk 0 + chunk N 切片</text>
+<text class="small" x="440" y="130">生命周期: Open 时创建/复用 → Close 时 release</text>
+<text class="small" x="440" y="145">淘汰: lastCheck > 12h 无条件删除</text>
+<text class="small" x="440" y="160">失效: mtime/mtimensec 变化 → invalidateAllChunks</text>
+
+<rect class="box" x="820" y="45" width="350" height="130"/>
+<text class="title" x="835" y="68">L2b: Symlink Cache</text>
+<text class="small" x="835" y="85">symlinkCache: LRU, capacity=10000</text>
+<text class="small" x="835" y="100">entryTerms: per-dir term counter</text>
+<text class="small" x="835" y="115">entryCache valid iff term ≥ entryTerms[parent]</text>
+<text class="small" x="835" y="130">cleanup: 每 1min 清理过期项</text>
+
+<!-- Row 2: Data caches -->
+<text class="title" x="30" y="210">数据缓存 (Data Cache)</text>
+
+<rect class="cyan-box" x="30" y="225" width="350" height="130"/>
+<text class="title" x="45" y="248">L3: Memory Pages (chunk/mem_cache.go)</text>
+<text class="small" x="45" y="265">map[string]memItem{atime, *Page}</text>
+<text class="small" x="45" y="280">pending pages map: 尚未 flush 到磁盘</text>
+<text class="small" x="45" y="295">2-random 淘汰 (同 disk cache 策略)</text>
+<text class="small" x="45" y="310">CacheDir="memory" 或磁盘缓存不可用时降级</text>
+<text class="small" x="45" y="325">writeback: memory mode 不支持 staging</text>
+
+<rect class="orange-box" x="425" y="225" width="350" height="130"/>
+<text class="title" x="440" y="248">L4: Disk Cache (disk_cache.go)</text>
+<text class="small" x="440" y="265">多目录: consistent hashing (murmur3, 100 vnodes)</text>
+<text class="small" x="440" y="280">文件格式: data + CRC32C checksums + tierID</text>
+<text class="small" x="440" y="295">异步 flush: pending → flushPage(tmp→rename)</text>
+<text class="small" x="440" y="310">淘汰: none / 2-random(默认) / LRU min-heap</text>
+<text class="small" x="440" y="325">状态机: Normal→Unstable(3err)→Down(30min)</text>
+
+<rect class="purple-box" x="820" y="225" width="350" height="130"/>
+<text class="title" x="835" y="248">L5: Prefetch Engine (prefetch.go)</text>
+<text class="small" x="835" y="265">范围读成功后异步预取完整 block</text>
+<text class="small" x="835" y="280">busy map 去重 (同 key 只取一次)</text>
+<text class="small" x="835" y="295">配置: Prefetch (默认 1) 并发 goroutine</text>
+<text class="small" x="835" y="310">与 loadRange() 联动: range GET 后触发</text>
+<text class="small" x="835" y="325">预取 block 自动缓存到 disk cache</text>
+
+<!-- Row 3: cache manager overview -->
+<text class="title" x="30" y="390">缓存管理器 (cacheManager)</text>
+
+<rect class="box" x="30" y="405" width="1140" height="80"/>
+<text class="title" x="45" y="428">lookup 优先级: pages (内存 pending) → KeyIndex (磁盘索引, 仅 scan 后有效) → disk cache file</text>
+<text class="small" x="45" y="445">load(key): 一致性哈希 store → 未命中 → 旧 FNV32 哈希 fallback → 未命中 → errNotCached</text>
+<text class="small" x="45" y="462">stage(key, data): writeback 模式 → flushPage() → hardlink(staging→cache dir) → keys.add(key, -size)</text>
+<text class="small" x="45" y="479">uploaded(key, size): staged block 上传成功 → keys.add(key, +size, atime=0) → remove staging file</text>
+
+</svg>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- TRANSACTION ENGINE -->
+<!-- ============================================================ -->
+<section id="txn">
+<h2>事务引擎</h2>
+<div class="grid-2">
+<div class="card">
+<h3>两阶段并发控制</h3>
+<svg viewBox="0 0 550 460" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="at" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b949e"/></marker>
+  <marker id="atb" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#58a6ff"/></marker>
+  <marker id="atg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#3fb950"/></marker>
+  <marker id="atr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#f85149"/></marker>
+</defs>
+
+<rect class="highlight" x="10" y="10" width="530" height="50"/>
+<text class="title" x="25" y="35">Phase 1: 悲观互斥 (txLock, 防惊群)</text>
+<text class="small" x="25" y="50">h = FNV32(keys[0]) % 1024; m.txlocks[h].Lock(); defer Unlock()</text>
+
+<path class="arrow-bold" d="M275,60 L275,85"/>
+
+<rect class="orange-box" x="10" y="85" width="530" height="50"/>
+<text class="title" x="25" y="108">Phase 2: 乐观 WATCH/EXEC 重试 (max 50 次)</text>
+<text class="small" x="25" y="125">rdb.Watch(ctx, txf, keys...) → EXEC 失败 → shouldRetry? → backoff</text>
+
+<path class="arrow" d="M275,135 L275,160"/>
+
+<rect class="box" x="50" y="160" width="450" height="140"/>
+<text class="title" x="65" y="183">Retry Loop 详情 (redis.go:1163)</text>
+<text class="small" x="65" y="200">for i := 0; i &lt; maxRetry(50); i++ {</text>
+<text class="small" x="65" y="217">  if ctx.Err() != nil → return EINTR</text>
+<text class="small" x="65" y="234">  err = rdb.Watch(ctx, replaceErrno(txf), keys...)</text>
+<text class="small" x="65" y="251">  if err == nil → return nil</text>
+<text class="small" x="65" y="268">  if !shouldRetry(err, retryOnFailure) → return err</text>
+<text class="small" x="65" y="285">  time.Sleep(rand.Int() % ((i+1)*(i+1)) ms)  // 二次方抖动</text>
+<text class="small" x="65" y="302">} return lastErr</text>
+
+<path class="arrow" d="M275,300 L275,325"/>
+
+<rect class="box" x="10" y="325" width="530" height="115"/>
+<text class="title" x="25" y="348">错误分类 (shouldRetry, line 1076)</text>
+<text class="small" x="25" y="365" fill="var(--green)">始终重试: TxFailedErr, max clients, EXECABORT, bad state</text>
+<text class="small" x="25" y="382" fill="var(--orange)">条件重试: io.EOF, io.ErrUnexpectedEOF, timeout</text>
+<text class="small" x="25" y="399" fill="var(--orange)">集群重试: LOADING, READONLY, CLUSTERDOWN, TRYAGAIN, MOVED, ASK</text>
+<text class="small" x="25" y="416" fill="var(--red)">永不重试: context.Canceled, context.DeadlineExceeded</text>
+<text class="small" x="25" y="435">replaceErrno(): 将 syscall.Errno 转为 errNo 防止 Watch 误判</text>
+</svg>
+</div>
+
+<div class="card">
+<h3>关键事务流程</h3>
+<div class="step-indicator" id="txn-steps">
+  <span class="step active" onclick="showTxn(0)">doWrite</span>
+  <span class="step" onclick="showTxn(1)">doMknod</span>
+  <span class="step" onclick="showTxn(2)">doCompactChunk</span>
+</div>
+<div id="txn-detail" class="step-detail">
+<h4>doWrite — 写入切片元数据 (redis.go:3119)</h4>
+<code class="block">WATCH inodeKey(ino)
+-- 1. GET i{ino} → parse attr → check TypeFile → check quota
+-- 2. 计算 newLength, delta.space
+TxPipelined:
+  RPUSH  c{ino}_{indx}  marshalSlice(pos,id,size,off,len)
+  SET    i{ino}          marshal(updatedAttr)
+  INCRBY usedSpace        delta.space
+  RPUSH  txnLog           "WRITE(ino,indx,id,off,len)"</code>
+</div>
+<script>
+const txnDetails = [
+  '<h4>doWrite — 写入切片元数据 (redis.go:3119)</h4><code class="block">WATCH inodeKey(ino)\n-- 1. GET i{ino} → parse attr → check TypeFile → check quota\n-- 2. 计算 newLength, delta.space\nTxPipelined:\n  RPUSH  c{ino}_{indx}  marshalSlice(pos,id,size,off,len)\n  SET    i{ino}          marshal(updatedAttr)\n  INCRBY usedSpace        delta.space\n  RPUSH  txnLog           "WRITE(ino,indx,id,off,len)"</code>',
+  '<h4>doMknod — 创建文件 (redis.go:1446)</h4><code class="block">WATCH inodeKey(parent), entryKey(parent)\n-- 1. GET i{parent} → parse attr\n-- 2. HGET d{parent} name → check existence\nTxPipelined:\n  SET    i{newIno}   marshal(newAttr)\n  SET    i{parent}   marshal(updatedPAttr)\n  HSET   d{parent}   name  packEntry(type, newIno)\n  INCRBY usedSpace  delta\n  INCR   totalInodes</code>',
+  '<h4>doCompactChunk — CAS 压缩 (redis.go:3774)</h4><code class="block">WATCH chunkKey(ino, indx)\n-- 1. LRANGE 读取前 N 条 (N = len(origin)/24)\n-- 2. 逐字节比对 origin (CAS check)\nTxPipelined:\n  LTRIM    c{ino}_{indx}  N  -1        -- 删除前 N 条\n  LPUSH    c{ino}_{indx}  compacted     -- 插入合并结果\n  LPUSH    c{ino}_{indx}  skipped...    -- 略过的切片放回\n  HINCRBY  sliceRefs  k{oldId}_{oldSize}  -1\n  HSET     sliceRefs  k{newId}_{newSize}  0</code>'
+];
+function showTxn(i) {
+  document.getElementById('txn-detail').innerHTML = txnDetails[i];
+  document.querySelectorAll('#txn-steps .step').forEach((el,j)=>el.classList.toggle('active',j===i));
+}
+</script>
+</div>
+</div>
+
+<div class="card">
+<h3>原子性边界与崩溃恢复</h3>
+<table>
+<tr><th>操作</th><th>原子?</th><th>机制</th><th>崩溃场景</th></tr>
+<tr><td>单 slice 提交</td><td class="metric-good">✅ 原子</td><td>Redis WATCH/EXEC</td><td>——</td></tr>
+<tr><td>跨 chunk 写入</td><td class="metric-bad">❌ 不保证</td><td>各 chunk 独立提交</td><td>部分可见</td></tr>
+<tr><td>单 block PUT</td><td class="metric-good">✅ 原子</td><td>S3 PUT 语义</td><td>——</td></tr>
+<tr><td>数据 + 元数据</td><td class="metric-bad">❌ 最终一致</td><td>data-first, metadata-later</td><td>孤儿 block → sliceRefs GC</td></tr>
+<tr><td>Writeback staging</td><td class="metric-bad">❌ staging 丢失 = 数据丢失</td><td>本地 disk → async upload</td><td>scanStaging() 恢复或丢失</td></tr>
+</table>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- SLICE COMPACTION -->
+<!-- ============================================================ -->
+<section id="compact">
+<h2>Slice 压缩机制</h2>
+<div class="grid-2">
+<div class="card">
+<h3>压缩触发条件</h3>
+<table>
+<tr><th>条件</th><th>类型</th><th>行为</th></tr>
+<tr><td>numSlices % 100 == 99</td><td>非强制</td><td>后台 goroutine，不阻塞写</td></tr>
+<tr><td>numSlices > 350</td><td>非强制</td><td>同上</td></tr>
+<tr><td><strong>numSlices ≥ 2500</strong></td><td><strong>强制</strong></td><td><strong>阻塞写入，等待完成</strong></td></tr>
+</table>
+</div>
+<div class="card">
+<h3>压缩算法步骤</h3>
+<code class="block">1. doRead() → LRANGE 获取所有切片
+2. skipSome() → 跳过头部 ≥1MB 的大切片
+3. compactChunk() → buildSlice() 二叉树合并
+   └─ cut(pos) 分裂 → in-order traversal → 去空洞
+4. NewSlice() → 分配新 slice ID
+5. 后台: 读旧切片 → 物理合并为大 object → PUT S3
+6. doCompactChunk() → CAS (LTRIM+LPUSH) 原子替换</code>
+</div>
+</div>
+<div class="card">
+<svg viewBox="0 0 1100 300" xmlns="http://www.w3.org/2000/svg">
+<text class="title" x="20" y="25">buildSlice() 二叉树合并示例</text>
+
+<!-- Before -->
+<text class="label" x="20" y="55">压缩前 (4 slices, 有重叠):</text>
+<rect class="orange-box" x="20" y="65" width="180" height="40"/>
+<text class="small" x="30" y="90">s1: pos=0, len=4M</text>
+<rect class="cyan-box" x="160" y="65" width="180" height="40"/>
+<text class="small" x="170" y="90">s2: pos=2M, len=4M</text>
+<rect class="purple-box" x="300" y="65" width="200" height="40"/>
+<text class="small" x="310" y="90">s3: hole (id=0), len=2M</text>
+<rect class="green-box" x="460" y="65" width="180" height="40"/>
+<text class="small" x="470" y="90">s4: pos=8M, len=4M</text>
+
+<text class="label" x="20" y="145">构建二叉树 (by cut & insert):</text>
+<text class="mono" x="20" y="165">s1(0,4M)</text>
+<text class="mono" x="110" y="150" fill="var(--muted)">/</text>
+<text class="mono" x="120" y="165">hole(0,2M)</text>
+<text class="mono" x="120" y="180">s2(2M,4M) = overlap → s2 covers [2M,6M)</text>
+
+<text class="label" x="400" y="145">插入后 (root=s4):</text>
+<text class="mono" x="400" y="165">s4(8M,4M)</text>
+<text class="mono" x="500" y="150" fill="var(--muted)">/</text>
+<text class="mono" x="510" y="165">s1(0,4M) + s2(2M,4M) merged via cut</text>
+
+<text class="label" x="20" y="220">压缩后 (in-order traversal, 3 slices):</text>
+<rect class="green-box" x="20" y="230" width="200" height="40"/>
+<text class="small" x="30" y="255">[0,2M): id=0 (hole, skipped)</text>
+<rect class="green-box" x="240" y="230" width="220" height="40"/>
+<text class="small" x="250" y="255">[2M,6M): id=NEW, Size=4M</text>
+<rect class="green-box" x="480" y="230" width="240" height="40"/>
+<text class="small" x="490" y="255">[8M,12M): s4, id=old_s4</text>
+
+<text class="small" x="20" y="290" fill="var(--muted)">结果: 4 slices → 2 data slices + trimmed holes. 裁剪掉首尾空洞。</text>
+</svg>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<!-- PERFORMANCE COMPARISON -->
+<!-- ============================================================ -->
+<section id="perf">
+<h2>BrewFS vs JuiceFS 性能对比</h2>
+<p style="color:var(--muted);margin-bottom:16px">环境: rustfs S3 + Redis, io_uring, 4M block. 基于最新 benchmark 数据.</p>
+
+<div class="card">
+<h3>FIO 吞吐量对比</h3>
+<table>
+<tr><th>Test</th><th>rw</th><th>jobs</th><th>JuiceFS BW</th><th>BrewFS BW</th><th>Ratio</th><th>JuiceFS P99</th><th>BrewFS P99</th></tr>
+<tr><td>seqread</td><td>read</td><td>1</td><td class="metric-good">1.1 GiB/s</td><td>134 MiB/s</td><td class="metric-bad">8.4x</td><td class="metric-good">5ms</td><td>75ms</td></tr>
+<tr><td>randread</td><td>randread</td><td>4</td><td class="metric-good">1.2 GiB/s</td><td>29 MiB/s</td><td class="metric-bad">42x</td><td class="metric-good">30ms</td><td>1367ms</td></tr>
+<tr><td>bigread</td><td>read</td><td>8</td><td class="metric-good">816 MiB/s</td><td>77 MiB/s</td><td class="metric-bad">10.6x</td><td class="metric-good">154ms</td><td>1061ms</td></tr>
+<tr><td>seqwrite</td><td>write</td><td>1</td><td class="metric-good">195 MiB/s</td><td>131 MiB/s</td><td class="metric-bad">1.5x</td><td class="metric-good">200ms</td><td>633ms</td></tr>
+<tr><td>randwrite</td><td>randwrite</td><td>4</td><td class="metric-good">184 MiB/s</td><td>55 MiB/s</td><td class="metric-bad">3.3x</td><td class="metric-good">342ms</td><td>1267ms</td></tr>
+<tr><td>bigwrite</td><td>write</td><td>8</td><td>206 MiB/s</td><td>205 MiB/s</td><td>~1x</td><td class="metric-good">287ms</td><td>417ms</td></tr>
+<tr><td>randrw</td><td>randrw</td><td>4</td><td class="metric-good">57 MiB/s</td><td>15 MiB/s</td><td class="metric-bad">3.8x</td><td class="metric-good">1099ms</td><td>9194ms</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>元数据性能对比</h3>
+<table>
+<tr><th>Operation</th><th>JuiceFS ops/s</th><th>BrewFS ops/s</th><th>Ratio</th><th>根因</th></tr>
+<tr><td>stat</td><td class="metric-good">1,035,890</td><td>3,061</td><td class="metric-bad">338x</td><td>Redis CSC inode cache 命中，免查 Redis</td></tr>
+<tr><td>open</td><td class="metric-good">5,385</td><td>1,238</td><td class="metric-bad">4.3x</td><td>OpenFile 属性 + chunk 缓存</td></tr>
+<tr><td>rename</td><td class="metric-good">1,288</td><td>533</td><td class="metric-bad">2.4x</td><td>事务批量优化</td></tr>
+<tr><td>create</td><td class="metric-good">259</td><td>121</td><td class="metric-bad">2.1x</td><td>共同瓶颈: 同步 S3 操作，差距较小</td></tr>
+<tr><td>readdir</td><td>27,583</td><td>24,634</td><td>~1x</td><td>两者都走 Redis，性能接近</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h3>根因 → 优化路径</h3>
+<table>
+<tr><th>差距</th><th>核心根因</th><th>JuiceFS 机制</th><th>BrewFS 优化建议</th></tr>
+<tr>
+  <td>读 8-42x</td>
+  <td>无本地块缓存，每次读都查 S3</td>
+  <td>3级 block cache (mem→disk→S3) + singleflight 去重</td>
+  <td><strong>优先级 P0</strong>: 实现 block-level 磁盘缓存。预期提升 5-40x</td>
+</tr>
+<tr>
+  <td>stat 338x</td>
+  <td>每次 stat 查 Redis</td>
+  <td>Redis CSC (RESP3 client tracking) + openfile attribute cache</td>
+  <td><strong>优先级 P0</strong>: 实现 inline attr cache 或 CSC。预期提升 50-300x</td>
+</tr>
+<tr>
+  <td>读 8-42x</td>
+  <td>无自适应预读</td>
+  <td>session-based adaptive readahead (翻倍/减半)</td>
+  <td><strong>优先级 P1</strong>: 实现连续读检测 + 动态预读窗口</td>
+</tr>
+<tr>
+  <td>写 3x</td>
+  <td>切片碎片过多 + 无 writeback</td>
+  <td>自动压缩 (每 100 slice) + 本地 staging 延迟上传</td>
+  <td><strong>优先级 P2</strong>: 实现 slice 合并 + optional writeback</td>
+</tr>
+</table>
+</div>
+</section>
+
+</main>
+
+<script>
+function switchTab(id) {
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelector(`nav button[onclick="switchTab('${id}')"]`).classList.add('active');
+}
+</script>
+</body>
+</html>

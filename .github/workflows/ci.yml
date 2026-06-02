@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace
+        run: cargo check --workspace
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Check rfuse3 runtime features
+        run: |
+          cargo check -p rfuse3 --no-default-features --features tokio-runtime
+          cargo check -p rfuse3 --no-default-features --features io-uring-runtime
+          cargo check -p rfuse3 --no-default-features --features async-io-runtime
+
+      - name: Test workspace
+        run: cargo test --workspace --lib --bins
+
+      - name: Clippy
+        run: cargo clippy --workspace

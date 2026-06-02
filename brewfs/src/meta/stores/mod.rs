@@ -1,0 +1,152 @@
+//! Metadata Store Implementations
+//!
+//! This module contains all concrete implementations of the MetaStore trait.
+//! Each store provides a different backend for metadata persistence:
+//!
+//! - `DatabaseMetaStore`: SQL databases (PostgreSQL, SQLite)
+//! - `EtcdMetaStore`: Distributed etcd cluster
+//! - `TiKvMetaStore`: TiKV metadata backend skeleton
+pub mod database;
+pub mod etcd;
+pub(crate) mod pool;
+pub mod redis;
+pub mod tikv;
+
+// Re-export main types for convenience
+pub use database::DatabaseMetaStore;
+pub use etcd::EtcdMetaStore;
+pub(crate) use etcd::watch::{CacheInvalidationEvent, EtcdWatchWorker, WatchConfig};
+pub use redis::RedisMetaStore;
+use std::future::Future;
+pub use tikv::TiKvMetaStore;
+
+pub(crate) async fn build_paths_from_names<E, F, FR>(
+    root_ino: i64,
+    names: Vec<(Option<i64>, String)>,
+    mut resolve_parent: F,
+) -> Result<Vec<String>, E>
+where
+    F: FnMut(i64) -> FR,
+    FR: Future<Output = Result<Option<(i64, String)>, E>>,
+{
+    let mut out = Vec::with_capacity(names.len());
+
+    for (parent_opt, name) in names {
+        let Some(parent) = parent_opt else {
+            continue;
+        };
+
+        let mut path_parts = vec![name];
+        let mut current_ino = parent;
+
+        while current_ino != root_ino {
+            let entry = resolve_parent(current_ino).await?;
+
+            let Some((next_parent, entry_name)) = entry else {
+                path_parts.clear();
+                break;
+            };
+
+            path_parts.push(entry_name);
+            current_ino = next_parent;
+        }
+
+        if path_parts.is_empty() {
+            continue;
+        }
+
+        path_parts.reverse();
+        out.push(format!("/{}", path_parts.join("/")));
+    }
+
+    out.sort();
+    out.dedup();
+
+    Ok(out)
+}
+
+struct TruncatePlan {
+    cutoff_chunk: u64,
+    cutoff_offset: u64,
+    drop_start: u64,
+    old_chunk_count: u64,
+}
+
+enum TrimAction {
+    Keep,
+    Drop,
+    Truncate(u64),
+}
+
+fn truncate_plan(new_size: u64, old_size: u64, chunk_size: u64) -> Option<TruncatePlan> {
+    if new_size >= old_size || chunk_size == 0 {
+        return None;
+    }
+
+    let cutoff_chunk = new_size / chunk_size;
+    let cutoff_offset = new_size % chunk_size;
+    let old_chunk_count = old_size / chunk_size + u64::from(!old_size.is_multiple_of(chunk_size));
+    let drop_start = if cutoff_offset == 0 {
+        cutoff_chunk
+    } else {
+        cutoff_chunk + 1
+    };
+
+    Some(TruncatePlan {
+        cutoff_chunk,
+        cutoff_offset,
+        drop_start,
+        old_chunk_count,
+    })
+}
+
+fn trim_action(offset: u64, length: u64, cutoff_offset: u64) -> TrimAction {
+    if offset >= cutoff_offset {
+        return TrimAction::Drop;
+    }
+
+    let end = offset.saturating_add(length);
+    if end > cutoff_offset {
+        TrimAction::Truncate(cutoff_offset - offset)
+    } else {
+        TrimAction::Keep
+    }
+}
+
+fn trim_slices_in_place(slices: &mut Vec<crate::chunk::SliceDesc>, cutoff_offset: u64) {
+    slices.retain(|s| s.offset < cutoff_offset);
+    for slice in slices.iter_mut() {
+        let end = slice.offset + slice.length;
+        if end > cutoff_offset {
+            slice.length = cutoff_offset - slice.offset;
+        }
+    }
+}
+
+pub(crate) async fn apply_truncate_plan<E, R, D, FR, FD>(
+    new_size: u64,
+    old_size: u64,
+    chunk_size: u64,
+    mut rewrite: R,
+    mut delete: D,
+) -> Result<(), E>
+where
+    R: FnMut(u64, u64) -> FR,
+    FR: std::future::Future<Output = Result<(), E>>,
+    D: FnMut(u64, u64) -> FD,
+    FD: std::future::Future<Output = Result<(), E>>,
+{
+    let Some(plan) = truncate_plan(new_size, old_size, chunk_size) else {
+        return Ok(());
+    };
+
+    if plan.cutoff_offset > 0 {
+        rewrite(plan.cutoff_chunk, plan.cutoff_offset).await?;
+    }
+
+    if plan.drop_start < plan.old_chunk_count {
+        delete(plan.drop_start, plan.old_chunk_count).await?;
+    }
+
+    Ok(())
+}

@@ -1,0 +1,35 @@
+# Performance-tuned config for self-hosted S3 backends (RustFS/MinIO).
+#
+# Key optimizations vs default:
+#   - chunk_size 256MiB: fewer metadata commits per file (4x reduction)
+#   - disable_payload_checksum: skip SigV4 SHA-256 payload signing (~20% CPU saving)
+#   - max_concurrency 16: more parallel S3 uploads/downloads
+#   - fuse workers 8 + max_background 512: higher FUSE concurrency
+#
+# See tools/perf/PERF-REPORT.md for benchmarking methodology and results.
+
+mount_point: /mnt/brewfs
+
+data:
+  backend: s3
+  s3:
+    bucket: brewfs-data
+    endpoint: http://127.0.0.1:9000
+    region: us-east-1
+    force_path_style: true
+    disable_payload_checksum: true
+    part_size: 16777216
+    max_concurrency: 16
+
+meta:
+  backend: redis
+  redis:
+    url: "redis://127.0.0.1:6379/0"
+
+layout:
+  chunk_size: 268435456
+  block_size: 4194304
+
+fuse:
+  workers: 8
+  max_background: 512
