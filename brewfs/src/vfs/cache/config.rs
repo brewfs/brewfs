@@ -78,7 +78,7 @@ impl Default for CacheConfig {
             read_ssd_bytes: 20 * 1024 * 1024 * 1024,
             write_memory_bytes: 300 * 1024 * 1024,
             write_ssd_bytes: 20 * 1024 * 1024 * 1024,
-            dirty_slice_target_size: 8 * 1024 * 1024,
+            dirty_slice_target_size: 32 * 1024 * 1024,
             dirty_slice_max_age_ms: 500,
             upload_concurrency: 32,
             prefetch_enabled: true,
@@ -114,7 +114,7 @@ mod tests {
         assert_eq!(config.compression, Compression::Lz4);
         assert_eq!(config.read_memory_bytes, 4096 * 1024 * 1024);
         assert_eq!(config.write_memory_bytes, 300 * 1024 * 1024);
-        assert_eq!(config.dirty_slice_target_size, 8 * 1024 * 1024);
+        assert_eq!(config.dirty_slice_target_size, 32 * 1024 * 1024);
         assert_eq!(config.prefetch_max_bytes, 64 * 1024 * 1024);
     }
 }

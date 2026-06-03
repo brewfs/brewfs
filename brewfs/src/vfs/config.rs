@@ -94,13 +94,14 @@ impl Default for WriteConfig {
             buffer_size: DEFAULT_WRITE_BUFFER_SIZE,
             flush_all_interval: DEFAULT_FLUSH_ALL_INTERVAL,
             #[cfg(not(test))]
-            freeze_min_bytes: 8 * 1024 * 1024,
+            freeze_min_bytes: 32 * 1024 * 1024,
             #[cfg(test)]
             freeze_min_bytes: 4096,
             // Balance between flush latency and sustained write throughput.
-            // 500ms at ~160 MiB/s accumulates ~80MB, but the 8MiB freeze_min_bytes
-            // triggers inline during fast writes (at ~50ms). This gives 2 blocks
-            // per upload batch as minimum, with pipeline upload handling concurrency.
+            // 500ms at ~160 MiB/s accumulates ~80MB, but the 32MiB freeze_min_bytes
+            // triggers inline during fast writes (at ~200ms). This gives 8 blocks
+            // per upload batch as minimum, reducing small-object PUT amplification
+            // while pipeline upload still handles concurrency.
             #[cfg(not(test))]
             auto_flush_max_age: Duration::from_millis(500),
             #[cfg(test)]
@@ -245,5 +246,13 @@ mod tests {
         );
         assert_eq!(config.write.writeback_mode, cache.writeback_mode);
         assert_eq!(config.cache.memory_budget_bytes, cache.memory_budget_bytes);
+    }
+
+    #[test]
+    fn vfs_config_default_batches_s3_writes_into_eight_blocks() {
+        let config =
+            VFSConfig::new_with_cache_config(ChunkLayout::default(), CacheConfig::default());
+
+        assert_eq!(config.write.freeze_min_bytes, 32 * 1024 * 1024);
     }
 }
