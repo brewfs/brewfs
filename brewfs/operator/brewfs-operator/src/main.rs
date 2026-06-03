@@ -6,18 +6,22 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
-use kube::CustomResourceExt;
-use kube::Client;
 use kube::api::Api;
-use kube::runtime::Controller;
 use kube::runtime::watcher;
+use kube::runtime::Controller;
+use kube::Client;
+use kube::CustomResourceExt;
 use tracing::{error, info};
 
 use crate::crd::{BrewFSCluster, BrewFSMount};
 use crate::reconciler::OperatorContext;
 
 #[derive(Parser, Debug)]
-#[command(name = "brewfs-operator", version, about = "Independent BrewFS Kubernetes operator")]
+#[command(
+    name = "brewfs-operator",
+    version,
+    about = "Independent BrewFS Kubernetes operator"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -56,8 +60,8 @@ fn init_tracing() {
 fn print_crd() -> anyhow::Result<()> {
     let cluster_crd = serde_yaml::to_string(&BrewFSCluster::crd())
         .context("serialize BrewFSCluster CRD to YAML")?;
-    let mount_crd = serde_yaml::to_string(&BrewFSMount::crd())
-        .context("serialize BrewFSMount CRD to YAML")?;
+    let mount_crd =
+        serde_yaml::to_string(&BrewFSMount::crd()).context("serialize BrewFSMount CRD to YAML")?;
     println!("{cluster_crd}---\n{mount_crd}");
     Ok(())
 }
@@ -86,7 +90,7 @@ async fn run_controller() -> anyhow::Result<()> {
                     info!(name = %object_ref.name, ?action, "reconciled BrewFSCluster");
                 }
                 Err(error) => {
-                    error!(error = %error, "BrewFSCluster reconcile loop error");
+                    error!(?error, "BrewFSCluster reconcile loop error");
                 }
             }
         });
@@ -103,7 +107,7 @@ async fn run_controller() -> anyhow::Result<()> {
                     info!(name = %object_ref.name, ?action, "reconciled BrewFSMount");
                 }
                 Err(error) => {
-                    error!(error = %error, "BrewFSMount reconcile loop error");
+                    error!(?error, "BrewFSMount reconcile loop error");
                 }
             }
         });

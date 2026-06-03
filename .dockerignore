@@ -1,0 +1,11 @@
+.git
+.github
+target
+target/
+**/target
+**/target/
+**/.DS_Store
+*.log
+!target/
+!target/release/
+!target/release/brewfs

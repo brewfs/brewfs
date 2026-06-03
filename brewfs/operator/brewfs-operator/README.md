@@ -60,7 +60,17 @@ operator/brewfs-operator/
     ├── rbac.yaml
     ├── deployment.yaml
     ├── example-cluster.yaml
-    └── example-mount.yaml
+    ├── example-mount.yaml
+    └── kustomization.yaml
+└── overlays/
+    ├── kubernetes/
+    │   ├── cluster.yaml
+    │   ├── mount.yaml
+    │   └── kustomization.yaml
+    └── minikube/
+        ├── cluster.yaml
+        ├── mount.yaml
+        └── kustomization.yaml
 ```
 
 ## CRD
@@ -98,7 +108,8 @@ spec:
   clusterRef:
     name: demo
   workloadKind: Deployment
-  image: brewfs:local
+  image: ghcr.io/ivanbeethoven/brewfs:latest
+  imagePullPolicy: Always
 ```
 
 ## 工作方式
@@ -151,7 +162,8 @@ spec:
   clusterRef:
     name: demo
   workloadKind: DaemonSet
-  image: brewfs:local
+  image: ghcr.io/ivanbeethoven/brewfs:latest
+  imagePullPolicy: Always
   hostMountPath: /var/lib/brewfs/mounts/demo
   mountPropagation: Bidirectional
   nodeSelector:
@@ -203,10 +215,63 @@ cd operator/brewfs-operator
 cargo run -- crdgen
 ```
 
-应用示例资源：
+BrewFS runtime 和 operator 镜像由 `.github/workflows/docker-images.yml` 发布：
+
+- PR merge 到 `main` 后触发 `push` workflow，自动构建并推送 `latest` 和短 SHA tag
+- 也可以从 GitHub Actions 手动运行 `workflow_dispatch`
+- 默认镜像：
+  - `ghcr.io/ivanbeethoven/brewfs:latest`
+  - `ghcr.io/ivanbeethoven/brewfs-operator:latest`
+
+只安装 operator 基础组件：
 
 ```bash
-kubectl apply -f manifests/crd.yaml
+kubectl apply -k manifests
+```
+
+在标准 Kubernetes 集群上安装 operator 和示例 `BrewFSCluster`/`BrewFSMount`：
+
+```bash
+kubectl apply -k overlays/kubernetes
+```
+
+在 minikube 上安装 operator 和 minikube 友好的示例：
+
+```bash
+kubectl apply -k overlays/minikube
+```
+
+如果 GHCR package 不是 public，需要在 `brewfs-system` namespace 配置 `imagePullSecret`，并给 operator Deployment 以及 `BrewFSMount` 生成的挂载 workload 使用同一组凭据。
+
+如果暂时使用 private GHCR package，可以先创建 pull secret：
+
+```bash
+kubectl create namespace brewfs-system --dry-run=client -o yaml | kubectl apply -f -
+
+GHCR_USER="$(gh api user --jq .login)"
+GHCR_TOKEN="$(gh auth token)"
+
+for ns in brewfs-system default; do
+  kubectl -n "$ns" create secret docker-registry ghcr-pull \
+    --docker-server=ghcr.io \
+    --docker-username="$GHCR_USER" \
+    --docker-password="$GHCR_TOKEN" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+
+kubectl -n brewfs-system patch serviceaccount brewfs-operator \
+  --type=merge -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
+kubectl -n default patch serviceaccount default \
+  --type=merge -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
+```
+
+package 公开后，上面这组 secret/patch 就不需要了。
+当前两个 package 的设置页分别是 `https://github.com/users/Ivanbeethoven/packages/container/package/brewfs/settings` 和 `https://github.com/users/Ivanbeethoven/packages/container/package/brewfs-operator/settings`。
+
+也可以手动应用单个示例资源：
+
+```bash
+kubectl apply -k manifests
 kubectl apply -f manifests/example-cluster.yaml
 kubectl apply -f manifests/example-mount.yaml
 ```

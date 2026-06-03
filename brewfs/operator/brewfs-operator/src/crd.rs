@@ -73,35 +73,56 @@ pub struct BrewFSMountSpec {
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BrewFSClusterStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
     pub phase: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub redis_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rustfs_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config_map: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reconciled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BrewFSMountStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
     pub phase: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cluster: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workload_kind: Option<MountWorkloadKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workload_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config_map: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_mount_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mount_propagation: Option<MountPropagationMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub desired_replicas: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ready_replicas: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_workload_kind: Option<ConsumerWorkloadKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_workload_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_mount_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_desired_replicas: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_ready_replicas: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reconciled_at: Option<DateTime<Utc>>,
 }
 
@@ -607,4 +628,51 @@ fn default_max_concurrency() -> usize {
 
 fn default_force_path_style() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::BrewFSMountStatus;
+
+    #[test]
+    fn mount_status_omits_absent_optional_fields() {
+        let value = serde_json::to_value(BrewFSMountStatus {
+            observed_generation: None,
+            phase: "Ready".to_string(),
+            message: "ready".to_string(),
+            cluster: None,
+            workload_kind: None,
+            workload_name: None,
+            config_map: None,
+            host_mount_path: None,
+            mount_propagation: None,
+            desired_replicas: None,
+            ready_replicas: None,
+            consumer_workload_kind: None,
+            consumer_workload_name: None,
+            consumer_mount_path: None,
+            consumer_desired_replicas: None,
+            consumer_ready_replicas: None,
+            last_reconciled_at: None,
+        })
+        .expect("serialize BrewFSMountStatus");
+
+        let Value::Object(status) = value else {
+            panic!("status should serialize as an object");
+        };
+
+        assert_eq!(
+            status.get("phase"),
+            Some(&Value::String("Ready".to_string()))
+        );
+        assert_eq!(
+            status.get("message"),
+            Some(&Value::String("ready".to_string()))
+        );
+        assert!(!status.contains_key("consumerWorkloadKind"));
+        assert!(!status.contains_key("observedGeneration"));
+        assert!(!status.contains_key("lastReconciledAt"));
+    }
 }

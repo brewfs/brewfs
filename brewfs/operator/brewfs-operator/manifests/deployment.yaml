@@ -16,8 +16,8 @@ spec:
       serviceAccountName: brewfs-operator
       containers:
         - name: operator
-          image: __BREWFS_OPERATOR_IMAGE__
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/ivanbeethoven/brewfs-operator:latest
+          imagePullPolicy: Always
           args:
             - run
           env:

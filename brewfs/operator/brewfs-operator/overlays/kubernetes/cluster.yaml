@@ -1,0 +1,13 @@
+apiVersion: storage.brewfs.io/v1alpha1
+kind: BrewFSCluster
+metadata:
+  name: demo
+spec:
+  redis: {}
+  rustfs:
+    bucket: brewfs-data
+    storageSize: 20Gi
+  mountConfig:
+    mountPoint: /mnt/brewfs
+    chunkSize: 67108864
+    blockSize: 4194304

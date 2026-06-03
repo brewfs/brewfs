@@ -3,37 +3,37 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context as _, anyhow};
-use chrono::Utc;
+use anyhow::{anyhow, Context as _};
+use chrono::{DateTime, Utc};
 use k8s_openapi::api::apps::v1::{
     DaemonSet, DaemonSetSpec, Deployment, DeploymentSpec, StatefulSet, StatefulSetSpec,
 };
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, ConfigMap, ConfigMapEnvSource, Container, ContainerPort, EmptyDirVolumeSource,
-    EnvFromSource, EnvVar, EnvVarSource, ExecAction, HTTPGetAction, HTTPHeader,
-    Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
-    PersistentVolumeClaimSpec, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
-    ResourceRequirements, Secret, SecretEnvSource, SecretKeySelector, SecurityContext, Service,
-    ServicePort, ServiceSpec, TCPSocketAction, Toleration, Volume, VolumeMount,
+    EnvFromSource, EnvVar, EnvVarSource, ExecAction, HTTPGetAction, HTTPHeader, Lifecycle,
+    LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PersistentVolumeClaimSpec,
+    PodSecurityContext, PodSpec, PodTemplateSpec, Probe, ResourceRequirements, Secret,
+    SecretEnvSource, SecretKeySelector, SecurityContext, Service, ServicePort, ServiceSpec,
+    TCPSocketAction, Toleration, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
-use kube::Resource;
-use kube::ResourceExt;
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
+use kube::Resource;
+use kube::ResourceExt;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use thiserror::Error;
 
 use crate::crd::{
-    ConsumerContainerSpec, ConsumerEnvFromSpec, ConsumerHTTPGetActionSpec, ConsumerLifecycleSpec,
+    BrewFSCluster, BrewFSClusterStatus, BrewFSMount, BrewFSMountStatus, ConsumerContainerSpec,
+    ConsumerEnvFromSpec, ConsumerHTTPGetActionSpec, ConsumerLifecycleSpec,
     ConsumerPodSecurityContextSpec, ConsumerPortSpec, ConsumerProbeSpec,
     ConsumerResourceRequirementsSpec, ConsumerSecurityContextSpec, ConsumerTCPSocketActionSpec,
-    ConsumerVolumeSpec, ConsumerVolumeMountSpec, ConsumerWorkloadKind, MountConsumerSpec,
-    MountPropagationMode, MountToleration, MountWorkloadKind, BrewFSCluster,
-    BrewFSClusterStatus, BrewFSMount, BrewFSMountStatus,
+    ConsumerVolumeMountSpec, ConsumerVolumeSpec, ConsumerWorkloadKind, MountConsumerSpec,
+    MountPropagationMode, MountToleration, MountWorkloadKind,
 };
 
 #[derive(Clone)]
@@ -108,12 +108,14 @@ pub async fn reconcile_mount(
             Some(workload_name),
             None,
             None,
-            mount.spec
+            mount
+                .spec
                 .consumer
                 .as_ref()
                 .map(|consumer| consumer.workload_kind.clone()),
             Some(default_consumer_workload_name.clone()),
-            mount.spec
+            mount
+                .spec
                 .consumer
                 .as_ref()
                 .map(|consumer| consumer.mount_path.clone()),
@@ -149,12 +151,14 @@ pub async fn reconcile_mount(
             Some(workload_name),
             None,
             None,
-            mount.spec
+            mount
+                .spec
                 .consumer
                 .as_ref()
                 .map(|consumer| consumer.workload_kind.clone()),
             Some(default_consumer_workload_name.clone()),
-            mount.spec
+            mount
+                .spec
                 .consumer
                 .as_ref()
                 .map(|consumer| consumer.mount_path.clone()),
@@ -165,9 +169,15 @@ pub async fn reconcile_mount(
         return Ok(Action::requeue(Duration::from_secs(15)));
     }
 
-    let workload_name =
-        apply_mount_workload(&client, &namespace, &mount, &cluster, &config_map_name, &owner)
-            .await?;
+    let workload_name = apply_mount_workload(
+        &client,
+        &namespace,
+        &mount,
+        &cluster,
+        &config_map_name,
+        &owner,
+    )
+    .await?;
     let (desired_replicas, ready_replicas) =
         get_mount_workload_status(&client, &namespace, &mount, &workload_name).await?;
     let phase = if ready_replicas.unwrap_or_default() >= desired_replicas.unwrap_or_default() {
@@ -203,13 +213,8 @@ pub async fn reconcile_mount(
                 &owner,
             )
             .await?;
-            let (desired, ready) = get_consumer_workload_status(
-                &client,
-                &namespace,
-                consumer,
-                &consumer_name,
-            )
-            .await?;
+            let (desired, ready) =
+                get_consumer_workload_status(&client, &namespace, consumer, &consumer_name).await?;
             consumer_workload_name_status = Some(consumer_name.clone());
             consumer_desired_replicas = desired;
             consumer_ready_replicas = ready;
@@ -287,10 +292,7 @@ pub fn error_policy_mount(
 
 fn labels(instance: &str, component: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
-        (
-            "app.kubernetes.io/name".to_string(),
-            "brewfs".to_string(),
-        ),
+        ("app.kubernetes.io/name".to_string(), "brewfs".to_string()),
         (
             "app.kubernetes.io/instance".to_string(),
             instance.to_string(),
@@ -385,8 +387,14 @@ async fn apply_rustfs_secret(
     let desired = Secret {
         metadata: object_meta(name.clone(), labels(&cluster_name, "rustfs-secret"), owner),
         string_data: Some(BTreeMap::from([
-            ("accessKey".to_string(), cluster.spec.rustfs.access_key.clone()),
-            ("secretKey".to_string(), cluster.spec.rustfs.secret_key.clone()),
+            (
+                "accessKey".to_string(),
+                cluster.spec.rustfs.access_key.clone(),
+            ),
+            (
+                "secretKey".to_string(),
+                cluster.spec.rustfs.secret_key.clone(),
+            ),
         ])),
         type_: Some("Opaque".to_string()),
         ..Secret::default()
@@ -546,6 +554,19 @@ async fn apply_rustfs_service(
     apply(&api, &name, &desired).await
 }
 
+fn rustfs_container_args(port: i32, access_key: &str, secret_key: &str) -> Vec<String> {
+    vec![
+        "--address".to_string(),
+        format!(":{port}"),
+        "--console-enable".to_string(),
+        "--access-key".to_string(),
+        access_key.to_string(),
+        "--secret-key".to_string(),
+        secret_key.to_string(),
+        "/data".to_string(),
+    ]
+}
+
 async fn apply_rustfs_deployment(
     client: &kube::Client,
     namespace: &str,
@@ -575,18 +596,11 @@ async fn apply_rustfs_deployment(
                     containers: vec![Container {
                         name: "rustfs".to_string(),
                         image: Some(cluster.spec.rustfs.image.clone()),
-                        args: Some(vec![
-                            "--address".to_string(),
-                            format!(":{}", cluster.spec.rustfs.port),
-                            "--console-enable".to_string(),
-                            "--server-domains".to_string(),
-                            "rustfs".to_string(),
-                            "--access-key".to_string(),
-                            cluster.spec.rustfs.access_key.clone(),
-                            "--secret-key".to_string(),
-                            cluster.spec.rustfs.secret_key.clone(),
-                            "/data".to_string(),
-                        ]),
+                        args: Some(rustfs_container_args(
+                            cluster.spec.rustfs.port,
+                            &cluster.spec.rustfs.access_key,
+                            &cluster.spec.rustfs.secret_key,
+                        )),
                         env: Some(vec![
                             EnvVar {
                                 name: "RUSTFS_ACCESS_KEY".to_string(),
@@ -957,7 +971,7 @@ fn build_mount_pod_template(
 ) -> PodTemplateSpec {
     let cluster_name = cluster.name_any();
     let mount_command = format!(
-        "mkdir -p {mount_path} {state_path} && exec /usr/local/bin/brewfs mount --config {config_path} {mount_path}",
+        "mkdir -p {mount_path} {state_path} && exec /usr/local/bin/brewfs mount --privileged --config {config_path} {mount_path}",
         mount_path = mount.spec.mount_path,
         state_path = mount.spec.state_path,
         config_path = mount.spec.config_path,
@@ -1072,6 +1086,35 @@ fn build_mount_pod_template(
                     EnvVar {
                         name: "RUST_LOG".to_string(),
                         value: Some(mount.spec.log_level.clone()),
+                        ..EnvVar::default()
+                    },
+                    EnvVar {
+                        name: "AWS_ACCESS_KEY_ID".to_string(),
+                        value_from: Some(EnvVarSource {
+                            secret_key_ref: Some(SecretKeySelector {
+                                key: "accessKey".to_string(),
+                                name: rustfs_secret_name(&cluster_name),
+                                ..SecretKeySelector::default()
+                            }),
+                            ..EnvVarSource::default()
+                        }),
+                        ..EnvVar::default()
+                    },
+                    EnvVar {
+                        name: "AWS_SECRET_ACCESS_KEY".to_string(),
+                        value_from: Some(EnvVarSource {
+                            secret_key_ref: Some(SecretKeySelector {
+                                key: "secretKey".to_string(),
+                                name: rustfs_secret_name(&cluster_name),
+                                ..SecretKeySelector::default()
+                            }),
+                            ..EnvVarSource::default()
+                        }),
+                        ..EnvVar::default()
+                    },
+                    EnvVar {
+                        name: "AWS_DEFAULT_REGION".to_string(),
+                        value: Some(cluster.spec.rustfs.region.clone()),
                         ..EnvVar::default()
                     },
                     EnvVar {
@@ -1229,9 +1272,7 @@ fn consumer_image_pull_secrets(names: &[String]) -> Option<Vec<LocalObjectRefere
     Some(
         names
             .iter()
-            .map(|name| LocalObjectReference {
-                name: name.clone(),
-            })
+            .map(|name| LocalObjectReference { name: name.clone() })
             .collect(),
     )
 }
@@ -1242,7 +1283,8 @@ fn consumer_env_from_sources(specs: &[ConsumerEnvFromSpec]) -> Option<Vec<EnvFro
     }
 
     Some(
-        specs.iter()
+        specs
+            .iter()
             .filter_map(|spec| {
                 if let Some(name) = &spec.config_map_name {
                     Some(EnvFromSource {
@@ -1274,7 +1316,8 @@ fn consumer_ports(specs: &[ConsumerPortSpec]) -> Option<Vec<ContainerPort>> {
     }
 
     Some(
-        specs.iter()
+        specs
+            .iter()
             .map(|spec| ContainerPort {
                 container_port: spec.container_port,
                 name: spec.name.clone(),
@@ -1420,9 +1463,7 @@ fn consumer_lifecycle(spec: &Option<ConsumerLifecycleSpec>) -> Option<Lifecycle>
     })
 }
 
-fn consumer_lifecycle_handler(
-    spec: &crate::crd::ConsumerLifecycleHandlerSpec,
-) -> LifecycleHandler {
+fn consumer_lifecycle_handler(spec: &crate::crd::ConsumerLifecycleHandlerSpec) -> LifecycleHandler {
     LifecycleHandler {
         exec: if spec.exec_command.is_empty() {
             None
@@ -1478,7 +1519,9 @@ fn consumer_rendered_init_containers(
         consumer
             .init_containers
             .iter()
-            .map(|container| render_consumer_container(container, &consumer.mount_path, shared_volume_name))
+            .map(|container| {
+                render_consumer_container(container, &consumer.mount_path, shared_volume_name)
+            })
             .collect(),
     )
 }
@@ -1519,7 +1562,9 @@ fn consumer_rendered_containers(
         consumer
             .containers
             .iter()
-            .map(|container| render_consumer_container(container, &consumer.mount_path, shared_volume_name))
+            .map(|container| {
+                render_consumer_container(container, &consumer.mount_path, shared_volume_name)
+            })
             .collect()
     }
 }
@@ -1660,11 +1705,12 @@ async fn get_mount_workload_status(
                 .get_opt(name)
                 .await
                 .with_context(|| format!("load DaemonSet {name}"))?;
-            let desired = daemonset
-                .as_ref()
-                .and_then(|d| d.status.as_ref().map(|status| status.desired_number_scheduled));
-            let ready = daemonset
-                .and_then(|d| d.status.map(|status| status.number_ready));
+            let desired = daemonset.as_ref().and_then(|d| {
+                d.status
+                    .as_ref()
+                    .map(|status| status.desired_number_scheduled)
+            });
+            let ready = daemonset.and_then(|d| d.status.map(|status| status.number_ready));
             Ok((desired, ready))
         }
     }
@@ -1695,11 +1741,12 @@ async fn get_consumer_workload_status(
                 .get_opt(name)
                 .await
                 .with_context(|| format!("load consumer DaemonSet {name}"))?;
-            let desired = daemonset
-                .as_ref()
-                .and_then(|d| d.status.as_ref().map(|status| status.desired_number_scheduled));
-            let ready = daemonset
-                .and_then(|d| d.status.map(|status| status.number_ready));
+            let desired = daemonset.as_ref().and_then(|d| {
+                d.status
+                    .as_ref()
+                    .map(|status| status.desired_number_scheduled)
+            });
+            let ready = daemonset.and_then(|d| d.status.map(|status| status.number_ready));
             Ok((desired, ready))
         }
         ConsumerWorkloadKind::StatefulSet => {
@@ -1711,8 +1758,7 @@ async fn get_consumer_workload_status(
             let desired = statefulset
                 .as_ref()
                 .and_then(|s| s.spec.as_ref().and_then(|spec| spec.replicas));
-            let ready =
-                statefulset.and_then(|s| s.status.and_then(|status| status.ready_replicas));
+            let ready = statefulset.and_then(|s| s.status.and_then(|status| status.ready_replicas));
             Ok((desired, ready))
         }
     }
@@ -1811,14 +1857,12 @@ layout:\n  chunk_size: {chunk_size}\n  block_size: {block_size}\n",
     )
 }
 
-async fn patch_cluster_status(
-    client: &kube::Client,
-    namespace: &str,
+fn cluster_ready_status(
     cluster: &BrewFSCluster,
-) -> Result<(), anyhow::Error> {
-    let api: Api<BrewFSCluster> = Api::namespaced(client.clone(), namespace);
+    last_reconciled_at: Option<DateTime<Utc>>,
+) -> BrewFSClusterStatus {
     let cluster_name = cluster.name_any();
-    let status = BrewFSClusterStatus {
+    BrewFSClusterStatus {
         observed_generation: cluster.metadata.generation,
         phase: "Ready".to_string(),
         message: "Backend resources reconciled".to_string(),
@@ -1826,8 +1870,62 @@ async fn patch_cluster_status(
         rustfs_service: Some(rustfs_name(&cluster_name)),
         bucket: Some(cluster.spec.rustfs.bucket.clone()),
         config_map: Some(cluster_config_map_name(&cluster_name)),
-        last_reconciled_at: Some(Utc::now()),
-    };
+        last_reconciled_at,
+    }
+}
+
+fn cluster_status_semantically_equal(
+    current: &BrewFSClusterStatus,
+    desired: &BrewFSClusterStatus,
+) -> bool {
+    current.observed_generation == desired.observed_generation
+        && current.phase == desired.phase
+        && current.message == desired.message
+        && current.redis_service == desired.redis_service
+        && current.rustfs_service == desired.rustfs_service
+        && current.bucket == desired.bucket
+        && current.config_map == desired.config_map
+}
+
+fn mount_status_semantically_equal(
+    current: &BrewFSMountStatus,
+    desired: &BrewFSMountStatus,
+) -> bool {
+    current.observed_generation == desired.observed_generation
+        && current.phase == desired.phase
+        && current.message == desired.message
+        && current.cluster == desired.cluster
+        && current.workload_kind == desired.workload_kind
+        && current.workload_name == desired.workload_name
+        && current.config_map == desired.config_map
+        && current.host_mount_path == desired.host_mount_path
+        && current.mount_propagation == desired.mount_propagation
+        && current.desired_replicas == desired.desired_replicas
+        && current.ready_replicas == desired.ready_replicas
+        && current.consumer_workload_kind == desired.consumer_workload_kind
+        && current.consumer_workload_name == desired.consumer_workload_name
+        && current.consumer_mount_path == desired.consumer_mount_path
+        && current.consumer_desired_replicas == desired.consumer_desired_replicas
+        && current.consumer_ready_replicas == desired.consumer_ready_replicas
+}
+
+async fn patch_cluster_status(
+    client: &kube::Client,
+    namespace: &str,
+    cluster: &BrewFSCluster,
+) -> Result<(), anyhow::Error> {
+    let api: Api<BrewFSCluster> = Api::namespaced(client.clone(), namespace);
+    let cluster_name = cluster.name_any();
+    let desired = cluster_ready_status(cluster, None);
+    if cluster
+        .status
+        .as_ref()
+        .is_some_and(|current| cluster_status_semantically_equal(current, &desired))
+    {
+        return Ok(());
+    }
+
+    let status = cluster_ready_status(cluster, Some(Utc::now()));
 
     let patch = json!({
         "apiVersion": "storage.brewfs.io/v1alpha1",
@@ -1865,7 +1963,7 @@ async fn patch_mount_status(
 ) -> Result<(), anyhow::Error> {
     let api: Api<BrewFSMount> = Api::namespaced(client.clone(), namespace);
     let mount_name = mount.name_any();
-    let status = BrewFSMountStatus {
+    let desired = BrewFSMountStatus {
         observed_generation: mount.metadata.generation,
         phase: phase.to_string(),
         message: message.to_string(),
@@ -1882,7 +1980,19 @@ async fn patch_mount_status(
         consumer_mount_path,
         consumer_desired_replicas,
         consumer_ready_replicas,
+        last_reconciled_at: None,
+    };
+    if mount
+        .status
+        .as_ref()
+        .is_some_and(|current| mount_status_semantically_equal(current, &desired))
+    {
+        return Ok(());
+    }
+
+    let status = BrewFSMountStatus {
         last_reconciled_at: Some(Utc::now()),
+        ..desired
     };
 
     let patch = json!({
@@ -1913,4 +2023,221 @@ where
     .await
     .with_context(|| format!("apply resource {name}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::crd::{
+        BrewFSClusterRef, BrewFSClusterSpec, BrewFSMountSpec, MountConfigSpec, RedisSpec,
+        RustFsSpec,
+    };
+
+    use super::*;
+
+    #[test]
+    fn rustfs_container_args_do_not_force_virtual_host_domains() {
+        let args = rustfs_container_args(9000, "access", "secret");
+
+        assert_eq!(
+            args,
+            vec![
+                "--address",
+                ":9000",
+                "--console-enable",
+                "--access-key",
+                "access",
+                "--secret-key",
+                "secret",
+                "/data",
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "--server-domains"));
+    }
+
+    #[test]
+    fn mount_pod_uses_privileged_brewfs_mount_mode() {
+        let cluster = BrewFSCluster {
+            metadata: ObjectMeta {
+                name: Some("demo".to_string()),
+                generation: Some(1),
+                ..ObjectMeta::default()
+            },
+            spec: BrewFSClusterSpec {
+                redis: RedisSpec::default(),
+                rustfs: RustFsSpec::default(),
+                mount_config: MountConfigSpec::default(),
+            },
+            status: None,
+        };
+        let mount = BrewFSMount {
+            metadata: ObjectMeta {
+                name: Some("demo-mount".to_string()),
+                ..ObjectMeta::default()
+            },
+            spec: BrewFSMountSpec {
+                cluster_ref: BrewFSClusterRef {
+                    name: "demo".to_string(),
+                },
+                workload_kind: MountWorkloadKind::DaemonSet,
+                image: "brewfs:local".to_string(),
+                image_pull_policy: "IfNotPresent".to_string(),
+                replicas: 1,
+                mount_path: "/mnt/brewfs".to_string(),
+                host_mount_path: Some("/var/lib/brewfs/mounts/demo".to_string()),
+                mount_propagation: MountPropagationMode::Bidirectional,
+                config_path: "/run/brewfs/config.yaml".to_string(),
+                state_path: "/var/lib/brewfs".to_string(),
+                log_level: "brewfs=info".to_string(),
+                service_account_name: None,
+                node_selector: BTreeMap::new(),
+                tolerations: Vec::new(),
+                state_pvc_name: None,
+                consumer: None,
+            },
+            status: None,
+        };
+
+        let template = build_mount_pod_template(&mount, &cluster, "demo-config", BTreeMap::new());
+        let command = template
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.containers.first())
+            .and_then(|container| container.args.as_ref())
+            .and_then(|args| args.first())
+            .expect("mount pod command");
+
+        assert!(command.contains("/usr/local/bin/brewfs mount --privileged --config"));
+    }
+
+    #[test]
+    fn mount_pod_injects_rustfs_s3_credentials() {
+        let cluster = BrewFSCluster {
+            metadata: ObjectMeta {
+                name: Some("demo".to_string()),
+                generation: Some(1),
+                ..ObjectMeta::default()
+            },
+            spec: BrewFSClusterSpec {
+                redis: RedisSpec::default(),
+                rustfs: RustFsSpec::default(),
+                mount_config: MountConfigSpec::default(),
+            },
+            status: None,
+        };
+        let mount = BrewFSMount {
+            metadata: ObjectMeta {
+                name: Some("demo-mount".to_string()),
+                ..ObjectMeta::default()
+            },
+            spec: BrewFSMountSpec {
+                cluster_ref: BrewFSClusterRef {
+                    name: "demo".to_string(),
+                },
+                workload_kind: MountWorkloadKind::DaemonSet,
+                image: "brewfs:local".to_string(),
+                image_pull_policy: "IfNotPresent".to_string(),
+                replicas: 1,
+                mount_path: "/mnt/brewfs".to_string(),
+                host_mount_path: Some("/var/lib/brewfs/mounts/demo".to_string()),
+                mount_propagation: MountPropagationMode::Bidirectional,
+                config_path: "/run/brewfs/config.yaml".to_string(),
+                state_path: "/var/lib/brewfs".to_string(),
+                log_level: "brewfs=info".to_string(),
+                service_account_name: None,
+                node_selector: BTreeMap::new(),
+                tolerations: Vec::new(),
+                state_pvc_name: None,
+                consumer: None,
+            },
+            status: None,
+        };
+
+        let template = build_mount_pod_template(&mount, &cluster, "demo-config", BTreeMap::new());
+        let env = template
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.containers.first())
+            .and_then(|container| container.env.as_ref())
+            .expect("mount pod env");
+        let access_key = env
+            .iter()
+            .find(|var| var.name == "AWS_ACCESS_KEY_ID")
+            .expect("AWS_ACCESS_KEY_ID env var");
+        let secret_key = env
+            .iter()
+            .find(|var| var.name == "AWS_SECRET_ACCESS_KEY")
+            .expect("AWS_SECRET_ACCESS_KEY env var");
+        let region = env
+            .iter()
+            .find(|var| var.name == "AWS_DEFAULT_REGION")
+            .expect("AWS_DEFAULT_REGION env var");
+
+        let access_ref = access_key
+            .value_from
+            .as_ref()
+            .and_then(|source| source.secret_key_ref.as_ref())
+            .expect("access key secret ref");
+        let secret_ref = secret_key
+            .value_from
+            .as_ref()
+            .and_then(|source| source.secret_key_ref.as_ref())
+            .expect("secret key secret ref");
+
+        assert_eq!(access_ref.name, "demo-rustfs-credentials");
+        assert_eq!(access_ref.key, "accessKey");
+        assert_eq!(secret_ref.name, "demo-rustfs-credentials");
+        assert_eq!(secret_ref.key, "secretKey");
+        assert_eq!(region.value.as_deref(), Some("us-east-1"));
+    }
+
+    #[test]
+    fn cluster_status_semantic_comparison_ignores_last_reconciled_at() {
+        let current = BrewFSClusterStatus {
+            observed_generation: Some(1),
+            phase: "Ready".to_string(),
+            message: "Backend resources reconciled".to_string(),
+            redis_service: Some("demo-redis".to_string()),
+            rustfs_service: Some("demo-rustfs".to_string()),
+            bucket: Some("brewfs-data".to_string()),
+            config_map: Some("demo-brewfs-config".to_string()),
+            last_reconciled_at: Some(Utc::now()),
+        };
+        let mut desired = current.clone();
+        desired.last_reconciled_at = None;
+
+        assert!(cluster_status_semantically_equal(&current, &desired));
+
+        desired.phase = "Pending".to_string();
+        assert!(!cluster_status_semantically_equal(&current, &desired));
+    }
+
+    #[test]
+    fn mount_status_semantic_comparison_ignores_last_reconciled_at() {
+        let current = BrewFSMountStatus {
+            observed_generation: Some(2),
+            phase: "Running".to_string(),
+            message: "mount workload reconciled".to_string(),
+            cluster: Some("demo".to_string()),
+            workload_kind: Some(MountWorkloadKind::DaemonSet),
+            workload_name: Some("demo-mount".to_string()),
+            config_map: Some("demo-brewfs-config".to_string()),
+            host_mount_path: Some("/var/lib/brewfs/mounts/demo".to_string()),
+            mount_propagation: Some(MountPropagationMode::Bidirectional),
+            desired_replicas: None,
+            ready_replicas: Some(1),
+            consumer_workload_kind: Some(ConsumerWorkloadKind::StatefulSet),
+            consumer_workload_name: Some("demo-mount-consumer".to_string()),
+            consumer_mount_path: Some("/data".to_string()),
+            consumer_desired_replicas: Some(1),
+            consumer_ready_replicas: Some(1),
+            last_reconciled_at: Some(Utc::now()),
+        };
+        let mut desired = current.clone();
+        desired.last_reconciled_at = None;
+
+        assert!(mount_status_semantically_equal(&current, &desired));
+
+        desired.ready_replicas = Some(0);
+        assert!(!mount_status_semantically_equal(&current, &desired));
+    }
 }

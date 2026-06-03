@@ -1,0 +1,72 @@
+name: Docker Images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Build and publish GHCR images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image names
+        shell: bash
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          short_sha="${GITHUB_SHA::12}"
+          echo "IMAGE_PREFIX=ghcr.io/${owner}" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=${short_sha}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push BrewFS runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: brewfs/docker/Dockerfile.runtime
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/brewfs:latest
+            ${{ env.IMAGE_PREFIX }}/brewfs:${{ env.SHORT_SHA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=brewfs
+          cache-from: type=gha,scope=brewfs-runtime
+          cache-to: type=gha,scope=brewfs-runtime,mode=max
+
+      - name: Build and push BrewFS operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: brewfs/operator/brewfs-operator
+          file: brewfs/operator/brewfs-operator/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/brewfs-operator:latest
+            ${{ env.IMAGE_PREFIX }}/brewfs-operator:${{ env.SHORT_SHA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=brewfs-operator
+          cache-from: type=gha,scope=brewfs-operator
+          cache-to: type=gha,scope=brewfs-operator,mode=max

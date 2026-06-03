@@ -1,0 +1,12 @@
+apiVersion: storage.brewfs.io/v1alpha1
+kind: BrewFSCluster
+metadata:
+  name: demo
+spec:
+  redis: {}
+  rustfs:
+    bucket: brewfs-data
+    storageSize: 5Gi
+  mountConfig:
+    mountPoint: /mnt/brewfs
+    forcePathStyle: true
