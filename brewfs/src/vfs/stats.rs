@@ -57,6 +57,12 @@ pub struct FsStatsSnapshot {
     pub vfs_setattr_recent_remove_lat_us: u64,
     pub vfs_setattr_recent_get_mut_ops: u64,
     pub vfs_setattr_recent_get_mut_lat_us: u64,
+    pub vfs_read_dirty_probe_ops: u64,
+    pub vfs_read_dirty_probe_lat_us: u64,
+    pub vfs_read_handle_ops: u64,
+    pub vfs_read_handle_lat_us: u64,
+    pub vfs_read_overlay_ops: u64,
+    pub vfs_read_overlay_lat_us: u64,
     pub s3_get_ops: u64,
     pub s3_get_bytes: u64,
     pub s3_get_lat_us: u64,
@@ -194,6 +200,18 @@ pub struct FsStats {
     pub vfs_setattr_recent_get_mut_ops: AtomicU64,
     /// Total get_mut deleted-inode setattr map latency in microseconds
     pub vfs_setattr_recent_get_mut_lat_us: AtomicU64,
+    /// Total dirty-overlay probes before VFS reads committed data
+    pub vfs_read_dirty_probe_ops: AtomicU64,
+    /// Total dirty-overlay probe latency before VFS reads committed data
+    pub vfs_read_dirty_probe_lat_us: AtomicU64,
+    /// Total handle.read calls inside VFS read
+    pub vfs_read_handle_ops: AtomicU64,
+    /// Total handle.read latency inside VFS read
+    pub vfs_read_handle_lat_us: AtomicU64,
+    /// Total post-read dirty overlay calls inside VFS read
+    pub vfs_read_overlay_ops: AtomicU64,
+    /// Total post-read dirty overlay latency inside VFS read
+    pub vfs_read_overlay_lat_us: AtomicU64,
 
     // ─── Object storage (S3) layer ───────────────────────────────
     /// Total S3 GET requests
@@ -264,6 +282,12 @@ impl FsStats {
             vfs_setattr_recent_remove_lat_us: AtomicU64::new(0),
             vfs_setattr_recent_get_mut_ops: AtomicU64::new(0),
             vfs_setattr_recent_get_mut_lat_us: AtomicU64::new(0),
+            vfs_read_dirty_probe_ops: AtomicU64::new(0),
+            vfs_read_dirty_probe_lat_us: AtomicU64::new(0),
+            vfs_read_handle_ops: AtomicU64::new(0),
+            vfs_read_handle_lat_us: AtomicU64::new(0),
+            vfs_read_overlay_ops: AtomicU64::new(0),
+            vfs_read_overlay_lat_us: AtomicU64::new(0),
             s3_get_ops: AtomicU64::new(0),
             s3_get_bytes: AtomicU64::new(0),
             s3_get_lat_us: AtomicU64::new(0),
@@ -319,6 +343,12 @@ impl FsStats {
             vfs_setattr_recent_remove_lat_us: self.vfs_setattr_recent_remove_lat_us.load(ORD),
             vfs_setattr_recent_get_mut_ops: self.vfs_setattr_recent_get_mut_ops.load(ORD),
             vfs_setattr_recent_get_mut_lat_us: self.vfs_setattr_recent_get_mut_lat_us.load(ORD),
+            vfs_read_dirty_probe_ops: self.vfs_read_dirty_probe_ops.load(ORD),
+            vfs_read_dirty_probe_lat_us: self.vfs_read_dirty_probe_lat_us.load(ORD),
+            vfs_read_handle_ops: self.vfs_read_handle_ops.load(ORD),
+            vfs_read_handle_lat_us: self.vfs_read_handle_lat_us.load(ORD),
+            vfs_read_overlay_ops: self.vfs_read_overlay_ops.load(ORD),
+            vfs_read_overlay_lat_us: self.vfs_read_overlay_lat_us.load(ORD),
             s3_get_ops: self.s3_get_ops.load(ORD),
             s3_get_bytes: self.s3_get_bytes.load(ORD),
             s3_get_lat_us: self.s3_get_lat_us.load(ORD),
@@ -543,6 +573,30 @@ impl FsStats {
             "brewfs_vfs_setattr_recent_get_mut_lat_us_total {}\n",
             self.vfs_setattr_recent_get_mut_lat_us.load(ORD)
         ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_dirty_probe_ops_total {}\n",
+            self.vfs_read_dirty_probe_ops.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_dirty_probe_lat_us_total {}\n",
+            self.vfs_read_dirty_probe_lat_us.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_handle_ops_total {}\n",
+            self.vfs_read_handle_ops.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_handle_lat_us_total {}\n",
+            self.vfs_read_handle_lat_us.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_overlay_ops_total {}\n",
+            self.vfs_read_overlay_ops.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_vfs_read_overlay_lat_us_total {}\n",
+            self.vfs_read_overlay_lat_us.load(ORD)
+        ));
 
         // Object storage
         out.push_str(&format!(
@@ -739,6 +793,9 @@ mod tests {
         assert!(output.contains("brewfs_vfs_unlink_lookup_lat_us_total 0"));
         assert!(output.contains("brewfs_vfs_unlink_recent_ops_total 0"));
         assert!(output.contains("brewfs_vfs_setattr_recent_remove_lat_us_total 0"));
+        assert!(output.contains("brewfs_vfs_read_dirty_probe_ops_total 0"));
+        assert!(output.contains("brewfs_vfs_read_handle_ops_total 0"));
+        assert!(output.contains("brewfs_vfs_read_overlay_ops_total 0"));
     }
 
     #[test]

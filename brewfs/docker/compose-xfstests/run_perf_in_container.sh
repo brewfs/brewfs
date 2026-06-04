@@ -671,18 +671,23 @@ print(f\"  total: {read.get('io_bytes',0)+write.get('io_bytes',0)} bytes, {read.
 prepare_fio_dataset() {
     local tool="$1"
     local work_dir="$2"
-    local dataset_size="$3"
-    local direct_mode="$4"
+    local job_name="$3"
+    local dataset_size="$4"
+    local direct_mode="$5"
+    local numjobs="$6"
+    local bs="$7"
+    local ioengine="$8"
+    local iodepth="$9"
     local prep_log="$artifact_dir/tools/${tool}-prepare.log"
     local -a prep_args=(
-        --name="${tool}-prepare"
+        --name="$job_name"
         --directory="$work_dir"
         --rw=write
-        --bs="${PERF_FIO_PREP_BS:-4m}"
+        --bs="${PERF_FIO_PREP_BS:-$bs}"
         --size="$dataset_size"
-        --numjobs=1
-        --ioengine="${PERF_FIO_PREP_IOENGINE:-io_uring}"
-        --iodepth="${PERF_FIO_PREP_IODEPTH:-1}"
+        --numjobs="${PERF_FIO_PREP_NUMJOBS:-$numjobs}"
+        --ioengine="${PERF_FIO_PREP_IOENGINE:-$ioengine}"
+        --iodepth="${PERF_FIO_PREP_IODEPTH:-$iodepth}"
         --direct="$direct_mode"
         --end_fsync=1
         --group_reporting
@@ -917,7 +922,7 @@ run_fio_profile() {
     fi
 
     if [[ "$needs_prefill" == true ]]; then
-        prepare_fio_dataset "$tool" "$work_dir" "$size" "$direct" || return $?
+        prepare_fio_dataset "$tool" "$work_dir" "$name" "$size" "$direct" "$numjobs" "$bs" "$ioengine" "$iodepth" || return $?
     fi
 
     # Collect per-second latency logs for time-series analysis

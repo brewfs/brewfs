@@ -34,7 +34,7 @@ use rand::RngCore;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
@@ -978,6 +978,9 @@ struct Shared<B, M> {
     last_flushed_gen: AtomicU64,
     /// First durable writeback error observed by background upload/commit.
     writeback_error: ParkingMutex<Option<String>>,
+    /// The last user handle was released, but writeback overlay may still be
+    /// needed until committed slices finish uploading and age out.
+    released: AtomicBool,
 }
 
 impl<B, M> Shared<B, M>
@@ -1012,6 +1015,7 @@ where
             write_gen: AtomicU64::new(0),
             last_flushed_gen: AtomicU64::new(0),
             writeback_error: ParkingMutex::new(None),
+            released: AtomicBool::new(false),
         }
     }
 
@@ -1616,6 +1620,20 @@ where
             .chunks
             .values()
             .any(|chunk| !chunk.slices.is_empty() || !chunk.recently_committed.is_empty())
+    }
+
+    fn mark_active(&self) {
+        self.shared.released.store(false, Ordering::Release);
+    }
+
+    fn mark_released(&self) {
+        self.shared.released.store(true, Ordering::Release);
+    }
+
+    async fn released_cleanup_ready(&self) -> bool {
+        self.shared.released.load(Ordering::Acquire)
+            && !self.has_pending().await
+            && !self.has_overlay_state().await
     }
 
     /// Spawn a background task to upload a frozen slice's data.
@@ -2601,7 +2619,8 @@ where
     }
 
     pub(crate) fn ensure_file(&self, inode: Arc<Inode>) -> Arc<FileWriter<B, M>> {
-        self.files
+        let writer = self
+            .files
             .entry(inode.ino() as u64)
             .or_insert_with(|| {
                 Arc::new(FileWriter::new_with_memory_budget(
@@ -2614,7 +2633,9 @@ where
                     self.memory_budget.clone(),
                 ))
             })
-            .clone()
+            .clone();
+        writer.mark_active();
+        writer
     }
 
     pub(crate) fn start_flush_background(self: &Arc<Self>) {
@@ -2767,8 +2788,16 @@ where
     }
 
     pub(crate) async fn release(&self, ino: u64) {
-        if let Some((_, writer)) = self.files.remove(&ino) {
-            writer.clear().await;
+        let writer = self.files.get(&ino).map(|entry| entry.value().clone());
+        if let Some(writer) = writer
+            && (writer.has_pending().await || writer.has_overlay_state().await)
+        {
+            writer.mark_released();
+            return;
+        }
+
+        if let Some((_, removed)) = self.files.remove(&ino) {
+            removed.clear().await;
         }
     }
 
@@ -2779,15 +2808,20 @@ where
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn flush_once(&self) {
-        let writers: Vec<Arc<FileWriter<B, M>>> = self
+        let writers: Vec<(u64, Arc<FileWriter<B, M>>)> = self
             .files
             .iter()
-            .map(|entry| entry.value().clone())
+            .map(|entry| (*entry.key(), entry.value().clone()))
             .collect();
 
-        for writer in writers {
+        for (ino, writer) in writers {
             if writer.has_pending().await {
                 let _ = writer.flush().await;
+            }
+            if writer.released_cleanup_ready().await
+                && let Some((_, removed)) = self.files.remove(&ino)
+            {
+                removed.clear().await;
             }
         }
     }
@@ -3324,6 +3358,58 @@ mod tests {
         .expect("blocked object upload should eventually finish");
 
         assert_eq!(uploaded, data);
+    }
+
+    #[tokio::test]
+    async fn test_data_writer_release_keeps_writeback_overlay_until_upload_finishes() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "release_writeback_overlay.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            backend,
+            reader,
+            None,
+        ));
+
+        let len = (layout.block_size / 2) as usize;
+        let data = vec![7u8; len];
+        let file_writer = writer.ensure_file(inode);
+        file_writer.write_at(0, &data).await.unwrap();
+        timeout(Duration::from_secs(2), file_writer.flush())
+            .await
+            .expect("commit-before-upload flush should not wait for blocked object upload")
+            .unwrap();
+
+        assert!(file_writer.has_overlay_state().await);
+        writer.release(ino as u64).await;
+
+        assert!(
+            writer.has_file(ino as u64),
+            "released writeback writer should stay indexed while overlay is needed"
+        );
+        let mut out = vec![0u8; len];
+        writer
+            .overlay_dirty_if_exists(ino as u64, 0, &mut out)
+            .await
+            .unwrap();
+        assert_eq!(out, data);
+
+        store.unblock();
     }
 
     #[tokio::test]

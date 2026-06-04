@@ -2160,14 +2160,20 @@ where
         let actual_len = len.min((file_size - offset) as usize);
         let writer = self.state.writer.clone();
         let ino = handle.ino as u64;
-        if let Some(data) = handle
-            .try_read_overlay(offset, actual_len, move |offset, len| {
-                let writer = writer.clone();
-                async move { writer.read_dirty_if_fully_covered(ino, offset, len).await }
-            })
-            .await
-            .map_err(VfsError::from)?
-        {
+        let dirty_data = {
+            let _dirty_probe_timer = self.vfs_timing_timer(
+                &self.state.stats.vfs_read_dirty_probe_ops,
+                &self.state.stats.vfs_read_dirty_probe_lat_us,
+            );
+            handle
+                .try_read_overlay(offset, actual_len, move |offset, len| {
+                    let writer = writer.clone();
+                    async move { writer.read_dirty_if_fully_covered(ino, offset, len).await }
+                })
+                .await
+                .map_err(VfsError::from)?
+        };
+        if let Some(data) = dirty_data {
             return Ok(data);
         }
 
@@ -2186,12 +2192,24 @@ where
         // synchronous flush.
         let inode = self.ensure_inode_registered(handle.ino).await?;
         handle.ensure_reader_with(|| self.state.reader.open_for_handle(inode, fh));
-        let mut data = handle.read(offset, len).await.map_err(VfsError::from)?;
-        self.state
-            .writer
-            .overlay_dirty_if_exists(handle.ino as u64, offset, &mut data)
-            .await
-            .map_err(VfsError::from)?;
+        let mut data = {
+            let _handle_read_timer = self.vfs_timing_timer(
+                &self.state.stats.vfs_read_handle_ops,
+                &self.state.stats.vfs_read_handle_lat_us,
+            );
+            handle.read(offset, len).await.map_err(VfsError::from)?
+        };
+        {
+            let _overlay_timer = self.vfs_timing_timer(
+                &self.state.stats.vfs_read_overlay_ops,
+                &self.state.stats.vfs_read_overlay_lat_us,
+            );
+            self.state
+                .writer
+                .overlay_dirty_if_exists(handle.ino as u64, offset, &mut data)
+                .await
+                .map_err(VfsError::from)?;
+        }
 
         self.state
             .reader
