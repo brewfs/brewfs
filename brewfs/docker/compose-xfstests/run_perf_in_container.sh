@@ -188,6 +188,8 @@ EOF
             || -n "${BREWFS_PREFETCH_CONCURRENCY:-}" \
             || -n "${BREWFS_MEMORY_BUDGET_BYTES:-}" \
             || -n "${BREWFS_COMPRESSION:-}" \
+            || -n "${BREWFS_UPLOAD_LIMIT_MIBPS:-}" \
+            || -n "${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}" \
             || -n "$writeback_mode" ]]; then
             echo
             echo "cache:"
@@ -205,6 +207,15 @@ EOF
             [[ -n "${BREWFS_COMPRESSION:-}" ]] && echo "  compression: ${comp}"
             if [[ -n "$writeback_mode" ]]; then
                 echo "  writeback_mode: ${writeback_mode}"
+            fi
+            if [[ -n "${BREWFS_UPLOAD_LIMIT_MIBPS:-}" || -n "${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}" ]]; then
+                echo "  bandwidth:"
+                if [[ -n "${BREWFS_UPLOAD_LIMIT_MIBPS:-}" ]]; then
+                    echo "    upload_limit_mibps: ${BREWFS_UPLOAD_LIMIT_MIBPS}"
+                fi
+                if [[ -n "${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}" ]]; then
+                    echo "    download_limit_mibps: ${BREWFS_DOWNLOAD_LIMIT_MIBPS}"
+                fi
             fi
         fi
     } >"$config_path"

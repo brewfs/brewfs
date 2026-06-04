@@ -10,7 +10,7 @@
 //   While flushing, new writes are blocked via flush_waiting/write_waiting gates.
 
 use super::reader::DataReader;
-use crate::chunk::writer::DataUploader;
+use crate::chunk::writer::{DataUploader, UploadPriority};
 use crate::chunk::{BlockStore, SliceDesc};
 use crate::meta::backoff::backoff;
 use crate::meta::store::{MetaError, RetryReason};
@@ -1715,6 +1715,14 @@ where
                     let wb_ref = shared.write_back.clone();
                     let ino = shared.inode.ino();
                     let layout = shared.config.layout;
+                    let upload_priority = if matches!(
+                        shared.config.writeback_mode,
+                        WriteBackMode::CommitBeforeUpload
+                    ) {
+                        UploadPriority::Writeback
+                    } else {
+                        UploadPriority::Foreground
+                    };
                     join_set.spawn(async move {
                         // Best-effort SSD persist for crash recovery.
                         let persist = wb_ref.as_ref().map(|wb| {
@@ -1737,7 +1745,12 @@ where
                         let upload = async {
                             backoff(UPLOAD_MAX_RETRIES, || async {
                                 match uploader
-                                    .write_at_vectored(slice_id, batch_offset.into(), &all_chunks)
+                                    .write_at_vectored_with_priority(
+                                        slice_id,
+                                        batch_offset.into(),
+                                        &all_chunks,
+                                        upload_priority,
+                                    )
                                     .await
                                 {
                                     Ok(_) => Ok(()),

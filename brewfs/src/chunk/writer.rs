@@ -15,9 +15,21 @@ use tokio::sync::Semaphore;
 const FG_UPLOAD_PERMITS: usize = 192;
 /// Background upload permits (compaction/warmup) — lower priority, smaller pool.
 const BG_UPLOAD_PERMITS: usize = 64;
+/// Commit-before-upload writeback permits — tiny pool to avoid starving reads.
+const WRITEBACK_UPLOAD_PERMITS: usize = 1;
 
 static FG_UPLOAD_SEM: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(FG_UPLOAD_PERMITS));
 static BG_UPLOAD_SEM: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(BG_UPLOAD_PERMITS));
+static WRITEBACK_UPLOAD_SEM: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(writeback_upload_permits()));
+
+fn writeback_upload_permits() -> usize {
+    std::env::var("BREWFS_WRITEBACK_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(WRITEBACK_UPLOAD_PERMITS)
+}
 
 /// Acquire a foreground upload permit (flush/fsync path).
 pub(crate) async fn fg_upload_permit() -> tokio::sync::SemaphorePermit<'static> {
@@ -33,6 +45,27 @@ pub(crate) async fn upload_permit() -> tokio::sync::SemaphorePermit<'static> {
         .acquire()
         .await
         .expect("bg upload semaphore closed")
+}
+
+/// Acquire a writeback upload permit (commit-before-upload path).
+pub(crate) async fn writeback_upload_permit() -> tokio::sync::SemaphorePermit<'static> {
+    WRITEBACK_UPLOAD_SEM
+        .acquire()
+        .await
+        .expect("writeback upload semaphore closed")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UploadPriority {
+    Foreground,
+    Writeback,
+}
+
+async fn upload_permit_for(priority: UploadPriority) -> tokio::sync::SemaphorePermit<'static> {
+    match priority {
+        UploadPriority::Foreground => fg_upload_permit().await,
+        UploadPriority::Writeback => writeback_upload_permit().await,
+    }
 }
 
 struct ChunkCursor<'a> {
@@ -99,6 +132,17 @@ where
         offset: SliceOffset,
         chunks: &[Bytes],
     ) -> Result<()> {
+        self.write_at_vectored_with_priority(slice_id, offset, chunks, UploadPriority::Foreground)
+            .await
+    }
+
+    pub(crate) async fn write_at_vectored_with_priority(
+        &self,
+        slice_id: u64,
+        offset: SliceOffset,
+        chunks: &[Bytes],
+        priority: UploadPriority,
+    ) -> Result<()> {
         let total_len = chunks.iter().map(|c| c.len()).sum::<usize>();
 
         let mut cursor = ChunkCursor::new(chunks);
@@ -116,12 +160,13 @@ where
             futures.push(future);
         }
 
-        // Bound total concurrent block uploads with foreground priority permits
-        // so that flush/fsync gets priority over background compaction.
+        // Bound total concurrent block uploads. Upload-before-commit flushes use
+        // the foreground pool; commit-before-upload writeback uses a tiny pool so
+        // foreground reads keep capacity. Compaction uses upload_permit() directly.
         let futures: Vec<_> = futures
             .into_iter()
             .map(|f| async move {
-                let _p = FG_UPLOAD_SEM.acquire().await;
+                let _p = upload_permit_for(priority).await;
                 f.await
             })
             .collect();
@@ -144,6 +189,11 @@ mod tests {
     use crate::vfs::backend::Backend;
     use bytes::Bytes;
     use std::sync::Arc;
+    use std::sync::LazyLock as StdLazyLock;
+    use tokio::sync::Mutex;
+    use tokio::time::{Duration, timeout};
+
+    static UPLOAD_PERMIT_TEST_LOCK: StdLazyLock<Mutex<()>> = StdLazyLock::new(|| Mutex::new(()));
 
     fn small_layout() -> ChunkLayout {
         ChunkLayout {
@@ -244,5 +294,100 @@ mod tests {
         fetcher.prepare_slices().await.unwrap();
         let out = fetcher.read_at(offset.into(), data.len()).await.unwrap();
         assert_eq!(out, data);
+    }
+
+    #[tokio::test]
+    async fn test_background_priority_waits_for_background_permits() {
+        let _guard = UPLOAD_PERMIT_TEST_LOCK.lock().await;
+        let mut background_permits = Vec::new();
+        for _ in 0..BG_UPLOAD_PERMITS {
+            background_permits.push(upload_permit().await);
+        }
+
+        let layout = small_layout();
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta = create_meta_store_from_url("sqlite::memory:")
+            .await
+            .unwrap()
+            .layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let uploader = DataUploader::new(layout, backend.as_ref());
+        let chunks = vec![Bytes::from(vec![1u8; layout.block_size as usize])];
+
+        let background_result = timeout(Duration::from_millis(50), upload_permit()).await;
+        assert!(
+            background_result.is_err(),
+            "background uploads should wait when background permits are exhausted"
+        );
+
+        timeout(
+            Duration::from_secs(1),
+            uploader.write_at_vectored(101, 0u64.into(), &chunks),
+        )
+        .await
+        .expect("foreground upload should not wait on background permits")
+        .expect("foreground upload should succeed");
+
+        drop(background_permits);
+        let resumed_permit = timeout(Duration::from_secs(1), upload_permit())
+            .await
+            .expect("background permit should resume after background permits are released");
+        drop(resumed_permit);
+    }
+
+    #[tokio::test]
+    async fn test_writeback_priority_waits_for_writeback_permits_only() {
+        let _guard = UPLOAD_PERMIT_TEST_LOCK.lock().await;
+        let mut writeback_permits = Vec::new();
+        for _ in 0..WRITEBACK_UPLOAD_PERMITS {
+            writeback_permits.push(writeback_upload_permit().await);
+        }
+
+        let layout = small_layout();
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta = create_meta_store_from_url("sqlite::memory:")
+            .await
+            .unwrap()
+            .layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let uploader = DataUploader::new(layout, backend.as_ref());
+        let chunks = vec![Bytes::from(vec![1u8; layout.block_size as usize])];
+
+        let writeback_result = timeout(
+            Duration::from_millis(50),
+            uploader.write_at_vectored_with_priority(
+                103,
+                0u64.into(),
+                &chunks,
+                UploadPriority::Writeback,
+            ),
+        )
+        .await;
+        assert!(
+            writeback_result.is_err(),
+            "writeback uploads should wait when writeback permits are exhausted"
+        );
+
+        timeout(
+            Duration::from_secs(1),
+            uploader.write_at_vectored(104, 0u64.into(), &chunks),
+        )
+        .await
+        .expect("foreground upload should not wait on writeback permits")
+        .expect("foreground upload should succeed");
+
+        drop(writeback_permits);
+        timeout(
+            Duration::from_secs(1),
+            uploader.write_at_vectored_with_priority(
+                105,
+                0u64.into(),
+                &chunks,
+                UploadPriority::Writeback,
+            ),
+        )
+        .await
+        .expect("writeback upload should resume after writeback permits are released")
+        .expect("writeback upload should succeed");
     }
 }
