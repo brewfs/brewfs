@@ -13,6 +13,7 @@ use rfuse3::MountOptions;
 use rfuse3::raw::logfs::LoggingFileSystem;
 
 use crate::chunk::store::BlockStore;
+use crate::fuse::BREWFS_FUSE_MAX_WRITE;
 use crate::meta::MetaLayer;
 use crate::vfs::fs::VFS;
 
@@ -34,7 +35,7 @@ fn default_mount_options() -> MountOptions {
     // Note: Requires 'user_allow_other' in /etc/fuse.conf for non-root mounts
     mo.allow_other(true);
     // Default to 4 MiB for higher throughput while keeping memory usage reasonable.
-    mo.max_write(NonZeroU32::new(4 * 1024 * 1024).unwrap());
+    mo.max_write(NonZeroU32::new(BREWFS_FUSE_MAX_WRITE).unwrap());
     // Set kernel readahead to 16 MiB (4 blocks). Larger values cause excessive
     // concurrent FUSE reads that create scheduling contention. 16 MiB lets the
     // kernel pipeline 4 read requests while our userspace prefetcher handles

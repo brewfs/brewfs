@@ -33,6 +33,7 @@ use rfuse3::raw::reply::{
 };
 use std::ffi::{OsStr, OsString};
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use futures_util::stream::{self, BoxStream};
@@ -66,6 +67,7 @@ const STATS_FILENAME: &str = ".stats";
 const STATS_FILE_SIZE: u64 = 16 * 1024;
 const STATS_FILE_BLOCKS: u64 = 32;
 const STATS_FILE_BLOCK_SIZE: u32 = 4096;
+pub(crate) const BREWFS_FUSE_MAX_WRITE: u32 = 4 * 1024 * 1024;
 #[cfg(all(test, target_os = "linux"))]
 mod mount_tests {
     use super::*;
@@ -355,7 +357,10 @@ where
     M: MetaLayer + Send + Sync + 'static,
 {
     async fn init(&self, _req: Request) -> FuseResult<ReplyInit> {
-        Ok(ReplyInit::default())
+        Ok(ReplyInit {
+            max_write: NonZeroU32::new(BREWFS_FUSE_MAX_WRITE)
+                .expect("BrewFS FUSE max_write must be non-zero"),
+        })
     }
 
     async fn destroy(&self, _req: Request) {}
@@ -2108,5 +2113,26 @@ mod mode_sanitization_tests {
         assert_eq!(seen.len(), TOTAL_CHILDREN);
         assert_eq!(seen.first().copied(), Some(0));
         assert_eq!(seen.last().copied(), Some(TOTAL_CHILDREN - 1));
+    }
+}
+
+#[cfg(test)]
+mod fuse_init_tests {
+    use super::*;
+    use crate::chunk::layout::ChunkLayout;
+    use crate::chunk::store::InMemoryBlockStore;
+    use crate::meta::factory::create_meta_store_from_url;
+    use rfuse3::raw::Filesystem;
+
+    #[tokio::test]
+    async fn init_reply_advertises_large_write_requests() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = VFS::new(layout, store, meta_handle.store()).await.unwrap();
+
+        let reply = Filesystem::init(&fs, Request::default()).await.unwrap();
+
+        assert_eq!(reply.max_write.get(), 4 * 1024 * 1024);
     }
 }
