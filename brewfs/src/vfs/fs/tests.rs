@@ -988,6 +988,51 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_fs_read_only_handle_uses_fully_covered_dirty_overlay_before_backend_read() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/dirty-covered-readonly.bin").await.unwrap();
+        let attr = fs.stat("/dirty-covered-readonly.bin").await.unwrap();
+        let initial = vec![0x11; 4096];
+        let write_fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        fs.write(write_fh, 0, &initial).await.unwrap();
+        fs.flush(write_fh).await.unwrap();
+
+        let replacement = vec![0x42; 4096];
+        fs.write(write_fh, 0, &replacement).await.unwrap();
+
+        counters.reset_reads();
+
+        let attr = fs.stat("/dirty-covered-readonly.bin").await.unwrap();
+        let read_fh = fs
+            .open(attr.ino, attr.clone(), true, false, false)
+            .await
+            .unwrap();
+
+        let out = fs.read(read_fh, 0, replacement.len()).await.unwrap();
+        assert_eq!(out, replacement);
+        assert_eq!(
+            counters.read_range_calls(),
+            0,
+            "read-only handle should use fully-covered dirty overlay without fetching old blocks"
+        );
+
+        fs.close(read_fh).await.unwrap();
+        fs.close(write_fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_set_attr_truncate_flushes_cached_write_without_hanging() {
         let layout = ChunkLayout::default();
         let store = InMemoryBlockStore::new();

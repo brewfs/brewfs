@@ -2159,7 +2159,11 @@ where
             return Ok(Vec::new());
         }
         let actual_len = len.min((file_size - offset) as usize);
-        let dirty_data = if handle.flags.write && handle.has_write_dirty() {
+        // Fast path for ranges fully covered by live dirty or recently committed
+        // writeback-overlay data.  This also helps read-only handles opened after
+        // a write handle: the slower reader path below would first fetch old
+        // committed blocks and only then overlay the same data.
+        let dirty_data = {
             let writer = self.state.writer.clone();
             let ino = handle.ino as u64;
             let _dirty_probe_timer = self.vfs_timing_timer(
@@ -2173,8 +2177,6 @@ where
                 })
                 .await
                 .map_err(VfsError::from)?
-        } else {
-            None
         };
         if let Some(data) = dirty_data {
             return Ok(data);
