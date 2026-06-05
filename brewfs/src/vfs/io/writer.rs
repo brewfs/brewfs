@@ -186,6 +186,8 @@ pub(crate) struct SliceState {
     /// Set to `true` when a pipeline upload task has been spawned for this
     /// slice to prevent duplicate top-level upload tasks.
     upload_task_active: bool,
+    /// True while this slice's bytes are included in pending-upload accounting.
+    recent_pending_accounted: bool,
     data: CacheSlice,
     usage: UsageGuard,
     memory_usage: Option<MemoryUsageGuard>,
@@ -229,6 +231,7 @@ impl SliceState {
             block_done: 0,
             in_flight: 0,
             upload_task_active: false,
+            recent_pending_accounted: false,
             data: CacheSlice::new(config),
             usage: UsageGuard::new(usage),
             memory_usage: memory_budget
@@ -469,6 +472,7 @@ where
                 s.state = SliceStatus::Uploaded;
                 s.err = None;
             }
+            self.clear_recent_pending_if_complete(s);
             s.notify.notify_waiters();
         })
     }
@@ -495,8 +499,21 @@ where
                 s.state = SliceStatus::Uploaded;
                 s.err = None;
             }
+            self.clear_recent_pending_if_complete(s);
             s.notify.notify_waiters();
         })
+    }
+
+    fn clear_recent_pending_if_complete(&self, s: &mut SliceState) {
+        if s.recent_pending_accounted && s.upload_complete() {
+            let bytes = s.data.alloc_bytes();
+            s.recent_pending_accounted = false;
+            self.shared
+                .recent_pending_upload
+                .bytes
+                .fetch_sub(bytes, Ordering::AcqRel);
+            self.shared.recent_pending_upload.notify.notify_waiters();
+        }
     }
 
     fn should_freeze(&self) -> bool {
@@ -977,6 +994,8 @@ struct Shared<B, M> {
     write_gen: AtomicU64,
     /// Snapshot of `write_gen` taken after a flush completes successfully.
     last_flushed_gen: AtomicU64,
+    /// Bytes in recently committed slices whose object upload is not complete.
+    recent_pending_upload: Arc<RecentPendingUploadState>,
     /// First durable writeback error observed by background upload/commit.
     writeback_error: ParkingMutex<Option<String>>,
     /// The last user handle was released, but writeback overlay may still be
@@ -984,11 +1003,26 @@ struct Shared<B, M> {
     released: AtomicBool,
 }
 
+struct RecentPendingUploadState {
+    bytes: AtomicU64,
+    notify: Notify,
+}
+
+impl RecentPendingUploadState {
+    fn new() -> Self {
+        Self {
+            bytes: AtomicU64::new(0),
+            notify: Notify::new(),
+        }
+    }
+}
+
 impl<B, M> Shared<B, M>
 where
     B: BlockStore,
     M: MetaLayer,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         inode: Arc<Inode>,
         config: Arc<WriteConfig>,
@@ -997,6 +1031,7 @@ where
         buffer_usage: Arc<AtomicU64>,
         write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
         memory_budget: Option<MemoryBudget>,
+        recent_pending_upload: Arc<RecentPendingUploadState>,
     ) -> Self {
         Self {
             inode,
@@ -1015,6 +1050,7 @@ where
             memory_budget,
             write_gen: AtomicU64::new(0),
             last_flushed_gen: AtomicU64::new(0),
+            recent_pending_upload,
             writeback_error: ParkingMutex::new(None),
             released: AtomicBool::new(false),
         }
@@ -1026,6 +1062,7 @@ where
             *guard = Some(err);
         }
         self.flush_notify.notify_waiters();
+        self.recent_pending_upload.notify.notify_waiters();
     }
 
     fn writeback_error(&self) -> Option<String> {
@@ -1182,6 +1219,36 @@ where
         }
     }
 
+    async fn wait_for_writeback_backpressure(&self, incoming_len: usize) -> anyhow::Result<()> {
+        if !matches!(
+            self.shared.config.writeback_mode,
+            WriteBackMode::CommitBeforeUpload
+        ) {
+            return Ok(());
+        }
+
+        let soft = self.shared.config.writeback_recent_pending_soft_limit;
+        let hard = self.shared.config.writeback_recent_pending_hard_limit;
+        let limit = if hard > 0 { hard } else { soft };
+        if limit == 0 {
+            return Ok(());
+        }
+
+        let incoming = incoming_len as u64;
+        loop {
+            self.shared.writeback_result()?;
+            let pending = self
+                .shared
+                .recent_pending_upload
+                .bytes
+                .load(Ordering::Acquire);
+            if pending.saturating_add(incoming) <= limit {
+                return Ok(());
+            }
+            self.shared.recent_pending_upload.notify.notified().await;
+        }
+    }
+
     pub(crate) fn new(
         inode: Arc<Inode>,
         config: Arc<WriteConfig>,
@@ -1198,9 +1265,11 @@ where
             buffer_usage,
             write_back,
             None,
+            Arc::new(RecentPendingUploadState::new()),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_memory_budget(
         inode: Arc<Inode>,
         config: Arc<WriteConfig>,
@@ -1209,6 +1278,7 @@ where
         buffer_usage: Arc<AtomicU64>,
         write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
         memory_budget: Option<MemoryBudget>,
+        recent_pending_upload: Arc<RecentPendingUploadState>,
     ) -> Self {
         let shared = Arc::new(Shared::new(
             inode,
@@ -1218,6 +1288,7 @@ where
             buffer_usage,
             write_back,
             memory_budget,
+            recent_pending_upload,
         ));
         let flush_shared = Arc::downgrade(&shared);
         tokio::spawn(async move { Self::auto_flush(flush_shared).await });
@@ -1259,6 +1330,7 @@ where
     ) -> anyhow::Result<usize> {
         self.shared.writeback_result()?;
         self.back_pressure().await?;
+        self.wait_for_writeback_backpressure(buf.len()).await?;
         let mut guard = self.shared.inner.lock().await;
 
         if !bypass_flush_gate {
@@ -1942,6 +2014,27 @@ where
         empty
     }
 
+    fn account_recent_pending_if_needed(
+        shared: &Arc<Shared<B, M>>,
+        slice: &Arc<ParkingMutex<SliceState>>,
+    ) {
+        let bytes = {
+            let mut state = slice.lock();
+            if state.recent_pending_accounted || state.upload_complete() {
+                0
+            } else {
+                state.recent_pending_accounted = true;
+                state.data.alloc_bytes()
+            }
+        };
+        if bytes > 0 {
+            shared
+                .recent_pending_upload
+                .bytes
+                .fetch_add(bytes, Ordering::AcqRel);
+        }
+    }
+
     async fn move_front_slice_to_recently_committed(
         shared: &Arc<Shared<B, M>>,
         chunk_id: u64,
@@ -1961,6 +2054,7 @@ where
                 .front()
                 .is_some_and(|front| Arc::ptr_eq(front, expected));
             if is_front && let Some(slice) = chunk.slices.pop_front() {
+                Self::account_recent_pending_if_needed(shared, &slice);
                 chunk.recently_committed.push_back(slice);
             }
         }
@@ -2429,6 +2523,7 @@ where
                 if let Some(chunk) = guard.chunks.get_mut(&chunk_id)
                     && let Some(s) = chunk.slices.pop_front()
                 {
+                    Self::account_recent_pending_if_needed(&shared, &s);
                     chunk.recently_committed.push_back(s);
                 }
                 if guard.flush_waiting > 0 {
@@ -2616,6 +2711,7 @@ pub(crate) struct DataWriter<B, M> {
     buffer_usage: Arc<AtomicU64>,
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
     memory_budget: Option<MemoryBudget>,
+    recent_pending_upload: Arc<RecentPendingUploadState>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -2644,6 +2740,7 @@ where
             buffer_usage: Arc::new(AtomicU64::new(0)),
             write_back,
             memory_budget: None,
+            recent_pending_upload: Arc::new(RecentPendingUploadState::new()),
         }
     }
 
@@ -2665,11 +2762,16 @@ where
                     self.buffer_usage.clone(),
                     self.write_back.clone(),
                     self.memory_budget.clone(),
+                    self.recent_pending_upload.clone(),
                 ))
             })
             .clone();
         writer.mark_active();
         writer
+    }
+
+    pub(crate) fn recent_pending_upload_bytes(&self) -> u64 {
+        self.recent_pending_upload.bytes.load(Ordering::Acquire)
     }
 
     pub(crate) async fn dirty_breakdown(&self) -> WritebackDirtyBreakdown {
@@ -3494,6 +3596,121 @@ mod tests {
         assert_eq!(out, data);
 
         store.unblock();
+    }
+
+    #[tokio::test]
+    async fn test_recent_pending_upload_accounting_tracks_commit_and_upload_completion() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "pending_upload_accounting.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            backend,
+            reader,
+            None,
+        ));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![3u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), file_writer.flush())
+            .await
+            .expect("commit-before-upload flush should return while object upload is blocked")
+            .unwrap();
+
+        assert_eq!(
+            writer.recent_pending_upload_bytes(),
+            layout.block_size as u64
+        );
+
+        store.unblock();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if writer.recent_pending_upload_bytes() == 0 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pending-upload bytes should drop after object upload completes");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_writeback_backpressure_waits_for_pending_upload_to_drain() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "pending_upload_backpressure.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let config = Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .freeze_min_bytes(4096)
+                .writeback_mode(WriteBackMode::CommitBeforeUpload)
+                .writeback_recent_pending_soft_limit(layout.block_size as u64),
+        );
+        let writer = Arc::new(DataWriter::new(config, backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![1u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), file_writer.flush())
+            .await
+            .expect("commit-before-upload flush should return while object upload is blocked")
+            .unwrap();
+
+        let blocked = {
+            let file_writer = file_writer.clone();
+            tokio::spawn(async move {
+                file_writer
+                    .write_at(layout.block_size as u64, &vec![2u8; 512])
+                    .await
+            })
+        };
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            !blocked.is_finished(),
+            "write should wait while pending-upload backlog is at the configured limit"
+        );
+
+        store.unblock();
+        timeout(Duration::from_secs(2), blocked)
+            .await
+            .expect("write should wake after pending-upload backlog drains")
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

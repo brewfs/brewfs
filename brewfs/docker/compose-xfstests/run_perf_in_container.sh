@@ -273,6 +273,8 @@ EOF
     append_env_export BREWFS_NOFILE_LIMIT "1048576"
     append_env_export BREWFS_FUSE_READ_DIRECT_IO
     append_env_export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
+    append_env_export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES
+    append_env_export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
     append_env_export PERF_FUSE_OPS_LOG "0"
     append_env_export BREWFS_FUSE_OP_LOG "0"
     append_env_export BREWFS_FUSE_LOG_FILE

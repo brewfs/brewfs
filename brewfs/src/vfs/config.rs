@@ -72,6 +72,10 @@ pub struct WriteConfig {
     pub auto_flush_max_age: Duration,
     /// Controls ordering of upload vs metadata commit.
     pub writeback_mode: crate::vfs::cache::config::WriteBackMode,
+    /// Soft limit for committed-but-not-uploaded dirty bytes. 0 disables this gate.
+    pub writeback_recent_pending_soft_limit: u64,
+    /// Hard limit for committed-but-not-uploaded dirty bytes. 0 falls back to the soft limit.
+    pub writeback_recent_pending_hard_limit: u64,
 }
 
 impl Default for WriteConfig {
@@ -87,6 +91,16 @@ impl Default for WriteConfig {
             })
             .map(|_| crate::vfs::cache::config::WriteBackMode::CommitBeforeUpload)
             .unwrap_or(crate::vfs::cache::config::WriteBackMode::UploadBeforeCommit);
+        let writeback_recent_pending_soft_limit =
+            std::env::var("BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        let writeback_recent_pending_hard_limit =
+            std::env::var("BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
 
         Self {
             layout: ChunkLayout::default(),
@@ -107,6 +121,8 @@ impl Default for WriteConfig {
             #[cfg(test)]
             auto_flush_max_age: Duration::from_millis(5),
             writeback_mode,
+            writeback_recent_pending_soft_limit,
+            writeback_recent_pending_hard_limit,
         }
     }
 }
@@ -155,6 +171,20 @@ impl WriteConfig {
     pub fn writeback_mode(self, writeback_mode: crate::vfs::cache::config::WriteBackMode) -> Self {
         Self {
             writeback_mode,
+            ..self
+        }
+    }
+
+    pub fn writeback_recent_pending_soft_limit(self, limit: u64) -> Self {
+        Self {
+            writeback_recent_pending_soft_limit: limit,
+            ..self
+        }
+    }
+
+    pub fn writeback_recent_pending_hard_limit(self, limit: u64) -> Self {
+        Self {
+            writeback_recent_pending_hard_limit: limit,
             ..self
         }
     }
@@ -254,5 +284,18 @@ mod tests {
             VFSConfig::new_with_cache_config(ChunkLayout::default(), CacheConfig::default());
 
         assert_eq!(config.write.freeze_min_bytes, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn write_config_defaults_and_sets_recent_pending_backpressure_limits() {
+        let default_config = WriteConfig::new(ChunkLayout::default());
+        assert_eq!(default_config.writeback_recent_pending_soft_limit, 0);
+        assert_eq!(default_config.writeback_recent_pending_hard_limit, 0);
+
+        let configured = WriteConfig::new(ChunkLayout::default())
+            .writeback_recent_pending_soft_limit(123)
+            .writeback_recent_pending_hard_limit(456);
+        assert_eq!(configured.writeback_recent_pending_soft_limit, 123);
+        assert_eq!(configured.writeback_recent_pending_hard_limit, 456);
     }
 }
