@@ -97,6 +97,9 @@ pub struct FsStatsSnapshot {
     pub meta_open_fresh_stat: u64,
     pub meta_open_file_cache_hit: u64,
     pub meta_open_file_cache_miss: u64,
+    pub meta_lookup_attr_fused_hit: u64,
+    pub meta_lookup_attr_fused_miss: u64,
+    pub meta_lookup_attr_fused_error: u64,
 }
 
 impl FsStatsSnapshot {
@@ -315,6 +318,12 @@ pub struct FsStats {
     pub meta_open_file_cache_hit: AtomicU64,
     /// Open-file scoped metadata cache misses
     pub meta_open_file_cache_miss: AtomicU64,
+    /// Fused lookup-with-attr cache hits
+    pub meta_lookup_attr_fused_hit: AtomicU64,
+    /// Fused lookup-with-attr backend misses
+    pub meta_lookup_attr_fused_miss: AtomicU64,
+    /// Fused lookup-with-attr backend errors
+    pub meta_lookup_attr_fused_error: AtomicU64,
 }
 
 impl FsStats {
@@ -399,6 +408,9 @@ impl FsStats {
             meta_open_fresh_stat: AtomicU64::new(0),
             meta_open_file_cache_hit: AtomicU64::new(0),
             meta_open_file_cache_miss: AtomicU64::new(0),
+            meta_lookup_attr_fused_hit: AtomicU64::new(0),
+            meta_lookup_attr_fused_miss: AtomicU64::new(0),
+            meta_lookup_attr_fused_error: AtomicU64::new(0),
         }
     }
 
@@ -485,6 +497,9 @@ impl FsStats {
             meta_open_fresh_stat: self.meta_open_fresh_stat.load(ORD),
             meta_open_file_cache_hit: self.meta_open_file_cache_hit.load(ORD),
             meta_open_file_cache_miss: self.meta_open_file_cache_miss.load(ORD),
+            meta_lookup_attr_fused_hit: self.meta_lookup_attr_fused_hit.load(ORD),
+            meta_lookup_attr_fused_miss: self.meta_lookup_attr_fused_miss.load(ORD),
+            meta_lookup_attr_fused_error: self.meta_lookup_attr_fused_error.load(ORD),
         }
     }
 
@@ -572,6 +587,9 @@ impl FsStats {
         open_fresh_stat: u64,
         open_file_cache_hit: u64,
         open_file_cache_miss: u64,
+        lookup_attr_fused_hit: u64,
+        lookup_attr_fused_miss: u64,
+        lookup_attr_fused_error: u64,
     ) {
         self.meta_stat_cache_hit.store(stat_cache_hit, ORD);
         self.meta_stat_cache_miss.store(stat_cache_miss, ORD);
@@ -588,6 +606,12 @@ impl FsStats {
             .store(open_file_cache_hit, ORD);
         self.meta_open_file_cache_miss
             .store(open_file_cache_miss, ORD);
+        self.meta_lookup_attr_fused_hit
+            .store(lookup_attr_fused_hit, ORD);
+        self.meta_lookup_attr_fused_miss
+            .store(lookup_attr_fused_miss, ORD);
+        self.meta_lookup_attr_fused_error
+            .store(lookup_attr_fused_error, ORD);
     }
 
     /// Render all counters in Prometheus text format (one metric per line).
@@ -967,6 +991,18 @@ impl FsStats {
             "brewfs_meta_open_file_cache_miss_total {}\n",
             snapshot.meta_open_file_cache_miss
         ));
+        out.push_str(&format!(
+            "brewfs_meta_lookup_attr_fused_hit_total {}\n",
+            snapshot.meta_lookup_attr_fused_hit
+        ));
+        out.push_str(&format!(
+            "brewfs_meta_lookup_attr_fused_miss_total {}\n",
+            snapshot.meta_lookup_attr_fused_miss
+        ));
+        out.push_str(&format!(
+            "brewfs_meta_lookup_attr_fused_error_total {}\n",
+            snapshot.meta_lookup_attr_fused_error
+        ));
 
         out
     }
@@ -1108,6 +1144,9 @@ mod tests {
         assert!(output.contains("brewfs_meta_open_fresh_stat_total 0"));
         assert!(output.contains("brewfs_meta_open_file_cache_hit_total 0"));
         assert!(output.contains("brewfs_meta_open_file_cache_miss_total 0"));
+        assert!(output.contains("brewfs_meta_lookup_attr_fused_hit_total 0"));
+        assert!(output.contains("brewfs_meta_lookup_attr_fused_miss_total 0"));
+        assert!(output.contains("brewfs_meta_lookup_attr_fused_error_total 0"));
         assert!(output.contains("brewfs_writeback_dirty_bytes 4096"));
         assert!(output.contains("brewfs_writeback_live_dirty_bytes 1024"));
         assert!(output.contains("brewfs_writeback_recent_pending_upload_bytes 2048"));

@@ -75,6 +75,29 @@ async fn test_recently_unlinked_cleanup_is_not_run_on_every_threshold_insert() {
     );
 }
 
+#[tokio::test]
+async fn test_child_attr_of_returns_child_inode_and_attr() {
+    let layout = ChunkLayout::default();
+    let store = InMemoryBlockStore::new();
+    let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+    let meta_store = meta_handle.store();
+    let fs = VFS::new(layout, store, meta_store).await.unwrap();
+    let root = fs.root_ino();
+    let ino = fs
+        .create_file_at(root, "lookup_attr_vfs.txt", true)
+        .await
+        .unwrap();
+
+    let (found, attr) = fs
+        .child_attr_of(root, "lookup_attr_vfs.txt")
+        .await
+        .expect("child_attr_of should return the created child");
+
+    assert_eq!(found, ino);
+    assert_eq!(attr.ino, ino);
+    assert_eq!(attr.kind, super::FileType::File);
+}
+
 #[cfg(test)]
 mod fsstress_013_native_tests {
     use super::*;

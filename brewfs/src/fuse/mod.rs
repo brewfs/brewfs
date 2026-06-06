@@ -429,12 +429,9 @@ where
         );
 
         let name_str = name.to_string_lossy();
-        let child = self.child_of(parent as i64, name_str.as_ref()).await;
-        let Some(child_ino) = child else {
+        let Some((_child_ino, vattr)) = self.child_attr_of(parent as i64, name_str.as_ref()).await
+        else {
             info!(parent, name = %name_str, "fuse.lookup ENOENT");
-            return Err(libc::ENOENT.into());
-        };
-        let Some(vattr) = self.stat_ino(child_ino).await else {
             return Err(libc::ENOENT.into());
         };
         let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));

@@ -814,6 +814,9 @@ where
                             meta.open_fresh_stat,
                             meta.open_file_cache_hit,
                             meta.open_file_cache_miss,
+                            meta.lookup_attr_fused_hit,
+                            meta.lookup_attr_fused_miss,
+                            meta.lookup_attr_fused_error,
                         );
                     }
 
@@ -958,6 +961,23 @@ where
     /// get the node's child inode by name.
     pub(crate) async fn child_of(&self, parent: i64, name: &str) -> Option<i64> {
         self.meta_lookup(parent, name).await.ok().flatten()
+    }
+
+    /// get the node's child inode and attributes by name.
+    pub(crate) async fn child_attr_of(&self, parent: i64, name: &str) -> Option<(i64, FileAttr)> {
+        let (ino, mut attr) = self
+            .meta_lookup_with_attr(parent, name)
+            .await
+            .ok()
+            .flatten()?;
+
+        // close-to-open semantics: if there is a local state, it should be considered as the newest state.
+        if let Some(size) = self.inode_size_cached(ino) {
+            attr.size = size;
+        }
+
+        tracing::debug!(ino, nlink = attr.nlink, kind = ?attr.kind, "child_attr_of");
+        Some((ino, attr))
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]

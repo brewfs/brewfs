@@ -462,6 +462,18 @@ pub trait MetaStore: Send + Sync {
 
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError>;
 
+    async fn lookup_with_attr(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        let Some(ino) = self.lookup(parent, name).await? else {
+            return Ok(None);
+        };
+        let attr = self.stat(ino).await?.ok_or(MetaError::NotFound(ino))?;
+        Ok(Some((ino, attr)))
+    }
+
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError>;
 
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError>;

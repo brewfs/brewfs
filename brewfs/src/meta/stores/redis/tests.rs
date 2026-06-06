@@ -5,7 +5,7 @@ use crate::meta::config::{
     DatabaseType,
 };
 use crate::meta::file_lock::{FileLockQuery, FileLockRange, FileLockType};
-use crate::meta::store::{LockName, MetaError, SetAttrFlags, SetAttrRequest};
+use crate::meta::store::{FileType, LockName, MetaError, SetAttrFlags, SetAttrRequest};
 use crate::meta::stores::RedisMetaStore;
 use crate::meta::{MetaLayer, MetaStore};
 use crate::vfs::fs::VFS;
@@ -2361,6 +2361,53 @@ async fn test_meta_client_new_directory_negative_lookup_stays_local() {
         hget_calls, 0,
         "negative lookup in a freshly-created empty directory should stay local; observed {hget_calls} Redis HGET calls"
     );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_lookup_with_attr_returns_inode_attr_and_warms_node_cache() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "lookup_attr.txt".to_string())
+        .await
+        .unwrap();
+
+    store.node_cache.invalidate(&ino).await;
+    reset_redis_commandstats(&store).await;
+
+    let (found, attr) = store
+        .lookup_with_attr(root, "lookup_attr.txt")
+        .await
+        .unwrap()
+        .expect("lookup_with_attr should find created file");
+
+    assert_eq!(found, ino);
+    assert_eq!(attr.ino, ino);
+    assert_eq!(attr.kind, FileType::File);
+    assert!(
+        matches!(store.node_cache.get(&ino).await, Some(Some(_))),
+        "lookup_with_attr should warm the Redis store node cache"
+    );
+    let script_calls = redis_script_calls(&store).await;
+    assert!(
+        (1..=2).contains(&script_calls),
+        "Redis lookup_with_attr should use one business Lua script execution; observed {script_calls} script calls including possible EVALSHA warm-up"
+    );
+    assert_eq!(
+        redis_command_calls(&store, "hget").await,
+        1,
+        "Redis lookup_with_attr should perform one directory HGET inside Lua"
+    );
+    assert_eq!(
+        redis_command_calls(&store, "get").await,
+        1,
+        "Redis lookup_with_attr should perform one node GET inside Lua"
+    );
+
+    let missing = store.lookup_with_attr(root, "missing.txt").await.unwrap();
+    assert!(missing.is_none());
 }
 
 #[serial]

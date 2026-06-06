@@ -1147,6 +1147,26 @@ const RENAME_EXCHANGE_LUA: &str = r#"
     return cjson.encode({ok=true})
 "#;
 
+// Lookup a directory entry and its inode attribute in a single Redis script.
+// This mirrors JuiceFS' Redis lookup shape: dentry lookup plus inode attr fetch
+// are returned together so upper layers can avoid lookup->stat round trips.
+// KEYS[1] = directory hash key
+// ARGV[1] = child name
+// ARGV[2] = inode node key prefix
+const LOOKUP_WITH_ATTR_LUA: &str = r#"
+    local ino = redis.call('HGET', KEYS[1], ARGV[1])
+    if not ino then
+        return cjson.encode({ok=false, error="not_found"})
+    end
+
+    local node_json = redis.call('GET', ARGV[2] .. ino)
+    if not node_json then
+        return cjson.encode({ok=false, error="node_not_found", ino=tonumber(ino)})
+    end
+
+    return cjson.encode({ok=true, ino=tonumber(ino), node=node_json})
+"#;
+
 /// Wrapper for deserializing plock values stored by the Lua script.
 /// Format: `{"epoch": N, "records": [{lock_type, pid, lock_range}]}`
 /// Also handles legacy bare-array format for transparent upgrade.
@@ -1177,6 +1197,8 @@ struct LuaResponse {
     gid: Option<u32>,
     #[serde(default)]
     attr: Option<serde_json::Value>,
+    #[serde(default)]
+    node: Option<String>,
     #[serde(default)]
     replaced_ino: Option<i64>,
     #[serde(default)]
@@ -2060,6 +2082,45 @@ impl MetaStore for RedisMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
         self.directory_child(parent, name).await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn lookup_with_attr(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        let script = redis::Script::new(LOOKUP_WITH_ATTR_LUA);
+        let result: String = script
+            .key(self.dir_key(parent))
+            .arg(name)
+            .arg(NODE_KEY_PREFIX)
+            .invoke_async(&mut self.conn.clone())
+            .await
+            .map_err(redis_err)?;
+
+        let response: LuaResponse = serde_json::from_str(&result)
+            .map_err(|e| MetaError::Internal(format!("Lua response parse error: {e}")))?;
+
+        match response.error.as_deref() {
+            Some("not_found") => Ok(None),
+            Some("node_not_found") => Err(MetaError::NotFound(response.ino.unwrap_or(parent))),
+            Some(other) => Err(MetaError::Internal(format!("Lua error: {other}"))),
+            None if response.ok => {
+                let ino = response
+                    .ino
+                    .ok_or_else(|| MetaError::Internal("missing ino in lookup response".into()))?;
+                let node_json = response
+                    .node
+                    .ok_or_else(|| MetaError::Internal("missing node in lookup response".into()))?;
+                let node: StoredNode = serde_json::from_str(&node_json)
+                    .map_err(|e| MetaError::Internal(format!("stored node parse error: {e}")))?;
+                let attr = node.as_file_attr();
+                self.node_cache.insert(ino, Some(node)).await;
+                Ok(Some((ino, attr)))
+            }
+            None => Err(MetaError::Internal("unexpected Lua response".into())),
+        }
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(path))]

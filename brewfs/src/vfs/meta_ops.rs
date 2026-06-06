@@ -94,6 +94,18 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    /// Look up `name` under `parent` and return both inode and attributes.
+    pub(super) async fn meta_lookup_with_attr(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, VfsError> {
+        self.meta_layer()
+            .lookup_with_attr(parent, name)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     pub(super) async fn meta_lookup_required(
         &self,
         parent: i64,

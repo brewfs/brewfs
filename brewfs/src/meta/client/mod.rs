@@ -104,6 +104,9 @@ pub struct MetaClientMetricsSnapshot {
     pub open_fresh_stat: u64,
     pub open_file_cache_hit: u64,
     pub open_file_cache_miss: u64,
+    pub lookup_attr_fused_hit: u64,
+    pub lookup_attr_fused_miss: u64,
+    pub lookup_attr_fused_error: u64,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +121,9 @@ pub struct MetaClientMetrics {
     open_fresh_stat: AtomicU64,
     open_file_cache_hit: AtomicU64,
     open_file_cache_miss: AtomicU64,
+    lookup_attr_fused_hit: AtomicU64,
+    lookup_attr_fused_miss: AtomicU64,
+    lookup_attr_fused_error: AtomicU64,
 }
 
 impl MetaClientMetrics {
@@ -133,6 +139,9 @@ impl MetaClientMetrics {
             open_fresh_stat: self.open_fresh_stat.load(Ordering::Relaxed),
             open_file_cache_hit: self.open_file_cache_hit.load(Ordering::Relaxed),
             open_file_cache_miss: self.open_file_cache_miss.load(Ordering::Relaxed),
+            lookup_attr_fused_hit: self.lookup_attr_fused_hit.load(Ordering::Relaxed),
+            lookup_attr_fused_miss: self.lookup_attr_fused_miss.load(Ordering::Relaxed),
+            lookup_attr_fused_error: self.lookup_attr_fused_error.load(Ordering::Relaxed),
         }
     }
 
@@ -174,6 +183,18 @@ impl MetaClientMetrics {
 
     fn record_open_file_cache_miss(&self) {
         self.open_file_cache_miss.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_lookup_attr_fused_hit(&self) {
+        self.lookup_attr_fused_hit.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_lookup_attr_fused_miss(&self) {
+        self.lookup_attr_fused_miss.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_lookup_attr_fused_error(&self) {
+        self.lookup_attr_fused_error.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1102,16 +1123,95 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
 
         if let Some(ino) = result {
             if let Ok(Some(attr)) = self.store.stat(ino).await {
-                let cache_parent = matches!(attr.kind, FileType::Dir).then_some(parent);
-
-                self.inode_cache.insert_node(ino, attr, cache_parent).await;
+                self.cache_lookup_attr(parent, name, ino, attr).await;
+            } else {
+                self.inode_cache
+                    .add_child(parent, name.to_string(), ino)
+                    .await;
             }
-            self.inode_cache
-                .add_child(parent, name.to_string(), ino)
-                .await;
-            Ok(result)
+            Ok(Some(ino))
         } else if self.options.case_insensitive {
             self.resolve_case(parent, name).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn cache_lookup_attr(&self, parent: i64, name: &str, ino: i64, attr: FileAttr) {
+        let cache_parent = matches!(attr.kind, FileType::Dir).then_some(parent);
+
+        self.inode_cache.insert_node(ino, attr, cache_parent).await;
+        self.inode_cache
+            .add_child(parent, name.to_string(), ino)
+            .await;
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn cached_lookup_with_attr(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        let parent = self.check_root(parent);
+
+        if let Some(result) = self.inode_cache.lookup_if_loaded(parent, name).await {
+            match result {
+                Some(ino) => {
+                    self.metrics.record_lookup_cache_hit();
+                    if let Some(attr) = self.inode_cache.get_attr(ino).await {
+                        self.metrics.record_lookup_attr_fused_hit();
+                        return Ok(Some((ino, attr)));
+                    }
+                    self.metrics.record_lookup_attr_fused_miss();
+                    let attr = match self.store.stat(ino).await {
+                        Ok(Some(attr)) => attr,
+                        Ok(None) => return Err(MetaError::NotFound(ino)),
+                        Err(err) => {
+                            self.metrics.record_lookup_attr_fused_error();
+                            return Err(err);
+                        }
+                    };
+                    self.cache_lookup_attr(parent, name, ino, attr.clone())
+                        .await;
+                    return Ok(Some((ino, attr)));
+                }
+                None if !self.options.case_insensitive => {
+                    self.metrics.record_lookup_cache_hit();
+                    self.metrics.record_lookup_attr_fused_hit();
+                    return Ok(None);
+                }
+                None => {
+                    self.metrics.record_lookup_cache_hit();
+                }
+            }
+        }
+
+        self.metrics.record_lookup_cache_miss();
+        self.metrics.record_lookup_attr_fused_miss();
+
+        let result = match self.store.lookup_with_attr(parent, name).await {
+            Ok(result) => result,
+            Err(err) => {
+                self.metrics.record_lookup_attr_fused_error();
+                return Err(err);
+            }
+        };
+
+        if let Some((ino, attr)) = result {
+            self.cache_lookup_attr(parent, name, ino, attr.clone())
+                .await;
+            Ok(Some((ino, attr)))
+        } else if self.options.case_insensitive {
+            let Some(ino) = self.resolve_case(parent, name).await? else {
+                return Ok(None);
+            };
+            let attr = self
+                .cached_stat(ino)
+                .await?
+                .ok_or(MetaError::NotFound(ino))?;
+            self.cache_lookup_attr(parent, name, ino, attr.clone())
+                .await;
+            Ok(Some((ino, attr)))
         } else {
             Ok(None)
         }
@@ -1423,6 +1523,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
         self.cached_lookup(parent, name).await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn lookup_with_attr(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        self.cached_lookup_with_attr(parent, name).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
@@ -2566,6 +2675,66 @@ mod tests {
         assert!(metrics.lookup_cache_miss >= 1);
         assert!(metrics.lookup_cache_hit >= 1);
         assert!(metrics.stat_cache_hit >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_meta_client_lookup_with_attr_populates_stat_cache_and_metrics() {
+        let client = create_test_client().await;
+        let ino = client
+            .create_file(1, "lookup-with-attr.txt".to_string())
+            .await
+            .unwrap();
+
+        client.inode_cache.invalidate_inode(1).await;
+        client.inode_cache.invalidate_inode(ino).await;
+
+        let before = client.metrics().snapshot();
+        let (found, attr) = client
+            .lookup_with_attr(1, "lookup-with-attr.txt")
+            .await
+            .unwrap()
+            .expect("lookup_with_attr should find created file");
+        assert_eq!(found, ino);
+        assert_eq!(attr.ino, ino);
+
+        let after_lookup = client.metrics().snapshot();
+        assert_eq!(
+            after_lookup.lookup_attr_fused_miss,
+            before.lookup_attr_fused_miss + 1
+        );
+        assert_eq!(after_lookup.stat_cache_miss, before.stat_cache_miss);
+
+        assert!(client.stat(ino).await.unwrap().is_some());
+        let after_stat = client.metrics().snapshot();
+        assert_eq!(
+            after_stat.stat_cache_miss, after_lookup.stat_cache_miss,
+            "lookup_with_attr should populate inode stat cache for later stat calls"
+        );
+        assert!(after_stat.stat_cache_hit > after_lookup.stat_cache_hit);
+    }
+
+    #[tokio::test]
+    async fn test_meta_client_lookup_only_does_not_count_lookup_attr_fused_path() {
+        let client = create_test_client().await;
+        let ino = client
+            .create_file(1, "lookup-only.txt".to_string())
+            .await
+            .unwrap();
+
+        client.inode_cache.invalidate_inode(1).await;
+        client.inode_cache.invalidate_inode(ino).await;
+
+        let before = client.metrics().snapshot();
+        assert_eq!(
+            client.lookup(1, "lookup-only.txt").await.unwrap(),
+            Some(ino)
+        );
+        let after = client.metrics().snapshot();
+
+        assert_eq!(
+            after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
+            "lookup-only callers should stay on the lighter inode-only path"
+        );
     }
 
     #[tokio::test]
