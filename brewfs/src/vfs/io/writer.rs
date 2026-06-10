@@ -68,6 +68,8 @@ const AUTO_FLUSH_MAX_AGE: Duration = Duration::from_millis(500);
 const MAX_UNFLUSHED_SLICES: usize = 3;
 const MAX_SLICES_THRESHOLD: usize = 800;
 const WRITE_MAX_WAIT: Duration = Duration::from_secs(30);
+const WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP: Duration = Duration::from_millis(1);
+const WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP: Duration = Duration::from_millis(6);
 /// Minimum number of bytes a Writable slice must hold before `should_freeze`
 /// returns true on a size basis.  32 MiB gives 8 blocks per upload batch,
 /// maximizing pipeline parallelism while keeping flush latency reasonable.
@@ -77,7 +79,7 @@ const SHOULD_FREEZE_MIN_BYTES: u64 = 8 * 1024 * 1024;
 
 enum WritebackBackpressureDecision {
     Allow,
-    SoftYield,
+    SoftSleep(Duration),
     Wait,
 }
 
@@ -97,7 +99,16 @@ fn decide_writeback_backpressure(
     }
 
     if hard_limit > soft_limit && projected <= hard_limit {
-        return WritebackBackpressureDecision::SoftYield;
+        let over_soft = projected.saturating_sub(soft_limit);
+        let soft_range = hard_limit - soft_limit;
+        let sleep_span_ms = (WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP
+            - WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP)
+            .as_millis() as u64;
+        let extra_ms =
+            ((over_soft as u128) * (sleep_span_ms as u128) / (soft_range as u128)) as u64;
+        return WritebackBackpressureDecision::SoftSleep(
+            WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP + Duration::from_millis(extra_ms),
+        );
     }
 
     WritebackBackpressureDecision::Wait
@@ -1271,8 +1282,8 @@ where
                 .load(Ordering::Acquire);
             match decide_writeback_backpressure(pending, incoming, soft, hard) {
                 WritebackBackpressureDecision::Allow => return Ok(()),
-                WritebackBackpressureDecision::SoftYield => {
-                    tokio::task::yield_now().await;
+                WritebackBackpressureDecision::SoftSleep(duration) => {
+                    tokio::time::sleep(duration).await;
                     return Ok(());
                 }
                 WritebackBackpressureDecision::Wait => {
@@ -3066,7 +3077,7 @@ mod tests {
     }
 
     #[test]
-    fn test_writeback_backpressure_decision_uses_soft_yield_before_hard_wait() {
+    fn test_writeback_backpressure_decision_uses_soft_sleep_before_hard_wait() {
         let soft = 12 * 1024;
         let hard = 16 * 1024;
 
@@ -3074,14 +3085,30 @@ mod tests {
             decide_writeback_backpressure(soft - 512, 256, soft, hard),
             WritebackBackpressureDecision::Allow
         ));
-        assert!(matches!(
-            decide_writeback_backpressure(soft, 512, soft, hard),
-            WritebackBackpressureDecision::SoftYield
-        ));
+        match decide_writeback_backpressure(soft, 512, soft, hard) {
+            WritebackBackpressureDecision::SoftSleep(duration) => {
+                assert!(duration >= WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP);
+                assert!(duration <= WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP);
+            }
+            _ => panic!("expected soft sleep before hard wait"),
+        }
         assert!(matches!(
             decide_writeback_backpressure(hard, 512, soft, hard),
             WritebackBackpressureDecision::Wait
         ));
+    }
+
+    #[test]
+    fn test_writeback_backpressure_soft_sleep_reaches_max_for_large_ranges() {
+        let soft = 1;
+        let hard = u64::MAX;
+
+        match decide_writeback_backpressure(hard - 1, 1, soft, hard) {
+            WritebackBackpressureDecision::SoftSleep(duration) => {
+                assert_eq!(duration, WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP);
+            }
+            _ => panic!("expected max soft sleep at the hard boundary"),
+        }
     }
 
     fn blocks_len(data: &[(usize, Vec<Bytes>)]) -> usize {

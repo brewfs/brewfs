@@ -30,7 +30,7 @@ usage() {
   --local-fs                 改为使用本地目录作为对象存储
   --s3-writeback             启用 S3 commit-before-upload 写回语义（等价于 BREWFS_WRITEBACK_MODE=commit_before_upload）
   --writeback-throughput-profile
-                             启用 S3 writeback 全场景吞吐 profile（4GiB read/write buffer, 12GiB memory budget, S3/upload concurrency=16, pending soft/hard=4GiB/6GiB, writeback persist fsync=false）
+                             启用 S3 writeback 全场景吞吐 profile（4GiB read/write buffer, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=4, pending soft/hard=1GiB/2GiB, writeback persist fsync=false, compression=lz4, fuse workers=6）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --brewfs-bench           额外运行一次宿主机 cargo bench --bench brewfs_bench
   --bench-args "<args...>"   透传给 cargo bench 之后的 Criterion 参数
@@ -49,7 +49,7 @@ usage() {
   BREWFS_READ_MEMORY_BYTES BREWFS_READ_SSD_BYTES BREWFS_WRITE_MEMORY_BYTES BREWFS_WRITE_SSD_BYTES
   BREWFS_DIRTY_SLICE_TARGET_SIZE BREWFS_DIRTY_SLICE_MAX_AGE_MS
   BREWFS_PREFETCH_ENABLED BREWFS_PREFETCH_MAX_BYTES BREWFS_PREFETCH_CONCURRENCY BREWFS_MEMORY_BUDGET_BYTES
-  BREWFS_FUSE_READ_DIRECT_IO
+  BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_READ_DIRECT_IO
   BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
   BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
   BREWFS_WRITEBACK_PERSIST_SYNC
@@ -142,10 +142,12 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-4294967296}"
     export BREWFS_MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-12884901888}"
     export BREWFS_S3_MAX_CONCURRENCY="${BREWFS_S3_MAX_CONCURRENCY:-16}"
-    export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-16}"
-    export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-4294967296}"
-    export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-6442450944}"
+    export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-4}"
+    export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-1073741824}"
+    export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-2147483648}"
     export BREWFS_WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
+    export BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-lz4}"
+    export BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-6}"
     export BREWFS_METADATA_OPEN_CACHE_TTL_MS="${BREWFS_METADATA_OPEN_CACHE_TTL_MS:-1000}"
     export BREWFS_METADATA_OPEN_CACHE_CAPACITY="${BREWFS_METADATA_OPEN_CACHE_CAPACITY:-65536}"
 fi
