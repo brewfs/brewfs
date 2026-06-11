@@ -211,3 +211,39 @@ Result:
 Decision: reverted.
 
 Reason: the candidate correctly reduced pending-upload overshoot and hard waits, but did so by turning soft backpressure into millions of foreground sleeps. That improved post-write drain and total wall time for several write workloads, but violated the acceptance gate by regressing `fio-randrw` active read/write throughput by more than 5% and causing severe `direct=0` write tail regressions. A follow-up candidate must cap or budget soft rechecks instead of looping until pending bytes drain.
+
+### Attempt 2: Writer Single Soft Recheck
+
+Candidate: cap the soft backpressure recheck loop to one sleep/recheck before allowing soft-band writes.
+Branch: `codex/perf-tune-writer`
+Commits: `b27460084d555a3a6376af93eb388fecda60d56d`, `5d60341`
+Integration commits: `d6b4596`, `9deb4d4`
+Revert commits: `ddd0806`, `1eac5b6`
+Touched files: `brewfs/src/vfs/io/writer.rs`
+Targeted tests: `CARGO_TARGET_DIR=/mnt/slayerfs/brewfs/target cargo test -p brewfs vfs::io::writer --lib` passed, 25 tests.
+Perf artifact baseline: `brewfs/docker/compose-xfstests/artifacts/perf-run-1781173824-24909`
+Perf artifact candidate: `brewfs/docker/compose-xfstests/artifacts/perf-run-1781176203-28231`
+
+Result:
+
+| Tool | Metric | Baseline | Candidate | Delta |
+| --- | --- | ---: | ---: | ---: |
+| `fio-randrw-direct0` | total seconds | 61 | 58 | -4.9% |
+| `fio-randrw-direct0` | read BW MiB/s | 307.72 | 305.09 | -0.9% |
+| `fio-randrw-direct0` | write BW MiB/s | 139.95 | 139.49 | -0.3% |
+| `fio-randrw-direct0` | write p99 ms | 11.47 | 383.78 | +3246.3% |
+| `fio-randrw-direct0` | write p99.9 ms | 40.11 | 583.01 | +1353.6% |
+| `fio-randrw-direct1` | total seconds | 70 | 64 | -8.6% |
+| `fio-randrw-direct1` | read BW MiB/s | 235.44 | 270.24 | +14.8% |
+| `fio-randrw-direct1` | write BW MiB/s | 108.60 | 127.12 | +17.1% |
+| `fio-randrw-direct1` | write p99 ms | 193.99 | 28.18 | -85.5% |
+| `fio-randwrite-direct0` | total seconds | 71 | 73 | +2.8% |
+| `fio-randwrite-direct0` | write p99 ms | 50.07 | 110.63 | +120.9% |
+| `fio-randwrite-direct1` | total seconds | 83 | 79 | -4.8% |
+| `fio-seqwrite-direct0` | total seconds | 69 | 66 | -4.3% |
+| `fio-seqwrite-direct0` | write BW MiB/s | 164.67 | 151.41 | -8.1% |
+| `fio-seqwrite-direct1` | total seconds | 41 | 42 | +2.4% |
+
+Decision: reverted.
+
+Reason: the cap avoids the Attempt 1 soft-sleep explosion and improves `fio-randrw-direct1`, but the change is still not safe as a default. `fio-randrw-direct0` write p99/p99.9 regressed far beyond the 25% tail gate, `fio-randwrite-direct0` p99 doubled, and `fio-seqwrite-direct0` throughput regressed by 8.1%. This suggests admission-only tweaks are trading where latency appears instead of removing the underlying upload/drain bottleneck. Next write-path work should target upload queueing, object count, or slice aggregation rather than more soft admission tuning.
