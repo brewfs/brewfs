@@ -768,7 +768,9 @@ mod tests {
     async fn unsupported_feature_routes_return_stable_json_errors() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
-        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let mut config = test_config(dir.path(), AuthConfig::Disabled);
+        config.csi_dashboard = true;
+        let app = build_router(config);
 
         let requests = [Request::builder()
             .uri("/api/csi/summary")
@@ -786,6 +788,28 @@ mod tests {
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(value["error"]["code"], "unsupported");
         }
+    }
+
+    #[tokio::test]
+    async fn csi_summary_returns_unavailable_when_dashboard_is_disabled() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/csi/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "unavailable");
     }
 
     #[tokio::test]

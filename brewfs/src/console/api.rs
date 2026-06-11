@@ -543,7 +543,7 @@ pub async fn csi_summary(
     if state.csi_dashboard {
         Err(unsupported("CSI dashboard adapter is not implemented yet"))
     } else {
-        Err(unsupported("CSI dashboard is disabled"))
+        Err(unavailable("CSI dashboard is disabled"))
     }
 }
 
