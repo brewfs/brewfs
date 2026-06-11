@@ -5,7 +5,8 @@ pub mod session;
 use crate::chunk::SliceDesc;
 use crate::control::job::{GcJobResult, JobManager};
 use crate::control::protocol::{
-    ControlDirectoryEntry, ControlFileKind, ControlPathMetadata, ControlRequest, ControlResponse,
+    ControlAclEntry, ControlDirectoryEntry, ControlFileKind, ControlPathMetadata, ControlRequest,
+    ControlResponse,
 };
 use crate::control::runtime::{InstanceRecord, RuntimeRegistry};
 use crate::control::server::{ControlHandler, ControlServer};
@@ -38,6 +39,8 @@ use crate::vfs::extract_ino_and_chunk_index;
 use cache::{InodeCache, OpenFileCache};
 use chrono::Utc;
 use hostname::get as get_hostname;
+
+const CONTROL_ACL_XATTR_NAME: &str = "system.brewfs.acl";
 use path_trie::PathTrie;
 use session::{SessionInfo, SessionManager};
 
@@ -544,17 +547,77 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
     }
 
-    async fn acl_for_control(&self, path: &str) -> ControlResponse {
+    async fn resolve_acl_control_path(&self, path: &str) -> Result<(String, i64), MetaError> {
         let path = match Self::normalize_control_path(path) {
             Ok(path) => path,
-            Err(err) => return control_meta_error(err),
+            Err(err) => return Err(err),
         };
         match self.lookup_path_with_attr(&path).await {
-            Ok(Some(_)) => ControlResponse::Error {
-                code: "unsupported".to_string(),
-                message: "ACL control-plane requests are not implemented yet".to_string(),
+            Ok(Some((ino, _))) => Ok((path, ino)),
+            Ok(None) => Err(MetaError::NotFound(self.root())),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn get_acl_for_control(&self, path: &str) -> ControlResponse {
+        let (path, ino) = match self.resolve_acl_control_path(path).await {
+            Ok(result) => result,
+            Err(err) => return control_meta_error(err),
+        };
+
+        match self.store.get_xattr(ino, CONTROL_ACL_XATTR_NAME).await {
+            Ok(Some(raw)) => match serde_json::from_slice::<Vec<ControlAclEntry>>(&raw) {
+                Ok(entries) => ControlResponse::Acl { path, entries },
+                Err(err) => control_meta_error(MetaError::Internal(format!(
+                    "invalid ACL metadata for {path}: {err}"
+                ))),
             },
-            Ok(None) => control_meta_error(MetaError::NotFound(self.root())),
+            Ok(None) => ControlResponse::Acl {
+                path,
+                entries: Vec::new(),
+            },
+            Err(err) => control_meta_error(err),
+        }
+    }
+
+    async fn put_acl_for_control(
+        &self,
+        path: &str,
+        entries: Vec<ControlAclEntry>,
+    ) -> ControlResponse {
+        if let Err(err) = self.ensure_writable() {
+            return control_meta_error(err);
+        }
+        let (path, ino) = match self.resolve_acl_control_path(path).await {
+            Ok(result) => result,
+            Err(err) => return control_meta_error(err),
+        };
+        let raw = match serde_json::to_vec(&entries) {
+            Ok(raw) => raw,
+            Err(err) => return control_meta_error(MetaError::Internal(err.to_string())),
+        };
+
+        match self
+            .store
+            .set_xattr(ino, CONTROL_ACL_XATTR_NAME, &raw, 0)
+            .await
+        {
+            Ok(()) => ControlResponse::Acl { path, entries },
+            Err(err) => control_meta_error(err),
+        }
+    }
+
+    async fn delete_acl_for_control(&self, path: &str) -> ControlResponse {
+        if let Err(err) = self.ensure_writable() {
+            return control_meta_error(err);
+        }
+        let (path, ino) = match self.resolve_acl_control_path(path).await {
+            Ok(result) => result,
+            Err(err) => return control_meta_error(err),
+        };
+
+        match self.store.remove_xattr(ino, CONTROL_ACL_XATTR_NAME).await {
+            Ok(()) | Err(MetaError::NotFound(_)) => ControlResponse::AclDeleted { path },
             Err(err) => control_meta_error(err),
         }
     }
@@ -1524,9 +1587,11 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
             ControlRequest::ListDirectory { path } => self.list_directory_for_control(&path).await,
             ControlRequest::StatPath { path } => self.stat_path_for_control(&path).await,
             ControlRequest::ReadLink { path } => self.readlink_for_control(&path).await,
-            ControlRequest::GetAcl { path }
-            | ControlRequest::PutAcl { path, .. }
-            | ControlRequest::DeleteAcl { path } => self.acl_for_control(&path).await,
+            ControlRequest::GetAcl { path } => self.get_acl_for_control(&path).await,
+            ControlRequest::PutAcl { path, entries } => {
+                self.put_acl_for_control(&path, entries).await
+            }
+            ControlRequest::DeleteAcl { path } => self.delete_acl_for_control(&path).await,
             ControlRequest::ListTrash
             | ControlRequest::RestoreTrashEntry { .. }
             | ControlRequest::DeleteTrashEntry { .. } => ControlResponse::Error {
@@ -3208,7 +3273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_control_plane_acl_requests_resolve_paths_before_reporting_unsupported() {
+    async fn test_control_plane_acl_requests_persist_entries() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
             mount_point: Some("/mnt/acl".to_string()),
@@ -3234,30 +3299,135 @@ mod tests {
         .unwrap();
         assert_control_error_code(missing, "not_found");
 
-        for request in [
-            crate::control::protocol::ControlRequest::GetAcl {
+        let initial = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::GetAcl {
                 path: "/docs".to_string(),
             },
-            crate::control::protocol::ControlRequest::PutAcl {
-                path: "/docs".to_string(),
-                entries: vec![crate::control::protocol::ControlAclEntry {
-                    scope: "access".to_string(),
-                    tag: "user_obj".to_string(),
-                    id: None,
-                    perm: "rwx".to_string(),
-                }],
+        )
+        .await
+        .unwrap();
+        match initial {
+            crate::control::protocol::ControlResponse::Acl { path, entries } => {
+                assert_eq!(path, "/docs");
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected initial ACL response: {other:?}"),
+        }
+
+        let entries = vec![
+            crate::control::protocol::ControlAclEntry {
+                scope: "access".to_string(),
+                tag: "user_obj".to_string(),
+                id: None,
+                perm: "rwx".to_string(),
             },
-            crate::control::protocol::ControlRequest::DeleteAcl {
+            crate::control::protocol::ControlAclEntry {
+                scope: "default".to_string(),
+                tag: "group".to_string(),
+                id: Some(1000),
+                perm: "r-x".to_string(),
+            },
+        ];
+
+        let put = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::PutAcl {
+                path: "/docs".to_string(),
+                entries: entries.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        match put {
+            crate::control::protocol::ControlResponse::Acl {
+                path,
+                entries: put_entries,
+            } => {
+                assert_eq!(path, "/docs");
+                assert_eq!(put_entries, entries);
+            }
+            other => panic!("unexpected put ACL response: {other:?}"),
+        }
+
+        let get = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::GetAcl {
                 path: "/docs".to_string(),
             },
-        ] {
-            let response = crate::control::client::send_request(&record.socket_path, &request)
-                .await
-                .unwrap();
-            assert_control_error_code(response, "unsupported");
+        )
+        .await
+        .unwrap();
+        match get {
+            crate::control::protocol::ControlResponse::Acl {
+                path,
+                entries: get_entries,
+            } => {
+                assert_eq!(path, "/docs");
+                assert_eq!(get_entries, entries);
+            }
+            other => panic!("unexpected get ACL response: {other:?}"),
+        }
+
+        let deleted = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::DeleteAcl {
+                path: "/docs".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        match deleted {
+            crate::control::protocol::ControlResponse::AclDeleted { path } => {
+                assert_eq!(path, "/docs");
+            }
+            other => panic!("unexpected delete ACL response: {other:?}"),
+        }
+
+        let after_delete = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::GetAcl {
+                path: "/docs".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        match after_delete {
+            crate::control::protocol::ControlResponse::Acl { path, entries } => {
+                assert_eq!(path, "/docs");
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected ACL response after delete: {other:?}"),
         }
 
         client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_database_acl_capability_matches_rule_storage() {
+        let client = create_test_client().await;
+        let capabilities = client.store.capabilities();
+        assert!(capabilities.xattr);
+        assert!(capabilities.acl);
+
+        let rule = AclRule {
+            acl_type: 1,
+            qualifier: 1000,
+            permissions: 0o7,
+        };
+        client.set_acl(1, rule.clone()).await.unwrap();
+
+        let stored = client.get_acl(1, 1, 1000).await.unwrap().unwrap();
+        assert_eq!(stored, rule);
+
+        let replacement = AclRule {
+            permissions: 0o5,
+            ..rule
+        };
+        client.set_acl(1, replacement.clone()).await.unwrap();
+        let stored = client.get_acl(1, 1, 1000).await.unwrap().unwrap();
+        assert_eq!(stored, replacement);
+        assert!(client.get_acl(1, 1, 2000).await.unwrap().is_none());
     }
 
     fn assert_control_error_code(

@@ -16,8 +16,8 @@ use crate::meta::file_lock::{
     FileLockInfo, FileLockQuery, FileLockRange, FileLockType, PlockRecord,
 };
 use crate::meta::store::{
-    CHUNK_LOCK_CHECK_TTL_SECS, DirEntry, FileAttr, LockName, MetaError, MetaStore, OpenFlags,
-    RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
+    AclRule, CHUNK_LOCK_CHECK_TTL_SECS, DirEntry, FileAttr, LockName, MetaError, MetaStore,
+    OpenFlags, RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::meta::{INODE_ID_KEY, Permission, SLICE_ID_KEY};
 
@@ -43,6 +43,8 @@ use std::time::Duration;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, warn};
+
+const DATABASE_ACL_RULES_XATTR_NAME: &str = "system.brewfs.acl.rules";
 
 #[derive(Eq, Hash, PartialEq)]
 struct PlockHashMapKey {
@@ -1186,7 +1188,7 @@ impl MetaStore for DatabaseMetaStore {
             plocks: true,
             flocks: false,
             xattr: true,
-            acl: false,
+            acl: true,
             quota: false,
             dump_load: false,
             compaction: true,
@@ -3137,6 +3139,38 @@ impl MetaStore for DatabaseMetaStore {
         }
         Ok(())
     }
+
+    async fn set_acl(&self, inode: i64, rule: AclRule) -> Result<(), MetaError> {
+        let mut rules = match self.get_xattr(inode, DATABASE_ACL_RULES_XATTR_NAME).await? {
+            Some(raw) => serde_json::from_slice::<Vec<AclRule>>(&raw)
+                .map_err(|err| MetaError::Internal(format!("invalid ACL metadata: {err}")))?,
+            None => Vec::new(),
+        };
+        rules.retain(|existing| {
+            existing.acl_type != rule.acl_type || existing.qualifier != rule.qualifier
+        });
+        rules.push(rule);
+        let raw = serde_json::to_vec(&rules).map_err(|err| MetaError::Internal(err.to_string()))?;
+        self.set_xattr(inode, DATABASE_ACL_RULES_XATTR_NAME, &raw, 0)
+            .await
+    }
+
+    async fn get_acl(
+        &self,
+        inode: i64,
+        acl_type: u8,
+        acl_id: u32,
+    ) -> Result<Option<AclRule>, MetaError> {
+        let Some(raw) = self.get_xattr(inode, DATABASE_ACL_RULES_XATTR_NAME).await? else {
+            return Ok(None);
+        };
+        let rules = serde_json::from_slice::<Vec<AclRule>>(&raw)
+            .map_err(|err| MetaError::Internal(format!("invalid ACL metadata: {err}")))?;
+        Ok(rules
+            .into_iter()
+            .find(|rule| rule.acl_type == acl_type && rule.qualifier == acl_id))
+    }
+
     // GC Phase 1: find aged delayed slices, delete their slice_meta records, and mark them for block deletion.
     async fn process_delayed_slices(
         &self,

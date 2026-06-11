@@ -223,8 +223,8 @@ pub struct VolumeStat {
     pub inode_count: i64,
 }
 
-/// ACL rule placeholder (to be fleshed out once ACL storage lands)
-#[derive(Debug, Clone, Default)]
+/// ACL rule stored by metadata backends that expose ACL capability.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct AclRule {
     pub acl_type: u8,
