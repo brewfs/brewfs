@@ -896,3 +896,93 @@ Candidate I: current-branch direct1 rebaseline and backpressure attribution.
   If direct1 returns near Candidate D, resume cached-origin idle cleanup with a
   bounded full-block-first scanner that avoids increasing hard_wait.
 ```
+
+## Candidate I Result: Same-Time Direct1 Control
+
+Goal:
+
+- Determine whether the current direct1 throughput drop is caused by Candidate
+  G/H code, or by the test environment/object-store latency changing between
+  runs.
+- Compare current branch against exact Candidate D code in the same time window.
+
+Method:
+
+- Reverted Candidate H behavior first; current branch kept only accepted code
+  plus Candidate G observability.
+- Created a detached worktree at exact Candidate D commit `d1cfa1a`.
+- Ran both with identical command shape:
+
+```bash
+PERF_TOOLS="fio-randrw" \
+PERF_FIO_DIRECT_MATRIX="1" \
+PERF_FIO_POST_WRITE_DRAIN=true \
+PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS=900 \
+bash brewfs/docker/compose-xfstests/run_redis_perf.sh \
+  --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-randrw"
+```
+
+Current-branch rebaseline artifact:
+
+```text
+brewfs/docker/compose-xfstests/artifacts/perf-run-1781214273-18491
+```
+
+Same-time Candidate D control artifact:
+
+```text
+perf-run-1781214825-17826
+```
+
+Same-time D control versus old Candidate D artifact
+(`perf-run-1781205600-16115`):
+
+```text
+read_bw_mib_s=183.2 vs 232.7 (-21.3%)
+write_bw_mib_s=83.3 vs 106.2 (-21.6%)
+active_io_runtime_s=63.8 vs 60.1
+post_write_drain_s=20 vs 22
+post-drained put_ops_per_gib_written=257.9 vs 259.0 (-0.4%)
+avg_upload_batch_mib=4.080 vs 4.046 (+0.9%)
+partial_tail_ratio=0.027 vs 0.030
+s3_put_avg_ms=239.3 vs 193.0 (+24.0%)
+writeback_hard_wait_ms=223.4k vs 193.2k (+15.6%)
+```
+
+Current branch versus same-time D control:
+
+```text
+read_bw_mib_s=182.5 vs 183.2 (-0.4%)
+write_bw_mib_s=83.1 vs 83.3 (-0.2%)
+active_io_runtime_s=63.1 vs 63.8
+post_write_drain_s=21 vs 20
+post-drained put_ops_per_gib_written=258.2 vs 257.9 (+0.1%)
+avg_upload_batch_mib=4.107 vs 4.080 (+0.7%)
+partial_tail_ratio=0.030 vs 0.027
+s3_put_avg_ms=235.8 vs 239.3 (-1.5%)
+writeback_hard_wait_ms=220.2k vs 223.4k (-1.4%)
+```
+
+Decision:
+
+- Candidate G/H are not the source of the apparent direct1 throughput drop.
+- The old Candidate D artifact is no longer a valid direct1 throughput baseline
+  for current comparisons because exact D code now reproduces the same lower
+  throughput in the same environment.
+- Use same-time controls for future behavior candidates. Direct1 guard should
+  compare candidate code against a nearby D/current control, not against the old
+  high-throughput artifact alone.
+
+Next target:
+
+```text
+Candidate J: bounded cached-origin full-block-first idle cleanup.
+  Keep direct1 normal-origin behavior unchanged.
+  Use current/same-time D direct1 as the guard baseline.
+  Optimize direct0 by reducing cached-origin auto_idle tiny-tail uploads, but
+  bound dirty backlog so hard_wait does not grow more than 5% versus current.
+  Accept only if direct0 post-drained PUT/GiB improves and same-time direct1
+  read/write stays within 5%.
+```
