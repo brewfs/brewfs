@@ -70,7 +70,6 @@ const MAX_SLICES_THRESHOLD: usize = 800;
 const WRITE_MAX_WAIT: Duration = Duration::from_secs(30);
 const WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP: Duration = Duration::from_millis(1);
 const WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP: Duration = Duration::from_millis(6);
-const WRITEBACK_SOFT_BACKPRESSURE_MAX_RECHECKS: u8 = 1;
 /// Minimum number of bytes a Writable slice must hold before `should_freeze`
 /// returns true on a size basis.  32 MiB gives 8 blocks per upload batch,
 /// maximizing pipeline parallelism while keeping flush latency reasonable.
@@ -1302,7 +1301,6 @@ where
         }
 
         let incoming = incoming_len as u64;
-        let mut soft_rechecks = 0;
         loop {
             self.shared.writeback_result()?;
             let pending = self
@@ -1314,10 +1312,6 @@ where
             match decision {
                 WritebackBackpressureDecision::Allow => return Ok(()),
                 WritebackBackpressureDecision::SoftSleep(duration) => {
-                    if soft_rechecks >= WRITEBACK_SOFT_BACKPRESSURE_MAX_RECHECKS {
-                        return Ok(());
-                    }
-                    soft_rechecks += 1;
                     let start = Instant::now();
                     tokio::time::sleep(duration).await;
                     self.shared
@@ -3177,7 +3171,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_writeback_backpressure_rechecks_soft_backlog_once_then_allows() {
+    async fn test_writeback_backpressure_rechecks_pending_after_soft_sleep() {
         let layout = ChunkLayout {
             chunk_size: 8 * 1024,
             block_size: 4 * 1024,
@@ -3217,34 +3211,39 @@ mod tests {
             .bytes
             .store(layout.block_size as u64, Ordering::Release);
 
-        let admission = tokio::spawn({
+        let blocked = tokio::spawn({
             let writer = writer.clone();
             async move { writer.wait_for_writeback_backpressure(512).await }
         });
 
-        timeout(Duration::from_millis(100), admission)
+        tokio::task::yield_now().await;
+        sleep(WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP * 3).await;
+        assert!(
+            !blocked.is_finished(),
+            "soft backpressure should recheck pending bytes instead of admitting while backlog remains over soft limit"
+        );
+
+        writer
+            .shared
+            .recent_pending_upload
+            .bytes
+            .store(0, Ordering::Release);
+        writer.shared.recent_pending_upload.notify.notify_waiters();
+
+        timeout(Duration::from_secs(1), blocked)
             .await
-            .expect("soft backlog should not loop indefinitely when it remains below hard limit")
+            .expect("writeback admission should finish after pending bytes drain")
             .unwrap()
             .unwrap();
 
-        assert_eq!(
+        assert!(
             writer
                 .shared
                 .recent_pending_upload
                 .soft_sleep_ops
-                .load(Ordering::Relaxed),
-            1,
-            "admission should spend at most one soft sleep before allowing soft-band writes"
-        );
-        assert_eq!(
-            writer
-                .shared
-                .recent_pending_upload
-                .hard_wait_ops
-                .load(Ordering::Relaxed),
-            0,
-            "soft-band writes should not turn into hard waits unless projected bytes reach the hard limit"
+                .load(Ordering::Relaxed)
+                >= 2,
+            "admission should perform at least one recheck after the first soft sleep"
         );
     }
 
