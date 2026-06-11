@@ -774,8 +774,11 @@ where
                     let dirty = writer.dirty_breakdown().await;
                     fuse_stats.sync_writeback_dirty_breakdown(
                         dirty.live_bytes,
+                        dirty.live_slices,
                         dirty.recently_committed_pending_upload_bytes,
+                        dirty.recently_committed_pending_upload_slices,
                         dirty.recently_committed_uploaded_bytes,
+                        dirty.recently_committed_uploaded_slices,
                     );
                     fuse_stats.sync_writeback_backpressure_metrics(
                         dirty.backpressure_soft_sleep_ops,
@@ -791,6 +794,30 @@ where
                         dirty.stage_us,
                         dirty.stage_failures,
                         dirty.commit_before_stage_ops,
+                    );
+                    fuse_stats.sync_writeback_slice_selection_metrics(
+                        dirty.slice_create_ops,
+                        dirty.slice_reuse_ops,
+                        dirty.slice_reject_older_unique_ops,
+                        dirty.slice_reject_dispatched_prefix_ops,
+                    );
+                    fuse_stats.sync_writeback_freeze_metrics(
+                        dirty.freeze_size_ops,
+                        dirty.freeze_size_bytes,
+                        dirty.freeze_max_unflushed_ops,
+                        dirty.freeze_max_unflushed_bytes,
+                        dirty.freeze_explicit_flush_ops,
+                        dirty.freeze_explicit_flush_bytes,
+                        dirty.freeze_auto_ops,
+                        dirty.freeze_auto_bytes,
+                        dirty.freeze_commit_age_ops,
+                        dirty.freeze_commit_age_bytes,
+                    );
+                    fuse_stats.sync_writeback_upload_batch_metrics(
+                        dirty.upload_batch_ops,
+                        dirty.upload_batch_bytes,
+                        dirty.upload_batch_blocks,
+                        dirty.upload_partial_tail_ops,
                     );
                     if let Some(object_metrics) = &object_metrics {
                         let object = object_metrics.snapshot();

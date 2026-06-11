@@ -203,6 +203,15 @@ pub(crate) enum SliceStatus {
     Committed,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SliceFreezeReason {
+    SizeOrChunkEnd,
+    MaxUnflushed,
+    ExplicitFlush,
+    Auto,
+    CommitAgeSafety,
+}
+
 pub(crate) struct SliceState {
     state: SliceStatus,
     /// ID of the chunk it belongs to.
@@ -443,6 +452,24 @@ where
         self.with_ref(|s| s.can_write(offset, len))
     }
 
+    fn rejects_dispatched_prefix(&self, offset: u64, len: usize) -> bool {
+        self.with_ref(|s| {
+            if !matches!(s.state, SliceStatus::Writable) || offset < s.offset {
+                return false;
+            }
+            let write_end = offset.saturating_add(len as u64);
+            let slice_end = s.offset.saturating_add(s.data.len());
+            if offset >= slice_end || s.offset >= write_end {
+                return false;
+            }
+
+            let block_size = s.data.block_size();
+            let pending_start = s.dispatched_end as u64 * block_size as u64;
+            let prefix_end = pending_start.max(s.uploaded);
+            offset - s.offset < prefix_end
+        })
+    }
+
     fn try_write(&self, offset: u64, buf: &[u8]) -> anyhow::Result<bool> {
         let wrote = self.with_mut(|s| match s.can_write(offset, buf.len()) {
             Some(action) => {
@@ -456,8 +483,9 @@ where
         Ok(wrote)
     }
 
-    fn freeze(&self) -> bool {
+    fn freeze_with_reason(&self, reason: SliceFreezeReason) -> bool {
         let mut empty_committed = false;
+        let mut frozen_bytes = 0u64;
         let froze = self.with_mut(|s| {
             if !matches!(s.state, SliceStatus::Writable) {
                 return false;
@@ -471,6 +499,7 @@ where
                 return false;
             }
 
+            frozen_bytes = s.data.len();
             s.state = SliceStatus::Readonly;
             s.frozen_epoch = self.shared.inode.data_epoch();
             s.data.freeze();
@@ -485,6 +514,11 @@ where
 
         if empty_committed {
             self.shared.flush_notify.notify_waiters();
+        }
+        if froze {
+            self.shared
+                .recent_pending_upload
+                .record_freeze(reason, frozen_bytes);
         }
 
         froze
@@ -631,6 +665,11 @@ where
             s.data.freeze_blocks(start, end);
 
             let data = s.data.collect_pages(start, end)?;
+            let data_len = data
+                .iter()
+                .flat_map(|(_, chunks)| chunks.iter())
+                .map(|chunk| chunk.len() as u64)
+                .sum();
             // Pipeline: track dispatched frontier and in-flight count instead
             // of a single exclusive `uploading` range.
             s.dispatched_end = end;
@@ -639,6 +678,16 @@ where
             // Compute the byte offset for this batch based on block indices.
             let block_size = s.data.block_size() as u64;
             let batch_offset = start as u64 * block_size;
+            let partial_tail = matches!(
+                s.state,
+                SliceStatus::Readonly | SliceStatus::Failed | SliceStatus::Committed
+            ) && s.data.len() % block_size != 0
+                && end as u64 * block_size >= s.data.len();
+            self.shared.recent_pending_upload.record_upload_batch(
+                data_len,
+                (end - start) as u64,
+                partial_tail,
+            );
 
             Ok(Some(UploadPlan {
                 chunk_id: s.chunk_id,
@@ -885,6 +934,7 @@ where
 
         let mut found: Option<Arc<ParkingMutex<SliceState>>> = None;
         let mut flush = Vec::new();
+        let mut rejected_dispatched_prefix = false;
         for (idx, slice) in slices.iter().rev().enumerate() {
             let handle = SliceHandle {
                 slice,
@@ -899,21 +949,29 @@ where
                 if creation_unique != 0 {
                     let max_u = slice.lock().max_write_unique;
                     if max_u != 0 && creation_unique < max_u {
+                        self.shared
+                            .recent_pending_upload
+                            .record_slice_reject_older_unique();
                         continue;
                     }
                 }
                 found = Some(slice.clone());
                 break;
+            } else if handle.rejects_dispatched_prefix(offset, len) {
+                rejected_dispatched_prefix = true;
             }
 
             // Prevent slices from remaining unflushed for too long.
-            if idx > MAX_UNFLUSHED_SLICES && handle.freeze() {
+            if idx > MAX_UNFLUSHED_SLICES
+                && handle.freeze_with_reason(SliceFreezeReason::MaxUnflushed)
+            {
                 flush.push(slice.clone());
             }
         }
 
         let slice = match found {
             Some(slice) => {
+                self.shared.recent_pending_upload.record_slice_reuse();
                 // Update max_write_unique so future older writes won't reuse this slice.
                 if creation_unique != 0 {
                     let mut s = slice.lock();
@@ -932,6 +990,12 @@ where
                     self.shared.memory_budget.clone(),
                     creation_unique,
                 )));
+                self.shared.recent_pending_upload.record_slice_create();
+                if rejected_dispatched_prefix {
+                    self.shared
+                        .recent_pending_upload
+                        .record_slice_reject_dispatched_prefix();
+                }
                 // Insert in sorted position by creation_unique so that slices
                 // committed in FIFO (front-first) order reflect the kernel's
                 // temporal write ordering. This prevents a race where concurrent
@@ -1005,7 +1069,10 @@ where
             };
 
             if handle.try_write(offset, buf)? {
-                if handle.can_continue_upload() || handle.should_freeze() && handle.freeze() {
+                if handle.can_continue_upload()
+                    || handle.should_freeze()
+                        && handle.freeze_with_reason(SliceFreezeReason::SizeOrChunkEnd)
+                {
                     flush.push(slice);
                 }
 
@@ -1078,6 +1145,24 @@ struct RecentPendingUploadState {
     stage_us: AtomicU64,
     stage_failures: AtomicU64,
     commit_before_stage_ops: AtomicU64,
+    slice_create_ops: AtomicU64,
+    slice_reuse_ops: AtomicU64,
+    slice_reject_older_unique_ops: AtomicU64,
+    slice_reject_dispatched_prefix_ops: AtomicU64,
+    freeze_size_ops: AtomicU64,
+    freeze_size_bytes: AtomicU64,
+    freeze_max_unflushed_ops: AtomicU64,
+    freeze_max_unflushed_bytes: AtomicU64,
+    freeze_explicit_flush_ops: AtomicU64,
+    freeze_explicit_flush_bytes: AtomicU64,
+    freeze_auto_ops: AtomicU64,
+    freeze_auto_bytes: AtomicU64,
+    freeze_commit_age_ops: AtomicU64,
+    freeze_commit_age_bytes: AtomicU64,
+    upload_batch_ops: AtomicU64,
+    upload_batch_bytes: AtomicU64,
+    upload_batch_blocks: AtomicU64,
+    upload_partial_tail_ops: AtomicU64,
     notify: Notify,
 }
 
@@ -1107,6 +1192,24 @@ impl RecentPendingUploadState {
             stage_us: AtomicU64::new(0),
             stage_failures: AtomicU64::new(0),
             commit_before_stage_ops: AtomicU64::new(0),
+            slice_create_ops: AtomicU64::new(0),
+            slice_reuse_ops: AtomicU64::new(0),
+            slice_reject_older_unique_ops: AtomicU64::new(0),
+            slice_reject_dispatched_prefix_ops: AtomicU64::new(0),
+            freeze_size_ops: AtomicU64::new(0),
+            freeze_size_bytes: AtomicU64::new(0),
+            freeze_max_unflushed_ops: AtomicU64::new(0),
+            freeze_max_unflushed_bytes: AtomicU64::new(0),
+            freeze_explicit_flush_ops: AtomicU64::new(0),
+            freeze_explicit_flush_bytes: AtomicU64::new(0),
+            freeze_auto_ops: AtomicU64::new(0),
+            freeze_auto_bytes: AtomicU64::new(0),
+            freeze_commit_age_ops: AtomicU64::new(0),
+            freeze_commit_age_bytes: AtomicU64::new(0),
+            upload_batch_ops: AtomicU64::new(0),
+            upload_batch_bytes: AtomicU64::new(0),
+            upload_batch_blocks: AtomicU64::new(0),
+            upload_partial_tail_ops: AtomicU64::new(0),
             notify: Notify::new(),
         }
     }
@@ -1156,6 +1259,54 @@ impl RecentPendingUploadState {
 
     fn record_commit_before_stage(&self) {
         self.commit_before_stage_ops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_slice_create(&self) {
+        self.slice_create_ops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_slice_reuse(&self) {
+        self.slice_reuse_ops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_slice_reject_older_unique(&self) {
+        self.slice_reject_older_unique_ops
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_slice_reject_dispatched_prefix(&self) {
+        self.slice_reject_dispatched_prefix_ops
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_freeze(&self, reason: SliceFreezeReason, bytes: u64) {
+        let (ops, total_bytes) = match reason {
+            SliceFreezeReason::SizeOrChunkEnd => (&self.freeze_size_ops, &self.freeze_size_bytes),
+            SliceFreezeReason::MaxUnflushed => (
+                &self.freeze_max_unflushed_ops,
+                &self.freeze_max_unflushed_bytes,
+            ),
+            SliceFreezeReason::ExplicitFlush => (
+                &self.freeze_explicit_flush_ops,
+                &self.freeze_explicit_flush_bytes,
+            ),
+            SliceFreezeReason::Auto => (&self.freeze_auto_ops, &self.freeze_auto_bytes),
+            SliceFreezeReason::CommitAgeSafety => {
+                (&self.freeze_commit_age_ops, &self.freeze_commit_age_bytes)
+            }
+        };
+        ops.fetch_add(1, Ordering::Relaxed);
+        total_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn record_upload_batch(&self, bytes: u64, blocks: u64, partial_tail: bool) {
+        self.upload_batch_ops.fetch_add(1, Ordering::Relaxed);
+        self.upload_batch_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.upload_batch_blocks
+            .fetch_add(blocks, Ordering::Relaxed);
+        if partial_tail {
+            self.upload_partial_tail_ops.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1353,7 +1504,7 @@ where
                     && s.data.len() > 0
                     && s.last_mod.elapsed() >= Duration::from_millis(10)
             });
-            if should_try && handle.freeze() {
+            if should_try && handle.freeze_with_reason(SliceFreezeReason::Auto) {
                 Self::spawn_flush_slice(self.shared.clone(), slice);
                 flushed += 1;
                 if flushed >= PRESSURE_FLUSH_LIMIT {
@@ -1730,7 +1881,7 @@ where
                         slice,
                         shared: &self.shared,
                     };
-                    if handle.freeze() {
+                    if handle.freeze_with_reason(SliceFreezeReason::ExplicitFlush) {
                         Self::spawn_flush_slice(self.shared.clone(), slice.clone());
                     }
                 }
@@ -2489,7 +2640,7 @@ where
                 // If the slice is too old, it will be frozen and flushed.
                 if runtime.started.elapsed() > FLUSH_DURATION * 2 {
                     let _span = tracing::trace_span!("commit_chunk.freeze").entered();
-                    let froze = handle.freeze();
+                    let froze = handle.freeze_with_reason(SliceFreezeReason::CommitAgeSafety);
 
                     if froze {
                         let _spawn_span =
@@ -2856,7 +3007,7 @@ where
                             should = true;
                         }
 
-                        if should && handle.freeze() {
+                        if should && handle.freeze_with_reason(SliceFreezeReason::Auto) {
                             tracing::debug!(
                                 age_ms = age.as_millis(),
                                 idle_ms = idle_time.as_millis(),
@@ -2930,8 +3081,11 @@ pub(crate) struct DataWriter<B, M> {
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct WritebackDirtyBreakdown {
     pub live_bytes: u64,
+    pub live_slices: u64,
     pub recently_committed_pending_upload_bytes: u64,
+    pub recently_committed_pending_upload_slices: u64,
     pub recently_committed_uploaded_bytes: u64,
+    pub recently_committed_uploaded_slices: u64,
     pub backpressure_soft_sleep_ops: u64,
     pub backpressure_soft_sleep_us: u64,
     pub backpressure_hard_wait_ops: u64,
@@ -2943,6 +3097,24 @@ pub(crate) struct WritebackDirtyBreakdown {
     pub stage_us: u64,
     pub stage_failures: u64,
     pub commit_before_stage_ops: u64,
+    pub slice_create_ops: u64,
+    pub slice_reuse_ops: u64,
+    pub slice_reject_older_unique_ops: u64,
+    pub slice_reject_dispatched_prefix_ops: u64,
+    pub freeze_size_ops: u64,
+    pub freeze_size_bytes: u64,
+    pub freeze_max_unflushed_ops: u64,
+    pub freeze_max_unflushed_bytes: u64,
+    pub freeze_explicit_flush_ops: u64,
+    pub freeze_explicit_flush_bytes: u64,
+    pub freeze_auto_ops: u64,
+    pub freeze_auto_bytes: u64,
+    pub freeze_commit_age_ops: u64,
+    pub freeze_commit_age_bytes: u64,
+    pub upload_batch_ops: u64,
+    pub upload_batch_bytes: u64,
+    pub upload_batch_blocks: u64,
+    pub upload_partial_tail_ops: u64,
 }
 
 impl<B, M> DataWriter<B, M>
@@ -3043,6 +3215,78 @@ where
                 .recent_pending_upload
                 .commit_before_stage_ops
                 .load(Ordering::Relaxed),
+            slice_create_ops: self
+                .recent_pending_upload
+                .slice_create_ops
+                .load(Ordering::Relaxed),
+            slice_reuse_ops: self
+                .recent_pending_upload
+                .slice_reuse_ops
+                .load(Ordering::Relaxed),
+            slice_reject_older_unique_ops: self
+                .recent_pending_upload
+                .slice_reject_older_unique_ops
+                .load(Ordering::Relaxed),
+            slice_reject_dispatched_prefix_ops: self
+                .recent_pending_upload
+                .slice_reject_dispatched_prefix_ops
+                .load(Ordering::Relaxed),
+            freeze_size_ops: self
+                .recent_pending_upload
+                .freeze_size_ops
+                .load(Ordering::Relaxed),
+            freeze_size_bytes: self
+                .recent_pending_upload
+                .freeze_size_bytes
+                .load(Ordering::Relaxed),
+            freeze_max_unflushed_ops: self
+                .recent_pending_upload
+                .freeze_max_unflushed_ops
+                .load(Ordering::Relaxed),
+            freeze_max_unflushed_bytes: self
+                .recent_pending_upload
+                .freeze_max_unflushed_bytes
+                .load(Ordering::Relaxed),
+            freeze_explicit_flush_ops: self
+                .recent_pending_upload
+                .freeze_explicit_flush_ops
+                .load(Ordering::Relaxed),
+            freeze_explicit_flush_bytes: self
+                .recent_pending_upload
+                .freeze_explicit_flush_bytes
+                .load(Ordering::Relaxed),
+            freeze_auto_ops: self
+                .recent_pending_upload
+                .freeze_auto_ops
+                .load(Ordering::Relaxed),
+            freeze_auto_bytes: self
+                .recent_pending_upload
+                .freeze_auto_bytes
+                .load(Ordering::Relaxed),
+            freeze_commit_age_ops: self
+                .recent_pending_upload
+                .freeze_commit_age_ops
+                .load(Ordering::Relaxed),
+            freeze_commit_age_bytes: self
+                .recent_pending_upload
+                .freeze_commit_age_bytes
+                .load(Ordering::Relaxed),
+            upload_batch_ops: self
+                .recent_pending_upload
+                .upload_batch_ops
+                .load(Ordering::Relaxed),
+            upload_batch_bytes: self
+                .recent_pending_upload
+                .upload_batch_bytes
+                .load(Ordering::Relaxed),
+            upload_batch_blocks: self
+                .recent_pending_upload
+                .upload_batch_blocks
+                .load(Ordering::Relaxed),
+            upload_partial_tail_ops: self
+                .recent_pending_upload
+                .upload_partial_tail_ops
+                .load(Ordering::Relaxed),
             ..WritebackDirtyBreakdown::default()
         };
 
@@ -3050,6 +3294,7 @@ where
             let guard = writer.shared.inner.lock().await;
             for chunk in guard.chunks.values() {
                 for slice in &chunk.slices {
+                    breakdown.live_slices = breakdown.live_slices.saturating_add(1);
                     breakdown.live_bytes = breakdown
                         .live_bytes
                         .saturating_add(slice.lock().data.alloc_bytes());
@@ -3058,10 +3303,16 @@ where
                     let state = slice.lock();
                     let bytes = state.data.alloc_bytes();
                     if state.upload_complete() {
+                        breakdown.recently_committed_uploaded_slices = breakdown
+                            .recently_committed_uploaded_slices
+                            .saturating_add(1);
                         breakdown.recently_committed_uploaded_bytes = breakdown
                             .recently_committed_uploaded_bytes
                             .saturating_add(bytes);
                     } else {
+                        breakdown.recently_committed_pending_upload_slices = breakdown
+                            .recently_committed_pending_upload_slices
+                            .saturating_add(1);
                         breakdown.recently_committed_pending_upload_bytes = breakdown
                             .recently_committed_pending_upload_bytes
                             .saturating_add(bytes);
@@ -4142,6 +4393,42 @@ mod tests {
             breakdown.backpressure_hard_wait_us > 0,
             "hard wait duration should be recorded after blocked write wakes"
         );
+    }
+
+    #[tokio::test]
+    async fn test_dirty_breakdown_reports_slice_lifecycle_metrics() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "slice_lifecycle_metrics.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer.write_at(0, &[1u8; 1024]).await.unwrap();
+        file_writer.write_at(1024, &[2u8; 1024]).await.unwrap();
+        let before_flush = writer.dirty_breakdown().await;
+        assert_eq!(before_flush.live_slices, 1);
+        assert_eq!(before_flush.slice_create_ops, 1);
+        assert_eq!(before_flush.slice_reuse_ops, 1);
+
+        file_writer.flush().await.unwrap();
+        let after_flush = writer.dirty_breakdown().await;
+        assert_eq!(after_flush.freeze_explicit_flush_ops, 1);
+        assert_eq!(after_flush.upload_batch_ops, 1);
+        assert_eq!(after_flush.upload_partial_tail_ops, 1);
     }
 
     #[tokio::test]

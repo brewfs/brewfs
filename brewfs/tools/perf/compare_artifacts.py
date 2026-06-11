@@ -247,8 +247,11 @@ STAT_METRICS = {
     "brewfs_writeback_recent_pending_upload_bytes": ("backpressure_pending_mib", "MiB", BYTES_PER_MIB),
     "brewfs_writeback_dirty_bytes": ("writeback_dirty_mib", "MiB", BYTES_PER_MIB),
     "brewfs_writeback_live_dirty_bytes": ("writeback_live_dirty_mib", "MiB", BYTES_PER_MIB),
+    "brewfs_writeback_live_slices": ("writeback_live_slices", "slices", 1.0),
     "brewfs_buffer_dirty_bytes": ("buffer_dirty_mib", "MiB", BYTES_PER_MIB),
     "brewfs_writeback_recent_uploaded_bytes": ("writeback_recent_uploaded_mib", "MiB", BYTES_PER_MIB),
+    "brewfs_writeback_recent_pending_upload_slices": ("writeback_recent_pending_slices", "slices", 1.0),
+    "brewfs_writeback_recent_uploaded_slices": ("writeback_recent_uploaded_slices", "slices", 1.0),
     "brewfs_fuse_write_bytes_total": ("fuse_write_mib", "MiB", BYTES_PER_MIB),
     "brewfs_fuse_read_bytes_total": ("fuse_read_mib", "MiB", BYTES_PER_MIB),
     "brewfs_s3_put_ops_total": ("s3_put_ops", "ops", 1.0),
@@ -272,6 +275,72 @@ STAT_METRICS = {
     "brewfs_writeback_stage_lat_us_total": ("writeback_stage_total_ms", "ms", 1000.0),
     "brewfs_writeback_stage_failures_total": ("writeback_stage_failures", "ops", 1.0),
     "brewfs_writeback_commit_before_stage_ops_total": ("writeback_commit_before_stage_ops", "ops", 1.0),
+    "brewfs_writeback_slice_create_ops_total": ("writeback_slice_create_ops", "ops", 1.0),
+    "brewfs_writeback_slice_reuse_ops_total": ("writeback_slice_reuse_ops", "ops", 1.0),
+    "brewfs_writeback_slice_reject_older_unique_ops_total": (
+        "writeback_slice_reject_older_unique_ops",
+        "ops",
+        1.0,
+    ),
+    "brewfs_writeback_slice_reject_dispatched_prefix_ops_total": (
+        "writeback_slice_reject_dispatched_prefix_ops",
+        "ops",
+        1.0,
+    ),
+    "brewfs_writeback_freeze_size_ops_total": ("writeback_freeze_size_ops", "ops", 1.0),
+    "brewfs_writeback_freeze_size_bytes_total": ("writeback_freeze_size_mib", "MiB", BYTES_PER_MIB),
+    "brewfs_writeback_freeze_max_unflushed_ops_total": (
+        "writeback_freeze_max_unflushed_ops",
+        "ops",
+        1.0,
+    ),
+    "brewfs_writeback_freeze_max_unflushed_bytes_total": (
+        "writeback_freeze_max_unflushed_mib",
+        "MiB",
+        BYTES_PER_MIB,
+    ),
+    "brewfs_writeback_freeze_explicit_flush_ops_total": (
+        "writeback_freeze_explicit_flush_ops",
+        "ops",
+        1.0,
+    ),
+    "brewfs_writeback_freeze_explicit_flush_bytes_total": (
+        "writeback_freeze_explicit_flush_mib",
+        "MiB",
+        BYTES_PER_MIB,
+    ),
+    "brewfs_writeback_freeze_auto_ops_total": ("writeback_freeze_auto_ops", "ops", 1.0),
+    "brewfs_writeback_freeze_auto_bytes_total": (
+        "writeback_freeze_auto_mib",
+        "MiB",
+        BYTES_PER_MIB,
+    ),
+    "brewfs_writeback_freeze_commit_age_ops_total": (
+        "writeback_freeze_commit_age_ops",
+        "ops",
+        1.0,
+    ),
+    "brewfs_writeback_freeze_commit_age_bytes_total": (
+        "writeback_freeze_commit_age_mib",
+        "MiB",
+        BYTES_PER_MIB,
+    ),
+    "brewfs_writeback_upload_batch_ops_total": ("writeback_upload_batch_ops", "ops", 1.0),
+    "brewfs_writeback_upload_batch_bytes_total": (
+        "writeback_upload_batch_mib",
+        "MiB",
+        BYTES_PER_MIB,
+    ),
+    "brewfs_writeback_upload_batch_blocks_total": (
+        "writeback_upload_batch_blocks",
+        "blocks",
+        1.0,
+    ),
+    "brewfs_writeback_upload_partial_tail_ops_total": (
+        "writeback_upload_partial_tail_ops",
+        "ops",
+        1.0,
+    ),
 }
 
 CRITICAL_STAT_METRICS = (
@@ -287,6 +356,9 @@ CRITICAL_STAT_METRICS = (
     "brewfs_writeback_backpressure_soft_sleep_us",
     "brewfs_writeback_backpressure_hard_wait_ops",
     "brewfs_writeback_backpressure_hard_wait_us",
+    "brewfs_writeback_slice_create_ops_total",
+    "brewfs_writeback_upload_batch_ops_total",
+    "brewfs_writeback_upload_batch_bytes_total",
 )
 
 
@@ -315,6 +387,14 @@ def append_stats_derived_metrics(metrics: list[Metric], item: str, raw_metrics: 
     fuse_write_bytes = raw_metric(raw_metrics, "brewfs_fuse_write_bytes_total")
     fuse_read_bytes = raw_metric(raw_metrics, "brewfs_fuse_read_bytes_total")
     uploaded_bytes = raw_metric(raw_metrics, "brewfs_writeback_recent_uploaded_bytes")
+    live_bytes = raw_metric(raw_metrics, "brewfs_writeback_live_dirty_bytes")
+    live_slices = raw_metric(raw_metrics, "brewfs_writeback_live_slices")
+    pending_bytes = raw_metric(raw_metrics, "brewfs_writeback_recent_pending_upload_bytes")
+    pending_slices = raw_metric(raw_metrics, "brewfs_writeback_recent_pending_upload_slices")
+    upload_batch_ops = raw_metric(raw_metrics, "brewfs_writeback_upload_batch_ops_total")
+    upload_batch_bytes = raw_metric(raw_metrics, "brewfs_writeback_upload_batch_bytes_total")
+    upload_batch_blocks = raw_metric(raw_metrics, "brewfs_writeback_upload_batch_blocks_total")
+    partial_tail_ops = raw_metric(raw_metrics, "brewfs_writeback_upload_partial_tail_ops_total")
 
     append_ratio_metric(metrics, item, "upload_byte_amp", put_bytes, fuse_write_bytes, "ratio")
     append_ratio_metric(metrics, item, "writeback_upload_byte_amp", uploaded_bytes, fuse_write_bytes, "ratio")
@@ -322,6 +402,47 @@ def append_stats_derived_metrics(metrics: list[Metric], item: str, raw_metrics: 
     append_ratio_metric(metrics, item, "s3_get_avg_object_mib", get_bytes, get_ops * BYTES_PER_MIB if get_ops else None, "MiB/op")
     append_ratio_metric(metrics, item, "put_ops_per_gib_written", put_ops, fuse_write_bytes / BYTES_PER_GIB if fuse_write_bytes else None, "ops/GiB")
     append_ratio_metric(metrics, item, "get_ops_per_gib_read", get_ops, fuse_read_bytes / BYTES_PER_GIB if fuse_read_bytes else None, "ops/GiB")
+    append_ratio_metric(metrics, item, "writeback_avg_live_slice_mib", live_bytes, live_slices * BYTES_PER_MIB if live_slices else None, "MiB/slice")
+    append_ratio_metric(
+        metrics,
+        item,
+        "writeback_avg_recent_pending_slice_mib",
+        pending_bytes,
+        pending_slices * BYTES_PER_MIB if pending_slices else None,
+        "MiB/slice",
+    )
+    append_ratio_metric(
+        metrics,
+        item,
+        "writeback_avg_upload_batch_mib",
+        upload_batch_bytes,
+        upload_batch_ops * BYTES_PER_MIB if upload_batch_ops else None,
+        "MiB/op",
+    )
+    append_ratio_metric(
+        metrics,
+        item,
+        "writeback_avg_upload_batch_blocks",
+        upload_batch_blocks,
+        upload_batch_ops,
+        "blocks/op",
+    )
+    append_ratio_metric(
+        metrics,
+        item,
+        "writeback_partial_tail_ratio",
+        partial_tail_ops,
+        upload_batch_ops,
+        "ratio",
+    )
+    append_ratio_metric(
+        metrics,
+        item,
+        "s3_puts_per_upload_batch",
+        put_ops,
+        upload_batch_ops,
+        "ops/batch",
+    )
 
 
 def append_missing_stats_metric(metrics: list[Metric], item: str, raw_metrics: dict[str, float]) -> None:

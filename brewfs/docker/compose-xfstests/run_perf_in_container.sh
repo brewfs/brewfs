@@ -1508,6 +1508,9 @@ if brewfs_stats_paths:
     def fmt_mib(value):
         return f"{value / 1048576.0:.1f} MiB"
 
+    def fmt_avg_mib(bytes_value, count):
+        return fmt_mib(bytes_value / count) if count else "n/a"
+
     for path in brewfs_stats_paths:
         tool = path.name.removeprefix("stats-").removesuffix("-after.txt")
         metrics = parse_brewfs_stats(path)
@@ -1547,6 +1550,25 @@ if brewfs_stats_paths:
             0.0,
         )
         remote_inflight = metrics.get("brewfs_writeback_remote_upload_inflight_bytes", 0.0)
+        live_slices = metrics.get("brewfs_writeback_live_slices", 0.0)
+        slice_create = metrics.get("brewfs_writeback_slice_create_ops_total", 0.0)
+        slice_reuse = metrics.get("brewfs_writeback_slice_reuse_ops_total", 0.0)
+        reject_older = metrics.get("brewfs_writeback_slice_reject_older_unique_ops_total", 0.0)
+        reject_prefix = metrics.get(
+            "brewfs_writeback_slice_reject_dispatched_prefix_ops_total",
+            0.0,
+        )
+        batch_ops = metrics.get("brewfs_writeback_upload_batch_ops_total", 0.0)
+        batch_bytes = metrics.get("brewfs_writeback_upload_batch_bytes_total", 0.0)
+        batch_blocks = metrics.get("brewfs_writeback_upload_batch_blocks_total", 0.0)
+        partial_tail = metrics.get("brewfs_writeback_upload_partial_tail_ops_total", 0.0)
+        freeze_size = metrics.get("brewfs_writeback_freeze_size_ops_total", 0.0)
+        freeze_flush = metrics.get("brewfs_writeback_freeze_explicit_flush_ops_total", 0.0)
+        freeze_auto = metrics.get("brewfs_writeback_freeze_auto_ops_total", 0.0)
+        freeze_max = metrics.get("brewfs_writeback_freeze_max_unflushed_ops_total", 0.0)
+        freeze_age = metrics.get("brewfs_writeback_freeze_commit_age_ops_total", 0.0)
+        avg_batch_blocks = batch_blocks / batch_ops if batch_ops else 0.0
+        partial_tail_ratio = partial_tail / batch_ops if batch_ops else 0.0
         rel = path.relative_to(artifact_dir)
         lines.append(
             f"| {tool} | {hit_ratio * 100.0:.1f}% ({int(hits)}/{int(requests)}) | "
@@ -1557,7 +1579,14 @@ if brewfs_stats_paths:
             f"{rel}; range={int(range_gets)}, full={int(full_gets)}, bg_prefetch={int(bg_prefetch)}, "
             f"stage={int(stage_ops)} ops/{fmt_mib(stage_bytes)}/{stage_ms:.1f} ms, "
             f"stage_fail={int(stage_failures)}, commit_before_stage={int(commit_before_stage)}, "
-            f"remote_inflight={fmt_mib(remote_inflight)} |"
+            f"remote_inflight={fmt_mib(remote_inflight)}, "
+            f"slices=create {int(slice_create)}/reuse {int(slice_reuse)}/"
+            f"reject_unique {int(reject_older)}/reject_prefix {int(reject_prefix)}, "
+            f"live_slices={int(live_slices)} avg={fmt_avg_mib(live_dirty, live_slices)}, "
+            f"upload_batch={int(batch_ops)} avg={fmt_avg_mib(batch_bytes, batch_ops)} "
+            f"blocks={avg_batch_blocks:.2f}/batch partial_tail={partial_tail_ratio:.2f}, "
+            f"freeze=size {int(freeze_size)}/flush {int(freeze_flush)}/auto {int(freeze_auto)}/"
+            f"max {int(freeze_max)}/age {int(freeze_age)} |"
         )
 
 fuse_log = artifact_dir / "brewfs_fuse_ops.log"

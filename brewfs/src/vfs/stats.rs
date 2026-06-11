@@ -75,8 +75,11 @@ pub struct FsStatsSnapshot {
     pub buf_dirty_bytes: u64,
     pub buf_read_bytes: u64,
     pub writeback_live_dirty_bytes: u64,
+    pub writeback_live_slices: u64,
     pub writeback_recent_pending_upload_bytes: u64,
+    pub writeback_recent_pending_upload_slices: u64,
     pub writeback_recent_uploaded_bytes: u64,
+    pub writeback_recent_uploaded_slices: u64,
     pub writeback_backpressure_soft_sleep_ops: u64,
     pub writeback_backpressure_soft_sleep_us: u64,
     pub writeback_backpressure_hard_wait_ops: u64,
@@ -88,6 +91,24 @@ pub struct FsStatsSnapshot {
     pub writeback_stage_lat_us: u64,
     pub writeback_stage_failures: u64,
     pub writeback_commit_before_stage_ops: u64,
+    pub writeback_slice_create_ops: u64,
+    pub writeback_slice_reuse_ops: u64,
+    pub writeback_slice_reject_older_unique_ops: u64,
+    pub writeback_slice_reject_dispatched_prefix_ops: u64,
+    pub writeback_freeze_size_ops: u64,
+    pub writeback_freeze_size_bytes: u64,
+    pub writeback_freeze_max_unflushed_ops: u64,
+    pub writeback_freeze_max_unflushed_bytes: u64,
+    pub writeback_freeze_explicit_flush_ops: u64,
+    pub writeback_freeze_explicit_flush_bytes: u64,
+    pub writeback_freeze_auto_ops: u64,
+    pub writeback_freeze_auto_bytes: u64,
+    pub writeback_freeze_commit_age_ops: u64,
+    pub writeback_freeze_commit_age_bytes: u64,
+    pub writeback_upload_batch_ops: u64,
+    pub writeback_upload_batch_bytes: u64,
+    pub writeback_upload_batch_blocks: u64,
+    pub writeback_upload_partial_tail_ops: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub read_block_cache_hits: u64,
@@ -285,10 +306,16 @@ pub struct FsStats {
     pub buf_read_bytes: AtomicU64,
     /// Dirty bytes in active writeback slices.
     pub writeback_live_dirty_bytes: AtomicU64,
+    /// Active writeback slices currently visible to overlay/commit.
+    pub writeback_live_slices: AtomicU64,
     /// Recently committed bytes still waiting for S3 upload completion.
     pub writeback_recent_pending_upload_bytes: AtomicU64,
+    /// Recently committed slices still waiting for S3 upload completion.
+    pub writeback_recent_pending_upload_slices: AtomicU64,
     /// Recently committed bytes already uploaded to S3 but kept for overlay grace.
     pub writeback_recent_uploaded_bytes: AtomicU64,
+    /// Recently committed slices already uploaded to S3 but kept for overlay grace.
+    pub writeback_recent_uploaded_slices: AtomicU64,
     /// Soft backpressure sleeps on committed-but-not-uploaded writeback bytes.
     pub writeback_backpressure_soft_sleep_ops: AtomicU64,
     /// Total soft backpressure sleep duration in microseconds.
@@ -311,6 +338,42 @@ pub struct FsStats {
     pub writeback_stage_failures: AtomicU64,
     /// Metadata commits that happened before local staging finished.
     pub writeback_commit_before_stage_ops: AtomicU64,
+    /// Newly-created writer slices.
+    pub writeback_slice_create_ops: AtomicU64,
+    /// Writes that reused an existing writer slice.
+    pub writeback_slice_reuse_ops: AtomicU64,
+    /// Slice reuse rejects caused by older FUSE unique ordering.
+    pub writeback_slice_reject_older_unique_ops: AtomicU64,
+    /// Slice reuse rejects caused by already-dispatched/uploaded block prefixes.
+    pub writeback_slice_reject_dispatched_prefix_ops: AtomicU64,
+    /// Slices frozen because they reached target size or chunk end.
+    pub writeback_freeze_size_ops: AtomicU64,
+    /// Bytes in slices frozen because they reached target size or chunk end.
+    pub writeback_freeze_size_bytes: AtomicU64,
+    /// Slices frozen to cap per-chunk unflushed slice count.
+    pub writeback_freeze_max_unflushed_ops: AtomicU64,
+    /// Bytes in slices frozen to cap per-chunk unflushed slice count.
+    pub writeback_freeze_max_unflushed_bytes: AtomicU64,
+    /// Slices frozen by explicit flush/fsync/close.
+    pub writeback_freeze_explicit_flush_ops: AtomicU64,
+    /// Bytes in slices frozen by explicit flush/fsync/close.
+    pub writeback_freeze_explicit_flush_bytes: AtomicU64,
+    /// Slices frozen by auto-flush, memory pressure, or background pressure flush.
+    pub writeback_freeze_auto_ops: AtomicU64,
+    /// Bytes in slices frozen by auto-flush, memory pressure, or background pressure flush.
+    pub writeback_freeze_auto_bytes: AtomicU64,
+    /// Slices frozen by commit-loop age safety.
+    pub writeback_freeze_commit_age_ops: AtomicU64,
+    /// Bytes in slices frozen by commit-loop age safety.
+    pub writeback_freeze_commit_age_bytes: AtomicU64,
+    /// Upload batches dispatched from writer slices.
+    pub writeback_upload_batch_ops: AtomicU64,
+    /// Bytes included in writer upload batches.
+    pub writeback_upload_batch_bytes: AtomicU64,
+    /// Blocks included in writer upload batches.
+    pub writeback_upload_batch_blocks: AtomicU64,
+    /// Upload batches that included a frozen partial tail block.
+    pub writeback_upload_partial_tail_ops: AtomicU64,
     /// Block cache hit count
     pub cache_hits: AtomicU64,
     /// Block cache miss count
@@ -419,8 +482,11 @@ impl FsStats {
             buf_dirty_bytes: AtomicU64::new(0),
             buf_read_bytes: AtomicU64::new(0),
             writeback_live_dirty_bytes: AtomicU64::new(0),
+            writeback_live_slices: AtomicU64::new(0),
             writeback_recent_pending_upload_bytes: AtomicU64::new(0),
+            writeback_recent_pending_upload_slices: AtomicU64::new(0),
             writeback_recent_uploaded_bytes: AtomicU64::new(0),
+            writeback_recent_uploaded_slices: AtomicU64::new(0),
             writeback_backpressure_soft_sleep_ops: AtomicU64::new(0),
             writeback_backpressure_soft_sleep_us: AtomicU64::new(0),
             writeback_backpressure_hard_wait_ops: AtomicU64::new(0),
@@ -432,6 +498,24 @@ impl FsStats {
             writeback_stage_lat_us: AtomicU64::new(0),
             writeback_stage_failures: AtomicU64::new(0),
             writeback_commit_before_stage_ops: AtomicU64::new(0),
+            writeback_slice_create_ops: AtomicU64::new(0),
+            writeback_slice_reuse_ops: AtomicU64::new(0),
+            writeback_slice_reject_older_unique_ops: AtomicU64::new(0),
+            writeback_slice_reject_dispatched_prefix_ops: AtomicU64::new(0),
+            writeback_freeze_size_ops: AtomicU64::new(0),
+            writeback_freeze_size_bytes: AtomicU64::new(0),
+            writeback_freeze_max_unflushed_ops: AtomicU64::new(0),
+            writeback_freeze_max_unflushed_bytes: AtomicU64::new(0),
+            writeback_freeze_explicit_flush_ops: AtomicU64::new(0),
+            writeback_freeze_explicit_flush_bytes: AtomicU64::new(0),
+            writeback_freeze_auto_ops: AtomicU64::new(0),
+            writeback_freeze_auto_bytes: AtomicU64::new(0),
+            writeback_freeze_commit_age_ops: AtomicU64::new(0),
+            writeback_freeze_commit_age_bytes: AtomicU64::new(0),
+            writeback_upload_batch_ops: AtomicU64::new(0),
+            writeback_upload_batch_bytes: AtomicU64::new(0),
+            writeback_upload_batch_blocks: AtomicU64::new(0),
+            writeback_upload_partial_tail_ops: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             read_block_cache_hits: AtomicU64::new(0),
@@ -517,10 +601,15 @@ impl FsStats {
             buf_dirty_bytes: self.buf_dirty_bytes.load(ORD),
             buf_read_bytes: self.buf_read_bytes.load(ORD),
             writeback_live_dirty_bytes: self.writeback_live_dirty_bytes.load(ORD),
+            writeback_live_slices: self.writeback_live_slices.load(ORD),
             writeback_recent_pending_upload_bytes: self
                 .writeback_recent_pending_upload_bytes
                 .load(ORD),
+            writeback_recent_pending_upload_slices: self
+                .writeback_recent_pending_upload_slices
+                .load(ORD),
             writeback_recent_uploaded_bytes: self.writeback_recent_uploaded_bytes.load(ORD),
+            writeback_recent_uploaded_slices: self.writeback_recent_uploaded_slices.load(ORD),
             writeback_backpressure_soft_sleep_ops: self
                 .writeback_backpressure_soft_sleep_ops
                 .load(ORD),
@@ -540,6 +629,32 @@ impl FsStats {
             writeback_stage_lat_us: self.writeback_stage_lat_us.load(ORD),
             writeback_stage_failures: self.writeback_stage_failures.load(ORD),
             writeback_commit_before_stage_ops: self.writeback_commit_before_stage_ops.load(ORD),
+            writeback_slice_create_ops: self.writeback_slice_create_ops.load(ORD),
+            writeback_slice_reuse_ops: self.writeback_slice_reuse_ops.load(ORD),
+            writeback_slice_reject_older_unique_ops: self
+                .writeback_slice_reject_older_unique_ops
+                .load(ORD),
+            writeback_slice_reject_dispatched_prefix_ops: self
+                .writeback_slice_reject_dispatched_prefix_ops
+                .load(ORD),
+            writeback_freeze_size_ops: self.writeback_freeze_size_ops.load(ORD),
+            writeback_freeze_size_bytes: self.writeback_freeze_size_bytes.load(ORD),
+            writeback_freeze_max_unflushed_ops: self.writeback_freeze_max_unflushed_ops.load(ORD),
+            writeback_freeze_max_unflushed_bytes: self
+                .writeback_freeze_max_unflushed_bytes
+                .load(ORD),
+            writeback_freeze_explicit_flush_ops: self.writeback_freeze_explicit_flush_ops.load(ORD),
+            writeback_freeze_explicit_flush_bytes: self
+                .writeback_freeze_explicit_flush_bytes
+                .load(ORD),
+            writeback_freeze_auto_ops: self.writeback_freeze_auto_ops.load(ORD),
+            writeback_freeze_auto_bytes: self.writeback_freeze_auto_bytes.load(ORD),
+            writeback_freeze_commit_age_ops: self.writeback_freeze_commit_age_ops.load(ORD),
+            writeback_freeze_commit_age_bytes: self.writeback_freeze_commit_age_bytes.load(ORD),
+            writeback_upload_batch_ops: self.writeback_upload_batch_ops.load(ORD),
+            writeback_upload_batch_bytes: self.writeback_upload_batch_bytes.load(ORD),
+            writeback_upload_batch_blocks: self.writeback_upload_batch_blocks.load(ORD),
+            writeback_upload_partial_tail_ops: self.writeback_upload_partial_tail_ops.load(ORD),
             cache_hits: self.cache_hits.load(ORD),
             cache_misses: self.cache_misses.load(ORD),
             read_block_cache_hits: self.read_block_cache_hits.load(ORD),
@@ -579,14 +694,22 @@ impl FsStats {
     pub fn sync_writeback_dirty_breakdown(
         &self,
         live_bytes: u64,
+        live_slices: u64,
         recent_pending_upload_bytes: u64,
+        recent_pending_upload_slices: u64,
         recent_uploaded_bytes: u64,
+        recent_uploaded_slices: u64,
     ) {
         self.writeback_live_dirty_bytes.store(live_bytes, ORD);
+        self.writeback_live_slices.store(live_slices, ORD);
         self.writeback_recent_pending_upload_bytes
             .store(recent_pending_upload_bytes, ORD);
+        self.writeback_recent_pending_upload_slices
+            .store(recent_pending_upload_slices, ORD);
         self.writeback_recent_uploaded_bytes
             .store(recent_uploaded_bytes, ORD);
+        self.writeback_recent_uploaded_slices
+            .store(recent_uploaded_slices, ORD);
     }
 
     pub fn add_writeback_backpressure_soft_sleep(&self, duration: Duration) {
@@ -639,6 +762,67 @@ impl FsStats {
         self.writeback_stage_failures.store(stage_failures, ORD);
         self.writeback_commit_before_stage_ops
             .store(commit_before_stage_ops, ORD);
+    }
+
+    pub fn sync_writeback_slice_selection_metrics(
+        &self,
+        create_ops: u64,
+        reuse_ops: u64,
+        reject_older_unique_ops: u64,
+        reject_dispatched_prefix_ops: u64,
+    ) {
+        self.writeback_slice_create_ops.store(create_ops, ORD);
+        self.writeback_slice_reuse_ops.store(reuse_ops, ORD);
+        self.writeback_slice_reject_older_unique_ops
+            .store(reject_older_unique_ops, ORD);
+        self.writeback_slice_reject_dispatched_prefix_ops
+            .store(reject_dispatched_prefix_ops, ORD);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_writeback_freeze_metrics(
+        &self,
+        size_ops: u64,
+        size_bytes: u64,
+        max_unflushed_ops: u64,
+        max_unflushed_bytes: u64,
+        explicit_flush_ops: u64,
+        explicit_flush_bytes: u64,
+        auto_ops: u64,
+        auto_bytes: u64,
+        commit_age_ops: u64,
+        commit_age_bytes: u64,
+    ) {
+        self.writeback_freeze_size_ops.store(size_ops, ORD);
+        self.writeback_freeze_size_bytes.store(size_bytes, ORD);
+        self.writeback_freeze_max_unflushed_ops
+            .store(max_unflushed_ops, ORD);
+        self.writeback_freeze_max_unflushed_bytes
+            .store(max_unflushed_bytes, ORD);
+        self.writeback_freeze_explicit_flush_ops
+            .store(explicit_flush_ops, ORD);
+        self.writeback_freeze_explicit_flush_bytes
+            .store(explicit_flush_bytes, ORD);
+        self.writeback_freeze_auto_ops.store(auto_ops, ORD);
+        self.writeback_freeze_auto_bytes.store(auto_bytes, ORD);
+        self.writeback_freeze_commit_age_ops
+            .store(commit_age_ops, ORD);
+        self.writeback_freeze_commit_age_bytes
+            .store(commit_age_bytes, ORD);
+    }
+
+    pub fn sync_writeback_upload_batch_metrics(
+        &self,
+        ops: u64,
+        bytes: u64,
+        blocks: u64,
+        partial_tail_ops: u64,
+    ) {
+        self.writeback_upload_batch_ops.store(ops, ORD);
+        self.writeback_upload_batch_bytes.store(bytes, ORD);
+        self.writeback_upload_batch_blocks.store(blocks, ORD);
+        self.writeback_upload_partial_tail_ops
+            .store(partial_tail_ops, ORD);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1007,12 +1191,24 @@ impl FsStats {
             snapshot.writeback_live_dirty_bytes
         ));
         out.push_str(&format!(
+            "brewfs_writeback_live_slices {}\n",
+            snapshot.writeback_live_slices
+        ));
+        out.push_str(&format!(
             "brewfs_writeback_recent_pending_upload_bytes {}\n",
             snapshot.writeback_recent_pending_upload_bytes
         ));
         out.push_str(&format!(
+            "brewfs_writeback_recent_pending_upload_slices {}\n",
+            snapshot.writeback_recent_pending_upload_slices
+        ));
+        out.push_str(&format!(
             "brewfs_writeback_recent_uploaded_bytes {}\n",
             snapshot.writeback_recent_uploaded_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_recent_uploaded_slices {}\n",
+            snapshot.writeback_recent_uploaded_slices
         ));
         out.push_str(&format!(
             "brewfs_writeback_backpressure_soft_sleep_ops {}\n",
@@ -1057,6 +1253,78 @@ impl FsStats {
         out.push_str(&format!(
             "brewfs_writeback_commit_before_stage_ops_total {}\n",
             snapshot.writeback_commit_before_stage_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_slice_create_ops_total {}\n",
+            snapshot.writeback_slice_create_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_slice_reuse_ops_total {}\n",
+            snapshot.writeback_slice_reuse_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_slice_reject_older_unique_ops_total {}\n",
+            snapshot.writeback_slice_reject_older_unique_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_slice_reject_dispatched_prefix_ops_total {}\n",
+            snapshot.writeback_slice_reject_dispatched_prefix_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_size_ops_total {}\n",
+            snapshot.writeback_freeze_size_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_size_bytes_total {}\n",
+            snapshot.writeback_freeze_size_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_max_unflushed_ops_total {}\n",
+            snapshot.writeback_freeze_max_unflushed_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_max_unflushed_bytes_total {}\n",
+            snapshot.writeback_freeze_max_unflushed_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_explicit_flush_ops_total {}\n",
+            snapshot.writeback_freeze_explicit_flush_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_explicit_flush_bytes_total {}\n",
+            snapshot.writeback_freeze_explicit_flush_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_auto_ops_total {}\n",
+            snapshot.writeback_freeze_auto_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_auto_bytes_total {}\n",
+            snapshot.writeback_freeze_auto_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_commit_age_ops_total {}\n",
+            snapshot.writeback_freeze_commit_age_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_freeze_commit_age_bytes_total {}\n",
+            snapshot.writeback_freeze_commit_age_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_upload_batch_ops_total {}\n",
+            snapshot.writeback_upload_batch_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_upload_batch_bytes_total {}\n",
+            snapshot.writeback_upload_batch_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_upload_batch_blocks_total {}\n",
+            snapshot.writeback_upload_batch_blocks
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_upload_partial_tail_ops_total {}\n",
+            snapshot.writeback_upload_partial_tail_ops
         ));
         out.push_str(&format!(
             "brewfs_reader_buffer_bytes {}\n",
@@ -1270,10 +1538,13 @@ mod tests {
         stats.s3_put_cache_lat_us.store(100, ORD);
         stats.sync_cache_counters(8, 2);
         stats.sync_buffer_bytes(4096, 8192);
-        stats.sync_writeback_dirty_breakdown(1024, 2048, 512);
+        stats.sync_writeback_dirty_breakdown(1024, 2, 2048, 3, 512, 4);
         stats.add_writeback_backpressure_soft_sleep(Duration::from_micros(12));
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(34));
         stats.sync_writeback_phase_metrics(1, 2, 3, 4, 5, 6, 7);
+        stats.sync_writeback_slice_selection_metrics(8, 9, 10, 11);
+        stats.sync_writeback_freeze_metrics(12, 1024, 13, 2048, 14, 4096, 15, 8192, 16, 16384);
+        stats.sync_writeback_upload_batch_metrics(17, 32768, 18, 19);
 
         let output = stats.render();
         assert!(output.contains("brewfs_fuse_read_ops_total 42"));
@@ -1311,8 +1582,11 @@ mod tests {
         assert!(output.contains("brewfs_meta_lookup_attr_fused_error_total 0"));
         assert!(output.contains("brewfs_writeback_dirty_bytes 4096"));
         assert!(output.contains("brewfs_writeback_live_dirty_bytes 1024"));
+        assert!(output.contains("brewfs_writeback_live_slices 2"));
         assert!(output.contains("brewfs_writeback_recent_pending_upload_bytes 2048"));
+        assert!(output.contains("brewfs_writeback_recent_pending_upload_slices 3"));
         assert!(output.contains("brewfs_writeback_recent_uploaded_bytes 512"));
+        assert!(output.contains("brewfs_writeback_recent_uploaded_slices 4"));
         assert!(output.contains("brewfs_writeback_backpressure_soft_sleep_ops 1"));
         assert!(output.contains("brewfs_writeback_backpressure_soft_sleep_us 12"));
         assert!(output.contains("brewfs_writeback_backpressure_hard_wait_ops 1"));
@@ -1324,6 +1598,24 @@ mod tests {
         assert!(output.contains("brewfs_writeback_stage_lat_us_total 5"));
         assert!(output.contains("brewfs_writeback_stage_failures_total 6"));
         assert!(output.contains("brewfs_writeback_commit_before_stage_ops_total 7"));
+        assert!(output.contains("brewfs_writeback_slice_create_ops_total 8"));
+        assert!(output.contains("brewfs_writeback_slice_reuse_ops_total 9"));
+        assert!(output.contains("brewfs_writeback_slice_reject_older_unique_ops_total 10"));
+        assert!(output.contains("brewfs_writeback_slice_reject_dispatched_prefix_ops_total 11"));
+        assert!(output.contains("brewfs_writeback_freeze_size_ops_total 12"));
+        assert!(output.contains("brewfs_writeback_freeze_size_bytes_total 1024"));
+        assert!(output.contains("brewfs_writeback_freeze_max_unflushed_ops_total 13"));
+        assert!(output.contains("brewfs_writeback_freeze_max_unflushed_bytes_total 2048"));
+        assert!(output.contains("brewfs_writeback_freeze_explicit_flush_ops_total 14"));
+        assert!(output.contains("brewfs_writeback_freeze_explicit_flush_bytes_total 4096"));
+        assert!(output.contains("brewfs_writeback_freeze_auto_ops_total 15"));
+        assert!(output.contains("brewfs_writeback_freeze_auto_bytes_total 8192"));
+        assert!(output.contains("brewfs_writeback_freeze_commit_age_ops_total 16"));
+        assert!(output.contains("brewfs_writeback_freeze_commit_age_bytes_total 16384"));
+        assert!(output.contains("brewfs_writeback_upload_batch_ops_total 17"));
+        assert!(output.contains("brewfs_writeback_upload_batch_bytes_total 32768"));
+        assert!(output.contains("brewfs_writeback_upload_batch_blocks_total 18"));
+        assert!(output.contains("brewfs_writeback_upload_partial_tail_ops_total 19"));
         assert!(output.contains("brewfs_reader_buffer_bytes 8192"));
         assert!(output.contains("brewfs_vfs_create_total_ops_total 0"));
         assert!(output.contains("brewfs_vfs_unlink_lookup_lat_us_total 0"));
@@ -1345,11 +1637,14 @@ mod tests {
         stats.fuse_write_ops.store(4, ORD);
         stats.fuse_write_lat_us.store(1000, ORD);
         stats.sync_cache_counters(3, 1);
-        stats.sync_writeback_dirty_breakdown(11, 22, 33);
+        stats.sync_writeback_dirty_breakdown(11, 2, 22, 3, 33, 4);
         stats.add_writeback_backpressure_soft_sleep(Duration::from_micros(44));
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(55));
         stats.sync_writeback_backpressure_metrics(66, 77, 88, 99);
         stats.sync_writeback_phase_metrics(111, 222, 333, 444, 555, 666, 777);
+        stats.sync_writeback_slice_selection_metrics(888, 999, 1000, 1001);
+        stats.sync_writeback_freeze_metrics(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+        stats.sync_writeback_upload_batch_metrics(11, 12, 13, 14);
         stats.sync_object_store_metrics(2, 8192, 50, 1, 4096, 25, 75, 125, 3);
 
         let snapshot = stats.snapshot();
@@ -1366,8 +1661,11 @@ mod tests {
         assert_eq!(snapshot.avg_s3_put_cache_lat_us(), 125.0);
         assert_eq!(snapshot.s3_del_ops, 3);
         assert_eq!(snapshot.writeback_live_dirty_bytes, 11);
+        assert_eq!(snapshot.writeback_live_slices, 2);
         assert_eq!(snapshot.writeback_recent_pending_upload_bytes, 22);
+        assert_eq!(snapshot.writeback_recent_pending_upload_slices, 3);
         assert_eq!(snapshot.writeback_recent_uploaded_bytes, 33);
+        assert_eq!(snapshot.writeback_recent_uploaded_slices, 4);
         assert_eq!(snapshot.writeback_backpressure_soft_sleep_ops, 66);
         assert_eq!(snapshot.writeback_backpressure_soft_sleep_us, 77);
         assert_eq!(snapshot.writeback_backpressure_hard_wait_ops, 88);
@@ -1379,6 +1677,24 @@ mod tests {
         assert_eq!(snapshot.writeback_stage_lat_us, 555);
         assert_eq!(snapshot.writeback_stage_failures, 666);
         assert_eq!(snapshot.writeback_commit_before_stage_ops, 777);
+        assert_eq!(snapshot.writeback_slice_create_ops, 888);
+        assert_eq!(snapshot.writeback_slice_reuse_ops, 999);
+        assert_eq!(snapshot.writeback_slice_reject_older_unique_ops, 1000);
+        assert_eq!(snapshot.writeback_slice_reject_dispatched_prefix_ops, 1001);
+        assert_eq!(snapshot.writeback_freeze_size_ops, 1);
+        assert_eq!(snapshot.writeback_freeze_size_bytes, 2);
+        assert_eq!(snapshot.writeback_freeze_max_unflushed_ops, 3);
+        assert_eq!(snapshot.writeback_freeze_max_unflushed_bytes, 4);
+        assert_eq!(snapshot.writeback_freeze_explicit_flush_ops, 5);
+        assert_eq!(snapshot.writeback_freeze_explicit_flush_bytes, 6);
+        assert_eq!(snapshot.writeback_freeze_auto_ops, 7);
+        assert_eq!(snapshot.writeback_freeze_auto_bytes, 8);
+        assert_eq!(snapshot.writeback_freeze_commit_age_ops, 9);
+        assert_eq!(snapshot.writeback_freeze_commit_age_bytes, 10);
+        assert_eq!(snapshot.writeback_upload_batch_ops, 11);
+        assert_eq!(snapshot.writeback_upload_batch_bytes, 12);
+        assert_eq!(snapshot.writeback_upload_batch_blocks, 13);
+        assert_eq!(snapshot.writeback_upload_partial_tail_ops, 14);
     }
 
     #[test]
