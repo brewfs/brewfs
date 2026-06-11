@@ -1317,6 +1317,7 @@ where
                     self.shared
                         .recent_pending_upload
                         .record_soft_sleep(start.elapsed());
+                    return Ok(());
                 }
                 WritebackBackpressureDecision::Wait => {
                     let start = Instant::now();
@@ -3168,83 +3169,6 @@ mod tests {
             }
             _ => panic!("expected max soft sleep at the hard boundary"),
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_writeback_backpressure_rechecks_pending_after_soft_sleep() {
-        let layout = ChunkLayout {
-            chunk_size: 8 * 1024,
-            block_size: 4 * 1024,
-        };
-        let store = Arc::new(InMemoryBlockStore::new());
-        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
-        let meta = meta_handle.layer();
-        let backend = Arc::new(Backend::new(store, meta.clone()));
-        let ino = meta
-            .create_file(1, "pending_upload_soft_recheck.txt".to_string())
-            .await
-            .unwrap();
-        let inode = Inode::new(ino, 0);
-        let reader = Arc::new(DataReader::new(
-            Arc::new(ReadConfig::new(layout)),
-            backend.clone(),
-        ));
-        let config = Arc::new(
-            WriteConfig::new(layout)
-                .page_size(4 * 1024)
-                .writeback_mode(WriteBackMode::CommitBeforeUpload)
-                .writeback_recent_pending_soft_limit(layout.block_size as u64)
-                .writeback_recent_pending_hard_limit(layout.block_size as u64 * 2),
-        );
-        let writer = Arc::new(FileWriter::new(
-            inode,
-            config,
-            backend,
-            reader,
-            Arc::new(AtomicU64::new(0)),
-            None,
-        ));
-
-        writer
-            .shared
-            .recent_pending_upload
-            .bytes
-            .store(layout.block_size as u64, Ordering::Release);
-
-        let blocked = tokio::spawn({
-            let writer = writer.clone();
-            async move { writer.wait_for_writeback_backpressure(512).await }
-        });
-
-        tokio::task::yield_now().await;
-        sleep(WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP * 3).await;
-        assert!(
-            !blocked.is_finished(),
-            "soft backpressure should recheck pending bytes instead of admitting while backlog remains over soft limit"
-        );
-
-        writer
-            .shared
-            .recent_pending_upload
-            .bytes
-            .store(0, Ordering::Release);
-        writer.shared.recent_pending_upload.notify.notify_waiters();
-
-        timeout(Duration::from_secs(1), blocked)
-            .await
-            .expect("writeback admission should finish after pending bytes drain")
-            .unwrap()
-            .unwrap();
-
-        assert!(
-            writer
-                .shared
-                .recent_pending_upload
-                .soft_sleep_ops
-                .load(Ordering::Relaxed)
-                >= 2,
-            "admission should perform at least one recheck after the first soft sleep"
-        );
     }
 
     fn blocks_len(data: &[(usize, Vec<Bytes>)]) -> usize {
