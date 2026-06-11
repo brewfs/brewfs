@@ -1,13 +1,12 @@
 use super::{AuthConfig, ConsoleConfig, ConsoleState, api};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::{Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tower_http::services::ServeDir;
 
@@ -15,10 +14,12 @@ pub fn build_router(config: ConsoleConfig) -> Router {
     let state = ConsoleState {
         auth: config.auth.clone(),
         static_dir: config.static_dir.clone(),
+        registry: super::registry::VolumeRegistry::new(config.state_dir.clone()),
         csi_dashboard: config.csi_dashboard,
     };
     let api = Router::new()
         .route("/health", get(api::health))
+        .route("/volumes", get(api::list_volumes).post(api::create_volume))
         .fallback(api_not_found)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -137,25 +138,9 @@ fn content_type_for_path(path: &Path) -> &'static str {
 fn json_error(
     status: StatusCode,
     code: &'static str,
-    message: &'static str,
-) -> (StatusCode, Json<ErrorResponse>) {
-    (
-        status,
-        Json(ErrorResponse {
-            error: ErrorBody { code, message },
-        }),
-    )
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: ErrorBody,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    code: &'static str,
-    message: &'static str,
+    message: impl Into<String>,
+) -> api::ApiErrorResponse {
+    api::json_error(status, code, message)
 }
 
 #[cfg(test)]
@@ -171,6 +156,7 @@ mod tests {
     fn test_config(static_dir: &std::path::Path, auth: AuthConfig) -> ConsoleConfig {
         ConsoleConfig {
             listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            state_dir: static_dir.join("state"),
             static_dir: static_dir.to_path_buf(),
             auth,
             csi_dashboard: false,
@@ -352,5 +338,65 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(body.as_ref(), b"icon");
+    }
+
+    #[tokio::test]
+    async fn volumes_api_creates_and_lists_redacted_registry_entries() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+
+        let create_body = serde_json::json!({
+            "name": "dev-local",
+            "description": "local development",
+            "labels": { "env": "dev" },
+            "mount_config": {
+                "mount_point": "/mnt/brewfs",
+                "data_backend": "local-fs",
+                "data_dir": "/var/lib/brewfs/data",
+                "meta_backend": "sqlx",
+                "meta_url": "postgres://brewfs:secret@db.example/brewfs",
+                "chunk_size": 67108864,
+                "block_size": 4194304
+            }
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/volumes")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(created["name"], "dev-local");
+        assert_eq!(
+            created["mount_config"]["meta_url_redacted"],
+            "postgres://brewfs:<redacted>@db.example/brewfs"
+        );
+        assert!(!String::from_utf8_lossy(&body).contains("secret"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/volumes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(listed["volumes"][0]["id"], created["id"]);
+        assert!(!String::from_utf8_lossy(&body).contains("secret"));
     }
 }

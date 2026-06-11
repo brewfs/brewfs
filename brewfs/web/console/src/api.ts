@@ -11,6 +11,45 @@ export interface HealthResponse {
   static_assets_available: boolean;
 }
 
+export interface VolumeResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  labels: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+  mount_config: VolumeMountConfigResponse;
+}
+
+export interface VolumeMountConfigResponse {
+  mount_point: string | null;
+  data_backend: string;
+  data_dir: string | null;
+  meta_backend: string;
+  meta_url_redacted: string | null;
+  chunk_size: number | null;
+  block_size: number | null;
+}
+
+export interface ListVolumesResponse {
+  volumes: VolumeResponse[];
+}
+
+export interface CreateVolumeRequest {
+  name: string;
+  description?: string;
+  labels?: Record<string, string>;
+  mount_config: {
+    mount_point?: string;
+    data_backend: string;
+    data_dir?: string;
+    meta_backend: string;
+    meta_url?: string;
+    chunk_size?: number;
+    block_size?: number;
+  };
+}
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -22,19 +61,54 @@ export class ApiError extends Error {
 }
 
 export async function fetchHealth(token?: string | null): Promise<HealthResponse> {
+  const response = await fetch('/api/health', {
+    headers: apiHeaders(token),
+  });
+
+  assertOk(response, 'health request failed');
+
+  return (await response.json()) as HealthResponse;
+}
+
+export async function fetchVolumes(token?: string | null): Promise<ListVolumesResponse> {
+  const response = await fetch('/api/volumes', {
+    headers: apiHeaders(token),
+  });
+
+  assertOk(response, 'volumes request failed');
+
+  return (await response.json()) as ListVolumesResponse;
+}
+
+export async function createVolume(
+  request: CreateVolumeRequest,
+  token?: string | null,
+): Promise<VolumeResponse> {
+  const response = await fetch('/api/volumes', {
+    method: 'POST',
+    headers: apiHeaders(token, true),
+    body: JSON.stringify(request),
+  });
+
+  assertOk(response, 'create volume request failed');
+
+  return (await response.json()) as VolumeResponse;
+}
+
+function apiHeaders(token?: string | null, json = false): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   const trimmedToken = token?.trim();
   if (trimmedToken) {
     headers.Authorization = `Bearer ${trimmedToken}`;
   }
-
-  const response = await fetch('/api/health', {
-    headers,
-  });
-
-  if (!response.ok) {
-    throw new ApiError(`health request failed: ${response.status}`, response.status);
+  if (json) {
+    headers['Content-Type'] = 'application/json';
   }
+  return headers;
+}
 
-  return (await response.json()) as HealthResponse;
+function assertOk(response: Response, message: string) {
+  if (!response.ok) {
+    throw new ApiError(`${message}: ${response.status}`, response.status);
+  }
 }

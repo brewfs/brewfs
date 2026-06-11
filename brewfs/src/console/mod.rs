@@ -1,7 +1,9 @@
 pub mod api;
+pub mod registry;
 pub mod server;
 
 use crate::config::ConsoleArgs;
+use registry::VolumeRegistry;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -51,6 +53,7 @@ impl fmt::Debug for AuthConfig {
 #[derive(Debug, Clone)]
 pub struct ConsoleConfig {
     pub listen: SocketAddr,
+    pub state_dir: PathBuf,
     pub static_dir: PathBuf,
     pub auth: AuthConfig,
     pub csi_dashboard: bool,
@@ -60,6 +63,7 @@ pub struct ConsoleConfig {
 pub struct ConsoleState {
     pub auth: AuthConfig,
     pub static_dir: PathBuf,
+    pub registry: VolumeRegistry,
     pub csi_dashboard: bool,
 }
 
@@ -74,6 +78,7 @@ impl ConsoleConfig {
 
         Ok(Self {
             listen: args.listen,
+            state_dir: args.state_dir.unwrap_or_else(default_state_dir),
             static_dir: args
                 .static_dir
                 .unwrap_or_else(|| PathBuf::from("brewfs/web/console/dist")),
@@ -119,6 +124,16 @@ fn read_token_auth(token_file: Option<&PathBuf>) -> anyhow::Result<AuthConfig> {
     Ok(AuthConfig::Token {
         token: Arc::from(token),
     })
+}
+
+fn default_state_dir() -> PathBuf {
+    if unsafe { libc::geteuid() } == 0 {
+        return PathBuf::from("/var/lib/brewfs/console");
+    }
+    dirs::state_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brewfs")
+        .join("console")
 }
 
 #[cfg(test)]
