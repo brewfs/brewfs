@@ -23,6 +23,7 @@ from typing import Iterable
 
 
 BYTES_PER_MIB = 1024.0 * 1024.0
+BYTES_PER_GIB = BYTES_PER_MIB * 1024.0
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,8 @@ def op_totals(jobs: list[dict], op_name: str) -> dict[str, float]:
     mean_ns = sum(mean * n for mean, n in samples) / total_n if total_n else 0.0
     runtimes = [as_float(op.get("runtime")) for op in ops if as_float(op.get("runtime")) > 0]
     return {
+        "io_bytes": sum(as_float(op.get("io_bytes")) for op in ops),
+        "total_ios": sum(as_float(op.get("total_ios")) for op in ops),
         "bw_bytes": sum(as_float(op.get("bw_bytes")) for op in ops),
         "iops": sum(as_float(op.get("iops")) for op in ops),
         "mean_ns": mean_ns,
@@ -152,12 +155,15 @@ def load_fio_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
         read = op_totals(jobs, "read")
         write = op_totals(jobs, "write")
         runtime_ms = max(read["runtime_ms"], write["runtime_ms"])
+        raw_job_runtime_ms = max((as_float(job.get("job_runtime")) for job in jobs), default=0.0)
 
         for prefix, op in (("read", read), ("write", write)):
             if op["bw_bytes"] <= 0:
                 continue
             metrics.extend(
                 [
+                    Metric("fio", item, f"{prefix}_io_mib", op["io_bytes"] / BYTES_PER_MIB, "MiB"),
+                    Metric("fio", item, f"{prefix}_total_ios", op["total_ios"], "ios"),
                     Metric("fio", item, f"{prefix}_bw_mib_s", op["bw_bytes"] / BYTES_PER_MIB, "MiB/s"),
                     Metric("fio", item, f"{prefix}_iops", op["iops"], "iops"),
                     Metric("fio", item, f"{prefix}_mean_ms", op["mean_ns"] / 1_000_000.0, "ms"),
@@ -169,6 +175,8 @@ def load_fio_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
 
         if runtime_ms > 0:
             metrics.append(Metric("fio", item, "active_io_runtime_s", runtime_ms / 1000.0, "s"))
+        if raw_job_runtime_ms > 0:
+            metrics.append(Metric("fio", item, "raw_job_runtime_s", raw_job_runtime_ms / 1000.0, "s"))
         for opt_name in ("rw", "bs", "numjobs", "direct"):
             if opt_name in options:
                 metrics.append(Metric("fio_config", item, opt_name, str(options[opt_name]), ""))
@@ -245,13 +253,73 @@ STAT_METRICS = {
     "brewfs_fuse_read_bytes_total": ("fuse_read_mib", "MiB", BYTES_PER_MIB),
     "brewfs_s3_put_ops_total": ("s3_put_ops", "ops", 1.0),
     "brewfs_s3_get_ops_total": ("s3_get_ops", "ops", 1.0),
+    "brewfs_s3_put_bytes_total": ("s3_put_mib", "MiB", BYTES_PER_MIB),
+    "brewfs_s3_get_bytes_total": ("s3_get_mib", "MiB", BYTES_PER_MIB),
+    "brewfs_s3_put_lat_us_total": ("s3_put_total_ms", "ms", 1000.0),
+    "brewfs_s3_get_lat_us_total": ("s3_get_total_ms", "ms", 1000.0),
     "brewfs_s3_put_avg_lat_us": ("s3_put_avg_ms", "ms", 1000.0),
     "brewfs_s3_get_avg_lat_us": ("s3_get_avg_ms", "ms", 1000.0),
+    "brewfs_s3_put_prepare_avg_lat_us": ("s3_put_prepare_avg_ms", "ms", 1000.0),
+    "brewfs_s3_put_cache_avg_lat_us": ("s3_put_cache_avg_ms", "ms", 1000.0),
     "brewfs_writeback_backpressure_soft_sleep_ops": ("writeback_soft_sleep_ops", "ops", 1.0),
     "brewfs_writeback_backpressure_soft_sleep_us": ("writeback_soft_sleep_ms", "ms", 1000.0),
     "brewfs_writeback_backpressure_hard_wait_ops": ("writeback_hard_wait_ops", "ops", 1.0),
     "brewfs_writeback_backpressure_hard_wait_us": ("writeback_hard_wait_ms", "ms", 1000.0),
 }
+
+CRITICAL_STAT_METRICS = (
+    "brewfs_s3_put_ops_total",
+    "brewfs_s3_put_bytes_total",
+    "brewfs_s3_get_ops_total",
+    "brewfs_s3_get_bytes_total",
+    "brewfs_fuse_write_bytes_total",
+    "brewfs_fuse_read_bytes_total",
+    "brewfs_writeback_recent_pending_upload_bytes",
+    "brewfs_writeback_dirty_bytes",
+    "brewfs_writeback_backpressure_soft_sleep_ops",
+    "brewfs_writeback_backpressure_soft_sleep_us",
+    "brewfs_writeback_backpressure_hard_wait_ops",
+    "brewfs_writeback_backpressure_hard_wait_us",
+)
+
+
+def raw_metric(raw_metrics: dict[str, float], name: str) -> float | None:
+    return raw_metrics.get(name)
+
+
+def append_ratio_metric(
+    metrics: list[Metric],
+    item: str,
+    name: str,
+    numerator: float | None,
+    denominator: float | None,
+    unit: str,
+) -> None:
+    if numerator is None or denominator is None or denominator <= 0:
+        return
+    metrics.append(Metric("amplification", item, name, numerator / denominator, unit))
+
+
+def append_stats_derived_metrics(metrics: list[Metric], item: str, raw_metrics: dict[str, float]) -> None:
+    put_ops = raw_metric(raw_metrics, "brewfs_s3_put_ops_total")
+    put_bytes = raw_metric(raw_metrics, "brewfs_s3_put_bytes_total")
+    get_ops = raw_metric(raw_metrics, "brewfs_s3_get_ops_total")
+    get_bytes = raw_metric(raw_metrics, "brewfs_s3_get_bytes_total")
+    fuse_write_bytes = raw_metric(raw_metrics, "brewfs_fuse_write_bytes_total")
+    fuse_read_bytes = raw_metric(raw_metrics, "brewfs_fuse_read_bytes_total")
+    uploaded_bytes = raw_metric(raw_metrics, "brewfs_writeback_recent_uploaded_bytes")
+
+    append_ratio_metric(metrics, item, "upload_byte_amp", put_bytes, fuse_write_bytes, "ratio")
+    append_ratio_metric(metrics, item, "writeback_upload_byte_amp", uploaded_bytes, fuse_write_bytes, "ratio")
+    append_ratio_metric(metrics, item, "s3_put_avg_object_mib", put_bytes, put_ops * BYTES_PER_MIB if put_ops else None, "MiB/op")
+    append_ratio_metric(metrics, item, "s3_get_avg_object_mib", get_bytes, get_ops * BYTES_PER_MIB if get_ops else None, "MiB/op")
+    append_ratio_metric(metrics, item, "put_ops_per_gib_written", put_ops, fuse_write_bytes / BYTES_PER_GIB if fuse_write_bytes else None, "ops/GiB")
+    append_ratio_metric(metrics, item, "get_ops_per_gib_read", get_ops, fuse_read_bytes / BYTES_PER_GIB if fuse_read_bytes else None, "ops/GiB")
+
+
+def append_missing_stats_metric(metrics: list[Metric], item: str, raw_metrics: dict[str, float]) -> None:
+    missing = [name for name in CRITICAL_STAT_METRICS if name not in raw_metrics]
+    metrics.append(Metric("gap", item, "missing_critical_stats", ",".join(missing) if missing else "none", ""))
 
 
 def parse_stats_file(path: pathlib.Path) -> dict[str, float]:
@@ -300,7 +368,55 @@ def load_stats_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
         for raw_name, (metric_name, unit, divisor) in STAT_METRICS.items():
             if raw_name in raw_metrics:
                 metrics.append(Metric("stats", item, metric_name, raw_metrics[raw_name] / divisor, unit))
+        append_stats_derived_metrics(metrics, item, raw_metrics)
+        append_missing_stats_metric(metrics, item, raw_metrics)
     return metrics
+
+
+def get_metric_value(metrics: dict[tuple[str, str, str], Metric], kind: str, item: str, name: str) -> float | None:
+    metric = metrics.get((kind, item, name))
+    if metric is None or not isinstance(metric.value, float):
+        return None
+    return metric.value
+
+
+def append_artifact_gap_metrics(metrics: list[Metric], artifact_dir: pathlib.Path) -> None:
+    missing: list[str] = []
+    if not (artifact_dir / "perf-summary.tsv").exists():
+        missing.append("perf-summary.tsv")
+    if not (artifact_dir / "post-write-drain.tsv").exists():
+        missing.append("post-write-drain.tsv")
+    if not iter_fio_paths(artifact_dir):
+        missing.append("results/fio*.json")
+    diag_dir = artifact_dir / "diagnostics"
+    if not diag_dir.exists() or not list(diag_dir.glob("stats-*-after.txt")):
+        missing.append("diagnostics/stats-*-after.txt")
+    metrics.append(Metric("gap", "__artifact__", "missing_artifact_sections", ",".join(missing) if missing else "none", ""))
+
+
+def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
+    metric_map = {(metric.kind, metric.item, metric.name): metric for metric in metrics}
+    items = sorted({metric.item for metric in metrics})
+    derived: list[Metric] = []
+    for item in items:
+        wall_s = get_metric_value(metric_map, "summary", item, "tool_wall_s")
+        active_s = get_metric_value(metric_map, "fio", item, "active_io_runtime_s")
+        raw_job_s = get_metric_value(metric_map, "fio", item, "raw_job_runtime_s")
+        drain_s = get_metric_value(metric_map, "drain", item, "post_write_drain_s")
+
+        if wall_s is not None and active_s is not None:
+            derived.append(Metric("runtime", item, "wall_active_tail_s", wall_s - active_s, "s"))
+            if active_s > 0:
+                derived.append(Metric("runtime", item, "wall_active_ratio", wall_s / active_s, "ratio"))
+        if wall_s is not None and raw_job_s is not None:
+            derived.append(Metric("runtime", item, "wall_job_runtime_tail_s", wall_s - raw_job_s, "s"))
+            if raw_job_s > 0:
+                derived.append(Metric("runtime", item, "wall_job_runtime_ratio", wall_s / raw_job_s, "ratio"))
+        if active_s is not None and drain_s is not None:
+            derived.append(Metric("runtime", item, "active_plus_drain_s", active_s + drain_s, "s"))
+            if active_s > 0:
+                derived.append(Metric("runtime", item, "drain_active_ratio", drain_s / active_s, "ratio"))
+    return metrics + derived
 
 
 def load_artifact(artifact_dir: pathlib.Path) -> dict[tuple[str, str, str], Metric]:
@@ -322,6 +438,8 @@ def load_artifact(artifact_dir: pathlib.Path) -> dict[tuple[str, str, str], Metr
             "or diagnostics/stats-*-after.txt)"
         )
 
+    append_artifact_gap_metrics(metrics, artifact_dir)
+    metrics = append_runtime_metrics(metrics)
     return {(metric.kind, metric.item, metric.name): metric for metric in metrics}
 
 
@@ -330,9 +448,15 @@ def compare_metrics(
     candidate: dict[tuple[str, str, str], Metric],
 ) -> list[Row]:
     rows: list[Row] = []
-    for key in sorted(set(baseline) & set(candidate)):
-        base = baseline[key]
-        cand = candidate[key]
+    common_keys = set(baseline) & set(candidate)
+    gap_keys = {key for key in set(baseline) | set(candidate) if key[0] == "gap"}
+    for key in sorted(common_keys | gap_keys):
+        if key[0] != "gap" and key not in common_keys:
+            continue
+        base = baseline.get(key, Metric(key[0], key[1], key[2], "not_reported", ""))
+        cand = candidate.get(key, Metric(key[0], key[1], key[2], "not_reported", ""))
+        if key[0] == "gap" and base.value == "none" and cand.value == "none":
+            continue
         unit = cand.unit or base.unit
         rows.append(
             Row(
@@ -401,8 +525,11 @@ def emit_markdown(
         ("summary", "## Summary"),
         ("fio_config", "## Fio Config"),
         ("fio", "## Fio"),
+        ("runtime", "## Runtime And Tail"),
         ("drain", "## Drain And Backpressure"),
         ("stats", "## BrewFS Stats"),
+        ("amplification", "## Object And Upload Amplification"),
+        ("gap", "## Metric Gaps"),
     ]
     for kind, heading in groups:
         group_rows = [row for row in rows if row.kind == kind]
