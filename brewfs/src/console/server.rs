@@ -19,6 +19,7 @@ pub fn build_router(config: ConsoleConfig) -> Router {
         csi_dashboard: config.csi.enabled,
         csi_adapter: super::csi::default_csi_adapter(config.csi.clone()),
         trash_adapter: super::trash::default_trash_adapter(),
+        acl_adapter: super::acl::default_acl_adapter(),
     };
     let api = Router::new()
         .route("/health", get(api::health))

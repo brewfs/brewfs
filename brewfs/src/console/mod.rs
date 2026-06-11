@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod api;
 pub mod csi;
 pub mod registry;
@@ -79,6 +80,7 @@ pub struct ConsoleState {
     pub csi_dashboard: bool,
     pub csi_adapter: Arc<dyn csi::CsiAdapter>,
     pub trash_adapter: Arc<dyn trash::TrashAdapter>,
+    pub acl_adapter: Arc<dyn acl::AclAdapter>,
 }
 
 impl ConsoleConfig {

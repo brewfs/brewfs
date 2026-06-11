@@ -1,5 +1,6 @@
 use super::{
     AuthMode, ConsoleState,
+    acl::AclAdapterError,
     csi::CsiAdapterError,
     registry::{
         CreateVolumeRequest, RegistryError, UpdateVolumeRequest,
@@ -596,36 +597,46 @@ pub async fn get_acl(
     State(state): State<ConsoleState>,
     Path(volume_id): Path<String>,
     Query(query): Query<PathQuery>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    let _path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
-    ensure_acl_capability(&state, &volume_id).await?;
-    Err(unsupported(
-        "ACL control-plane adapter is not implemented yet",
-    ))
+) -> Result<Json<super::acl::AclResponse>, ApiErrorResponse> {
+    let path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
+    let record = ensure_acl_capability(&state, &volume_id).await?;
+    state
+        .acl_adapter
+        .get(&volume_id, &path, &record)
+        .await
+        .map(Json)
+        .map_err(acl_adapter_error)
 }
 
 pub async fn put_acl(
     State(state): State<ConsoleState>,
     Path(volume_id): Path<String>,
     Query(query): Query<PathQuery>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    let _path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
-    ensure_acl_capability(&state, &volume_id).await?;
-    Err(unsupported(
-        "ACL control-plane adapter is not implemented yet",
-    ))
+    Json(request): Json<super::acl::AclResponse>,
+) -> Result<Json<super::acl::AclResponse>, ApiErrorResponse> {
+    let path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
+    let record = ensure_acl_capability(&state, &volume_id).await?;
+    state
+        .acl_adapter
+        .put(&volume_id, &path, request, &record)
+        .await
+        .map(Json)
+        .map_err(acl_adapter_error)
 }
 
 pub async fn delete_acl(
     State(state): State<ConsoleState>,
     Path(volume_id): Path<String>,
     Query(query): Query<PathQuery>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    let _path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
-    ensure_acl_capability(&state, &volume_id).await?;
-    Err(unsupported(
-        "ACL control-plane adapter is not implemented yet",
-    ))
+) -> Result<Json<super::acl::AclActionResponse>, ApiErrorResponse> {
+    let path = normalize_absolute_path(query.path.as_deref().unwrap_or("/"))?;
+    let record = ensure_acl_capability(&state, &volume_id).await?;
+    state
+        .acl_adapter
+        .delete(&volume_id, &path, &record)
+        .await
+        .map(|()| Json(super::acl::AclActionResponse { ok: true }))
+        .map_err(acl_adapter_error)
 }
 
 pub async fn csi_summary(
@@ -771,7 +782,7 @@ async fn find_optional_runtime_record_for_volume(
 async fn ensure_acl_capability(
     state: &ConsoleState,
     volume_id: &str,
-) -> Result<(), ApiErrorResponse> {
+) -> Result<InstanceRecord, ApiErrorResponse> {
     let record = find_runtime_record_for_volume(state, volume_id).await?;
     let response = send_control_request(&record.socket_path, &ControlRequest::GetInfo).await?;
     match response {
@@ -802,7 +813,7 @@ async fn ensure_acl_capability(
                 ));
             }
             if capabilities.acl {
-                Ok(())
+                Ok(record)
             } else {
                 Err(unsupported(
                     "ACL is not supported by the mounted metadata backend",
@@ -866,6 +877,12 @@ fn csi_adapter_error(err: CsiAdapterError) -> ApiErrorResponse {
 fn trash_adapter_error(err: TrashAdapterError) -> ApiErrorResponse {
     match err {
         TrashAdapterError::Unsupported(message) => unsupported(message),
+    }
+}
+
+fn acl_adapter_error(err: AclAdapterError) -> ApiErrorResponse {
+    match err {
+        AclAdapterError::Unsupported(message) => unsupported(message),
     }
 }
 
@@ -1020,6 +1037,7 @@ mod tests {
     use crate::{
         console::{
             AuthConfig, AuthMode, ConsoleState,
+            acl::{AclAdapter, AclEntry, AclResponse},
             csi::{CsiAdapter, CsiResourceList, CsiSummary},
             registry::{CreateVolumeMountConfig, CreateVolumeRequest, VolumeRegistry},
             trash::{TrashAdapter, TrashEntry, TrashList},
@@ -1110,6 +1128,47 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ReadyAclAdapter;
+
+    #[async_trait::async_trait]
+    impl AclAdapter for ReadyAclAdapter {
+        async fn get(
+            &self,
+            _volume_id: &str,
+            _path: &str,
+            _runtime: &InstanceRecord,
+        ) -> Result<AclResponse, super::super::acl::AclAdapterError> {
+            Ok(AclResponse {
+                entries: vec![AclEntry {
+                    scope: "access".to_string(),
+                    tag: "user_obj".to_string(),
+                    id: None,
+                    perm: "rwx".to_string(),
+                }],
+            })
+        }
+
+        async fn put(
+            &self,
+            _volume_id: &str,
+            _path: &str,
+            request: AclResponse,
+            _runtime: &InstanceRecord,
+        ) -> Result<AclResponse, super::super::acl::AclAdapterError> {
+            Ok(request)
+        }
+
+        async fn delete(
+            &self,
+            _volume_id: &str,
+            _path: &str,
+            _runtime: &InstanceRecord,
+        ) -> Result<(), super::super::acl::AclAdapterError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn health_response_uses_build_metadata_and_state() {
         let static_dir = PathBuf::from("/tmp/brewfs-console-dist");
@@ -1121,6 +1180,7 @@ mod tests {
             csi_dashboard: true,
             csi_adapter: Arc::new(ReadyCsiAdapter),
             trash_adapter: Arc::new(ReadyTrashAdapter),
+            acl_adapter: Arc::new(ReadyAclAdapter),
         };
 
         let response = HealthResponse::from_state(&state, true);
@@ -1144,6 +1204,7 @@ mod tests {
             csi_dashboard: true,
             csi_adapter: Arc::new(ReadyCsiAdapter),
             trash_adapter: Arc::new(ReadyTrashAdapter),
+            acl_adapter: Arc::new(ReadyAclAdapter),
         };
 
         let Json(response) = csi_summary(State(state)).await.unwrap();
@@ -1163,6 +1224,7 @@ mod tests {
             csi_dashboard: false,
             csi_adapter: Arc::new(ReadyCsiAdapter),
             trash_adapter: Arc::new(ReadyTrashAdapter),
+            acl_adapter: Arc::new(ReadyAclAdapter),
         };
 
         let err = csi_summary(State(state)).await.unwrap_err();
@@ -1208,11 +1270,156 @@ mod tests {
             csi_dashboard: false,
             csi_adapter: Arc::new(ReadyCsiAdapter),
             trash_adapter: Arc::new(ReadyTrashAdapter),
+            acl_adapter: Arc::new(ReadyAclAdapter),
         };
 
         let Json(response) = list_trash(State(state), Path(volume.id)).await.unwrap();
 
         assert_eq!(response.entries[0].id, "trash-1");
         assert_eq!(response.entries[0].original_path, "/docs/report.txt");
+    }
+
+    #[tokio::test]
+    async fn get_acl_uses_state_adapter_after_capability_check() {
+        let (_dir, _server, state, volume_id) = acl_ready_state().await;
+
+        let Json(response) = get_acl(
+            State(state),
+            Path(volume_id),
+            Query(PathQuery {
+                path: Some("/".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.entries[0].tag, "user_obj");
+        assert_eq!(response.entries[0].perm, "rwx");
+    }
+
+    #[tokio::test]
+    async fn put_acl_uses_state_adapter_after_capability_check() {
+        let (_dir, _server, state, volume_id) = acl_ready_state().await;
+        let request = AclResponse {
+            entries: vec![AclEntry {
+                scope: "access".to_string(),
+                tag: "group".to_string(),
+                id: Some(1_000),
+                perm: "r-x".to_string(),
+            }],
+        };
+
+        let Json(response) = put_acl(
+            State(state),
+            Path(volume_id),
+            Query(PathQuery {
+                path: Some("/docs".to_string()),
+            }),
+            Json(request.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response, request);
+    }
+
+    #[tokio::test]
+    async fn delete_acl_uses_state_adapter_after_capability_check() {
+        let (_dir, _server, state, volume_id) = acl_ready_state().await;
+
+        let Json(response) = delete_acl(
+            State(state),
+            Path(volume_id),
+            Query(PathQuery {
+                path: Some("/docs".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.ok);
+    }
+
+    async fn acl_ready_state() -> (
+        tempfile::TempDir,
+        crate::control::server::ControlServer,
+        ConsoleState,
+        String,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = VolumeRegistry::new(dir.path().join("state"));
+        let runtime_registry = RuntimeRegistry::new(dir.path().join("runtime"));
+        let volume = registry
+            .create(CreateVolumeRequest {
+                name: "dev-local".to_string(),
+                description: None,
+                labels: BTreeMap::new(),
+                mount_config: CreateVolumeMountConfig {
+                    mount_point: Some("/mnt/brewfs".to_string()),
+                    data_backend: "local-fs".to_string(),
+                    data_dir: None,
+                    meta_backend: "sqlx".to_string(),
+                    meta_url: None,
+                    chunk_size: None,
+                    block_size: None,
+                },
+            })
+            .await
+            .unwrap();
+        let pid = std::process::id();
+        let socket_path = runtime_registry.socket_path(pid);
+        let server =
+            crate::control::server::ControlServer::bind(socket_path.clone(), AclCapabilityHandler)
+                .await
+                .unwrap();
+        let record = InstanceRecord::new(
+            pid,
+            "/mnt/brewfs".to_string(),
+            socket_path,
+            chrono::Utc::now(),
+        );
+        runtime_registry.write_record(&record).await.unwrap();
+        let state = ConsoleState {
+            auth: AuthConfig::Disabled,
+            static_dir: dir.path().join("static"),
+            registry,
+            runtime_registry,
+            csi_dashboard: false,
+            csi_adapter: Arc::new(ReadyCsiAdapter),
+            trash_adapter: Arc::new(ReadyTrashAdapter),
+            acl_adapter: Arc::new(ReadyAclAdapter),
+        };
+        (dir, server, state, volume.id)
+    }
+
+    struct AclCapabilityHandler;
+
+    #[async_trait::async_trait]
+    impl crate::control::server::ControlHandler for AclCapabilityHandler {
+        async fn handle(
+            &self,
+            request: crate::control::protocol::ControlRequest,
+        ) -> crate::control::protocol::ControlResponse {
+            match request {
+                crate::control::protocol::ControlRequest::GetInfo => {
+                    let capabilities = crate::meta::store::MetaStoreCapabilities {
+                        acl: true,
+                        ..Default::default()
+                    };
+                    crate::control::protocol::ControlResponse::Info {
+                        pid: std::process::id(),
+                        mount_point: "/mnt/brewfs".to_string(),
+                        started_at: 1_786_000_000_000,
+                        version: "0.1.0-test".to_string(),
+                        meta_backend: "sqlx".to_string(),
+                        capabilities,
+                    }
+                }
+                other => crate::control::protocol::ControlResponse::Error {
+                    code: "unexpected".to_string(),
+                    message: format!("unexpected request: {other:?}"),
+                },
+            }
+        }
     }
 }
