@@ -1,7 +1,16 @@
 use super::api::CsiResourceQuery;
 use async_trait::async_trait;
+use k8s_openapi::api::{
+    core::v1::{PersistentVolume, PersistentVolumeClaim, Pod},
+    storage::v1::StorageClass,
+};
+use kube::{
+    Client, Config,
+    api::{Api, ListParams},
+    config::{KubeConfigOptions, Kubeconfig},
+};
 use serde::Serialize;
-use std::{fmt, sync::Arc};
+use std::{fmt, path::PathBuf, sync::Arc};
 
 #[cfg(test)]
 pub const DEFAULT_DRIVER_NAME: &str = "csi.brewfs.io";
@@ -24,6 +33,7 @@ pub struct CsiResourceList {
 pub enum CsiAdapterError {
     Disabled,
     Unsupported(&'static str),
+    Unavailable(String),
 }
 
 #[async_trait]
@@ -43,7 +53,11 @@ pub trait CsiAdapter: fmt::Debug + Send + Sync {
 }
 
 pub fn default_csi_adapter(config: super::ConsoleCsiConfig) -> Arc<dyn CsiAdapter> {
-    Arc::new(UnsupportedCsiAdapter { config })
+    if config.enabled {
+        Arc::new(KubernetesCsiAdapter::new(config))
+    } else {
+        Arc::new(UnsupportedCsiAdapter { config })
+    }
 }
 
 #[derive(Debug)]
@@ -87,7 +101,180 @@ impl CsiAdapter for UnsupportedCsiAdapter {
     }
 }
 
-#[cfg(test)]
+#[async_trait]
+pub trait CsiResourceCollector: fmt::Debug + Send + Sync {
+    async fn collect(&self) -> Result<CsiResourceSnapshot, CsiAdapterError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct KubernetesCsiAdapter {
+    driver_name: String,
+    collector: Arc<dyn CsiResourceCollector>,
+}
+
+impl KubernetesCsiAdapter {
+    pub fn new(config: super::ConsoleCsiConfig) -> Self {
+        Self {
+            driver_name: config.driver_name,
+            collector: Arc::new(KubernetesCsiResourceCollector::new(config.kubeconfig)),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_collector(
+        driver_name: impl Into<String>,
+        collector: Arc<dyn CsiResourceCollector>,
+    ) -> Self {
+        Self {
+            driver_name: driver_name.into(),
+            collector,
+        }
+    }
+
+    async fn snapshot_adapter(&self) -> Result<SnapshotCsiAdapter, CsiAdapterError> {
+        let snapshot = self.collector.collect().await?;
+        Ok(SnapshotCsiAdapter::new(self.driver_name.clone(), snapshot))
+    }
+}
+
+#[async_trait]
+impl CsiAdapter for KubernetesCsiAdapter {
+    async fn summary(&self) -> Result<CsiSummary, CsiAdapterError> {
+        self.snapshot_adapter().await?.summary().await
+    }
+
+    async fn storageclasses(&self) -> Result<CsiResourceList, CsiAdapterError> {
+        self.snapshot_adapter().await?.storageclasses().await
+    }
+
+    async fn persistentvolumes(&self) -> Result<CsiResourceList, CsiAdapterError> {
+        self.snapshot_adapter().await?.persistentvolumes().await
+    }
+
+    async fn persistentvolumeclaims(
+        &self,
+        query: &CsiResourceQuery,
+    ) -> Result<CsiResourceList, CsiAdapterError> {
+        self.snapshot_adapter()
+            .await?
+            .persistentvolumeclaims(query)
+            .await
+    }
+
+    async fn pods(&self, query: &CsiResourceQuery) -> Result<CsiResourceList, CsiAdapterError> {
+        self.snapshot_adapter().await?.pods(query).await
+    }
+}
+
+#[derive(Debug, Clone)]
+struct KubernetesCsiResourceCollector {
+    kubeconfig: Option<PathBuf>,
+}
+
+impl KubernetesCsiResourceCollector {
+    fn new(kubeconfig: Option<PathBuf>) -> Self {
+        Self { kubeconfig }
+    }
+
+    async fn client(&self) -> Result<Client, CsiAdapterError> {
+        if let Some(path) = &self.kubeconfig {
+            let kubeconfig = Kubeconfig::read_from(path).map_err(|err| {
+                CsiAdapterError::Unavailable(format!(
+                    "failed to read kubeconfig {}: {err}",
+                    path.display()
+                ))
+            })?;
+            let config = Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+                .await
+                .map_err(|err| {
+                    CsiAdapterError::Unavailable(format!(
+                        "failed to load kubeconfig {}: {err}",
+                        path.display()
+                    ))
+                })?;
+            Client::try_from(config).map_err(|err| {
+                CsiAdapterError::Unavailable(format!(
+                    "failed to create Kubernetes client from kubeconfig {}: {err}",
+                    path.display()
+                ))
+            })
+        } else {
+            Client::try_default().await.map_err(|err| {
+                CsiAdapterError::Unavailable(format!(
+                    "failed to create Kubernetes client from the default environment: {err}"
+                ))
+            })
+        }
+    }
+}
+
+#[async_trait]
+impl CsiResourceCollector for KubernetesCsiResourceCollector {
+    async fn collect(&self) -> Result<CsiResourceSnapshot, CsiAdapterError> {
+        let client = self.client().await?;
+        let params = ListParams::default();
+
+        let storageclasses: Api<StorageClass> = Api::all(client.clone());
+        let persistentvolumes: Api<PersistentVolume> = Api::all(client.clone());
+        let persistentvolumeclaims: Api<PersistentVolumeClaim> = Api::all(client.clone());
+        let pods: Api<Pod> = Api::all(client);
+
+        Ok(CsiResourceSnapshot {
+            storageclasses: serialize_items(
+                "StorageClass",
+                storageclasses
+                    .list(&params)
+                    .await
+                    .map_err(|err| kubernetes_list_error("StorageClass", err))?
+                    .items,
+            )?,
+            persistentvolumes: serialize_items(
+                "PersistentVolume",
+                persistentvolumes
+                    .list(&params)
+                    .await
+                    .map_err(|err| kubernetes_list_error("PersistentVolume", err))?
+                    .items,
+            )?,
+            persistentvolumeclaims: serialize_items(
+                "PersistentVolumeClaim",
+                persistentvolumeclaims
+                    .list(&params)
+                    .await
+                    .map_err(|err| kubernetes_list_error("PersistentVolumeClaim", err))?
+                    .items,
+            )?,
+            pods: serialize_items(
+                "Pod",
+                pods.list(&params)
+                    .await
+                    .map_err(|err| kubernetes_list_error("Pod", err))?
+                    .items,
+            )?,
+        })
+    }
+}
+
+fn kubernetes_list_error(kind: &'static str, err: kube::Error) -> CsiAdapterError {
+    CsiAdapterError::Unavailable(format!("failed to list Kubernetes {kind} resources: {err}"))
+}
+
+fn serialize_items<T: Serialize>(
+    kind: &'static str,
+    items: Vec<T>,
+) -> Result<Vec<serde_json::Value>, CsiAdapterError> {
+    items
+        .into_iter()
+        .map(|item| {
+            serde_json::to_value(item).map_err(|err| {
+                CsiAdapterError::Unavailable(format!(
+                    "failed to serialize Kubernetes {kind} resource: {err}"
+                ))
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CsiResourceSnapshot {
     pub storageclasses: Vec<serde_json::Value>,
@@ -96,14 +283,12 @@ pub struct CsiResourceSnapshot {
     pub pods: Vec<serde_json::Value>,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct SnapshotCsiAdapter {
     driver_name: String,
     snapshot: CsiResourceSnapshot,
 }
 
-#[cfg(test)]
 impl SnapshotCsiAdapter {
     pub fn new(driver_name: impl Into<String>, snapshot: CsiResourceSnapshot) -> Self {
         Self {
@@ -132,7 +317,7 @@ impl SnapshotCsiAdapter {
             .collect()
     }
 
-    fn brewfs_pvc_names(&self, namespace: Option<&str>) -> Vec<String> {
+    fn brewfs_pvc_refs(&self, namespace: Option<&str>) -> Vec<NamespacedName> {
         let storageclasses = self.brewfs_storageclass_names();
         let pvs = self.brewfs_pv_names();
         self.snapshot
@@ -151,8 +336,7 @@ impl SnapshotCsiAdapter {
                         .is_some_and(|name| storageclasses.iter().any(|entry| entry == name))
                     || volume_name.is_some_and(|name| pvs.iter().any(|entry| entry == name))
             })
-            .filter_map(resource_name)
-            .map(ToOwned::to_owned)
+            .filter_map(namespaced_resource_ref)
             .collect()
     }
 
@@ -170,7 +354,7 @@ impl SnapshotCsiAdapter {
         let namespace = pod
             .pointer("/metadata/namespace")
             .and_then(|value| value.as_str());
-        let pvc_names = self.brewfs_pvc_names(namespace);
+        let pvc_refs = self.brewfs_pvc_refs(namespace);
         pod.pointer("/spec/volumes")
             .and_then(|value| value.as_array())
             .is_some_and(|volumes| {
@@ -183,8 +367,9 @@ impl SnapshotCsiAdapter {
                     let pvc_name = volume
                         .pointer("/persistentVolumeClaim/claimName")
                         .and_then(|value| value.as_str());
-                    let brewfs_pvc =
-                        pvc_name.is_some_and(|name| pvc_names.iter().any(|entry| entry == name));
+                    let brewfs_pvc = pvc_name.is_some_and(|name| {
+                        pvc_refs.iter().any(|entry| entry.matches(namespace, name))
+                    });
                     let volume_matches = query.volume.as_deref().is_none_or(|filter| {
                         pvc_name == Some(filter) || volume_name == Some(filter)
                     });
@@ -217,7 +402,6 @@ impl SnapshotCsiAdapter {
     }
 }
 
-#[cfg(test)]
 #[async_trait]
 impl CsiAdapter for SnapshotCsiAdapter {
     async fn summary(&self) -> Result<CsiSummary, CsiAdapterError> {
@@ -228,7 +412,7 @@ impl CsiAdapter for SnapshotCsiAdapter {
         Ok(CsiSummary {
             storageclasses: self.brewfs_storageclass_names().len(),
             persistentvolumes: self.brewfs_pv_names().len(),
-            persistentvolumeclaims: self.brewfs_pvc_names(None).len(),
+            persistentvolumeclaims: self.brewfs_pvc_refs(None).len(),
             unhealthy_mounts: pods.iter().filter(|pod| !pod_ready(pod)).count(),
             pods: pods.len(),
         })
@@ -262,7 +446,7 @@ impl CsiAdapter for SnapshotCsiAdapter {
         &self,
         query: &CsiResourceQuery,
     ) -> Result<CsiResourceList, CsiAdapterError> {
-        let names = self.brewfs_pvc_names(query.namespace.as_deref());
+        let refs = self.brewfs_pvc_refs(query.namespace.as_deref());
         Ok(CsiResourceList {
             items: self
                 .snapshot
@@ -270,7 +454,8 @@ impl CsiAdapter for SnapshotCsiAdapter {
                 .iter()
                 .filter(|item| namespace_matches(item, query.namespace.as_deref()))
                 .filter(|item| {
-                    resource_name(item).is_some_and(|name| names.iter().any(|entry| entry == name))
+                    namespaced_resource_ref(item)
+                        .is_some_and(|item_ref| refs.iter().any(|entry| entry == &item_ref))
                 })
                 .cloned()
                 .collect(),
@@ -284,13 +469,33 @@ impl CsiAdapter for SnapshotCsiAdapter {
     }
 }
 
-#[cfg(test)]
 fn resource_name(item: &serde_json::Value) -> Option<&str> {
     item.pointer("/metadata/name")
         .and_then(|value| value.as_str())
 }
 
-#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NamespacedName {
+    namespace: Option<String>,
+    name: String,
+}
+
+impl NamespacedName {
+    fn matches(&self, namespace: Option<&str>, name: &str) -> bool {
+        self.namespace.as_deref() == namespace && self.name == name
+    }
+}
+
+fn namespaced_resource_ref(item: &serde_json::Value) -> Option<NamespacedName> {
+    Some(NamespacedName {
+        namespace: item
+            .pointer("/metadata/namespace")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        name: resource_name(item)?.to_owned(),
+    })
+}
+
 fn namespace_matches(item: &serde_json::Value, namespace: Option<&str>) -> bool {
     namespace.is_none_or(|expected| {
         item.pointer("/metadata/namespace")
@@ -299,7 +504,6 @@ fn namespace_matches(item: &serde_json::Value, namespace: Option<&str>) -> bool 
     })
 }
 
-#[cfg(test)]
 fn metadata_value<'a>(item: &'a serde_json::Value, section: &str, key: &str) -> Option<&'a str> {
     item.pointer("/metadata")
         .and_then(|metadata| metadata.get(section))
@@ -307,7 +511,6 @@ fn metadata_value<'a>(item: &'a serde_json::Value, section: &str, key: &str) -> 
         .and_then(|value| value.as_str())
 }
 
-#[cfg(test)]
 fn pod_ready(pod: &serde_json::Value) -> bool {
     let phase = pod
         .pointer("/status/phase")
@@ -550,10 +753,140 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn snapshot_adapter_does_not_match_same_named_pvcs_across_namespaces() {
+        let snapshot = CsiResourceSnapshot {
+            storageclasses: vec![json!({
+                "metadata": { "name": "brewfs-sc" },
+                "provisioner": DEFAULT_DRIVER_NAME
+            })],
+            persistentvolumes: Vec::new(),
+            persistentvolumeclaims: vec![
+                json!({
+                    "metadata": { "name": "data", "namespace": "prod" },
+                    "spec": { "storageClassName": "brewfs-sc" }
+                }),
+                json!({
+                    "metadata": { "name": "data", "namespace": "staging" },
+                    "spec": { "storageClassName": "other-sc" }
+                }),
+            ],
+            pods: Vec::new(),
+        };
+        let adapter = SnapshotCsiAdapter::new(DEFAULT_DRIVER_NAME, snapshot);
+
+        assert_eq!(
+            resource_names(
+                adapter
+                    .persistentvolumeclaims(&CsiResourceQuery {
+                        namespace: None,
+                        volume: None,
+                    })
+                    .await
+                    .unwrap()
+                    .items
+                    .as_slice()
+            ),
+            vec!["data"]
+        );
+        assert_eq!(
+            adapter
+                .persistentvolumeclaims(&CsiResourceQuery {
+                    namespace: Some("staging".to_string()),
+                    volume: None,
+                })
+                .await
+                .unwrap()
+                .items,
+            Vec::<serde_json::Value>::new()
+        );
+    }
+
     fn resource_names(items: &[serde_json::Value]) -> Vec<&str> {
         items
             .iter()
             .filter_map(|item| item.pointer("/metadata/name")?.as_str())
             .collect()
+    }
+
+    #[derive(Debug)]
+    struct StubCollector {
+        snapshot: CsiResourceSnapshot,
+    }
+
+    #[async_trait]
+    impl CsiResourceCollector for StubCollector {
+        async fn collect(&self) -> Result<CsiResourceSnapshot, CsiAdapterError> {
+            Ok(self.snapshot.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn kubernetes_adapter_uses_collected_resources_for_dashboard_views() {
+        let adapter = KubernetesCsiAdapter::from_collector(
+            DEFAULT_DRIVER_NAME,
+            Arc::new(StubCollector {
+                snapshot: CsiResourceSnapshot {
+                    storageclasses: vec![json!({
+                        "metadata": { "name": "brewfs-sc" },
+                        "provisioner": DEFAULT_DRIVER_NAME
+                    })],
+                    persistentvolumes: vec![json!({
+                        "metadata": { "name": "pv-data" },
+                        "spec": {
+                            "csi": { "driver": DEFAULT_DRIVER_NAME },
+                            "storageClassName": "brewfs-sc"
+                        }
+                    })],
+                    persistentvolumeclaims: vec![json!({
+                        "metadata": { "name": "data", "namespace": "prod" },
+                        "spec": {
+                            "storageClassName": "brewfs-sc",
+                            "volumeName": "pv-data"
+                        }
+                    })],
+                    pods: vec![json!({
+                        "metadata": { "name": "api", "namespace": "prod" },
+                        "spec": {
+                            "volumes": [
+                                {
+                                    "name": "data",
+                                    "persistentVolumeClaim": { "claimName": "data" }
+                                }
+                            ]
+                        },
+                        "status": {
+                            "phase": "Running",
+                            "conditions": [{ "type": "Ready", "status": "True" }]
+                        }
+                    })],
+                },
+            }),
+        );
+
+        assert_eq!(
+            adapter.summary().await.unwrap(),
+            CsiSummary {
+                storageclasses: 1,
+                persistentvolumes: 1,
+                persistentvolumeclaims: 1,
+                pods: 1,
+                unhealthy_mounts: 0,
+            }
+        );
+        assert_eq!(
+            resource_names(
+                adapter
+                    .pods(&CsiResourceQuery {
+                        namespace: Some("prod".to_string()),
+                        volume: Some("data".to_string()),
+                    })
+                    .await
+                    .unwrap()
+                    .items
+                    .as_slice()
+            ),
+            vec!["api"]
+        );
     }
 }

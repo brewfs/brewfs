@@ -871,6 +871,9 @@ fn csi_adapter_error(err: CsiAdapterError) -> ApiErrorResponse {
     match err {
         CsiAdapterError::Disabled => unavailable("CSI dashboard is disabled"),
         CsiAdapterError::Unsupported(message) => unsupported(message),
+        CsiAdapterError::Unavailable(message) => {
+            json_error(StatusCode::BAD_GATEWAY, "kubernetes_error", message)
+        }
     }
 }
 

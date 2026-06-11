@@ -877,11 +877,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_feature_routes_return_stable_json_errors() {
+    async fn csi_summary_returns_kubernetes_error_when_kubeconfig_cannot_load() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
         let mut config = test_config(dir.path(), AuthConfig::Disabled);
         config.csi.enabled = true;
+        config.csi.kubeconfig = Some(dir.path().join("missing-kubeconfig"));
         let app = build_router(config);
 
         let requests = [Request::builder()
@@ -891,14 +892,14 @@ mod tests {
 
         for request in requests {
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
             assert_eq!(
                 response.headers().get(header::CONTENT_TYPE).unwrap(),
                 "application/json"
             );
             let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(value["error"]["code"], "unsupported");
+            assert_eq!(value["error"]["code"], "kubernetes_error");
         }
     }
 
@@ -950,11 +951,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn csi_resource_routes_are_unsupported_when_dashboard_is_enabled() {
+    async fn csi_resource_routes_return_kubernetes_error_when_kubeconfig_cannot_load() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
         let mut config = test_config(dir.path(), AuthConfig::Disabled);
         config.csi.enabled = true;
+        config.csi.kubeconfig = Some(dir.path().join("missing-kubeconfig"));
         let app = build_router(config);
 
         for uri in [
@@ -969,10 +971,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
             let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(value["error"]["code"], "unsupported");
+            assert_eq!(value["error"]["code"], "kubernetes_error");
         }
     }
 
