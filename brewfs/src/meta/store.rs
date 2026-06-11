@@ -561,6 +561,16 @@ pub trait MetaStore: Send + Sync {
 
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError>;
 
+    async fn restore_deleted_file(
+        &self,
+        ino: i64,
+        parent: i64,
+        name: String,
+    ) -> Result<(), MetaError> {
+        let _ = (ino, parent, name);
+        Err(MetaError::NotImplemented)
+    }
+
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError>;
 
     /// Return all distinct chunk IDs that have at least one slice.

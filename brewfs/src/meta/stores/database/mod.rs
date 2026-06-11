@@ -2753,6 +2753,83 @@ impl MetaStore for DatabaseMetaStore {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
+    async fn restore_deleted_file(
+        &self,
+        ino: i64,
+        parent: i64,
+        name: String,
+    ) -> Result<(), MetaError> {
+        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+
+        AccessMeta::find_by_id(parent)
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or(MetaError::ParentNotFound(parent))?;
+
+        let existing = ContentMeta::find()
+            .filter(content_meta::Column::ParentInode.eq(parent))
+            .filter(content_meta::Column::EntryName.eq(&name))
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+        if existing.is_some() {
+            txn.rollback().await.map_err(MetaError::Database)?;
+            return Err(MetaError::AlreadyExists { parent, name });
+        }
+
+        let file = FileMeta::find_by_id(ino)
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or(MetaError::NotFound(ino))?;
+        if !file.deleted || file.nlink != 0 {
+            txn.rollback().await.map_err(MetaError::Database)?;
+            return Err(MetaError::NotSupported(
+                "file is not marked as deleted".to_string(),
+            ));
+        }
+
+        let entry_type = if file.symlink_target.is_some() {
+            EntryType::Symlink
+        } else {
+            EntryType::File
+        };
+        content_meta::ActiveModel {
+            parent_inode: Set(parent),
+            entry_name: Set(name),
+            inode: Set(ino),
+            entry_type: Set(entry_type),
+        }
+        .insert(&txn)
+        .await
+        .map_err(MetaError::Database)?;
+
+        let now = Self::now_nanos();
+        let mut active: file_meta::ActiveModel = file.into();
+        active.deleted = Set(false);
+        active.nlink = Set(1);
+        active.parent = Set(parent);
+        active.modify_time = Set(now);
+        active.update(&txn).await.map_err(MetaError::Database)?;
+
+        let mut parent_meta: access_meta::ActiveModel = AccessMeta::find_by_id(parent)
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or(MetaError::ParentNotFound(parent))?
+            .into();
+        parent_meta.modify_time = Set(now);
+        parent_meta
+            .update(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+
+        txn.commit().await.map_err(MetaError::Database)?;
+        Ok(())
+    }
+
     #[tracing::instrument(
         level = "trace",
         skip(self),

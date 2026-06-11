@@ -669,11 +669,86 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         ControlResponse::Trash { entries }
     }
 
+    async fn restore_trash_for_control(&self, entry_id: &str) -> ControlResponse {
+        if let Err(err) = self.ensure_writable() {
+            return control_meta_error(err);
+        }
+        let ino = match Self::parse_trash_entry_id(entry_id) {
+            Ok(ino) => ino,
+            Err(err) => return control_meta_error(err),
+        };
+        let metadata = match self.load_trash_metadata(ino).await {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => return control_meta_error(MetaError::NotFound(ino)),
+            Err(err) => return control_meta_error(err),
+        };
+        let (parent_path, name) = match Self::split_restored_child_path(&metadata.original_path) {
+            Ok(parts) => parts,
+            Err(err) => return control_meta_error(err),
+        };
+        let parent = match self.resolve_path(&parent_path).await {
+            Ok(parent) => parent,
+            Err(err) => return control_meta_error(err),
+        };
+
+        match self
+            .store
+            .restore_deleted_file(ino, parent, name.clone())
+            .await
+        {
+            Ok(()) => {
+                if let Err(err) = self.store.remove_xattr(ino, CONTROL_TRASH_XATTR_NAME).await {
+                    warn!(inode = ino, error = ?err, "failed to remove restored trash metadata");
+                }
+                if let Ok(Some(attr)) = self.store.stat(ino).await {
+                    self.inode_cache.insert_node(ino, attr, Some(parent)).await;
+                }
+                self.inode_cache.add_child(parent, name, ino).await;
+                self.invalidate_parent_path(parent).await;
+                ControlResponse::TrashRestored {
+                    entry_id: entry_id.to_string(),
+                }
+            }
+            Err(err) => control_meta_error(err),
+        }
+    }
+
     fn unsupported_trash_response(action: &str) -> ControlResponse {
         ControlResponse::Error {
             code: "unsupported".to_string(),
             message: format!("trash {action} control-plane request is not implemented yet"),
         }
+    }
+
+    async fn load_trash_metadata(
+        &self,
+        ino: i64,
+    ) -> Result<Option<ControlTrashMetadata>, MetaError> {
+        let Some(raw) = self.store.get_xattr(ino, CONTROL_TRASH_XATTR_NAME).await? else {
+            return Ok(None);
+        };
+        serde_json::from_slice::<ControlTrashMetadata>(&raw)
+            .map(Some)
+            .map_err(|err| MetaError::Internal(format!("invalid trash metadata: {err}")))
+    }
+
+    fn parse_trash_entry_id(entry_id: &str) -> Result<i64, MetaError> {
+        entry_id
+            .parse::<i64>()
+            .map_err(|_| MetaError::InvalidPath(format!("invalid trash entry id: {entry_id}")))
+    }
+
+    fn split_restored_child_path(path: &str) -> Result<(String, String), MetaError> {
+        let path = Self::normalize_control_path(path)?;
+        if path == "/" {
+            return Err(MetaError::InvalidPath(path));
+        }
+        let Some((parent, name)) = path.rsplit_once('/') else {
+            return Err(MetaError::InvalidPath(path));
+        };
+        Self::validate_entry_name(name)?;
+        let parent = if parent.is_empty() { "/" } else { parent };
+        Ok((parent.to_string(), name.to_string()))
     }
 
     async fn child_original_path_for_trash(&self, parent: i64, name: &str) -> String {
@@ -1681,8 +1756,8 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
             }
             ControlRequest::DeleteAcl { path } => self.delete_acl_for_control(&path).await,
             ControlRequest::ListTrash => self.list_trash_for_control().await,
-            ControlRequest::RestoreTrashEntry { .. } => {
-                MetaClient::<T>::unsupported_trash_response("restore")
+            ControlRequest::RestoreTrashEntry { entry_id } => {
+                self.restore_trash_for_control(&entry_id).await
             }
             ControlRequest::DeleteTrashEntry { .. } => {
                 MetaClient::<T>::unsupported_trash_response("delete")
@@ -1695,6 +1770,7 @@ fn control_meta_error(err: MetaError) -> ControlResponse {
     let code = match &err {
         MetaError::NotFound(_) => "not_found",
         MetaError::NotDirectory(_) => "not_directory",
+        MetaError::AlreadyExists { .. } => "already_exists",
         MetaError::InvalidPath(_) | MetaError::InvalidFilename => "invalid_path",
         MetaError::NotSupported(_) | MetaError::NotImplemented => "unsupported",
         _ => "meta_error",
@@ -3571,7 +3647,29 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_control_error_code(restore, "unsupported");
+        match restore {
+            crate::control::protocol::ControlResponse::TrashRestored { entry_id } => {
+                assert_eq!(entry_id, report_ino.to_string());
+            }
+            other => panic!("unexpected trash restore response: {other:?}"),
+        }
+        assert_eq!(
+            client.resolve_path("/docs/report.txt").await.unwrap(),
+            report_ino
+        );
+
+        let after_restore = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::ListTrash,
+        )
+        .await
+        .unwrap();
+        match after_restore {
+            crate::control::protocol::ControlResponse::Trash { entries } => {
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected trash response after restore: {other:?}"),
+        }
 
         let delete = crate::control::client::send_request(
             &record.socket_path,
@@ -3582,6 +3680,66 @@ mod tests {
         .await
         .unwrap();
         assert_control_error_code(delete, "unsupported");
+
+        client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_control_plane_restore_trash_preserves_entry_on_name_conflict() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let options = MetaClientOptions {
+            mount_point: Some("/mnt/trash-conflict".to_string()),
+            control_runtime_dir: Some(runtime_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let client = create_test_client_with_options(options).await;
+        let docs_ino = client.mkdir(1, "docs".to_string()).await.unwrap();
+        let deleted_ino = client
+            .create_file(docs_ino, "report.txt".to_string())
+            .await
+            .unwrap();
+        client.unlink(docs_ino, "report.txt").await.unwrap();
+        let replacement_ino = client
+            .create_file(docs_ino, "report.txt".to_string())
+            .await
+            .unwrap();
+        client.start_control_plane().await.unwrap();
+
+        let registry =
+            crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
+        let record = registry
+            .select_instance(Some("/mnt/trash-conflict"))
+            .await
+            .unwrap();
+
+        let restore = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::RestoreTrashEntry {
+                entry_id: deleted_ino.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(restore, "already_exists");
+        assert_eq!(
+            client.resolve_path("/docs/report.txt").await.unwrap(),
+            replacement_ino
+        );
+
+        let trash = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::ListTrash,
+        )
+        .await
+        .unwrap();
+        match trash {
+            crate::control::protocol::ControlResponse::Trash { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].id, deleted_ino.to_string());
+            }
+            other => panic!("unexpected trash response after conflict: {other:?}"),
+        }
 
         client.shutdown_runtime().await;
     }
