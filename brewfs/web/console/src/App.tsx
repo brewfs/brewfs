@@ -1,6 +1,8 @@
 import {
   Activity,
   ArrowUp,
+  Check,
+  Copy,
   Database,
   FileSearch,
   FolderTree,
@@ -40,6 +42,7 @@ import {
 import { formatMode, joinBrowserPath, normalizeBrowserPath, parentBrowserPath } from './browserPath';
 import { loadFeatureStatus, type FeatureKey, type FeatureStatus } from './featureStatus';
 import { loadInstanceDetails } from './instanceDetails';
+import { buildMountCommand } from './mountCommand';
 import { labelsFromText, labelsToText } from './volumeEdit';
 
 type PageKey =
@@ -147,6 +150,8 @@ export function App() {
   const [editVolumeForm, setEditVolumeForm] = useState<VolumeEditFormState | null>(null);
   const [volumeActionInFlight, setVolumeActionInFlight] = useState(false);
   const [volumeActionError, setVolumeActionError] = useState<string | null>(null);
+  const [copiedMountCommandVolumeId, setCopiedMountCommandVolumeId] = useState<string | null>(null);
+  const [mountCommandError, setMountCommandError] = useState<string | null>(null);
   const [selectedJobPid, setSelectedJobPid] = useState<number | null>(null);
   const [gcDryRun, setGcDryRun] = useState(true);
   const [jobRequestInFlight, setJobRequestInFlight] = useState(false);
@@ -532,6 +537,26 @@ export function App() {
     }
   };
 
+  const copyMountCommand = async (volume: VolumeResponse) => {
+    const { command } = buildMountCommand(volume);
+    if (!navigator.clipboard) {
+      setMountCommandError('Clipboard API is unavailable in this browser.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(command);
+      setMountCommandError(null);
+      setCopiedMountCommandVolumeId(volume.id);
+      window.setTimeout(() => {
+        setCopiedMountCommandVolumeId((current) => (current === volume.id ? null : current));
+      }, 1500);
+    } catch (err: unknown) {
+      setCopiedMountCommandVolumeId(null);
+      setMountCommandError(err instanceof Error ? err.message : 'copy failed');
+    }
+  };
+
   const submitGcJob = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (selectedJobPid === null) return;
@@ -635,6 +660,8 @@ export function App() {
               editVolumeForm,
               volumeActionInFlight,
               volumeActionError,
+              copiedMountCommandVolumeId,
+              mountCommandError,
               selectedJobPid,
               gcDryRun,
               jobRequestInFlight,
@@ -659,6 +686,7 @@ export function App() {
               onVolumeEditSubmit: submitVolumeEdit,
               onVolumeEditCancel: cancelVolumeEdit,
               onVolumeDelete: deleteVolumeEntry,
+              onMountCommandCopy: copyMountCommand,
               onSelectedJobPidChange: setSelectedJobPid,
               onGcDryRunChange: setGcDryRun,
               onGcJobSubmit: submitGcJob,
@@ -725,6 +753,8 @@ type RenderContext = {
   editVolumeForm: VolumeEditFormState | null;
   volumeActionInFlight: boolean;
   volumeActionError: string | null;
+  copiedMountCommandVolumeId: string | null;
+  mountCommandError: string | null;
   selectedJobPid: number | null;
   gcDryRun: boolean;
   jobRequestInFlight: boolean;
@@ -749,6 +779,7 @@ type RenderContext = {
   onVolumeEditSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onVolumeEditCancel: () => void;
   onVolumeDelete: (volume: VolumeResponse) => void;
+  onMountCommandCopy: (volume: VolumeResponse) => void;
   onSelectedJobPidChange: (pid: number) => void;
   onGcDryRunChange: (enabled: boolean) => void;
   onGcJobSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -777,6 +808,8 @@ function renderPage(page: PageKey, context: RenderContext) {
     editVolumeForm,
     volumeActionInFlight,
     volumeActionError,
+    copiedMountCommandVolumeId,
+    mountCommandError,
     selectedJobPid,
     gcDryRun,
     jobRequestInFlight,
@@ -801,6 +834,7 @@ function renderPage(page: PageKey, context: RenderContext) {
     onVolumeEditSubmit,
     onVolumeEditCancel,
     onVolumeDelete,
+    onMountCommandCopy,
     onSelectedJobPidChange,
     onGcDryRunChange,
     onGcJobSubmit,
@@ -867,6 +901,8 @@ function renderPage(page: PageKey, context: RenderContext) {
         editForm={editVolumeForm}
         actionInFlight={volumeActionInFlight}
         actionError={volumeActionError}
+        copiedMountCommandVolumeId={copiedMountCommandVolumeId}
+        mountCommandError={mountCommandError}
         onChange={onVolumeFormChange}
         onSubmit={onVolumeSubmit}
         onEditStart={onVolumeEditStart}
@@ -874,6 +910,7 @@ function renderPage(page: PageKey, context: RenderContext) {
         onEditSubmit={onVolumeEditSubmit}
         onEditCancel={onVolumeEditCancel}
         onDelete={onVolumeDelete}
+        onMountCommandCopy={onMountCommandCopy}
       />
     );
   }
@@ -1294,6 +1331,8 @@ function FilesystemsPage({
   editForm,
   actionInFlight,
   actionError,
+  copiedMountCommandVolumeId,
+  mountCommandError,
   onChange,
   onSubmit,
   onEditStart,
@@ -1301,6 +1340,7 @@ function FilesystemsPage({
   onEditSubmit,
   onEditCancel,
   onDelete,
+  onMountCommandCopy,
 }: {
   volumes: VolumeResponse[];
   volumeError: string | null;
@@ -1311,6 +1351,8 @@ function FilesystemsPage({
   editForm: VolumeEditFormState | null;
   actionInFlight: boolean;
   actionError: string | null;
+  copiedMountCommandVolumeId: string | null;
+  mountCommandError: string | null;
   onChange: (field: keyof VolumeFormState, value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onEditStart: (volume: VolumeResponse) => void;
@@ -1318,6 +1360,7 @@ function FilesystemsPage({
   onEditSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onEditCancel: () => void;
   onDelete: (volume: VolumeResponse) => void;
+  onMountCommandCopy: (volume: VolumeResponse) => void;
 }) {
   return (
     <>
@@ -1325,6 +1368,7 @@ function FilesystemsPage({
         <h2>Registered filesystems</h2>
         {volumeError ? <p className="error-text">{volumeError}</p> : null}
         {actionError ? <p className="error-text">{actionError}</p> : null}
+        {mountCommandError ? <p className="error-text">{mountCommandError}</p> : null}
         {volumes.length === 0 ? (
           <p className="muted">No registered filesystems.</p>
         ) : (
@@ -1337,41 +1381,69 @@ function FilesystemsPage({
                   <th>Meta</th>
                   <th>Mount</th>
                   <th>Meta URL</th>
+                  <th>Command</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {volumes.map((volume) => (
-                  <tr key={volume.id}>
-                    <td>{volume.name}</td>
-                    <td>{volume.mount_config.data_backend}</td>
-                    <td>{volume.mount_config.meta_backend}</td>
-                    <td>{volume.mount_config.mount_point ?? '-'}</td>
-                    <td>{volume.mount_config.meta_url_redacted ?? '-'}</td>
-                    <td>
-                      <div className="table-actions">
-                        <button
-                          className="secondary-button compact-button"
-                          type="button"
-                          onClick={() => onEditStart(volume)}
-                          disabled={actionInFlight}
-                        >
-                          <Pencil size={14} aria-hidden="true" />
-                          <span>Edit</span>
-                        </button>
-                        <button
-                          className="danger-button compact-button"
-                          type="button"
-                          onClick={() => onDelete(volume)}
-                          disabled={actionInFlight}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                          <span>Delete</span>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {volumes.map((volume) => {
+                  const mountCommand = buildMountCommand(volume);
+                  const copied = copiedMountCommandVolumeId === volume.id;
+                  return (
+                    <tr key={volume.id}>
+                      <td>{volume.name}</td>
+                      <td>{volume.mount_config.data_backend}</td>
+                      <td>{volume.mount_config.meta_backend}</td>
+                      <td>{volume.mount_config.mount_point ?? '-'}</td>
+                      <td>{volume.mount_config.meta_url_redacted ?? '-'}</td>
+                      <td>
+                        <div className="mount-command">
+                          <code>{mountCommand.command}</code>
+                          {mountCommand.warnings.map((warning) => (
+                            <span className="muted" key={warning}>
+                              {warning}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="table-actions">
+                          <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            onClick={() => onMountCommandCopy(volume)}
+                            disabled={actionInFlight}
+                          >
+                            {copied ? (
+                              <Check size={14} aria-hidden="true" />
+                            ) : (
+                              <Copy size={14} aria-hidden="true" />
+                            )}
+                            <span>{copied ? 'Copied' : 'Copy'}</span>
+                          </button>
+                          <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            onClick={() => onEditStart(volume)}
+                            disabled={actionInFlight}
+                          >
+                            <Pencil size={14} aria-hidden="true" />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            className="danger-button compact-button"
+                            type="button"
+                            onClick={() => onDelete(volume)}
+                            disabled={actionInFlight}
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

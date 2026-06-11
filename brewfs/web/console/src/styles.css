@@ -329,6 +329,23 @@ h2 {
   gap: 8px;
 }
 
+.mount-command {
+  display: grid;
+  gap: 6px;
+  min-width: 320px;
+  max-width: 520px;
+}
+
+.mount-command code {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: #f6f8fb;
+  color: #17202a;
+}
+
 .browser-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(280px, 1fr) auto;
