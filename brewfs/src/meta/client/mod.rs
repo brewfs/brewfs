@@ -544,6 +544,21 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
     }
 
+    async fn acl_for_control(&self, path: &str) -> ControlResponse {
+        let path = match Self::normalize_control_path(path) {
+            Ok(path) => path,
+            Err(err) => return control_meta_error(err),
+        };
+        match self.lookup_path_with_attr(&path).await {
+            Ok(Some(_)) => ControlResponse::Error {
+                code: "unsupported".to_string(),
+                message: "ACL control-plane requests are not implemented yet".to_string(),
+            },
+            Ok(None) => control_meta_error(MetaError::NotFound(self.root())),
+            Err(err) => control_meta_error(err),
+        }
+    }
+
     fn normalize_control_path(path: &str) -> Result<String, MetaError> {
         let path = path.trim();
         if path.is_empty() {
@@ -1509,12 +1524,9 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
             ControlRequest::ListDirectory { path } => self.list_directory_for_control(&path).await,
             ControlRequest::StatPath { path } => self.stat_path_for_control(&path).await,
             ControlRequest::ReadLink { path } => self.readlink_for_control(&path).await,
-            ControlRequest::GetAcl { .. }
-            | ControlRequest::PutAcl { .. }
-            | ControlRequest::DeleteAcl { .. } => ControlResponse::Error {
-                code: "unsupported".to_string(),
-                message: "ACL control-plane requests are not implemented yet".to_string(),
-            },
+            ControlRequest::GetAcl { path }
+            | ControlRequest::PutAcl { path, .. }
+            | ControlRequest::DeleteAcl { path } => self.acl_for_control(&path).await,
             ControlRequest::ListTrash
             | ControlRequest::RestoreTrashEntry { .. }
             | ControlRequest::DeleteTrashEntry { .. } => ControlResponse::Error {
@@ -3193,6 +3205,71 @@ mod tests {
         }
 
         client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_control_plane_acl_requests_resolve_paths_before_reporting_unsupported() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let options = MetaClientOptions {
+            mount_point: Some("/mnt/acl".to_string()),
+            control_runtime_dir: Some(runtime_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let client = create_test_client_with_options(options).await;
+        client.mkdir(1, "docs".to_string()).await.unwrap();
+        client.start_control_plane().await.unwrap();
+
+        let registry =
+            crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
+        let record = registry.select_instance(Some("/mnt/acl")).await.unwrap();
+
+        let missing = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::GetAcl {
+                path: "/missing".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(missing, "not_found");
+
+        for request in [
+            crate::control::protocol::ControlRequest::GetAcl {
+                path: "/docs".to_string(),
+            },
+            crate::control::protocol::ControlRequest::PutAcl {
+                path: "/docs".to_string(),
+                entries: vec![crate::control::protocol::ControlAclEntry {
+                    scope: "access".to_string(),
+                    tag: "user_obj".to_string(),
+                    id: None,
+                    perm: "rwx".to_string(),
+                }],
+            },
+            crate::control::protocol::ControlRequest::DeleteAcl {
+                path: "/docs".to_string(),
+            },
+        ] {
+            let response = crate::control::client::send_request(&record.socket_path, &request)
+                .await
+                .unwrap();
+            assert_control_error_code(response, "unsupported");
+        }
+
+        client.shutdown_runtime().await;
+    }
+
+    fn assert_control_error_code(
+        response: crate::control::protocol::ControlResponse,
+        expected: &str,
+    ) {
+        match response {
+            crate::control::protocol::ControlResponse::Error { code, .. } => {
+                assert_eq!(code, expected);
+            }
+            other => panic!("expected control error {expected}, got {other:?}"),
+        }
     }
 
     #[tokio::test]
