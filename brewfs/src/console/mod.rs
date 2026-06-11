@@ -2,6 +2,7 @@ pub mod api;
 pub mod csi;
 pub mod registry;
 pub mod server;
+pub mod trash;
 
 use crate::config::ConsoleArgs;
 use crate::control::runtime::RuntimeRegistry;
@@ -66,6 +67,7 @@ pub struct ConsoleConfig {
 pub struct ConsoleCsiConfig {
     pub enabled: bool,
     pub kubeconfig: Option<PathBuf>,
+    pub driver_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +78,7 @@ pub struct ConsoleState {
     pub runtime_registry: RuntimeRegistry,
     pub csi_dashboard: bool,
     pub csi_adapter: Arc<dyn csi::CsiAdapter>,
+    pub trash_adapter: Arc<dyn trash::TrashAdapter>,
 }
 
 impl ConsoleConfig {
@@ -100,6 +103,7 @@ impl ConsoleConfig {
             csi: ConsoleCsiConfig {
                 enabled: args.enable_csi_dashboard,
                 kubeconfig: args.kubeconfig,
+                driver_name: args.csi_driver_name,
             },
         })
     }
@@ -168,6 +172,7 @@ mod tests {
             static_dir: None,
             auth_token_file: None,
             kubeconfig: None,
+            csi_driver_name: "csi.brewfs.io".to_string(),
             dev_no_auth: false,
             enable_csi_dashboard: false,
         }
@@ -212,5 +217,6 @@ mod tests {
             config.csi.kubeconfig,
             Some(PathBuf::from("/tmp/kubeconfig"))
         );
+        assert_eq!(config.csi.driver_name, "csi.brewfs.io");
     }
 }

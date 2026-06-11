@@ -5,6 +5,7 @@ use super::{
         CreateVolumeRequest, RegistryError, UpdateVolumeRequest,
         VolumeResponse as RegistryVolumeResponse,
     },
+    trash::TrashAdapterError,
 };
 use crate::{
     control::{
@@ -555,31 +556,40 @@ pub async fn read_link(
 pub async fn list_trash(
     State(state): State<ConsoleState>,
     Path(volume_id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    ensure_registered_volume_is_mounted_if_present(&state, &volume_id).await?;
-    Err(unsupported(
-        "trash APIs are not implemented for BrewFS volumes yet",
-    ))
+) -> Result<Json<super::trash::TrashList>, ApiErrorResponse> {
+    let record = find_runtime_record_for_volume(&state, &volume_id).await?;
+    state
+        .trash_adapter
+        .list(&volume_id, &record)
+        .await
+        .map(Json)
+        .map_err(trash_adapter_error)
 }
 
 pub async fn restore_trash_entry(
     State(state): State<ConsoleState>,
-    Path((volume_id, _entry_id)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    ensure_registered_volume_is_mounted_if_present(&state, &volume_id).await?;
-    Err(unsupported(
-        "trash APIs are not implemented for BrewFS volumes yet",
-    ))
+    Path((volume_id, entry_id)): Path<(String, String)>,
+) -> Result<Json<super::trash::TrashActionResponse>, ApiErrorResponse> {
+    let record = find_runtime_record_for_volume(&state, &volume_id).await?;
+    state
+        .trash_adapter
+        .restore(&volume_id, &entry_id, &record)
+        .await
+        .map(|()| Json(super::trash::TrashActionResponse { ok: true }))
+        .map_err(trash_adapter_error)
 }
 
 pub async fn delete_trash_entry(
     State(state): State<ConsoleState>,
-    Path((volume_id, _entry_id)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, ApiErrorResponse> {
-    ensure_registered_volume_is_mounted_if_present(&state, &volume_id).await?;
-    Err(unsupported(
-        "trash APIs are not implemented for BrewFS volumes yet",
-    ))
+    Path((volume_id, entry_id)): Path<(String, String)>,
+) -> Result<Json<super::trash::TrashActionResponse>, ApiErrorResponse> {
+    let record = find_runtime_record_for_volume(&state, &volume_id).await?;
+    state
+        .trash_adapter
+        .delete(&volume_id, &entry_id, &record)
+        .await
+        .map(|()| Json(super::trash::TrashActionResponse { ok: true }))
+        .map_err(trash_adapter_error)
 }
 
 pub async fn get_acl(
@@ -758,15 +768,6 @@ async fn find_optional_runtime_record_for_volume(
     Ok(Some(record))
 }
 
-async fn ensure_registered_volume_is_mounted_if_present(
-    state: &ConsoleState,
-    volume_id: &str,
-) -> Result<(), ApiErrorResponse> {
-    find_optional_runtime_record_for_volume(state, volume_id)
-        .await
-        .map(|_| ())
-}
-
 async fn ensure_acl_capability(
     state: &ConsoleState,
     volume_id: &str,
@@ -859,6 +860,12 @@ fn csi_adapter_error(err: CsiAdapterError) -> ApiErrorResponse {
     match err {
         CsiAdapterError::Disabled => unavailable("CSI dashboard is disabled"),
         CsiAdapterError::Unsupported(message) => unsupported(message),
+    }
+}
+
+fn trash_adapter_error(err: TrashAdapterError) -> ApiErrorResponse {
+    match err {
+        TrashAdapterError::Unsupported(message) => unsupported(message),
     }
 }
 
@@ -1014,10 +1021,12 @@ mod tests {
         console::{
             AuthConfig, AuthMode, ConsoleState,
             csi::{CsiAdapter, CsiResourceList, CsiSummary},
-            registry::VolumeRegistry,
+            registry::{CreateVolumeMountConfig, CreateVolumeRequest, VolumeRegistry},
+            trash::{TrashAdapter, TrashEntry, TrashList},
         },
-        control::runtime::RuntimeRegistry,
+        control::runtime::{InstanceRecord, RuntimeRegistry},
     };
+    use std::collections::BTreeMap;
     use std::{path::PathBuf, sync::Arc};
 
     #[derive(Debug)]
@@ -1062,6 +1071,45 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ReadyTrashAdapter;
+
+    #[async_trait::async_trait]
+    impl TrashAdapter for ReadyTrashAdapter {
+        async fn list(
+            &self,
+            _volume_id: &str,
+            _runtime: &InstanceRecord,
+        ) -> Result<TrashList, super::super::trash::TrashAdapterError> {
+            Ok(TrashList {
+                entries: vec![TrashEntry {
+                    id: "trash-1".to_string(),
+                    original_path: "/docs/report.txt".to_string(),
+                    size: Some(42),
+                    deleted_at: Some("2026-06-11T12:00:00Z".to_string()),
+                }],
+            })
+        }
+
+        async fn restore(
+            &self,
+            _volume_id: &str,
+            _entry_id: &str,
+            _runtime: &InstanceRecord,
+        ) -> Result<(), super::super::trash::TrashAdapterError> {
+            Ok(())
+        }
+
+        async fn delete(
+            &self,
+            _volume_id: &str,
+            _entry_id: &str,
+            _runtime: &InstanceRecord,
+        ) -> Result<(), super::super::trash::TrashAdapterError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn health_response_uses_build_metadata_and_state() {
         let static_dir = PathBuf::from("/tmp/brewfs-console-dist");
@@ -1072,6 +1120,7 @@ mod tests {
             runtime_registry: RuntimeRegistry::new(static_dir.join("runtime")),
             csi_dashboard: true,
             csi_adapter: Arc::new(ReadyCsiAdapter),
+            trash_adapter: Arc::new(ReadyTrashAdapter),
         };
 
         let response = HealthResponse::from_state(&state, true);
@@ -1094,6 +1143,7 @@ mod tests {
             runtime_registry: RuntimeRegistry::new(static_dir.join("runtime")),
             csi_dashboard: true,
             csi_adapter: Arc::new(ReadyCsiAdapter),
+            trash_adapter: Arc::new(ReadyTrashAdapter),
         };
 
         let Json(response) = csi_summary(State(state)).await.unwrap();
@@ -1112,11 +1162,57 @@ mod tests {
             runtime_registry: RuntimeRegistry::new(static_dir.join("runtime")),
             csi_dashboard: false,
             csi_adapter: Arc::new(ReadyCsiAdapter),
+            trash_adapter: Arc::new(ReadyTrashAdapter),
         };
 
         let err = csi_summary(State(state)).await.unwrap_err();
 
         assert_eq!(err.status, StatusCode::CONFLICT);
         assert_eq!(err.code, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn list_trash_uses_state_adapter_for_mounted_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = VolumeRegistry::new(dir.path().join("state"));
+        let runtime_registry = RuntimeRegistry::new(dir.path().join("runtime"));
+        let volume = registry
+            .create(CreateVolumeRequest {
+                name: "dev-local".to_string(),
+                description: None,
+                labels: BTreeMap::new(),
+                mount_config: CreateVolumeMountConfig {
+                    mount_point: Some("/mnt/brewfs".to_string()),
+                    data_backend: "local-fs".to_string(),
+                    data_dir: None,
+                    meta_backend: "sqlx".to_string(),
+                    meta_url: None,
+                    chunk_size: None,
+                    block_size: None,
+                },
+            })
+            .await
+            .unwrap();
+        let record = InstanceRecord::new(
+            std::process::id(),
+            "/mnt/brewfs".to_string(),
+            runtime_registry.socket_path(std::process::id()),
+            chrono::Utc::now(),
+        );
+        runtime_registry.write_record(&record).await.unwrap();
+        let state = ConsoleState {
+            auth: AuthConfig::Disabled,
+            static_dir: dir.path().join("static"),
+            registry,
+            runtime_registry,
+            csi_dashboard: false,
+            csi_adapter: Arc::new(ReadyCsiAdapter),
+            trash_adapter: Arc::new(ReadyTrashAdapter),
+        };
+
+        let Json(response) = list_trash(State(state), Path(volume.id)).await.unwrap();
+
+        assert_eq!(response.entries[0].id, "trash-1");
+        assert_eq!(response.entries[0].original_path, "/docs/report.txt");
     }
 }

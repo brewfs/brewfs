@@ -18,6 +18,7 @@ pub fn build_router(config: ConsoleConfig) -> Router {
         runtime_registry: crate::control::runtime::RuntimeRegistry::new(config.runtime_dir.clone()),
         csi_dashboard: config.csi.enabled,
         csi_adapter: super::csi::default_csi_adapter(config.csi.clone()),
+        trash_adapter: super::trash::default_trash_adapter(),
     };
     let api = Router::new()
         .route("/health", get(api::health))
@@ -199,6 +200,7 @@ mod tests {
             csi: ConsoleCsiConfig {
                 enabled: false,
                 kubeconfig: None,
+                driver_name: crate::console::csi::DEFAULT_DRIVER_NAME.to_string(),
             },
         }
     }

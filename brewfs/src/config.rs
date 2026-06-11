@@ -197,6 +197,10 @@ pub struct ConsoleArgs {
     #[arg(long, value_name = "FILE")]
     pub kubeconfig: Option<PathBuf>,
 
+    /// Kubernetes CSI driver name used to discover BrewFS resources.
+    #[arg(long, default_value = "csi.brewfs.io")]
+    pub csi_driver_name: String,
+
     /// Disable auth for local development. Only allowed with loopback listeners.
     #[arg(long, default_value_t = false)]
     pub dev_no_auth: bool,
@@ -636,6 +640,7 @@ mod tests {
         assert!(args.runtime_dir.is_none());
         assert!(args.static_dir.is_none());
         assert!(args.kubeconfig.is_none());
+        assert_eq!(args.csi_driver_name, "csi.brewfs.io");
         assert!(args.auth_token_file.is_none());
     }
 
