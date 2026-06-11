@@ -269,3 +269,58 @@ Partial result before aborting the rejected run:
 Decision: rejected; no code or default config change.
 
 Reason: raising global writeback upload concurrency from 4 to 6 made active fio time slightly shorter but moved more cost into post-write drain. Both seqwrite direct modes exceeded the 10% drain regression gate before the run reached `fio-randrw`, so the run was stopped early. This suggests simply widening the global writeback PUT pool increases burstiness rather than improving end-to-end writeback completion. The next candidate should reduce object/slice amplification or improve drain scheduling fairness, not only raise concurrency.
+
+### Attempt 4: Delay Writable Slice Dispatch
+
+Candidate: keep full blocks in a still-writable slice from being background-dispatched until flush/freeze, gated by `BREWFS_DELAY_WRITABLE_SLICE_DISPATCH=1`.
+Branch: `codex/perf-tune-dispatch-delay`
+Commits tested: `53ce2bc perf: gate writable slice dispatch delay`, plus test-only env propagation and the current integration fixes.
+Perf artifact baseline: `brewfs/docker/compose-xfstests/artifacts/perf-run-1781179262-25151`
+Perf artifact candidate: `/mnt/slayerfs/brewfs/.worktrees/perf-tune-dispatch-delay/brewfs/docker/compose-xfstests/artifacts/perf-run-1781180416-71`
+
+Smoke command:
+
+```bash
+PERF_FIO_DIRECT_MATRIX="0 1" \
+PERF_FIO_SEQWRITE_RUNTIME=15 \
+PERF_FIO_RANDRW_RUNTIME=15 \
+PERF_FIO_POST_WRITE_DRAIN=true \
+PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS=600 \
+PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS=600 \
+BREWFS_COMPRESSION=none \
+BREWFS_PREFETCH_ENABLED=true \
+BREWFS_UPLOAD_CONCURRENCY=32 \
+BREWFS_DELAY_WRITABLE_SLICE_DISPATCH=1 \
+CARGO_PROFILE_RELEASE_DEBUG=0 \
+bash brewfs/docker/compose-xfstests/run_redis_perf.sh \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randrw"
+```
+
+Key result:
+
+| Tool | Metric | Baseline | Candidate | Delta |
+| --- | --- | ---: | ---: | ---: |
+| `fio-randrw-direct0` | tool wall seconds | 71 | 100 | +40.8% |
+| `fio-randrw-direct0` | read BW MiB/s | 743.14 | 846.92 | +14.0% |
+| `fio-randrw-direct0` | write BW MiB/s | 336.90 | 385.73 | +14.5% |
+| `fio-randrw-direct0` | PUT ops/GiB written | 2266.85 | 3479.27 | +53.5% |
+| `fio-randrw-direct0` | S3 PUT avg object MiB | 0.466 | 0.301 | -35.4% |
+| `fio-randrw-direct0` | soft backpressure sleep ms | 162140 | 247406 | +52.6% |
+| `fio-randrw-direct1` | tool wall seconds | 44 | 33 | -25.0% |
+| `fio-randrw-direct1` | post-write drain seconds | 44 | 51 | +15.9% |
+| `fio-seqwrite-direct0` | tool wall seconds | 50 | 39 | -22.0% |
+| `fio-seqwrite-direct0` | post-write drain seconds | 2 | 6 | +200.0% |
+| `fio-seqwrite-direct1` | write BW MiB/s | 145.26 | 137.06 | -5.6% |
+| `fio-seqwrite-direct1` | write p99.9 ms | 7683.97 | 15770.58 | +105.2% |
+
+Decision: rejected; do not merge as a performance change.
+
+Reason: the candidate shifts cost out of some foreground paths but increases buffered `randrw` wall time, object count, and soft backpressure. It also exceeds the drain regression gate for `seqwrite-direct0` and `randrw-direct1`, and regresses `seqwrite-direct1` throughput and p99.9. This confirms that delaying dispatch of still-writable full blocks is not the right default direction. The next candidate should target JuiceFS-style staged upload queueing or object-count reduction, not later dispatch of already full blocks.
+
+## Next Target: Staged Upload And Object Count
+
+- Treat `fio-randrw-direct0` object amplification as the primary write-path bottleneck: baseline already shows thousands of PUT ops/GiB written and sub-1MiB average PUT object size.
+- Keep commit-before-upload semantics, but separate foreground commit progress from S3 PUT completion through a bounded staged uploader design, similar to JuiceFS `stage -> metadata commit -> delayed upload`.
+- Preserve the current safe path as the default; any staged uploader behavior must be feature-gated and must pass recovery, remount, and post-write-drain checks before becoming part of the throughput profile.
+- Use `compare_artifacts.py` amplification metrics as the acceptance gate. A candidate must reduce PUT ops or tail/backpressure without regressing `direct=1` throughput, p99.9, or post-write drain beyond the existing gates.
