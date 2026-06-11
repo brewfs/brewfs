@@ -530,3 +530,81 @@ direct0 remaining partial-tail attribution:
   explicit_flush=1718
   auto_too_many=553
 ```
+
+## Rejected Candidate E: Defer Cached Sub-Block Idle
+
+Hypothesis:
+
+- Since Candidate D moved most direct0 auto tails from `age` to `idle`, also deferring cached sub-block `idle` could reduce direct0 object amplification without affecting explicit flush or pressure paths.
+
+Implementation tested:
+
+- Added a unit test proving cached sub-block slices are not auto-idle frozen before explicit flush.
+- Changed the periodic auto-flush idle trigger from `idle_time > idle && age > idle` to also require `!cached_sub_block`.
+
+Verification before perf:
+
+```text
+cargo test -p brewfs --lib \
+  vfs::io::writer::tests::test_auto_flush_defers_cached_sub_block_idle_freeze_until_explicit_flush
+  # red before implementation, green after implementation
+
+cargo test -p brewfs --lib 'vfs::io::writer::tests::'  # 32 passed
+cargo clippy -p brewfs --lib -- -D warnings
+```
+
+Direct0 artifact:
+
+```text
+brewfs/docker/compose-xfstests/artifacts/perf-run-1781206434-27374
+```
+
+Direct0 result versus Candidate D (`perf-run-1781205242-516`):
+
+```text
+tool_wall_s=68 vs 83 (-18.1%)
+write_bw_mib_s=94.8 vs 99.3 (-4.6%)
+active_plus_drain_s=65.0 vs 66.0 (-1.6%)
+post_write_drain_s=2 vs 6
+post-drained put_ops_per_gib_written=1077.5 vs 1928.8 (-44.1%)
+s3_put_ops=6280 vs 11226 (-44.1%)
+avg_upload_batch_mib=0.904 vs 0.525 (+72.2%)
+partial_tail_total=5510 vs 10712 (-48.6%)
+partial_tail_auto_idle=0 vs 8313 (-100%)
+partial_tail_auto_too_many=1695 vs 553
+partial_tail_auto_flush_duration=2006 vs 0
+```
+
+Direct1 guard artifact:
+
+```text
+brewfs/docker/compose-xfstests/artifacts/perf-run-1781206873-2278
+```
+
+Direct1 guard versus Candidate D (`perf-run-1781205600-16115`):
+
+```text
+read_bw_mib_s=208.2 vs 232.7 (-10.5%)
+write_bw_mib_s=95.2 vs 106.2 (-10.4%)
+active_plus_drain_s=87.4 vs 82.1 (+6.4%)
+post_write_drain_s=24 vs 22
+post-drained put_ops_per_gib_written=260.4 vs 259.0 (+0.5%)
+avg_upload_batch_mib=4.016 vs 4.046 (-0.7%)
+partial_tail_ratio=0.038 vs 0.030
+```
+
+Decision:
+
+- Reject and roll back Candidate E.
+- The direct0 object-amplification improvement is real, but the direct1 guard regresses read/write throughput by about 10%.
+- The next attempt must reduce direct0 `auto_idle` object amplification without globally disabling idle freezes for cached sub-block slices.
+
+Next target:
+
+```text
+Prefer a narrower direct0-only batching strategy:
+  preserve idle freezing for direct1-like latency-sensitive traffic;
+  batch only when the writer has clear evidence of kernel writeback/cache coalescing opportunity;
+  keep direct1 throughput regression under 5%;
+  keep direct0 post-drained PUT/GiB below Candidate D.
+```
