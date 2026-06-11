@@ -39,9 +39,9 @@ import {
   type VolumeResponse,
   updateVolume,
 } from './api';
+import { loadAclView, type AclViewResult } from './aclView';
 import { formatMode, joinBrowserPath, normalizeBrowserPath, parentBrowserPath } from './browserPath';
 import { loadCsiDashboard, type CsiDashboardResult } from './csiDashboard';
-import { loadFeatureStatus, type FeatureKey, type FeatureStatus } from './featureStatus';
 import { loadInstanceDetails } from './instanceDetails';
 import { buildMountCommand } from './mountCommand';
 import { loadTrashView, type TrashViewResult } from './trashView';
@@ -112,11 +112,6 @@ type CurrentJob = {
   status: JobStatusResponse;
 };
 
-type FeatureResult = {
-  feature: FeatureKey;
-  status: FeatureStatus;
-};
-
 function pageTitle(page: PageKey): string {
   return navItems.find((item) => item.key === page)?.label ?? 'Overview';
 }
@@ -127,13 +122,6 @@ function pageFromPathname(pathname: string): PageKey {
     (Object.entries(pagePaths).find(([, path]) => path === normalized)?.[0] as PageKey | undefined) ??
     'overview'
   );
-}
-
-function featureForPage(page: PageKey): FeatureKey | null {
-  if (page === 'acl') {
-    return page;
-  }
-  return null;
 }
 
 export function App() {
@@ -176,9 +164,12 @@ export function App() {
   const [trashResult, setTrashResult] = useState<TrashViewResult | null>(null);
   const [trashLoading, setTrashLoading] = useState(false);
   const [trashError, setTrashError] = useState<string | null>(null);
-  const [featureResult, setFeatureResult] = useState<FeatureResult | null>(null);
-  const [featureLoading, setFeatureLoading] = useState(false);
-  const [featureError, setFeatureError] = useState<string | null>(null);
+  const [selectedAclVolumeId, setSelectedAclVolumeId] = useState<string | null>(null);
+  const [aclPath, setAclPath] = useState('/');
+  const [aclPathInput, setAclPathInput] = useState('/');
+  const [aclResult, setAclResult] = useState<AclViewResult | null>(null);
+  const [aclLoading, setAclLoading] = useState(false);
+  const [aclError, setAclError] = useState<string | null>(null);
   const [csiDashboard, setCsiDashboard] = useState<CsiDashboardResult | null>(null);
   const [csiLoading, setCsiLoading] = useState(false);
   const [csiError, setCsiError] = useState<string | null>(null);
@@ -284,6 +275,14 @@ export function App() {
   }, [volumes]);
 
   useEffect(() => {
+    setSelectedAclVolumeId((current) =>
+      current !== null && volumes.some((volume) => volume.id === current)
+        ? current
+        : (volumes[0]?.id ?? null),
+    );
+  }, [volumes]);
+
+  useEffect(() => {
     setBrowserResult(null);
     setBrowserError(null);
     setBrowserMetadata(null);
@@ -337,38 +336,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const feature = featureForPage(page);
-    if (!feature) return;
-    let cancelled = false;
-
-    setFeatureLoading(true);
-    setFeatureError(null);
-    void loadFeatureStatus(feature, volumes, token)
-      .then((status) => {
-        if (!cancelled) {
-          setFeatureResult({ feature, status });
-        }
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          setAuthRequired(true);
-        } else {
-          setFeatureError(err instanceof Error ? err.message : 'feature request failed');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setFeatureLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [page, token, volumes]);
-
-  useEffect(() => {
     if (page !== 'trash') return;
     let cancelled = false;
     const volume = volumes.find((entry) => entry.id === selectedTrashVolumeId) ?? null;
@@ -399,6 +366,38 @@ export function App() {
       cancelled = true;
     };
   }, [page, selectedTrashVolumeId, token, volumes]);
+
+  useEffect(() => {
+    if (page !== 'acl') return;
+    let cancelled = false;
+    const volume = volumes.find((entry) => entry.id === selectedAclVolumeId) ?? null;
+
+    setAclLoading(true);
+    setAclError(null);
+    void loadAclView(volume, aclPath, token)
+      .then((result) => {
+        if (!cancelled) {
+          setAclResult(result);
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthRequired(true);
+        } else {
+          setAclError(err instanceof Error ? err.message : 'ACL request failed');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAclLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aclPath, page, selectedAclVolumeId, token, volumes]);
 
   useEffect(() => {
     if (page !== 'csi') return;
@@ -450,6 +449,11 @@ export function App() {
     [selectedTrashVolumeId, volumes],
   );
 
+  const selectedAclVolume = useMemo(
+    () => volumes.find((volume) => volume.id === selectedAclVolumeId) ?? null,
+    [selectedAclVolumeId, volumes],
+  );
+
   const submitBrowserPath = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalized = normalizeBrowserPath(browserPathInput);
@@ -473,6 +477,21 @@ export function App() {
   const changeTrashVolume = (volumeId: string) => {
     setSelectedTrashVolumeId(volumeId);
     setTrashResult(null);
+  };
+
+  const submitAclPath = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = normalizeBrowserPath(aclPathInput);
+    setAclPathInput(normalized);
+    setAclPath(normalized);
+    setAclResult(null);
+  };
+
+  const changeAclVolume = (volumeId: string) => {
+    setSelectedAclVolumeId(volumeId);
+    setAclPath('/');
+    setAclPathInput('/');
+    setAclResult(null);
   };
 
   const refreshBrowser = () => {
@@ -776,9 +795,11 @@ export function App() {
               trashResult,
               trashLoading,
               trashError,
-              featureResult,
-              featureLoading,
-              featureError,
+              selectedAclVolume,
+              aclPathInput,
+              aclResult,
+              aclLoading,
+              aclError,
               csiDashboard,
               csiLoading,
               csiError,
@@ -801,6 +822,9 @@ export function App() {
               onBrowserNavigate: navigateBrowserPath,
               onBrowserInspect: inspectBrowserPath,
               onTrashVolumeChange: changeTrashVolume,
+              onAclVolumeChange: changeAclVolume,
+              onAclPathInputChange: setAclPathInput,
+              onAclPathSubmit: submitAclPath,
             })
           )}
         </section>
@@ -877,9 +901,11 @@ type RenderContext = {
   trashResult: TrashViewResult | null;
   trashLoading: boolean;
   trashError: string | null;
-  featureResult: FeatureResult | null;
-  featureLoading: boolean;
-  featureError: string | null;
+  selectedAclVolume: VolumeResponse | null;
+  aclPathInput: string;
+  aclResult: AclViewResult | null;
+  aclLoading: boolean;
+  aclError: string | null;
   csiDashboard: CsiDashboardResult | null;
   csiLoading: boolean;
   csiError: string | null;
@@ -902,6 +928,9 @@ type RenderContext = {
   onBrowserNavigate: (path: string) => void;
   onBrowserInspect: (path: string) => void;
   onTrashVolumeChange: (volumeId: string) => void;
+  onAclVolumeChange: (volumeId: string) => void;
+  onAclPathInputChange: (path: string) => void;
+  onAclPathSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
 function renderPage(page: PageKey, context: RenderContext) {
@@ -940,9 +969,11 @@ function renderPage(page: PageKey, context: RenderContext) {
     trashResult,
     trashLoading,
     trashError,
-    featureResult,
-    featureLoading,
-    featureError,
+    selectedAclVolume,
+    aclPathInput,
+    aclResult,
+    aclLoading,
+    aclError,
     csiDashboard,
     csiLoading,
     csiError,
@@ -965,6 +996,9 @@ function renderPage(page: PageKey, context: RenderContext) {
     onBrowserNavigate,
     onBrowserInspect,
     onTrashVolumeChange,
+    onAclVolumeChange,
+    onAclPathInputChange,
+    onAclPathSubmit,
   } = context;
 
   if (page === 'overview') {
@@ -1090,12 +1124,16 @@ function renderPage(page: PageKey, context: RenderContext) {
 
   if (page === 'acl') {
     return (
-      <FeatureStatusPanel
-        feature="acl"
-        fallbackTitle="ACL"
-        result={featureResult}
-        loading={featureLoading}
-        error={featureError}
+      <AclPage
+        volumes={volumes}
+        selectedVolume={selectedAclVolume}
+        pathInput={aclPathInput}
+        result={aclResult}
+        loading={aclLoading}
+        error={aclError}
+        onVolumeChange={onAclVolumeChange}
+        onPathInputChange={onAclPathInputChange}
+        onPathSubmit={onAclPathSubmit}
       />
     );
   }
@@ -1179,31 +1217,89 @@ function TrashPage({
   );
 }
 
-function FeatureStatusPanel({
-  feature,
-  fallbackTitle,
+function AclPage({
+  volumes,
+  selectedVolume,
+  pathInput,
   result,
   loading,
   error,
+  onVolumeChange,
+  onPathInputChange,
+  onPathSubmit,
 }: {
-  feature: FeatureKey;
-  fallbackTitle: string;
-  result: FeatureResult | null;
+  volumes: VolumeResponse[];
+  selectedVolume: VolumeResponse | null;
+  pathInput: string;
+  result: AclViewResult | null;
   loading: boolean;
   error: string | null;
+  onVolumeChange: (volumeId: string) => void;
+  onPathInputChange: (path: string) => void;
+  onPathSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
-  const status = result?.feature === feature ? result.status : null;
-
   return (
-    <article className="panel empty-panel">
-      <h2>{status?.title ?? fallbackTitle}</h2>
-      {loading && !status ? <p className="muted">Loading status.</p> : null}
+    <article className="panel table-panel">
+      <h2>{result?.title ?? 'ACL'}</h2>
+      <div className="page-toolbar">
+        {volumes.length > 0 ? (
+          <label>
+            Filesystem
+            <select
+              value={selectedVolume?.id ?? ''}
+              onChange={(event) => onVolumeChange(event.target.value)}
+            >
+              {volumes.map((volume) => (
+                <option key={volume.id} value={volume.id}>
+                  {volume.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        <form className="browser-path-form" onSubmit={onPathSubmit}>
+          <label>
+            Path
+            <input value={pathInput} onChange={(event) => onPathInputChange(event.target.value)} />
+          </label>
+          <button className="secondary-button compact-button" type="submit">
+            <FileSearch size={14} aria-hidden="true" />
+            <span>Load</span>
+          </button>
+        </form>
+      </div>
+      {loading && !result ? <p className="muted">Loading ACL.</p> : null}
       {error ? <p className="error-text">{error}</p> : null}
-      {status ? (
+      {result ? (
         <>
-          <Metric label="State" value={status.state} />
-          {status.volumeName ? <Metric label="Filesystem" value={status.volumeName} /> : null}
-          <p className="muted feature-message">{status.message}</p>
+          <Metric label="State" value={result.state} />
+          {result.volumeName ? <Metric label="Filesystem" value={result.volumeName} /> : null}
+          <Metric label="Path" value={result.path} />
+          <p className="muted feature-message">{result.message}</p>
+          {result.entries.length > 0 ? (
+            <div className="table-wrap">
+              <table className="data-table compact-data-table">
+                <thead>
+                  <tr>
+                    <th>Scope</th>
+                    <th>Tag</th>
+                    <th>ID</th>
+                    <th>Perm</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.entries.map((entry) => (
+                    <tr key={`${entry.scope}:${entry.tag}:${entry.id}`}>
+                      <td>{entry.scope}</td>
+                      <td>{entry.tag}</td>
+                      <td>{entry.id}</td>
+                      <td>{entry.perm}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </>
       ) : null}
     </article>
