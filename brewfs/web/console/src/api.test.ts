@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, createVolume, fetchHealth, fetchInstances, fetchVolumes } from './api';
+import {
+  ApiError,
+  createVolume,
+  fetchHealth,
+  fetchInstanceInfo,
+  fetchInstances,
+  fetchVolumes,
+} from './api';
 
 const healthResponse = {
   service: 'brewfs-console',
@@ -194,5 +201,39 @@ describe('runtime instances API', () => {
       },
     });
     expect(result.instances[0].mount_point).toBe('/mnt/brewfs');
+  });
+
+  it('fetches runtime instance detail with a bearer token', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          pid: 42,
+          mount_point: '/mnt/brewfs',
+          started_at: 1786000000000,
+          version: '0.1.0-test',
+          meta_backend: 'sqlx',
+          capabilities: {
+            namespace: true,
+            file_data: true,
+            acl: false,
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    );
+
+    const result = await fetchInstanceInfo(42, 'secret-token');
+
+    expect(fetch).toHaveBeenCalledWith('/api/instances/42', {
+      headers: {
+        Accept: 'application/json',
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    expect(result.meta_backend).toBe('sqlx');
+    expect(result.capabilities.namespace).toBe(true);
   });
 });

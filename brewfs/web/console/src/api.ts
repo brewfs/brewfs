@@ -42,6 +42,15 @@ export interface InstanceResponse {
   started_at: string;
 }
 
+export interface InstanceInfoResponse {
+  pid: number;
+  mount_point: string;
+  started_at: number;
+  version: string;
+  meta_backend: string;
+  capabilities: Record<string, boolean>;
+}
+
 export interface ListInstancesResponse {
   instances: InstanceResponse[];
 }
@@ -99,6 +108,19 @@ export async function fetchInstances(token?: string | null): Promise<ListInstanc
   assertOk(response, 'instances request failed');
 
   return (await response.json()) as ListInstancesResponse;
+}
+
+export async function fetchInstanceInfo(
+  pid: number,
+  token?: string | null,
+): Promise<InstanceInfoResponse> {
+  const response = await fetch(`/api/instances/${pid}`, {
+    headers: apiHeaders(token),
+  });
+
+  assertOk(response, 'instance info request failed');
+
+  return (await response.json()) as InstanceInfoResponse;
 }
 
 export async function createVolume(

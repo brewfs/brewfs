@@ -2,13 +2,24 @@ use super::{
     AuthMode, ConsoleState,
     registry::{CreateVolumeRequest, RegistryError, VolumeResponse},
 };
-use crate::control::runtime::InstanceRecord;
-use axum::{Json, extract::State};
+use crate::{
+    control::{
+        client::send_request,
+        protocol::{ControlRequest, ControlResponse},
+        runtime::InstanceRecord,
+    },
+    meta::store::MetaStoreCapabilities,
+};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HealthResponse {
@@ -41,6 +52,16 @@ pub struct InstanceResponse {
     pub mount_point: String,
     pub socket_path: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InstanceInfoResponse {
+    pub pid: u32,
+    pub mount_point: String,
+    pub started_at: i64,
+    pub version: String,
+    pub meta_backend: String,
+    pub capabilities: MetaStoreCapabilities,
 }
 
 impl From<InstanceRecord> for InstanceResponse {
@@ -115,6 +136,80 @@ pub async fn list_instances(
         .map(InstanceResponse::from)
         .collect();
     Ok(Json(ListInstancesResponse { instances }))
+}
+
+pub async fn get_instance_info(
+    State(state): State<ConsoleState>,
+    Path(pid): Path<u32>,
+) -> Result<Json<InstanceInfoResponse>, ApiErrorResponse> {
+    let record = state
+        .runtime_registry
+        .list_instances()
+        .await
+        .map_err(|err| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "runtime_registry_error",
+                format!("failed to read runtime registry: {err}"),
+            )
+        })?
+        .into_iter()
+        .find(|record| record.pid == pid)
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "runtime instance not found",
+            )
+        })?;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        send_request(&record.socket_path, &ControlRequest::GetInfo),
+    )
+    .await
+    .map_err(|_| {
+        json_error(
+            StatusCode::BAD_GATEWAY,
+            "control_plane_error",
+            "control-plane request timed out",
+        )
+    })?
+    .map_err(|err| {
+        json_error(
+            StatusCode::BAD_GATEWAY,
+            "control_plane_error",
+            format!("control-plane request failed: {err}"),
+        )
+    })?;
+
+    match response {
+        ControlResponse::Info {
+            pid,
+            mount_point,
+            started_at,
+            version,
+            meta_backend,
+            capabilities,
+        } => Ok(Json(InstanceInfoResponse {
+            pid,
+            mount_point,
+            started_at,
+            version,
+            meta_backend,
+            capabilities,
+        })),
+        ControlResponse::Error { code, message } => Err(json_error(
+            StatusCode::BAD_GATEWAY,
+            "control_plane_error",
+            format!("{code}: {message}"),
+        )),
+        other => Err(json_error(
+            StatusCode::BAD_GATEWAY,
+            "control_plane_error",
+            format!("unexpected control-plane response: {other:?}"),
+        )),
+    }
 }
 
 pub fn json_error(

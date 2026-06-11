@@ -16,9 +16,11 @@ import {
   ApiError,
   createVolume,
   fetchHealth,
+  fetchInstanceInfo,
   fetchInstances,
   fetchVolumes,
   type HealthResponse,
+  type InstanceInfoResponse,
   type InstanceResponse,
   type VolumeResponse,
 } from './api';
@@ -94,6 +96,7 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [instances, setInstances] = useState<InstanceResponse[]>([]);
+  const [instanceDetails, setInstanceDetails] = useState<Record<number, InstanceInfoResponse>>({});
   const [instanceError, setInstanceError] = useState<string | null>(null);
   const [volumes, setVolumes] = useState<VolumeResponse[]>([]);
   const [volumeError, setVolumeError] = useState<string | null>(null);
@@ -118,6 +121,15 @@ export function App() {
           if (!cancelled) {
             setInstances(instanceResult.instances);
             setInstanceError(null);
+          }
+          const detailEntries = await Promise.all(
+            instanceResult.instances.map(async (instance) => [
+              instance.pid,
+              await fetchInstanceInfo(instance.pid, token),
+            ] as const),
+          );
+          if (!cancelled) {
+            setInstanceDetails(Object.fromEntries(detailEntries));
           }
         } catch (err: unknown) {
           if (cancelled) return;
@@ -274,6 +286,7 @@ export function App() {
               health,
               error,
               instances,
+              instanceDetails,
               instanceError,
               volumes,
               volumeError,
@@ -327,6 +340,7 @@ type RenderContext = {
   health: HealthResponse | null;
   error: string | null;
   instances: InstanceResponse[];
+  instanceDetails: Record<number, InstanceInfoResponse>;
   instanceError: string | null;
   volumes: VolumeResponse[];
   volumeError: string | null;
@@ -342,6 +356,7 @@ function renderPage(page: PageKey, context: RenderContext) {
     health,
     error,
     instances,
+    instanceDetails,
     instanceError,
     volumes,
     volumeError,
@@ -370,8 +385,20 @@ function renderPage(page: PageKey, context: RenderContext) {
               {instances.map((instance) => (
                 <div className="instance-row" key={instance.pid}>
                   <strong>{instance.mount_point}</strong>
-                  <span>pid {instance.pid}</span>
+                  <span>
+                    pid {instance.pid}
+                    {instanceDetails[instance.pid]
+                      ? ` · ${instanceDetails[instance.pid].meta_backend} · ${instanceDetails[instance.pid].version}`
+                      : ''}
+                  </span>
                   <code>{instance.socket_path}</code>
+                  {instanceDetails[instance.pid] ? (
+                    <span>
+                      capabilities:{' '}
+                      {enabledCapabilities(instanceDetails[instance.pid].capabilities).join(', ') ||
+                        'none'}
+                    </span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -591,4 +618,10 @@ function Metric({ label, value }: { label: string; value: string }) {
 function optionalField(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function enabledCapabilities(capabilities: Record<string, boolean>): string[] {
+  return Object.entries(capabilities)
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
 }
