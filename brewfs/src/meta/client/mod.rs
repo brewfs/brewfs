@@ -723,10 +723,28 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
     }
 
-    fn unsupported_trash_response(action: &str) -> ControlResponse {
-        ControlResponse::Error {
-            code: "unsupported".to_string(),
-            message: format!("trash {action} control-plane request is not implemented yet"),
+    async fn delete_trash_for_control(&self, entry_id: &str) -> ControlResponse {
+        if let Err(err) = self.ensure_writable() {
+            return control_meta_error(err);
+        }
+        let ino = match Self::parse_trash_entry_id(entry_id) {
+            Ok(ino) => ino,
+            Err(err) => return control_meta_error(err),
+        };
+        match self.load_trash_metadata(ino).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return control_meta_error(MetaError::NotFound(ino)),
+            Err(err) => return control_meta_error(err),
+        }
+
+        match self.remove_file_metadata(ino).await {
+            Ok(()) => {
+                self.inode_cache.invalidate_inode(ino).await;
+                ControlResponse::TrashDeleted {
+                    entry_id: entry_id.to_string(),
+                }
+            }
+            Err(err) => control_meta_error(err),
         }
     }
 
@@ -1769,8 +1787,8 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
             ControlRequest::RestoreTrashEntry { entry_id } => {
                 self.restore_trash_for_control(&entry_id).await
             }
-            ControlRequest::DeleteTrashEntry { .. } => {
-                MetaClient::<T>::unsupported_trash_response("delete")
+            ControlRequest::DeleteTrashEntry { entry_id } => {
+                self.delete_trash_for_control(&entry_id).await
             }
         }
     }
@@ -3712,7 +3730,74 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_control_error_code(delete, "unsupported");
+        assert_control_error_code(delete, "not_found");
+
+        client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_control_plane_delete_trash_permanently_removes_entry() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let options = MetaClientOptions {
+            mount_point: Some("/mnt/trash-delete".to_string()),
+            control_runtime_dir: Some(runtime_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let client = create_test_client_with_options(options).await;
+        let docs_ino = client.mkdir(1, "docs".to_string()).await.unwrap();
+        let report_ino = client
+            .create_file(docs_ino, "report.txt".to_string())
+            .await
+            .unwrap();
+        client.unlink(docs_ino, "report.txt").await.unwrap();
+        client.start_control_plane().await.unwrap();
+
+        let registry =
+            crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
+        let record = registry
+            .select_instance(Some("/mnt/trash-delete"))
+            .await
+            .unwrap();
+
+        let delete = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::DeleteTrashEntry {
+                entry_id: report_ino.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        match delete {
+            crate::control::protocol::ControlResponse::TrashDeleted { entry_id } => {
+                assert_eq!(entry_id, report_ino.to_string());
+            }
+            other => panic!("unexpected trash delete response: {other:?}"),
+        }
+
+        let trash = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::ListTrash,
+        )
+        .await
+        .unwrap();
+        match trash {
+            crate::control::protocol::ControlResponse::Trash { entries } => {
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected trash response after delete: {other:?}"),
+        }
+
+        assert!(client.store.stat(report_ino).await.unwrap().is_none());
+        let restore = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::RestoreTrashEntry {
+                entry_id: report_ino.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(restore, "not_found");
 
         client.shutdown_runtime().await;
     }
