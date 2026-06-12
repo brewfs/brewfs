@@ -690,6 +690,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             Ok(ino) => ino,
             Err(err) => return control_meta_error(err),
         };
+        if let Err(err) = self.ensure_trash_inode_for_control(ino).await {
+            return control_meta_error(err);
+        }
         let metadata = match self.load_trash_metadata(ino).await {
             Ok(Some(metadata)) => metadata,
             Ok(None) => return control_meta_error(MetaError::NotFound(ino)),
@@ -734,6 +737,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             Ok(ino) => ino,
             Err(err) => return control_meta_error(err),
         };
+        if let Err(err) = self.ensure_trash_inode_for_control(ino).await {
+            return control_meta_error(err);
+        }
         match self.load_trash_metadata(ino).await {
             Ok(Some(_)) => {}
             Ok(None) => return control_meta_error(MetaError::NotFound(ino)),
@@ -748,6 +754,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 }
             }
             Err(err) => control_meta_error(err),
+        }
+    }
+
+    async fn ensure_trash_inode_for_control(&self, ino: i64) -> Result<(), MetaError> {
+        let deleted_files = self.store.get_deleted_files().await?;
+        if deleted_files.contains(&ino) {
+            Ok(())
+        } else {
+            Err(MetaError::NotFound(ino))
         }
     }
 
@@ -3862,6 +3877,65 @@ mod tests {
         .await
         .unwrap();
         assert_control_error_code(restore, "not_found");
+
+        client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_control_plane_trash_actions_reject_live_inodes_with_trash_metadata() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let options = MetaClientOptions {
+            mount_point: Some("/mnt/trash-live".to_string()),
+            control_runtime_dir: Some(runtime_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let client = create_test_client_with_options(options).await;
+        let docs_ino = client.mkdir(1, "docs".to_string()).await.unwrap();
+        let report_ino = client
+            .create_file(docs_ino, "report.txt".to_string())
+            .await
+            .unwrap();
+        let forged_metadata = ControlTrashMetadata {
+            original_path: "/docs/report.txt".to_string(),
+            deleted_at: Utc::now().to_rfc3339(),
+        };
+        let raw = serde_json::to_vec(&forged_metadata).unwrap();
+        client
+            .store
+            .set_xattr(report_ino, CONTROL_TRASH_XATTR_NAME, &raw, 0)
+            .await
+            .unwrap();
+        client.start_control_plane().await.unwrap();
+
+        let registry =
+            crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
+        let record = registry
+            .select_instance(Some("/mnt/trash-live"))
+            .await
+            .unwrap();
+
+        let restore = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::RestoreTrashEntry {
+                entry_id: report_ino.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(restore, "not_found");
+
+        let delete = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::DeleteTrashEntry {
+                entry_id: report_ino.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(delete, "not_found");
+
+        assert!(client.store.stat(report_ino).await.unwrap().is_some());
 
         client.shutdown_runtime().await;
     }
