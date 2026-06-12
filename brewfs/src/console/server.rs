@@ -72,8 +72,16 @@ pub fn build_router(config: ConsoleConfig) -> Router {
 
 pub async fn serve(config: ConsoleConfig) -> anyhow::Result<()> {
     let listen = config.listen;
-    let app = build_router(config);
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    serve_listener(listener, config).await
+}
+
+async fn serve_listener(
+    listener: tokio::net::TcpListener,
+    config: ConsoleConfig,
+) -> anyhow::Result<()> {
+    let listen = listener.local_addr()?;
+    let app = build_router(config);
     println!("brewfs console listening on http://{listen}");
     axum::serve(listener, app).await?;
     Ok(())
@@ -221,6 +229,7 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use std::net::SocketAddr;
     use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
     #[test]
@@ -282,6 +291,40 @@ mod tests {
         );
         registry.write_record(&record).await.unwrap();
         (build_router(config), server)
+    }
+
+    #[tokio::test]
+    async fn tcp_listener_serves_health_json() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
+        let config = test_config(dir.path(), AuthConfig::Disabled);
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve_listener(listener, config));
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut raw = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read_to_string(&mut raw),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        server.abort();
+        let _ = server.await;
+
+        assert!(raw.starts_with("HTTP/1.1 200 OK"), "{raw}");
+        let body = raw.split("\r\n\r\n").nth(1).unwrap();
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(value["service"], "brewfs-console");
     }
 
     #[tokio::test]
