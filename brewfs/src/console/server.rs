@@ -1226,12 +1226,29 @@ mod tests {
         assert_eq!(value["entries"][0]["tag"], "user_obj");
 
         let acl_body = serde_json::json!({
-            "entries": [{
-                "scope": "access",
-                "tag": "group",
-                "id": 1000,
-                "perm": "r-x"
-            }]
+            "entries": [
+                {
+                    "scope": "access",
+                    "tag": "user_obj",
+                    "perm": "rwx"
+                },
+                {
+                    "scope": "access",
+                    "tag": "group_obj",
+                    "perm": "r-x"
+                },
+                {
+                    "scope": "access",
+                    "tag": "other",
+                    "perm": "---"
+                },
+                {
+                    "scope": "access",
+                    "tag": "group",
+                    "id": 1000,
+                    "perm": "r-x"
+                }
+            ]
         });
         let response = app
             .clone()
@@ -1248,7 +1265,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["entries"][0]["tag"], "group");
+        assert_eq!(value["entries"][3]["tag"], "group");
 
         let invalid_acl_body = serde_json::json!({
             "entries": [{

@@ -131,7 +131,30 @@ pub fn validate_acl_entries(entries: &[ControlAclEntry]) -> Result<(), String> {
     for (index, entry) in entries.iter().enumerate() {
         validate_acl_entry(entry, index)?;
     }
+    validate_acl_entry_set(entries)?;
     Ok(())
+}
+
+fn validate_acl_entry_set(entries: &[ControlAclEntry]) -> Result<(), String> {
+    let has_access_entries = entries.iter().any(|entry| entry.scope == "access");
+    if !has_access_entries {
+        return Ok(());
+    }
+
+    let has_user_obj = has_acl_entry(entries, "access", "user_obj");
+    let has_group_obj = has_acl_entry(entries, "access", "group_obj");
+    let has_other = has_acl_entry(entries, "access", "other");
+    if has_user_obj && has_group_obj && has_other {
+        Ok(())
+    } else {
+        Err("access ACL must include user_obj, group_obj, and other entries".to_string())
+    }
+}
+
+fn has_acl_entry(entries: &[ControlAclEntry], scope: &str, tag: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.scope == scope && entry.tag == tag)
 }
 
 fn validate_acl_entry(entry: &ControlAclEntry, index: usize) -> Result<(), String> {

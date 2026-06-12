@@ -254,12 +254,32 @@ mod tests {
         );
         let adapter = default_acl_adapter();
         let request = AclResponse {
-            entries: vec![AclEntry {
-                scope: "access".to_string(),
-                tag: "group".to_string(),
-                id: Some(1_000),
-                perm: "r-x".to_string(),
-            }],
+            entries: vec![
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "user_obj".to_string(),
+                    id: None,
+                    perm: "rwx".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group_obj".to_string(),
+                    id: None,
+                    perm: "r-x".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "other".to_string(),
+                    id: None,
+                    perm: "---".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group".to_string(),
+                    id: Some(1_000),
+                    perm: "r-x".to_string(),
+                },
+            ],
         };
 
         let get = adapter.get("vol-1", "/docs", &runtime).await.unwrap();
@@ -319,6 +339,18 @@ mod tests {
                     perm: "rwx".to_string(),
                 },
                 AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group_obj".to_string(),
+                    id: None,
+                    perm: "r-x".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "other".to_string(),
+                    id: None,
+                    perm: "---".to_string(),
+                },
+                AclEntry {
                     scope: "default".to_string(),
                     tag: "group".to_string(),
                     id: Some(1000),
@@ -373,6 +405,32 @@ mod tests {
             },
             "perm",
         );
+    }
+
+    #[test]
+    fn rejects_incomplete_access_acl_base_entries() {
+        let err = validate_acl_response(&AclResponse {
+            entries: vec![
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "user_obj".to_string(),
+                    id: None,
+                    perm: "rwx".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group_obj".to_string(),
+                    id: None,
+                    perm: "r-x".to_string(),
+                },
+            ],
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AclAdapterError::InvalidRequest(message) if message.contains("access ACL must include user_obj, group_obj, and other entries")
+        ));
     }
 
     fn assert_acl_validation_error(entry: AclEntry, needle: &str) {

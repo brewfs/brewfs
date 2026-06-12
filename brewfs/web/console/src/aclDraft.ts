@@ -39,8 +39,26 @@ export function parseAclDraft(value: string): AclUpdateRequest {
   }
 
   return {
-    entries: parsed.map(parseEntry),
+    entries: validateAclEntrySet(parsed.map(parseEntry)),
   };
+}
+
+function validateAclEntrySet(entries: AclEntry[]): AclEntry[] {
+  const hasAccessEntries = entries.some((entry) => entry.scope === 'access');
+  if (!hasAccessEntries) return entries;
+
+  const hasUserObj = hasAclEntry(entries, 'access', 'user_obj');
+  const hasGroupObj = hasAclEntry(entries, 'access', 'group_obj');
+  const hasOther = hasAclEntry(entries, 'access', 'other');
+  if (!hasUserObj || !hasGroupObj || !hasOther) {
+    throw new Error('access ACL must include user_obj, group_obj, and other entries.');
+  }
+
+  return entries;
+}
+
+function hasAclEntry(entries: AclEntry[], scope: string, tag: string): boolean {
+  return entries.some((entry) => entry.scope === scope && entry.tag === tag);
 }
 
 function parseEntry(value: unknown, index: number): AclEntry {

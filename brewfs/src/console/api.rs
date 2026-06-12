@@ -1325,12 +1325,32 @@ mod tests {
     async fn put_acl_uses_state_adapter_after_capability_check() {
         let (_dir, _server, state, volume_id) = acl_ready_state().await;
         let request = AclResponse {
-            entries: vec![AclEntry {
-                scope: "access".to_string(),
-                tag: "group".to_string(),
-                id: Some(1_000),
-                perm: "r-x".to_string(),
-            }],
+            entries: vec![
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "user_obj".to_string(),
+                    id: None,
+                    perm: "rwx".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group_obj".to_string(),
+                    id: None,
+                    perm: "r-x".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "other".to_string(),
+                    id: None,
+                    perm: "---".to_string(),
+                },
+                AclEntry {
+                    scope: "access".to_string(),
+                    tag: "group".to_string(),
+                    id: Some(1_000),
+                    perm: "r-x".to_string(),
+                },
+            ],
         };
 
         let Json(response) = put_acl(

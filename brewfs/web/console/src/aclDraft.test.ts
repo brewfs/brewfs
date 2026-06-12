@@ -22,8 +22,17 @@ describe('aclDraft', () => {
   });
 
   it('parses ACL entry arrays into update requests', () => {
-    expect(parseAclDraft('[{"scope":"access","tag":"group","id":1002,"perm":"r-x"}]')).toEqual({
-      entries: [{ scope: 'access', tag: 'group', id: 1002, perm: 'r-x' }],
+    expect(
+      parseAclDraft(
+        '[{"scope":"access","tag":"user_obj","perm":"rwx"},{"scope":"access","tag":"group_obj","perm":"r-x"},{"scope":"access","tag":"other","perm":"---"},{"scope":"access","tag":"group","id":1002,"perm":"r-x"}]',
+      ),
+    ).toEqual({
+      entries: [
+        { scope: 'access', tag: 'user_obj', perm: 'rwx' },
+        { scope: 'access', tag: 'group_obj', perm: 'r-x' },
+        { scope: 'access', tag: 'other', perm: '---' },
+        { scope: 'access', tag: 'group', id: 1002, perm: 'r-x' },
+      ],
     });
   });
 
@@ -56,5 +65,13 @@ describe('aclDraft', () => {
     expect(() => parseAclDraft('[{"scope":"access","tag":"group_obj","perm":"read"}]')).toThrow(
       'ACL entry 1 perm must use rwx characters like rw- or r-x.',
     );
+  });
+
+  it('rejects access ACL drafts without base entries', () => {
+    expect(() =>
+      parseAclDraft(
+        '[{"scope":"access","tag":"user_obj","perm":"rwx"},{"scope":"access","tag":"group_obj","perm":"r-x"}]',
+      ),
+    ).toThrow('access ACL must include user_obj, group_obj, and other entries.');
   });
 });
