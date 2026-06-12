@@ -902,6 +902,7 @@ fn acl_adapter_error(err: AclAdapterError) -> ApiErrorResponse {
 fn control_error_response(code: &str, message: &str) -> ApiErrorResponse {
     match code {
         "not_found" => json_error(StatusCode::NOT_FOUND, "not_found", message),
+        "invalid_request" => json_error(StatusCode::BAD_REQUEST, "invalid_request", message),
         "not_directory" | "invalid_path" => {
             json_error(StatusCode::BAD_REQUEST, "invalid_path", message)
         }
@@ -1060,6 +1061,15 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::{path::PathBuf, sync::Arc};
+
+    #[test]
+    fn maps_control_invalid_request_to_bad_request() {
+        let err = control_error_response("invalid_request", "ACL entry 1 is invalid");
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "invalid_request");
+        assert_eq!(err.message, "ACL entry 1 is invalid");
+    }
 
     #[derive(Debug)]
     struct ReadyCsiAdapter;

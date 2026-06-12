@@ -187,10 +187,10 @@ fn acl_response(
 }
 
 fn control_error<T>(code: String, message: String) -> Result<T, AclAdapterError> {
-    if code == "unsupported" {
-        Err(AclAdapterError::Unsupported(message))
-    } else {
-        Err(AclAdapterError::ControlPlane(format!("{code}: {message}")))
+    match code.as_str() {
+        "invalid_request" => Err(AclAdapterError::InvalidRequest(message)),
+        "unsupported" => Err(AclAdapterError::Unsupported(message)),
+        _ => Err(AclAdapterError::ControlPlane(format!("{code}: {message}"))),
     }
 }
 
@@ -383,6 +383,20 @@ mod tests {
         assert!(matches!(
             err,
             AclAdapterError::InvalidRequest(message) if message.contains(needle)
+        ));
+    }
+
+    #[test]
+    fn maps_control_invalid_request_to_adapter_invalid_request() {
+        let err = control_error::<()>(
+            "invalid_request".to_string(),
+            "ACL entry 1 is invalid".to_string(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AclAdapterError::InvalidRequest(message) if message == "ACL entry 1 is invalid"
         ));
     }
 
