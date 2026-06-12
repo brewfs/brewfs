@@ -26,8 +26,8 @@ export interface TrashViewResult {
 
 export const DEFAULT_TRASH_ACTIONS: TrashActions = {
   restoreSupported: true,
-  deleteSupported: false,
-  deleteDisabledReason: 'Permanent delete requires block-store-aware GC and is not wired yet.',
+  deleteSupported: true,
+  deleteDisabledReason: null,
 };
 
 export async function loadTrashView(

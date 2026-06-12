@@ -53,8 +53,8 @@ describe('loadTrashView', () => {
     expect(result.state).toBe('ready');
     expect(result.actions).toEqual({
       restoreSupported: true,
-      deleteSupported: false,
-      deleteDisabledReason: 'Permanent delete requires block-store-aware GC and is not wired yet.',
+      deleteSupported: true,
+      deleteDisabledReason: null,
     });
     expect(result.entries).toEqual([
       {
