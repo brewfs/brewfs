@@ -1,6 +1,6 @@
 use crate::control::{
     client::send_request,
-    protocol::{ControlAclEntry, ControlRequest, ControlResponse},
+    protocol::{ControlAclEntry, ControlRequest, ControlResponse, validate_acl_entries},
     runtime::InstanceRecord,
 };
 use async_trait::async_trait;
@@ -201,58 +201,13 @@ fn unexpected_response<T>(response: ControlResponse) -> Result<T, AclAdapterErro
 }
 
 fn validate_acl_response(response: &AclResponse) -> Result<(), AclAdapterError> {
-    for (index, entry) in response.entries.iter().enumerate() {
-        validate_acl_entry(entry, index)?;
-    }
-    Ok(())
-}
-
-fn validate_acl_entry(entry: &AclEntry, index: usize) -> Result<(), AclAdapterError> {
-    let entry_number = index + 1;
-    if entry.scope != "access" && entry.scope != "default" {
-        return Err(AclAdapterError::InvalidRequest(format!(
-            "ACL entry {entry_number} scope must be access or default",
-        )));
-    }
-
-    if !matches!(
-        entry.tag.as_str(),
-        "user_obj" | "user" | "group_obj" | "group" | "mask" | "other"
-    ) {
-        return Err(AclAdapterError::InvalidRequest(format!(
-            "ACL entry {entry_number} tag is not supported",
-        )));
-    }
-
-    if !valid_acl_perm(&entry.perm) {
-        return Err(AclAdapterError::InvalidRequest(format!(
-            "ACL entry {entry_number} perm must use rwx characters like rw- or r-x",
-        )));
-    }
-
-    if matches!(entry.tag.as_str(), "user" | "group") && entry.id.is_none() {
-        return Err(AclAdapterError::InvalidRequest(format!(
-            "ACL entry {entry_number} tag {} requires id",
-            entry.tag
-        )));
-    }
-
-    if !matches!(entry.tag.as_str(), "user" | "group") && entry.id.is_some() {
-        return Err(AclAdapterError::InvalidRequest(format!(
-            "ACL entry {entry_number} tag {} must not include id",
-            entry.tag
-        )));
-    }
-
-    Ok(())
-}
-
-fn valid_acl_perm(perm: &str) -> bool {
-    let mut chars = perm.chars();
-    matches!(chars.next(), Some('r' | '-'))
-        && matches!(chars.next(), Some('w' | '-'))
-        && matches!(chars.next(), Some('x' | '-'))
-        && chars.next().is_none()
+    let entries: Vec<ControlAclEntry> = response
+        .entries
+        .iter()
+        .cloned()
+        .map(ControlAclEntry::from)
+        .collect();
+    validate_acl_entries(&entries).map_err(AclAdapterError::InvalidRequest)
 }
 
 impl From<AclEntry> for ControlAclEntry {

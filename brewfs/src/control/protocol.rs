@@ -125,6 +125,59 @@ pub struct ControlAclEntry {
     pub perm: String,
 }
 
+pub fn validate_acl_entries(entries: &[ControlAclEntry]) -> Result<(), String> {
+    for (index, entry) in entries.iter().enumerate() {
+        validate_acl_entry(entry, index)?;
+    }
+    Ok(())
+}
+
+fn validate_acl_entry(entry: &ControlAclEntry, index: usize) -> Result<(), String> {
+    let entry_number = index + 1;
+    if entry.scope != "access" && entry.scope != "default" {
+        return Err(format!(
+            "ACL entry {entry_number} scope must be access or default"
+        ));
+    }
+
+    if !matches!(
+        entry.tag.as_str(),
+        "user_obj" | "user" | "group_obj" | "group" | "mask" | "other"
+    ) {
+        return Err(format!("ACL entry {entry_number} tag is not supported"));
+    }
+
+    if !valid_acl_perm(&entry.perm) {
+        return Err(format!(
+            "ACL entry {entry_number} perm must use rwx characters like rw- or r-x"
+        ));
+    }
+
+    if matches!(entry.tag.as_str(), "user" | "group") && entry.id.is_none() {
+        return Err(format!(
+            "ACL entry {entry_number} tag {} requires id",
+            entry.tag
+        ));
+    }
+
+    if !matches!(entry.tag.as_str(), "user" | "group") && entry.id.is_some() {
+        return Err(format!(
+            "ACL entry {entry_number} tag {} must not include id",
+            entry.tag
+        ));
+    }
+
+    Ok(())
+}
+
+fn valid_acl_perm(perm: &str) -> bool {
+    let mut chars = perm.chars();
+    matches!(chars.next(), Some('r' | '-'))
+        && matches!(chars.next(), Some('w' | '-'))
+        && matches!(chars.next(), Some('x' | '-'))
+        && chars.next().is_none()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ControlTrashEntry {
     pub id: String,

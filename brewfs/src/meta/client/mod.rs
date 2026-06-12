@@ -6,7 +6,7 @@ use crate::chunk::SliceDesc;
 use crate::control::job::{GcJobResult, JobManager};
 use crate::control::protocol::{
     ControlAclEntry, ControlDirectoryEntry, ControlFileKind, ControlPathMetadata, ControlRequest,
-    ControlResponse, ControlTrashEntry,
+    ControlResponse, ControlTrashEntry, validate_acl_entries,
 };
 use crate::control::runtime::{InstanceRecord, RuntimeRegistry};
 use crate::control::server::{ControlHandler, ControlServer};
@@ -604,6 +604,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     ) -> ControlResponse {
         if let Err(err) = self.ensure_writable() {
             return control_meta_error(err);
+        }
+        if let Err(message) = validate_acl_entries(&entries) {
+            return control_invalid_request(message);
         }
         let (path, ino) = match self.resolve_acl_control_path(path).await {
             Ok(result) => result,
@@ -1791,6 +1794,13 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
                 self.delete_trash_for_control(&entry_id).await
             }
         }
+    }
+}
+
+fn control_invalid_request(message: impl Into<String>) -> ControlResponse {
+    ControlResponse::Error {
+        code: "invalid_request".to_string(),
+        message: message.into(),
     }
 }
 
@@ -3618,6 +3628,60 @@ mod tests {
                 assert!(entries.is_empty());
             }
             other => panic!("unexpected ACL response after delete: {other:?}"),
+        }
+
+        client.shutdown_runtime().await;
+    }
+
+    #[tokio::test]
+    async fn test_control_plane_acl_rejects_invalid_entries() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let options = MetaClientOptions {
+            mount_point: Some("/mnt/acl-invalid".to_string()),
+            control_runtime_dir: Some(runtime_dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let client = create_test_client_with_options(options).await;
+        client.mkdir(1, "docs".to_string()).await.unwrap();
+        client.start_control_plane().await.unwrap();
+
+        let registry =
+            crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
+        let record = registry
+            .select_instance(Some("/mnt/acl-invalid"))
+            .await
+            .unwrap();
+
+        let invalid = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::PutAcl {
+                path: "/docs".to_string(),
+                entries: vec![crate::control::protocol::ControlAclEntry {
+                    scope: "access".to_string(),
+                    tag: "group_obj".to_string(),
+                    id: None,
+                    perm: "read".to_string(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        assert_control_error_code(invalid, "invalid_request");
+
+        let get = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::GetAcl {
+                path: "/docs".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        match get {
+            crate::control::protocol::ControlResponse::Acl { entries, .. } => {
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected ACL response after invalid put: {other:?}"),
         }
 
         client.shutdown_runtime().await;
