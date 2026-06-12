@@ -27,3 +27,9 @@ export function parentBrowserPath(path: string): string {
 export function formatMode(mode: number): string {
   return `0${mode.toString(8)}`;
 }
+
+export function formatBrowserEntryFlags(entry: { has_acl?: boolean }): string {
+  const flags = [];
+  if (entry.has_acl) flags.push('ACL');
+  return flags.length === 0 ? '-' : flags.join(', ');
+}

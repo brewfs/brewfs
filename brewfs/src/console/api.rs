@@ -131,6 +131,7 @@ pub struct FileEntryResponse {
     pub uid: u32,
     pub gid: u32,
     pub mtime: String,
+    pub has_acl: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -960,6 +961,7 @@ impl From<ControlDirectoryEntry> for FileEntryResponse {
             uid: entry.uid,
             gid: entry.gid,
             mtime: format_timestamp_ns(entry.mtime_ns),
+            has_acl: entry.has_acl,
         }
     }
 }

@@ -103,6 +103,7 @@ pub struct ControlDirectoryEntry {
     pub uid: u32,
     pub gid: u32,
     pub mtime_ns: i64,
+    pub has_acl: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

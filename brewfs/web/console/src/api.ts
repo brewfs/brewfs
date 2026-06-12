@@ -98,6 +98,7 @@ export interface FileEntryResponse {
   uid: number;
   gid: number;
   mtime: string;
+  has_acl?: boolean;
 }
 
 export interface FileListResponse {

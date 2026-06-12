@@ -35,6 +35,7 @@ fn protocol_roundtrip_preserves_directory_listing_request() {
             uid: 1000,
             gid: 1000,
             mtime_ns: 1_786_000_000_000_000_000,
+            has_acl: true,
         }],
     };
     let raw = serde_json::to_vec(&response).expect("serialize response");

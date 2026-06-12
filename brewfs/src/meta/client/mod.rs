@@ -500,6 +500,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 Ok(None) => return control_meta_error(MetaError::NotFound(entry.ino)),
                 Err(err) => return control_meta_error(err),
             };
+            let has_acl = match self
+                .store
+                .get_xattr(entry.ino, CONTROL_ACL_XATTR_NAME)
+                .await
+            {
+                Ok(Some(raw)) => !raw.is_empty(),
+                Ok(None) | Err(MetaError::NotImplemented) => false,
+                Err(err) => return control_meta_error(err),
+            };
             response_entries.push(ControlDirectoryEntry {
                 name: entry.name,
                 inode: entry.ino,
@@ -509,6 +518,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 uid: attr.uid,
                 gid: attr.gid,
                 mtime_ns: attr.mtime,
+                has_acl,
             });
         }
 
@@ -3349,6 +3359,28 @@ mod tests {
             crate::control::runtime::RuntimeRegistry::new(runtime_dir.path().to_path_buf());
         let record = registry.select_instance(Some("/mnt/list")).await.unwrap();
 
+        let acl = crate::control::client::send_request(
+            &record.socket_path,
+            &crate::control::protocol::ControlRequest::PutAcl {
+                path: "/docs/readme.md".to_string(),
+                entries: vec![crate::control::protocol::ControlAclEntry {
+                    scope: "access".to_string(),
+                    tag: "user".to_string(),
+                    id: Some(1001),
+                    perm: "rw-".to_string(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        match acl {
+            crate::control::protocol::ControlResponse::Acl { path, entries } => {
+                assert_eq!(path, "/docs/readme.md");
+                assert_eq!(entries.len(), 1);
+            }
+            other => panic!("unexpected acl response: {other:?}"),
+        }
+
         let response = crate::control::client::send_request(
             &record.socket_path,
             &crate::control::protocol::ControlRequest::ListDirectory {
@@ -3368,6 +3400,7 @@ mod tests {
                     entries[0].kind,
                     crate::control::protocol::ControlFileKind::File
                 );
+                assert!(entries[0].has_acl);
             }
             other => panic!("unexpected directory listing response: {other:?}"),
         }

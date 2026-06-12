@@ -1349,6 +1349,7 @@ mod tests {
         assert_eq!(value["entries"][0]["inode"], 42);
         assert_eq!(value["entries"][0]["size"], 128);
         assert_eq!(value["entries"][0]["mode"], 0o644);
+        assert_eq!(value["entries"][0]["has_acl"], true);
     }
 
     #[tokio::test]
@@ -1770,6 +1771,7 @@ mod tests {
                             uid: 1000,
                             gid: 1000,
                             mtime_ns: 1_786_000_000_000_000_000,
+                            has_acl: true,
                         }],
                     }
                 }

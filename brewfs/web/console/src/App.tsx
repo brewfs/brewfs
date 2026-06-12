@@ -47,7 +47,13 @@ import {
 } from './api';
 import { formatAclDraft, parseAclDraft } from './aclDraft';
 import { loadAclView, type AclViewResult } from './aclView';
-import { formatMode, joinBrowserPath, normalizeBrowserPath, parentBrowserPath } from './browserPath';
+import {
+  formatBrowserEntryFlags,
+  formatMode,
+  joinBrowserPath,
+  normalizeBrowserPath,
+  parentBrowserPath,
+} from './browserPath';
 import {
   formatCsiItemCount,
   loadCsiDashboard,
@@ -1833,6 +1839,7 @@ function BrowserPage({
                   <th>Inode</th>
                   <th>Size</th>
                   <th>Mode</th>
+                  <th>Flags</th>
                   <th>Owner</th>
                   <th>Modified</th>
                   <th>Action</th>
@@ -1846,6 +1853,7 @@ function BrowserPage({
                     <td>{entry.inode}</td>
                     <td>{entry.size}</td>
                     <td>{formatMode(entry.mode)}</td>
+                    <td>{formatBrowserEntryFlags(entry)}</td>
                     <td>
                       {entry.uid}:{entry.gid}
                     </td>
