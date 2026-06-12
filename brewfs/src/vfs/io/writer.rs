@@ -280,9 +280,13 @@ pub(crate) struct SliceState {
     /// True while this slice's bytes are included in pending-upload accounting.
     recent_pending_accounted: bool,
     /// Bytes successfully persisted to the local writeback stage for this
-    /// slice. Commit-before-upload may publish metadata only after this covers
-    /// the whole sealed slice.
+    /// slice.
     writeback_persisted_bytes: u64,
+    /// True while a task is writing the recoverable local dirty record.
+    writeback_record_sealing: bool,
+    /// Commit-before-upload may publish metadata only after staged data covers
+    /// the whole sealed slice and this recoverable dirty record is sealed.
+    writeback_record_sealed: bool,
     data: CacheSlice,
     usage: UsageGuard,
     memory_usage: Option<MemoryUsageGuard>,
@@ -334,6 +338,8 @@ impl SliceState {
             upload_task_active: false,
             recent_pending_accounted: false,
             writeback_persisted_bytes: 0,
+            writeback_record_sealing: false,
+            writeback_record_sealed: false,
             data: CacheSlice::new(config),
             usage: UsageGuard::new(usage),
             memory_usage: memory_budget
@@ -363,8 +369,12 @@ impl SliceState {
         self.writeback_persisted_bytes = self.writeback_persisted_bytes.saturating_add(bytes);
     }
 
-    fn writeback_fully_persisted(&self) -> bool {
+    fn writeback_data_fully_persisted(&self) -> bool {
         self.writeback_persisted_bytes >= self.data.len()
+    }
+
+    fn writeback_fully_persisted(&self) -> bool {
+        self.writeback_data_fully_persisted() && self.writeback_record_sealed
     }
 
     pub(crate) fn can_write(&self, offset: u64, len: usize) -> Option<PageWriteAction> {
@@ -732,6 +742,43 @@ where
     fn mark_writeback_persisted(&self, bytes: u64) {
         self.with_mut(|s| {
             s.record_writeback_persisted_bytes(bytes);
+            s.notify.notify_waiters();
+        });
+        self.shared.flush_notify.notify_waiters();
+    }
+
+    fn claim_writeback_record_seal(
+        &self,
+    ) -> Option<(crate::vfs::cache::keys::DirtySliceKey, u64, u64)> {
+        let ino = self.shared.inode.ino();
+        self.with_mut(|s| {
+            if matches!(s.state, SliceStatus::Writable)
+                || !s.writeback_data_fully_persisted()
+                || s.writeback_record_sealed
+                || s.writeback_record_sealing
+            {
+                return None;
+            }
+
+            let slice_id = s.slice_id?;
+            s.writeback_record_sealing = true;
+            Some((
+                crate::vfs::cache::keys::DirtySliceKey {
+                    ino,
+                    chunk_id: s.chunk_id,
+                    local_seq: slice_id,
+                    epoch: 0,
+                },
+                s.offset,
+                s.data.len(),
+            ))
+        })
+    }
+
+    fn mark_writeback_record_sealed(&self) {
+        self.with_mut(|s| {
+            s.writeback_record_sealing = false;
+            s.writeback_record_sealed = true;
             s.notify.notify_waiters();
         });
         self.shared.flush_notify.notify_waiters();
@@ -2391,6 +2438,32 @@ where
         Self::spawn_upload_task(shared, slice);
     }
 
+    async fn seal_writeback_record_if_ready(
+        shared: &Arc<Shared<B, M>>,
+        slice: &Arc<ParkingMutex<SliceState>>,
+    ) -> anyhow::Result<bool> {
+        let Some(wb) = &shared.write_back else {
+            return Ok(false);
+        };
+
+        let handle = SliceHandle { slice, shared };
+        let Some((key, chunk_offset, length)) = handle.claim_writeback_record_seal() else {
+            return Ok(false);
+        };
+
+        match wb.seal_slice_record(key, chunk_offset, length).await {
+            Ok(()) => {
+                handle.mark_writeback_record_sealed();
+                Ok(true)
+            }
+            Err(err) => {
+                let message = format!("writeback record seal failed: {err}");
+                handle.mark_failed(anyhow::anyhow!(message));
+                Err(err)
+            }
+        }
+    }
+
     /// Pipeline upload task: dispatches multiple block batches concurrently
     /// using a JoinSet.  As each block range completes, `uploaded` advances
     /// through contiguous confirmed blocks.  New blocks that become ready
@@ -2500,22 +2573,26 @@ where
                                 let stage_start = shared_for_persist
                                     .recent_pending_upload
                                     .record_stage_start(data_len);
-                                let result = wb
-                                    .persist_slice(key, chunks, batch_offset)
-                                    .await
-                                    .map(|_| ());
+                                let result = async {
+                                    wb.persist_slice_data(key, chunks, batch_offset).await?;
+                                    SliceHandle {
+                                        slice: &slice_for_persist,
+                                        shared: &shared_for_persist,
+                                    }
+                                    .mark_writeback_persisted(data_len);
+                                    Self::seal_writeback_record_if_ready(
+                                        &shared_for_persist,
+                                        &slice_for_persist,
+                                    )
+                                    .await?;
+                                    Ok::<(), anyhow::Error>(())
+                                }
+                                .await;
                                 shared_for_persist
                                     .recent_pending_upload
                                     .record_stage_finish(stage_start, data_len, result.is_ok());
                                 match result {
-                                    Ok(()) => {
-                                        SliceHandle {
-                                            slice: &slice_for_persist,
-                                            shared: &shared_for_persist,
-                                        }
-                                        .mark_writeback_persisted(data_len);
-                                        Ok(())
-                                    }
+                                    Ok(()) => Ok(()),
                                     Err(err) => {
                                         let message =
                                             format!("writeback stage persist failed: {err}");
@@ -2888,6 +2965,18 @@ where
                         let desc = handle.desc_for_commit();
 
                         if let Some(desc) = desc {
+                            if let Err(err) =
+                                Self::seal_writeback_record_if_ready(&shared, &slice).await
+                            {
+                                warn!(
+                                    chunk_id = desc.chunk_id,
+                                    slice_id = desc.slice_id,
+                                    error = ?err,
+                                    "writeback record seal failed before commit-before-upload"
+                                );
+                                continue;
+                            }
+
                             let stage_ready = {
                                 let s = slice.lock();
                                 shared.write_back.is_none() || s.writeback_fully_persisted()
@@ -4333,6 +4422,13 @@ mod tests {
         );
 
         slice.record_writeback_persisted_bytes(4096);
+        assert!(slice.writeback_data_fully_persisted());
+        assert!(
+            !slice.writeback_fully_persisted(),
+            "staged data is not durable enough for commit-before-upload until the record is sealed"
+        );
+
+        slice.writeback_record_sealed = true;
         assert!(slice.writeback_fully_persisted());
     }
 

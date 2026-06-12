@@ -28,13 +28,21 @@ pub struct DirtySliceRecord {
 /// This provides crash recovery and decouples write latency from upload latency.
 #[async_trait::async_trait]
 pub trait WriteBackCache: Send + Sync {
-    /// Persist a sealed slice to local SSD. Returns the local file path.
-    async fn persist_slice(
+    /// Persist a slice data batch to local SSD. Returns the local file path.
+    async fn persist_slice_data(
         &self,
         key: DirtySliceKey,
         data: Vec<Bytes>,
-        chunk_offset: u64,
+        slice_offset: u64,
     ) -> anyhow::Result<PathBuf>;
+
+    /// Publish the recoverable dirty slice record after all data batches are staged.
+    async fn seal_slice_record(
+        &self,
+        key: DirtySliceKey,
+        chunk_offset: u64,
+        length: u64,
+    ) -> anyhow::Result<()>;
 
     /// Open a persisted slice for reading (used by the uploader).
     async fn open_slice(
@@ -86,8 +94,13 @@ impl FsWriteBackCache {
         record: &DirtySliceRecord,
     ) -> anyhow::Result<()> {
         let meta_path = key.meta_path(&self.root);
+        if let Some(parent) = meta_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let tmp_path = meta_path.with_extension("meta.tmp");
         let json = serde_json::to_vec(record)?;
-        fs::write(&meta_path, &json).await?;
+        fs::write(&tmp_path, &json).await?;
+        fs::rename(&tmp_path, &meta_path).await?;
         Ok(())
     }
 
@@ -100,11 +113,11 @@ impl FsWriteBackCache {
 
 #[async_trait::async_trait]
 impl WriteBackCache for FsWriteBackCache {
-    async fn persist_slice(
+    async fn persist_slice_data(
         &self,
         key: DirtySliceKey,
         data: Vec<Bytes>,
-        chunk_offset: u64,
+        slice_offset: u64,
     ) -> anyhow::Result<PathBuf> {
         let dir = key.dir_path(&self.root);
         fs::create_dir_all(&dir).await?;
@@ -117,18 +130,14 @@ impl WriteBackCache for FsWriteBackCache {
             .write(true)
             .open(&slice_path)
             .await?;
-        file.seek(std::io::SeekFrom::Start(chunk_offset)).await?;
-        let mut total_len = 0u64;
+        file.seek(std::io::SeekFrom::Start(slice_offset)).await?;
         for chunk in &data {
             file.write_all(chunk).await?;
-            total_len += chunk.len() as u64;
         }
-        let written_end = chunk_offset.saturating_add(total_len);
         file.flush().await?;
         if self.sync_on_persist {
             file.sync_all().await?;
         }
-        let file_len = file.metadata().await?.len().max(written_end);
         drop(file);
 
         if self.sync_on_persist {
@@ -137,31 +146,39 @@ impl WriteBackCache for FsWriteBackCache {
             dir_fd.sync_all().await?;
         }
 
-        let meta_path = key.meta_path(&self.root);
-        let record = match self.read_meta(&meta_path).await {
-            Ok(mut record) => {
-                record.length = record.length.max(file_len);
-                record.chunk_offset = record.chunk_offset.min(chunk_offset);
-                record.state = DirtySliceState::Sealed;
-                record.path = slice_path.clone();
-                record
-            }
-            Err(_) => DirtySliceRecord {
-                key,
-                ino: key.ino,
-                chunk_id: key.chunk_id,
-                chunk_offset,
-                length: file_len,
-                remote_slice_id: None,
-                state: DirtySliceState::Sealed,
-                path: slice_path.clone(),
-                retry_count: 0,
-                last_error: None,
-            },
+        Ok(slice_path)
+    }
+
+    async fn seal_slice_record(
+        &self,
+        key: DirtySliceKey,
+        chunk_offset: u64,
+        length: u64,
+    ) -> anyhow::Result<()> {
+        let slice_path = key.slice_path(&self.root);
+        let file_len = fs::metadata(&slice_path).await?.len();
+        anyhow::ensure!(
+            file_len >= length,
+            "writeback stage incomplete for {:?}: file length {} < sealed length {}",
+            key,
+            file_len,
+            length
+        );
+
+        let record = DirtySliceRecord {
+            key,
+            ino: key.ino,
+            chunk_id: key.chunk_id,
+            chunk_offset,
+            length,
+            remote_slice_id: None,
+            state: DirtySliceState::Sealed,
+            path: slice_path,
+            retry_count: 0,
+            last_error: None,
         };
         self.write_meta(&key, &record).await?;
-
-        Ok(slice_path)
+        Ok(())
     }
 
     async fn open_slice(
@@ -313,14 +330,47 @@ mod tests {
         };
 
         let path = cache
-            .persist_slice(key, vec![Bytes::from_static(b"small")], 0)
+            .persist_slice_data(key, vec![Bytes::from_static(b"small")], 0)
             .await
             .unwrap();
+        cache.seal_slice_record(key, 0, 5).await.unwrap();
 
         assert_eq!(tokio::fs::read(path).await.unwrap(), b"small");
         let records = cache.recover().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key, key);
+        assert_eq!(records[0].state, DirtySliceState::Sealed);
+    }
+
+    #[tokio::test]
+    async fn persisted_data_is_recoverable_only_after_record_is_sealed() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        let key = DirtySliceKey {
+            ino: 7,
+            chunk_id: 11,
+            local_seq: 17,
+            epoch: 0,
+        };
+
+        let path = cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"payload")], 0)
+            .await
+            .unwrap();
+
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"payload");
+        assert!(
+            cache.recover().await.unwrap().is_empty(),
+            "data batches alone must not publish a recoverable dirty record"
+        );
+
+        cache.seal_slice_record(key, 4096, 7).await.unwrap();
+
+        let records = cache.recover().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, key);
+        assert_eq!(records[0].chunk_offset, 4096);
+        assert_eq!(records[0].length, 7);
         assert_eq!(records[0].state, DirtySliceState::Sealed);
     }
 
@@ -336,13 +386,14 @@ mod tests {
         };
 
         cache
-            .persist_slice(key, vec![Bytes::from_static(b"first")], 0)
+            .persist_slice_data(key, vec![Bytes::from_static(b"first")], 0)
             .await
             .unwrap();
         let path = cache
-            .persist_slice(key, vec![Bytes::from_static(b"second")], 5)
+            .persist_slice_data(key, vec![Bytes::from_static(b"second")], 5)
             .await
             .unwrap();
+        cache.seal_slice_record(key, 0, 11).await.unwrap();
 
         assert_eq!(tokio::fs::read(path).await.unwrap(), b"firstsecond");
         let records = cache.recover().await.unwrap();
@@ -366,9 +417,10 @@ mod tests {
         };
 
         cache
-            .persist_slice(old_key, vec![Bytes::from_static(b"old")], 0)
+            .persist_slice_data(old_key, vec![Bytes::from_static(b"old")], 0)
             .await
             .unwrap();
+        cache.seal_slice_record(old_key, 0, 3).await.unwrap();
         cache.remove(&old_key).await.unwrap();
 
         assert!(
@@ -376,7 +428,7 @@ mod tests {
             "dirty slice cleanup must not remove the ino/chunk directory shared by newer slices"
         );
         cache
-            .persist_slice(new_key, vec![Bytes::from_static(b"new")], 0)
+            .persist_slice_data(new_key, vec![Bytes::from_static(b"new")], 0)
             .await
             .unwrap();
         assert_eq!(
