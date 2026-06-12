@@ -853,7 +853,7 @@ async fn send_control_request(
 }
 
 fn unsupported(message: impl Into<String>) -> ApiErrorResponse {
-    json_error(StatusCode::NOT_IMPLEMENTED, "unsupported", message)
+    json_error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported", message)
 }
 
 fn unavailable(message: impl Into<String>) -> ApiErrorResponse {

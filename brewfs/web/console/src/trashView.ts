@@ -91,7 +91,7 @@ function trashErrorOrThrow(volume: VolumeResponse, err: unknown): TrashViewResul
       actions: disabledTrashActions(),
     };
   }
-  if (err instanceof ApiError && err.status === 501) {
+  if (err instanceof ApiError && (err.code === 'unsupported' || err.status === 422)) {
     return {
       state: 'unsupported',
       title: 'Trash unsupported',

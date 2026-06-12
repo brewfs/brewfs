@@ -163,7 +163,7 @@ function dashboardErrorOrThrow(err: unknown): CsiDashboardResult {
       resources: [],
     };
   }
-  if (err instanceof ApiError && err.status === 501) {
+  if (err instanceof ApiError && (err.code === 'unsupported' || err.status === 422)) {
     return {
       state: 'unsupported',
       title: 'CSI dashboard unsupported',
@@ -199,7 +199,7 @@ function resourceErrorOrThrow(descriptor: CsiResourceDescriptor, err: unknown): 
       rows: [],
     };
   }
-  if (err instanceof ApiError && err.status === 501) {
+  if (err instanceof ApiError && (err.code === 'unsupported' || err.status === 422)) {
     return {
       key: descriptor.key,
       title: descriptor.title,

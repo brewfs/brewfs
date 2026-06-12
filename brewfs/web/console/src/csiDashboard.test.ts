@@ -183,7 +183,7 @@ describe('loadCsiDashboard', () => {
       )
       .mockResolvedValue(
         new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-          status: 501,
+          status: 422,
           headers: { 'content-type': 'application/json' },
         }),
       );

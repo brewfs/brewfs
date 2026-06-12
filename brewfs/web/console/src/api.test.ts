@@ -409,13 +409,13 @@ describe('unsupported feature API contracts', () => {
   it('throws ApiError for unsupported file browser responses', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-        status: 501,
+        status: 422,
         headers: { 'content-type': 'application/json' },
       }),
     );
 
     await expect(fetchFileList('vol-1', '/', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
     expect(fetch).toHaveBeenCalledWith('/api/volumes/vol-1/files?path=%2F', {
       headers: {
@@ -481,13 +481,13 @@ describe('unsupported feature API contracts', () => {
   it('throws ApiError for unsupported trash responses', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-        status: 501,
+        status: 422,
         headers: { 'content-type': 'application/json' },
       }),
     );
 
     await expect(fetchTrash('vol-1', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
     expect(fetch).toHaveBeenCalledWith('/api/volumes/vol-1/trash', {
       headers: {
@@ -497,7 +497,7 @@ describe('unsupported feature API contracts', () => {
     });
 
     await expect(restoreTrashEntry('vol-1', 'trash-1', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
     expect(fetch).toHaveBeenLastCalledWith('/api/volumes/vol-1/trash/trash-1/restore', {
       method: 'POST',
@@ -508,7 +508,7 @@ describe('unsupported feature API contracts', () => {
     });
 
     await expect(deleteTrashEntry('vol-1', 'trash-1', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
     expect(fetch).toHaveBeenLastCalledWith('/api/volumes/vol-1/trash/trash-1', {
       method: 'DELETE',
@@ -545,13 +545,13 @@ describe('unsupported feature API contracts', () => {
   it('sends ACL reads and writes through stable endpoints', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-        status: 501,
+        status: 422,
         headers: { 'content-type': 'application/json' },
       }),
     );
 
     await expect(fetchAcl('vol-1', '/', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
 
     expect(fetch).toHaveBeenCalledWith('/api/volumes/vol-1/acl?path=%2F', {
@@ -562,7 +562,7 @@ describe('unsupported feature API contracts', () => {
     });
 
     await expect(putAcl('vol-1', '/', { entries: [] }, 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
 
     expect(fetch).toHaveBeenLastCalledWith('/api/volumes/vol-1/acl?path=%2F', {
@@ -576,7 +576,7 @@ describe('unsupported feature API contracts', () => {
     });
 
     await expect(deleteAcl('vol-1', '/', 'secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
 
     expect(fetch).toHaveBeenLastCalledWith('/api/volumes/vol-1/acl?path=%2F', {
@@ -591,13 +591,13 @@ describe('unsupported feature API contracts', () => {
   it('throws ApiError for unsupported CSI summary responses', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-        status: 501,
+        status: 422,
         headers: { 'content-type': 'application/json' },
       }),
     );
 
     await expect(fetchCsiSummary('secret-token')).rejects.toMatchObject({
-      status: 501,
+      status: 422,
     } satisfies Partial<ApiError>);
     expect(fetch).toHaveBeenCalledWith('/api/csi/summary', {
       headers: {

@@ -78,7 +78,7 @@ describe('loadTrashView', () => {
   it('maps unsupported trash APIs to a visible page state', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: { code: 'unsupported' } }), {
-        status: 501,
+        status: 422,
         headers: { 'content-type': 'application/json' },
       }),
     );

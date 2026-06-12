@@ -1072,7 +1072,7 @@ mod tests {
                 .unwrap(),
         ] {
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
             let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(value["error"]["code"], "unsupported");
@@ -1198,7 +1198,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["error"]["code"], "unsupported");
