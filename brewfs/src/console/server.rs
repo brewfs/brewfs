@@ -2,7 +2,7 @@ use super::{AuthConfig, ConsoleConfig, ConsoleState, api};
 use axum::{
     Router,
     extract::State,
-    http::{Request, StatusCode, Uri, header},
+    http::{Method, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
@@ -85,7 +85,10 @@ async fn require_api_auth(
     next: Next,
 ) -> Response {
     match &state.auth {
-        AuthConfig::Disabled => next.run(request).await,
+        AuthConfig::Disabled => {
+            audit_mutating_api_request(&state.auth, request.method(), request.uri());
+            next.run(request).await
+        }
         AuthConfig::Token { .. } => {
             let token = request
                 .headers()
@@ -93,6 +96,7 @@ async fn require_api_auth(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "));
             if token.is_some_and(|token| state.auth.accepts_bearer(token)) {
+                audit_mutating_api_request(&state.auth, request.method(), request.uri());
                 next.run(request).await
             } else {
                 json_error(
@@ -103,6 +107,34 @@ async fn require_api_auth(
                 .into_response()
             }
         }
+    }
+}
+
+fn audit_mutating_api_request(auth: &AuthConfig, method: &Method, uri: &Uri) {
+    if !is_mutating_api_method(method) {
+        return;
+    }
+
+    tracing::info!(
+        target: "brewfs_console_audit",
+        user = audit_identity_label(auth),
+        method = %method,
+        path = uri.path(),
+        "console mutating API request"
+    );
+}
+
+fn is_mutating_api_method(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    )
+}
+
+fn audit_identity_label(auth: &AuthConfig) -> &'static str {
+    match auth {
+        AuthConfig::Disabled => "dev-no-auth",
+        AuthConfig::Token { .. } => "token",
     }
 }
 
@@ -190,6 +222,27 @@ mod tests {
     use std::net::SocketAddr;
     use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[test]
+    fn audit_treats_only_write_methods_as_mutating() {
+        assert!(!is_mutating_api_method(&axum::http::Method::GET));
+        assert!(!is_mutating_api_method(&axum::http::Method::HEAD));
+        assert!(is_mutating_api_method(&axum::http::Method::POST));
+        assert!(is_mutating_api_method(&axum::http::Method::PUT));
+        assert!(is_mutating_api_method(&axum::http::Method::PATCH));
+        assert!(is_mutating_api_method(&axum::http::Method::DELETE));
+    }
+
+    #[test]
+    fn audit_identity_labels_do_not_include_token_values() {
+        assert_eq!(audit_identity_label(&AuthConfig::Disabled), "dev-no-auth");
+        assert_eq!(
+            audit_identity_label(&AuthConfig::Token {
+                token: "secret-token".into(),
+            }),
+            "token"
+        );
+    }
 
     fn test_config(static_dir: &std::path::Path, auth: AuthConfig) -> ConsoleConfig {
         ConsoleConfig {
