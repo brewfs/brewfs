@@ -58,6 +58,39 @@ async fn new_test_store_with_session(session_id: Uuid) -> DatabaseMetaStore {
 }
 
 #[tokio::test]
+async fn test_stat_fs_reports_capacity_and_usage() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+
+    let file = store
+        .create_file(root, "statfs_file.txt".to_string())
+        .await
+        .unwrap();
+    store.set_file_size(file, 8192).await.unwrap();
+    store.mkdir(root, "statfs_dir".to_string()).await.unwrap();
+
+    let snapshot = store.stat_fs().await.unwrap();
+
+    assert!(
+        snapshot.total_space > 8192,
+        "statfs total space should represent filesystem capacity, not just used bytes"
+    );
+    assert_eq!(
+        snapshot.total_space - snapshot.available_space,
+        8192,
+        "statfs used space should match active file usage"
+    );
+    assert_eq!(
+        snapshot.used_inodes, 3,
+        "statfs should count root, one file, and one directory"
+    );
+    assert!(
+        snapshot.available_inodes > 0,
+        "statfs should expose remaining inode capacity"
+    );
+}
+
+#[tokio::test]
 async fn test_next_id_unique_across_store_instances() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let db_path = temp_dir.path().join("counter-unique.db");

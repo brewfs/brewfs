@@ -10,7 +10,8 @@ use crate::meta::INODE_ID_KEY;
 use crate::meta::config::{Config, DatabaseType, default_tikv_namespace};
 use crate::meta::store::{
     DirEntry, FileAttr, FileType, MetaError, MetaStore, MetaStoreCapabilities, OpenFlags,
-    RetryReason, SetAttrFlags, SetAttrRequest,
+    RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage,
+    stat_fs_used_bytes,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -1000,7 +1001,7 @@ impl MetaStore for TiKvMetaStore {
             hardlinks: true,
             symlinks: true,
             rename_exchange: true,
-            stat_fs: false,
+            stat_fs: true,
             compaction: true,
             ..MetaStoreCapabilities::default()
         }
@@ -1018,6 +1019,35 @@ impl MetaStore for TiKvMetaStore {
                     .txn_get_node(txn, ino, false, operation)
                     .await
                     .map(|node| node.map(|node| node.to_attr()))
+            })
+        })
+        .await
+    }
+
+    async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        let operation = "stat_fs";
+        self.read_txn(operation, |store, txn| {
+            Box::pin(async move {
+                let pairs =
+                    Self::txn_scan_prefix(txn, store.inode_prefix(), None, operation).await?;
+                let mut used_space = 0u64;
+                let mut used_inodes = 0u64;
+
+                for pair in pairs {
+                    let node = Self::decode_node(pair.value())?;
+                    if node.deleted || node.nlink == 0 {
+                        continue;
+                    }
+
+                    let attr = node.to_attr();
+                    if attr.kind != FileType::Dir {
+                        used_space =
+                            used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+                    }
+                    used_inodes = used_inodes.saturating_add(1);
+                }
+
+                Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
             })
         })
         .await

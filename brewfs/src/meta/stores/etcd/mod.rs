@@ -18,6 +18,7 @@ use crate::meta::file_lock::{
 };
 use crate::meta::store::{
     DirEntry, FileAttr, LockName, MetaError, MetaStore, RetryReason, SetAttrFlags, SetAttrRequest,
+    StatFsSnapshot, stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
 use crate::meta::stores::pool::IdPool;
 use crate::meta::{INODE_ID_KEY, Permission};
@@ -1490,7 +1491,7 @@ impl MetaStore for EtcdMetaStore {
             symlinks: true,
             rename_exchange: true,
             open_close_tracking: false,
-            stat_fs: false,
+            stat_fs: true,
             sessions: true,
             global_locks: true,
             plocks: true,
@@ -1520,6 +1521,46 @@ impl MetaStore for EtcdMetaStore {
         }
 
         Ok(None)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        let mut client = self.client.clone();
+        let resp = client
+            .get(
+                "r:".to_string(),
+                Some(etcd_client::GetOptions::new().with_prefix()),
+            )
+            .await
+            .map_err(|e| MetaError::Internal(format!("Failed to scan statfs entries: {e}")))?;
+
+        let mut used_space = 0u64;
+        let mut used_inodes = 0u64;
+
+        for kv in resp.kvs() {
+            let key = std::str::from_utf8(kv.key()).map_err(|e| {
+                MetaError::Internal(format!("Invalid statfs reverse key bytes: {e}"))
+            })?;
+            let Some(inode_str) = key.strip_prefix("r:") else {
+                continue;
+            };
+            let Ok(ino) = inode_str.parse::<i64>() else {
+                continue;
+            };
+            let entry_info = serde_json::from_slice::<EtcdEntryInfo>(kv.value())
+                .map_err(|e| MetaError::Internal(format!("Failed to parse {key}: {e}")))?;
+            if entry_info.deleted || entry_info.nlink == 0 {
+                continue;
+            }
+
+            let attr = entry_info.to_file_attr(ino);
+            if attr.kind != FileType::Dir {
+                used_space = used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+            }
+            used_inodes = used_inodes.saturating_add(1);
+        }
+
+        Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
     }
 
     /// Batch stat implementation for Etcd using Transaction batch GET

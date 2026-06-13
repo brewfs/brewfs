@@ -3372,11 +3372,13 @@ async fn test_stat_fs_accounting_fallback() {
         snap.used_inodes, 4,
         "should count 4 non-deleted inodes (including root)"
     );
+    let used_space = snap.total_space - snap.available_space;
     assert_eq!(
-        snap.total_space,
-        1000 + 6,
-        "should count file and symlink size"
+        used_space, 1536,
+        "should count allocated file and symlink blocks"
     );
+    assert!(snap.total_space > used_space);
+    assert!(snap.available_inodes > 0);
 }
 
 #[serial]

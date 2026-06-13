@@ -18,6 +18,7 @@ use crate::meta::file_lock::{
 use crate::meta::store::{
     AclRule, CHUNK_LOCK_CHECK_TTL_SECS, DirEntry, FileAttr, LockName, MetaError, MetaStore,
     OpenFlags, RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
+    stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
 use crate::meta::{INODE_ID_KEY, Permission, SLICE_ID_KEY};
 
@@ -2687,11 +2688,20 @@ impl MetaStore for DatabaseMetaStore {
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
         let files = FileMeta::find()
+            .filter(file_meta::Column::Deleted.eq(false))
+            .filter(file_meta::Column::Nlink.gt(0))
             .all(&self.db)
             .await
             .map_err(MetaError::Database)?;
 
-        let used_space: u64 = files.iter().map(|file| file.size.max(0) as u64).sum();
+        let used_space = files.iter().fold(0u64, |acc, file| {
+            let size = file
+                .symlink_target
+                .as_ref()
+                .map(|target| target.len() as u64)
+                .unwrap_or_else(|| file.size.max(0) as u64);
+            acc.saturating_add(stat_fs_used_bytes(size, size.div_ceil(512)))
+        });
 
         let file_count = files.len() as u64;
         let dir_count = AccessMeta::find()
@@ -2699,12 +2709,10 @@ impl MetaStore for DatabaseMetaStore {
             .await
             .map_err(MetaError::Database)?;
 
-        Ok(StatFsSnapshot {
-            total_space: used_space,
-            available_space: 0,
-            used_inodes: file_count + dir_count,
-            available_inodes: 0,
-        })
+        Ok(stat_fs_snapshot_from_usage(
+            used_space,
+            file_count.saturating_add(dir_count),
+        ))
     }
 
     #[tracing::instrument(level = "trace", skip(self))]

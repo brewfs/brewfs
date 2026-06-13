@@ -15,7 +15,7 @@ use crate::meta::file_lock::{
 };
 use crate::meta::store::{
     DirEntry, FileAttr, FileType, LockName, MetaError, MetaStore, RetryReason, SetAttrFlags,
-    SetAttrRequest, StatFsSnapshot,
+    SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
 use async_trait::async_trait;
@@ -2737,12 +2737,7 @@ impl MetaStore for RedisMetaStore {
             .map_err(redis_err)?;
 
         if keys.is_empty() {
-            return Ok(StatFsSnapshot {
-                total_space: 0,
-                available_space: 0,
-                used_inodes: 0,
-                available_inodes: 0,
-            });
+            return Ok(stat_fs_snapshot_from_usage(0, 0));
         }
 
         let nodes: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
@@ -2765,16 +2760,12 @@ impl MetaStore for RedisMetaStore {
                 continue;
             }
 
-            used_space = used_space.saturating_add(node.attr.size);
+            let attr = node.as_file_attr();
+            used_space = used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
             used_inodes = used_inodes.saturating_add(1);
         }
 
-        Ok(StatFsSnapshot {
-            total_space: used_space,
-            available_space: 0,
-            used_inodes,
-            available_inodes: 0,
-        })
+        Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
     }
 
     #[tracing::instrument(level = "trace", skip(self))]

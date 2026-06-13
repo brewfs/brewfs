@@ -145,6 +145,80 @@ pub struct StatFsSnapshot {
     pub available_inodes: u64,
 }
 
+/// Default filesystem capacity reported when no explicit quota/capacity exists.
+///
+/// This follows JuiceFS' root statfs behavior: expose a stable 1 PiB capacity
+/// and grow it if usage would make the filesystem appear nearly full.
+pub const DEFAULT_STATFS_TOTAL_SPACE: u64 = 1 << 50;
+
+/// Default free inode budget reported when no explicit inode limit exists.
+pub const DEFAULT_STATFS_AVAILABLE_INODES: u64 = 10 << 20;
+
+const STATFS_BLOCK_SIZE: u64 = 512;
+
+pub fn stat_fs_used_bytes(size: u64, blocks: u64) -> u64 {
+    if blocks > 0 {
+        blocks.saturating_mul(STATFS_BLOCK_SIZE)
+    } else {
+        size
+    }
+}
+
+pub fn stat_fs_snapshot_from_usage(used_space: u64, used_inodes: u64) -> StatFsSnapshot {
+    let mut total_space = DEFAULT_STATFS_TOTAL_SPACE;
+    while (total_space as u128) * 8 < (used_space as u128) * 10 {
+        if total_space >= u64::MAX / 2 {
+            total_space = u64::MAX;
+            break;
+        }
+        total_space *= 2;
+    }
+
+    if total_space < used_space {
+        total_space = used_space;
+    }
+
+    let mut available_inodes = DEFAULT_STATFS_AVAILABLE_INODES;
+    while (used_inodes as u128) > (available_inodes as u128) * 4 {
+        if available_inodes >= u64::MAX / 2 {
+            available_inodes = u64::MAX;
+            break;
+        }
+        available_inodes *= 2;
+    }
+
+    StatFsSnapshot {
+        total_space,
+        available_space: total_space.saturating_sub(used_space),
+        used_inodes,
+        available_inodes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stat_fs_snapshot_reports_default_capacity_and_availability() {
+        let snapshot = stat_fs_snapshot_from_usage(4096, 2);
+
+        assert_eq!(snapshot.total_space, DEFAULT_STATFS_TOTAL_SPACE);
+        assert_eq!(snapshot.available_space, DEFAULT_STATFS_TOTAL_SPACE - 4096);
+        assert_eq!(snapshot.used_inodes, 2);
+        assert_eq!(snapshot.available_inodes, DEFAULT_STATFS_AVAILABLE_INODES);
+    }
+
+    #[test]
+    fn stat_fs_snapshot_expands_space_when_default_would_be_nearly_full() {
+        let used = DEFAULT_STATFS_TOTAL_SPACE;
+        let snapshot = stat_fs_snapshot_from_usage(used, 1);
+
+        assert!(snapshot.total_space > used);
+        assert_eq!(snapshot.available_space, snapshot.total_space - used);
+    }
+}
+
 /// Explicit feature declaration for a metadata backend.
 ///
 /// The `MetaStore` trait intentionally contains optional methods while BrewFS
