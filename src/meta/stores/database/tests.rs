@@ -1101,7 +1101,7 @@ async fn test_chmod_updates_mode() {
 }
 
 #[tokio::test]
-async fn test_chmod_strips_special_bits() {
+async fn test_chmod_preserves_special_bits() {
     let store = new_test_store().await;
     let parent = store.root_ino();
     let ino = store
@@ -1109,12 +1109,12 @@ async fn test_chmod_strips_special_bits() {
         .await
         .unwrap();
 
-    // MetaStore::chmod strips setuid/setgid/sticky (masks to 0o777).
+    // MetaStore::chmod preserves setuid/setgid/sticky (masks to 0o7777).
     let attr = store.chmod(ino, 0o7755).await.unwrap();
     assert_eq!(
         attr.mode & 0o7777,
-        0o755,
-        "setuid/setgid/sticky should be stripped"
+        0o7755,
+        "setuid/setgid/sticky should be preserved"
     );
 }
 

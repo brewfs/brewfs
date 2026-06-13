@@ -194,6 +194,22 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    pub(super) async fn meta_create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, VfsError> {
+        self.meta_layer()
+            .create_node(parent, name, kind, mode, uid, gid, rdev)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     pub(super) async fn meta_link(
         &self,
         ino: i64,

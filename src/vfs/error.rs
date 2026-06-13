@@ -186,6 +186,7 @@ impl VfsError {
             MetaError::NotDirectory(_) => VfsError::NotADirectory { path },
             MetaError::DirectoryNotEmpty(_) => VfsError::DirectoryNotEmpty { path },
             MetaError::InvalidFilename => VfsError::InvalidFilename,
+            MetaError::FilenameTooLong => VfsError::FilenameTooLong { path },
             MetaError::InvalidPath(_) => VfsError::InvalidInput,
             MetaError::TooManySymlinks => VfsError::InvalidInput,
             MetaError::NotSupported(_) | MetaError::NotImplemented => VfsError::Unsupported,
@@ -338,5 +339,12 @@ mod tests {
 
         let io_err: std::io::Error = err.into();
         assert_eq!(io_err.kind(), ErrorKind::DirectoryNotEmpty);
+    }
+
+    #[test]
+    fn from_meta_preserves_filename_too_long_semantics() {
+        let err = VfsError::from_meta(PathHint::some("/tmp/name"), MetaError::FilenameTooLong);
+
+        assert!(matches!(err, VfsError::FilenameTooLong { .. }));
     }
 }

@@ -523,6 +523,7 @@ mod tests {
             blocks: 0,
             kind,
             mode: 0o755,
+            rdev: 0,
             uid: 0,
             gid: 0,
             atime: 0,

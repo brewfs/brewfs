@@ -979,6 +979,10 @@ fn control_kind_name(kind: ControlFileKind) -> &'static str {
         ControlFileKind::File => "file",
         ControlFileKind::Directory => "directory",
         ControlFileKind::Symlink => "symlink",
+        ControlFileKind::Fifo => "fifo",
+        ControlFileKind::Socket => "socket",
+        ControlFileKind::CharDevice => "char_device",
+        ControlFileKind::BlockDevice => "block_device",
     }
 }
 

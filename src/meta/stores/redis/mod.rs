@@ -688,6 +688,7 @@ const CREATE_ENTRY_LUA: &str = r#"
     local default_mode = tonumber(ARGV[5])
     local uid = tonumber(ARGV[6])
     local gid = tonumber(ARGV[7])
+    local rdev = tonumber(ARGV[8]) or 0
 
     -- Get parent node
     local parent_json = redis.call('GET', parent_node_key)
@@ -741,7 +742,8 @@ const CREATE_ENTRY_LUA: &str = r#"
             atime = timestamp,
             mtime = timestamp,
             ctime = timestamp,
-            nlink = nlink
+            nlink = nlink,
+            rdev = rdev
         },
         deleted = false
     }
@@ -1481,6 +1483,7 @@ impl RedisMetaStore {
         let attr = StoredAttr {
             size: 0,
             mode: 0o040755,
+            rdev: 0,
             uid: 0,
             gid: 0,
             atime: now,
@@ -1690,6 +1693,28 @@ impl RedisMetaStore {
         name: String,
         kind: FileType,
     ) -> Result<i64, MetaError> {
+        let default_mode = if kind == FileType::Dir {
+            0o040755
+        } else if kind == FileType::Symlink {
+            0o120777
+        } else {
+            kind.mode_type_bits() | 0o644
+        };
+        self.create_entry_with_attrs(parent, name, kind, default_mode, 0, 0, 0)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_entry_with_attrs(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
         let parent_dir_key = self.dir_key(parent);
         let parent_node_key = self.node_key(parent);
         let counter_key = COUNTER_INODE_KEY;
@@ -1698,14 +1723,12 @@ impl RedisMetaStore {
             FileType::File => "File",
             FileType::Dir => "Dir",
             FileType::Symlink => "Symlink",
+            FileType::Fifo => "Fifo",
+            FileType::Socket => "Socket",
+            FileType::CharDevice => "CharDevice",
+            FileType::BlockDevice => "BlockDevice",
         };
-        let default_mode = if kind == FileType::Dir {
-            0o040755
-        } else if kind == FileType::Symlink {
-            0o120777
-        } else {
-            0o100644
-        };
+        let mode = kind.mode_type_bits() | (mode & 0o7777);
         let now = current_time();
 
         let script = redis::Script::new(CREATE_ENTRY_LUA);
@@ -1717,9 +1740,10 @@ impl RedisMetaStore {
             .arg(kind_str) // ARGV[2]
             .arg(now) // ARGV[3]
             .arg(parent) // ARGV[4]
-            .arg(default_mode) // ARGV[5]
-            .arg(0u32) // ARGV[6] - uid (default 0)
-            .arg(0u32) // ARGV[7] - gid (default 0)
+            .arg(mode) // ARGV[5]
+            .arg(uid) // ARGV[6]
+            .arg(gid) // ARGV[7]
+            .arg(rdev) // ARGV[8]
             .invoke_async(&mut self.conn.clone())
             .await
             .map_err(redis_err)?;
@@ -1750,8 +1774,9 @@ impl RedisMetaStore {
                     kind: node_kind,
                     attr: StoredAttr {
                         size: 0,
-                        mode: default_mode,
-                        uid: 0,
+                        mode,
+                        rdev,
+                        uid,
                         gid: final_gid,
                         atime: now,
                         mtime: now,
@@ -2230,6 +2255,28 @@ impl MetaStore for RedisMetaStore {
         self.create_entry(parent, name, FileType::File).await
     }
 
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        if kind.is_dir() || kind.is_symlink() {
+            return Err(MetaError::NotSupported(format!(
+                "create_node does not create {:?}",
+                kind
+            )));
+        }
+
+        self.create_entry_with_attrs(parent, name, kind, mode, uid, gid, rdev)
+            .await
+    }
+
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
         if ino == ROOT_INODE {
@@ -2560,7 +2607,7 @@ impl MetaStore for RedisMetaStore {
 
         if let Some(mode) = req.mode {
             let kind_bits = node.attr.mode & 0o170000;
-            node.attr.mode = kind_bits | (mode & 0o777);
+            node.attr.mode = kind_bits | (mode & 0o7777);
             ctime_update = true;
         }
 
@@ -4260,6 +4307,8 @@ where
 struct StoredAttr {
     size: u64,
     mode: u32,
+    #[serde(default)]
+    rdev: u32,
     uid: u32,
     gid: u32,
     #[serde(deserialize_with = "deserialize_i64_from_number")]
@@ -4279,6 +4328,7 @@ impl StoredAttr {
             blocks: self.size.div_ceil(512),
             kind,
             mode: self.mode,
+            rdev: self.rdev,
             uid: self.uid,
             gid: self.gid,
             atime: self.atime,
@@ -4294,6 +4344,10 @@ enum NodeKind {
     File,
     Dir,
     Symlink,
+    Fifo,
+    Socket,
+    CharDevice,
+    BlockDevice,
 }
 
 impl From<FileType> for NodeKind {
@@ -4302,6 +4356,10 @@ impl From<FileType> for NodeKind {
             FileType::File => NodeKind::File,
             FileType::Dir => NodeKind::Dir,
             FileType::Symlink => NodeKind::Symlink,
+            FileType::Fifo => NodeKind::Fifo,
+            FileType::Socket => NodeKind::Socket,
+            FileType::CharDevice => NodeKind::CharDevice,
+            FileType::BlockDevice => NodeKind::BlockDevice,
         }
     }
 }
@@ -4312,6 +4370,10 @@ impl From<NodeKind> for FileType {
             NodeKind::File => FileType::File,
             NodeKind::Dir => FileType::Dir,
             NodeKind::Symlink => FileType::Symlink,
+            NodeKind::Fifo => FileType::Fifo,
+            NodeKind::Socket => FileType::Socket,
+            NodeKind::CharDevice => FileType::CharDevice,
+            NodeKind::BlockDevice => FileType::BlockDevice,
         }
     }
 }

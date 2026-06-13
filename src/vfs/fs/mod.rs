@@ -1006,6 +1006,12 @@ where
         self.state.handles.mark_write_dirty(fh)
     }
 
+    pub(crate) fn handle_allows_write_for_inode(&self, fh: u64, ino: i64) -> bool {
+        self.file_handle(fh)
+            .map(|handle| handle.ino == ino && handle.flags.write)
+            .unwrap_or(false)
+    }
+
     fn file_handles_for_inode(&self, ino: i64) -> Vec<Arc<FileHandle<S, M>>> {
         self.state
             .handles
@@ -1062,6 +1068,11 @@ where
             .await
             .ok()
             .and_then(|paths| paths.into_iter().next())
+    }
+
+    /// get all known paths for a node.
+    pub async fn paths_of(&self, ino: i64) -> Result<Vec<String>, VfsError> {
+        self.meta_get_paths(ino).await
     }
 
     /// get the node's child inode by name.
@@ -1432,6 +1443,30 @@ where
             }
             Err(err) => Err(err),
         }
+    }
+
+    /// Create a non-directory special node using a parent inode and entry name.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(level = "debug", skip(self), fields(parent_ino, name, kind = ?kind, mode, rdev))]
+    pub(crate) async fn create_special_node_at(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, VfsError> {
+        if name.is_empty() || name.contains('/') || name.contains('\0') {
+            return Err(VfsError::InvalidFilename);
+        }
+        if !kind.is_special_node() {
+            return Err(VfsError::InvalidInput);
+        }
+
+        self.meta_create_node(parent_ino, name.to_string(), kind, mode, uid, gid, rdev)
+            .await
     }
 
     /// Create a symbolic link using a parent inode and entry name directly.
@@ -2256,8 +2291,7 @@ where
 
     /// Change the permission bits of an inode (chmod).
     ///
-    /// `new_mode` is masked to `0o777` — setuid, setgid, and sticky bits are
-    /// stripped because BrewFS does not implement those semantics.
+    /// `new_mode` is masked to `0o7777`; setuid, setgid, and sticky bits are preserved.
     /// Returns `VfsError::NotFound` when the inode does not exist.
     #[tracing::instrument(level = "trace", skip(self), fields(ino, new_mode))]
     pub async fn chmod(&self, ino: i64, new_mode: u32) -> Result<FileAttr, VfsError> {

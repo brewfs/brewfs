@@ -17,6 +17,18 @@ pub enum EntryType {
 
     #[sea_orm(num_value = 2)]
     Symlink,
+
+    #[sea_orm(num_value = 3)]
+    Fifo,
+
+    #[sea_orm(num_value = 4)]
+    Socket,
+
+    #[sea_orm(num_value = 5)]
+    CharDevice,
+
+    #[sea_orm(num_value = 6)]
+    BlockDevice,
 }
 
 /// Content metadata model

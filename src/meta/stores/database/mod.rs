@@ -586,6 +586,7 @@ impl DatabaseMetaStore {
         let file_meta = file_meta::ActiveModel {
             inode: Set(inode),
             size: Set(0),
+            rdev: Set(0),
             permission: Set(file_permission),
             access_time: Set(now),
             modify_time: Set(now),
@@ -701,7 +702,7 @@ impl DatabaseMetaStore {
         let kind = if file_meta.symlink_target.is_some() {
             FileType::Symlink
         } else {
-            FileType::File
+            FileType::from_mode(permission.mode)
         };
         let size = if let Some(target) = &file_meta.symlink_target {
             target.len() as u64
@@ -715,12 +716,25 @@ impl DatabaseMetaStore {
             blocks: size.div_ceil(512),
             kind,
             mode: permission.mode,
+            rdev: file_meta.rdev.max(0) as u32,
             uid: permission.uid,
             gid: permission.gid,
             atime: file_meta.access_time,
             mtime: file_meta.modify_time,
             ctime: file_meta.create_time,
             nlink: file_meta.nlink as u32,
+        }
+    }
+
+    fn file_type_to_entry_type(kind: FileType) -> EntryType {
+        match kind {
+            FileType::File => EntryType::File,
+            FileType::Dir => EntryType::Directory,
+            FileType::Symlink => EntryType::Symlink,
+            FileType::Fifo => EntryType::Fifo,
+            FileType::Socket => EntryType::Socket,
+            FileType::CharDevice => EntryType::CharDevice,
+            FileType::BlockDevice => EntryType::BlockDevice,
         }
     }
 
@@ -733,6 +747,7 @@ impl DatabaseMetaStore {
             blocks: 4096_u64.div_ceil(512),
             kind: FileType::Dir,
             mode: permission.mode,
+            rdev: 0,
             uid: permission.uid,
             gid: permission.gid,
             atime: access_meta.access_time,
@@ -1291,25 +1306,18 @@ impl MetaStore for DatabaseMetaStore {
                 .map_err(MetaError::Database)?;
 
             match entry {
-                Some(entry) => match entry.entry_type {
-                    EntryType::Directory => {
+                Some(entry) => {
+                    let kind = FileType::from(entry.entry_type);
+                    if kind.is_dir() {
                         current_inode = entry.inode;
-                    }
-                    EntryType::File => {
+                    } else {
                         if index == parts.len() - 1 {
-                            return Ok(Some((entry.inode, FileType::File)));
+                            return Ok(Some((entry.inode, kind)));
                         } else {
                             return Ok(None);
                         }
                     }
-                    EntryType::Symlink => {
-                        if index == parts.len() - 1 {
-                            return Ok(Some((entry.inode, FileType::Symlink)));
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                },
+                }
                 None => return Ok(None),
             }
         }
@@ -1336,11 +1344,7 @@ impl MetaStore for DatabaseMetaStore {
 
         let mut entries = Vec::new();
         for content in contents {
-            let kind = match content.entry_type {
-                EntryType::File => FileType::File,
-                EntryType::Directory => FileType::Dir,
-                EntryType::Symlink => FileType::Symlink,
-            };
+            let kind = FileType::from(content.entry_type);
             entries.push(DirEntry {
                 name: content.entry_name,
                 ino: content.inode,
@@ -1424,6 +1428,91 @@ impl MetaStore for DatabaseMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
         self.create_file_internal(parent, name).await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        if kind.is_dir() || kind.is_symlink() {
+            return Err(MetaError::NotSupported(format!(
+                "create_node does not create {:?}",
+                kind
+            )));
+        }
+
+        let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
+        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+
+        let parent_meta = AccessMeta::find_by_id(parent)
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or(MetaError::ParentNotFound(parent))?;
+
+        let existing = ContentMeta::find()
+            .filter(content_meta::Column::ParentInode.eq(parent))
+            .filter(content_meta::Column::EntryName.eq(&name))
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+
+        if existing.is_some() {
+            txn.rollback().await.map_err(MetaError::Database)?;
+            return Err(MetaError::AlreadyExists { parent, name });
+        }
+
+        let now = Self::now_nanos();
+        let parent_perm = parent_meta.permission();
+        let gid = if (parent_perm.mode & 0o2000) != 0 {
+            parent_perm.gid
+        } else {
+            gid
+        };
+        let permission = Permission::new(kind.mode_type_bits() | (mode & 0o7777), uid, gid);
+
+        let file_meta = file_meta::ActiveModel {
+            inode: Set(inode),
+            size: Set(0),
+            rdev: Set(rdev as i32),
+            permission: Set(permission),
+            access_time: Set(now),
+            modify_time: Set(now),
+            create_time: Set(now),
+            nlink: Set(1),
+            parent: Set(parent),
+            deleted: Set(false),
+            symlink_target: Set(None),
+        };
+        file_meta.insert(&txn).await.map_err(MetaError::Database)?;
+
+        let content_meta = content_meta::ActiveModel {
+            inode: Set(inode),
+            parent_inode: Set(parent),
+            entry_name: Set(name),
+            entry_type: Set(Self::file_type_to_entry_type(kind)),
+        };
+        content_meta
+            .insert(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+
+        let mut parent_active: access_meta::ActiveModel = parent_meta.into();
+        parent_active.modify_time = Set(now);
+        parent_active
+            .update(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+
+        txn.commit().await.map_err(MetaError::Database)?;
+        Ok(inode)
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
@@ -1746,6 +1835,7 @@ impl MetaStore for DatabaseMetaStore {
         let file_meta = file_meta::ActiveModel {
             inode: Set(inode),
             size: Set(target.len() as i64),
+            rdev: Set(0),
             permission: Set(perm),
             access_time: Set(now),
             modify_time: Set(now),
@@ -1866,8 +1956,11 @@ impl MetaStore for DatabaseMetaStore {
                 return Ok(());
             }
 
-            match (&target_entry.entry_type, &existing.entry_type) {
-                (EntryType::Directory, EntryType::Directory) => {
+            let target_kind = FileType::from(target_entry.entry_type.clone());
+            let existing_kind = FileType::from(existing.entry_type.clone());
+
+            match (target_kind.is_dir(), existing_kind.is_dir()) {
+                (true, true) => {
                     let child_count = ContentMeta::find()
                         .filter(content_meta::Column::ParentInode.eq(existing.inode))
                         .count(&txn)
@@ -1888,19 +1981,19 @@ impl MetaStore for DatabaseMetaStore {
                         .await
                         .map_err(MetaError::Database)?;
                 }
-                (EntryType::Directory, EntryType::File | EntryType::Symlink) => {
+                (true, false) => {
                     txn.rollback().await.map_err(MetaError::Database)?;
                     return Err(MetaError::Io(std::io::Error::from(
                         std::io::ErrorKind::NotADirectory,
                     )));
                 }
-                (EntryType::File | EntryType::Symlink, EntryType::Directory) => {
+                (false, true) => {
                     txn.rollback().await.map_err(MetaError::Database)?;
                     return Err(MetaError::Io(std::io::Error::from(
                         std::io::ErrorKind::IsADirectory,
                     )));
                 }
-                (EntryType::File | EntryType::Symlink, EntryType::File | EntryType::Symlink) => {
+                (false, false) => {
                     let mut replaced_file: file_meta::ActiveModel =
                         FileMeta::find_by_id(existing.inode)
                             .one(&txn)
@@ -2365,7 +2458,7 @@ impl MetaStore for DatabaseMetaStore {
             let now = Self::now_nanos();
 
             if let Some(mode) = req.mode {
-                permission.chmod(mode & 0o777);
+                permission.chmod(mode & 0o7777);
                 ctime_update = true;
             }
 
@@ -2445,6 +2538,7 @@ impl MetaStore for DatabaseMetaStore {
                 blocks: symlink_len.unwrap_or(size as u64).div_ceil(512),
                 kind,
                 mode: permission.mode,
+                rdev: 0,
                 uid: permission.uid,
                 gid: permission.gid,
                 atime: access_time,
@@ -2468,7 +2562,7 @@ impl MetaStore for DatabaseMetaStore {
             let mut create_time = dir.create_time;
 
             if let Some(mode) = req.mode {
-                permission.chmod(mode & 0o777);
+                permission.chmod(mode & 0o7777);
                 ctime_update = true;
             }
 
@@ -2629,6 +2723,7 @@ impl MetaStore for DatabaseMetaStore {
                 blocks: 4096_u64.div_ceil(512),
                 kind: FileType::Dir,
                 mode: out_perm.mode,
+                rdev: 0,
                 uid: out_perm.uid,
                 gid: out_perm.gid,
                 atime: out_atime,

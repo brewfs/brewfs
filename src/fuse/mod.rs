@@ -35,7 +35,7 @@ use bytes::Bytes;
 use std::ffi::{OsStr, OsString};
 use std::mem::size_of;
 use std::num::NonZeroU32;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use asyncfuse::raw::Filesystem;
 use asyncfuse::{FileType as FuseFileType, SetAttr, Timestamp};
@@ -330,7 +330,7 @@ where
         let sanitized_mode = mode.map(sanitize_special_mode_bits);
         if let Some(current) = self.stat_ino(ino).await {
             let mode_matches = sanitized_mode
-                .map(|mode| current.mode & 0o777 == mode)
+                .map(|mode| current.mode & 0o7777 == mode)
                 .unwrap_or(true);
             if current.uid == uid && current.gid == gid && mode_matches {
                 return Some(current);
@@ -424,10 +424,15 @@ where
             });
         }
 
+        validate_fuse_name(name_str.as_ref())?;
+
         let _timer = crate::vfs::stats::OpTimer::new(
             &self.stats().fuse_lookup_ops,
             &self.stats().fuse_lookup_lat_us,
         );
+
+        self.ensure_access_allowed(parent as i64, req.uid, req.gid, libc::X_OK as u32)
+            .await?;
 
         let name_str = name.to_string_lossy();
         let Some((_child_ino, vattr)) = self.child_attr_of(parent as i64, name_str.as_ref()).await
@@ -468,6 +473,8 @@ where
             has_creat = (flags & libc::O_CREAT as u32) != 0,
             "fuse.open"
         );
+        self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid)
+            .await?;
         self.ensure_access_allowed(ino as i64, req.uid, req.gid, open_flags_access_mask(flags))
             .await?;
         let fh = self
@@ -731,20 +738,21 @@ where
     }
 
     // Set attributes: delegate to metadata layer for mode/uid/gid/size/timestamps.
-    // Permission checks are handled by the kernel (via default_permissions mount option).
+    // Userspace refines permission checks that need file-handle or utimensat semantics.
     //
-    // Security: setuid/setgid/sticky bits are stripped from mode changes.
+    // POSIX mode changes preserve setuid/setgid/sticky; chown/write paths may
+    // clear suid/sgid through explicit SetAttrFlags.
     async fn setattr(
         &self,
         req: Request,
         ino: u64,
-        _fh: Option<u64>,
+        fh: Option<u64>,
         set_attr: SetAttr,
     ) -> FuseResult<ReplyAttr> {
         debug!(unique = req.unique, ino, set_attr = ?set_attr, "fuse.setattr");
         let setattr_start = std::time::Instant::now();
 
-        let (meta_req, meta_flags) = fuse_setattr_to_meta(&set_attr);
+        let (mut meta_req, mut meta_flags) = fuse_setattr_to_meta(&set_attr);
 
         // If no attributes to set, just return current attributes
         if attr_request_is_empty(&meta_req) && meta_flags.is_empty() {
@@ -757,8 +765,52 @@ where
                 attr,
             });
         }
-        self.ensure_access_allowed(ino as i64, req.uid, req.gid, inode_mutation_access_mask())
-            .await?;
+        if fh.is_none() {
+            self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid)
+                .await?;
+        }
+        let write_handle_allows_truncate = fh
+            .map(|fh| self.handle_allows_write_for_inode(fh, ino as i64))
+            .unwrap_or(false);
+        if !(setattr_is_truncate_with_optional_timestamps(&meta_req, &meta_flags)
+            && write_handle_allows_truncate)
+        {
+            if setattr_is_timestamp_only(&meta_req, &meta_flags) {
+                self.ensure_timestamp_setattr_allowed(ino as i64, req.uid, req.gid, &meta_req)
+                    .await?;
+            } else if setattr_is_mode_with_optional_timestamps(&meta_req, &meta_flags) {
+                let requested_mode = meta_req
+                    .mode
+                    .expect("mode-with-optional-timestamps requests include mode");
+                self.ensure_mode_setattr_allowed(ino as i64, req.uid, requested_mode)
+                    .await?;
+                meta_req.mode = Some(
+                    self.effective_mode_setattr(
+                        ino as i64,
+                        req.uid,
+                        req.gid,
+                        req.pid,
+                        requested_mode,
+                    )
+                    .await?,
+                );
+            } else if setattr_is_chown_with_optional_timestamps(&meta_req, &meta_flags) {
+                let clear_suid_sgid = self
+                    .ensure_chown_setattr_allowed(ino as i64, req.uid, req.gid, req.pid, &meta_req)
+                    .await?;
+                if clear_suid_sgid {
+                    meta_flags.insert(SetAttrFlags::CLEAR_SUID | SetAttrFlags::CLEAR_SGID);
+                }
+            } else {
+                self.ensure_access_allowed(
+                    ino as i64,
+                    req.uid,
+                    req.gid,
+                    inode_mutation_access_mask(),
+                )
+                .await?;
+            }
+        }
 
         // Apply the attribute changes
         let vattr = match self.set_attr(ino as i64, &meta_req, meta_flags).await {
@@ -1073,7 +1125,7 @@ where
         parent: u64,
         name: &OsStr,
         mode: u32,
-        _rdev: u32,
+        rdev: u32,
     ) -> FuseResult<ReplyEntry> {
         debug!(
             unique = req.unique,
@@ -1083,6 +1135,7 @@ where
             "fuse.mknod"
         );
         let name = name.to_string_lossy();
+        validate_fuse_name(name.as_ref())?;
         let file_type = mode & libc::S_IFMT;
 
         let ino = match file_type {
@@ -1102,14 +1155,33 @@ where
                     .map_err(Errno::from)?
             }
             libc::S_IFIFO | libc::S_IFSOCK | libc::S_IFCHR | libc::S_IFBLK => {
-                return Err(libc::ENOSYS.into());
+                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+                    .await?;
+                let kind = match file_type {
+                    libc::S_IFIFO => VfsFileType::Fifo,
+                    libc::S_IFSOCK => VfsFileType::Socket,
+                    libc::S_IFCHR => VfsFileType::CharDevice,
+                    libc::S_IFBLK => VfsFileType::BlockDevice,
+                    _ => unreachable!("special file type already matched"),
+                };
+                self.create_special_node_at(
+                    parent as i64,
+                    &name,
+                    kind,
+                    mode,
+                    req.uid,
+                    req.gid,
+                    rdev,
+                )
+                .await
+                .map_err(Errno::from)?
             }
             _ => {
                 return Err(libc::EINVAL.into());
             }
         };
 
-        // Apply mode after stripping special bits unsupported by BrewFS.
+        // Apply mode after normalizing to POSIX permission bits.
         let Some(vattr) = self
             .apply_new_entry_attrs(ino, req.uid, req.gid, Some(mode))
             .await
@@ -1143,13 +1215,14 @@ where
             "fuse.mkdir"
         );
         let name = name.to_string_lossy();
+        validate_fuse_name(name.as_ref())?;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
         let _ino = self
             .mkdir_at_new(parent as i64, &name)
             .await
             .map_err(Errno::from)?;
-        // Strip setuid/setgid/sticky, then apply the caller's umask.
+        // Preserve setuid/setgid/sticky, then apply the caller's umask to rwx bits.
         let masked_mode = apply_creation_umask(mode, umask);
         let Some(vattr) = self
             .apply_new_entry_attrs(_ino, req.uid, req.gid, Some(masked_mode))
@@ -1183,6 +1256,7 @@ where
             "fuse.create"
         );
         let name = name.to_string_lossy();
+        validate_fuse_name(name.as_ref())?;
         let create_new = (flags & libc::O_EXCL as u32) != 0;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
@@ -1263,11 +1337,10 @@ where
         }
 
         let new_name_str = new_name.to_string_lossy();
-
-        if new_name_str.is_empty() || new_name_str.contains('/') || new_name_str.contains('\0') {
-            return Err(libc::EINVAL.into());
-        }
+        validate_fuse_name(new_name_str.as_ref())?;
         self.ensure_directory_parent_namespace_mutation_allowed(new_parent, req.uid, req.gid)
+            .await?;
+        self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid)
             .await?;
 
         // Use the inode directly from the FUSE request; avoid roundtripping through path_of
@@ -1288,6 +1361,7 @@ where
                 VfsError::NotADirectory { .. } => Errno::from(libc::ENOTDIR),
                 VfsError::TooManyLinks => Errno::from(libc::EMLINK),
                 VfsError::InvalidFilename => Errno::from(libc::EINVAL),
+                VfsError::FilenameTooLong { .. } => Errno::from(libc::ENAMETOOLONG),
                 other => {
                     info!(ino, new_parent, new_name = %new_name_str, error = %other, "fuse.link err");
                     Errno::from(libc::EIO)
@@ -1317,9 +1391,7 @@ where
             "fuse.symlink"
         );
         let name = name.to_string_lossy();
-        if name.is_empty() {
-            return Err(libc::EINVAL.into());
-        }
+        validate_fuse_name(name.as_ref())?;
 
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
@@ -1351,6 +1423,7 @@ where
     async fn unlink(&self, req: Request, parent: u64, name: &OsStr) -> FuseResult<()> {
         debug!(parent, name = %name.to_string_lossy(), "fuse.unlink");
         let name = name.to_string_lossy();
+        validate_fuse_name(name.as_ref())?;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
         // Target must exist and be a file
@@ -1363,6 +1436,8 @@ where
         if matches!(cattr.kind, VfsFileType::Dir) {
             return Err(libc::EISDIR.into());
         }
+        self.ensure_sticky_parent_allows_child_mutation(parent, child, req.uid)
+            .await?;
         self.unlink_at(parent as i64, &name)
             .await
             .map_err(Errno::from)
@@ -1372,6 +1447,7 @@ where
     async fn rmdir(&self, req: Request, parent: u64, name: &OsStr) -> FuseResult<()> {
         debug!(parent, name = %name.to_string_lossy(), "fuse.rmdir");
         let name = name.to_string_lossy();
+        validate_fuse_name(name.as_ref())?;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
         // Target must be a directory
@@ -1384,6 +1460,8 @@ where
         if !matches!(cattr.kind, VfsFileType::Dir) {
             return Err(libc::ENOTDIR.into());
         }
+        self.ensure_sticky_parent_allows_child_mutation(parent, child, req.uid)
+            .await?;
         self.rmdir_at(parent as i64, &name)
             .await
             .map_err(Errno::from)
@@ -1408,19 +1486,8 @@ where
         let name = name.to_string_lossy();
         let new_name = new_name.to_string_lossy();
 
-        // Validate input parameters
-        if name.is_empty() || new_name.is_empty() {
-            return Err(libc::EINVAL.into());
-        }
-
-        // Check for invalid characters in names
-        if name.contains('/')
-            || name.contains('\0')
-            || new_name.contains('/')
-            || new_name.contains('\0')
-        {
-            return Err(libc::EINVAL.into());
-        }
+        validate_fuse_name(name.as_ref())?;
+        validate_fuse_name(new_name.as_ref())?;
 
         // POSIX rename to the same location is a no-op.
         if parent == new_parent && name == new_name {
@@ -1428,9 +1495,9 @@ where
         }
 
         // Ensure the source exists
-        if self.child_of(parent as i64, name.as_ref()).await.is_none() {
+        let Some(src_ino) = self.child_of(parent as i64, name.as_ref()).await else {
             return Err(libc::ENOENT.into());
-        }
+        };
 
         // Validate the destination parent
         let Some(pattr) = self.stat_ino(new_parent as i64).await else {
@@ -1446,13 +1513,24 @@ where
             self.ensure_directory_parent_namespace_mutation_allowed(new_parent, req.uid, req.gid)
                 .await?;
         }
+        self.ensure_sticky_parent_allows_child_mutation(parent, src_ino, req.uid)
+            .await?;
+        if let Some(dst_ino) = self.child_of(new_parent as i64, new_name.as_ref()).await {
+            self.ensure_sticky_parent_allows_child_mutation(new_parent, dst_ino, req.uid)
+                .await?;
+        }
+        let Some(src_attr) = self.stat_ino(src_ino).await else {
+            return Err(libc::ENOENT.into());
+        };
+        if parent != new_parent && matches!(src_attr.kind, VfsFileType::Dir) {
+            self.ensure_access_allowed(src_ino, req.uid, req.gid, namespace_mutation_access_mask())
+                .await?;
+        }
 
         // Flush pending writes for the source inode before the rename so
         // that temp-file + rename patterns (e.g. object_store PutMode::Create)
         // do not race with in-flight write-back commit tasks.
-        if let Some(src_ino) = self.child_of(parent as i64, name.as_ref()).await {
-            self.flush_inode(src_ino as u64).await;
-        }
+        self.flush_inode(src_ino as u64).await;
 
         self.rename_at(parent as i64, &name, new_parent as i64, &new_name)
             .await
@@ -1466,6 +1544,8 @@ where
                     VfsError::PermissionDenied { .. } => libc::EACCES,
                     VfsError::CircularRename { .. } => libc::EINVAL,
                     VfsError::InvalidRenameTarget { .. } => libc::EINVAL,
+                    VfsError::InvalidFilename => libc::EINVAL,
+                    VfsError::FilenameTooLong { .. } => libc::ENAMETOOLONG,
                     VfsError::CrossesDevices => libc::EXDEV,
                     other => {
                         warn!(error = ?other, parent, %name, new_parent, %new_name, "unhandled VFS error during rename, mapped to EIO");
@@ -1935,13 +2015,7 @@ where
             return Ok(());
         }
 
-        let mode = match self
-            .acl_access_mode_for_inode(ino as i64, &attr, uid, gid)
-            .await
-        {
-            Some(mode) => mode,
-            None => access_mode_from_bits(&attr, uid, gid),
-        };
+        let mode = self.access_mode_for_attr(ino, &attr, uid, gid).await;
 
         // Check if the requested access is allowed
         // mask uses libc constants: F_OK=0, X_OK=1, W_OK=2, R_OK=4
@@ -1956,6 +2030,205 @@ where
         }
 
         Ok(())
+    }
+
+    async fn ensure_inode_paths_search_allowed(
+        &self,
+        ino: i64,
+        uid: u32,
+        gid: u32,
+    ) -> FuseResult<()> {
+        if ino == self.root_ino() {
+            return Ok(());
+        }
+
+        let paths = self.paths_of(ino).await.map_err(Errno::from)?;
+        if paths.is_empty() {
+            return Err(libc::ENOENT.into());
+        }
+
+        for path in paths {
+            if self.path_ancestors_search_allowed(&path, uid, gid).await? {
+                return Ok(());
+            }
+        }
+
+        Err(libc::EACCES.into())
+    }
+
+    async fn path_ancestors_search_allowed(
+        &self,
+        path: &str,
+        uid: u32,
+        gid: u32,
+    ) -> FuseResult<bool> {
+        let components: Vec<&str> = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect();
+        if components.is_empty() {
+            return Ok(true);
+        }
+
+        let mut dir = self.root_ino();
+        if !self.directory_search_allowed(dir, uid, gid).await? {
+            return Ok(false);
+        }
+
+        for component in components.iter().take(components.len().saturating_sub(1)) {
+            let Some(next) = self.child_of(dir, component).await else {
+                return Err(libc::ENOENT.into());
+            };
+            dir = next;
+            if !self.directory_search_allowed(dir, uid, gid).await? {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    async fn directory_search_allowed(&self, ino: i64, uid: u32, gid: u32) -> FuseResult<bool> {
+        match self
+            .ensure_access_allowed(ino, uid, gid, libc::X_OK as u32)
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(err) if err == Errno::from(libc::EACCES) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn ensure_mode_setattr_allowed(
+        &self,
+        ino: i64,
+        uid: u32,
+        requested_mode: u32,
+    ) -> FuseResult<()> {
+        let Some(attr) = self.stat_ino(ino).await else {
+            return Err(libc::ENOENT.into());
+        };
+
+        if uid == 0
+            || uid == attr.uid
+            || mode_setattr_only_clears_suid_sgid(attr.mode, requested_mode)
+        {
+            Ok(())
+        } else {
+            Err(libc::EPERM.into())
+        }
+    }
+
+    async fn effective_mode_setattr(
+        &self,
+        ino: i64,
+        uid: u32,
+        gid: u32,
+        pid: u32,
+        requested_mode: u32,
+    ) -> FuseResult<u32> {
+        let Some(attr) = self.stat_ino(ino).await else {
+            return Err(libc::ENOENT.into());
+        };
+
+        if uid != 0
+            && matches!(attr.kind, VfsFileType::File)
+            && (requested_mode & 0o2000) != 0
+            && !request_group_ids(pid, gid).contains(&attr.gid)
+        {
+            Ok(requested_mode & !0o2000)
+        } else {
+            Ok(requested_mode)
+        }
+    }
+
+    async fn ensure_timestamp_setattr_allowed(
+        &self,
+        ino: i64,
+        uid: u32,
+        gid: u32,
+        req: &SetAttrRequest,
+    ) -> FuseResult<()> {
+        let Some(attr) = self.stat_ino(ino).await else {
+            return Err(libc::ENOENT.into());
+        };
+
+        if uid == 0 || uid == attr.uid {
+            return Ok(());
+        }
+
+        if timestamp_request_is_ctime_only(req) {
+            return Ok(());
+        }
+
+        let mode = self.access_mode_for_attr(ino, &attr, uid, gid).await;
+        if timestamp_request_uses_current_time(req) {
+            if (mode & 0o2) != 0 {
+                Ok(())
+            } else {
+                Err(libc::EACCES.into())
+            }
+        } else {
+            Err(libc::EPERM.into())
+        }
+    }
+
+    async fn ensure_chown_setattr_allowed(
+        &self,
+        ino: i64,
+        uid: u32,
+        gid: u32,
+        pid: u32,
+        req: &SetAttrRequest,
+    ) -> FuseResult<bool> {
+        let Some(attr) = self.stat_ino(ino).await else {
+            return Err(libc::ENOENT.into());
+        };
+
+        if req.uid.is_none() && req.gid.is_none() {
+            return Ok(false);
+        }
+
+        if uid == 0 {
+            return Ok(false);
+        }
+
+        if uid != attr.uid {
+            return Err(libc::EPERM.into());
+        }
+
+        if let Some(new_uid) = req.uid
+            && new_uid != attr.uid
+        {
+            return Err(libc::EPERM.into());
+        }
+
+        if let Some(new_gid) = req.gid
+            && new_gid != attr.gid
+            && !request_group_ids(pid, gid).contains(&new_gid)
+        {
+            return Err(libc::EPERM.into());
+        }
+
+        if let Some(requested_mode) = req.mode {
+            let current_mode = attr.mode & 0o7777;
+            let requested_mode = requested_mode & 0o7777;
+            if current_mode != requested_mode
+                && !mode_setattr_only_clears_suid_sgid(current_mode, requested_mode)
+            {
+                return Err(libc::EPERM.into());
+            }
+        }
+
+        Ok(!matches!(attr.kind, VfsFileType::Dir))
+    }
+
+    async fn access_mode_for_attr(&self, ino: i64, attr: &VfsFileAttr, uid: u32, gid: u32) -> u32 {
+        match self.acl_access_mode_for_inode(ino, attr, uid, gid).await {
+            Some(mode) => mode,
+            None => access_mode_from_bits(attr, uid, gid),
+        }
     }
 
     async fn ensure_directory_parent_namespace_mutation_allowed(
@@ -1977,6 +2250,36 @@ where
             parent_namespace_mutation_access_mask(),
         )
         .await
+    }
+
+    async fn ensure_sticky_parent_allows_child_mutation(
+        &self,
+        parent: u64,
+        child: i64,
+        uid: u32,
+    ) -> FuseResult<()> {
+        if uid == 0 {
+            return Ok(());
+        }
+
+        let Some(parent_attr) = self.stat_ino(parent as i64).await else {
+            return Err(libc::ENOENT.into());
+        };
+        if !matches!(parent_attr.kind, VfsFileType::Dir) {
+            return Err(libc::ENOTDIR.into());
+        }
+        if (parent_attr.mode & libc::S_ISVTX as u32) == 0 {
+            return Ok(());
+        }
+
+        let Some(child_attr) = self.stat_ino(child).await else {
+            return Err(libc::ENOENT.into());
+        };
+        if uid == parent_attr.uid || uid == child_attr.uid {
+            Ok(())
+        } else {
+            Err(libc::EPERM.into())
+        }
     }
 
     async fn acl_access_mode_for_inode(
@@ -2160,6 +2463,7 @@ impl From<VfsError> for Errno {
             VfsError::CrossesDevices => libc::EXDEV,
             VfsError::TooManyLinks => libc::EMLINK,
             VfsError::InvalidFilename => libc::EINVAL,
+            VfsError::FilenameTooLong { .. } => libc::ENAMETOOLONG,
             VfsError::ArgumentListTooLong => libc::E2BIG,
             VfsError::Interrupted => libc::EINTR,
             VfsError::Unsupported => libc::ENOSYS,
@@ -2177,6 +2481,10 @@ fn vfs_kind_to_fuse(k: VfsFileType) -> FuseFileType {
         VfsFileType::Dir => FuseFileType::Directory,
         VfsFileType::File => FuseFileType::RegularFile,
         VfsFileType::Symlink => FuseFileType::Symlink,
+        VfsFileType::Fifo => FuseFileType::NamedPipe,
+        VfsFileType::Socket => FuseFileType::Socket,
+        VfsFileType::CharDevice => FuseFileType::CharDevice,
+        VfsFileType::BlockDevice => FuseFileType::BlockDevice,
     }
 }
 
@@ -2203,7 +2511,7 @@ fn vfs_to_fuse_attr(
         nlink: v.nlink,
         uid: v.uid,
         gid: v.gid,
-        rdev: 0,
+        rdev: v.rdev,
         #[cfg(target_os = "macos")]
         flags: 0,
         blksize: 4096,
@@ -2225,7 +2533,7 @@ fn timestamp_to_nanos(ts: Timestamp) -> i64 {
 }
 
 fn sanitize_special_mode_bits(mode: u32) -> u32 {
-    mode & 0o777
+    mode & 0o7777
 }
 
 fn apply_creation_umask(mode: u32, umask: u32) -> u32 {
@@ -2236,15 +2544,17 @@ fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     let mut req = SetAttrRequest::default();
     let flags = SetAttrFlags::empty();
     if let Some(mode) = set_attr.mode {
-        // Strip setuid (0o4000), setgid (0o2000), and sticky (0o1000) bits.
-        // BrewFS does not implement the semantics behind these special bits.
         req.mode = Some(sanitize_special_mode_bits(mode));
     }
     if let Some(uid) = set_attr.uid {
-        req.uid = Some(uid);
+        if uid != u32::MAX {
+            req.uid = Some(uid);
+        }
     }
     if let Some(gid) = set_attr.gid {
-        req.gid = Some(gid);
+        if gid != u32::MAX {
+            req.gid = Some(gid);
+        }
     }
     if let Some(size) = set_attr.size {
         req.size = Some(size);
@@ -2272,29 +2582,185 @@ fn attr_request_is_empty(req: &SetAttrRequest) -> bool {
         && req.flags.is_none()
 }
 
+fn setattr_is_truncate_with_optional_timestamps(
+    req: &SetAttrRequest,
+    flags: &SetAttrFlags,
+) -> bool {
+    req.size.is_some()
+        && req.mode.is_none()
+        && req.uid.is_none()
+        && req.gid.is_none()
+        && req.flags.is_none()
+        && flags.is_empty()
+}
+
+fn setattr_is_mode_with_optional_timestamps(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
+    req.mode.is_some()
+        && req.uid.is_none()
+        && req.gid.is_none()
+        && req.size.is_none()
+        && req.flags.is_none()
+        && flags.is_empty()
+}
+
+fn setattr_is_chown_with_optional_timestamps(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
+    (req.uid.is_some() || req.gid.is_some())
+        && req.size.is_none()
+        && req.flags.is_none()
+        && flags.is_empty()
+}
+
+fn mode_setattr_only_clears_suid_sgid(current_mode: u32, requested_mode: u32) -> bool {
+    let current = current_mode & 0o7777;
+    let requested = requested_mode & 0o7777;
+    let changed = current ^ requested;
+    let cleared_suid_sgid = (current & 0o6000) & !(requested & 0o6000);
+    let added_suid_sgid = (requested & 0o6000) & !(current & 0o6000);
+
+    (changed & !0o6000) == 0 && added_suid_sgid == 0 && cleared_suid_sgid != 0
+}
+
+fn setattr_is_timestamp_only(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
+    req.size.is_none()
+        && req.mode.is_none()
+        && req.uid.is_none()
+        && req.gid.is_none()
+        && req.flags.is_none()
+        && (req.atime.is_some() || req.mtime.is_some() || req.ctime.is_some())
+        && flags.is_empty()
+}
+
+fn timestamp_request_uses_current_time(req: &SetAttrRequest) -> bool {
+    let Some(now) = current_time_nanos() else {
+        return false;
+    };
+    let mut saw_user_timestamp = false;
+
+    for timestamp in [req.atime, req.mtime].into_iter().flatten() {
+        saw_user_timestamp = true;
+        if !timestamp_is_near_now(timestamp, now) {
+            return false;
+        }
+    }
+
+    saw_user_timestamp
+}
+
+fn timestamp_request_is_ctime_only(req: &SetAttrRequest) -> bool {
+    req.ctime.is_some() && req.atime.is_none() && req.mtime.is_none()
+}
+
+fn timestamp_is_near_now(timestamp: i64, now: i64) -> bool {
+    const TIMESTAMP_NOW_TOLERANCE_NANOS: i64 = 10 * NANOS_PER_SEC;
+    timestamp >= now.saturating_sub(TIMESTAMP_NOW_TOLERANCE_NANOS)
+        && timestamp <= now.saturating_add(TIMESTAMP_NOW_TOLERANCE_NANOS)
+}
+
+fn request_group_ids(pid: u32, fallback_gid: u32) -> Vec<u32> {
+    let mut groups = platform_process_group_ids(pid).unwrap_or_default();
+    if !groups.contains(&fallback_gid) {
+        groups.push(fallback_gid);
+    }
+    if groups.is_empty() {
+        groups.push(fallback_gid);
+    }
+    groups
+}
+
+#[cfg(target_os = "linux")]
+fn platform_process_group_ids(pid: u32) -> Option<Vec<u32>> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    parse_proc_status_groups(&status)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_process_group_ids(_pid: u32) -> Option<Vec<u32>> {
+    None
+}
+
+fn parse_proc_status_groups(status: &str) -> Option<Vec<u32>> {
+    let groups = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Groups:"))?;
+    let parsed = groups
+        .split_whitespace()
+        .filter_map(|group| group.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    Some(parsed)
+}
+
+fn current_time_nanos() -> Option<i64> {
+    Some(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos()
+            .try_into()
+            .unwrap_or(i64::MAX),
+    )
+}
+
+fn validate_fuse_name(name: &str) -> Result<(), Errno> {
+    if name.is_empty() {
+        return Err(libc::EINVAL.into());
+    }
+    if name.len() > NAME_MAX {
+        return Err(libc::ENAMETOOLONG.into());
+    }
+    if name.contains('/') || name.contains('\0') {
+        return Err(libc::EINVAL.into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod mode_sanitization_tests {
     use super::{
         access_mode_from_bits, acl_entries_access_mode, apply_creation_umask,
-        namespace_mutation_access_mask, open_flags_access_mask, opendir_access_mask,
-        parent_namespace_mutation_access_mask, sanitize_special_mode_bits,
+        mode_setattr_only_clears_suid_sgid, namespace_mutation_access_mask, open_flags_access_mask,
+        opendir_access_mask, parent_namespace_mutation_access_mask, parse_proc_status_groups,
+        sanitize_special_mode_bits, validate_fuse_name, vfs_kind_to_fuse, vfs_to_fuse_attr,
     };
     use crate::control::protocol::ControlAclEntry;
     use crate::vfs::fs::{FileAttr as VfsFileAttr, FileType as VfsFileType};
+    use asyncfuse::raw::Request;
+    use asyncfuse::{Errno, FileType as FuseFileType};
     use std::collections::BTreeSet;
 
     #[test]
-    fn sanitize_special_mode_bits_drops_setuid_setgid_and_sticky() {
-        assert_eq!(sanitize_special_mode_bits(0o1777), 0o777);
-        assert_eq!(sanitize_special_mode_bits(0o2755), 0o755);
-        assert_eq!(sanitize_special_mode_bits(0o4755), 0o755);
+    fn sanitize_special_mode_bits_preserves_setuid_setgid_and_sticky() {
+        assert_eq!(sanitize_special_mode_bits(0o1777), 0o1777);
+        assert_eq!(sanitize_special_mode_bits(0o2755), 0o2755);
+        assert_eq!(sanitize_special_mode_bits(0o4755), 0o4755);
     }
 
     #[test]
-    fn apply_creation_umask_runs_after_special_bit_stripping() {
-        assert_eq!(apply_creation_umask(0o1777, 0), 0o777);
-        assert_eq!(apply_creation_umask(0o1777, 0o022), 0o755);
-        assert_eq!(apply_creation_umask(0o4755, 0o022), 0o755);
+    fn apply_creation_umask_preserves_special_bits_and_masks_permissions() {
+        assert_eq!(apply_creation_umask(0o1777, 0), 0o1777);
+        assert_eq!(apply_creation_umask(0o1777, 0o022), 0o1755);
+        assert_eq!(apply_creation_umask(0o4755, 0o022), 0o4755);
+    }
+
+    #[test]
+    fn mode_setattr_clear_suid_sgid_exception_is_narrow() {
+        assert!(mode_setattr_only_clears_suid_sgid(0o6777, 0o0777));
+        assert!(mode_setattr_only_clears_suid_sgid(0o4777, 0o0777));
+        assert!(mode_setattr_only_clears_suid_sgid(0o6777, 0o2777));
+
+        assert!(!mode_setattr_only_clears_suid_sgid(0o0777, 0o4777));
+        assert!(!mode_setattr_only_clears_suid_sgid(0o4777, 0o4777));
+        assert!(!mode_setattr_only_clears_suid_sgid(0o1777, 0o0777));
+        assert!(!mode_setattr_only_clears_suid_sgid(0o4777, 0o0755));
+    }
+
+    #[test]
+    fn validate_fuse_name_returns_enametoolong_for_long_component() {
+        let long_name = "x".repeat(crate::posix::NAME_MAX + 1);
+
+        assert_eq!(
+            validate_fuse_name(&long_name).unwrap_err(),
+            Errno::from(libc::ENAMETOOLONG)
+        );
     }
 
     #[test]
@@ -2396,6 +2862,16 @@ mod mode_sanitization_tests {
     }
 
     #[test]
+    fn parse_proc_status_groups_reads_supplementary_groups() {
+        let status = "Name:\tfstest\nGroups:\t65533 65534 1000\n";
+
+        assert_eq!(
+            parse_proc_status_groups(status),
+            Some(vec![65533, 65534, 1000])
+        );
+    }
+
+    #[test]
     fn opendir_requires_read_access() {
         assert_eq!(opendir_access_mask(), libc::R_OK as u32);
     }
@@ -2416,6 +2892,39 @@ mod mode_sanitization_tests {
         );
     }
 
+    #[test]
+    fn special_file_types_map_to_fuse_types_and_rdev() {
+        assert_eq!(vfs_kind_to_fuse(VfsFileType::Fifo), FuseFileType::NamedPipe);
+        assert_eq!(
+            vfs_kind_to_fuse(VfsFileType::CharDevice),
+            FuseFileType::CharDevice
+        );
+        assert_eq!(
+            vfs_kind_to_fuse(VfsFileType::BlockDevice),
+            FuseFileType::BlockDevice
+        );
+        assert_eq!(vfs_kind_to_fuse(VfsFileType::Socket), FuseFileType::Socket);
+
+        let attr = VfsFileAttr {
+            ino: 2,
+            size: 0,
+            blocks: 0,
+            kind: VfsFileType::CharDevice,
+            mode: 0o20666,
+            uid: 1000,
+            gid: 1000,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            nlink: 1,
+            rdev: 0x0102,
+        };
+
+        let fuse_attr = vfs_to_fuse_attr(&attr, &Request::default(), attr.blocks);
+        assert_eq!(fuse_attr.kind, FuseFileType::CharDevice);
+        assert_eq!(fuse_attr.rdev, 0x0102);
+    }
+
     fn acl_entry(scope: &str, tag: &str, id: Option<u32>, perm: &str) -> ControlAclEntry {
         ControlAclEntry {
             scope: scope.to_string(),
@@ -2434,6 +2943,7 @@ mod mode_sanitization_tests {
             mode,
             uid,
             gid,
+            rdev: 0,
             atime: 0,
             mtime: 0,
             ctime: 0,
@@ -2467,10 +2977,14 @@ mod fuse_init_tests {
     }
 
     fn user_request() -> Request {
+        request_with_ids(1000, 1000)
+    }
+
+    fn request_with_ids(uid: u32, gid: u32) -> Request {
         Request {
             unique: 1,
-            uid: 1000,
-            gid: 1000,
+            uid,
+            gid,
             pid: 42,
         }
     }
@@ -2539,6 +3053,194 @@ mod fuse_init_tests {
     }
 
     #[tokio::test]
+    async fn lookup_rejects_child_when_parent_lacks_search_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/dir").await.unwrap();
+        fs.create_file("/dir/file.txt").await.unwrap();
+        let dir = fs.stat("/dir").await.unwrap();
+        fs.chown(dir.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(dir.ino, 0o644).await.unwrap();
+
+        let err = Filesystem::lookup(&fs, user_request(), dir.ino as u64, OsStr::new("file.txt"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EACCES));
+    }
+
+    #[tokio::test]
+    async fn open_rejects_cached_inode_when_parent_lacks_search_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/dir").await.unwrap();
+        fs.create_file("/dir/file.txt").await.unwrap();
+        let dir = fs.stat("/dir").await.unwrap();
+        let file = fs.stat("/dir/file.txt").await.unwrap();
+        fs.chown(dir.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chown(file.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(dir.ino, 0o644).await.unwrap();
+
+        let err = Filesystem::open(&fs, user_request(), file.ino as u64, libc::O_RDONLY as u32)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EACCES));
+    }
+
+    #[tokio::test]
+    async fn setattr_rejects_cached_inode_when_parent_lacks_search_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/dir").await.unwrap();
+        fs.create_file("/dir/file.txt").await.unwrap();
+        let dir = fs.stat("/dir").await.unwrap();
+        let file = fs.stat("/dir/file.txt").await.unwrap();
+        fs.chown(dir.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chown(file.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(dir.ino, 0o644).await.unwrap();
+
+        let err = Filesystem::setattr(
+            &fs,
+            user_request(),
+            file.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o620),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EACCES));
+    }
+
+    #[tokio::test]
+    async fn link_rejects_cached_source_inode_when_parent_lacks_search_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/src").await.unwrap();
+        fs.mkdir_p("/dst").await.unwrap();
+        fs.create_file("/src/file.txt").await.unwrap();
+        let src = fs.stat("/src").await.unwrap();
+        let dst = fs.stat("/dst").await.unwrap();
+        let file = fs.stat("/src/file.txt").await.unwrap();
+        fs.chown(src.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chown(file.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(src.ino, 0o644).await.unwrap();
+        fs.chmod(dst.ino, 0o777).await.unwrap();
+
+        let err = Filesystem::link(
+            &fs,
+            user_request(),
+            file.ino as u64,
+            dst.ino as u64,
+            OsStr::new("linked.txt"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EACCES));
+        assert!(fs.stat("/dst/linked.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_non_owner_from_sticky_source_parent() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/src").await.unwrap();
+        fs.mkdir_p("/dst").await.unwrap();
+        let src = fs.stat("/src").await.unwrap();
+        let dst = fs.stat("/dst").await.unwrap();
+        fs.chmod(src.ino, 0o1777).await.unwrap();
+        fs.chmod(dst.ino, 0o777).await.unwrap();
+        fs.create_file("/src/file.txt").await.unwrap();
+
+        let err = Filesystem::rename(
+            &fs,
+            user_request(),
+            src.ino as u64,
+            OsStr::new("file.txt"),
+            dst.ino as u64,
+            OsStr::new("moved.txt"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
+        assert!(fs.stat("/src/file.txt").await.is_ok());
+        assert!(fs.stat("/dst/moved.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_non_owner_over_sticky_destination_child() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/src").await.unwrap();
+        fs.mkdir_p("/dst").await.unwrap();
+        let src = fs.stat("/src").await.unwrap();
+        let dst = fs.stat("/dst").await.unwrap();
+        fs.chmod(src.ino, 0o777).await.unwrap();
+        fs.chmod(dst.ino, 0o1777).await.unwrap();
+        fs.create_file("/src/file.txt").await.unwrap();
+        let source = fs.stat("/src/file.txt").await.unwrap();
+        fs.chown(source.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.create_file("/dst/target.txt").await.unwrap();
+
+        let err = Filesystem::rename(
+            &fs,
+            user_request(),
+            src.ino as u64,
+            OsStr::new("file.txt"),
+            dst.ino as u64,
+            OsStr::new("target.txt"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
+        assert!(fs.stat("/src/file.txt").await.is_ok());
+        assert!(fs.stat("/dst/target.txt").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rename_rejects_cross_parent_directory_move_without_source_dir_mutation_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/src").await.unwrap();
+        fs.mkdir_p("/dst").await.unwrap();
+        fs.mkdir_p("/src/dir").await.unwrap();
+        let src = fs.stat("/src").await.unwrap();
+        let dst = fs.stat("/dst").await.unwrap();
+        fs.chown(src.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(src.ino, 0o1777).await.unwrap();
+        fs.chmod(dst.ino, 0o777).await.unwrap();
+
+        let err = Filesystem::rename(
+            &fs,
+            user_request(),
+            src.ino as u64,
+            OsStr::new("dir"),
+            dst.ino as u64,
+            OsStr::new("dir"),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EACCES));
+        assert!(fs.stat("/src/dir").await.is_ok());
+        assert!(fs.stat("/dst/dir").await.is_err());
+
+        Filesystem::rename(
+            &fs,
+            user_request(),
+            src.ino as u64,
+            OsStr::new("dir"),
+            src.ino as u64,
+            OsStr::new("renamed"),
+        )
+        .await
+        .unwrap();
+
+        assert!(fs.stat("/src/dir").await.is_err());
+        assert!(fs.stat("/src/renamed").await.is_ok());
+    }
+
+    #[tokio::test]
     async fn setattr_size_requires_write_access_on_inode() {
         let fs = new_fuse_test_vfs().await;
         fs.create_file("/file.txt").await.unwrap();
@@ -2559,6 +3261,432 @@ mod fuse_init_tests {
 
         assert_eq!(err, Errno::from(libc::EACCES));
         assert_eq!(fs.stat("/file.txt").await.unwrap().size, 0);
+    }
+
+    #[tokio::test]
+    async fn setattr_size_and_timestamps_allow_write_handle_for_mode_zero_create() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/scratch").await.unwrap();
+        let scratch = fs.stat("/scratch").await.unwrap();
+        fs.chmod(scratch.ino, 0o777).await.unwrap();
+
+        let created = Filesystem::create(
+            &fs,
+            user_request(),
+            scratch.ino as u64,
+            OsStr::new("zero.txt"),
+            0o000,
+            (libc::O_CREAT | libc::O_RDWR) as u32,
+        )
+        .await
+        .unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            created.attr.ino,
+            Some(created.fh),
+            SetAttr {
+                size: Some(0),
+                mtime: Some(Timestamp::new(1, 2)),
+                ctime: Some(Timestamp::new(1, 2)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.size, 0);
+    }
+
+    #[tokio::test]
+    async fn mknod_creates_fifo_metadata() {
+        let fs = new_fuse_test_vfs().await;
+        let reply = Filesystem::mknod(
+            &fs,
+            Request::default(),
+            1,
+            OsStr::new("pipe"),
+            libc::S_IFIFO | 0o644,
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.kind, FuseFileType::NamedPipe);
+        assert_eq!(reply.attr.perm, 0o644);
+        assert_eq!(reply.attr.rdev, 0);
+
+        let attr = fs.stat("/pipe").await.unwrap();
+        assert_eq!(attr.kind, VfsFileType::Fifo);
+        assert_eq!(attr.rdev, 0);
+    }
+
+    #[tokio::test]
+    async fn mknod_creates_char_device_metadata_with_rdev() {
+        let fs = new_fuse_test_vfs().await;
+        let reply = Filesystem::mknod(
+            &fs,
+            Request::default(),
+            1,
+            OsStr::new("tty"),
+            libc::S_IFCHR | 0o600,
+            0x0103,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.kind, FuseFileType::CharDevice);
+        assert_eq!(reply.attr.perm, 0o600);
+        assert_eq!(reply.attr.rdev, 0x0103);
+
+        let attr = fs.stat("/tty").await.unwrap();
+        assert_eq!(attr.kind, VfsFileType::CharDevice);
+        assert_eq!(attr.rdev, 0x0103);
+    }
+
+    #[tokio::test]
+    async fn timestamp_setattr_allows_owner_without_write_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(attr.ino, 0o444).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                atime: Some(Timestamp::new(1, 0)),
+                mtime: Some(Timestamp::new(2, 0)),
+                ctime: Some(Timestamp::new(3, 0)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.atime, Timestamp::new(1, 0));
+        assert_eq!(reply.attr.mtime, Timestamp::new(2, 0));
+    }
+
+    #[tokio::test]
+    async fn timestamp_setattr_rejects_non_owner_explicit_time_even_with_write_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chmod(attr.ino, 0o666).await.unwrap();
+
+        let err = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                atime: Some(Timestamp::new(1, 0)),
+                mtime: Some(Timestamp::new(2, 0)),
+                ctime: Some(Timestamp::new(3, 0)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
+    }
+
+    #[tokio::test]
+    async fn timestamp_setattr_allows_non_owner_current_time_with_write_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chmod(attr.ino, 0o666).await.unwrap();
+        let now = Timestamp::from(SystemTime::now());
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                atime: Some(now),
+                mtime: Some(now),
+                ctime: Some(now),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.atime, now);
+        assert_eq!(reply.attr.mtime, now);
+    }
+
+    #[tokio::test]
+    async fn timestamp_setattr_allows_non_owner_ctime_only_chown_noop() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        let ctime = Timestamp::new(123, 456);
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                ctime: Some(ctime),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.uid, 0);
+        assert_eq!(reply.attr.gid, 0);
+        assert_eq!(reply.attr.ctime, ctime);
+    }
+
+    #[tokio::test]
+    async fn mode_setattr_allows_owner_without_write_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(attr.ino, 0o444).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o600),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.perm, 0o600);
+    }
+
+    #[tokio::test]
+    async fn mode_setattr_rejects_non_owner_even_with_write_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chmod(attr.ino, 0o666).await.unwrap();
+
+        let err = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o600),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
+    }
+
+    #[tokio::test]
+    async fn mode_setattr_allows_non_owner_to_clear_only_suid_sgid_bits() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chmod(attr.ino, 0o6777).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o777),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.perm, 0o777);
+    }
+
+    #[tokio::test]
+    async fn mode_setattr_clears_sgid_for_owner_outside_file_group() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(2000)).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o2755),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.perm, 0o755);
+    }
+
+    #[tokio::test]
+    async fn mode_setattr_preserves_sgid_for_owner_inside_file_group() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(2000)).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            request_with_ids(1000, 2000),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                mode: Some(0o2755),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.perm, 0o2755);
+    }
+
+    #[tokio::test]
+    async fn chown_setattr_allows_non_owner_noop_ids() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                uid: Some(u32::MAX),
+                gid: Some(u32::MAX),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.uid, 0);
+        assert_eq!(reply.attr.gid, 0);
+    }
+
+    #[tokio::test]
+    async fn chown_setattr_allows_owner_group_change_and_clears_suid_sgid() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(attr.ino, 0o6555).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            request_with_ids(1000, 2000),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                uid: Some(1000),
+                gid: Some(2000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.uid, 1000);
+        assert_eq!(reply.attr.gid, 2000);
+        assert_eq!(reply.attr.perm, 0o555);
+    }
+
+    #[tokio::test]
+    async fn chown_setattr_allows_owner_group_change_with_kernel_clear_mode() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(1000)).await.unwrap();
+        fs.chmod(attr.ino, 0o6555).await.unwrap();
+
+        let reply = Filesystem::setattr(
+            &fs,
+            request_with_ids(1000, 2000),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                uid: Some(1000),
+                gid: Some(2000),
+                mode: Some(0o555),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.attr.uid, 1000);
+        assert_eq!(reply.attr.gid, 2000);
+        assert_eq!(reply.attr.perm, 0o555);
+    }
+
+    #[tokio::test]
+    async fn chown_setattr_rejects_non_owner_group_change() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let err = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                gid: Some(2000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
+    }
+
+    #[tokio::test]
+    async fn chown_setattr_rejects_owner_group_change_to_non_member_group() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(1000), Some(1000)).await.unwrap();
+
+        let err = Filesystem::setattr(
+            &fs,
+            user_request(),
+            attr.ino as u64,
+            None,
+            SetAttr {
+                gid: Some(2000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::EPERM));
     }
 
     #[tokio::test]

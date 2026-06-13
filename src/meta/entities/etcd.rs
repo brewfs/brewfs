@@ -97,6 +97,7 @@ impl EtcdEntryInfo {
             blocks: size.div_ceil(512),
             kind,
             mode: self.permission.mode,
+            rdev: 0,
             uid: self.permission.uid,
             gid: self.permission.gid,
             atime: self.access_time,

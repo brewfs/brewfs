@@ -81,7 +81,7 @@ impl Permission {
         self.mode & 0o777
     }
     pub fn file_type_bits(&self) -> u32 {
-        self.mode & !0o777
+        self.mode & 0o170000
     }
     pub fn is_directory(&self) -> bool {
         self.file_type_bits() & 0o040000 == 0o040000
@@ -254,12 +254,21 @@ mod tests {
     #[test]
     fn test_chmod_with_special_bits_at_permission_level() {
         // Permission::chmod allows 0o7777 (including setuid/setgid/sticky).
-        // Higher-level callers (MetaStore::chmod, VFS::chmod) strip those bits
-        // before calling this method.
         let mut perm = Permission::default_file(0, 0);
         perm.chmod(0o4755);
         // setuid bit is kept by Permission::chmod itself.
         assert_eq!(perm.mode & 0o7777, 0o4755);
+    }
+
+    #[test]
+    fn test_chmod_replaces_old_special_bits() {
+        let mut perm = Permission::default_file(0, 0);
+        perm.chmod(0o6755);
+
+        perm.chmod(0o755);
+
+        assert_eq!(perm.mode & 0o7777, 0o755);
+        assert!(perm.is_regular_file());
     }
 
     #[test]

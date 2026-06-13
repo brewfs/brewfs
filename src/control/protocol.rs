@@ -217,6 +217,10 @@ pub enum ControlFileKind {
     File,
     Directory,
     Symlink,
+    Fifo,
+    Socket,
+    CharDevice,
+    BlockDevice,
 }
 
 impl From<FileType> for ControlFileKind {
@@ -225,6 +229,10 @@ impl From<FileType> for ControlFileKind {
             FileType::File => Self::File,
             FileType::Dir => Self::Directory,
             FileType::Symlink => Self::Symlink,
+            FileType::Fifo => Self::Fifo,
+            FileType::Socket => Self::Socket,
+            FileType::CharDevice => Self::CharDevice,
+            FileType::BlockDevice => Self::BlockDevice,
         }
     }
 }

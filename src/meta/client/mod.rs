@@ -719,7 +719,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                     self.inode_cache.insert_node(ino, attr, Some(parent)).await;
                 }
                 self.inode_cache.add_child(parent, name, ino).await;
-                self.invalidate_parent_path(parent).await;
+                self.invalidate_parent_after_namespace_mutation(parent)
+                    .await;
                 ControlResponse::TrashRestored {
                     entry_id: entry_id.to_string(),
                 }
@@ -869,8 +870,12 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     }
 
     fn validate_entry_name(name: &str) -> Result<(), MetaError> {
-        if name.is_empty() || name.len() > NAME_MAX {
+        if name.is_empty() {
             return Err(MetaError::InvalidFilename);
+        }
+
+        if name.len() > NAME_MAX {
+            return Err(MetaError::FilenameTooLong);
         }
 
         if name.contains('/') || name.contains('\0') {
@@ -1426,6 +1431,12 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
     }
 
+    async fn invalidate_parent_after_namespace_mutation(&self, parent_ino: i64) {
+        let parent_ino = self.check_root(parent_ino);
+        self.inode_cache.invalidate_inode(parent_ino).await;
+        self.invalidate_parent_path(parent_ino).await;
+    }
+
     /// Retrieves file attributes (metadata) for a given inode with caching.
     ///
     /// This is a cache-aware wrapper around the underlying store's stat operation.
@@ -1824,6 +1835,7 @@ fn control_meta_error(err: MetaError) -> ControlResponse {
         MetaError::NotDirectory(_) => "not_directory",
         MetaError::AlreadyExists { .. } => "already_exists",
         MetaError::InvalidPath(_) | MetaError::InvalidFilename => "invalid_path",
+        MetaError::FilenameTooLong => "filename_too_long",
         MetaError::NotSupported(_) | MetaError::NotImplemented => "unsupported",
         _ => "meta_error",
     };
@@ -2092,7 +2104,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         }
         self.inode_cache.add_child(parent, name, ino).await;
 
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok(ino)
     }
@@ -2118,7 +2131,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             child_node.attr.write().await.nlink = 0;
             child_node.clear_parent().await;
         }
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok(())
     }
@@ -2145,7 +2159,40 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         }
         self.inode_cache.add_child(parent, name, ino).await;
 
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
+
+        Ok(ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        self.ensure_writable()?;
+        let parent = self.check_root(parent);
+        Self::validate_entry_name(&name)?;
+
+        let ino = self
+            .store
+            .create_node(parent, name.clone(), kind, mode, uid, gid, rdev)
+            .await?;
+
+        if let Ok(Some(attr)) = self.store.stat(ino).await {
+            let cache_parent = (attr.nlink <= 1).then_some(parent);
+            self.inode_cache.insert_node(ino, attr, cache_parent).await;
+        }
+        self.inode_cache.add_child(parent, name, ino).await;
+
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok(ino)
     }
@@ -2176,7 +2223,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .add_child(parent, name.to_string(), inode)
             .await;
 
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok(attr)
     }
@@ -2217,7 +2265,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .add_child(parent, name.to_string(), ino)
             .await;
 
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok((ino, attr))
     }
@@ -2245,7 +2294,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         if let Some(ino) = target_ino {
             self.invalidate_open_file_cache_inode(ino).await;
         }
-        self.invalidate_parent_path(parent).await;
+        self.invalidate_parent_after_namespace_mutation(parent)
+            .await;
 
         Ok(())
     }
@@ -2976,6 +3026,40 @@ mod tests {
         };
 
         MetaClient::new(store, capacity, ttl)
+    }
+
+    #[test]
+    fn validate_entry_name_returns_filename_too_long_for_long_component() {
+        let long_name = "x".repeat(crate::posix::NAME_MAX + 1);
+
+        assert!(matches!(
+            MetaClient::<DatabaseMetaStore>::validate_entry_name(&long_name),
+            Err(MetaError::FilenameTooLong)
+        ));
+    }
+
+    #[test]
+    fn validate_entry_name_returns_invalid_filename_for_slash_and_nul() {
+        assert!(matches!(
+            MetaClient::<DatabaseMetaStore>::validate_entry_name("bad/name"),
+            Err(MetaError::InvalidFilename)
+        ));
+        assert!(matches!(
+            MetaClient::<DatabaseMetaStore>::validate_entry_name("bad\0name"),
+            Err(MetaError::InvalidFilename)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mkdir_invalidates_cached_parent_attr_after_store_updates_parent_timestamp() {
+        let client = create_test_client().await;
+        let before = client.stat(1).await.unwrap().unwrap();
+
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        client.mkdir(1, "fresh-dir".to_string()).await.unwrap();
+
+        let after = client.stat(1).await.unwrap().unwrap();
+        assert_ne!(after.mtime, before.mtime);
     }
 
     #[tokio::test]

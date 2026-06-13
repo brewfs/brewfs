@@ -19,6 +19,56 @@ pub enum FileType {
     File,
     Dir,
     Symlink,
+    Fifo,
+    Socket,
+    CharDevice,
+    BlockDevice,
+}
+
+impl FileType {
+    pub fn from_mode(mode: u32) -> Self {
+        match mode & 0o170000 {
+            0o040000 => FileType::Dir,
+            0o120000 => FileType::Symlink,
+            0o010000 => FileType::Fifo,
+            0o140000 => FileType::Socket,
+            0o020000 => FileType::CharDevice,
+            0o060000 => FileType::BlockDevice,
+            _ => FileType::File,
+        }
+    }
+
+    pub fn mode_type_bits(self) -> u32 {
+        match self {
+            FileType::File => 0o100000,
+            FileType::Dir => 0o040000,
+            FileType::Symlink => 0o120000,
+            FileType::Fifo => 0o010000,
+            FileType::Socket => 0o140000,
+            FileType::CharDevice => 0o020000,
+            FileType::BlockDevice => 0o060000,
+        }
+    }
+
+    pub fn is_dir(self) -> bool {
+        matches!(self, FileType::Dir)
+    }
+
+    pub fn is_symlink(self) -> bool {
+        matches!(self, FileType::Symlink)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_regular_file(self) -> bool {
+        matches!(self, FileType::File)
+    }
+
+    pub fn is_special_node(self) -> bool {
+        matches!(
+            self,
+            FileType::Fifo | FileType::Socket | FileType::CharDevice | FileType::BlockDevice
+        )
+    }
 }
 
 impl From<EntryType> for FileType {
@@ -27,6 +77,10 @@ impl From<EntryType> for FileType {
             EntryType::File => FileType::File,
             EntryType::Directory => FileType::Dir,
             EntryType::Symlink => FileType::Symlink,
+            EntryType::Fifo => FileType::Fifo,
+            EntryType::Socket => FileType::Socket,
+            EntryType::CharDevice => FileType::CharDevice,
+            EntryType::BlockDevice => FileType::BlockDevice,
         }
     }
 }
@@ -41,6 +95,7 @@ pub struct FileAttr {
     pub blocks: u64,
     pub kind: FileType,
     pub mode: u32,
+    pub rdev: u32,
     pub uid: u32,
     pub gid: u32,
     pub atime: i64,
@@ -64,11 +119,10 @@ pub struct SetAttrRequest {
 
 /// Builds a `SetAttrRequest` for chmod-style updates.
 ///
-/// BrewFS currently supports only the standard `rwxrwxrwx` permission bits.
-/// setuid, setgid, and sticky bits are stripped before persistence.
+/// BrewFS persists the standard permission bits plus setuid, setgid, and sticky.
 pub fn chmod_request(new_mode: u32) -> SetAttrRequest {
     SetAttrRequest {
-        mode: Some(new_mode & 0o777),
+        mode: Some(new_mode & 0o7777),
         ..Default::default()
     }
 }
@@ -216,6 +270,13 @@ mod tests {
 
         assert!(snapshot.total_space > used);
         assert_eq!(snapshot.available_space, snapshot.total_space - used);
+    }
+
+    #[test]
+    fn chmod_request_preserves_special_permission_bits() {
+        assert_eq!(chmod_request(0o4755).mode, Some(0o4755));
+        assert_eq!(chmod_request(0o2755).mode, Some(0o2755));
+        assert_eq!(chmod_request(0o1777).mode, Some(0o1777));
     }
 }
 
@@ -420,6 +481,9 @@ pub enum MetaError {
     #[error("Invalid filename")]
     InvalidFilename,
 
+    #[error("Filename too long")]
+    FilenameTooLong,
+
     #[error(
         "More than max_symlinks symbolic links were encountered during resolution of the path."
     )]
@@ -569,6 +633,20 @@ pub trait MetaStore: Send + Sync {
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError>;
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError>;
+
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        let _ = (parent, name, kind, mode, uid, gid, rdev);
+        Err(MetaError::NotImplemented)
+    }
 
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError>;
 
@@ -754,9 +832,7 @@ pub trait MetaStore: Send + Sync {
 
     /// Update only the permission bits of an inode.
     ///
-    /// `new_mode` is masked to `0o777` before persistence — setuid (0o4000),
-    /// setgid (0o2000), and sticky (0o1000) bits are **intentionally stripped**
-    /// because BrewFS does not implement the associated semantics.
+    /// `new_mode` is masked to `0o7777` before persistence.
     ///
     /// Returns the updated [`FileAttr`] on success, or `MetaError::NotFound`
     /// if the inode does not exist.

@@ -27,7 +27,6 @@ pub struct FuseConcurrencyConfig {
 fn default_mount_options() -> MountOptions {
     let mut mo = MountOptions::default();
     mo.fs_name("brewfs");
-    // Enable kernel-side permission checking (recommended for most filesystems)
     mo.default_permissions(true);
     // Required for coherent mmap/page-cache writeback under fsx-style workloads.
     mo.write_back(true);
@@ -175,6 +174,17 @@ mod tests {
         assert!(
             debug.contains("max_read=4194304"),
             "Linux mount options should request 4 MiB FUSE read requests: {debug}"
+        );
+    }
+
+    #[test]
+    fn default_mount_options_enable_kernel_permission_checks() {
+        let options = default_mount_options();
+        let debug = format!("{options:?}");
+
+        assert!(
+            debug.contains("default_permissions: true"),
+            "BrewFS needs kernel checks for special-node opens such as FIFO permissions: {debug}"
         );
     }
 }

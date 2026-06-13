@@ -978,6 +978,7 @@ impl StoredNode {
             blocks,
             kind: self.kind.into(),
             mode: self.mode,
+            rdev: 0,
             uid: self.uid,
             gid: self.gid,
             atime: self.atime,
@@ -1744,7 +1745,7 @@ impl MetaStore for TiKvMetaStore {
 
                 if let Some(mode) = req.mode {
                     let kind_bits = node.mode & 0o170000;
-                    node.mode = kind_bits | (mode & 0o777);
+                    node.mode = kind_bits | (mode & 0o7777);
                     ctime_update = true;
                 }
                 if let Some(uid) = req.uid {

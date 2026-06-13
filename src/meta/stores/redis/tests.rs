@@ -2028,7 +2028,7 @@ async fn test_chmod_updates_mode() {
 #[serial]
 #[tokio::test]
 #[ignore]
-async fn test_set_attr_mode_strips_special_bits() {
+async fn test_set_attr_mode_preserves_special_bits() {
     let store = new_test_store().await;
     let parent = store.root_ino();
     let ino = store
@@ -2044,10 +2044,10 @@ async fn test_set_attr_mode_strips_special_bits() {
         .set_attr(ino, &req, SetAttrFlags::empty())
         .await
         .unwrap();
-    assert_eq!(attr.mode & 0o7777, 0o755);
+    assert_eq!(attr.mode & 0o7777, 0o4755);
 
     let stat = store.stat(ino).await.unwrap().unwrap();
-    assert_eq!(stat.mode & 0o7777, 0o755);
+    assert_eq!(stat.mode & 0o7777, 0o4755);
 }
 
 #[serial]
@@ -2873,8 +2873,8 @@ async fn test_set_attr_flags_state_transitions() {
         .unwrap();
     assert_eq!(
         attr1.mode & 0o7777,
-        0o755,
-        "setuid bit should be stripped on persistence"
+        0o4755,
+        "setuid bit should be preserved on persistence"
     );
 
     let req2 = SetAttrRequest {

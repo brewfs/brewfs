@@ -1615,6 +1615,7 @@ impl MetaStore for EtcdMetaStore {
                         blocks: 4096_u64.div_ceil(512),
                         kind: FileType::Dir,
                         mode: 0o40755,
+                        rdev: 0,
                         uid: 0,
                         gid: 0,
                         atime: now,
@@ -1676,25 +1677,18 @@ impl MetaStore for EtcdMetaStore {
             };
 
             match found_entry {
-                Some(entry) => match entry.entry_type {
-                    EntryType::Directory => {
+                Some(entry) => {
+                    let kind = FileType::from(entry.entry_type);
+                    if kind.is_dir() {
                         current_inode = entry.inode;
-                    }
-                    EntryType::File => {
+                    } else {
                         if index == parts.len() - 1 {
-                            return Ok(Some((entry.inode, FileType::File)));
+                            return Ok(Some((entry.inode, kind)));
                         } else {
                             return Ok(None);
                         }
                     }
-                    EntryType::Symlink => {
-                        if index == parts.len() - 1 {
-                            return Ok(Some((entry.inode, FileType::Symlink)));
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                },
+                }
                 None => return Ok(None),
             }
         }
@@ -1721,11 +1715,7 @@ impl MetaStore for EtcdMetaStore {
 
         let mut entries = Vec::new();
         for content in contents {
-            let kind = match content.entry_type {
-                EntryType::File => FileType::File,
-                EntryType::Directory => FileType::Dir,
-                EntryType::Symlink => FileType::Symlink,
-            };
+            let kind = FileType::from(content.entry_type);
             entries.push(DirEntry {
                 name: content.entry_name,
                 ino: content.inode,
@@ -2878,7 +2868,7 @@ impl MetaStore for EtcdMetaStore {
                     let mut ctime_update = false;
 
                     if let Some(mode) = req.mode {
-                        entry_info.permission.chmod(mode & 0o777);
+                        entry_info.permission.chmod(mode & 0o7777);
                         ctime_update = true;
                     }
 
@@ -2962,6 +2952,7 @@ impl MetaStore for EtcdMetaStore {
                         blocks: size.div_ceil(512),
                         kind,
                         mode: entry_info.permission.mode,
+                        rdev: 0,
                         uid: entry_info.permission.uid,
                         gid: entry_info.permission.gid,
                         atime: entry_info.access_time,

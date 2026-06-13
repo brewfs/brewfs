@@ -37,6 +37,7 @@ fn test_file_attr(ino: i64) -> super::FileAttr {
         blocks: 0,
         kind: super::FileType::File,
         mode: 0o100644,
+        rdev: 0,
         uid: 0,
         gid: 0,
         atime: 0,
@@ -1689,18 +1690,17 @@ mod permission_tests {
     }
 
     #[tokio::test]
-    async fn test_chmod_strips_setuid_setgid_sticky() {
+    async fn test_chmod_preserves_setuid_setgid_sticky() {
         let fs = new_test_vfs().await;
-        fs.mkdir_p("/strip").await.unwrap();
-        let ino = fs.create_file("/strip/s.txt").await.unwrap();
+        fs.mkdir_p("/special").await.unwrap();
+        let ino = fs.create_file("/special/s.txt").await.unwrap();
 
         // Pass mode with setuid (0o4000), setgid (0o2000), and sticky (0o1000)
         let attr = fs.chmod(ino, 0o7755).await.unwrap();
-        // Only 0o755 should survive — special bits are stripped.
         assert_eq!(
             attr.mode & 0o7777,
-            0o755,
-            "setuid/setgid/sticky should be stripped by chmod"
+            0o7755,
+            "setuid/setgid/sticky should be preserved by chmod"
         );
     }
 
@@ -1752,8 +1752,8 @@ mod permission_tests {
     }
 
     #[tokio::test]
-    async fn test_set_attr_mode_strips_special_bits_via_chmod_path() {
-        // When the chmod VFS method is used, special bits are stripped.
+    async fn test_set_attr_mode_preserves_special_bits_via_chmod_path() {
+        // When the chmod VFS method is used, special bits are preserved.
         let fs = new_test_vfs().await;
         fs.mkdir_p("/sa2").await.unwrap();
         let ino = fs.create_file("/sa2/y.txt").await.unwrap();
@@ -1761,8 +1761,8 @@ mod permission_tests {
         let attr = fs.chmod(ino, 0o4755).await.unwrap();
         assert_eq!(
             attr.mode & 0o7777,
-            0o755,
-            "setuid bit should be stripped when using chmod"
+            0o4755,
+            "setuid bit should be preserved when using chmod"
         );
     }
 

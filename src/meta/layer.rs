@@ -115,6 +115,17 @@ pub trait MetaLayer: Send + Sync {
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError>;
 
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError>;
+
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError>;
 
     async fn symlink(
@@ -251,7 +262,7 @@ pub trait MetaLayer: Send + Sync {
 
     /// Update only the permission bits of an inode (chmod).
     ///
-    /// The mode is masked to `0o777`; setuid/setgid/sticky bits are stripped.
+    /// The mode is masked to `0o7777`; setuid/setgid/sticky bits are preserved.
     /// Returns updated [`FileAttr`] or `MetaError::NotFound`.
     async fn chmod(&self, ino: i64, new_mode: u32) -> Result<FileAttr, MetaError> {
         let req = chmod_request(new_mode);

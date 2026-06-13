@@ -9,6 +9,8 @@ pub struct Model {
     pub inode: i64,
 
     pub size: i64,
+    #[sea_orm(column_type = "Integer", default_value = "0")]
+    pub rdev: i32,
     pub access_time: i64,
     pub modify_time: i64,
     pub create_time: i64,
@@ -62,6 +64,7 @@ impl Model {
         Self {
             inode,
             size,
+            rdev: 0,
             permission,
             access_time,
             modify_time,
