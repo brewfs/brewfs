@@ -1,0 +1,182 @@
+services:
+  redis:
+    image: docker.io/library/redis:7.2-alpine
+    container_name: redis-brewfs-perf
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_HOST_PORT:-16379}:6379"
+    networks:
+      - brewfs-xfstests
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs-brewfs-perf-redis
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_S3_HOST_PORT:-19000}:9000"
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_CONSOLE_HOST_PORT:-19001}:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+      RUSTFS_SERVER_DOMAINS: ${RUSTFS_SERVER_DOMAINS:-rustfs}
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --server-domains
+      - ${RUSTFS_SERVER_DOMAINS:-rustfs}
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    volumes:
+      - rustfs-data-perf-redis:/data
+    networks:
+      - brewfs-xfstests
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 180 sh -ec '
+          while true; do
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+    networks:
+      - brewfs-xfstests
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio-brewfs-perf-redis
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${MINIO_HOST_BIND:-127.0.0.1}:${MINIO_S3_HOST_PORT:-19000}:9000"
+      - "${MINIO_HOST_BIND:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-19001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    volumes:
+      - minio-data-perf-redis:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      - brewfs-xfstests
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        timeout 180 sh -ec '
+          while true; do
+            mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} >/dev/null 2>&1 || { sleep 2; continue; }
+            mc mb --ignore-existing local/${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    networks:
+      - brewfs-xfstests
+
+  perf:
+    image: brewfs-xfstests-perf:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      BREWFS_META_BACKEND: redis
+      BREWFS_META_URL: redis://redis:6379/0
+      BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
+      BREWFS_DATA_DIR: /var/lib/brewfs/data
+      BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
+      BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
+      BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
+      BREWFS_LOG_FILE: /artifacts/brewfs.log
+      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+      BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
+      BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
+      BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
+      BREWFS_NOFILE_LIMIT: ${BREWFS_NOFILE_LIMIT:-1048576}
+      BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      BREWFS_WRITEBACK_UPLOAD_CONCURRENCY: ${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-}
+      BREWFS_UPLOAD_LIMIT_MIBPS: ${BREWFS_UPLOAD_LIMIT_MIBPS:-}
+      BREWFS_DOWNLOAD_LIMIT_MIBPS: ${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}
+      BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      XFSTESTS_DIR: /opt/xfstests-dev
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-error}
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_perf_in_container.sh"]
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    volumes:
+      - ./artifacts:/artifacts
+      - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
+      - brewfs-state-perf-redis:/var/lib/brewfs
+    networks:
+      - brewfs-xfstests
+
+networks:
+  brewfs-xfstests:
+    driver: bridge
+
+volumes:
+  brewfs-state-perf-redis:
+  rustfs-data-perf-redis:
+  minio-data-perf-redis:

@@ -1,0 +1,44 @@
+FROM rust:1.96-bookworm AS builder
+
+WORKDIR /workspace
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends binutils protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+RUN cargo build --release -p brewfs \
+    && strip target/release/brewfs
+
+FROM debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        fuse3 \
+        libsqlite3-0 \
+        libssl3 \
+        procps \
+        tini \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/target/release/brewfs /usr/local/bin/brewfs
+COPY docker/entrypoint.sh /usr/local/bin/brewfs-entrypoint
+
+RUN set -e; \
+    mkdir -p /mnt/brewfs /run/brewfs /var/lib/brewfs/data; \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/brewfs-entrypoint; \
+    grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
+
+ENV BREWFS_HOME=/var/lib/brewfs \
+    BREWFS_MOUNT_POINT=/mnt/brewfs \
+    BREWFS_DATA_BACKEND=local-fs \
+    BREWFS_DATA_DIR=/var/lib/brewfs/data \
+    BREWFS_META_BACKEND=sqlite \
+    BREWFS_SQLITE_PATH=/var/lib/brewfs/metadata.db \
+    RUST_LOG=brewfs=info
+
+VOLUME ["/mnt/brewfs", "/var/lib/brewfs"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/brewfs-entrypoint"]

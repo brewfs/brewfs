@@ -1,0 +1,156 @@
+x-brewfs-image: &brewfs-image
+  image: brewfs:local
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+
+x-brewfs-rustfs-env: &brewfs-rustfs-env
+  AWS_ACCESS_KEY_ID: rustfsadmin
+  AWS_SECRET_ACCESS_KEY: rustfsadmin
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_EC2_METADATA_DISABLED: "true"
+  BREWFS_DATA_BACKEND: s3
+  BREWFS_S3_BUCKET: brewfs-data
+  BREWFS_S3_ENDPOINT: http://rustfs:9000
+  BREWFS_S3_REGION: us-east-1
+  BREWFS_S3_FORCE_PATH_STYLE: "true"
+
+services:
+  brewfs-image:
+    <<: *brewfs-image
+    profiles:
+      - image-maintenance
+    entrypoint: ["bash", "-lc", "true"]
+    depends_on:
+      - etcd
+    environment:
+      <<: *brewfs-rustfs-env
+      BREWFS_META_BACKEND: etcd
+      BREWFS_META_ETCD_URLS: http://etcd:2379
+    networks:
+      - brewfs-network
+
+  rustfs:
+    profiles:
+      - s3-stack
+    image: rustfs/rustfs:latest
+    container_name: rustfs-brewfs-etcd
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: ["/data"]
+    environment:
+      - RUSTFS_ADDRESS=:9000
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=rustfsadmin
+      - RUSTFS_SECRET_KEY=rustfsadmin
+    volumes:
+      - rustfs-data-etcd:/data
+    networks:
+      - brewfs-network
+
+  rustfs-init:
+    profiles:
+      - s3-stack
+    image: amazon/aws-cli:2
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      mkdir -p /root/.aws
+      printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+      until aws --endpoint-url http://rustfs:9000 s3api list-buckets >/dev/null 2>&1; do
+        sleep 2
+      done
+      aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket brewfs-data >/dev/null 2>&1 || \
+        aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket brewfs-data
+    environment:
+      - AWS_ACCESS_KEY_ID=rustfsadmin
+      - AWS_SECRET_ACCESS_KEY=rustfsadmin
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_EC2_METADATA_DISABLED=true
+    networks:
+      - brewfs-network
+
+  brewfs:
+    <<: *brewfs-image
+    profiles:
+      - s3-stack
+    container_name: brewfs-rustfs-etcd
+    depends_on:
+      etcd:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *brewfs-rustfs-env
+      BREWFS_META_BACKEND: etcd
+      BREWFS_META_ETCD_URLS: http://etcd:2379
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - brewfs-state-etcd:/var/lib/brewfs
+      - brewfs-mount-etcd:/mnt/brewfs
+    networks:
+      - brewfs-network
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.0
+    container_name: etcd-brewfs-test
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    environment:
+      - ETCDCTL_API=3
+    command: >
+      /usr/local/bin/etcd
+      --name etcd-single
+      --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://127.0.0.1:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://127.0.0.1:2380
+      --initial-cluster etcd-single=http://127.0.0.1:2380
+      --initial-cluster-token etcd-cluster-token
+      --initial-cluster-state new
+      --auto-compaction-mode=revision
+      --auto-compaction-retention=5000
+      --quota-backend-bytes=17179869184
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - brewfs-network
+
+  etcd-maintenance:
+    image: brewfs-etcd-maintenance:local
+    build:
+      context: .
+      dockerfile: etcd-maintenance.Dockerfile
+    depends_on:
+      etcd:
+        condition: service_healthy
+    environment:
+      ETCDCTL_API: "3"
+      ETCDCTL_ENDPOINTS: http://etcd:2379
+      ETCD_COMPACT_RETENTION_REVISIONS: ${ETCD_COMPACT_RETENTION_REVISIONS:-5000}
+      ETCD_MAINTENANCE_INTERVAL_SECS: ${ETCD_MAINTENANCE_INTERVAL_SECS:-30}
+    restart: unless-stopped
+    networks:
+      - brewfs-network
+
+networks:
+  brewfs-network:
+    driver: bridge
+
+volumes:
+  rustfs-data-etcd:
+  brewfs-state-etcd:
+  brewfs-mount-etcd:

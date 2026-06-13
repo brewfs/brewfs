@@ -1,0 +1,115 @@
+services:
+  redis:
+    image: docker.io/library/redis:7.2-alpine
+    container_name: redis-juicefs-perf
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_HOST_PORT:-16379}:6379"
+    networks:
+      - juicefs-xfstests
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs-juicefs-perf
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_S3_HOST_PORT:-19000}:9000"
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_CONSOLE_HOST_PORT:-19001}:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+      RUSTFS_SERVER_DOMAINS: ${RUSTFS_SERVER_DOMAINS:-rustfs}
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --server-domains
+      - ${RUSTFS_SERVER_DOMAINS:-rustfs}
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    volumes:
+      - rustfs-data-juicefs-perf:/data
+    networks:
+      - juicefs-xfstests
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 180 sh -ec '
+          while true; do
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+    networks:
+      - juicefs-xfstests
+
+  perf:
+    image: juicefs-xfstests-perf:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile.juicefs-perf
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      JFS_META_URL: redis://redis:6379/0
+      JFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      JFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      JFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
+      BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      XFSTESTS_DIR: /opt/xfstests-dev
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-error}
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - ./artifacts:/artifacts
+      - juicefs-state-perf:/var/lib/juicefs
+    networks:
+      - juicefs-xfstests
+
+networks:
+  juicefs-xfstests:
+    driver: bridge
+
+volumes:
+  rustfs-data-juicefs-perf:
+  juicefs-state-perf:

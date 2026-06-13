@@ -1,10 +1,10 @@
 <div align="center">
-  <img src="brewfs/doc/icon.png" alt="BrewFS icon" width="96" height="96" />
+  <img src="doc/icon.png" alt="BrewFS icon" width="96" height="96" />
 </div>
 
 <h1 align="center">BrewFS</h1>
 <p align="center"><strong>High-performance Rust and layer-aware distributed filesystem</strong></p>
-<p align="center"><a href="README.md"><b>English</b></a> | <a href="brewfs/README_CN.md">中文</a></p>
+<p align="center"><a href="README.md"><b>English</b></a> | <a href="README_CN.md">中文</a></p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
@@ -156,7 +156,7 @@ meta:
     namespace: tenant-a
 ```
 
-See [doc/configuration.md](brewfs/doc/configuration.md) and the files under [examples/](brewfs/examples/) for the full configuration surface.
+See [doc/configuration.md](doc/configuration.md) and the files under [examples/](examples/) for the full configuration surface.
 
 ## CLI
 
@@ -172,7 +172,7 @@ Useful mount options:
 - `--data-backend <local-fs|s3>`: object data backend.
 - `--meta-backend <sqlx|redis|etcd|tikv>`: metadata backend.
 - `--chunk-size <BYTES>` and `--block-size <BYTES>`: data layout tuning.
-- `--fuse-workers <N>`: `0` or `1` uses low-overhead rfuse3 session dispatch; values above `1` enable the worker pool.
+- `--fuse-workers <N>`: `0` or `1` uses low-overhead asyncfuse session dispatch; values above `1` enable the worker pool.
 - `--fuse-max-background <N>`: maximum queued and running FUSE requests.
 - `--privileged`: use `/dev/fuse` directly instead of `fusermount3`.
 
@@ -202,10 +202,10 @@ bash compose-xfstests/run_redis_xfstests.sh --s3 --cases "generic/001"
 
 More test and benchmark entry points:
 
-- [docker/README.md](brewfs/docker/README.md)
-- [doc/docker-compose-test-guide.md](brewfs/doc/docker-compose-test-guide.md)
-- [doc/bench.md](brewfs/doc/bench.md)
-- [doc/fuzz_testing_guide.md](brewfs/doc/fuzz_testing_guide.md)
+- [docker/README.md](docker/README.md)
+- [doc/docker-compose-test-guide.md](doc/docker-compose-test-guide.md)
+- [doc/bench.md](doc/bench.md)
+- [doc/fuzz_testing_guide.md](doc/fuzz_testing_guide.md)
 
 ## Feature Flags
 
@@ -226,18 +226,18 @@ Available features:
 
 Start here:
 
-- [Configuration](brewfs/doc/configuration.md)
-- [Architecture](brewfs/doc/arch.md)
-- [Metadata](brewfs/doc/meta.md)
-- [Chunk layout](brewfs/doc/chunk.md)
-- [Read path](brewfs/doc/read-path.md)
-- [Write path](brewfs/doc/write-path.md)
-- [Caching](brewfs/doc/caching.md)
-- [Compaction and GC](brewfs/doc/compaction-gc.md)
-- [Observability](brewfs/doc/observability.md)
-- [SDK](brewfs/doc/sdk.md)
-- [Control plane](brewfs/docs/control-plane.md)
-- [BrewFS vs JuiceFS analysis](brewfs/doc/brewfs-vs-juicefs-analysis.md)
+- [Configuration](doc/configuration.md)
+- [Architecture](doc/arch.md)
+- [Metadata](doc/meta.md)
+- [Chunk layout](doc/chunk.md)
+- [Read path](doc/read-path.md)
+- [Write path](doc/write-path.md)
+- [Caching](doc/caching.md)
+- [Compaction and GC](doc/compaction-gc.md)
+- [Observability](doc/observability.md)
+- [SDK](doc/sdk.md)
+- [Control plane](docs/control-plane.md)
+- [BrewFS vs JuiceFS analysis](doc/brewfs-vs-juicefs-analysis.md)
 
 ## Repository Map
 
