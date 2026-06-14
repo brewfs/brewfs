@@ -454,8 +454,9 @@ redis_diag_after_tool() {
     } >"$artifact_dir/diagnostics/redis-${tool}-after.txt" 2>&1 || true
 }
 
-stats_snapshot_after_tool() {
+stats_snapshot_tool() {
     local tool="$1"
+    local phase="$2"
     local stats_path="$mount_dir/.stats"
     {
         date -Iseconds
@@ -465,7 +466,15 @@ stats_snapshot_after_tool() {
         else
             echo "missing $stats_path"
         fi
-    } >"$artifact_dir/diagnostics/stats-${tool}-after.txt" 2>&1 || true
+    } >"$artifact_dir/diagnostics/stats-${tool}-${phase}.txt" 2>&1 || true
+}
+
+stats_snapshot_before_tool() {
+    stats_snapshot_tool "$1" before
+}
+
+stats_snapshot_after_tool() {
+    stats_snapshot_tool "$1" after
 }
 
 brewfs_stat_value() {
@@ -516,6 +525,8 @@ wait_for_fio_prefill_drain() {
     local start now elapsed pending dirty buffer_dirty drain_bytes put_bytes uploaded
 
     info "等待 fio 预填充写回完成: $tool (threshold=${threshold} bytes, timeout=${timeout}s)"
+    stats_snapshot_before_tool "${tool}-prefill-drained"
+    stats_snapshot_before_tool "${tool}-prefill-drain-timeout"
     start="$(date +%s)"
 
     while true; do
@@ -563,6 +574,8 @@ wait_for_fio_post_write_drain() {
     esac
 
     info "等待 fio 写入后写回完成: $tool (threshold=${threshold} bytes, timeout=${timeout}s)"
+    stats_snapshot_before_tool "${tool}-post-write-drained"
+    stats_snapshot_before_tool "${tool}-post-write-drain-timeout"
     start="$(date +%s)"
 
     while true; do
@@ -662,6 +675,7 @@ run_logged_tool() {
     info "运行压力工具: $tool"
     info "  命令: $*"
     redis_diag_before_tool "$tool"
+    stats_snapshot_before_tool "$tool"
     set +e
     if [[ "${PERF_LOG_TO_CONSOLE:-false}" == "true" ]]; then
         "$@" 2>&1 | tee "$log_path"
@@ -1189,6 +1203,7 @@ run_fio_profile() {
     fi
 
     if [[ "$needs_prefill" == true ]]; then
+        stats_snapshot_before_tool "${tool}-prefill"
         prepare_fio_dataset "$tool" "$work_dir" "$name" "$size" "$direct" "$numjobs" "$bs" "$ioengine" "$iodepth" || return $?
         stats_snapshot_after_tool "${tool}-prefill"
         if truthy_env "${PERF_FIO_COLD_READ:-false}" || truthy_env "${PERF_FIO_PREFILL_DRAIN:-false}"; then
@@ -1550,6 +1565,8 @@ if brewfs_stats_paths:
         "",
         "## BrewFS Stats",
         "",
+        "Counters are per-tool deltas when matching before/after snapshots exist; dirty, live, and inflight values are after-tool gauges.",
+        "",
         "| Tool | Cache hit | FUSE read | FUSE write | Dirty | Live dirty | Recent pending | Recent uploaded | Read buffer | S3 ops | S3 avg latency | Details |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ])
@@ -1578,139 +1595,150 @@ if brewfs_stats_paths:
     for path in brewfs_stats_paths:
         tool = path.name.removeprefix("stats-").removesuffix("-after.txt")
         metrics = parse_brewfs_stats(path)
-        hits = metrics.get("brewfs_cache_hits_total", 0.0)
-        misses = metrics.get("brewfs_cache_misses_total", 0.0)
-        requests = metrics.get("brewfs_cache_requests_total", hits + misses)
+        before_path = path.with_name(path.name.replace("-after.txt", "-before.txt"))
+        before_metrics = parse_brewfs_stats(before_path) if before_path.exists() else {}
+
+        def value(name, default=0.0):
+            return metrics.get(name, default)
+
+        def delta(name, default=0.0):
+            current = metrics.get(name, default)
+            if not before_metrics:
+                return current
+            previous = before_metrics.get(name, default)
+            return max(0.0, current - previous)
+
+        def delta_avg_us(lat_total_name, ops_name, avg_name):
+            ops = delta(ops_name)
+            if ops:
+                return delta(lat_total_name) / ops
+            return value(avg_name, 0.0)
+
+        hits = delta("brewfs_cache_hits_total")
+        misses = delta("brewfs_cache_misses_total")
+        requests = delta("brewfs_cache_requests_total", hits + misses)
+        if before_metrics and requests == 0:
+            requests = hits + misses
         hit_ratio = metrics.get(
             "brewfs_cache_hit_ratio",
             hits / requests if requests else 0.0,
         )
-        fuse_read = metrics.get("brewfs_fuse_read_bytes_total", 0.0)
-        fuse_write = metrics.get("brewfs_fuse_write_bytes_total", 0.0)
-        dirty = metrics.get(
+        if before_metrics:
+            hit_ratio = hits / requests if requests else 0.0
+        fuse_read = delta("brewfs_fuse_read_bytes_total")
+        fuse_write = delta("brewfs_fuse_write_bytes_total")
+        dirty = value(
             "brewfs_writeback_dirty_bytes",
-            metrics.get("brewfs_buffer_dirty_bytes", 0.0),
+            value("brewfs_buffer_dirty_bytes", 0.0),
         )
-        live_dirty = metrics.get("brewfs_writeback_live_dirty_bytes", 0.0)
-        recent_pending = metrics.get("brewfs_writeback_recent_pending_upload_bytes", 0.0)
-        recent_uploaded = metrics.get("brewfs_writeback_recent_uploaded_bytes", 0.0)
-        read_buffer = metrics.get(
+        live_dirty = value("brewfs_writeback_live_dirty_bytes", 0.0)
+        recent_pending = value("brewfs_writeback_recent_pending_upload_bytes", 0.0)
+        recent_uploaded = value("brewfs_writeback_recent_uploaded_bytes", 0.0)
+        read_buffer = value(
             "brewfs_reader_buffer_bytes",
-            metrics.get("brewfs_buffer_read_bytes", 0.0),
+            value("brewfs_buffer_read_bytes", 0.0),
         )
-        s3_get = metrics.get("brewfs_s3_get_ops_total", 0.0)
-        s3_put = metrics.get("brewfs_s3_put_ops_total", 0.0)
-        s3_get_avg_ms = metrics.get("brewfs_s3_get_avg_lat_us", 0.0) / 1000.0
-        s3_put_avg_ms = metrics.get("brewfs_s3_put_avg_lat_us", 0.0) / 1000.0
-        range_gets = metrics.get("brewfs_read_range_gets_total", 0.0)
-        full_gets = metrics.get("brewfs_read_full_gets_total", 0.0)
-        bg_prefetch = metrics.get("brewfs_read_background_prefetch_total", 0.0)
-        stage_ops = metrics.get("brewfs_writeback_stage_ops_total", 0.0)
-        stage_bytes = metrics.get("brewfs_writeback_stage_bytes_total", 0.0)
-        stage_ms = metrics.get("brewfs_writeback_stage_lat_us_total", 0.0) / 1000.0
-        stage_s = metrics.get("brewfs_writeback_stage_lat_us_total", 0.0) / 1_000_000.0
-        commit_wait_s = metrics.get("brewfs_writeback_commit_wait_upload_us_total", 0.0) / 1_000_000.0
-        stage_failures = metrics.get("brewfs_writeback_stage_failures_total", 0.0)
-        commit_before_stage = metrics.get(
+        s3_get = delta("brewfs_s3_get_ops_total")
+        s3_put = delta("brewfs_s3_put_ops_total")
+        s3_get_avg_ms = delta_avg_us(
+            "brewfs_s3_get_lat_us_total",
+            "brewfs_s3_get_ops_total",
+            "brewfs_s3_get_avg_lat_us",
+        ) / 1000.0
+        s3_put_avg_ms = delta_avg_us(
+            "brewfs_s3_put_lat_us_total",
+            "brewfs_s3_put_ops_total",
+            "brewfs_s3_put_avg_lat_us",
+        ) / 1000.0
+        range_gets = delta("brewfs_read_range_gets_total")
+        full_gets = delta("brewfs_read_full_gets_total")
+        bg_prefetch = delta("brewfs_read_background_prefetch_total")
+        stage_ops = delta("brewfs_writeback_stage_ops_total")
+        stage_bytes = delta("brewfs_writeback_stage_bytes_total")
+        stage_ms = delta("brewfs_writeback_stage_lat_us_total") / 1000.0
+        stage_s = delta("brewfs_writeback_stage_lat_us_total") / 1_000_000.0
+        commit_wait_s = delta("brewfs_writeback_commit_wait_upload_us_total") / 1_000_000.0
+        stage_failures = delta("brewfs_writeback_stage_failures_total")
+        commit_before_stage = delta(
             "brewfs_writeback_commit_before_stage_ops_total",
-            0.0,
         )
-        remote_inflight = metrics.get("brewfs_writeback_remote_upload_inflight_bytes", 0.0)
-        live_slices = metrics.get("brewfs_writeback_live_slices", 0.0)
-        live_normal_only_slices = metrics.get("brewfs_writeback_live_normal_only_slices", 0.0)
-        live_cached_only_slices = metrics.get("brewfs_writeback_live_cached_only_slices", 0.0)
-        live_mixed_origin_slices = metrics.get("brewfs_writeback_live_mixed_origin_slices", 0.0)
-        live_unknown_origin_slices = metrics.get("brewfs_writeback_live_unknown_origin_slices", 0.0)
-        slice_create = metrics.get("brewfs_writeback_slice_create_ops_total", 0.0)
-        slice_reuse = metrics.get("brewfs_writeback_slice_reuse_ops_total", 0.0)
-        reject_older = metrics.get("brewfs_writeback_slice_reject_older_unique_ops_total", 0.0)
-        reject_prefix = metrics.get(
+        remote_inflight = value("brewfs_writeback_remote_upload_inflight_bytes", 0.0)
+        live_slices = value("brewfs_writeback_live_slices", 0.0)
+        live_normal_only_slices = value("brewfs_writeback_live_normal_only_slices", 0.0)
+        live_cached_only_slices = value("brewfs_writeback_live_cached_only_slices", 0.0)
+        live_mixed_origin_slices = value("brewfs_writeback_live_mixed_origin_slices", 0.0)
+        live_unknown_origin_slices = value("brewfs_writeback_live_unknown_origin_slices", 0.0)
+        slice_create = delta("brewfs_writeback_slice_create_ops_total")
+        slice_reuse = delta("brewfs_writeback_slice_reuse_ops_total")
+        reject_older = delta("brewfs_writeback_slice_reject_older_unique_ops_total")
+        reject_prefix = delta(
             "brewfs_writeback_slice_reject_dispatched_prefix_ops_total",
-            0.0,
         )
-        batch_ops = metrics.get("brewfs_writeback_upload_batch_ops_total", 0.0)
-        batch_bytes = metrics.get("brewfs_writeback_upload_batch_bytes_total", 0.0)
-        batch_blocks = metrics.get("brewfs_writeback_upload_batch_blocks_total", 0.0)
-        partial_tail = metrics.get("brewfs_writeback_upload_partial_tail_ops_total", 0.0)
-        partial_tail_size = metrics.get("brewfs_writeback_upload_partial_tail_size_ops_total", 0.0)
-        partial_tail_max = metrics.get(
+        batch_ops = delta("brewfs_writeback_upload_batch_ops_total")
+        batch_bytes = delta("brewfs_writeback_upload_batch_bytes_total")
+        batch_blocks = delta("brewfs_writeback_upload_batch_blocks_total")
+        partial_tail = delta("brewfs_writeback_upload_partial_tail_ops_total")
+        partial_tail_size = delta("brewfs_writeback_upload_partial_tail_size_ops_total")
+        partial_tail_max = delta(
             "brewfs_writeback_upload_partial_tail_max_unflushed_ops_total",
-            0.0,
         )
-        partial_tail_flush = metrics.get(
+        partial_tail_flush = delta(
             "brewfs_writeback_upload_partial_tail_explicit_flush_ops_total",
-            0.0,
         )
-        partial_tail_auto = metrics.get("brewfs_writeback_upload_partial_tail_auto_ops_total", 0.0)
-        partial_tail_normal = metrics.get(
+        partial_tail_auto = delta("brewfs_writeback_upload_partial_tail_auto_ops_total")
+        partial_tail_normal = delta(
             "brewfs_writeback_upload_partial_tail_normal_only_ops_total",
-            0.0,
         )
-        partial_tail_cached = metrics.get(
+        partial_tail_cached = delta(
             "brewfs_writeback_upload_partial_tail_cached_only_ops_total",
-            0.0,
         )
-        partial_tail_mixed = metrics.get(
+        partial_tail_mixed = delta(
             "brewfs_writeback_upload_partial_tail_mixed_origin_ops_total",
-            0.0,
         )
-        partial_tail_unknown_origin = metrics.get(
+        partial_tail_unknown_origin = delta(
             "brewfs_writeback_upload_partial_tail_unknown_origin_ops_total",
-            0.0,
         )
-        partial_tail_auto_age = metrics.get(
+        partial_tail_auto_age = delta(
             "brewfs_writeback_upload_partial_tail_auto_age_ops_total",
-            0.0,
         )
-        partial_tail_auto_idle = metrics.get(
+        partial_tail_auto_idle = delta(
             "brewfs_writeback_upload_partial_tail_auto_idle_ops_total",
-            0.0,
         )
-        partial_tail_auto_pressure = metrics.get(
+        partial_tail_auto_pressure = delta(
             "brewfs_writeback_upload_partial_tail_auto_pressure_ops_total",
-            0.0,
         )
-        partial_tail_auto_too_many = metrics.get(
+        partial_tail_auto_too_many = delta(
             "brewfs_writeback_upload_partial_tail_auto_too_many_ops_total",
-            0.0,
         )
-        partial_tail_auto_buffer_high = metrics.get(
+        partial_tail_auto_buffer_high = delta(
             "brewfs_writeback_upload_partial_tail_auto_buffer_high_ops_total",
-            0.0,
         )
-        partial_tail_auto_flush_duration = metrics.get(
+        partial_tail_auto_flush_duration = delta(
             "brewfs_writeback_upload_partial_tail_auto_flush_duration_ops_total",
-            0.0,
         )
-        partial_tail_auto_unknown = metrics.get(
+        partial_tail_auto_unknown = delta(
             "brewfs_writeback_upload_partial_tail_auto_unknown_ops_total",
-            0.0,
         )
-        partial_tail_auto_normal = metrics.get(
+        partial_tail_auto_normal = delta(
             "brewfs_writeback_upload_partial_tail_auto_normal_only_ops_total",
-            0.0,
         )
-        partial_tail_auto_cached = metrics.get(
+        partial_tail_auto_cached = delta(
             "brewfs_writeback_upload_partial_tail_auto_cached_only_ops_total",
-            0.0,
         )
-        partial_tail_auto_mixed = metrics.get(
+        partial_tail_auto_mixed = delta(
             "brewfs_writeback_upload_partial_tail_auto_mixed_origin_ops_total",
-            0.0,
         )
-        partial_tail_auto_unknown_origin = metrics.get(
+        partial_tail_auto_unknown_origin = delta(
             "brewfs_writeback_upload_partial_tail_auto_unknown_origin_ops_total",
-            0.0,
         )
-        partial_tail_age = metrics.get(
+        partial_tail_age = delta(
             "brewfs_writeback_upload_partial_tail_commit_age_ops_total",
-            0.0,
         )
-        freeze_size = metrics.get("brewfs_writeback_freeze_size_ops_total", 0.0)
-        freeze_flush = metrics.get("brewfs_writeback_freeze_explicit_flush_ops_total", 0.0)
-        freeze_auto = metrics.get("brewfs_writeback_freeze_auto_ops_total", 0.0)
-        freeze_max = metrics.get("brewfs_writeback_freeze_max_unflushed_ops_total", 0.0)
-        freeze_age = metrics.get("brewfs_writeback_freeze_commit_age_ops_total", 0.0)
+        freeze_size = delta("brewfs_writeback_freeze_size_ops_total")
+        freeze_flush = delta("brewfs_writeback_freeze_explicit_flush_ops_total")
+        freeze_auto = delta("brewfs_writeback_freeze_auto_ops_total")
+        freeze_max = delta("brewfs_writeback_freeze_max_unflushed_ops_total")
+        freeze_age = delta("brewfs_writeback_freeze_commit_age_ops_total")
         avg_batch_blocks = batch_blocks / batch_ops if batch_ops else 0.0
         partial_tail_ratio = partial_tail / batch_ops if batch_ops else 0.0
         rel = path.relative_to(artifact_dir)
