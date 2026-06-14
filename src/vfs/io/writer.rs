@@ -3536,6 +3536,7 @@ where
             if tick.is_multiple_of(100) {
                 let mut guard = shared.inner.lock().await;
                 let mut emptied = Vec::new();
+                let mut stale_uploads = Vec::new();
                 let keep_writeback_overlay = matches!(
                     shared.config.writeback_mode,
                     WriteBackMode::CommitBeforeUpload
@@ -3544,13 +3545,18 @@ where
                     // Keep recently-committed slices for ~2 s.
                     chunk.recently_committed.retain(|s| {
                         let state = s.lock();
-                        state.started.elapsed() < Duration::from_secs(2)
-                            || (keep_writeback_overlay
-                                && matches!(
-                                    state.state,
-                                    SliceStatus::Committed | SliceStatus::Failed
-                                )
-                                && !state.upload_complete())
+                        let pending_writeback_upload = keep_writeback_overlay
+                            && matches!(state.state, SliceStatus::Committed | SliceStatus::Failed)
+                            && !state.upload_complete();
+                        let age = state.started.elapsed();
+                        if pending_writeback_upload
+                            && matches!(state.state, SliceStatus::Committed)
+                            && age > COMMIT_UPLOAD_MAX_WAIT
+                        {
+                            stale_uploads.push((*cid, s.clone(), age));
+                        }
+
+                        age < Duration::from_secs(2) || pending_writeback_upload
                     });
                     if chunk.slices.is_empty() && chunk.recently_committed.is_empty() {
                         emptied.push(*cid);
@@ -3561,6 +3567,20 @@ where
                 }
                 if !guard.has_chunks() && guard.flush_waiting > 0 {
                     shared.flush_notify.notify_waiters();
+                }
+                drop(guard);
+
+                for (chunk_id, slice, age) in stale_uploads {
+                    warn!(
+                        chunk_id,
+                        age_secs = age.as_secs(),
+                        "auto_flush: background writeback upload stalled too long, marking slice failed"
+                    );
+                    SliceHandle {
+                        slice: &slice,
+                        shared: &shared,
+                    }
+                    .mark_failed(anyhow::anyhow!("upload stalled for {age:?}, giving up"));
                 }
             }
 
@@ -5039,6 +5059,79 @@ mod tests {
             "remote upload should still be pending while S3 is blocked"
         );
 
+        store.unblock();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_commit_before_upload_watchdog_fails_stale_background_upload() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "stale_background_upload.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            backend,
+            reader,
+            None,
+        ));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![8u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), file_writer.flush())
+            .await
+            .expect("commit-before-upload flush should return while object upload is blocked")
+            .unwrap();
+
+        assert_eq!(
+            writer.recent_pending_upload_bytes(),
+            layout.block_size as u64
+        );
+
+        let stale_slice = {
+            let guard = file_writer.shared.inner.lock().await;
+            guard
+                .chunks
+                .values()
+                .find_map(|chunk| chunk.recently_committed.front().cloned())
+                .expect("flush should leave a recently committed slice pending upload")
+        };
+        stale_slice.lock().started =
+            Instant::now() - COMMIT_UPLOAD_MAX_WAIT - Duration::from_secs(1);
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if writer.recent_pending_upload_bytes() == 0
+                    && file_writer.shared.writeback_error().is_some()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stale background upload should be failed by watchdog");
+
+        let err = file_writer.shared.writeback_error().unwrap();
+        assert!(
+            err.contains("upload stalled"),
+            "unexpected writeback error: {err}"
+        );
         store.unblock();
     }
 
