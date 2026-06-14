@@ -1,1 +1,2 @@
 brewfs/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz filter=lfs diff=lfs merge=lfs -text
+tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz filter=lfs diff=lfs merge=lfs -text

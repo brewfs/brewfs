@@ -135,4 +135,5 @@ case "$profile" in
 esac
 
 info "stress-ng profile: $profile"
+export BREWFS_PERF_DOCKERFILE="${BREWFS_PERF_DOCKERFILE:-docker/compose-xfstests/Dockerfile.stress-ng}"
 exec "$RUN_PERF" "$storage_arg" --tools stress-ng "${extra_args[@]}"

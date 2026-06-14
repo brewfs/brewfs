@@ -121,7 +121,7 @@ services:
     image: brewfs-xfstests-perf:local
     build:
       context: ../..
-      dockerfile: docker/compose-xfstests/Dockerfile
+      dockerfile: ${BREWFS_PERF_DOCKERFILE:-docker/compose-xfstests/Dockerfile}
     depends_on:
       redis:
         condition: service_healthy
