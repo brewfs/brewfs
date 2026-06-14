@@ -1,11 +1,18 @@
+[package]
+name = "brewfs"
+version = "0.1.0"
+edition = "2024"
+authors = ["rk8s-dev team"]
+description = "High-performance Rust & Layers-aware Distributed Filesystem"
+repository = "https://github.com/brewfs/brewfs"
+license = "MIT"
+
 [workspace]
 members = [
-    "brewfs",
-    "brewfs/tools/stats",
-    "rfuse3"
+    "tools/stats"
 ]
 
-default-members = ["brewfs"]
+default-members = ["."]
 resolver = "2"
 
 [workspace.dependencies]
@@ -24,8 +31,8 @@ rks = { path = "rks" }
 dagrs-derive = { path = "dagrs-derive", version = "0.5.0" }
 quote = "1.0"
 proc-macro2 = "1.0"
-rfuse3 = { path = "rfuse3", version = "0.0.8", features = ["tokio-runtime", "unprivileged"] }
-brewfs = { path = "brewfs" }
+asyncfuse = { version = "0.0.8", default-features = false }
+brewfs = { path = "." }
 libcgroups = { version = "0.5.7", default-features = false }
 libcontainer = "0.5.7"
 tonic-build = "=0.7.2"
@@ -110,6 +117,8 @@ itertools = "0.14.0"
 iterator-ext = "0.2.1"
 json = "0.12.4"
 jsonwebtoken = "9.3.1"
+k8s-openapi = { version = "0.23", features = ["v1_30"] }
+kube = { version = "0.96", features = ["client", "rustls-tls"] }
 lazy_static = "1.5.0"
 libbpf-sys = "1.5.0"
 libc = "0.2.175"
@@ -234,6 +243,86 @@ ssh-key = { version = "0.6.7", features = ["std", "crypto"] }
 lz4_flex = "0.11"
 zstd = "0.13"
 governor = "0.8"
+
+[dependencies]
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "time", "net", "signal", "tracing"] }
+async-trait = { workspace = true }
+async-recursion = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true, features = ["behavior-version-latest"] }
+base64 = { workspace = true }
+md5 = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+libc = { workspace = true }
+bytes = { workspace = true }
+crc32c = { workspace = true }
+hex = { workspace = true }
+tokio-util = { workspace = true }
+moka = { workspace = true, features = ["future"] }
+dashmap = { workspace = true }
+dirs = { workspace = true }
+sha2 = { workspace = true }
+hyper = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "trace"] }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+sea-orm = { workspace = true, features = ["sqlx-sqlite", "sqlx-postgres", "runtime-tokio-rustls", "macros", "with-chrono", "with-uuid"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+log = { workspace = true }
+asyncfuse = { workspace = true, features = ["file-lock", "unprivileged"] }
+etcd-client = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+auto_impl = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-appender = { workspace = true }
+tracing-flame = { workspace = true, optional = true }
+tracing-chrome = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
+dotenv = { workspace = true }
+rand = { workspace = true }
+hostname = { workspace = true }
+bitflags = { workspace = true }
+redis = { workspace = true }
+if-addrs = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
+parking_lot = { workspace = true }
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-client = { workspace = true }
+rkyv = { workspace = true, optional = true, features = ["uuid-1"] }
+lz4_flex = { workspace = true }
+zstd = { workspace = true }
+governor = { workspace = true }
+
+[features]
+default = ["fuse-io-uring-runtime"]
+fuse-io-uring-runtime = ["asyncfuse/io-uring-runtime"]
+fuse-tokio-runtime = ["asyncfuse/tokio-runtime"]
+profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]
+jemalloc = ["dep:tikv-jemallocator"]
+jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling"]
+rkyv-serialization = ["dep:rkyv"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+pprof = { workspace = true }
+serial_test = { workspace = true }
+qlean = { workspace = true }
+tracing-chrome = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+
+[[bench]]
+name = "brewfs_bench"
+harness = false
 
 [profile.release]
 debug = true

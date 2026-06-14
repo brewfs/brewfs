@@ -126,14 +126,14 @@ jobs:
           docker compose version
 
       - name: Run pjdfstest
-        run: bash brewfs/docker/compose-xfstests/run_redis_pjdfstest.sh
+        run: bash docker/compose-pjdfstest/run_redis_pjdfstest.sh
 
       - name: Upload pjdfstest artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pjdfstest-artifacts
-          path: brewfs/docker/compose-xfstests/artifacts/**
+          path: docker/compose-pjdfstest/artifacts/**
           if-no-files-found: warn
 
   docker-stress-ng:
@@ -186,12 +186,12 @@ jobs:
           echo "STRESS_NG_PROFILE=$profile" >> "$GITHUB_ENV"
 
       - name: Run stress-ng profile
-        run: bash brewfs/docker/compose-xfstests/run_redis_stress_ng.sh --profile "$STRESS_NG_PROFILE"
+        run: bash docker/compose-xfstests/run_redis_stress_ng.sh --profile "$STRESS_NG_PROFILE"
 
       - name: Upload stress-ng artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: stress-ng-artifacts-${{ env.STRESS_NG_PROFILE }}
-          path: brewfs/docker/compose-xfstests/artifacts/**
+          path: docker/compose-xfstests/artifacts/**
           if-no-files-found: warn

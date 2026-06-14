@@ -43,7 +43,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: brewfs/docker/Dockerfile.runtime
+          file: docker/Dockerfile.runtime
           push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/brewfs:latest
@@ -58,8 +58,8 @@ jobs:
       - name: Build and push BrewFS operator image
         uses: docker/build-push-action@v6
         with:
-          context: brewfs/operator/brewfs-operator
-          file: brewfs/operator/brewfs-operator/Dockerfile
+          context: operator/brewfs-operator
+          file: operator/brewfs-operator/Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/brewfs-operator:latest

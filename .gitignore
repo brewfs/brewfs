@@ -4,15 +4,23 @@ target/
 
 # Local runtime data and logs
 data/
+slayerfs-meta/
+*.env
+results/
 *.log
 *.pid
 *.sock
 
 # Large/generated test artifacts
-brewfs/docker/compose-xfstests/artifacts/
-brewfs/tests/scripts/xfstests-prebuilt/*.tar.gz
-!brewfs/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz
+docker/compose-xfstests/artifacts/
+docker/compose-pjdfstest/artifacts/
+tests/scripts/xfstests-prebuilt/*.tar.gz
+!tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz
 perf.data
+
+# Web console generated assets
+web/console/node_modules/
+web/console/dist/
 
 # Editor and OS noise
 .DS_Store

@@ -1,0 +1,82 @@
+FROM debian:trixie-slim AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        ca-certificates \
+        flex \
+        bison \
+        git \
+        libaio-dev \
+        libnuma-dev \
+        libtirpc-dev \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 --branch 20260130 https://github.com/linux-test-project/ltp.git . && \
+    make autotools && \
+    ./configure --prefix=/opt/ltp && \
+    make -j"$(nproc)" && \
+    make install
+
+FROM debian:trixie-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        fuse3 \
+        libsqlite3-0 \
+        libssl3 \
+        procps \
+        tini \
+        util-linux \
+        acl \
+        attr \
+        bc \
+        gawk \
+        libaio1t64 \
+        libnuma1 \
+        libtirpc3 \
+        make \
+        perl \
+        psmisc \
+        python3 \
+        quota \
+        sed \
+        sudo \
+        xfsprogs && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/ltp /opt/ltp
+COPY target/release/brewfs /usr/local/bin/brewfs
+COPY docker/compose-xfstests/run_ltp_in_container.sh /usr/local/bin/run_ltp_in_container.sh
+COPY docker/compose-xfstests/ltp_skip_tests.txt /usr/local/share/brewfs/ltp_skip_tests.txt
+COPY docker/ltp_report.sh /usr/local/bin/ltp_report.sh
+
+RUN set -e; \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/run_ltp_in_container.sh /usr/local/bin/ltp_report.sh; \
+    mkdir -p /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts /usr/local/share/brewfs; \
+    grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
+
+ENV BREWFS_HOME=/var/lib/brewfs \
+    BREWFS_MOUNT_POINT=/mnt/brewfs \
+    BREWFS_DATA_BACKEND=local-fs \
+    BREWFS_DATA_DIR=/var/lib/brewfs/data \
+    BREWFS_S3_BUCKET=brewfs-data \
+    BREWFS_S3_ENDPOINT=http://rustfs:9000 \
+    BREWFS_S3_REGION=us-east-1 \
+    BREWFS_S3_FORCE_PATH_STYLE=true \
+    BREWFS_META_BACKEND=redis \
+    BREWFS_META_URL=redis://redis:6379/0 \
+    BREWFS_CONFIG_PATH=/run/brewfs/config.yaml \
+    BREWFS_LOG_FILE=/artifacts/brewfs.log \
+    LTP_DIR=/opt/ltp \
+    RUST_LOG=brewfs=info
+
+VOLUME ["/mnt/brewfs", "/var/lib/brewfs", "/artifacts"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/run_ltp_in_container.sh"]
