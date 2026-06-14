@@ -90,7 +90,12 @@ fuse:
 ---
 
 ## 📚 文档
-- 设计：`doc/arch.md`
+- 文档索引：`doc/README.md`
+- 架构设计：`doc/arch.md`
+- 配置说明：`doc/configuration.md`
+- VFS 内部实现：`doc/vfs/README.md`
+- 测试与 CI：`doc/README.md#testing-and-ci`
+- 性能与 JuiceFS 对比：`doc/README.md#performance-and-juicefs-comparison`
 - SDK 使用：`doc/sdk.md`
 
 ---

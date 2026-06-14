@@ -659,7 +659,7 @@ Document unsupported POSIX surface and add pjdfstest expected-failure exclusions
 Create:
 
 ```text
-docs/superpowers/plans/2026-06-13-pjdfstest-special-nodes.md
+doc/superpowers/plans/2026-06-13-pjdfstest-special-nodes.md
 ```
 
 Expected: the special-node plan includes backend schema/data-format compatibility steps and migration strategy before any code changes.
@@ -678,7 +678,7 @@ failures that cascade from unsupported special-node creation.
 Created:
 
 ```text
-docs/superpowers/plans/2026-06-13-pjdfstest-special-nodes.md
+doc/superpowers/plans/2026-06-13-pjdfstest-special-nodes.md
 ```
 
 ## Task 7: Fix chmod Permission Checks for Mode-only setattr
@@ -1683,7 +1683,7 @@ Review questions:
 Commit after each verified task:
 
 ```bash
-git add docs/superpowers/plans/2026-06-13-pjdfstest-posix-fixes.md <changed-files>
+git add doc/superpowers/plans/2026-06-13-pjdfstest-posix-fixes.md <changed-files>
 git commit -m "fix: return enametoolong for oversized names"
 git commit -m "fix: refresh parent attrs after namespace changes"
 git commit -m "fix: preserve special permission bits"

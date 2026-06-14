@@ -13,12 +13,12 @@
 ### Task 1: Document the Design and Plan
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-06-13-pjdfstest-compose-design.md`
-- Create: `docs/superpowers/plans/2026-06-13-pjdfstest-compose.md`
+- Create: `doc/superpowers/specs/2026-06-13-pjdfstest-compose-design.md`
+- Create: `doc/superpowers/plans/2026-06-13-pjdfstest-compose.md`
 
 - [ ] Add the design document with scope, architecture, CLI, artifacts, and verification commands.
 - [ ] Add this implementation plan with exact files and validation steps.
-- [ ] Run `grep -R -E "T[B]D|TO[D]O|fill[[:space:]]+in" docs/superpowers/specs/2026-06-13-pjdfstest-compose-design.md docs/superpowers/plans/2026-06-13-pjdfstest-compose.md` and confirm it prints nothing.
+- [ ] Run `grep -R -E "T[B]D|TO[D]O|fill[[:space:]]+in" doc/superpowers/specs/2026-06-13-pjdfstest-compose-design.md doc/superpowers/plans/2026-06-13-pjdfstest-compose.md` and confirm it prints nothing.
 
 ### Task 2: Add the pjdfstest Container Runner
 
@@ -93,6 +93,6 @@
 - [ ] If Docker build dependencies and network are available, run `docker compose -f docker/compose-pjdfstest/docker-compose.redis.yml build pjdfstest`.
 - [ ] Run one or more small pjdfstest cases through `bash docker/compose-pjdfstest/run_redis_pjdfstest.sh --tests "<case>" --prove-args "-v"` and record whether failures are test-infrastructure failures or BrewFS POSIX semantic failures.
 - [ ] Review `git diff --check`.
-- [ ] Review `git diff -- docker/compose-pjdfstest docker/README.md docs/superpowers`.
+- [ ] Review `git diff -- docker/compose-pjdfstest docker/README.md doc/superpowers`.
 - [ ] Commit with `test: add pjdfstest compose runner`.
 - [ ] Push `main` to `origin`.

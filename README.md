@@ -224,26 +224,23 @@ Available features:
 
 ## Documentation
 
-Start here:
+Start with the [documentation index](doc/README.md).
+
+Common entry points:
 
 - [Configuration](doc/configuration.md)
 - [Architecture](doc/arch.md)
-- [Metadata](doc/meta.md)
-- [Chunk layout](doc/chunk.md)
-- [Read path](doc/read-path.md)
-- [Write path](doc/write-path.md)
-- [Caching](doc/caching.md)
-- [Compaction and GC](doc/compaction-gc.md)
-- [Observability](doc/observability.md)
-- [SDK](doc/sdk.md)
-- [Control plane](docs/control-plane.md)
-- [BrewFS vs JuiceFS analysis](doc/brewfs-vs-juicefs-analysis.md)
+- [VFS internals](doc/vfs/README.md)
+- [Testing and CI guides](doc/README.md#testing-and-ci)
+- [Performance and JuiceFS comparison](doc/README.md#performance-and-juicefs-comparison)
+- [Control plane](doc/control-plane.md)
 
 ## Repository Map
 
 - `src/`: core filesystem, metadata, chunk, object backend, FUSE, and CLI code.
 - `examples/`: SDK, S3, persistence, and local mount examples.
-- `doc/` and `docs/`: design notes, operations guides, audits, and debugging notes.
+- `doc/`: canonical design notes, operations guides, audits, and debugging notes.
+- `docs/`: compatibility pointer for older documentation paths.
 - `docker/`: compose stacks, xfstests/LTP/perf runners, and runtime image tooling.
 - `tests/`: integration and native stress tests.
 - `operator/`: Kubernetes operator prototype and CRD documentation.
