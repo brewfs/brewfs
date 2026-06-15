@@ -382,6 +382,28 @@ the direct path is a required guard against page-cache masking.
 | `fio-randwrite` direct=1 | 153s, W 55.6 MiB/s | 148s, W 51.0 MiB/s | reject: active BW regression |
 | `fio-randrw` direct=1 | 173s, R 118.5 / W 53.3 MiB/s | 154s, R 126.9 / W 56.8 MiB/s | direct mixed improved but not enough to offset seqwrite |
 
+Writeback upload concurrency 8 check:
+
+```bash
+BREWFS_WRITEBACK_UPLOAD_CONCURRENCY=8 PERF_LOG_TO_CONSOLE=false \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781517044-23657`.
+
+The candidate raised the writeback upload worker count from the profile default
+4 to 8. It reduced sequential-write wall time slightly but increased S3 PUT
+latency and hurt mixed read/write tail latency, which points to RustFS/S3-side
+queueing rather than an underfilled upload semaphore.
+
+| Workload | Focused baseline | Upload concurrency 8 | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 147s, W 71.7 MiB/s, PUT avg 38.6ms | 139s, W 69.9 MiB/s, PUT avg 85.0ms | reject: lower BW and higher PUT latency |
+| `fio-randwrite` | 138s, W 96.5 MiB/s, PUT avg 24.0ms | 139s, W 126.8 MiB/s, PUT avg 48.4ms | reject: wall neutral and PUT latency doubled |
+| `fio-randrw` | 161s, R 221.3 / W 99.4 MiB/s, R p99 59.0ms | 163s, R 221.4 / W 99.1 MiB/s, R p99 121.1ms | reject: wall and read tail regression |
+
 Uncompressed aligned vectored PUT fast-path check:
 
 ```bash
