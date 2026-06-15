@@ -260,7 +260,39 @@ Metadata comparison from `metaperf`:
 | `readdir` | 62898 ops/s | 91787 ops/s | 0.69x |
 | `rename` | 1894 ops/s | 2676 ops/s | 0.71x |
 
-Latest rejected tuning check:
+Latest rejected tuning checks:
+
+Focused writeback slice-threshold check:
+
+```bash
+PERF_FIO_RUNTIME=30 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+
+PERF_FIO_RUNTIME=30 BREWFS_WRITEBACK_MAX_SLICES_THRESHOLD=2000 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+Artifacts:
+
+- Default focused baseline:
+  `docker/compose-xfstests/artifacts/perf-run-1781484237-25679`
+- Threshold override:
+  `docker/compose-xfstests/artifacts/perf-run-1781483558-2840`
+
+The threshold override is not adopted. It did not improve the close/flush tail,
+and the detailed stats still showed mostly cached partial-tail uploads.
+
+| Workload | Default focused baseline | Threshold 2000 | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 142s, W 336.2 MiB/s | 141s, W 307.0 MiB/s | reject: no wall gain, lower active BW |
+| `fio-randwrite` | 129s, W 125.5 MiB/s | 131s, W 163.3 MiB/s | reject: wall regression |
+| `fio-randrw` | 158s, R 192.6 / W 86.4 MiB/s | 162s, R 228.1 / W 102.4 MiB/s | reject: wall regression |
+
+Compression check:
 
 ```bash
 BREWFS_COMPRESSION=none \
