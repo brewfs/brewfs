@@ -275,6 +275,35 @@ Latest accepted BrewFS tuning:
 
 Latest rejected tuning checks:
 
+Uncompressed aligned vectored PUT fast-path check:
+
+```bash
+BREWFS_COMPRESSION=none PERF_FIO_RUNTIME=30 PERF_LOG_TO_CONSOLE=false \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+Artifacts:
+
+- Focused candidate run:
+  `docker/compose-xfstests/artifacts/perf-run-1781497160-25385`
+- Focused default comparison:
+  `docker/compose-xfstests/artifacts/perf-run-1781484237-25679`
+
+The candidate tested a narrow object-store write optimization for the
+`compression=none` comparison profile: aligned `write_fresh_vectored` calls
+kept caller `Bytes` chunks for `put_object_vectored` instead of coalescing them
+before upload. Targeted tests passed, but perf showed the close/flush tail is
+still dominated by dirty-slice staging and metadata commit volume rather than
+this upload-side copy. The code change was reverted.
+
+| Workload | Default focused baseline | `compression=none` vectored PUT fast path | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 142s, W 336.2 MiB/s | 142s, W 294.8 MiB/s | reject: no wall gain and lower active BW |
+| `fio-randwrite` | 129s, W 125.5 MiB/s | 135s, W 93.8 MiB/s | reject: wall and active BW regression |
+| `fio-randrw` | 158s, R 192.6 / W 86.4 MiB/s | 180s, R 155.8 / W 69.8 MiB/s | reject: wall and active BW regression |
+
 Cached writable stream-upload deferral check:
 
 ```bash
