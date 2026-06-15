@@ -368,6 +368,27 @@ passed, but the focused perf counters still averaged about one full
 to 206.6ms versus 33.8ms in the accepted full baseline. The change was rejected
 and reverted; the remaining bottleneck is not the pre-await lost-wake window.
 
+Range background prefetch disabled check:
+
+```bash
+BREWFS_RANGE_BACKGROUND_PREFETCH=false PERF_LOG_TO_CONSOLE=false \
+  CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqread fio-randread fio-randrw"
+```
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781544324-26500`.
+
+The focused run passed with `fio-seqread`/`fio-randread`/`fio-randrw` at
+60s/60s/158s and active bandwidth of 1.76 GiB/s, 853.3 MiB/s, and
+R 323.7 / W 144.7 MiB/s. It is not adopted because the profile's stats showed
+`range=0` and `bg_prefetch=0` for all three workloads, so this setting was not
+on the hot path under the current `compression=lz4` throughput profile.
+`fio-randrw` write p99 also regressed to 137.4ms. The read gap should be
+investigated in the block-cache hit path and FUSE/read scheduling, not by
+toggling range-triggered full-block prefetch in this profile.
+
 Cached sub-block 4s idle-grace check:
 
 ```bash
