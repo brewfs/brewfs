@@ -260,6 +260,24 @@ Metadata comparison from `metaperf`:
 | `readdir` | 62898 ops/s | 91787 ops/s | 0.69x |
 | `rename` | 1894 ops/s | 2676 ops/s | 0.71x |
 
+Latest rejected tuning check:
+
+```bash
+BREWFS_COMPRESSION=none \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 --writeback-throughput-profile
+```
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781481687-25288`.
+The full toolset passed, but this profile is not adopted because it regressed
+write wall time in the default comparison set.
+
+| Workload | Accepted BrewFS | `compression=none` | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 153s, W 72.7 MiB/s | 152s, W 70.4 MiB/s | neutral |
+| `fio-randwrite` | 150s, W 95.1 MiB/s | 159s, W 105.4 MiB/s | reject: wall regression |
+| `fio-randrw` | 177s, R 171.5 / W 76.9 MiB/s | 179s, R 184.5 / W 82.8 MiB/s | reject: wall regression |
+| `metaperf` | 351s | 346s | small metadata gain only |
+
 Interpretation:
 
 - This run used fio buffered IO (`direct=0`), so read bandwidth is a
