@@ -346,6 +346,28 @@ fell to R 267.2 / W 119.6 MiB/s. The change was rejected and reverted because
 it traded polling pressure and active mixed bandwidth for a modest wall-time
 gain.
 
+Registered Notify recheck check:
+
+```bash
+PERF_LOG_TO_CONSOLE=false CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781543324-24067`.
+
+The candidate registered the `Notify` waiter before rechecking whether a
+writeback slice could commit-before-upload, targeting a possible lost wake-up
+between the stage-ready check and the 100ms wait. The targeted
+commit-before-upload test and `cargo test -p brewfs --bin brewfs writeback`
+passed, but the focused perf counters still averaged about one full
+`COMMIT_WAIT_SLICE` per wait: `fio-seqwrite` 20746 waits / 2084.2s,
+`fio-randwrite` 39712 waits / 3982.7s, and `fio-randrw` 39924 waits /
+3998.5s. Wall time moved to 140s/131s/155s, but `fio-randwrite` p99 regressed
+to 206.6ms versus 33.8ms in the accepted full baseline. The change was rejected
+and reverted; the remaining bottleneck is not the pre-await lost-wake window.
+
 Cached sub-block 4s idle-grace check:
 
 ```bash
