@@ -275,6 +275,36 @@ Latest accepted BrewFS tuning:
 
 Latest rejected tuning checks:
 
+Cached sub-block 5s coalescing-window check:
+
+```bash
+PERF_FIO_RUNTIME=30 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+
+bash docker/compose-xfstests/run_redis_perf.sh --s3 --writeback-throughput-profile
+```
+
+Artifacts:
+
+- Focused candidate run:
+  `docker/compose-xfstests/artifacts/perf-run-1781490684-1968`
+- Full candidate run:
+  `docker/compose-xfstests/artifacts/perf-run-1781491348-13630`
+
+The candidate aligned cached sub-block auto-freeze timing with the 5s background
+flush duration so FUSE writeback-cache fragments would be coalesced longer. It
+was not adopted: the focused write run improved, but the full default run
+regressed the pure write wall-time checks. The code change was reverted.
+
+| Workload | Accepted BrewFS | 5s cached-sub-block full run | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 140s, W 73.2 MiB/s | 142s, W 82.0 MiB/s | reject: wall regression despite active BW gain |
+| `fio-randwrite` | 153s, W 79.6 MiB/s | 159s, W 81.5 MiB/s | reject: wall regression |
+| `fio-randrw` | 173s, R 170.2 / W 76.4 MiB/s | 161s, R 236.4 / W 105.9 MiB/s | reject: mixed gain does not offset pure-write regression |
+| `metaperf` | 353s | 326s | metadata gain only |
+
 Dirty slice file-handle cache check:
 
 ```bash
