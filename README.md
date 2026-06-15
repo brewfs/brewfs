@@ -495,6 +495,35 @@ and the detailed stats still showed mostly cached partial-tail uploads.
 | `fio-randwrite` | 129s, W 125.5 MiB/s | 131s, W 163.3 MiB/s | reject: wall regression |
 | `fio-randrw` | 158s, R 192.6 / W 86.4 MiB/s | 162s, R 228.1 / W 102.4 MiB/s | reject: wall regression |
 
+Cached too-many grace check:
+
+```bash
+PERF_LOG_TO_CONSOLE=false \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw metaperf"
+```
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781502023-376`.
+
+The candidate extended cached-only sub-block `too_many` grace from `1s` to the
+existing `3s` cached idle grace. It was not adopted: sequential write improved,
+but random write and mixed read/write shifted `too_many` tails into idle tails,
+increased object/slice amplification, and metaperf regressed sharply. The code
+change was reverted.
+
+| Workload | Accepted BrewFS | Cached too-many grace focused run | Decision |
+| --- | ---: | ---: | --- |
+| `fio-seqwrite` | 150s, W 71.9 MiB/s | 145s, W 77.9 MiB/s | reject: seqwrite gain only |
+| `fio-randwrite` | 142s, W 103.3 MiB/s, write p99 41.7ms | 137s, W 107.0 MiB/s, write p99 208.7ms | reject: write tail and PUT/slice amplification regression |
+| `fio-randrw` | 166s, R 164.8 / W 73.9 MiB/s | 166s, R 204.3 / W 91.5 MiB/s | reject: no wall gain; PUT and partial-tail counts rose |
+| `metaperf` | 371s | 450s | reject: metadata wall regression |
+
+The detailed counters show why the timing-only approach is unsafe: `fio-randrw`
+reduced `too_many` partial tails from `5572` to `526`, but idle tails rose from
+`10530` to `16059`; `fio-randwrite` partial tails rose from `11451` to `14313`;
+and `metaperf` explicit partial tails rose from `27000` to `28600`.
+
 Compression check:
 
 ```bash
