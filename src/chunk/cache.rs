@@ -507,7 +507,7 @@ impl DiskStorage {
         );
     }
 
-    pub async fn load(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+    pub async fn load(&self, key: &str) -> anyhow::Result<bytes::Bytes> {
         let filename = Self::key_to_filename(key);
         let filepath = self.base_dir.join(filename);
 
@@ -523,7 +523,7 @@ impl DiskStorage {
         };
 
         // Decode with CRC32C verification (handles legacy unencoded files too)
-        match super::cache_integrity::decode(&raw) {
+        match super::cache_integrity::decode_bytes(raw) {
             Some(data) => {
                 // Touch atime so LRU eviction keeps hot data longer.
                 // Uses futimens with UTIME_NOW on atime only (mtime unchanged).
@@ -565,7 +565,7 @@ impl DiskStorage {
         }
     }
 
-    pub async fn load_with_health(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    pub async fn load_with_health(&self, key: &str) -> anyhow::Result<Option<bytes::Bytes>> {
         if self.health.is_bypassed() {
             return Ok(None);
         }
@@ -1700,13 +1700,13 @@ impl ChunksCache {
 
         if self.policy.should_promote(key.clone()).await {
             debug!("Promoting key to hot cache: {}", key);
-            let b = bytes::Bytes::from(value.clone());
+            let b = value.clone();
             self.hot_bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
             self.hot_cache.insert(key.clone(), b).await;
         }
 
         self.update_utilization_metrics();
-        Some(bytes::Bytes::from(value))
+        Some(value)
     }
 
     /// Update cache utilization metrics (using byte-based utilization)
