@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
+use dashmap::DashSet;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -69,6 +70,7 @@ pub struct FsWriteBackCache {
     root: PathBuf,
     seq: AtomicU64,
     sync_on_persist: bool,
+    created_dirs: DashSet<PathBuf>,
 }
 
 impl FsWriteBackCache {
@@ -81,6 +83,7 @@ impl FsWriteBackCache {
             root,
             seq: AtomicU64::new(0),
             sync_on_persist,
+            created_dirs: DashSet::new(),
         }
     }
 
@@ -95,7 +98,7 @@ impl FsWriteBackCache {
     ) -> anyhow::Result<()> {
         let meta_path = key.meta_path(&self.root);
         if let Some(parent) = meta_path.parent() {
-            fs::create_dir_all(parent).await?;
+            self.ensure_dir(parent).await?;
         }
         let tmp_path = meta_path.with_extension("meta.tmp");
         let json = serde_json::to_vec(record)?;
@@ -104,10 +107,24 @@ impl FsWriteBackCache {
         Ok(())
     }
 
+    async fn ensure_dir(&self, dir: &Path) -> anyhow::Result<()> {
+        if self.created_dirs.contains(dir) {
+            return Ok(());
+        }
+        fs::create_dir_all(dir).await?;
+        self.created_dirs.insert(dir.to_path_buf());
+        Ok(())
+    }
+
     async fn read_meta(&self, meta_path: &Path) -> anyhow::Result<DirtySliceRecord> {
         let data = fs::read(meta_path).await?;
         let record: DirtySliceRecord = serde_json::from_slice(&data)?;
         Ok(record)
+    }
+
+    #[cfg(test)]
+    fn created_dir_count(&self) -> usize {
+        self.created_dirs.len()
     }
 }
 
@@ -120,7 +137,7 @@ impl WriteBackCache for FsWriteBackCache {
         slice_offset: u64,
     ) -> anyhow::Result<PathBuf> {
         let dir = key.dir_path(&self.root);
-        fs::create_dir_all(&dir).await?;
+        self.ensure_dir(&dir).await?;
 
         let slice_path = key.slice_path(&self.root);
 
@@ -399,6 +416,37 @@ mod tests {
         let records = cache.recover().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].length, 11);
+    }
+
+    #[tokio::test]
+    async fn persist_reuses_created_dirty_directory_for_slice_and_meta() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        let key = DirtySliceKey {
+            ino: 8,
+            chunk_id: 12,
+            local_seq: 31,
+            epoch: 0,
+        };
+        let next_key = DirtySliceKey {
+            local_seq: 32,
+            ..key
+        };
+
+        cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"first")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(key, 0, 5).await.unwrap();
+        assert_eq!(cache.created_dir_count(), 1);
+
+        cache
+            .persist_slice_data(next_key, vec![Bytes::from_static(b"second")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(next_key, 0, 6).await.unwrap();
+
+        assert_eq!(cache.created_dir_count(), 1);
     }
 
     #[tokio::test]
