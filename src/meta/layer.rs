@@ -115,6 +115,7 @@ pub trait MetaLayer: Send + Sync {
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError>;
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_node(
         &self,
         parent: i64,

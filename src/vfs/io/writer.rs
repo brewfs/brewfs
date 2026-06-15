@@ -3422,6 +3422,20 @@ where
 
                 // if there are too many slices, it should flush "a few more" to reduce memory usage.
                 let too_many = total_slices > MAX_SLICES_THRESHOLD;
+                let too_many_excess = total_slices.saturating_sub(MAX_SLICES_THRESHOLD);
+                let block_sized_backlog = if too_many {
+                    chunk_slices
+                        .iter()
+                        .flat_map(|slices| slices.iter())
+                        .filter(|slice| {
+                            let guard = slice.lock();
+                            guard.data.len() >= guard.data.block_size() as u64
+                        })
+                        .count()
+                } else {
+                    0
+                };
+                let too_many_has_block_sized_relief = block_sized_backlog >= too_many_excess.max(1);
                 let force_pressure_flush = shared
                     .memory_budget
                     .as_ref()
@@ -3495,7 +3509,13 @@ where
                         }
                         let cached_too_many_too_young =
                             cached_sub_block && age <= CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE;
-                        if trigger.is_none() && too_many && !cached_too_many_too_young {
+                        let cached_too_many_has_block_relief =
+                            cached_sub_block && too_many_has_block_sized_relief;
+                        if trigger.is_none()
+                            && too_many
+                            && !cached_too_many_too_young
+                            && !cached_too_many_has_block_relief
+                        {
                             // idx <= half represents older slices.
                             if chunk_idx % 2 == pick_bit && idx <= half {
                                 trigger = Some(AutoFreezeTrigger::TooMany);
@@ -5844,6 +5864,66 @@ mod tests {
         assert_eq!(
             breakdown.upload_partial_tail_auto_too_many_ops, 0,
             "tooMany should not force cached sub-block tails during the coalescing grace"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_auto_flush_too_many_prefers_block_sized_backlog_over_cached_sub_block_tails() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_too_many_block_relief.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        let block_sized_slices = MAX_SLICES_THRESHOLD + 32;
+        for idx in 0..block_sized_slices as u64 {
+            file_writer
+                .write_at_cached(
+                    idx * layout.block_size as u64 * 2,
+                    &[idx as u8; 4096],
+                    idx + 1,
+                )
+                .await
+                .unwrap();
+        }
+
+        let cached_tail_base = block_sized_slices as u64 * layout.block_size as u64 * 2;
+        for idx in 0..32u64 {
+            file_writer
+                .write_at_cached(
+                    cached_tail_base + idx * layout.block_size as u64 * 2,
+                    &[idx as u8; 1024],
+                    idx + 10_000,
+                )
+                .await
+                .unwrap();
+        }
+
+        sleep(Duration::from_millis(1500)).await;
+
+        let breakdown = writer.dirty_breakdown().await;
+        store.unblock();
+        assert!(
+            breakdown.live_slices > MAX_SLICES_THRESHOLD as u64,
+            "test setup should keep slice pressure above the tooMany threshold"
+        );
+        assert_eq!(
+            breakdown.upload_partial_tail_auto_too_many_ops, 0,
+            "tooMany should drain block-sized backlog before freezing cached sub-block tails"
         );
     }
 
