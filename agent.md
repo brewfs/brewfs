@@ -13,12 +13,16 @@ the local architecture.
 
 Current primary gaps from the latest Redis plus S3/RustFS comparison:
 
-- Sequential and random reads are close to JuiceFS.
-- Sequential write and random write still trail JuiceFS.
-- Mixed `randrw` active IO bandwidth can approach JuiceFS, but BrewFS still has
-  a much longer wall-time tail.
-- Metadata `stat` is close to JuiceFS; `create`, `open`, `readdir`, and
-  `rename` still need focused work.
+- Cold `bigread` and random reads still trail JuiceFS significantly; sequential
+  read is closer but not at parity.
+- Sequential write and random write active bandwidth still trail JuiceFS,
+  although random-write wall time can beat the noisy local JuiceFS run when
+  JuiceFS is slowed by disk-cache timeout and direct-upload fallback.
+- Mixed `randrw` active IO bandwidth can exceed the local JuiceFS run, but
+  BrewFS still has a much longer wall-time close/flush tail.
+- Metadata `stat` is at parity; `create`, `open`, `readdir`, and `rename` still
+  need focused work, and total `metaperf` wall time remains high when fixed-time
+  subtests create more small-file writeback cleanup.
 
 ## Reference Code
 
@@ -69,15 +73,26 @@ evidence decides.
 
 ## Required Perf Coverage
 
-Use direct fio IO by default so large reads and writes are less distorted by the
-kernel page cache:
+Use the default throughput profile for the final local comparison, because it
+matches the README tables and the checked-in compose defaults:
 
 ```bash
-PERF_FIO_DIRECT=1 PERF_LOG_TO_CONSOLE=false \
+PERF_LOG_TO_CONSOLE=false \
   bash docker/compose-xfstests/run_redis_perf.sh --s3 --writeback-throughput-profile
 
-PERF_FIO_DIRECT=1 PERF_LOG_TO_CONSOLE=false \
+PERF_LOG_TO_CONSOLE=false \
   bash docker/compose-xfstests/run_juicefs_perf.sh --writeback-throughput-profile
+```
+
+For read-cache, writeback, or page-cache-sensitive changes, also run a
+`PERF_FIO_DIRECT=1` guard on the touched fio workloads so Linux page cache and
+FUSE writeback-cache effects do not hide regressions:
+
+```bash
+PERF_FIO_DIRECT=1 PERF_FIO_RUNTIME=30 PERF_LOG_TO_CONSOLE=false \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
 ```
 
 The default perf run must include these scenarios unless the user explicitly

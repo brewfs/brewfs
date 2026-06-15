@@ -179,6 +179,7 @@ struct UploadPlan {
     data: Vec<(usize, Vec<Bytes>)>,
     slice_id: Option<u64>,
     uploaded: u64,
+    write_origin: WriteOriginKind,
 }
 
 async fn join_best_effort_persist<P, U, T>(
@@ -196,6 +197,26 @@ where
         }
         None => (None, upload.await),
     }
+}
+
+async fn join_writeback_stage_then_upload<P, U, T>(persist: P, upload: U) -> (anyhow::Result<()>, T)
+where
+    P: Future<Output = anyhow::Result<()>>,
+    U: Future<Output = T>,
+{
+    let persist_result = persist.await;
+    let upload_result = upload.await;
+    (persist_result, upload_result)
+}
+
+fn should_stage_first_writeback_upload(
+    priority: UploadPriority,
+    has_persist: bool,
+    write_origin: WriteOriginKind,
+) -> bool {
+    has_persist
+        && matches!(priority, UploadPriority::Writeback)
+        && matches!(write_origin, WriteOriginKind::CachedOnly)
 }
 
 #[derive(Default, Copy, Clone, Debug)]
@@ -836,14 +857,14 @@ where
                 && end as u64 * block_size >= s.data.len();
             let partial_tail_reason = s.freeze_reason;
             let partial_tail_auto_trigger = s.auto_freeze_trigger;
-            let partial_tail_origin = s.write_origin_kind();
+            let write_origin = s.write_origin_kind();
             self.shared.recent_pending_upload.record_upload_batch(
                 data_len,
                 (end - start) as u64,
                 partial_tail,
                 partial_tail_reason,
                 partial_tail_auto_trigger,
-                partial_tail_origin,
+                write_origin,
             );
 
             Ok(Some(UploadPlan {
@@ -851,6 +872,7 @@ where
                 data,
                 slice_id: s.slice_id,
                 uploaded: batch_offset,
+                write_origin,
             }))
         })
     }
@@ -2536,6 +2558,7 @@ where
                         data,
                         slice_id: _,
                         uploaded: batch_offset,
+                        write_origin,
                     } = plan;
 
                     let mut all_chunks = Vec::new();
@@ -2654,8 +2677,19 @@ where
                             .await
                         };
 
-                        let (persist_result, result) =
-                            join_best_effort_persist(persist, upload).await;
+                        let stage_first_upload = should_stage_first_writeback_upload(
+                            upload_priority,
+                            persist.is_some(),
+                            write_origin,
+                        );
+                        let (persist_result, result) = if stage_first_upload {
+                            let persist = persist.expect("stage-first upload requires persist");
+                            let (persist_result, result) =
+                                join_writeback_stage_then_upload(persist, upload).await;
+                            (Some(persist_result), result)
+                        } else {
+                            join_best_effort_persist(persist, upload).await
+                        };
                         if let Some(Err(e)) = persist_result {
                             warn!(
                                 ino, chunk_id, slice_id, error = ?e,
@@ -6305,6 +6339,73 @@ mod tests {
         );
         assert!(persist_result.unwrap().is_ok());
         assert_eq!(upload_result.unwrap(), 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_writeback_stage_completes_before_upload_starts() {
+        let stage_done = Arc::new(AtomicBool::new(false));
+        let upload_saw_stage_done = Arc::new(AtomicBool::new(false));
+
+        let stage_done_for_persist = stage_done.clone();
+        let stage_done_for_upload = stage_done.clone();
+        let upload_saw_stage_done_for_upload = upload_saw_stage_done.clone();
+
+        let start = Instant::now();
+        let (persist_result, upload_result) = join_writeback_stage_then_upload(
+            async move {
+                sleep(Duration::from_millis(120)).await;
+                stage_done_for_persist.store(true, Ordering::SeqCst);
+                anyhow::Ok(())
+            },
+            async move {
+                upload_saw_stage_done_for_upload.store(
+                    stage_done_for_upload.load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
+                Ok::<usize, anyhow::Error>(7usize)
+            },
+        )
+        .await;
+
+        assert!(
+            start.elapsed() >= Duration::from_millis(120),
+            "writeback stage-first helper should wait for staging before upload"
+        );
+        assert!(persist_result.is_ok());
+        assert_eq!(upload_result.unwrap(), 7);
+        assert!(
+            upload_saw_stage_done.load(Ordering::SeqCst),
+            "upload must not start before writeback stage is complete"
+        );
+    }
+
+    #[test]
+    fn test_stage_first_upload_is_limited_to_cached_writeback() {
+        assert!(should_stage_first_writeback_upload(
+            UploadPriority::Writeback,
+            true,
+            WriteOriginKind::CachedOnly
+        ));
+        assert!(!should_stage_first_writeback_upload(
+            UploadPriority::Writeback,
+            true,
+            WriteOriginKind::NormalOnly
+        ));
+        assert!(!should_stage_first_writeback_upload(
+            UploadPriority::Writeback,
+            true,
+            WriteOriginKind::Mixed
+        ));
+        assert!(!should_stage_first_writeback_upload(
+            UploadPriority::Foreground,
+            true,
+            WriteOriginKind::CachedOnly
+        ));
+        assert!(!should_stage_first_writeback_upload(
+            UploadPriority::Writeback,
+            false,
+            WriteOriginKind::CachedOnly
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
