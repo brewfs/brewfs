@@ -4,6 +4,8 @@ use crate::chunk::BlockStore;
 use crate::chunk::layout::ChunkLayout;
 use crate::chunk::store::InMemoryBlockStore;
 use crate::meta::MetaLayer;
+use crate::meta::client::{MetaClientOptions, OpenFileCacheConfig};
+use crate::meta::config::MetaClientConfig;
 use crate::meta::factory::create_meta_store_from_url;
 use crate::posix::NAME_MAX;
 use crate::vfs::fs::VFS;
@@ -531,6 +533,57 @@ mod basic_tests {
             fs.open_fresh_ino(999_999, true, false, false).await,
             Err(crate::vfs::error::VfsError::NotFound { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_open_with_cached_attr_records_open_cache() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let config = MetaClientConfig {
+            options: MetaClientOptions {
+                open_file_cache: OpenFileCacheConfig {
+                    ttl: Duration::from_secs(60),
+                    capacity: 128,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let fs = VFS::with_meta_client_config(layout, store, meta_store, config)
+            .await
+            .unwrap();
+        let root = fs.root_ino();
+        let file_ino = fs
+            .create_file_at(root, "cached-open-file", false)
+            .await
+            .unwrap();
+        let attr = fs.stat_ino(file_ino).await.unwrap();
+
+        let write_fh = fs
+            .open_with_cached_attr(file_ino, attr, false, true, false)
+            .await
+            .unwrap();
+        fs.close(write_fh).await.unwrap();
+
+        let before = fs.meta_layer().metrics().snapshot();
+        let read_fh = fs
+            .open_fresh_ino(file_ino, true, false, false)
+            .await
+            .unwrap();
+        fs.close(read_fh).await.unwrap();
+        let after = fs.meta_layer().metrics().snapshot();
+
+        assert_eq!(
+            after.open_fresh_stat, before.open_fresh_stat,
+            "cached-attr opens should warm the open-file cache for the next open"
+        );
+        assert_eq!(
+            after.open_file_cache_hit,
+            before.open_file_cache_hit + 1,
+            "the next fresh open should reuse the cached attr"
+        );
     }
 
     #[tokio::test]

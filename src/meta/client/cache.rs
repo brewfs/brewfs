@@ -513,6 +513,16 @@ impl OpenFileCache {
         }
     }
 
+    pub(crate) async fn update_attr_if_present(&self, ino: i64, attr: FileAttr) -> bool {
+        let Some(entry) = self.ttl_manager.get(&ino).await else {
+            return false;
+        };
+
+        *entry.attr.write().await = attr;
+        *entry.last_check.write().await = Instant::now();
+        true
+    }
+
     pub(crate) async fn invalidate_inode(&self, ino: i64) {
         self.ttl_manager.invalidate(&ino).await;
         self.entries.remove(&ino);

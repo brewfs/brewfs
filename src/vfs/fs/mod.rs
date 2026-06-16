@@ -2825,8 +2825,12 @@ where
         write: bool,
         append: bool,
     ) -> Result<u64, VfsError> {
-        self.open_with_attr_refresh(ino, attr, read, write, append, false)
-            .await
+        let fh = self
+            .open_with_attr_refresh(ino, attr.clone(), read, write, append, false)
+            .await?;
+        self.meta_record_open(ino, attr, read, write, append)
+            .await?;
+        Ok(fh)
     }
 
     pub(crate) async fn open_fresh_ino(

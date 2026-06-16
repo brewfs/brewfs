@@ -932,6 +932,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         (read || write) && !append
     }
 
+    fn timestamp_only_setattr(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
+        if req.mode.is_some()
+            || req.uid.is_some()
+            || req.gid.is_some()
+            || req.size.is_some()
+            || req.flags.is_some()
+        {
+            return false;
+        }
+
+        let timestamp_request = req.atime.is_some() || req.mtime.is_some() || req.ctime.is_some();
+        let timestamp_flags = SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW;
+        let non_timestamp_flags =
+            SetAttrFlags::from_bits_retain(flags.bits() & !timestamp_flags.bits());
+
+        (timestamp_request || flags.intersects(timestamp_flags)) && non_timestamp_flags.is_empty()
+    }
+
     async fn invalidate_open_file_cache_inode(&self, inode: i64) {
         if let Some(cache) = &self.open_file_cache {
             cache.invalidate_inode(inode).await;
@@ -2748,11 +2766,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     ) -> Result<FileAttr, MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let timestamp_only = Self::timestamp_only_setattr(req, &flags);
         let attr = self.store.set_attr(inode, req, flags).await?;
         self.inode_cache
             .insert_node(inode, attr.clone(), None)
             .await;
-        self.invalidate_open_file_cache_inode(inode).await;
+        if timestamp_only {
+            if let Some(cache) = &self.open_file_cache {
+                cache.update_attr_if_present(inode, attr.clone()).await;
+            }
+        } else {
+            self.invalidate_open_file_cache_inode(inode).await;
+        }
         Ok(attr)
     }
 
@@ -3411,6 +3436,62 @@ mod tests {
         assert_eq!(metrics.open_fresh_stat, 2);
         assert_eq!(metrics.open_file_cache_hit, 2);
         assert_eq!(metrics.open_file_cache_miss, 2);
+    }
+
+    #[tokio::test]
+    async fn test_open_file_cache_survives_timestamp_only_setattr() {
+        let options = MetaClientOptions {
+            open_file_cache: OpenFileCacheConfig {
+                ttl: Duration::from_secs(60),
+                capacity: 128,
+            },
+            ..Default::default()
+        };
+        let client = create_test_client_with_options(options).await;
+        let ino = client
+            .create_file(1, "open-cache-timestamp.txt".to_string())
+            .await
+            .unwrap();
+
+        let first = client
+            .stat_for_open(ino, true, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .record_open(ino, first.clone(), true, false, false)
+            .await
+            .unwrap();
+        client.record_close(ino).await.unwrap();
+
+        client
+            .set_attr(
+                ino,
+                &SetAttrRequest {
+                    mtime: Some(first.mtime + 1),
+                    ctime: Some(first.ctime + 1),
+                    ..Default::default()
+                },
+                SetAttrFlags::empty(),
+            )
+            .await
+            .unwrap();
+
+        let cached = client
+            .stat_for_open(ino, true, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.mtime, first.mtime + 1);
+        assert_eq!(cached.ctime, first.ctime + 1);
+
+        let metrics = client.metrics().snapshot();
+        assert_eq!(
+            metrics.open_fresh_stat, 1,
+            "timestamp-only setattr should refresh the open cache instead of forcing a fresh open stat"
+        );
+        assert_eq!(metrics.open_file_cache_hit, 1);
+        assert_eq!(metrics.open_file_cache_miss, 1);
     }
 
     #[tokio::test]

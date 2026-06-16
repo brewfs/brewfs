@@ -273,6 +273,55 @@ BrewFS total metadata wall remains far above JuiceFS despite matching `stat`
 throughput; `open`, `create`, `readdir`, and `rename` remain metadata-cache and
 Redis-roundtrip targets.
 
+Additional 2026-06-16 short matrix:
+
+The full default profile can spend a long time in writeback tail on this local
+RustFS setup, so the following same-cycle comparison keeps the same profile
+shape but shortens fio work to make all core scenarios repeatable in one run.
+Both filesystems used fio `direct=0`, `fio-big*` size `64m`,
+`fio-seq*`/`fio-rand*`/`fio-randrw` size `128m`, 5s time-based windows for
+seq/random workloads, `metaperf -t 8`, S3 writeback profiles, open-cache
+`1s/65536`, and cold-read prefill drain/remount/cache-clear.
+
+Artifacts:
+
+- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781581281-3995`
+- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781581880-23048`
+
+All selected tools passed: `fio-bigwrite fio-bigread fio-seqread fio-seqwrite
+fio-randread fio-randwrite fio-randrw metaperf`. A preceding default BrewFS run
+was stopped after the writeback tail grew too large for an interactive
+iteration; its incomplete artifact is not used for the table.
+
+| Workload | BrewFS wall | JuiceFS wall | BrewFS active BW | JuiceFS active BW | BrewFS/JuiceFS BW |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fio-bigwrite` | 1s | 1s | W 1.01 GiB/s | W 3.21 GiB/s | W 0.32x |
+| `fio-bigread` | 1s | <1s | R 535.0 MiB/s | R 2.31 GiB/s | R 0.23x |
+| `fio-seqread` | 6s | 6s | R 1.74 GiB/s | R 2.52 GiB/s | R 0.69x |
+| `fio-seqwrite` | 49s | 25s | W 1.42 GiB/s | W 1.08 GiB/s | W 1.31x |
+| `fio-randread` | 6s | 6s | R 590.7 MiB/s | R 3.12 GiB/s | R 0.18x |
+| `fio-randwrite` | 128s | 71s | W 1.35 GiB/s | W 2.27 GiB/s | W 0.59x |
+| `fio-randrw` | 29s | 6s | R 995.8 / W 454.8 MiB/s | R 1.12 GiB/s / W 525.1 MiB/s | R 0.87x / W 0.87x |
+
+Short-matrix metadata comparison:
+
+| Operation | BrewFS | JuiceFS | BrewFS/JuiceFS |
+| --- | ---: | ---: | ---: |
+| `create` | 3479.1 ops/s | 1334.1 ops/s | 2.61x |
+| `open` | 10099.8 ops/s | 23473.6 ops/s | 0.43x |
+| `stat` | 1022759.0 ops/s | 1031216.6 ops/s | 0.99x |
+| `readdir` | 107389.7 ops/s | 91777.6 ops/s | 1.17x |
+| `rename` | 1929.1 ops/s | 2681.6 ops/s | 0.72x |
+
+This run confirms the current shape of the gap: BrewFS can match or exceed
+JuiceFS on active sequential write and `readdir`, but it still trails on cold
+and random reads, random write active bandwidth, and write completion wall time.
+`fio-seqwrite`, `fio-randwrite`, and `fio-randrw` show high active throughput
+but large close/flush tails, so writeback completion remains a primary
+bottleneck. The new open-cache warm/refresh change reduced metaperf open
+fresh-stat misses, but `open` throughput stayed around `10.1k ops/s`; the next
+open-performance target is therefore outside backend fresh stat avoidance.
+
 Focused metadata diagnostics:
 
 - Zero-byte `metaperf` isolates metadata from 4KiB small-file writeback. The
@@ -309,6 +358,19 @@ permission checks again.
 
 Latest accepted BrewFS tuning:
 
+- `src/vfs/fs/mod.rs` now records open-file-cache state for opens that already
+  have a trusted freshly-created attribute, and `src/meta/client/mod.rs`
+  refreshes an existing open-file-cache entry for timestamp-only `setattr`
+  instead of invalidating it. The TDD guards cover both paths and the existing
+  size-mutation invalidation test still passes. In short-matrix `metaperf`
+  `docker/compose-xfstests/artifacts/perf-run-1781581281-3995`, open-cache
+  hit ratio improved from the previous focused run's roughly 74.7% to roughly
+  96.1% (`119000` hits and `4800` misses in the metaperf window), reducing
+  Redis fresh-stat pressure. This is accepted as backend-load reduction, not as
+  an `open` throughput fix: `open` stayed essentially flat at `10099.8 ops/s`
+  versus `10060.0 ops/s` in
+  `docker/compose-xfstests/artifacts/perf-run-1781579177-18631`, while JuiceFS
+  remains at about `23.5k ops/s`.
 - `src/vfs/handles.rs` now returns up to 256 directory entries per
   readdir/readdirplus batch instead of 50. This stays comfortably below common
   FUSE reply-buffer limits while cutting userspace pagination for metaperf's
