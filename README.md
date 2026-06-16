@@ -443,6 +443,49 @@ memory growth during metaperf. Write-heavy wall time still needs separate
 work: BrewFS spends more time inside the fio tool, while this JuiceFS run spent
 large tails in post-write drain and emitted local cache write timeout warnings.
 
+Demand-read SliceState bypass validation, 2026-06-16:
+
+This focused check removes the per-read `FileReader` `SliceState` reservation
+and completion path for committed demand reads. Demand data still flows through
+`DataFetcher` and the per-handle chunk slice metadata cache; writer commits
+still invalidate that metadata cache before subsequent reads. The hypothesis was
+that cached random reads were paying extra lock/list/notification overhead even
+after the object blocks were already served from BrewFS's block cache.
+
+Artifacts:
+
+- BrewFS baseline before the bypass:
+  `docker/compose-xfstests/artifacts/perf-run-1781613121-5053`
+- BrewFS bypass repeat A:
+  `docker/compose-xfstests/artifacts/perf-run-1781633772-21427`
+- BrewFS bypass repeat B:
+  `docker/compose-xfstests/artifacts/perf-run-1781634035-24683`
+- Fresh JuiceFS same-parameter reference:
+  `docker/compose-xfstests/artifacts/juicefs-perf-run-1781634158-8289`
+
+All runs used the same focused command shape as the read-path checks above:
+fio `direct=0`, `fio-bigread` size `64m`,
+`fio-seqread`/`fio-randread`/`fio-randrw` size `128m`, 5s time-based windows
+for seq/random workloads, Redis metadata, RustFS S3, cold-read remount/cache
+clear, and writeback throughput profiles.
+
+| Workload | BrewFS baseline | BrewFS bypass A | BrewFS bypass B | Fresh JuiceFS | B/JuiceFS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fio-bigread` | R 1.24 GiB/s, p99 54.3ms | R 1.25 GiB/s, p99 54.8ms | R 1.21 GiB/s, p99 63.2ms | R 2.24 GiB/s, p99 46.4ms | R 0.54x |
+| `fio-seqread` | R 2.00 GiB/s, p99 2.7ms | R 2.16 GiB/s, p99 2.5ms | R 2.02 GiB/s, p99 4.5ms | R 2.37 GiB/s, p99 2.1ms | R 0.85x |
+| `fio-randread` | R 1.86 GiB/s, p99 24.3ms | R 1.88 GiB/s, p99 22.9ms | R 1.88 GiB/s, p99 24.0ms | R 3.11 GiB/s, p99 11.1ms | R 0.60x |
+| `fio-randrw` | R 982.1 / W 446.0 MiB/s, p99 R 38.5ms / W 9.2ms | R 982.7 / W 442.4 MiB/s, p99 R 45.9ms / W 59.0ms | R 932.7 / W 426.3 MiB/s, p99 R 41.7ms / W 9.0ms | R 898.6 / W 413.4 MiB/s, p99 R 204.5ms / W 15.1ms | R 1.04x / W 1.03x |
+
+Internal BrewFS counters show the intended hot-path effect on `fio-randread`:
+average FUSE read latency moved from `35.49us` to `32.84us` and `32.19us`
+across the two bypass runs, while `brewfs_read_range_gets_total` stayed `0`
+and block-cache hits stayed high. The accepted conclusion is narrow: removing
+demand `SliceState` reservations is a small cached-random-read improvement, not
+the main explanation for the remaining JuiceFS gap. Repeat A had a mixed-write
+p99 outlier, so future read-path changes should continue to include `randrw`
+guard runs. The next likely read bottlenecks are DataFetcher/cache-copy overhead
+inside each 128KiB FUSE read and kernel/FUSE request granularity.
+
 Focused metadata diagnostics:
 
 - Zero-byte `metaperf` isolates metadata from 4KiB small-file writeback. The

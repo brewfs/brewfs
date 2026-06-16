@@ -1,15 +1,14 @@
 // Read pipeline (high-level):
-// - FileReader::read_at splits a file read into chunk spans and prepares slices.
-// - prepare_slices ensures SliceState records exist for target ranges without
-//   issuing FileReader-owned prefetch I/O.
+// - FileReader::read_at splits a file read into chunk spans.
 // - read_chunk_span reads through BlockStore/DataFetcher so all data is served by
-//   the unified cache layer; SliceState is only updated as metadata.
+//   the unified cache layer; committed demand reads do not create FileReader
+//   SliceState reservations.
 // - Writer commit calls DataReader::invalidate(...) to mark slice metadata stale.
 
 use crate::chunk::reader::DataFetcher;
 use crate::chunk::{BlockStore, ChunkLayout};
 use crate::meta::MetaLayer;
-use crate::utils::{Intervals, NumCastExt};
+use crate::utils::NumCastExt;
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::chunk_id_for;
@@ -343,21 +342,6 @@ struct SliceState {
 }
 
 impl SliceState {
-    fn new(index: u64, range: (u64, u64), refs: u16) -> Self {
-        Self {
-            index,
-            range,
-            state: SliceStatus::New,
-            err: None,
-            notify: Arc::new(Notify::new()),
-            generation: 0,
-            refs,
-            queue_delay_ms: None,
-            fetch_ms: None,
-            last_access: Instant::now(),
-        }
-    }
-
     fn in_flight(&self) -> bool {
         matches!(
             self.state,
@@ -462,29 +446,6 @@ impl SliceState {
             }
             guard.notify.notify_waiters();
         });
-    }
-}
-
-struct SlicePinGuard {
-    slices: Vec<Arc<ParkingMutex<SliceState>>>,
-}
-
-impl SlicePinGuard {
-    pub fn new() -> Self {
-        Self { slices: Vec::new() }
-    }
-
-    pub fn add(&mut self, slice: Arc<ParkingMutex<SliceState>>) {
-        self.slices.push(slice);
-    }
-}
-
-impl Drop for SlicePinGuard {
-    fn drop(&mut self) {
-        for slice in self.slices.drain(..) {
-            let mut guard = slice.lock();
-            guard.refs = guard.refs.saturating_sub(1);
-        }
     }
 }
 
@@ -815,22 +776,6 @@ where
         let spans = tracing::trace_span!("read_at.split_spans", offset, len = actual_len)
             .in_scope(|| split_chunk_spans(self.config.layout, offset, actual_len));
 
-        let mut pin_guard = Vec::new();
-        for span in spans.iter().copied() {
-            // Demand reads fill data through a single DataFetcher below; the
-            // slice records here are metadata reservations, not data owners.
-            pin_guard.push(
-                self.prepare_slices(span.index, (span.offset, span.offset + span.len))
-                    .instrument(tracing::trace_span!(
-                        "read_at.prepare_slice",
-                        index = span.index,
-                        offset = span.offset,
-                        len = span.len
-                    ))
-                    .await,
-            );
-        }
-
         // Read demand data first — do not synchronously submit readahead
         // before the foreground read.  The GlobalPrefetcher (VFS layer)
         // handles asynchronous readahead after each successful read.
@@ -848,8 +793,6 @@ where
                     len = actual_len
                 ))
                 .await;
-
-            drop(pin_guard);
 
             if should_clean {
                 self.cleanup_invalid()
@@ -882,8 +825,6 @@ where
         }
         .instrument(tracing::trace_span!("read_at.read_spans"))
         .await;
-
-        drop(pin_guard);
 
         // Assemble Bytes chunks into output
         let data = if result.is_ok() {
@@ -956,11 +897,7 @@ where
             .await;
 
             match result {
-                Ok(()) => {
-                    self.complete_demand_slices(index, offset, buf.len(), None::<&anyhow::Error>)
-                        .await;
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(err)
                     if attempt + 1 < MAX_SLICE_READ_RETRIES && is_transient_read_error(&err) =>
                 {
@@ -972,85 +909,11 @@ where
                         .await;
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
-                Err(err) => {
-                    self.complete_demand_slices(index, offset, buf.len(), Some(&err))
-                        .await;
-                    return Err(err);
-                }
+                Err(err) => return Err(err),
             }
         }
 
         unreachable!("read_chunk_span retry loop should return before exhausting attempts")
-    }
-
-    async fn complete_demand_slices(
-        &self,
-        index: u64,
-        offset: u64,
-        len: usize,
-        err: Option<&anyhow::Error>,
-    ) {
-        let end = offset.saturating_add(len as u64);
-        let slices = {
-            let guard = self.slices.lock().await;
-            guard
-                .iter()
-                .filter(|slice| {
-                    let state = slice.lock();
-                    state.index == index && state.range.0 < end && offset < state.range.1
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-
-        for slice in slices {
-            let mut state = slice.lock();
-            state.last_access = Instant::now();
-            if let Some(err) = err {
-                state.state = SliceStatus::Invalid;
-                state.err = Some(err.to_string());
-            } else if !matches!(state.state, SliceStatus::Invalid) {
-                state.state = SliceStatus::Ready;
-                state.err = None;
-            }
-            state.notify.notify_waiters();
-        }
-    }
-
-    async fn prepare_slices(&self, index: u64, (start, end): (u64, u64)) -> SlicePinGuard {
-        let mut pinned = SlicePinGuard::new();
-        let mut cutter = Intervals::new(start, end);
-
-        let mut guard = self.slices.lock().await;
-        for slice in guard.iter() {
-            let mut guard = slice.lock();
-
-            if guard.index != index {
-                continue;
-            }
-
-            if matches!(guard.state, SliceStatus::Invalid) {
-                continue;
-            }
-
-            // The "reservation" needs to read this slice.
-            if guard.overlaps(start, end.saturating_sub(start)) {
-                guard.refs = guard.refs.saturating_add(1);
-                guard.last_access = Instant::now();
-                pinned.add(slice.clone());
-            }
-
-            let (l, r) = guard.range;
-            cutter.cut(l, r);
-        }
-
-        for range in cutter.collect() {
-            let slice = Arc::new(ParkingMutex::new(SliceState::new(index, range, 1)));
-            pinned.add(slice.clone());
-            guard.push_back(slice);
-        }
-
-        pinned
     }
 
     async fn invalidate(&self, offset: u64, len: usize) {
@@ -1399,15 +1262,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        // After the synchronous demand read, no ahead slices should be created.
-        // Readahead is handled asynchronously by the GlobalPrefetcher at the VFS
-        // layer, not by FileReader::read_at.
-        let demand_end = layout.block_size as u64;
         assert!(
-            ranges
-                .iter()
-                .any(|&(start, end)| start == 0 && end >= demand_end),
-            "demand range should be in slices, ranges={ranges:?}"
+            ranges.is_empty(),
+            "demand reads should not retain FileReader slice state; ranges={ranges:?}"
         );
     }
 
