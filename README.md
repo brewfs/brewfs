@@ -285,8 +285,10 @@ seq/random workloads, `metaperf -t 8`, S3 writeback profiles, open-cache
 
 Artifacts:
 
-- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781581281-3995`
-- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781581880-23048`
+- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781585469-32747`
+- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781584326-14116`
+- BrewFS standalone metadata guard:
+  `docker/compose-xfstests/artifacts/perf-run-1781586159-28465`
 
 All selected tools passed: `fio-bigwrite fio-bigread fio-seqread fio-seqwrite
 fio-randread fio-randwrite fio-randrw metaperf`. A preceding default BrewFS run
@@ -295,32 +297,34 @@ iteration; its incomplete artifact is not used for the table.
 
 | Workload | BrewFS wall | JuiceFS wall | BrewFS active BW | JuiceFS active BW | BrewFS/JuiceFS BW |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `fio-bigwrite` | 1s | 1s | W 1.01 GiB/s | W 3.21 GiB/s | W 0.32x |
-| `fio-bigread` | 1s | <1s | R 535.0 MiB/s | R 2.31 GiB/s | R 0.23x |
-| `fio-seqread` | 6s | 6s | R 1.74 GiB/s | R 2.52 GiB/s | R 0.69x |
-| `fio-seqwrite` | 49s | 25s | W 1.42 GiB/s | W 1.08 GiB/s | W 1.31x |
-| `fio-randread` | 6s | 6s | R 590.7 MiB/s | R 3.12 GiB/s | R 0.18x |
-| `fio-randwrite` | 128s | 71s | W 1.35 GiB/s | W 2.27 GiB/s | W 0.59x |
-| `fio-randrw` | 29s | 6s | R 995.8 / W 454.8 MiB/s | R 1.12 GiB/s / W 525.1 MiB/s | R 0.87x / W 0.87x |
+| `fio-bigwrite` | 2s | 1s | W 1.03 GiB/s | W 3.21 GiB/s | W 0.32x |
+| `fio-bigread` | 1s | 1s | R 568.9 MiB/s | R 2.19 GiB/s | R 0.25x |
+| `fio-seqread` | 6s | 6s | R 1.82 GiB/s | R 2.47 GiB/s | R 0.74x |
+| `fio-seqwrite` | 52s | 21s | W 1.42 GiB/s | W 1011.4 MiB/s | W 1.44x |
+| `fio-randread` | 5s | 5s | R 714.1 MiB/s | R 3.19 GiB/s | R 0.22x |
+| `fio-randwrite` | 126s | 72s | W 1.64 GiB/s | W 2.23 GiB/s | W 0.74x |
+| `fio-randrw` | 25s | 6s | R 1.06 GiB/s / W 501.1 MiB/s | R 1.08 GiB/s / W 506.9 MiB/s | R 0.98x / W 0.99x |
 
 Short-matrix metadata comparison:
 
 | Operation | BrewFS | JuiceFS | BrewFS/JuiceFS |
 | --- | ---: | ---: | ---: |
-| `create` | 3479.1 ops/s | 1334.1 ops/s | 2.61x |
-| `open` | 10099.8 ops/s | 23473.6 ops/s | 0.43x |
-| `stat` | 1022759.0 ops/s | 1031216.6 ops/s | 0.99x |
-| `readdir` | 107389.7 ops/s | 91777.6 ops/s | 1.17x |
-| `rename` | 1929.1 ops/s | 2681.6 ops/s | 0.72x |
+| `create` | 3475.9 ops/s | 1362.7 ops/s | 2.55x |
+| `open` | 10074.4 ops/s | 23565.2 ops/s | 0.43x |
+| `stat` | 1015321.2 ops/s | 1015054.7 ops/s | 1.00x |
+| `readdir` | 109094.6 ops/s | 91731.3 ops/s | 1.19x |
+| `rename` | 1923.2 ops/s | 2661.3 ops/s | 0.72x |
 
 This run confirms the current shape of the gap: BrewFS can match or exceed
-JuiceFS on active sequential write and `readdir`, but it still trails on cold
-and random reads, random write active bandwidth, and write completion wall time.
-`fio-seqwrite`, `fio-randwrite`, and `fio-randrw` show high active throughput
-but large close/flush tails, so writeback completion remains a primary
-bottleneck. The new open-cache warm/refresh change reduced metaperf open
-fresh-stat misses, but `open` throughput stayed around `10.1k ops/s`; the next
-open-performance target is therefore outside backend fresh stat avoidance.
+JuiceFS on active sequential write, active mixed read/write bandwidth, `create`,
+`stat`, and `readdir`, but it still trails on cold/random read bandwidth,
+random-write wall time, and metadata `open`/`rename`. `fio-randwrite` and
+`fio-randrw` still show large close/flush tails even when active bandwidth is
+near JuiceFS, so writeback completion remains the primary bottleneck. The full
+short matrix reported `metaperf` wall at `187s` because `fio-randrw` left about
+`196 MiB` dirty data that drained during the next tool; the standalone metadata
+guard completed in `79s` with the same operation rates, confirming that metadata
+ops/sec did not regress.
 
 Focused metadata diagnostics:
 
@@ -358,6 +362,30 @@ permission checks again.
 
 Latest accepted BrewFS tuning:
 
+- `src/chunk/store.rs` no longer duplicates a decompressed full-block read into
+  the 64KiB page cache before inserting the same block into the full block
+  cache. `ObjectBlockStore::read_range` always checks the block cache first, so
+  the old compressed full-read path copied and cached the same 4MiB payload
+  twice without helping the next read while the block cache entry was present.
+  This follows the JuiceFS direction of caching the loaded block once and using
+  range/page cache for true range misses. The TDD guard verifies compressed
+  full reads skip page-cache population while subsequent range reads still hit
+  the block cache. `cargo test -p brewfs --lib chunk::store::tests` and
+  `cargo fmt --all --check` passed.
+
+  Full short-matrix validation
+  `docker/compose-xfstests/artifacts/perf-run-1781585469-32747` moved BrewFS
+  `fio-randread` from `590.7` to `714.1 MiB/s`, `fio-seqread` from `1.74` to
+  `1.82 GiB/s`, `fio-randwrite` from `1.35` to `1.64 GiB/s`, and `fio-randrw`
+  from R `995.8` / W `454.8 MiB/s` to R `1.06 GiB/s` / W `501.1 MiB/s`.
+  Mixed read/write wall improved from `29s` to `25s`, and p99 moved from
+  R `58.5ms` / W `11.1ms` to R `49.0ms` / W `4.8ms`. `fio-bigread` bandwidth
+  improved from `535.0` to `568.9 MiB/s`, but its p99 regressed from `94.9ms`
+  to `227.5ms`, so the next read-path iteration should focus on GET tail
+  control rather than more cache duplication changes. The same run's `metaperf`
+  wall was polluted by prior `randrw` dirty tail, but standalone
+  `docker/compose-xfstests/artifacts/perf-run-1781586159-28465` finished
+  `metaperf` in `79s` with `open` at `10100.7 ops/s` and no residual files.
 - `src/vfs/fs/mod.rs` now records open-file-cache state for opens that already
   have a trusted freshly-created attribute, and `src/meta/client/mod.rs`
   refreshes an existing open-file-cache entry for timestamp-only `setattr`

@@ -490,18 +490,6 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         }
     }
 
-    async fn populate_page_cache_from_block(&self, key: BlockKey, block_data: &[u8]) {
-        let page_size = self.page_cache.page_size();
-        for (page_idx, page) in block_data.chunks(page_size).enumerate() {
-            self.page_cache
-                .insert(
-                    (key.0, key.1, page_idx as u32),
-                    Bytes::copy_from_slice(page),
-                )
-                .await;
-        }
-    }
-
     async fn try_promote_page_cache_to_block_cache(&self, key: BlockKey) -> bool {
         let page_size = self.page_cache.page_size();
         let page_count = self.config.block_size.div_ceil(page_size);
@@ -866,11 +854,6 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
         }
         tracing::Span::current().record("read_len", copy_len);
-
-        if !matches!(compression, Compression::None) {
-            self.populate_page_cache_from_block(key, block_data.as_ref())
-                .await;
-        }
 
         // Populate caches after serving the read — the hot cache insert is
         // fast (in-memory) so we await it to ensure subsequent reads hit.
@@ -1265,8 +1248,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compressed_small_read_uses_full_object() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_compressed_full_read_populates_only_block_cache()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::cadapter::client::{ObjectBackend, ObjectClient};
         use crate::chunk::compress::{Compression, compress};
         use async_trait::async_trait;
@@ -1361,8 +1344,24 @@ mod tests {
         assert_eq!(*backend.get_object_calls.lock().unwrap(), 1);
         assert_eq!(*backend.get_object_range_calls.lock().unwrap(), 0);
         assert!(
-            store.page_cache.get(&(7, 0, 32)).await.is_some(),
-            "decompressed full-block reads should populate page_cache for future range reads"
+            store.page_cache.get(&(7, 0, 32)).await.is_none(),
+            "full-block reads already populate block_cache, so duplicating the decompressed block into page_cache only adds copy/cache overhead"
+        );
+
+        *backend.get_object_calls.lock().unwrap() = 0;
+        *backend.get_object_range_calls.lock().unwrap() = 0;
+        let mut cached = vec![1u8; 128 * 1024];
+        store.read_range((7, 0), 64 * 1024, &mut cached).await?;
+        assert_eq!(cached, vec![0u8; 128 * 1024]);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "subsequent reads should hit block_cache without another full GET"
+        );
+        assert_eq!(
+            *backend.get_object_range_calls.lock().unwrap(),
+            0,
+            "subsequent reads should hit block_cache without range GETs"
         );
 
         Ok(())
