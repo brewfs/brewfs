@@ -47,6 +47,13 @@ fn retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(u64::from((attempt * attempt * 10).min(1000)))
 }
 
+fn align_up_to(value: u64, align: u64) -> u64 {
+    if align == 0 {
+        return value;
+    }
+    value.div_ceil(align).saturating_mul(align)
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) struct DataReader<B, M> {
     config: Arc<ReadConfig>,
@@ -146,14 +153,13 @@ where
             }
 
             use crate::vfs::cache::prefetch::{PrefetchPriority, PrefetchTask};
-            let ahead_start = offset + read_len;
-            let mut ahead_len = read_len.max(self.config.layout.block_size as u64);
-            if let Some(budget) = &self.memory_budget {
-                let block_size = self.config.layout.block_size as u64;
-                ahead_len = ((ahead_len as f64 * budget.readahead_factor()).ceil() as u64)
-                    .max(block_size)
-                    .min(self.config.max_ahead.max(block_size));
-            }
+            let Some(reader) = self.reader_for_handle(ino as u64, fh) else {
+                return;
+            };
+            let Some((ahead_start, ahead_len)) = reader.prefetch_range_after_read(offset, read_len)
+            else {
+                return;
+            };
             let p = prefetcher.clone();
             let task = PrefetchTask {
                 ino,
@@ -586,9 +592,11 @@ where
         len: usize,
     ) -> usize {
         if sessions[0].total == 0 {
+            sessions[0].reset(offset, len as u64);
             return 0;
         }
         if sessions[1].total == 0 {
+            sessions[1].reset(offset, len as u64);
             return 1;
         }
 
@@ -658,6 +666,42 @@ where
             .saturating_div(self.config.layout.block_size as u64)
             .saturating_mul(READ_SESSIONS as u64)
             .saturating_add(1) as usize
+    }
+
+    fn prefetch_range_after_read(&self, offset: u64, read_len: u64) -> Option<(u64, u64)> {
+        if read_len == 0 {
+            return None;
+        }
+
+        let block_size = self.config.layout.block_size as u64;
+        let read_end = offset.checked_add(read_len)?;
+        let file_size = self.inode.file_size();
+        if read_end >= file_size {
+            return None;
+        }
+
+        let ahead = {
+            let sessions = self.sessions.lock();
+            sessions
+                .iter()
+                .filter(|session| {
+                    session.total > 0 && session.last_off == read_end && session.ahead >= block_size
+                })
+                .map(|session| session.ahead)
+                .max()
+        }?;
+
+        let ahead_start = align_up_to(read_end, block_size);
+        if ahead_start >= file_size {
+            return None;
+        }
+
+        let requested = read_len.max(block_size).min(ahead);
+        let remaining = file_size - ahead_start;
+        let ahead_len = requested.min(remaining);
+        let ahead_end = align_up_to(ahead_start.saturating_add(ahead_len), block_size);
+        let ahead_len = ahead_end.min(file_size).saturating_sub(ahead_start);
+        (ahead_len > 0).then_some((ahead_start, ahead_len))
     }
 
     async fn clean_evictable_slices(&self, offset: u64, len: usize) {
@@ -1114,6 +1158,7 @@ mod tests {
     use crate::meta::factory::create_meta_store_from_url;
     use crate::meta::store::MetaStore;
     use crate::vfs::Inode;
+    use crate::vfs::cache::prefetch::{PrefetchTask, Prefetcher};
     use crate::vfs::config::{ReadConfig, WriteConfig};
     use crate::vfs::io::writer::FileWriter;
     use bytes::Bytes;
@@ -1130,6 +1175,26 @@ mod tests {
             chunk_size: 8 * 1024,
             block_size: 4 * 1024,
         }
+    }
+
+    #[derive(Default)]
+    struct CapturePrefetcher {
+        tasks: StdMutex<Vec<PrefetchTask>>,
+    }
+
+    impl CapturePrefetcher {
+        fn tasks(&self) -> Vec<PrefetchTask> {
+            self.tasks.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Prefetcher for CapturePrefetcher {
+        async fn submit(&self, task: PrefetchTask) {
+            self.tasks.lock().unwrap().push(task);
+        }
+
+        async fn cancel_for_handle(&self, _ino: i64, _fh: u64) {}
     }
 
     #[tokio::test]
@@ -1344,6 +1409,74 @@ mod tests {
                 .any(|&(start, end)| start == 0 && end >= demand_end),
             "demand range should be in slices, ranges={ranges:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_first_nonzero_read_does_not_start_readahead() {
+        let layout = small_layout();
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(block_store, meta));
+        let inode = Inode::new(77, layout.chunk_size as u64 * 8);
+        let reader = DataReader::new(
+            Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
+            backend,
+        );
+        let file_reader = reader.open_for_handle(inode, 1);
+
+        let first_offset = layout.block_size as u64 * 3;
+        let first_ahead = file_reader.check_session(first_offset, 512);
+        assert_eq!(
+            first_ahead, 0,
+            "a first read at a non-zero offset is random until a contiguous follow-up read confirms a stream"
+        );
+
+        let second_ahead = file_reader.check_session(first_offset + 512, 512);
+        assert!(
+            second_ahead >= layout.block_size as u64,
+            "the next contiguous read should enable readahead for the detected stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_prefetch_requires_confirmed_stream_and_aligns_to_next_block() {
+        let layout = small_layout();
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(block_store, meta));
+        let capture = Arc::new(CapturePrefetcher::default());
+        let ino = 78;
+        let fh = 2;
+        let inode = Inode::new(ino, layout.chunk_size as u64 * 8);
+        let reader = DataReader::new(
+            Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
+            backend,
+        )
+        .with_prefetcher(capture.clone());
+        let file_reader = reader.open_for_handle(inode, fh);
+
+        let first_offset = layout.block_size as u64 * 3;
+        let read_len = 512;
+        assert_eq!(file_reader.check_session(first_offset, read_len), 0);
+        reader.submit_prefetch(ino, fh, first_offset, read_len as u64);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            capture.tasks().is_empty(),
+            "a first non-zero offset read should not schedule speculative readahead"
+        );
+
+        let second_offset = first_offset + read_len as u64;
+        let ahead = file_reader.check_session(second_offset, read_len);
+        assert!(ahead >= layout.block_size as u64);
+        reader.submit_prefetch(ino, fh, second_offset, read_len as u64);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let tasks = capture.tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].start, layout.block_size as u64 * 4);
+        assert_eq!(tasks[0].len, layout.block_size as u64);
     }
 
     #[derive(Default)]

@@ -382,6 +382,67 @@ random-read improvement and does not show a large mixed-workload regression, but
 it does not explain the remaining `bigread`/`seqread` gap. The next read-path
 target remains FUSE/read scheduling and object GET tail behavior.
 
+Session-gated readahead validation, 2026-06-16:
+
+This round follows JuiceFS's read-session discipline more closely: a first
+non-zero-offset read is treated as random until the next contiguous read
+confirms a stream, and VFS prefetch tasks are submitted only for confirmed
+sessions. A too-aggressive intermediate version used the full session `ahead`
+window for each prefetch and reproducibly dropped focused `fio-seqread` to
+`1.26 GiB/s`; the accepted version keeps the gating but caps each prefetch at
+`max(read_len, block_size)`, restoring focused `fio-seqread` to `2.20 GiB/s`
+in `docker/compose-xfstests/artifacts/perf-run-1781594242-13781`.
+
+Artifacts:
+
+- BrewFS accepted run:
+  `docker/compose-xfstests/artifacts/perf-run-1781594407-19392`
+- JuiceFS same-parameter run, `juicedata/juicefs` at `fd52b9a`:
+  `docker/compose-xfstests/artifacts/juicefs-perf-run-1781593000-13808`
+
+Both runs used fio `direct=0`, `fio-big*` size `64m`,
+`fio-seq*`/`fio-rand*`/`fio-randrw` size `128m`, 5s time-based windows for
+seq/random workloads, `metaperf -t 30`, Redis metadata, RustFS S3, writeback
+profiles, open-cache `1s/65536`, and cold-read prefill drain/remount/cache-clear.
+
+| Workload | BrewFS tool+drain | JuiceFS tool+drain | BrewFS post-drain | JuiceFS post-drain | BrewFS active BW | JuiceFS active BW | BrewFS/JuiceFS BW |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fio-bigwrite` | 5s | 7s | 5s | 6s | W 1.07 GiB/s | W 3.05 GiB/s | W 0.35x |
+| `fio-bigread` | 1s | 1s | n/a | n/a | R 1.29 GiB/s | R 2.18 GiB/s | R 0.59x |
+| `fio-seqread` | 5s | 5s | n/a | n/a | R 2.18 GiB/s | R 2.47 GiB/s | R 0.88x |
+| `fio-seqwrite` | 92s | 85s | 32s | 63s | W 1.42 GiB/s | W 1.02 GiB/s | W 1.39x |
+| `fio-randread` | 5s | 5s | n/a | n/a | R 1.68 GiB/s | R 3.15 GiB/s | R 0.53x |
+| `fio-randwrite` | 135s | 173s | 0s | 102s | W 1.74 GiB/s | W 2.24 GiB/s | W 0.78x |
+| `fio-randrw` | 36s | 62s | 2s | 57s | R 1.37 GiB/s / W 653.6 MiB/s | R 1.13 GiB/s / W 525.6 MiB/s | R 1.21x / W 1.24x |
+
+Read-path movement versus the prior full short matrix
+`docker/compose-xfstests/artifacts/perf-run-1781587688-20926`:
+
+| Workload | Previous BrewFS | Accepted BrewFS | Delta |
+| --- | ---: | ---: | ---: |
+| `fio-bigread` | R 672.8 MiB/s | R 1.29 GiB/s | +95.6% |
+| `fio-seqread` | R 1.76 GiB/s | R 2.18 GiB/s | +23.9% |
+| `fio-randread` | R 598.0 MiB/s | R 1.68 GiB/s | +188.4% |
+| `fio-randrw` | R 1009.3 / W 461.1 MiB/s | R 1.37 GiB/s / W 653.6 MiB/s | R +39.5% / W +41.7% |
+
+Metadata comparison from the same run:
+
+| Operation | BrewFS | JuiceFS | BrewFS/JuiceFS |
+| --- | ---: | ---: | ---: |
+| `create` | 3470.4 ops/s | 1263.5 ops/s | 2.75x |
+| `open` | 10106.8 ops/s | 23382.5 ops/s | 0.43x |
+| `stat` | 1021723.6 ops/s | 1022365.7 ops/s | 1.00x |
+| `readdir` | 109145.2 ops/s | 93126.8 ops/s | 1.17x |
+| `rename` | 1915.0 ops/s | 2652.3 ops/s | 0.72x |
+
+The accepted result moves BrewFS much closer on read throughput, especially
+`fio-seqread` at `0.88x` of this JuiceFS run and `fio-bigread` at `0.59x`.
+The remaining gaps are active `fio-randread` bandwidth (`0.53x`), active
+`fio-randwrite` bandwidth (`0.78x`), metadata `open`/`rename`, and BrewFS
+memory growth during metaperf. Write-heavy wall time still needs separate
+work: BrewFS spends more time inside the fio tool, while this JuiceFS run spent
+large tails in post-write drain and emitted local cache write timeout warnings.
+
 Focused metadata diagnostics:
 
 - Zero-byte `metaperf` isolates metadata from 4KiB small-file writeback. The
