@@ -696,16 +696,24 @@ that is disabled while mixed writeback is active.
 
 Same-window focused control, 2026-06-16:
 
-A clean default-profile control run,
-`docker/compose-xfstests/artifacts/perf-run-1781613121-5053`, used the same
-`fio-bigread fio-seqread fio-randread fio-randrw` focused matrix with 64MiB
-`fio-bigread`, 128MiB seq/random data, fio `direct=0`, and 5s timed windows.
-It measured `fio-bigread` at 1.24 GiB/s, `fio-seqread` at 2.00 GiB/s,
-`fio-randread` at 1.86 GiB/s, and `fio-randrw` at 982.1 MiB/s read plus
-446.0 MiB/s write. This shows the older accepted full-run baseline is noisy for
-short read/mixed comparisons; future focused candidates should be compared
-against this same-window control first, then promoted to the full BrewFS/JuiceFS
-matrix only if they beat it without material secondary regressions.
+Clean default-profile focused controls are:
+
+- `docker/compose-xfstests/artifacts/perf-run-1781613121-5053` for
+  `fio-bigread fio-seqread fio-randread fio-randrw`: `fio-bigread` 1.24 GiB/s,
+  `fio-seqread` 2.00 GiB/s, `fio-randread` 1.86 GiB/s, and `fio-randrw`
+  982.1 MiB/s read plus 446.0 MiB/s write.
+- `docker/compose-xfstests/artifacts/perf-run-1781613484-12800` for
+  `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw`: `fio-bigwrite`
+  911.0 MiB/s, `fio-seqwrite` 1.29 GiB/s with 66s wall, `fio-randwrite`
+  1.56 GiB/s with 117s wall, and `fio-randrw` 1.28 GiB/s read plus
+  600.0 MiB/s write with 32s wall.
+
+These controls used 64MiB big fio data, 128MiB seq/random data, fio `direct=0`,
+and 5s timed windows. They show the older accepted full-run baseline is noisy
+for short focused comparisons; future focused candidates should be compared
+against the matching same-window control first, then promoted to the full
+BrewFS/JuiceFS matrix only if they beat it without material secondary
+regressions.
 
 Older FUSE unique append reuse:
 
