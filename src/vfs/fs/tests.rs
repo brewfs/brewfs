@@ -747,6 +747,7 @@ mod io_tests {
     struct CountingBlockStore {
         inner: Arc<InMemoryBlockStore>,
         read_range_calls: Arc<AtomicUsize>,
+        write_fresh_calls: Arc<AtomicUsize>,
     }
 
     impl CountingBlockStore {
@@ -754,8 +755,16 @@ mod io_tests {
             self.read_range_calls.store(0, Ordering::SeqCst);
         }
 
+        fn reset_writes(&self) {
+            self.write_fresh_calls.store(0, Ordering::SeqCst);
+        }
+
         fn read_range_calls(&self) -> usize {
             self.read_range_calls.load(Ordering::SeqCst)
+        }
+
+        fn write_fresh_calls(&self) -> usize {
+            self.write_fresh_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -767,6 +776,7 @@ mod io_tests {
             offset: u64,
             data: &[u8],
         ) -> anyhow::Result<u64> {
+            self.write_fresh_calls.fetch_add(1, Ordering::SeqCst);
             self.inner.write_fresh_range(key, offset, data).await
         }
 
@@ -1027,6 +1037,143 @@ mod io_tests {
         );
 
         fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_cached_zero_eof_write_extends_sparse_without_block_upload() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/zero-sparse.bin").await.unwrap();
+        let attr = fs.stat("/zero-sparse.bin").await.unwrap();
+        let zeros = vec![0u8; 4096];
+
+        fs.write_cached_ino(attr.ino, 0, &zeros, 1).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        assert_eq!(
+            counters.write_fresh_calls(),
+            0,
+            "zero EOF cached write should extend the sparse file without uploading a zero block"
+        );
+        assert!(
+            !fs.state.writer.has_file(attr.ino as u64),
+            "sparse zero EOF write should not create dirty writer state"
+        );
+
+        let stat = fs.stat("/zero-sparse.bin").await.unwrap();
+        assert_eq!(stat.size, zeros.len() as u64);
+
+        let out = read_path(&fs, "/zero-sparse.bin", 0, zeros.len()).await;
+        assert_eq!(out, zeros);
+    }
+
+    #[tokio::test]
+    async fn test_fs_handle_zero_eof_write_flushes_as_sparse_without_block_upload() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/zero-handle.bin").await.unwrap();
+        let attr = fs.stat("/zero-handle.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        let zeros = vec![0u8; 4096];
+
+        fs.write(fh, 0, &zeros).await.unwrap();
+        fs.flush(fh).await.unwrap();
+        fs.close(fh).await.unwrap();
+
+        assert_eq!(
+            counters.write_fresh_calls(),
+            0,
+            "zero EOF handle write should not upload a zero block"
+        );
+
+        let stat = fs.stat("/zero-handle.bin").await.unwrap();
+        assert_eq!(stat.size, zeros.len() as u64);
+        let out = read_path(&fs, "/zero-handle.bin", 0, zeros.len()).await;
+        assert_eq!(out, zeros);
+    }
+
+    #[tokio::test]
+    async fn test_fs_cached_zero_write_to_presized_sparse_file_skips_block_upload() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/zero-presized.bin").await.unwrap();
+        fs.truncate("/zero-presized.bin", 4096).await.unwrap();
+        let attr = fs.stat("/zero-presized.bin").await.unwrap();
+        let zeros = vec![0u8; 4096];
+
+        counters.reset_writes();
+        fs.write_cached_ino(attr.ino, 0, &zeros, 1).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        assert_eq!(
+            counters.write_fresh_calls(),
+            0,
+            "zero write into an already sparse range should not upload a zero block"
+        );
+        assert!(
+            !fs.state.writer.has_file(attr.ino as u64),
+            "presized sparse zero write should not create dirty writer state"
+        );
+
+        let out = read_path(&fs, "/zero-presized.bin", 0, zeros.len()).await;
+        assert_eq!(out, zeros);
+    }
+
+    #[tokio::test]
+    async fn test_fs_zero_overwrite_keeps_real_slice_semantics() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/zero-overwrite.bin").await.unwrap();
+        let initial = vec![0x55; 4096];
+        write_path(&fs, "/zero-overwrite.bin", 0, &initial).await;
+
+        counters.reset_writes();
+
+        let zeros = vec![0u8; 4096];
+        write_path(&fs, "/zero-overwrite.bin", 0, &zeros).await;
+
+        assert!(
+            counters.write_fresh_calls() > 0,
+            "zero overwrite inside the existing file must still upload a real slice"
+        );
+
+        let out = read_path(&fs, "/zero-overwrite.bin", 0, zeros.len()).await;
+        assert_eq!(out, zeros);
     }
 
     #[tokio::test]

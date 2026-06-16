@@ -309,6 +309,35 @@ permission checks again.
 
 Latest accepted BrewFS tuning:
 
+- `src/vfs/fs/mod.rs` now treats small all-zero writes into sparse ranges as a
+  metadata-only sparse extension. This follows the same performance idea as
+  JuiceFS holes, but keeps BrewFS away from `slice_id=0` metadata because BrewFS
+  slice precedence depends on monotonically increasing slice ids. Zero
+  overwrites of committed data still fall back to a real slice upload, and TDD
+  guards cover cached EOF sparse extension, normal handle flush/close, presized
+  sparse ranges, and committed-data overwrite semantics.
+
+  Focused default 4KiB `metaperf` changed the hot small-file create path from
+  `35801` S3 PUTs to `1` S3 PUT and moved BrewFS `create` from `1100.3` to
+  `3059.3 ops/s`. A same-cycle focused JuiceFS run is included for direction;
+  this is not a replacement for the full perf table above.
+
+  | Focused 4KiB `metaperf` | BrewFS before `perf-run-1781572378-29881` | BrewFS sparse-zero `perf-run-1781575796-24729` | JuiceFS `juicefs-perf-run-1781576125-3207` |
+  | --- | ---: | ---: | ---: |
+  | wall | 198s | 189s | 206s |
+  | `create` | 1100.3 ops/s | 3059.3 ops/s | 1361.4 ops/s |
+  | `open` | 10142.3 ops/s | 10161.1 ops/s | 23607.3 ops/s |
+  | `stat` | 1018832.6 ops/s | 1023493.1 ops/s | 1003843.3 ops/s |
+  | `readdir` | 64422.5 ops/s | 65443.4 ops/s | 91338.6 ops/s |
+  | `rename` | 1935.6 ops/s | 1944.5 ops/s | 2688.6 ops/s |
+  | S3 PUTs / writeback stages | 35801 / 35801 | 1 / 1 | n/a |
+
+  Direct fio regression guard
+  `docker/compose-xfstests/artifacts/perf-run-1781576500-15551` passed
+  `fio-seqwrite fio-randwrite fio-randrw` with `PERF_FIO_DIRECT=1`:
+  `seqwrite` W 73.01 MiB/s, `randwrite` W 52.33 MiB/s, and `randrw`
+  R 116.86 / W 52.45 MiB/s. Next focused targets are still JuiceFS gaps in
+  `open`, `readdir`, `rename`, and direct random-write/mixed-write bandwidth.
 - `src/fuse/mod.rs` now lets uid 0 bypass cached-inode ancestor search
   permission checks before FUSE `open`, matching Linux root search semantics and
   avoiding repeated `get_paths`/ancestor checks in root-run perf workloads. The
@@ -396,6 +425,37 @@ Latest accepted BrewFS tuning:
   takes 125s wall time versus JuiceFS at 61s.
 
 Latest rejected tuning checks:
+
+Uploaded committed overlay data release check:
+
+```bash
+PERF_LOG_TO_CONSOLE=false CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "metaperf"
+```
+
+Artifact:
+`docker/compose-xfstests/artifacts/perf-run-1781573541-26081`.
+
+The candidate released resident `recently_committed` page data as soon as a
+commit-before-upload slice's remote upload completed. The correctness test
+proved that overlay data was still retained while upload was blocked and became
+unneeded after object upload, but the focused 4KiB `metaperf` run did not show
+a stable performance win. Object shape was unchanged at `36200` one-block
+partial-tail uploads, so the bottleneck remained the same tiny explicit-flush
+PUT pattern. The code was reverted; a useful next attempt must reduce slice/PUT
+count or metadata calls rather than only shortening in-memory residency.
+
+| Workload | Accepted 4KiB focused `perf-run-1781572378-29881` | Candidate `perf-run-1781573541-26081` | Decision |
+| --- | ---: | ---: | --- |
+| `metaperf` wall | 198s | 196s | neutral/no stable wall gain |
+| `create` | 1100.3 ops/s | 1099.6 ops/s | neutral |
+| `open` | 10142.3 ops/s | 10052.2 ops/s | reject: open regression |
+| `stat` | 1018832.6 ops/s | 1024720.0 ops/s | neutral |
+| `readdir` | 64422.5 ops/s | 64685.7 ops/s | neutral |
+| `rename` | 1935.6 ops/s | 1943.9 ops/s | neutral |
+| S3/writeback shape | 35800 batches / 35801 PUTs | 36200 batches / 36201 PUTs | unchanged tiny-object bottleneck |
 
 Uploaded-slice metadata stage-seal guard check:
 

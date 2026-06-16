@@ -4195,6 +4195,15 @@ where
         }
     }
 
+    pub(crate) async fn has_dirty_state(&self, ino: u64) -> bool {
+        let writer = self.files.get(&ino).map(|entry| entry.value().clone());
+        if let Some(writer) = writer {
+            writer.has_pending().await || writer.has_overlay_state().await
+        } else {
+            false
+        }
+    }
+
     pub(crate) async fn overlay_dirty_if_exists(
         &self,
         ino: u64,

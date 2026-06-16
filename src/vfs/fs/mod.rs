@@ -21,6 +21,8 @@ use tokio::sync::Mutex;
 // Re-export types from meta::store for convenience
 pub use crate::meta::store::{DirEntry, FileAttr, FileType};
 
+const SPARSE_ZERO_MAX_SCAN_BYTES: usize = 128 * 1024;
+
 /// Rename operation flags (similar to Linux renameat2 flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RenameFlags {
@@ -103,10 +105,11 @@ fn vfs_timing_enabled_from_env() -> bool {
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::CacheConfig;
+use crate::vfs::chunk_id_for;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::{PathHint, VfsError};
 use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags};
-use crate::vfs::io::{DataReader, DataWriter};
+use crate::vfs::io::{DataReader, DataWriter, split_chunk_spans};
 use crate::vfs::memory::MemoryBudget;
 
 struct HandleRegistry<B, M>
@@ -1070,6 +1073,87 @@ where
 
         let attr = self.meta_stat_required(ino, PathHint::none()).await?;
         Ok(attr.size)
+    }
+
+    async fn try_sparse_zero_extend(
+        &self,
+        ino: i64,
+        offset: u64,
+        data: &[u8],
+        visible_size: u64,
+    ) -> Result<bool, VfsError> {
+        // JuiceFS stores holes with slice id 0. BrewFS slice precedence is based
+        // on monotonically increasing slice ids, so sparse-zero writes stay a
+        // VFS fast path instead of materializing id-0 slice metadata.
+        if data.is_empty()
+            || data.len() > SPARSE_ZERO_MAX_SCAN_BYTES
+            || data.iter().any(|&byte| byte != 0)
+        {
+            return Ok(false);
+        }
+
+        if self.state.writer.has_dirty_state(ino as u64).await {
+            return Ok(false);
+        }
+
+        let new_end = offset
+            .checked_add(data.len() as u64)
+            .ok_or(VfsError::InvalidInput)?;
+
+        if offset < visible_size
+            && self
+                .range_has_committed_slices(ino, offset, data.len())
+                .await?
+        {
+            return Ok(false);
+        }
+
+        if new_end > visible_size {
+            self.meta_extend_file_size(ino, new_end).await?;
+        }
+
+        if let Some(inode) = self.state.inodes.get(&ino) {
+            inode.extend_size(new_end);
+            inode.extend_committed_size(new_end);
+        }
+        self.extend_local_file_size(ino, new_end);
+
+        let _ = self
+            .state
+            .reader
+            .invalidate(ino as u64, offset, data.len())
+            .await;
+
+        Ok(true)
+    }
+
+    async fn range_has_committed_slices(
+        &self,
+        ino: i64,
+        offset: u64,
+        len: usize,
+    ) -> Result<bool, VfsError> {
+        let layout = self.core.layout;
+        for span in split_chunk_spans(layout, offset, len) {
+            let chunk_id = chunk_id_for(ino, span.index).map_err(VfsError::from)?;
+            let span_start = span.offset;
+            let span_end = span.offset + span.len;
+            let slices = self
+                .meta_layer()
+                .get_slices(chunk_id)
+                .await
+                .map_err(|err| VfsError::from_meta(PathHint::none(), err))?;
+
+            if slices.iter().any(|slice| {
+                let slice_start = slice.offset;
+                let slice_end = slice.offset + slice.length;
+                slice_start < span_end && span_start < slice_end
+            }) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     /// get the node's parent inode.
@@ -2434,7 +2518,17 @@ where
             let _handle_guard = handle.lock_write().await;
 
             let append_offset = self.inode_size(handle.ino).await?;
-            let written = handle.write_unlocked(append_offset, data).await?;
+            let written = if self
+                .try_sparse_zero_extend(handle.ino, append_offset, data, append_offset)
+                .await?
+            {
+                handle.update_offset(append_offset + data.len() as u64);
+                handle.extend_size(append_offset + data.len() as u64);
+                handle.mark_write_dirty();
+                data.len()
+            } else {
+                handle.write_unlocked(append_offset, data).await?
+            };
             tracing::debug!(
                 fh,
                 ino = handle.ino,
@@ -2445,7 +2539,20 @@ where
             );
             (append_offset, written)
         } else {
-            (offset, handle.write(offset, data).await?)
+            let _handle_guard = handle.lock_write().await;
+            let visible_size = handle.attr().size;
+            let written = if self
+                .try_sparse_zero_extend(handle.ino, offset, data, visible_size)
+                .await?
+            {
+                handle.update_offset(offset + data.len() as u64);
+                handle.extend_size(offset + data.len() as u64);
+                handle.mark_write_dirty();
+                data.len()
+            } else {
+                handle.write_unlocked(offset, data).await?
+            };
+            (offset, written)
         };
 
         // Invalidate reader cache for the written range so subsequent reads
@@ -2497,6 +2604,13 @@ where
         }
 
         let inode = self.ensure_inode_registered(ino).await?;
+        if self
+            .try_sparse_zero_extend(ino, offset, data, inode.file_size())
+            .await?
+        {
+            return Ok(data.len());
+        }
+
         let writer = self.state.writer.ensure_file(inode);
         let written = writer
             .write_at(offset, data)
@@ -2548,6 +2662,17 @@ where
         }
 
         let inode = self.ensure_inode_registered(ino).await?;
+        if data.len() <= SPARSE_ZERO_MAX_SCAN_BYTES {
+            let mutation_lock = self.state.append_lock(ino);
+            let _mutation_guard = mutation_lock.lock_owned().await;
+            if self
+                .try_sparse_zero_extend(ino, offset, data, inode.file_size())
+                .await?
+            {
+                return Ok(data.len());
+            }
+        }
+
         let writer = self.state.writer.ensure_file(inode.clone());
         let written = writer
             .write_at_cached(offset, data, creation_unique)
