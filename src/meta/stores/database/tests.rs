@@ -1,6 +1,5 @@
 use super::*;
-use crate::CompactConfig;
-use crate::meta::config::{CacheConfig, ClientOptions, DatabaseConfig};
+use crate::meta::config::{CacheConfig, ClientOptions, CompactConfig, DatabaseConfig};
 use crate::meta::file_lock::{FileLockQuery, FileLockRange, FileLockType};
 use tokio::time;
 

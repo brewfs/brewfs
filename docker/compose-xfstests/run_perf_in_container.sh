@@ -161,6 +161,57 @@ EOF
             echo "  open_file_cache_capacity: ${BREWFS_METADATA_OPEN_CACHE_CAPACITY}"
         fi
 
+        if [[ -n "${BREWFS_COMPACT_INTERVAL_SECS:-}" \
+            || -n "${BREWFS_COMPACT_MIN_SLICE_COUNT:-}" \
+            || -n "${BREWFS_COMPACT_MIN_FRAGMENT_RATIO:-}" \
+            || -n "${BREWFS_COMPACT_ASYNC_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_SYNC_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_MAX_CHUNKS_PER_RUN:-}" \
+            || -n "${BREWFS_COMPACT_MAX_CONCURRENT_TASKS:-}" \
+            || -n "${BREWFS_COMPACT_LIGHT_ENABLED:-}" \
+            || -n "${BREWFS_COMPACT_LIGHT_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_HEAVY_ENABLED:-}" \
+            || -n "${BREWFS_COMPACT_HEAVY_FRAGMENT_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_HEAVY_SLICE_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_HEAVY_FORCE_FRAGMENT_THRESHOLD:-}" \
+            || -n "${BREWFS_COMPACT_LOCK_ASYNC_TTL_SECS:-}" \
+            || -n "${BREWFS_COMPACT_LOCK_SYNC_TTL_SECS:-}" \
+            || -n "${BREWFS_COMPACT_LOCK_TTL_PER_SLICE_MS:-}" \
+            || -n "${BREWFS_COMPACT_LOCK_MIN_TTL_SECS:-}" \
+            || -n "${BREWFS_COMPACT_LOCK_MAX_TTL_SECS:-}" ]]; then
+            echo
+            echo "compact:"
+            [[ -n "${BREWFS_COMPACT_MIN_SLICE_COUNT:-}" ]] && echo "  min_slice_count: ${BREWFS_COMPACT_MIN_SLICE_COUNT}"
+            [[ -n "${BREWFS_COMPACT_MIN_FRAGMENT_RATIO:-}" ]] && echo "  min_fragment_ratio: ${BREWFS_COMPACT_MIN_FRAGMENT_RATIO}"
+            [[ -n "${BREWFS_COMPACT_ASYNC_THRESHOLD:-}" ]] && echo "  async_threshold: ${BREWFS_COMPACT_ASYNC_THRESHOLD}"
+            [[ -n "${BREWFS_COMPACT_SYNC_THRESHOLD:-}" ]] && echo "  sync_threshold: ${BREWFS_COMPACT_SYNC_THRESHOLD}"
+            if [[ -n "${BREWFS_COMPACT_INTERVAL_SECS:-}" ]]; then
+                echo "  interval:"
+                echo "    secs: ${BREWFS_COMPACT_INTERVAL_SECS}"
+                echo "    nanos: 0"
+            fi
+            [[ -n "${BREWFS_COMPACT_MAX_CHUNKS_PER_RUN:-}" ]] && echo "  max_chunks_per_run: ${BREWFS_COMPACT_MAX_CHUNKS_PER_RUN}"
+            [[ -n "${BREWFS_COMPACT_MAX_CONCURRENT_TASKS:-}" ]] && echo "  max_concurrent_tasks: ${BREWFS_COMPACT_MAX_CONCURRENT_TASKS}"
+            [[ -n "${BREWFS_COMPACT_LIGHT_ENABLED:-}" ]] && echo "  light_enabled: ${BREWFS_COMPACT_LIGHT_ENABLED}"
+            [[ -n "${BREWFS_COMPACT_LIGHT_THRESHOLD:-}" ]] && echo "  light_threshold: ${BREWFS_COMPACT_LIGHT_THRESHOLD}"
+            [[ -n "${BREWFS_COMPACT_HEAVY_ENABLED:-}" ]] && echo "  heavy_enabled: ${BREWFS_COMPACT_HEAVY_ENABLED}"
+            [[ -n "${BREWFS_COMPACT_HEAVY_FRAGMENT_THRESHOLD:-}" ]] && echo "  heavy_fragment_threshold: ${BREWFS_COMPACT_HEAVY_FRAGMENT_THRESHOLD}"
+            [[ -n "${BREWFS_COMPACT_HEAVY_SLICE_THRESHOLD:-}" ]] && echo "  heavy_slice_threshold: ${BREWFS_COMPACT_HEAVY_SLICE_THRESHOLD}"
+            [[ -n "${BREWFS_COMPACT_HEAVY_FORCE_FRAGMENT_THRESHOLD:-}" ]] && echo "  heavy_force_fragment_threshold: ${BREWFS_COMPACT_HEAVY_FORCE_FRAGMENT_THRESHOLD}"
+            if [[ -n "${BREWFS_COMPACT_LOCK_ASYNC_TTL_SECS:-}" \
+                || -n "${BREWFS_COMPACT_LOCK_SYNC_TTL_SECS:-}" \
+                || -n "${BREWFS_COMPACT_LOCK_TTL_PER_SLICE_MS:-}" \
+                || -n "${BREWFS_COMPACT_LOCK_MIN_TTL_SECS:-}" \
+                || -n "${BREWFS_COMPACT_LOCK_MAX_TTL_SECS:-}" ]]; then
+                echo "  lock_ttl:"
+                [[ -n "${BREWFS_COMPACT_LOCK_ASYNC_TTL_SECS:-}" ]] && echo "    async_ttl_secs: ${BREWFS_COMPACT_LOCK_ASYNC_TTL_SECS}"
+                [[ -n "${BREWFS_COMPACT_LOCK_SYNC_TTL_SECS:-}" ]] && echo "    sync_ttl_secs: ${BREWFS_COMPACT_LOCK_SYNC_TTL_SECS}"
+                [[ -n "${BREWFS_COMPACT_LOCK_TTL_PER_SLICE_MS:-}" ]] && echo "    ttl_per_slice_ms: ${BREWFS_COMPACT_LOCK_TTL_PER_SLICE_MS}"
+                [[ -n "${BREWFS_COMPACT_LOCK_MIN_TTL_SECS:-}" ]] && echo "    min_ttl_secs: ${BREWFS_COMPACT_LOCK_MIN_TTL_SECS}"
+                [[ -n "${BREWFS_COMPACT_LOCK_MAX_TTL_SECS:-}" ]] && echo "    max_ttl_secs: ${BREWFS_COMPACT_LOCK_MAX_TTL_SECS}"
+            fi
+        fi
+
         echo
         cat <<EOF
 layout:

@@ -52,8 +52,8 @@ use crate::fuse::mount::{FuseConcurrencyConfig, mount_vfs_privileged, mount_vfs_
 use crate::meta::MetaStore;
 use crate::meta::client::MetaClient;
 use crate::meta::config::{
-    CacheConfig as MetaCacheConfig, ClientOptions, CompactConfig, Config, DatabaseConfig,
-    DatabaseType, MetaClientConfig,
+    CacheConfig as MetaCacheConfig, ClientOptions, Config, DatabaseConfig, DatabaseType,
+    MetaClientConfig,
 };
 use crate::meta::factory::MetaStoreFactory;
 use crate::meta::layer::MetaLayer;
@@ -447,6 +447,7 @@ where
     if let Some(capacity) = args.meta_open_file_cache_capacity {
         meta_config.options.open_file_cache.capacity = capacity;
     }
+    meta_config.compact = args.compact.clone();
 
     tracing::info!("mount startup meta client create begin");
     let meta_client = MetaClient::with_options(
@@ -662,7 +663,7 @@ async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaSto
     match args.meta_backend {
         MetaBackendKind::Sqlx => {
             let client = ClientOptions::default();
-            let compact = CompactConfig::default();
+            let compact = args.compact.clone();
 
             let config = Config {
                 database: DatabaseConfig {
@@ -681,7 +682,7 @@ async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaSto
             }
 
             let client = ClientOptions::default();
-            let compact = CompactConfig::default();
+            let compact = args.compact.clone();
 
             let config = Config {
                 database: DatabaseConfig {
@@ -698,7 +699,7 @@ async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaSto
         }
         MetaBackendKind::Redis => {
             let client = ClientOptions::default();
-            let compact = CompactConfig::default();
+            let compact = args.compact.clone();
 
             let config = Config {
                 database: DatabaseConfig {
@@ -719,7 +720,7 @@ async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaSto
             }
 
             let client = ClientOptions::default();
-            let compact = CompactConfig::default();
+            let compact = args.compact.clone();
 
             let config = Config {
                 database: DatabaseConfig {

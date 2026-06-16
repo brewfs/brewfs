@@ -690,6 +690,7 @@ bounded. All runs used the writeback throughput profile with fio `direct=0`,
 | Preallocate upload aggregation `Vec` | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | bigwrite BW +9.1%, randwrite BW +14.3%, seqwrite BW +2.2%, randwrite p99 45.4ms -> 33.4ms | seqwrite wall 66s -> 72s, randwrite wall 117s -> 131s, randrw read/write BW -3.9%/-4.5%, randrw write p99 4.6ms -> 9.4ms | reject: active-write gain does not survive wall-time and mixed-workload guards |
 | Share upload/stage chunk buffer with `Arc<[Bytes]>` | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | bigwrite BW +8.3%, seqwrite BW +9.2%, randwrite BW +13.0%, randwrite p99 45.4ms -> 30.0ms | seqwrite wall 66s -> 78s, randwrite wall 117s -> 123s, randrw read/write BW -4.6%/-4.7%, randrw write p99 4.6ms -> 9.5ms, randwrite PUTs/GiB +24.8% | reject: removing the Vec clone does not reduce object amplification and worsens wall/mixed guards |
 | Count only writable slices for `too_many` pressure | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | seqwrite wall 66s -> 65s, seqwrite PUTs/GiB -6.6%, seqwrite too_many tails 37 -> 0, randwrite BW +11.7%, randwrite p99 45.4ms -> 30.3ms | randwrite wall 117s -> 127s, randwrite PUTs/GiB +32.3%, randwrite partial-tail ratio 0.831 -> 0.885, randrw write p99 4.6ms -> 9.1ms, bigwrite BW -3.4% | reject: delayed too_many pressure shifts work into smaller randwrite objects and longer close/flush tail |
+| Enable compact profile defaults (`interval=2s`, `min_slice_count=3`) | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | bigwrite BW 911.0 MiB/s -> 1.04 GiB/s, seqwrite BW 1.29 -> 1.39 GiB/s, randwrite BW 1.56 -> 1.70 GiB/s, randrw wall 32s -> 12s | seqwrite wall 66s -> 83s, randwrite wall 117s -> 129s, randrw read/write BW 1.28 GiB/s / 600.0 MiB/s -> 845.7 / 384.1 MiB/s | reject as default: config pass-through is kept, but low-interval compaction hurts wall time and mixed throughput |
 
 These results point away from micro-optimizing cache file writes, local overlay
 allocation shape, or unconditional atime skipping. The next useful attempt
@@ -710,6 +711,11 @@ Clean default-profile focused controls are:
   911.0 MiB/s, `fio-seqwrite` 1.29 GiB/s with 66s wall, `fio-randwrite`
   1.56 GiB/s with 117s wall, and `fio-randrw` 1.28 GiB/s read plus
   600.0 MiB/s write with 32s wall.
+- `docker/compose-xfstests/artifacts/perf-run-1781621038-23087` for the
+  rejected compact-default check. The generated `backend.yml` contained the
+  requested top-level `compact:` section, proving the config path works, but
+  the same-window write guard regressed `seqwrite`, `randwrite`, and active
+  `randrw` throughput.
 
 These controls used 64MiB big fio data, 128MiB seq/random data, fio `direct=0`,
 and 5s timed windows. They show the older accepted full-run baseline is noisy

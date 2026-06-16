@@ -65,7 +65,10 @@ Every performance attempt must follow this loop:
 3. Inspect the BrewFS hot path and the matching JuiceFS code path.
 4. Add or adjust focused tests before risky behavior changes.
 5. Make the smallest code change that can prove or disprove the hypothesis.
-6. Run local compile/test checks relevant to the touched code.
+6. Run the local CI gate from `.github/workflows/ci.yml` before perf. At
+   minimum this means the Rust job commands listed in the Required Local CI
+   Gate section below; for FUSE, Docker, or POSIX behavior changes, also run
+   the matching Docker smoke job locally.
 7. Run BrewFS perf and JuiceFS perf with matching parameters.
 8. Compare fio JSON, metadata logs, total script wall time, and internal BrewFS
    counters such as slice creation, partial-tail uploads, cache hit ratio, and
@@ -73,12 +76,46 @@ Every performance attempt must follow this loop:
 9. Update `README.md` with the new performance comparison table.
 10. Review the diff for correctness, concurrency, cache consistency, and
     cleanup.
-11. Commit only changes backed by perf or correctness evidence.
+11. Commit only changes backed by CI, perf, or correctness evidence.
 12. Revert experiments that do not improve the target metric or that regress
     important secondary scenarios.
 
 Do not keep speculative changes because they look theoretically better. Perf
 evidence decides.
+
+## Required Local CI Gate
+
+Before running expensive perf comparisons or committing code, reproduce the
+Rust job from `.github/workflows/ci.yml` locally:
+
+```bash
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo fmt --all --check
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo check --workspace
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo build --workspace
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo check -p brewfs --no-default-features --features fuse-tokio-runtime
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo test --workspace --lib --bins
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo clippy --workspace
+```
+
+If `rfuse3` is a workspace member in the checkout, also run the three rfuse3
+runtime feature checks from the workflow. This repository layout currently
+skips those checks when `rfuse3` is not a workspace member, matching CI.
+
+For FUSE or POSIX-facing changes, run the Docker smoke suite before claiming the
+change is merge-ready:
+
+```bash
+bash docker/compose-pjdfstest/run_redis_pjdfstest.sh
+bash docker/compose-xfstests/run_redis_stress_ng.sh --profile smoke
+```
 
 ## Required Perf Coverage
 

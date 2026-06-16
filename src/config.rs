@@ -6,6 +6,7 @@ use crate::chunk::bandwidth::BandwidthConfig;
 use crate::chunk::cache_integrity::CacheIntegrityMode;
 use crate::chunk::compress::Compression;
 use crate::chunk::layout::{DEFAULT_BLOCK_SIZE, DEFAULT_CHUNK_SIZE};
+use crate::meta::config::CompactConfig;
 use crate::vfs::cache::config::{CacheConfig as VfsCacheConfig, WriteBackMode};
 
 pub const DEFAULT_DATA_DIR: &str = "./data";
@@ -236,6 +237,7 @@ pub struct MountFileConfig {
     pub layout: Option<LayoutFileConfig>,
     pub fuse: Option<FuseFileConfig>,
     pub cache: Option<CacheFileConfig>,
+    pub compact: Option<CompactConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -358,6 +360,7 @@ pub struct MountConfig {
     pub fuse_max_background: usize,
     pub privileged: bool,
     pub cache: VfsCacheConfig,
+    pub compact: CompactConfig,
 }
 
 impl MountConfig {
@@ -381,6 +384,7 @@ impl MountConfig {
         let layout_cfg = file_cfg.layout.unwrap_or_default();
         let fuse_cfg = file_cfg.fuse.unwrap_or_default();
         let cache_cfg = file_cfg.cache.unwrap_or_default();
+        let compact = file_cfg.compact.unwrap_or_default();
         let cache = cache_cfg.into_cache_config()?;
         let data_backend = args
             .data_backend
@@ -469,6 +473,7 @@ impl MountConfig {
                 .unwrap_or(DEFAULT_FUSE_MAX_BACKGROUND),
             privileged: args.privileged || fuse_cfg.privileged.unwrap_or(false),
             cache,
+            compact,
         })
     }
 }
@@ -861,6 +866,105 @@ cache:
         assert_eq!(config.cache.writeback_recent_pending_hard_bytes, 2147483648);
         assert_eq!(config.cache.bandwidth.upload_limit_mibps, Some(10));
         assert_eq!(config.cache.bandwidth.download_limit_mibps, Some(20));
+    }
+
+    #[test]
+    fn mount_config_parses_compact_section() {
+        let path = std::env::temp_dir().join(format!(
+            "brewfs-compact-config-{}-{}.yaml",
+            std::process::id(),
+            "parse"
+        ));
+        std::fs::write(
+            &path,
+            r#"
+mount_point: /mnt/slayer
+compact:
+  min_slice_count: 7
+  min_fragment_ratio: 0.25
+  async_threshold: 64
+  sync_threshold: 128
+  interval:
+    secs: 2
+    nanos: 0
+  max_chunks_per_run: 32
+  max_concurrent_tasks: 3
+  light_enabled: true
+  light_threshold: 3
+  heavy_enabled: false
+  heavy_fragment_threshold: 0.4
+  heavy_slice_threshold: 48
+  heavy_force_fragment_threshold: 0.8
+  lock_ttl:
+    async_ttl_secs: 4
+    sync_ttl_secs: 12
+    ttl_per_slice_ms: 25
+    min_ttl_secs: 3
+    max_ttl_secs: 60
+"#,
+        )
+        .unwrap();
+
+        let config = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None)).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.compact.min_slice_count, 7);
+        assert_eq!(config.compact.min_fragment_ratio, 0.25);
+        assert_eq!(config.compact.async_threshold, 64);
+        assert_eq!(config.compact.sync_threshold, 128);
+        assert_eq!(config.compact.interval, std::time::Duration::from_secs(2));
+        assert_eq!(config.compact.max_chunks_per_run, 32);
+        assert_eq!(config.compact.max_concurrent_tasks, 3);
+        assert!(config.compact.light_enabled);
+        assert_eq!(config.compact.light_threshold, 3);
+        assert!(!config.compact.heavy_enabled);
+        assert_eq!(config.compact.heavy_fragment_threshold, 0.4);
+        assert_eq!(config.compact.heavy_slice_threshold, 48);
+        assert_eq!(config.compact.heavy_force_fragment_threshold, 0.8);
+        assert_eq!(config.compact.lock_ttl.async_ttl_secs, 4);
+        assert_eq!(config.compact.lock_ttl.sync_ttl_secs, 12);
+        assert_eq!(config.compact.lock_ttl.ttl_per_slice_ms, 25);
+        assert_eq!(config.compact.lock_ttl.min_ttl_secs, 3);
+        assert_eq!(config.compact.lock_ttl.max_ttl_secs, 60);
+    }
+
+    #[test]
+    fn mount_config_parses_partial_compact_section_with_defaults() {
+        let path = std::env::temp_dir().join(format!(
+            "brewfs-partial-compact-config-{}-{}.yaml",
+            std::process::id(),
+            "parse"
+        ));
+        std::fs::write(
+            &path,
+            r#"
+mount_point: /mnt/slayer
+compact:
+  interval:
+    secs: 2
+    nanos: 0
+  async_threshold: 64
+"#,
+        )
+        .unwrap();
+
+        let config = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None)).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.compact.interval, std::time::Duration::from_secs(2));
+        assert_eq!(config.compact.async_threshold, 64);
+        assert_eq!(
+            config.compact.min_slice_count,
+            CompactConfig::default().min_slice_count
+        );
+        assert_eq!(
+            config.compact.sync_threshold,
+            CompactConfig::default().sync_threshold
+        );
+        assert_eq!(
+            config.compact.lock_ttl.async_ttl_secs,
+            CompactConfig::default().lock_ttl.async_ttl_secs
+        );
     }
 
     #[test]
