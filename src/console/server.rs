@@ -155,21 +155,20 @@ async fn static_or_spa(State(state): State<ConsoleState>, uri: Uri) -> Response 
         return api_not_found().await;
     }
 
-    if let Some(path) = static_file_path(&state.static_dir, uri.path()) {
-        if tokio::fs::metadata(&path)
+    if let Some(path) = static_file_path(&state.static_dir, uri.path())
+        && tokio::fs::metadata(&path)
             .await
             .is_ok_and(|metadata| metadata.is_file())
-        {
-            match tokio::fs::read(&path).await {
-                Ok(bytes) => {
-                    return (
-                        [(header::CONTENT_TYPE, content_type_for_path(&path))],
-                        bytes,
-                    )
-                        .into_response();
-                }
-                Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    {
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                return (
+                    [(header::CONTENT_TYPE, content_type_for_path(&path))],
+                    bytes,
+                )
+                    .into_response();
             }
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
         }
     }
 
