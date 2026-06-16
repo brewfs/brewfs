@@ -17,6 +17,12 @@ before a perf run, README update, or commit is accepted, the Rust checks from
 next goal step is to fix or quarantine that failure before continuing with
 performance work.
 
+Current goal amendment: every performance iteration must run the workflow's
+`Test workspace` command locally before its perf numbers are considered valid:
+`cargo test --workspace --lib --bins`. Record that result alongside the perf
+evidence. A focused unit test is allowed during development, but it does not
+replace the CI test step for accepting an optimization.
+
 Current primary gaps from the latest Redis plus S3/RustFS comparison:
 
 - Cold `bigread` and random reads still trail JuiceFS significantly; sequential
@@ -110,6 +116,9 @@ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
   cargo clippy --workspace
 ```
+
+The `cargo test --workspace --lib --bins` step is mandatory for each accepted
+performance attempt, even when a narrower focused test already passed.
 
 If `rfuse3` is a workspace member in the checkout, also run the three rfuse3
 runtime feature checks from the workflow. This repository layout currently
