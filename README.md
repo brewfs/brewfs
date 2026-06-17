@@ -787,6 +787,65 @@ writeback throughput profile with fio `direct=0`, 64MiB `fio-big*` data,
 | Enable compact profile defaults (`interval=2s`, `min_slice_count=3`) | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | bigwrite BW 911.0 MiB/s -> 1.04 GiB/s, seqwrite BW 1.29 -> 1.39 GiB/s, randwrite BW 1.56 -> 1.70 GiB/s, randrw wall 32s -> 12s | seqwrite wall 66s -> 83s, randwrite wall 117s -> 129s, randrw read/write BW 1.28 GiB/s / 600.0 MiB/s -> 845.7 / 384.1 MiB/s | reject as default: config pass-through is kept, but low-interval compaction hurts wall time and mixed throughput |
 | Early Redis rename outcome retry | `metaperf` | standalone `metaperf` wall was 187s, but this is not comparable to the full-matrix 248s after fio pressure | vs accepted same-parameter run: create 3470.4 -> 3174.0, open 10106.8 -> 9149.6, stat 1021723.6 -> 932515.8, readdir 109145.2 -> 98537.3, rename 1915.0 -> 1863.9 ops/s | reject: the early version only avoided part of the destination prelookup and regressed all metadata subtests; the later accepted `RenameOutcome` implementation above adds source/replaced inode cache invalidation tests and full-matrix perf evidence |
 
+2026-06-17 cached adjacent sub-block slice merge check:
+
+The candidate tried to coalesce adjacent writable cached-only sub-block slices
+before flush, targeting the object-shape problem seen in FUSE writeback-cache:
+small adjacent page writes often arrive out of order and later become many
+partial-tail S3 PUTs. The TDD guard reproduced the intended behavior and the
+local CI `Test workspace` step was run before perf:
+`cargo test --workspace --lib --bins` passed with `442 passed; 0 failed; 159
+ignored` for the library target, `504 passed; 0 failed; 159 ignored` for the
+BrewFS binary target, and `0 passed; 0 failed` for `brewfs_stats`.
+
+Artifacts:
+
+- BrewFS candidate:
+  `docker/compose-xfstests/artifacts/perf-run-1781664402-30831`
+- Same-parameter JuiceFS comparison:
+  `docker/compose-xfstests/artifacts/juicefs-perf-run-1781665162-3837`
+
+Command shape:
+
+```bash
+PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+
+PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
+  bash docker/compose-xfstests/run_juicefs_perf.sh \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+The code was rejected and reverted. It strongly reduced BrewFS object
+amplification, but shifted cost into foreground close/flush tail and S3 PUT
+latency. Against the latest accepted full snapshot, `fio-randrw` wall+drain
+regressed from `163s` to `205s` and write p99 regressed from `20.6ms` to
+`43.3ms`. The same-cycle JuiceFS run was noisy, with disk-cache timeout,
+slow-PUT, `readSlice context canceled`, and compact warnings, but it still
+shows the architectural gap: JuiceFS returns from the active mixed fio window
+quickly and drains staging later, while BrewFS still blocks the foreground path
+too long.
+
+| Workload | Latest accepted BrewFS | Candidate BrewFS | Same-run JuiceFS | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `fio-seqwrite` wall+drain | 140s | 145s | 171s | reject: no wall gain despite active BW jump |
+| `fio-seqwrite` active BW / p99 | W 76.2 MiB/s / 14.2ms | W 505.8 MiB/s / 15.9ms | W 600.0 MiB/s / 35.9ms | object shape improved, but foreground wait moved elsewhere |
+| `fio-randwrite` wall+drain | 145s | 139s | 148s | mixed: wall ok, p99 guard failed |
+| `fio-randwrite` active BW / p99 | W 112.3 MiB/s / 34.9ms | W 345.9 MiB/s / 49.5ms | W 575.0 MiB/s / 337.6ms | reject: BrewFS p99 +42% vs accepted |
+| `fio-randrw` wall+drain | 163s | 205s | 81s | reject: foreground/mixed wall regression |
+| `fio-randrw` active BW / p99 | R 230.8 / W 103.5 MiB/s; R 227.5ms / W 20.6ms | R 349.8 / W 156.3 MiB/s; R 39.1ms / W 43.3ms | R 224.9 / W 102.8 MiB/s; R 742.4ms / W 14.6ms | reject: active BW improved, but write tail and wall violated guard |
+
+The object counters are still useful for the next design. Candidate PUT ops
+dropped from the accepted full run's `fio-seqwrite/fio-randwrite/fio-randrw`
+counts of about `13439/10055/18274` to `5238/2883/3144`, and upload batches
+grew from sub-1MiB average objects toward `2-3MiB` objects. However, average
+S3 PUT latency climbed to `90.9ms` for seqwrite, `148.0ms` for randwrite, and
+`190.5ms` for randrw. The next attempt should preserve this object aggregation
+signal without letting foreground writes wait on larger, slower S3 PUTs.
+
 2026-06-17 writer retry scheduling check:
 
 The candidate moved the rare `ChunkHandle::write_at` retry from an internal
