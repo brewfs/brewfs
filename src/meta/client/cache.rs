@@ -448,12 +448,13 @@ impl OpenFileEntry {
     }
 }
 
-/// JuiceFS-style metadata cache scoped to files that were recently opened.
+/// JuiceFS-style metadata cache scoped to files that are recently active.
 ///
 /// This cache is created only when explicitly enabled by configuration. It is
 /// intentionally narrower than `InodeCache`: it is used for close-to-open
 /// refresh avoidance on repeated non-append opens and is invalidated on local
-/// metadata mutations.
+/// metadata mutations. Entries expire after an idle window, matching JuiceFS'
+/// `openfiles.lastCheck` behavior more closely than a fixed lifetime.
 pub(crate) struct OpenFileCache {
     entries: Arc<DashMap<i64, Arc<OpenFileEntry>>>,
     ttl_manager: Cache<i64, Arc<OpenFileEntry>>,
@@ -465,7 +466,7 @@ impl OpenFileCache {
         let entries_clone = entries.clone();
         let ttl_manager = Cache::builder()
             .max_capacity(capacity.max(1))
-            .time_to_live(ttl)
+            .time_to_idle(ttl)
             .eviction_listener(
                 move |key: Arc<i64>, _value: Arc<OpenFileEntry>, cause: RemovalCause| {
                     debug!("OpenFileCache: Evicting inode {} (cause: {:?})", key, cause);
@@ -551,6 +552,33 @@ mod tests {
         assert!(
             cache.readdir(1).await.is_none(),
             "missing child attrs must force a backend readdir instead of reporting File"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_file_cache_refreshes_idle_deadline_on_attr_access() {
+        let cache = OpenFileCache::new(8, Duration::from_millis(80));
+        let file_attr = attr(42, FileType::File);
+
+        cache.open(42, file_attr).await;
+        cache.close(42).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            cache.attr(42).await.is_some(),
+            "entry should be present before the idle window expires"
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            cache.attr(42).await.is_some(),
+            "hot attr access should refresh the open-file cache idle window"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            cache.attr(42).await.is_none(),
+            "entry should expire after a full idle window without access"
         );
     }
 }

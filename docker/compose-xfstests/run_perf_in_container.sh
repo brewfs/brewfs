@@ -943,6 +943,9 @@ run_fio_profile() {
     local runtime_var
     local name rw rwmixread bs size numjobs ioengine iodepth direct runtime
     local needs_prefill=false
+    local use_time_based=true
+    local use_end_fsync=false
+    local use_refill_buffers=false
     local -a args=()
 
     if [[ -n "$profile_key_override" ]]; then
