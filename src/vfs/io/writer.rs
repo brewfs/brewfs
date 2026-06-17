@@ -2642,6 +2642,11 @@ where
                                         &slice_for_persist,
                                     )
                                     .await?;
+                                    Self::try_commit_before_upload_if_front(
+                                        &shared_for_persist,
+                                        &slice_for_persist,
+                                    )
+                                    .await;
                                     Ok::<(), anyhow::Error>(())
                                 }
                                 .await;
@@ -3024,6 +3029,27 @@ where
                 false
             }
         }
+    }
+
+    async fn try_commit_before_upload_if_front(
+        shared: &Arc<Shared<B, M>>,
+        slice: &Arc<ParkingMutex<SliceState>>,
+    ) -> bool {
+        let chunk_id = slice.lock().chunk_id;
+        let is_front = {
+            let guard = shared.inner.lock().await;
+            guard
+                .chunks
+                .get(&chunk_id)
+                .and_then(|chunk| chunk.slices.front())
+                .is_some_and(|front| Arc::ptr_eq(front, slice))
+        };
+
+        if !is_front {
+            return false;
+        }
+
+        Self::try_commit_before_upload_front(shared, slice).await
     }
 
     /// The background thread for committing a chunk.
@@ -5182,6 +5208,101 @@ mod tests {
         wait_for_recent_pending_upload_bytes(&writer, layout.block_size as u64).await;
 
         store.unblock();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_stage_ready_commit_before_upload_helper_requires_front_slice() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "stage_done_front_order.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+        let write_back = Arc::new(
+            crate::vfs::cache::write_back::FsWriteBackCache::new_with_sync(
+                temp.path().to_path_buf(),
+                false,
+            ),
+        );
+        let writer = FileWriter::new(
+            inode.clone(),
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            Some(write_back),
+        );
+
+        let cid = chunk_id_for(inode.ino(), 0).unwrap();
+        let first = Arc::new(ParkingMutex::new(SliceState::new(
+            cid,
+            0,
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            1,
+        )));
+        let second = Arc::new(ParkingMutex::new(SliceState::new(
+            cid,
+            layout.block_size.into(),
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            2,
+        )));
+
+        for (slice, id) in [(&first, 11), (&second, 12)] {
+            let mut state = slice.lock();
+            state.data.append(&vec![id as u8; 1024]).unwrap();
+            state.state = SliceStatus::Readonly;
+            state.slice_id = Some(id);
+            state.frozen_epoch = inode.data_epoch();
+            state.freeze_reason = Some(SliceFreezeReason::ExplicitFlush);
+            state.writeback_persisted_bytes = state.data.len();
+            state.writeback_record_sealed = true;
+        }
+
+        {
+            let mut guard = writer.shared.inner.lock().await;
+            let mut chunk = ChunkState::new(cid);
+            chunk.slices.push_back(first.clone());
+            chunk.slices.push_back(second.clone());
+            guard.chunks.insert(cid, chunk);
+        }
+
+        assert!(
+            !FileWriter::try_commit_before_upload_if_front(&writer.shared, &second).await,
+            "stage-done helper must not commit a later slice before earlier slices"
+        );
+        assert!(
+            !matches!(second.lock().state, SliceStatus::Committed),
+            "non-front slice must remain uncommitted"
+        );
+        assert!(
+            meta.get_slices(cid).await.unwrap().is_empty(),
+            "non-front slice must not be written to metadata"
+        );
+
+        assert!(
+            FileWriter::try_commit_before_upload_if_front(&writer.shared, &first).await,
+            "front stage-ready slice should commit without waiting for object upload"
+        );
+        assert!(matches!(first.lock().state, SliceStatus::Committed));
+        let slices = meta.get_slices(cid).await.unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].slice_id, 11);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
