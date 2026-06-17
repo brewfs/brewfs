@@ -221,8 +221,59 @@ Use these notes to understand where BrewFS intentionally differs from JuiceFS, w
 
 ### Latest Local Perf Snapshot
 
-The following snapshot was collected on 2026-06-16 with the full Docker perf
-runners under `docker/compose-xfstests/`:
+Focused writeback observability snapshot, collected on 2026-06-17 with the
+Docker perf runners under `docker/compose-xfstests/`:
+
+```bash
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+  cargo test --workspace --lib --bins
+PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
+  bash docker/compose-xfstests/run_juicefs_perf.sh \
+  --writeback-throughput-profile \
+  --tools "fio-seqwrite fio-randwrite fio-randrw"
+```
+
+Artifacts:
+
+- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781667182-26770`
+- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781667810-4966`
+
+Local CI gate for this iteration:
+`cargo fmt --all --check`,
+`bash docker/compose-xfstests/test_perf_report_delta.sh`, and the workflow's
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
+all passed before accepting the perf data.
+
+This iteration adds BrewFS writeback `flush_wait` counters to `.stats` and the
+generated perf report. The data-plane behavior is unchanged; the new counters
+make foreground close/flush tail visible next to staging and upload counters.
+`Tool+drain` is the script tool wall time plus explicit post-write drain.
+JuiceFS in this local run emitted many disk-cache write timeout, slow S3 PUT,
+slow flush, and mixed read `context canceled` warnings, so the table should be
+read as a same-cycle local comparison rather than an ideal JuiceFS upper bound.
+
+| Workload | BrewFS tool+drain | JuiceFS tool+drain | BrewFS active BW | JuiceFS active BW | BrewFS/JuiceFS BW | BrewFS p99 | JuiceFS p99 | BrewFS flush wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `fio-seqwrite` | 135s | 166s | W 76.28 MiB/s | W 593.07 MiB/s | W 0.13x | W 15.7ms | W 78.1ms | 3 ops / 133.45s / 13335 slices |
+| `fio-randwrite` | 135s | 153s | W 129.60 MiB/s | W 585.26 MiB/s | W 0.22x | W 208.7ms | W 333.4ms | 11 ops / 381.97s / 16977 slices |
+| `fio-randrw` | 146s | 80s | R 295.47 / W 132.74 MiB/s | R 198.72 / W 90.08 MiB/s | R 1.49x / W 1.47x | R 37.0ms / W 11.5ms | R 1044.4ms / W 15.7ms | 8 ops / 442.57s / 17507 slices |
+
+The current bottleneck is now clearer: BrewFS active write bandwidth still trails
+JuiceFS on pure write workloads, but this local focused run shows BrewFS can
+finish pure write tool+drain sooner because JuiceFS leaves long post-write drain
+tails. BrewFS still pays a large foreground close/flush cost: the new
+`flush_wait` metrics show 133s on sequential write, 382s aggregate across random
+write flushes, and 443s aggregate across mixed random read/write flushes. The
+next writeback target should reduce per-flush slice scanning/waiting and move
+safe staging acknowledgement closer to JuiceFS's writeback model without
+weakening read-after-write, fsync, or orphan cleanup semantics.
+
+Previous full default snapshot, collected on 2026-06-16 with the full Docker
+perf runners under `docker/compose-xfstests/`:
 
 ```bash
 PERF_LOG_TO_CONSOLE=false \

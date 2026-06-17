@@ -1352,6 +1352,9 @@ struct RecentPendingUploadState {
     commit_wait_upload_unknown_origin_us: AtomicU64,
     commit_wait_retry_ops: AtomicU64,
     commit_wait_retry_us: AtomicU64,
+    flush_wait_ops: AtomicU64,
+    flush_wait_us: AtomicU64,
+    flush_wait_slices: AtomicU64,
     slice_create_ops: AtomicU64,
     slice_reuse_ops: AtomicU64,
     slice_reject_older_unique_ops: AtomicU64,
@@ -1445,6 +1448,9 @@ impl RecentPendingUploadState {
             commit_wait_upload_unknown_origin_us: AtomicU64::new(0),
             commit_wait_retry_ops: AtomicU64::new(0),
             commit_wait_retry_us: AtomicU64::new(0),
+            flush_wait_ops: AtomicU64::new(0),
+            flush_wait_us: AtomicU64::new(0),
+            flush_wait_slices: AtomicU64::new(0),
             slice_create_ops: AtomicU64::new(0),
             slice_reuse_ops: AtomicU64::new(0),
             slice_reject_older_unique_ops: AtomicU64::new(0),
@@ -1604,6 +1610,15 @@ impl RecentPendingUploadState {
             duration.as_micros().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
+    }
+
+    fn record_flush_wait(&self, duration: Duration, slices: u64) {
+        self.flush_wait_ops.fetch_add(1, Ordering::Relaxed);
+        self.flush_wait_us.fetch_add(
+            duration.as_micros().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+        self.flush_wait_slices.fetch_add(slices, Ordering::Relaxed);
     }
 
     fn record_slice_create(&self) {
@@ -2278,6 +2293,7 @@ where
         }
 
         let start = Instant::now();
+        let mut captured_slices = 0u64;
         let result = {
             let mut flushed_gen = self.shared.write_gen.load(Ordering::Acquire);
             loop {
@@ -2290,6 +2306,7 @@ where
                         .flat_map(|chunk| chunk.slices.iter().cloned())
                         .collect()
                 };
+                captured_slices = captured_slices.saturating_add(slices.len() as u64);
 
                 // Freeze any that are still writable and kick off their uploads.
                 for slice in &slices {
@@ -2378,6 +2395,9 @@ where
                 flushed_gen = current_gen;
             }
         };
+        self.shared
+            .recent_pending_upload
+            .record_flush_wait(start.elapsed(), captured_slices);
 
         // Notify all write events.
         let mut guard = self.shared.inner.lock().await;
@@ -3711,6 +3731,9 @@ pub(crate) struct WritebackDirtyBreakdown {
     pub commit_wait_upload_unknown_origin_us: u64,
     pub commit_wait_retry_ops: u64,
     pub commit_wait_retry_us: u64,
+    pub flush_wait_ops: u64,
+    pub flush_wait_us: u64,
+    pub flush_wait_slices: u64,
     pub slice_create_ops: u64,
     pub slice_reuse_ops: u64,
     pub slice_reject_older_unique_ops: u64,
@@ -3946,6 +3969,18 @@ where
             commit_wait_retry_us: self
                 .recent_pending_upload
                 .commit_wait_retry_us
+                .load(Ordering::Relaxed),
+            flush_wait_ops: self
+                .recent_pending_upload
+                .flush_wait_ops
+                .load(Ordering::Relaxed),
+            flush_wait_us: self
+                .recent_pending_upload
+                .flush_wait_us
+                .load(Ordering::Relaxed),
+            flush_wait_slices: self
+                .recent_pending_upload
+                .flush_wait_slices
                 .load(Ordering::Relaxed),
             slice_create_ops: self
                 .recent_pending_upload
@@ -4472,6 +4507,7 @@ mod tests {
             WriteOriginKind::CachedOnly,
         );
         state.record_commit_wait_retry(Duration::from_micros(34));
+        state.record_flush_wait(Duration::from_micros(55), 3);
         state.record_upload_batch(4096, 1, false, None, None, WriteOriginKind::NormalOnly);
         state.record_upload_batch(8192, 2, false, None, None, WriteOriginKind::NormalOnly);
 
@@ -4511,6 +4547,9 @@ mod tests {
         );
         assert_eq!(state.commit_wait_retry_ops.load(Ordering::Relaxed), 1);
         assert_eq!(state.commit_wait_retry_us.load(Ordering::Relaxed), 34);
+        assert_eq!(state.flush_wait_ops.load(Ordering::Relaxed), 1);
+        assert_eq!(state.flush_wait_us.load(Ordering::Relaxed), 55);
+        assert_eq!(state.flush_wait_slices.load(Ordering::Relaxed), 3);
     }
 
     #[test]

@@ -1709,6 +1709,9 @@ if brewfs_stats_paths:
         stage_ms = delta("brewfs_writeback_stage_lat_us_total") / 1000.0
         stage_s = delta("brewfs_writeback_stage_lat_us_total") / 1_000_000.0
         commit_wait_s = delta("brewfs_writeback_commit_wait_upload_us_total") / 1_000_000.0
+        flush_wait_ops = delta("brewfs_writeback_flush_wait_ops_total")
+        flush_wait_s = delta("brewfs_writeback_flush_wait_us_total") / 1_000_000.0
+        flush_wait_slices = delta("brewfs_writeback_flush_wait_slices_total")
         stage_failures = delta("brewfs_writeback_stage_failures_total")
         commit_before_stage = delta(
             "brewfs_writeback_commit_before_stage_ops_total",
@@ -1802,6 +1805,7 @@ if brewfs_stats_paths:
             f"{rel}; range={int(range_gets)}, full={int(full_gets)}, bg_prefetch={int(bg_prefetch)}, "
             f"stage={int(stage_ops)} ops/{fmt_mib(stage_bytes)}/{stage_ms:.1f} ms, "
             f"foreground=stage {stage_s:.2f}s/commit_wait {commit_wait_s:.2f}s, "
+            f"flush_wait={int(flush_wait_ops)} ops/{flush_wait_s:.2f}s/{int(flush_wait_slices)} slices, "
             f"stage_fail={int(stage_failures)}, commit_before_stage={int(commit_before_stage)}, "
             f"remote_inflight={fmt_mib(remote_inflight)}, "
             f"slices=create {int(slice_create)}/reuse {int(slice_reuse)}/"

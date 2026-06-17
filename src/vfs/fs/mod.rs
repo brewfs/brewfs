@@ -829,6 +829,11 @@ where
                         dirty.commit_wait_retry_ops,
                         dirty.commit_wait_retry_us,
                     );
+                    fuse_stats.sync_writeback_flush_wait_metrics(
+                        dirty.flush_wait_ops,
+                        dirty.flush_wait_us,
+                        dirty.flush_wait_slices,
+                    );
                     fuse_stats.sync_writeback_commit_wait_breakdown_metrics(
                         dirty.commit_wait_upload_size_ops,
                         dirty.commit_wait_upload_size_us,

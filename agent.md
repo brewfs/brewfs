@@ -19,9 +19,10 @@ performance work.
 
 Current goal amendment: every performance iteration must run the workflow's
 `Test workspace` command locally before its perf numbers are considered valid:
-`cargo test --workspace --lib --bins`. Record that result alongside the perf
-evidence. A focused unit test is allowed during development, but it does not
-replace the CI test step for accepting an optimization.
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`.
+Record that result alongside the perf evidence. A focused unit test is allowed
+during development, but it does not replace the CI test step for accepting an
+optimization.
 
 Goal acceptance rule: no BrewFS performance comparison, README table update, or
 optimization commit may be treated as accepted unless the local reproduction of
