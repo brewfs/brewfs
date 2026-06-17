@@ -473,10 +473,12 @@ where
             has_creat = (flags & libc::O_CREAT as u32) != 0,
             "fuse.open"
         );
-        self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid)
-            .await?;
-        self.ensure_access_allowed(ino as i64, req.uid, req.gid, open_flags_access_mask(flags))
-            .await?;
+        if req.uid != 0 {
+            self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid)
+                .await?;
+            self.ensure_access_allowed(ino as i64, req.uid, req.gid, open_flags_access_mask(flags))
+                .await?;
+        }
         let fh = self
             .open_fresh_ino(ino as i64, read, write, append)
             .await
@@ -3084,6 +3086,27 @@ mod fuse_init_tests {
             .unwrap_err();
 
         assert_eq!(err, Errno::from(libc::EACCES));
+    }
+
+    #[tokio::test]
+    async fn open_allows_root_for_cached_inode_when_parent_lacks_search_access() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/dir").await.unwrap();
+        fs.create_file("/dir/file.txt").await.unwrap();
+        let dir = fs.stat("/dir").await.unwrap();
+        let file = fs.stat("/dir/file.txt").await.unwrap();
+        fs.chmod(dir.ino, 0o000).await.unwrap();
+
+        let reply = Filesystem::open(
+            &fs,
+            request_with_ids(0, 0),
+            file.ino as u64,
+            libc::O_RDONLY as u32,
+        )
+        .await
+        .unwrap();
+
+        fs.close(reply.fh).await.unwrap();
     }
 
     #[tokio::test]

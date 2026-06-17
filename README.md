@@ -53,6 +53,33 @@ Filesystem and runtime features:
 - Slice compaction and two-phase block deletion
 - Runtime control plane for `brewfs info` and `brewfs gc`
 
+## Performance Snapshot
+
+Current Redis + S3-compatible RustFS perf runs use `fio` with `io_uring`, `iodepth=1`, buffered IO, 4 MiB blocks, BrewFS writeback throughput profile, no compression, 6 FUSE workers, and a 1s/65k open metadata cache. JuiceFS is v1.3.1 with writeback and the same open-cache limit.
+
+Artifacts:
+
+- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781719441-4216`
+- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781716413-26269`
+
+| fio tool | BrewFS MiB/s | JuiceFS MiB/s | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| `fio-bigread` | R 656.4 / W 0.0 | R 2398.1 / W 0.0 | 27.4% |
+| `fio-bigwrite` | R 0.0 / W 1181.1 | R 0.0 / W 3494.9 | 33.8% |
+| `fio-seqread` | R 1808.9 / W 0.0 | R 2478.8 / W 0.0 | 73.0% |
+| `fio-seqwrite` | R 0.0 / W 70.1 | R 0.0 / W 283.2 | 24.8% |
+| `fio-randread` | R 765.7 / W 0.0 | R 3287.6 / W 0.0 | 23.3% |
+| `fio-randwrite` | R 0.0 / W 89.9 | R 0.0 / W 277.5 | 32.4% |
+| `fio-randrw` | R 229.2 / W 102.8 | R 164.0 / W 75.3 | 138.8% |
+
+| metadata op | BrewFS ops/s | JuiceFS ops/s | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| create | 848.0 | 1315.9 | 64.4% |
+| open | 10116.4 | 23541.6 | 43.0% |
+| stat | 1028718.3 | 1015339.8 | 101.3% |
+| readdir | 63763.5 | 67671.5 | 94.2% |
+| rename | 1911.8 | 2740.9 | 69.8% |
+
 ## Quick Start
 
 Requirements:
