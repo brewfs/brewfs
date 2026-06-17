@@ -787,6 +787,24 @@ writeback throughput profile with fio `direct=0`, 64MiB `fio-big*` data,
 | Enable compact profile defaults (`interval=2s`, `min_slice_count=3`) | `fio-bigwrite fio-seqwrite fio-randwrite fio-randrw` | bigwrite BW 911.0 MiB/s -> 1.04 GiB/s, seqwrite BW 1.29 -> 1.39 GiB/s, randwrite BW 1.56 -> 1.70 GiB/s, randrw wall 32s -> 12s | seqwrite wall 66s -> 83s, randwrite wall 117s -> 129s, randrw read/write BW 1.28 GiB/s / 600.0 MiB/s -> 845.7 / 384.1 MiB/s | reject as default: config pass-through is kept, but low-interval compaction hurts wall time and mixed throughput |
 | Early Redis rename outcome retry | `metaperf` | standalone `metaperf` wall was 187s, but this is not comparable to the full-matrix 248s after fio pressure | vs accepted same-parameter run: create 3470.4 -> 3174.0, open 10106.8 -> 9149.6, stat 1021723.6 -> 932515.8, readdir 109145.2 -> 98537.3, rename 1915.0 -> 1863.9 ops/s | reject: the early version only avoided part of the destination prelookup and regressed all metadata subtests; the later accepted `RenameOutcome` implementation above adds source/replaced inode cache invalidation tests and full-matrix perf evidence |
 
+2026-06-17 writer retry scheduling check:
+
+The candidate moved the rare `ChunkHandle::write_at` retry from an internal
+`std::thread::yield_now()` loop to an outer async retry that released the writer
+lock, dispatched any flush/commit action, and then used `tokio::task::yield_now`.
+It passed the local Rust CI gate (`cargo fmt --all --check`, perf script checks,
+`cargo check --workspace`, `cargo build --workspace`, BrewFS FUSE feature
+checks, `cargo test --workspace --lib --bins`, and `cargo clippy --workspace`)
+before perf. The code was rejected and reverted after focused perf because the
+target retry path did not trigger in the artifact logs and random-write tail
+latency regressed.
+
+Artifact: `docker/compose-xfstests/artifacts/perf-run-1781659194-5941`
+
+| Candidate | Focused tools | Positive signal | Regression | Decision |
+| --- | --- | --- | --- | --- |
+| Async writer retry outside the writer lock | `fio-seqwrite fio-randwrite fio-randrw` | wall improved versus the latest full accepted snapshot: seqwrite 140s -> 134s, randwrite 145s -> 134s, randrw 163s -> 150s; randwrite BW 112.3 -> 129.6 MiB/s; randrw R/W 230.8/103.5 -> 269.9/121.4 MiB/s | seqwrite active BW slipped 76.2 -> 73.3 MiB/s; randwrite p99 regressed 34.9ms -> 206.6ms; no `write_at retried` log appeared, so the intended rare retry path was not exercised | reject: the target path was not validated and the randwrite p99 regression violates the mixed/write guard |
+
 The DataFetcher single-block candidate artifact is
 `docker/compose-xfstests/artifacts/perf-run-1781630677-14774`; its same-parameter
 JuiceFS focused comparison is
