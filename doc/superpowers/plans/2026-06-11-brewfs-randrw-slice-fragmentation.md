@@ -1605,3 +1605,84 @@ Decision:
   `FsWriteBackCache`.
 - Keep the local CI test gate as mandatory for every accepted performance
   change, but keep `randrw` plus post-write drain as the decisive perf gate.
+
+## 2026-06-17 Goal Amendment: Local CI Test Gate
+
+The active performance goal now treats the CI workflow's `Test workspace` step
+as a hard acceptance gate. Every accepted performance iteration must run this
+command locally, in the same iteration as the perf evidence, before the numbers
+are considered valid:
+
+```bash
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins
+```
+
+Focused tests still belong in the development loop, but they only prove the
+narrow hypothesis. They do not replace the local CI test gate. If this command
+fails, the next performance goal step is to fix, quarantine, or document that
+failure before continuing with throughput tuning.
+
+Local reproduction on 2026-06-17:
+
+```text
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins
+result: ok, 504 passed, 0 failed, 159 ignored
+notable guard: vfs::fs::tests::io_tests::test_fs_fuzz_parallel_read_write passed
+```
+
+## 2026-06-17 Rejected Candidate R: Relax Older-Unique Append Reuse
+
+Hypothesis:
+
+- Older FUSE write `unique` values were causing `ChunkHandle::find_slice_or_create`
+  to reject writable slices even for strict appends.
+- A strict append is non-overlapping, so allowing it to reuse the current slice
+  might reduce `slice_reject_older_unique_ops`, slice creation, and object
+  amplification while preserving the existing overlap guard.
+
+Verification before perf:
+
+```text
+RED: cargo test -p brewfs --lib vfs::io::writer::tests::test_cached_older_unique_append_reuses_non_overlapping_slice -- --nocapture
+     failed as expected with slice_create_ops left=2 right=1
+GREEN: same focused test passed after the candidate change
+cargo test -p brewfs --lib vfs::io::writer::tests -- --nocapture
+     46 passed; 0 failed
+cargo fmt --all --check
+git diff --check
+```
+
+Perf artifact:
+
+```text
+candidate direct0 focused writeback: perf-run-1781687228-30572
+accepted direct0 baseline:          perf-run-1781673470-37
+```
+
+Key results:
+
+```text
+fio-seqwrite tool_wall_s:        130 -> 129 (-0.8%)
+fio-seqwrite write_bw_mib_s:     126.2 -> 124.8 (-1.0%)
+fio-seqwrite s3_put_ops:         9573 -> 10553 (+10.2%)
+fio-randwrite tool_wall_s:       131 -> 185 (+41.2%)
+fio-randwrite active_runtime_s:  43.719 -> 32.919 (-24.7%)
+fio-randwrite write_bw_mib_s:    204.6 -> 285.9 (+39.8%)
+fio-randwrite buffer_dirty_mib:  0 -> 2964.7
+fio-randwrite live_dirty_mib:    0 -> 1988.9
+slice_reject_older_unique_ops:   149288 -> 143544 (-3.8%)
+upload_partial_tail_flush_ops:   574 -> 4497 (+683.4%)
+```
+
+Decision:
+
+- Reject and roll back Candidate R code.
+- The candidate made active `fio-randwrite` bandwidth look better, but it
+  shifted too much cost into dirty writeback debt and made wall time 41.2%
+  worse.
+- The small drop in older-unique rejects did not reduce slice/object
+  amplification. It increased slice creation, upload batch count, partial-tail
+  pressure, and pending dirty bytes.
+- `creation_unique` is not the root performance lever by itself. Future work
+  should use explicit extent ordering/coalescing or upload scheduling evidence
+  instead of relaxing append reuse heuristics in isolation.

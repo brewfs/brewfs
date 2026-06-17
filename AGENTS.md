@@ -39,6 +39,13 @@ Every accepted code change, including performance work, must pass the relevant
 local CI gate before commit. At minimum, run the Rust job commands from
 `.github/workflows/ci.yml`:
 
+The active performance goal treats the workflow's `Test workspace` step as a
+hard validity gate for every accepted optimization attempt. Run
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
+locally in the same iteration before accepting perf numbers, updating the
+README comparison table, or committing code. Focused unit tests are useful
+during development, but they do not replace this CI test gate.
+
 ```bash
 cargo fmt --all --check
 
@@ -178,4 +185,3 @@ df -h /mnt/slayerfs /mnt/slayerfs/brewfs
 du -sh target docker/compose-xfstests/artifacts 2>/dev/null || true
 docker system df
 ```
-
