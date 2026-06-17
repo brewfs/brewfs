@@ -1533,3 +1533,75 @@ amplification.
     - keep direct0 read/write within 2% and direct1 active+drain no worse than
       the nearby HEAD direct1 baseline.
 ```
+
+## 2026-06-17 Rejected Candidate Q: FsWriteBackCache Stage-Range Map
+
+Hypothesis:
+
+- `FsWriteBackCache::seal_slice_record` proves staged completeness with
+  `metadata(slice_path).len() >= length`, which can mistake sparse staged files
+  for fully staged data.
+- Tracking staged ranges in memory would both close the correctness gap and
+  avoid an extra local filesystem metadata lookup on the foreground seal path.
+- This deliberately avoided the previously rejected upload concurrency,
+  notification, stage/upload ordering, and slice coalescing changes.
+
+Local CI gate:
+
+```text
+bash -n docker/compose-xfstests/run_perf_in_container.sh
+bash -n docker/compose-xfstests/run_redis_perf.sh
+bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh
+bash -n docker/compose-xfstests/run_juicefs_perf.sh
+bash docker/compose-xfstests/test_perf_report_delta.sh
+bash docker/compose-xfstests/test_juicefs_direct_matrix.sh
+bash docker/compose-xfstests/test_juicefs_perf_report.sh
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo check --workspace
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace
+rfuse3 feature checks skipped because rfuse3 is not a workspace member
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo check -p brewfs --no-default-features --features fuse-tokio-runtime
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace
+```
+
+Functional result:
+
+- The focused RED test reproduced the sparse-stage hole: a tail-only staged file
+  could be sealed because file length was large enough.
+- The candidate made the focused writeback cache tests and the local CI Rust
+  job pass.
+
+Perf artifact:
+
+```text
+candidate direct0 focused writeback: perf-run-1781684542-6139
+accepted direct0 baseline:          perf-run-1781673470-37
+```
+
+Key results:
+
+```text
+fio-seqwrite tool_wall_s:  130 -> 126 (-3.1%)
+fio-randwrite tool_wall_s: 131 -> 132 (+0.8%)
+fio-randrw tool_wall_s:    143 -> 182 (+27.3%)
+fio-randrw read_bw_mib_s:  914.3 -> 275.9 (-69.8%)
+fio-randrw write_bw_mib_s: 409.4 -> 122.9 (-70.0%)
+
+randrw drain did not complete cleanly. After the script exceeded the expected
+post-write drain timeout, BrewFS still reported about 7.0 GiB dirty,
+6.1 GiB live dirty, 801 MiB recent pending upload, and 3.1 GiB remote upload
+in flight. A child shell was blocked in FUSE getattr on the mount.
+```
+
+Decision:
+
+- Reject and roll back Candidate Q code.
+- The correctness issue remains worth fixing, but this implementation creates
+  too many live cached-only slices in mixed read/write and turns `randrw` into a
+  hard regression.
+- Any future fix for staged coverage must be tied to the writer's existing
+  slice lifecycle state instead of adding a second hot-path range map in
+  `FsWriteBackCache`.
+- Keep the local CI test gate as mandatory for every accepted performance
+  change, but keep `randrw` plus post-write drain as the decisive perf gate.
