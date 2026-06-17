@@ -239,44 +239,50 @@ PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
 
 Artifacts:
 
-- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781669522-32683`
-- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781670104-2821`
+- BrewFS: `docker/compose-xfstests/artifacts/perf-run-1781673470-37`
+- JuiceFS: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781673944-2163`
 
 Local CI gate for this iteration:
-`cargo fmt --all --check`,
-`bash docker/compose-xfstests/test_perf_report_delta.sh`, and the workflow's
+`cargo fmt --all --check`, `git diff --check`, focused writeback tests, and the
+workflow's
 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
-(`504 passed; 0 failed; 159 ignored`) all passed before accepting the perf data.
+(`504 passed; 0 failed; 159 ignored` for the BrewFS binary target) all passed
+before accepting the perf data.
 
-This iteration lets a cached writeback slice commit metadata immediately after
-its local stage record is sealed, but only if that slice is still at the front
-of its chunk queue. The change follows JuiceFS's writeback direction of
-acknowledging local staging before remote upload while preserving BrewFS
-metadata ordering and read-after-write overlay semantics.
+This iteration extends the cached writeback coalescing window for sub-block
+slices. Auto-freeze can still run under pressure, but idle, too-many-slices, and
+flush-duration auto-freeze no longer force young cached-only tails into small
+object PUTs. This follows JuiceFS's bias toward keeping recent writable slices
+available for coalescing while preserving BrewFS explicit flush semantics.
 `Tool+drain` is the script tool wall time plus explicit post-write drain.
-JuiceFS in this local run emitted many disk-cache write timeout, slow S3 PUT,
-slow flush, and mixed read `context canceled` warnings, so the table should be
-read as a same-cycle local comparison rather than an ideal JuiceFS upper bound.
+JuiceFS in this local run emitted slow S3 PUT, slow flush, disk-cache timeout,
+and mixed read `context canceled` warnings, so the table should be read as a
+same-cycle local comparison rather than an ideal JuiceFS upper bound.
 
 | Workload | BrewFS tool+drain | JuiceFS tool+drain | BrewFS active BW | JuiceFS active BW | BrewFS/JuiceFS BW | BrewFS p99 | JuiceFS p99 | BrewFS flush wait |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `fio-seqwrite` | 133s | 169s | W 80.79 MiB/s | W 605.04 MiB/s | W 0.13x | W 16.3ms | W 47.4ms | 2 ops / 132.20s / 13285 slices |
-| `fio-randwrite` | 136s | 157s | W 181.64 MiB/s | W 587.98 MiB/s | W 0.31x | W 206.6ms | W 333.4ms | 6 ops / 427.52s / 17465 slices |
-| `fio-randrw` | 150s | 62s | R 494.94 / W 222.44 MiB/s | R 223.04 / W 101.61 MiB/s | R 2.22x / W 2.19x | R 34.9ms / W 12.6ms | R 775.9ms / W 14.7ms | 7 ops / 505.88s / 20452 slices |
+| `fio-seqwrite` | 130s | 145s | W 126.15 MiB/s | W 605.67 MiB/s | W 0.21x | W 16.6ms | W 26.1ms | 2 ops / 127.44s / 14599 slices |
+| `fio-randwrite` | 131s | 190s | W 204.58 MiB/s | W 542.15 MiB/s | W 0.38x | W 206.6ms | W 337.6ms | 6 ops / 413.88s / 18234 slices |
+| `fio-randrw` | 145s | 62s | R 914.30 / W 409.37 MiB/s | R 242.28 / W 111.50 MiB/s | R 3.77x / W 3.67x | R 206.6ms / W 10.2ms | R 616.6ms / W 12.4ms | 7 ops / 367.24s / 9250 slices |
 
 Compared with the previous accepted focused snapshot
-`docker/compose-xfstests/artifacts/perf-run-1781667182-26770`, BrewFS active
-bandwidth improved by about `+6%` on `seqwrite`, `+40%` on `randwrite`, and
-`+68%` on both read and write sides of `randrw`. End-to-end wall time is still
-dominated by foreground close/flush tail: pure writes finish sooner than this
-local JuiceFS run only because JuiceFS leaves long post-write drain tails, while
-mixed `randrw` remains much slower end-to-end even though BrewFS now reports
-higher active bandwidth. The next target should reduce slice fragmentation and
-per-flush queue waiting; the stage-ready commit path alone does not solve the
-large `flush_wait` aggregate. A follow-up attempt to also move the committed
-front slice to the recently-committed queue before remote upload completed was
-rejected: `perf-run-1781671165-9431` stalled in `fio-randrw` with multi-GiB
-writeback dirty bytes, so that queue move is not part of the accepted change.
+`docker/compose-xfstests/artifacts/perf-run-1781669522-32683`, BrewFS
+tool+drain improved modestly: `seqwrite` `133s -> 130s`, `randwrite`
+`136s -> 131s`, and `randrw` `150s -> 145s`. Active bandwidth moved more:
+`seqwrite` `+56%`, `randwrite` `+13%`, and `randrw` about `+85%` on both read
+and write sides. The clearest internal win is in mixed IO: `randrw` auto
+partial-tail uploads dropped from `15652` to `398`, upload batches dropped from
+`16826` to `13228`, and flush-wait slices dropped from `20452` to `9250`.
+
+The result is accepted as a narrow writeback coalescing improvement, not as a
+write-path fix. Pure write workloads still trail JuiceFS badly on active
+bandwidth, and `randrw` remains much slower end-to-end because BrewFS spends too
+long in foreground close/flush tails. A follow-up attempt to also move the
+committed front slice to the recently-committed queue before remote upload
+completed was rejected: `perf-run-1781671165-9431` stalled in `fio-randrw` with
+multi-GiB writeback dirty bytes, so that queue move is not part of the accepted
+change. The next target should reduce explicit-flush partial-tail amplification
+and per-flush queue waiting without reopening the rejected early queue move.
 
 Previous full default snapshot, collected on 2026-06-16 with the full Docker
 perf runners under `docker/compose-xfstests/`:

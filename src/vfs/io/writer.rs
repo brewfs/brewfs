@@ -70,7 +70,7 @@ const MAX_SLICES_THRESHOLD: usize = 800;
 const WRITE_MAX_WAIT: Duration = Duration::from_secs(30);
 const WRITEBACK_WRITE_MAX_WAIT: Duration = Duration::from_secs(300);
 const CACHED_SUB_BLOCK_IDLE_GRACE: Duration = Duration::from_secs(3);
-const CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE: Duration = Duration::from_secs(1);
+const CACHED_SUB_BLOCK_AUTO_FREEZE_MIN_AGE: Duration = Duration::from_secs(10);
 const WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP: Duration = Duration::from_millis(1);
 const WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP: Duration = Duration::from_millis(6);
 /// Minimum number of bytes a Writable slice must hold before `should_freeze`
@@ -3570,13 +3570,19 @@ where
                         // already frozen the slice and kicked off the upload,
                         // so flush only waits for in-flight work to land.
                         let auto_flush_max = shared.config.auto_flush_max_age;
+                        let cached_auto_freeze_ready =
+                            !cached_sub_block || age > CACHED_SUB_BLOCK_AUTO_FREEZE_MIN_AGE;
                         let cached_idle_grace =
                             cached_sub_block && age <= CACHED_SUB_BLOCK_IDLE_GRACE;
                         let mut trigger = if age > auto_flush_max && !cached_sub_block {
                             Some(AutoFreezeTrigger::Age)
-                        } else if idle_time > idle && age > idle && !cached_idle_grace {
+                        } else if idle_time > idle
+                            && age > idle
+                            && !cached_idle_grace
+                            && cached_auto_freeze_ready
+                        {
                             Some(AutoFreezeTrigger::Idle)
-                        } else if age > FLUSH_DURATION {
+                        } else if age > FLUSH_DURATION && cached_auto_freeze_ready {
                             Some(AutoFreezeTrigger::FlushDuration)
                         } else {
                             None
@@ -3588,7 +3594,7 @@ where
                             trigger = Some(AutoFreezeTrigger::Pressure);
                         }
                         let cached_too_many_too_young =
-                            cached_sub_block && age <= CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE;
+                            cached_sub_block && !cached_auto_freeze_ready;
                         let cached_too_many_has_block_relief =
                             cached_sub_block && too_many_has_block_sized_relief;
                         if trigger.is_none()
@@ -5984,7 +5990,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_auto_flush_defers_cached_sub_block_idle_freeze_with_bounded_grace() {
+    async fn test_auto_flush_defers_cached_sub_block_idle_freeze_until_explicit_flush() {
         let layout = ChunkLayout {
             chunk_size: 16 * 1024,
             block_size: 4 * 1024,
@@ -6010,28 +6016,21 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(1200)).await;
+        sleep(Duration::from_millis(3500)).await;
 
-        let before_grace = writer.dirty_breakdown().await;
+        let before_flush = writer.dirty_breakdown().await;
         assert_eq!(
-            before_grace.freeze_auto_ops, 0,
-            "cached sub-block idle slices should get a short coalescing grace before auto freeze"
+            before_flush.freeze_auto_ops, 0,
+            "cached sub-block idle slices should keep coalescing instead of creating partial-tail uploads"
         );
-        assert_eq!(before_grace.upload_partial_tail_auto_idle_ops, 0);
+        assert_eq!(before_flush.upload_partial_tail_auto_idle_ops, 0);
 
-        timeout(Duration::from_secs(3), async {
-            loop {
-                let breakdown = writer.dirty_breakdown().await;
-                if breakdown.upload_partial_tail_auto_idle_ops == 1 {
-                    assert_eq!(breakdown.freeze_auto_ops, 1);
-                    assert_eq!(breakdown.upload_partial_tail_auto_cached_only_ops, 1);
-                    break;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("cached sub-block idle grace should still be bounded");
+        file_writer.flush().await.unwrap();
+
+        let after_flush = writer.dirty_breakdown().await;
+        assert_eq!(after_flush.freeze_explicit_flush_ops, 1);
+        assert_eq!(after_flush.upload_partial_tail_explicit_flush_ops, 1);
+        assert_eq!(after_flush.upload_partial_tail_auto_idle_ops, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6040,10 +6039,10 @@ mod tests {
             chunk_size: 16 * 1024,
             block_size: 4 * 1024,
         };
-        let store = Arc::new(InMemoryBlockStore::new());
+        let store = Arc::new(BlockingStore::new(true));
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
         let meta = meta_handle.layer();
-        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
         let ino = meta
             .create_file(1, "cached_too_many_deferral.txt".to_string())
             .await
@@ -6067,16 +6066,17 @@ mod tests {
                 .unwrap();
         }
 
-        sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(1500)).await;
 
         let breakdown = writer.dirty_breakdown().await;
+        store.unblock();
         assert!(
             breakdown.live_slices > MAX_SLICES_THRESHOLD as u64,
             "test setup should keep enough live slices to trigger tooMany"
         );
         assert_eq!(
             breakdown.upload_partial_tail_auto_too_many_ops, 0,
-            "tooMany should not force cached sub-block tails during the coalescing grace"
+            "tooMany should not force cached sub-block tails while they can still coalesce"
         );
     }
 
