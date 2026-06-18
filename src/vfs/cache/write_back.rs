@@ -63,8 +63,8 @@ pub trait WriteBackCache: Send + Sync {
 /// Filesystem-backed write-back cache implementation.
 ///
 /// Directory layout:
-///   {root}/dirty/{ino}/{chunk_id}/{local_seq}.slice  — raw data
-///   {root}/dirty/{ino}/{chunk_id}/{local_seq}.meta   — JSON metadata
+///   {root}/dirty/{local_seq/1024}/{ino}_{chunk_id}_{local_seq}_{epoch}.slice  — raw data
+///   {root}/dirty/{local_seq/1024}/{ino}_{chunk_id}_{local_seq}_{epoch}.meta   — JSON metadata
 pub struct FsWriteBackCache {
     root: PathBuf,
     seq: AtomicU64,
@@ -88,12 +88,11 @@ impl FsWriteBackCache {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn write_meta(
+    async fn write_meta_at(
         &self,
-        key: &DirtySliceKey,
+        meta_path: PathBuf,
         record: &DirtySliceRecord,
     ) -> anyhow::Result<()> {
-        let meta_path = key.meta_path(&self.root);
         if let Some(parent) = meta_path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -104,10 +103,106 @@ impl FsWriteBackCache {
         Ok(())
     }
 
+    async fn write_meta(
+        &self,
+        key: &DirtySliceKey,
+        record: &DirtySliceRecord,
+    ) -> anyhow::Result<()> {
+        self.write_meta_at(key.meta_path(&self.root), record).await
+    }
+
     async fn read_meta(&self, meta_path: &Path) -> anyhow::Result<DirtySliceRecord> {
         let data = fs::read(meta_path).await?;
         let record: DirtySliceRecord = serde_json::from_slice(&data)?;
         Ok(record)
+    }
+
+    fn is_meta_path(path: &Path) -> bool {
+        path.extension().and_then(|e| e.to_str()) == Some("meta")
+    }
+
+    async fn push_recoverable_meta(
+        &self,
+        path: &Path,
+        records: &mut Vec<DirtySliceRecord>,
+    ) -> anyhow::Result<()> {
+        match self.read_meta(path).await {
+            Ok(record)
+                if !matches!(
+                    record.state,
+                    DirtySliceState::Committed | DirtySliceState::Obsolete
+                ) =>
+            {
+                records.push(record);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(path = ?path, error = ?e, "corrupt meta");
+            }
+        }
+        Ok(())
+    }
+
+    async fn collect_recoverable_meta_in_dir(
+        &self,
+        dir: &Path,
+        records: &mut Vec<DirtySliceRecord>,
+    ) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if entry.file_type().await?.is_file() && Self::is_meta_path(&path) {
+                self.push_recoverable_meta(&path, records).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn overlay_from_meta_dir(
+        &self,
+        dir: &Path,
+        ino: i64,
+        chunk_id: u64,
+        chunk_offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !entry.file_type().await?.is_file() || !Self::is_meta_path(&path) {
+                continue;
+            }
+
+            let record = match self.read_meta(&path).await {
+                Ok(record) if record.ino == ino && record.chunk_id == chunk_id => record,
+                Ok(_) | Err(_) => continue,
+            };
+
+            if !record.path.exists() {
+                continue;
+            }
+
+            let slice_start = record.chunk_offset;
+            let slice_end = slice_start + record.length;
+            let buf_end = chunk_offset + buf.len() as u64;
+
+            let overlap_start = chunk_offset.max(slice_start);
+            let overlap_end = buf_end.min(slice_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            let file_offset = overlap_start - slice_start;
+            let dst_start = (overlap_start - chunk_offset) as usize;
+            let dst_end = (overlap_end - chunk_offset) as usize;
+            let read_len = dst_end - dst_start;
+
+            let mut file = fs::File::open(&record.path).await?;
+            file.seek(std::io::SeekFrom::Start(file_offset)).await?;
+            file.read_exact(&mut buf[dst_start..dst_start + read_len])
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -191,11 +286,12 @@ impl WriteBackCache for FsWriteBackCache {
     }
 
     async fn mark_state(&self, key: &DirtySliceKey, state: DirtySliceState) -> anyhow::Result<()> {
-        let meta_path = key.meta_path(&self.root);
-        if meta_path.exists() {
-            let mut record = self.read_meta(&meta_path).await?;
-            record.state = state;
-            self.write_meta(key, &record).await?;
+        for meta_path in [key.meta_path(&self.root), key.legacy_meta_path(&self.root)] {
+            if meta_path.exists() {
+                let mut record = self.read_meta(&meta_path).await?;
+                record.state = state;
+                self.write_meta_at(meta_path, &record).await?;
+            }
         }
         Ok(())
     }
@@ -207,35 +303,29 @@ impl WriteBackCache for FsWriteBackCache {
         }
 
         let mut records = Vec::new();
-        let mut ino_dirs = fs::read_dir(&dirty_root).await?;
-        while let Some(ino_entry) = ino_dirs.next_entry().await? {
-            if !ino_entry.file_type().await?.is_dir() {
+        let mut entries = fs::read_dir(&dirty_root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_file() && Self::is_meta_path(&path) {
+                self.push_recoverable_meta(&path, &mut records).await?;
                 continue;
             }
-            let mut chunk_dirs = fs::read_dir(ino_entry.path()).await?;
-            while let Some(chunk_entry) = chunk_dirs.next_entry().await? {
-                if !chunk_entry.file_type().await?.is_dir() {
-                    continue;
-                }
-                let mut files = fs::read_dir(chunk_entry.path()).await?;
-                while let Some(file_entry) = files.next_entry().await? {
-                    let path = file_entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("meta") {
-                        match self.read_meta(&path).await {
-                            Ok(record)
-                                if !matches!(
-                                    record.state,
-                                    DirtySliceState::Committed | DirtySliceState::Obsolete
-                                ) =>
-                            {
-                                records.push(record);
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!(path = ?path, error = ?e, "corrupt meta");
-                            }
-                        }
-                    }
+
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            // New bucketed layout: dirty/<bucket>/*.meta.
+            self.collect_recoverable_meta_in_dir(&path, &mut records)
+                .await?;
+
+            // Legacy layout: dirty/<ino>/<chunk>/*.meta.
+            let mut nested = fs::read_dir(&path).await?;
+            while let Some(nested_entry) = nested.next_entry().await? {
+                if nested_entry.file_type().await?.is_dir() {
+                    self.collect_recoverable_meta_in_dir(&nested_entry.path(), &mut records)
+                        .await?;
                 }
             }
         }
@@ -243,10 +333,14 @@ impl WriteBackCache for FsWriteBackCache {
     }
 
     async fn remove(&self, key: &DirtySliceKey) -> anyhow::Result<()> {
-        let slice_path = key.slice_path(&self.root);
-        let meta_path = key.meta_path(&self.root);
-        let _ = fs::remove_file(&slice_path).await;
-        let _ = fs::remove_file(&meta_path).await;
+        for path in [
+            key.slice_path(&self.root),
+            key.meta_path(&self.root),
+            key.legacy_slice_path(&self.root),
+            key.legacy_meta_path(&self.root),
+        ] {
+            let _ = fs::remove_file(&path).await;
+        }
         Ok(())
     }
 }
@@ -269,44 +363,21 @@ impl FsWriteBackCache {
             .join(ino.to_string())
             .join(chunk_id.to_string());
 
-        if !chunk_dir.exists() {
+        let dirty_root = self.root.join("dirty");
+        if !dirty_root.exists() {
             return Ok(());
         }
 
-        let mut entries = fs::read_dir(&chunk_dir).await?;
+        let mut entries = fs::read_dir(&dirty_root).await?;
         while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("meta") {
-                continue;
+            if entry.file_type().await?.is_dir() {
+                self.overlay_from_meta_dir(&entry.path(), ino, chunk_id, chunk_offset, buf)
+                    .await?;
             }
+        }
 
-            let record = match self.read_meta(&path).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if !record.path.exists() {
-                continue;
-            }
-
-            let slice_start = record.chunk_offset;
-            let slice_end = slice_start + record.length;
-            let buf_end = chunk_offset + buf.len() as u64;
-
-            let overlap_start = chunk_offset.max(slice_start);
-            let overlap_end = buf_end.min(slice_end);
-            if overlap_start >= overlap_end {
-                continue;
-            }
-
-            let file_offset = overlap_start - slice_start;
-            let dst_start = (overlap_start - chunk_offset) as usize;
-            let dst_end = (overlap_end - chunk_offset) as usize;
-            let read_len = dst_end - dst_start;
-
-            let mut file = fs::File::open(&record.path).await?;
-            file.seek(std::io::SeekFrom::Start(file_offset)).await?;
-            file.read_exact(&mut buf[dst_start..dst_start + read_len])
+        if chunk_dir.exists() {
+            self.overlay_from_meta_dir(&chunk_dir, ino, chunk_id, chunk_offset, buf)
                 .await?;
         }
 
@@ -399,6 +470,38 @@ mod tests {
         let records = cache.recover().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].length, 11);
+    }
+
+    #[tokio::test]
+    async fn overlay_dirty_range_reads_bucketed_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        let key = DirtySliceKey {
+            ino: 8,
+            chunk_id: 12,
+            local_seq: 4096,
+            epoch: 0,
+        };
+
+        let path = cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"payload")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(key, 4, 7).await.unwrap();
+
+        assert_eq!(path, key.slice_path(temp.path()));
+        assert!(
+            !key.legacy_slice_path(temp.path()).exists(),
+            "new writes should use the bucketed dirty path"
+        );
+
+        let mut buf = vec![0u8; 16];
+        cache
+            .overlay_dirty_range(key.ino, key.chunk_id, 0, &mut buf)
+            .await
+            .unwrap();
+
+        assert_eq!(&buf[4..11], b"payload");
     }
 
     #[tokio::test]

@@ -194,6 +194,7 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn meta_create_node(
         &self,
         parent: i64,

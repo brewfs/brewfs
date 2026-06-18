@@ -1533,3 +1533,112 @@ amplification.
     - keep direct0 read/write within 2% and direct1 active+drain no worse than
       the nearby HEAD direct1 baseline.
 ```
+
+## 2026-06-18 Candidate P: Bucket Dirty Staging Paths
+
+Hypothesis:
+
+- The Redis/S3 compose profile showed that 4 KiB `metaperf create` is not pure
+  metadata. It creates many tiny dirty slice records, and each record was
+  staged under `dirty/<ino>/<chunk_id>/<local_seq>.{slice,meta}`.
+- For a create-heavy workload, each file usually has a new inode and chunk, so
+  the previous layout creates many one-entry directories. JuiceFS stages dirty
+  cache files under bucketed paths, avoiding per-file directory amplification.
+- Moving BrewFS dirty staging to bucketed flat files should reduce local
+  filesystem namespace overhead without changing writeback ordering,
+  commit-before-upload semantics, or object layout.
+
+Implementation:
+
+- `DirtySliceKey` now writes new records to:
+
+```text
+dirty/<local_seq/1024>/<ino>_<chunk_id>_<local_seq>_<epoch>.slice
+dirty/<local_seq/1024>/<ino>_<chunk_id>_<local_seq>_<epoch>.meta
+```
+
+- Legacy helpers keep the old path shape readable and removable:
+
+```text
+dirty/<ino>/<chunk_id>/<local_seq>.slice
+dirty/<ino>/<chunk_id>/<local_seq>.meta
+```
+
+- Recovery scans both layouts. Dirty overlay fallback scans the bucketed layout
+  and the legacy per-inode/per-chunk directory.
+- `mark_state` and `remove` update/remove both new and legacy records when
+  present, so in-flight records from an older binary are not stranded.
+
+Functional verification:
+
+```text
+cargo test -p brewfs --lib vfs::cache::write_back -- --nocapture
+cargo test -p brewfs --lib vfs::cache::keys::tests::dirty_slice_paths_are_bucketed_by_local_sequence -- --nocapture
+cargo test -p brewfs --lib vfs::cache::keys -- --nocapture
+cargo test -p brewfs --lib commit_before_upload -- --nocapture
+cargo test -p brewfs --lib writeback -- --nocapture
+cargo fmt --check
+```
+
+Perf artifacts:
+
+```text
+Clean baseline after external perf-storage fix: perf-run-1781801838-32315
+Bucketed dirty staging targeted gate:        perf-run-1781803517-29302
+Bucketed dirty staging randrw repeat guard:  perf-run-1781804486-10365
+```
+
+Key results:
+
+```text
+Targeted gate vs clean baseline:
+  fio-randwrite write_bw_mib_s 108.52 -> 122.36 (+12.8%)
+  fio-randrw read_bw_mib_s     169.11 -> 147.53 (-12.8%)
+  fio-randrw write_bw_mib_s     75.85 ->  66.10 (-12.9%)
+  metaperf create ops/s        560.4  -> 652.2  (+16.4%)
+  metaperf open ops/s         9165.3  -> 9479.1 (+3.4%)
+  metaperf stat ops/s      1024250.2  -> 1024599.4 (+0.0%)
+  metaperf readdir ops/s     63362.3  -> 64073.3 (+1.1%)
+  metaperf rename ops/s       1877.9  -> 1902.6 (+1.3%)
+
+Writeback/object shape during metaperf:
+  stage_ops 57661 -> 37699 (-34.6%)
+  S3 PUT ops 58688 -> 38705 (-34.1%)
+  stage_fail 0 -> 0
+
+Randrw repeat guard:
+  read_bw_mib_s 331.30
+  write_bw_mib_s 148.05
+  stage_fail 0
+  Redis total_error_replies 0
+```
+
+Decision:
+
+- Accept Candidate P as a performance improvement.
+- The first targeted `fio-randrw` row was noisy and had higher GET latency and
+  lower cache hit rate; a clean randrw repeat was above both the clean BrewFS
+  baseline and the current JuiceFS reference. The accepted signal is therefore
+  the consistent metaperf/create improvement plus the large reduction in
+  stage/PUT amplification, guarded by the randrw repeat.
+- This candidate deliberately does not enforce a new staging-before-commit
+  barrier. It only changes local dirty path shape, preserving the state-machine
+  semantics already covered by `commit_before_upload` and writeback tests.
+
+Next target:
+
+```text
+Candidate Q: reduce remaining 4 KiB create/write amplification at the writer
+layer, not only at the local staging namespace.
+  Use the latest gate as the new BrewFS target:
+    - keep metaperf create >= 650 ops/s;
+    - keep randwrite >= 120 MiB/s;
+    - keep randrw within 5% of the better clean repeat or rerun if object-store
+      GET latency is clearly noisy;
+    - keep stage_fail=0 and Redis error replies at baseline/noise level.
+  Primary code direction:
+    - per-inode/per-chunk short-window small-write coalescing for cached 4 KiB
+      writes before they become independent slice/object metadata records;
+    - or a safer metadata-only version token/slice-cache optimization if the
+      coalescer touches too much correctness surface.
+```

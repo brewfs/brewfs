@@ -2270,7 +2270,7 @@ where
         if !matches!(parent_attr.kind, VfsFileType::Dir) {
             return Err(libc::ENOTDIR.into());
         }
-        if (parent_attr.mode & libc::S_ISVTX as u32) == 0 {
+        if (parent_attr.mode & libc::S_ISVTX) == 0 {
             return Ok(());
         }
 
@@ -2548,15 +2548,15 @@ fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     if let Some(mode) = set_attr.mode {
         req.mode = Some(sanitize_special_mode_bits(mode));
     }
-    if let Some(uid) = set_attr.uid {
-        if uid != u32::MAX {
-            req.uid = Some(uid);
-        }
+    if let Some(uid) = set_attr.uid
+        && uid != u32::MAX
+    {
+        req.uid = Some(uid);
     }
-    if let Some(gid) = set_attr.gid {
-        if gid != u32::MAX {
-            req.gid = Some(gid);
-        }
+    if let Some(gid) = set_attr.gid
+        && gid != u32::MAX
+    {
+        req.gid = Some(gid);
     }
     if let Some(size) = set_attr.size {
         req.size = Some(size);
