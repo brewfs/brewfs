@@ -1906,6 +1906,260 @@ Acceptance gate for the next code change:
 - Run the full BrewFS and JuiceFS perf contract again.
 - Keep only if the targeted metadata op improves by at least 5% and no fio or metadata scenario regresses by more than 5% versus the kept BrewFS baseline.
 
+### Round 17: open-cache local overhead candidate plan
+
+Goal:
+
+Reduce BrewFS `metaperf open` overhead without changing Redis metadata semantics. The latest single-op probes show hot open runs at about 10.3k ops/s while issuing only about 0.2 Redis calls per open, so the next testable hypothesis is local cache/handle bookkeeping rather than backend metadata latency.
+
+Architecture:
+
+Keep the existing `MetaClient::stat_for_open -> OpenFileCache::attr` API and FUSE/VFS open semantics intact. Remove only unused open-file-cache timestamp bookkeeping that currently performs extra async `RwLock` writes on every cached `open` and `close`; preserve ref-count behavior and Moka time-to-idle refresh through cache `get()` calls.
+
+Tech stack:
+
+Rust/Tokio, BrewFS `src/meta/client/cache.rs`, Redis + RustFS perf harness, `run_redis_meta_perf.sh`, `run_redis_perf.sh`, `run_juicefs_perf.sh`.
+
+Evidence baseline:
+
+- Isolated BrewFS metadata artifact: `docker/compose-xfstests/artifacts/perf-run-1781764009-8040`
+- Isolated JuiceFS metadata artifact: `docker/compose-xfstests/artifacts/juicefs-perf-run-1781764245-28837`
+- Open-only BrewFS commandstats artifact: `docker/compose-xfstests/artifacts/perf-run-1781765214-15029`
+- Open-only signal: open-file cache hits `317400`, misses `601`, Redis calls about `0.2/open`.
+- Current gap: isolated `open` is `10275.8` ops/s on BrewFS vs `23586.3` ops/s on JuiceFS, so a backend-only fix is unlikely to explain the gap.
+
+Rejected routes not to repeat:
+
+- Do not seed the open-file cache from `open_with_cached_attr`; Round 11 regressed `create`, `open`, `randread`, and `randrw`.
+- Do not add a generic VFS rename fast path; Round 16 showed no target improvement.
+- Do not repeat writeback directory-cache optimization; Task 7 regressed `fio-randrw`, write wall time, stage latency, and total `metaperf`.
+
+#### Task 17A: remove unused open-cache `last_check` lock writes
+
+**Files:**
+
+- Modify: `src/meta/client/cache.rs`
+- Test: `src/meta/client/cache.rs`
+- Document: `docs/superpowers/plans/2026-06-17-file-to-file-perf-alignment.md`
+
+- [x] **Step 1: Write the failing cache test**
+
+Add this test near the existing `open_file_cache_refreshes_idle_deadline_on_attr_access` test:
+
+```rust
+#[tokio::test]
+async fn open_file_cache_debug_ref_count_tracks_open_close_without_backend() {
+    let cache = OpenFileCache::new(8, Duration::from_secs(60));
+    let file_attr = attr(77, FileType::File);
+
+    assert_eq!(cache.debug_ref_count(77).await, None);
+
+    cache.open(77, file_attr.clone()).await;
+    assert_eq!(cache.debug_ref_count(77).await, Some(1));
+
+    cache.open(77, file_attr).await;
+    assert_eq!(cache.debug_ref_count(77).await, Some(2));
+
+    cache.close(77).await;
+    assert_eq!(cache.debug_ref_count(77).await, Some(1));
+
+    cache.close(77).await;
+    assert_eq!(cache.debug_ref_count(77).await, Some(0));
+}
+```
+
+- [x] **Step 2: Run test to verify RED**
+
+Run:
+
+```bash
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache::tests::open_file_cache_debug_ref_count_tracks_open_close_without_backend -- --exact --nocapture
+```
+
+Expected: fail to compile because `OpenFileCache::debug_ref_count` does not exist.
+
+- [x] **Step 3: Implement the minimal test helper**
+
+Add this method to `impl OpenFileCache`:
+
+```rust
+#[cfg(test)]
+pub(crate) async fn debug_ref_count(&self, ino: i64) -> Option<u64> {
+    let entry = self.ttl_manager.get(&ino).await?;
+    Some(entry.refs.load(Ordering::Relaxed))
+}
+```
+
+- [x] **Step 4: Run test to verify GREEN**
+
+Run the same command from Step 2.
+
+Expected: pass.
+
+- [x] **Step 5: Remove unused `last_check` field and lock writes**
+
+In `OpenFileEntry`, remove:
+
+```rust
+last_check: Arc<RwLock<Instant>>,
+```
+
+Remove initialization:
+
+```rust
+last_check: Arc::new(RwLock::new(Instant::now())),
+```
+
+Remove these writes:
+
+```rust
+*self.last_check.write().await = Instant::now();
+```
+
+Keep `attr`, `refs`, `open()`, `close()`, and cache TTL behavior unchanged.
+
+- [x] **Step 6: Run focused Rust tests**
+
+Run:
+
+```bash
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache -- --nocapture
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache::tests::open_file_cache_refreshes_idle_deadline_on_attr_access -- --exact --nocapture
+cargo fmt --check
+git diff --check
+```
+
+Expected: all pass.
+
+- [x] **Step 7: Run metadata perf gate**
+
+Run:
+
+```bash
+BREWFS_PERF_STATE_MOUNT=/data/slayer/brewfs-perf-state \
+BREWFS_PERF_RUSTFS_DATA_MOUNT=/data/slayer/brewfs-perf-rustfs \
+BREWFS_PERF_MINIO_DATA_MOUNT=/data/slayer/brewfs-perf-minio \
+PERF_METAPERF_SECONDS=30 \
+PERF_METAPERF_OP_FILES=200 \
+PERF_METAPERF_BG_FILES=2000 \
+bash docker/compose-xfstests/run_redis_meta_perf.sh --s3 --writeback-throughput-profile --tools "metaperf"
+```
+
+Expected: `metaperf open` improves by at least 5% versus `perf-run-1781764009-8040` or the newest immediately-pre-change metadata baseline. `create`, `stat`, `readdir`, and `rename` must not regress by more than 5%.
+
+- [x] **Step 8: Full perf gate if metadata gate passes**
+
+Run:
+
+```bash
+BREWFS_PERF_STATE_MOUNT=/data/slayer/brewfs-perf-state \
+BREWFS_PERF_RUSTFS_DATA_MOUNT=/data/slayer/brewfs-perf-rustfs \
+BREWFS_PERF_MINIO_DATA_MOUNT=/data/slayer/brewfs-perf-minio \
+bash docker/compose-xfstests/run_redis_perf.sh --s3 --writeback-throughput-profile
+
+JUICEFS_PERF_STATE_MOUNT=/data/slayer/juicefs-perf-state \
+JUICEFS_PERF_RUSTFS_DATA_MOUNT=/data/slayer/juicefs-perf-rustfs \
+bash docker/compose-xfstests/run_juicefs_perf.sh --s3 --writeback-throughput-profile
+```
+
+Expected: target metadata op still improves; all fio and metadata scenarios stay within the 5% regression budget, with `fio-randrw` checked explicitly.
+
+Outcome: skipped because the metadata gate did not pass.
+
+- [x] **Step 9: Decision**
+
+If the perf gate passes, update `README.md` and this plan with the new BrewFS/JuiceFS table, then commit and push. If the gate fails, revert `src/meta/client/cache.rs`, record the rejected artifact and reason here, and move to Task 17B.
+
+Outcome:
+
+Rejected and reverted. The candidate artifact was `docker/compose-xfstests/artifacts/perf-run-1781791579-10339`; the baseline was `docker/compose-xfstests/artifacts/perf-run-1781764009-8040`.
+
+| Operation | Baseline ops/s | Candidate ops/s | Candidate / baseline |
+| --- | ---: | ---: | ---: |
+| create | 958.5 | 957.3 | 99.9% |
+| open | 10275.8 | 10280.9 | 100.0% |
+| stat | 1023339.2 | 1021583.7 | 99.8% |
+| readdir | 65561.4 | 65631.1 | 100.1% |
+| rename | 1928.7 | 1911.0 | 99.1% |
+
+The open target moved only `+0.05%`, far below the required `+5%` gate. Runner warnings were clean (`WARNING=0`, `timeout=0`, `slow request=0`, `slow operation=0`), so the result is a valid negative signal rather than an infrastructure failure. Local verification before rollback passed:
+
+```bash
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache -- --nocapture
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache::tests::open_file_cache_refreshes_idle_deadline_on_attr_access -- --exact --nocapture
+cargo fmt --check
+git diff --check
+```
+
+Rollback verification passed:
+
+```bash
+CARGO_TARGET_DIR=/data/slayer/brewfs-cargo-target CARGO_INCREMENTAL=0 \
+  cargo test -p brewfs --lib meta::client::cache -- --nocapture
+cargo fmt --check
+git diff --check
+```
+
+Next decision: stop optimizing local open-cache bookkeeping until a flamegraph or timing probe shows a larger local open component. The next attempt moves to Task 17B because create still produces one cached-only explicit partial-tail upload, one stage op, and one S3 PUT per 4KiB file.
+
+#### Task 17B: writeback stage/commit evidence before any further code
+
+**Files:**
+
+- Inspect: `src/vfs/io/writer.rs`
+- Inspect: `src/vfs/cache/write_back.rs`
+- Compare: `/mnt/slayerfs/juicefs/pkg/chunk/cached_store.go`
+
+- [ ] **Step 1: Run or reuse a create-only commandstats artifact**
+
+Use a `metaperf create`-only run if the harness can pass `PERF_METAPERF_ARGS`; otherwise use full `metaperf` and parse the create line.
+
+- [ ] **Step 2: Record stage, upload, and commit counters**
+
+Capture:
+
+- `brewfs_writeback_stage_ops_total`
+- `brewfs_writeback_stage_lat_us_total`
+- `brewfs_s3_put_ops_total`
+- `brewfs_s3_put_lat_us_total`
+- `brewfs_writeback_commit_wait_upload_ops_total`
+- `brewfs_writeback_upload_partial_tail_explicit_flush_ops_total`
+- `brewfs_writeback_upload_batch_single_block_ops_total`
+
+- [ ] **Step 3: Form exactly one new writeback hypothesis**
+
+Only continue to code if the counters show one dominant cost that can be changed without weakening commit-before-upload crash recovery or close/fsync error reporting.
+
+Outcome:
+
+The evidence pointed at remote upload competing with local stage/metadata commit during 4KiB create. Three fixed-delay variants were tested and rejected:
+
+| Variant | Artifact | Positive signal | Rejection reason |
+| --- | --- | --- | --- |
+| Delay every writeback upload by 50ms | `docker/compose-xfstests/artifacts/perf-run-1781793096-2603` | Full `metaperf create` improved `658.4 -> 681.4 ops/s` (`+3.5%`) | Full `fio-randwrite` regressed `86.8 -> 68.9 MiB/s` (`-20.6%`); `fio-bigread` also regressed `-8.5%`. |
+| Delay only sub-block batches (`data_len < block_size`) | `docker/compose-xfstests/artifacts/perf-run-1781795719-257` | Full `metaperf create` improved `658.4 -> 760.9 ops/s` (`+15.6%`) | Full `fio-randwrite` still regressed `86.8 -> 69.4 MiB/s` (`-20.1%`), and `fio-bigwrite` regressed `-6.6%`. Real randwrite still produces many partial writeback batches. |
+| Delay only tiny batches (`data_len <= 64KiB`) | `docker/compose-xfstests/artifacts/perf-run-1781797361-23461` | Targeted `fio-randwrite` improved `86.8 -> 114.1 MiB/s`; `fio-randrw` improved about `+14%` | Targeted `metaperf create` regressed `658.4 -> 586.6 ops/s`; the run showed dirty writeback backlog/stage-failure counters, so this was not a safe metadata optimization. |
+
+The implementation was reverted after the failed full gates. The result is useful negative evidence: a fixed sleep is too blunt. It can shift contention, but it also creates unstable writeback backlog behavior across the full fio matrix.
+
+#### Task 17C: next attempt should be stage-before-upload, not fixed delay
+
+Hypothesis:
+
+For small commit-before-upload batches, start remote upload only after the local writeback stage and dirty-record seal complete. This should preserve the create benefit of reducing S3/upload competition during the metadata-visible stage, without adding arbitrary wall-clock sleep. Large batches should keep the current concurrent stage/upload behavior.
+
+Required setup before coding:
+
+- First make `DataWriter`/`Shared` accept `Arc<dyn WriteBackCache>` instead of hard-coding `Arc<FsWriteBackCache>`, or add a narrow test-only seam. The attempted RED test needed a blocking writeback cache and exposed that the current concrete type prevents a deterministic stage-before-upload test.
+- Add a RED test: block `persist_slice_data` for a small batch and assert that `BlockStore::write_fresh_range` is not attempted until the local stage is unblocked.
+- Keep the threshold conservative (`<=64KiB`) and require full perf, not only targeted perf.
+- Acceptance: full `metaperf create` improves at least `+5%`; `fio-bigwrite`, `fio-randwrite`, `fio-randrw`, and metadata `open/stat/readdir/rename` must not regress by more than `5%`.
+
 ### Round 15: strict same-round profile, rejected open-cache write-skip, and next target reset
 
 Scope:
