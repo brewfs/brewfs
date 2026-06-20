@@ -4558,17 +4558,25 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tokio::time::{sleep, timeout};
 
-    fn test_config_with_writeback(
+    fn test_config_with_writeback_and_auto_flush(
         layout: ChunkLayout,
         writeback_mode: WriteBackMode,
+        auto_flush_max_age: Duration,
     ) -> Arc<WriteConfig> {
         Arc::new(
             WriteConfig::new(layout)
                 .page_size(4 * 1024)
                 .freeze_min_bytes(4096)
-                .auto_flush_max_age(Duration::from_millis(5))
+                .auto_flush_max_age(auto_flush_max_age)
                 .writeback_mode(writeback_mode),
         )
+    }
+
+    fn test_config_with_writeback(
+        layout: ChunkLayout,
+        writeback_mode: WriteBackMode,
+    ) -> Arc<WriteConfig> {
+        test_config_with_writeback_and_auto_flush(layout, writeback_mode, Duration::from_millis(5))
     }
 
     fn test_config(layout: ChunkLayout) -> Arc<WriteConfig> {
@@ -4577,11 +4585,10 @@ mod tests {
 
     fn test_config_without_auto_flush(layout: ChunkLayout) -> Arc<WriteConfig> {
         // Keep live-slice assertions deterministic instead of racing auto_flush.
-        Arc::new(
-            WriteConfig::new(layout)
-                .page_size(4 * 1024)
-                .freeze_min_bytes(4096)
-                .auto_flush_max_age(Duration::from_secs(60)),
+        test_config_with_writeback_and_auto_flush(
+            layout,
+            WriteBackMode::UploadBeforeCommit,
+            Duration::from_secs(60),
         )
     }
 
