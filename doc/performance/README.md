@@ -9,8 +9,19 @@ notes, and focused review outputs from previous tuning passes.
   performance improvement roadmap and validation target.
 - [performance-roadmap.md](performance-roadmap.md): broader backlog and staged
   optimization ideas.
+- [brewfs-vs-juicefs-performance-analysis-2026-06.md](brewfs-vs-juicefs-performance-analysis-2026-06.md):
+  **(2026-06) comprehensive BrewFS/JuiceFS performance report** — fresh measured
+  A/B benchmarks (identical Redis meta + local-fs object store) cross-referenced
+  with historical S3 numbers, a verified per-subsystem code+architecture gap
+  analysis (7 subsystems, with `file:line` root causes), and a P0/P1/P2
+  improvement plan. Headline: BrewFS write throughput is a flat ~210 MiB/s that
+  does not scale with concurrency (6.6–23.6× behind JuiceFS).
+- [bench-2026-06-21/](bench-2026-06-21/): raw measured data (`summary.tsv`,
+  `comparison.md`) and the reproducible host-native benchmark harness
+  (`run_bench.sh`, `metabench.c`, `parse_fio.py`, `combine_results.py`) backing
+  the 2026-06 report.
 - [brewfs-vs-juicefs-analysis.md](brewfs-vs-juicefs-analysis.md): high-level
-  BrewFS/JuiceFS comparison.
+  BrewFS/JuiceFS comparison (2026-05).
 - [small-file-read-write-performance-optimization.md](small-file-read-write-performance-optimization.md):
   small-file read/write optimization notes.
 

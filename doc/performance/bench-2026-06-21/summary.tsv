@@ -1,0 +1,24 @@
+brewfs	seqwrite	222.6	56	1.96	3271.56
+brewfs	randwrite	207.6	52	15.14	3305.11
+brewfs	bigwrite	211.6	53	45.35	2231.37
+brewfs	seqread	1084.7	271	3.75	6.26
+brewfs	randread	804.4	201	20.58	26.61
+brewfs	bigread	852.6	213	37.49	3305.11
+brewfs	meta_create_ops_per_s	1976			
+brewfs	meta_stat_ops_per_s	21937			
+brewfs	meta_open_ops_per_s	9253			
+brewfs	meta_create_n	5000			
+brewfs	meta_stat_n	25000			
+brewfs	meta_open_n	25000			
+juicefs	seqwrite	1479.8	370	2.47	5.47
+juicefs	randwrite	4096.0	1024	3.56	4.42
+juicefs	bigwrite	4983.0	1246	5.80	3271.56
+juicefs	seqread	2343.2	586	1.63	2.61
+juicefs	randread	1667.8	417	7.57	41.16
+juicefs	bigread	4521.0	1130	6.91	16.91
+juicefs	meta_create_ops_per_s	1515			
+juicefs	meta_stat_ops_per_s	49355			
+juicefs	meta_open_ops_per_s	4574			
+juicefs	meta_create_n	5000			
+juicefs	meta_stat_n	25000			
+juicefs	meta_open_n	25000			
