@@ -29,7 +29,7 @@ BREWFS_BASE_URL="${BREWFS_BASE_URL:-https://download.brewfs.ai/brewfs/releases}"
 BREWFS_VERSION="${BREWFS_VERSION:-}"
 BREWFS_REQUIRE_CHECKSUM="${BREWFS_REQUIRE_CHECKSUM:-0}"
 BREWFS_ALLOW_FALLBACK="${BREWFS_ALLOW_FALLBACK:-0}"
-DEFAULT_BREWFS_VERSION="${DEFAULT_BREWFS_VERSION:-v0.1.0}"
+DEFAULT_BREWFS_VERSION="${DEFAULT_BREWFS_VERSION:-v0.1.1}"
 BREWFS_DOWNLOAD_URL="${BREWFS_DOWNLOAD_URL:-}"
 RUSTFS_DOWNLOAD_URL="${RUSTFS_DOWNLOAD_URL:-}"
 REDIS_DOWNLOAD_URL="${REDIS_DOWNLOAD_URL:-}"
@@ -92,7 +92,7 @@ Environment overrides:
   BREWFS_REQUIRE_CHECKSUM=0    Set to 1 to fail if <binary>.sha256 is missing.
   BREWFS_ALLOW_FALLBACK=0      Set to 1 to use DEFAULT_BREWFS_VERSION if latest
                                release detection is unreachable.
-  DEFAULT_BREWFS_VERSION=v0.1.0
+  DEFAULT_BREWFS_VERSION=v0.1.1
                                Opt-in fallback version.
   BREWFS_DOWNLOAD_URL=""       Explicit BrewFS binary archive or executable URL.
   RUSTFS_DOWNLOAD_URL=""      RustFS binary archive or executable URL.
