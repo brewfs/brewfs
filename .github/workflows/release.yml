@@ -12,7 +12,7 @@ jobs:
   build-and-upload:
     runs-on: ${{ matrix.target.runner }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         component: [brewfs]
         target:
@@ -58,9 +58,14 @@ jobs:
         shell: bash
         run: |
           binary_name="${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
+          cargo_args=(--locked --release --target "${{ matrix.target.rust }}" --bin "${{ matrix.component }}")
+
+          if [[ "${{ matrix.target.os }}" == "darwin" ]]; then
+            cargo_args+=(--no-default-features --features fuse-tokio-runtime)
+          fi
 
           echo "Building ${binary_name} for target ${{ matrix.target.rust }}..."
-          RUSTFLAGS="-C strip=symbols" cargo build --locked --release --target ${{ matrix.target.rust }} --bin ${{ matrix.component }}
+          RUSTFLAGS="-C strip=symbols" cargo build "${cargo_args[@]}"
 
           mkdir -p build
           cp "target/${{ matrix.target.rust }}/release/${{ matrix.component }}" "build/${binary_name}"
