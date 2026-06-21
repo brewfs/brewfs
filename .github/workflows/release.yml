@@ -36,6 +36,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Install macOS dependencies
+        if: matrix.target.os == 'darwin'
+        run: |
+          brew install protobuf
+
       - name: Cache cargo registry
         uses: actions/cache@v5
         with:

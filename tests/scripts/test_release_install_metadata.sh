@@ -31,6 +31,7 @@ assert_contains "$release_workflow" "x86_64-unknown-linux-gnu"
 assert_contains "$release_workflow" "aarch64-unknown-linux-gnu"
 assert_contains "$release_workflow" "aarch64-apple-darwin"
 assert_contains "$release_workflow" "--features fuse-tokio-runtime"
+assert_contains "$release_workflow" "brew install protobuf"
 assert_contains "$release_workflow" "ubuntu-24.04-arm"
 assert_contains "$release_workflow" "brewfs/releases/\${{ github.ref_name }}/"
 
