@@ -33,6 +33,7 @@ use asyncfuse::raw::reply::{
 };
 use bytes::Bytes;
 use std::ffi::{OsStr, OsString};
+#[cfg(target_os = "linux")]
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -224,6 +225,7 @@ where
             .await;
     }
 
+    #[cfg(target_os = "linux")]
     fn ioctl_ok_reply() -> ReplyIoctl {
         ReplyIoctl {
             result: 0,
@@ -234,6 +236,7 @@ where
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn parse_clone_range(data: &[u8]) -> Option<FileCloneRange> {
         if data.len() < size_of::<FileCloneRange>() {
             return None;
@@ -244,6 +247,7 @@ where
         Some(unsafe { std::ptr::read_unaligned(data.as_ptr().cast::<FileCloneRange>()) })
     }
 
+    #[cfg(target_os = "linux")]
     async fn resolve_proc_fd_inode(&self, pid: u32, fd: i64) -> FuseResult<i64> {
         if fd < 0 {
             return Err(libc::EBADF.into());
@@ -276,6 +280,7 @@ where
         Err(libc::EXDEV.into())
     }
 
+    #[cfg(target_os = "linux")]
     async fn ioctl_ficlone(&self, req: Request, dst_ino: u64, arg: u64) -> FuseResult<ReplyIoctl> {
         let src_fd = i32::try_from(arg).map_err(|_| Errno::from(libc::EINVAL))?;
         let src_ino = self
@@ -299,6 +304,7 @@ where
         Ok(Self::ioctl_ok_reply())
     }
 
+    #[cfg(target_os = "linux")]
     async fn ioctl_ficlonerange(
         &self,
         req: Request,
@@ -363,6 +369,7 @@ fn exclusive_lock_end_to_fuse(end: u64) -> u64 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_os = "linux")]
 struct FileCloneRange {
     src_fd: i64,
     src_offset: u64,
@@ -1139,32 +1146,39 @@ where
         );
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
-        let file_type = mode & libc::S_IFMT;
+        const S_IFMT: u32 = libc::S_IFMT as u32;
+        const S_IFREG: u32 = libc::S_IFREG as u32;
+        const S_IFDIR: u32 = libc::S_IFDIR as u32;
+        const S_IFIFO: u32 = libc::S_IFIFO as u32;
+        const S_IFSOCK: u32 = libc::S_IFSOCK as u32;
+        const S_IFCHR: u32 = libc::S_IFCHR as u32;
+        const S_IFBLK: u32 = libc::S_IFBLK as u32;
+        let file_type = mode & S_IFMT;
 
         let ino = match file_type {
             // Linux accepts mknod(path, 0, 0) as a regular file with mode 000.
-            0 | libc::S_IFREG => {
+            0 | S_IFREG => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
                     .await?;
                 self.create_file_at(parent as i64, &name, true)
                     .await
                     .map_err(Errno::from)?
             }
-            libc::S_IFDIR => {
+            S_IFDIR => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
                     .await?;
                 self.mkdir_at_new(parent as i64, &name)
                     .await
                     .map_err(Errno::from)?
             }
-            libc::S_IFIFO | libc::S_IFSOCK | libc::S_IFCHR | libc::S_IFBLK => {
+            S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
                     .await?;
                 let kind = match file_type {
-                    libc::S_IFIFO => VfsFileType::Fifo,
-                    libc::S_IFSOCK => VfsFileType::Socket,
-                    libc::S_IFCHR => VfsFileType::CharDevice,
-                    libc::S_IFBLK => VfsFileType::BlockDevice,
+                    S_IFIFO => VfsFileType::Fifo,
+                    S_IFSOCK => VfsFileType::Socket,
+                    S_IFCHR => VfsFileType::CharDevice,
+                    S_IFBLK => VfsFileType::BlockDevice,
                     _ => unreachable!("special file type already matched"),
                 };
                 self.create_special_node_at(
@@ -1727,12 +1741,19 @@ where
             return Err(libc::EOPNOTSUPP.into());
         }
 
-        match cmd {
-            x if x == libc::FICLONE as u32 => self.ioctl_ficlone(req, inode, arg).await,
-            x if x == libc::FICLONERANGE as u32 => {
-                self.ioctl_ficlonerange(req, inode, in_data).await
+        #[cfg(target_os = "linux")]
+        {
+            match cmd {
+                x if x == libc::FICLONE as u32 => self.ioctl_ficlone(req, inode, arg).await,
+                x if x == libc::FICLONERANGE as u32 => {
+                    self.ioctl_ficlonerange(req, inode, in_data).await
+                }
+                _ => Err(libc::EOPNOTSUPP.into()),
             }
-            _ => Err(libc::EOPNOTSUPP.into()),
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(libc::EOPNOTSUPP.into())
         }
     }
 
@@ -1877,10 +1898,10 @@ where
     ) -> FuseResult<ReplyLock> {
         debug!(inode, lock_owner, start, end, lock_type, "fuse.getlk");
         // Convert FUSE lock type to our internal type
-        let fl_type = match lock_type as i32 {
-            libc::F_RDLCK => FileLockType::Read,
-            libc::F_WRLCK => FileLockType::Write,
-            libc::F_UNLCK => FileLockType::UnLock,
+        let fl_type = match lock_type {
+            x if x == libc::F_RDLCK as u32 => FileLockType::Read,
+            x if x == libc::F_WRLCK as u32 => FileLockType::Write,
+            x if x == libc::F_UNLCK as u32 => FileLockType::UnLock,
             _ => return Err(libc::EINVAL.into()),
         };
 
@@ -1897,12 +1918,12 @@ where
             Ok(info) => {
                 // Convert internal lock type back to FUSE type
                 let fuse_type = match info.lock_type {
-                    FileLockType::Read => libc::F_RDLCK,
-                    FileLockType::Write => libc::F_WRLCK,
-                    FileLockType::UnLock => libc::F_UNLCK,
+                    FileLockType::Read => libc::F_RDLCK as u32,
+                    FileLockType::Write => libc::F_WRLCK as u32,
+                    FileLockType::UnLock => libc::F_UNLCK as u32,
                 };
                 Ok(ReplyLock {
-                    r#type: fuse_type as u32,
+                    r#type: fuse_type,
                     start: info.range.start,
                     end: exclusive_lock_end_to_fuse(info.range.end),
                     pid: info.pid,
@@ -1930,10 +1951,10 @@ where
             lock_owner, start, end, lock_type, pid, block, "fuse.setlk"
         );
         // Convert FUSE lock type to our internal type
-        let fl_type = match lock_type as i32 {
-            libc::F_RDLCK => FileLockType::Read,
-            libc::F_WRLCK => FileLockType::Write,
-            libc::F_UNLCK => FileLockType::UnLock,
+        let fl_type = match lock_type {
+            x if x == libc::F_RDLCK as u32 => FileLockType::Read,
+            x if x == libc::F_WRLCK as u32 => FileLockType::Write,
+            x if x == libc::F_UNLCK as u32 => FileLockType::UnLock,
             _ => return Err(libc::EINVAL.into()),
         };
 
@@ -2553,7 +2574,7 @@ fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     let mut req = SetAttrRequest::default();
     let flags = SetAttrFlags::empty();
     if let Some(mode) = set_attr.mode {
-        req.mode = Some(sanitize_special_mode_bits(mode));
+        req.mode = Some(sanitize_special_mode_bits(mode.into()));
     }
     if let Some(uid) = set_attr.uid
         && uid != u32::MAX

@@ -1,0 +1,99 @@
+name: Build and Release to R2
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-upload:
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [brewfs]
+        target:
+          - { rust: x86_64-unknown-linux-gnu, os: linux, arch: amd64, runner: ubuntu-latest }
+          - { rust: aarch64-unknown-linux-gnu, os: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { rust: aarch64-apple-darwin, os: darwin, arch: arm64, runner: macos-latest }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.rust }}
+
+      - name: Install Linux dependencies
+        if: matrix.target.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install macOS dependencies
+        if: matrix.target.os == 'darwin'
+        run: |
+          brew install protobuf
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ matrix.target.rust }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build binary
+        shell: bash
+        run: |
+          binary_name="${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
+          cargo_args=(--locked --release --target "${{ matrix.target.rust }}" --bin "${{ matrix.component }}")
+
+          if [[ "${{ matrix.target.os }}" == "darwin" ]]; then
+            cargo_args+=(--no-default-features --features fuse-tokio-runtime)
+          fi
+
+          echo "Building ${binary_name} for target ${{ matrix.target.rust }}..."
+          RUSTFLAGS="-C strip=symbols" cargo build "${cargo_args[@]}"
+
+          mkdir -p build
+          cp "target/${{ matrix.target.rust }}/release/${{ matrix.component }}" "build/${binary_name}"
+          chmod +x "build/${binary_name}"
+          (cd build && sha256sum "${binary_name}" > "${binary_name}.sha256")
+
+          echo "Built binary: ${binary_name}"
+
+      - name: Upload to Cloudflare R2
+        shell: bash
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          RCLONE_CONFIG_R2_ACL: private
+        run: |
+          if [[ "${{ matrix.target.os }}" == "darwin" ]]; then
+            brew install rclone
+          else
+            curl https://rclone.org/install.sh | sudo bash
+          fi
+          rclone copy ./build/ r2:${{ secrets.R2_BUCKET_NAME }}/brewfs/releases/${{ github.ref_name }}/ -v
+
+          echo "Upload completed for ${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
