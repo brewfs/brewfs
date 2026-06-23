@@ -1,2 +1,6 @@
 target
+target/
+!target/
+!target/release/
+!target/release/brewfs-operator
 *.log

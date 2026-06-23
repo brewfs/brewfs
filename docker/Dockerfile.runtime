@@ -1,14 +1,3 @@
-FROM rust:1.96-bookworm AS builder
-
-WORKDIR /workspace
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends binutils protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY . .
-RUN cargo build --release -p brewfs \
-    && strip target/release/brewfs
-
 FROM debian:trixie-slim
 
 RUN apt-get update \
@@ -23,7 +12,7 @@ RUN apt-get update \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /workspace/target/release/brewfs /usr/local/bin/brewfs
+COPY target/release/brewfs /usr/local/bin/brewfs
 COPY docker/entrypoint.sh /usr/local/bin/brewfs-entrypoint
 
 RUN set -e; \
