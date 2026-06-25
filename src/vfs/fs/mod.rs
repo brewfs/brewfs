@@ -1730,6 +1730,7 @@ where
             src_ino,
             &src_attr,
             &new_parent_attr,
+            None,
         )
         .await
     }
@@ -1752,6 +1753,7 @@ where
         src_ino: i64,
         src_attr: &FileAttr,
         new_parent_attr: &FileAttr,
+        known_dest_ino: Option<Option<i64>>,
     ) -> Result<(), VfsError> {
         if old_name.is_empty()
             || new_name.is_empty()
@@ -1783,8 +1785,23 @@ where
             });
         }
 
-        self.meta_rename(old_parent_ino, old_name, new_parent_ino, new_name)
-            .await?;
+        let (dest_ino, destination_checked) = match known_dest_ino {
+            Some(dest_ino) => (dest_ino, true),
+            None => (None, false),
+        };
+
+        self.meta_rename_with_known_attrs(
+            old_parent_ino,
+            old_name,
+            new_parent_ino,
+            new_name,
+            src_ino,
+            src_attr.clone(),
+            new_parent_attr.clone(),
+            dest_ino,
+            destination_checked,
+        )
+        .await?;
 
         Ok(())
     }

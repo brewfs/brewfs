@@ -1636,6 +1636,148 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn rename_cached(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+        known_src: Option<(i64, FileAttr)>,
+        known_new_parent_attr: Option<FileAttr>,
+        known_dest_ino: Option<Option<i64>>,
+    ) -> Result<(), MetaError> {
+        self.ensure_writable()?;
+
+        let old_parent = self.check_root(old_parent);
+        let new_parent = self.check_root(new_parent);
+
+        // Fast path: if renaming to same location, return success (POSIX no-op)
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
+        }
+
+        debug!(
+            "MetaClient: rename operation from ({}, '{}') to ({}, '{}')",
+            old_parent, old_name, new_parent, new_name
+        );
+
+        Self::validate_entry_name(&new_name)?;
+
+        let (src_ino, src_attr) = match known_src {
+            Some((ino, attr)) => (self.check_root(ino), Some(attr)),
+            None => {
+                let src_ino = self.cached_lookup_required(old_parent, old_name).await?;
+                let src_attr = self.cached_stat(src_ino).await?;
+                (src_ino, src_attr)
+            }
+        };
+
+        match known_new_parent_attr {
+            Some(attr) if attr.kind != FileType::Dir => {
+                return Err(MetaError::NotDirectory(new_parent));
+            }
+            Some(_) => {}
+            None => {
+                self.ensure_directory_exists(new_parent).await?;
+            }
+        }
+
+        // Resolve destination inode before store rename so we can invalidate its
+        // cache entry afterwards.  When the store replaces an existing destination,
+        // its nlink is decremented (possibly to 0, which deletes the node).  The
+        // cache must reflect this, otherwise a subsequent stat on an fd that was
+        // open before the overwrite returns a stale (non-zero) nlink.
+        let dest_ino = match known_dest_ino {
+            Some(dest_ino) => dest_ino.map(|ino| self.check_root(ino)),
+            None => self.cached_lookup(new_parent, &new_name).await?,
+        };
+
+        // Execute the store-level rename with atomic cache updates.
+        self.store
+            .rename(old_parent, old_name, new_parent, new_name.clone())
+            .await?;
+        self.invalidate_open_file_cache_inode(src_ino).await;
+        if let Some(dest_ino) = dest_ino {
+            self.invalidate_open_file_cache_inode(dest_ino).await;
+        }
+
+        debug!("MetaClient: rename completed, updating cache");
+
+        // Update cache atomically with enhanced consistency management.
+        let cache_result = async {
+            // Remove child from old parent (keep inode for later use).
+            let child_info = self
+                .inode_cache
+                .remove_child_but_keep_inode(old_parent, old_name)
+                .await;
+
+            if let Some(child_ino) = child_info {
+                // Ensure new parent is in cache with up-to-date metadata.
+                self.inode_cache
+                    .ensure_node_in_cache(new_parent, &self.store, None)
+                    .await?;
+
+                // Add child to new parent.
+                self.inode_cache
+                    .add_child(new_parent, new_name.clone(), child_ino)
+                    .await;
+
+                // Directories keep their inline parent even though nlink is >= 2.
+                if let Some(attr) = &src_attr {
+                    if attr.kind == FileType::Dir || attr.nlink <= 1 {
+                        if let Some(child_node) = self.inode_cache.get_node(child_ino).await {
+                            child_node.set_parent(new_parent).await;
+                        }
+                    } else if let Some(child_node) = self.inode_cache.get_node(child_ino).await {
+                        child_node.clear_parent().await;
+                    }
+                }
+            }
+
+            // Keep an overwritten destination inode addressable while it may
+            // still be held open by the kernel, but expose it as unlinked.
+            if let Some(dest) = dest_ino {
+                if let Some(dest_node) = self.inode_cache.get_node(dest).await {
+                    dest_node.attr.write().await.nlink = 0;
+                    dest_node.clear_parent().await;
+                } else {
+                    self.inode_cache.invalidate_inode(dest).await;
+                }
+            }
+
+            // Precise path cache invalidation.
+            self.invalidate_parent_path(old_parent).await;
+            if old_parent != new_parent {
+                self.invalidate_parent_path(new_parent).await;
+            }
+
+            // Invalidate directory stat caches (mtime/ctime changed).
+            self.inode_cache.invalidate_inode(old_parent).await;
+            if old_parent != new_parent {
+                self.inode_cache.invalidate_inode(new_parent).await;
+            }
+
+            if let Some(child_ino) = child_info {
+                // Preload the renamed entry and its new parent for better subsequent access.
+                let _ = self.preload_cache_entries(&[child_ino, new_parent]).await;
+            }
+
+            Ok::<(), MetaError>(())
+        }
+        .await;
+
+        if let Err(cache_err) = cache_result {
+            warn!(
+                "MetaClient: cache update failed after successful store rename: {}",
+                cache_err
+            );
+            // Cache inconsistency is logged but not fatal.
+        }
+
+        Ok(())
+    }
+
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn resolve_case(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
         let entries = self.store.readdir(parent).await?;
@@ -2312,134 +2454,46 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError> {
-        self.ensure_writable()?;
+        self.rename_cached(old_parent, old_name, new_parent, new_name, None, None, None)
+            .await
+    }
 
-        let old_parent = self.check_root(old_parent);
-        let new_parent = self.check_root(new_parent);
-
-        // Fast path: if renaming to same location, return success (POSIX no-op)
-        if old_parent == new_parent && old_name == new_name {
-            return Ok(());
-        }
-
-        debug!(
-            "MetaClient: rename operation from ({}, '{}') to ({}, '{}')",
-            old_parent, old_name, new_parent, new_name
-        );
-
-        // Comprehensive pre-validation
-        let src_ino = self.cached_lookup_required(old_parent, old_name).await?;
-
-        let src_attr = self.cached_stat(src_ino).await?;
-
-        // Validate new parent exists and is a directory
-        self.ensure_directory_exists(new_parent).await?;
-
-        // Validate name constraints
-        Self::validate_entry_name(&new_name)?;
-
-        // Resolve destination inode before store rename so we can invalidate its
-        // cache entry afterwards.  When the store replaces an existing destination,
-        // its nlink is decremented (possibly to 0, which deletes the node).  The
-        // cache must reflect this, otherwise a subsequent stat on an fd that was
-        // open before the overwrite returns a stale (non-zero) nlink.
-        let dest_ino = self.cached_lookup(new_parent, &new_name).await?;
-
-        // Execute the store-level rename with atomic cache updates
-        self.store
-            .rename(old_parent, old_name, new_parent, new_name.clone())
-            .await?;
-        self.invalidate_open_file_cache_inode(src_ino).await;
-        if let Some(dest_ino) = dest_ino {
-            self.invalidate_open_file_cache_inode(dest_ino).await;
-        }
-
-        debug!("MetaClient: rename completed, updating cache");
-
-        // Update cache atomically with enhanced consistency management
-        let cache_result = async {
-            // Step 1: Store pre-rename cache state for precise invalidation
-            let _old_parent_cached = self.inode_cache.get_node(old_parent).await;
-            let _new_parent_cached = if old_parent != new_parent {
-                self.inode_cache.get_node(new_parent).await
-            } else {
-                None
-            };
-
-            // Step 2: Remove child from old parent (keep inode for later use)
-            let child_info = self
-                .inode_cache
-                .remove_child_but_keep_inode(old_parent, old_name)
-                .await;
-
-            if let Some(child_ino) = child_info {
-                // Step 3: Ensure new parent is in cache with up-to-date metadata
-                self.inode_cache
-                    .ensure_node_in_cache(new_parent, &self.store, None)
-                    .await?;
-
-                // Step 4: Add child to new parent
-                self.inode_cache
-                    .add_child(new_parent, new_name.clone(), child_ino)
-                    .await;
-
-                // Directories keep their inline parent even though nlink is >= 2.
-                if let Some(attr) = &src_attr {
-                    if attr.kind == FileType::Dir || attr.nlink <= 1 {
-                        if let Some(child_node) = self.inode_cache.get_node(child_ino).await {
-                            child_node.set_parent(new_parent).await;
-                        }
-                    } else if let Some(child_node) = self.inode_cache.get_node(child_ino).await {
-                        child_node.clear_parent().await;
-                    }
-                }
-            }
-
-            // Step 5: Keep an overwritten destination inode addressable while
-            // it may still be held open by the kernel, but expose it as
-            // unlinked.  This lets fstat() on an open-but-replaced directory
-            // succeed with nlink=0 instead of returning ENOENT.
-            if let Some(dest) = dest_ino {
-                if let Some(dest_node) = self.inode_cache.get_node(dest).await {
-                    dest_node.attr.write().await.nlink = 0;
-                    dest_node.clear_parent().await;
-                } else {
-                    self.inode_cache.invalidate_inode(dest).await;
-                }
-            }
-
-            // Step 6: Precise path cache invalidation
-            // Invalidate paths affected by this rename
-            self.invalidate_parent_path(old_parent).await;
-            if old_parent != new_parent {
-                self.invalidate_parent_path(new_parent).await;
-            }
-
-            // Step 7: Invalidate directory stat caches (mtime/ctime changed)
-            self.inode_cache.invalidate_inode(old_parent).await;
-            if old_parent != new_parent {
-                self.inode_cache.invalidate_inode(new_parent).await;
-            }
-
-            // Step 8: Preload commonly accessed cache entries for better performance
-            if let Some(child_ino) = child_info {
-                // Preload the renamed entry and its new parent for better subsequent access
-                let _ = self.preload_cache_entries(&[child_ino, new_parent]).await;
-            }
-
-            Ok::<(), MetaError>(())
-        }
-        .await;
-
-        if let Err(cache_err) = cache_result {
-            warn!(
-                "MetaClient: cache update failed after successful store rename: {}",
-                cache_err
-            );
-            // Cache inconsistency is logged but not fatal
-        }
-
-        Ok(())
+    #[tracing::instrument(
+        level = "trace",
+        skip(self, src_attr, new_parent_attr),
+        fields(
+            old_parent,
+            old_name,
+            new_parent,
+            new_name,
+            src_ino,
+            destination_checked
+        )
+    )]
+    #[allow(clippy::too_many_arguments)]
+    async fn rename_with_known_attrs(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+        src_ino: i64,
+        src_attr: FileAttr,
+        new_parent_attr: FileAttr,
+        dest_ino: Option<i64>,
+        destination_checked: bool,
+    ) -> Result<(), MetaError> {
+        let known_dest_ino = destination_checked.then_some(dest_ino);
+        self.rename_cached(
+            old_parent,
+            old_name,
+            new_parent,
+            new_name,
+            Some((src_ino, src_attr)),
+            Some(new_parent_attr),
+            known_dest_ino,
+        )
+        .await
     }
 
     async fn rename_exchange(
@@ -3356,6 +3410,50 @@ mod tests {
         assert_eq!(metrics.open_fresh_stat, 2);
         assert_eq!(metrics.open_file_cache_hit, 2);
         assert_eq!(metrics.open_file_cache_miss, 2);
+    }
+
+    #[tokio::test]
+    async fn test_rename_with_known_attrs_skips_client_prelookups() {
+        let client = create_test_client().await;
+        let ino = client
+            .create_file(1, "known-rename-src.txt".to_string())
+            .await
+            .unwrap();
+        let src_attr = client.stat(ino).await.unwrap().unwrap();
+        let parent_attr = client.stat(1).await.unwrap().unwrap();
+
+        client.inode_cache.invalidate_inode(1).await;
+        client.inode_cache.invalidate_inode(ino).await;
+
+        let before = client.metrics().snapshot();
+        client
+            .rename_with_known_attrs(
+                1,
+                "known-rename-src.txt",
+                1,
+                "known-rename-dst.txt".to_string(),
+                ino,
+                src_attr,
+                parent_attr,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let after = client.metrics().snapshot();
+
+        assert_eq!(
+            after.lookup_cache_miss, before.lookup_cache_miss,
+            "known rename should not pre-lookup the source or destination when destination was checked"
+        );
+        assert_eq!(
+            after.stat_cache_miss, before.stat_cache_miss,
+            "known rename should not stat the source or destination parent again"
+        );
+        assert_eq!(
+            client.lookup(1, "known-rename-dst.txt").await.unwrap(),
+            Some(ino)
+        );
     }
 
     #[tokio::test]

@@ -258,6 +258,35 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn meta_rename_with_known_attrs(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+        src_ino: i64,
+        src_attr: FileAttr,
+        new_parent_attr: FileAttr,
+        dest_ino: Option<i64>,
+        destination_checked: bool,
+    ) -> Result<(), VfsError> {
+        self.meta_layer()
+            .rename_with_known_attrs(
+                old_parent,
+                old_name,
+                new_parent,
+                new_name,
+                src_ino,
+                src_attr,
+                new_parent_attr,
+                dest_ino,
+                destination_checked,
+            )
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     pub(super) async fn meta_rename_exchange(
         &self,
         old_parent: i64,

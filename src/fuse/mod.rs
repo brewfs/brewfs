@@ -1546,8 +1546,10 @@ where
             return Ok(());
         }
 
-        // Ensure the source exists
-        let Some(src_ino) = self.child_of(parent as i64, name.as_ref()).await else {
+        // Ensure the source exists and keep its attributes for the later VFS
+        // rename checks instead of statting it again.
+        let Some((src_ino, src_attr)) = self.child_attr_of(parent as i64, name.as_ref()).await
+        else {
             return Err(libc::ENOENT.into());
         };
 
@@ -1567,13 +1569,11 @@ where
         }
         self.ensure_sticky_parent_allows_child_mutation(parent, src_ino, req.uid)
             .await?;
-        if let Some(dst_ino) = self.child_of(new_parent as i64, new_name.as_ref()).await {
+        let dst_ino = self.child_of(new_parent as i64, new_name.as_ref()).await;
+        if let Some(dst_ino) = dst_ino {
             self.ensure_sticky_parent_allows_child_mutation(new_parent, dst_ino, req.uid)
                 .await?;
         }
-        let Some(src_attr) = self.stat_ino(src_ino).await else {
-            return Err(libc::ENOENT.into());
-        };
         if parent != new_parent && matches!(src_attr.kind, VfsFileType::Dir) {
             self.ensure_access_allowed(src_ino, req.uid, req.gid, namespace_mutation_access_mask())
                 .await?;
@@ -1592,6 +1592,7 @@ where
             src_ino,
             &src_attr,
             &pattr,
+            Some(dst_ino),
         )
         .await
             .map_err(|e| {
