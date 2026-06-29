@@ -1467,6 +1467,7 @@ mod tests {
         }
 
         let default_cache_dir = tempfile::tempdir()?;
+        let block_size = 128 * 1024;
         let default_store = ObjectBlockStore::new_with_configs_async(
             ObjectClient::new(MockBackend::default()),
             ChunksCacheConfig::with_budgets(
@@ -1475,19 +1476,19 @@ mod tests {
                 default_cache_dir.path().to_path_buf(),
             ),
             BlockStoreConfig {
-                block_size: 4 * 1024 * 1024,
+                block_size,
                 compression: Compression::None,
                 ..Default::default()
             },
         )
         .await?;
 
-        let data = vec![3u8; 128 * 1024];
+        let data = vec![3u8; block_size / 2];
         default_store.write_fresh_range((122, 0), 0, &data).await?;
         assert_eq!(
             default_store.block_cache.stats().write_hot_entries,
             1,
-            "write_fresh_range should populate the recent-write hot tier by default"
+            "partial-block uploads should populate the recent-write hot tier by default"
         );
         assert!(
             !default_store
@@ -1504,7 +1505,7 @@ mod tests {
             "default upload-time read cache population must preserve read-after-write"
         );
 
-        let large_data = vec![5u8; 2 * 1024 * 1024];
+        let large_data = vec![5u8; block_size];
         default_store
             .write_fresh_range((122, 1), 0, &large_data)
             .await?;
@@ -1528,7 +1529,7 @@ mod tests {
                 disabled_cache_dir.path().to_path_buf(),
             ),
             BlockStoreConfig {
-                block_size: 4 * 1024 * 1024,
+                block_size,
                 compression: Compression::None,
                 populate_write_cache_after_upload: false,
                 ..Default::default()
@@ -1553,7 +1554,7 @@ mod tests {
                 cache_dir.path().to_path_buf(),
             ),
             BlockStoreConfig {
-                block_size: 4 * 1024 * 1024,
+                block_size,
                 compression: Compression::None,
                 populate_write_cache_after_upload: true,
                 persist_write_cache_after_upload: true,
@@ -1562,7 +1563,7 @@ mod tests {
         )
         .await?;
 
-        store.write_fresh_range((123, 0), 0, &data).await?;
+        store.write_fresh_range((123, 0), 0, &large_data).await?;
 
         assert_eq!(
             store.block_cache.stats().write_hot_entries,
@@ -1571,7 +1572,7 @@ mod tests {
         );
         assert_eq!(
             store.block_cache.get(&"chunks/123/0".to_string()).await,
-            Some(data.into())
+            Some(large_data.into())
         );
         let disk_key = "chunks/123/0".to_string();
         for _ in 0..20 {

@@ -282,6 +282,7 @@ mod tests {
         assert_eq!(config.read.buffer_size, cache.read_memory_bytes);
         assert_eq!(config.read.max_ahead, cache.prefetch_max_bytes);
         assert_eq!(config.write.buffer_size, cache.write_memory_bytes);
+        assert_eq!(config.write.page_size, DEFAULT_PAGE_SIZE);
         assert_eq!(config.write.freeze_min_bytes, cache.dirty_slice_target_size);
         assert_eq!(config.write.upload_concurrency, cache.upload_concurrency);
         assert_eq!(
