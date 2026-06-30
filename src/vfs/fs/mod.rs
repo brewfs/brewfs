@@ -1640,6 +1640,7 @@ where
             );
             self.remember_recently_unlinked_attr(ino, attr);
         }
+        self.discard_closed_unlinked_inode_state(ino).await;
         Ok(())
     }
 
@@ -2246,6 +2247,9 @@ where
                 path: PathHint::none(),
             });
         }
+        if attr.kind != FileType::File {
+            return Err(VfsError::InvalidInput);
+        }
         if length == 0 {
             return Ok(());
         }
@@ -2256,12 +2260,44 @@ where
             return Ok(());
         }
 
+        self.ensure_fallocate_space_available(current_size, end)
+            .await?;
+        self.extend_inode_size_for_fallocate(ino, end).await?;
+        Ok(())
+    }
+
+    async fn ensure_fallocate_space_available(
+        &self,
+        current_size: u64,
+        new_size: u64,
+    ) -> Result<(), VfsError> {
+        let growth = new_size.saturating_sub(current_size);
+        if growth == 0 {
+            return Ok(());
+        }
+
+        let stat = self.meta_stat_fs().await?;
+        if growth > stat.available_space {
+            return Err(VfsError::StorageFull);
+        }
+        Ok(())
+    }
+
+    async fn extend_inode_size_for_fallocate(&self, ino: i64, size: u64) -> Result<(), VfsError> {
+        let now = Self::current_timestamp_nanos()?;
         let req = SetAttrRequest {
-            size: Some(end),
+            size: Some(size),
+            mtime: Some(now),
+            ctime: Some(now),
             ..Default::default()
         };
-        self.set_attr(ino, &req, SetAttrFlags::empty()).await?;
-        self.update_mtime_ctime(ino).await?;
+        let mut attr = self.meta_set_attr(ino, &req, SetAttrFlags::empty()).await?;
+        attr.size = attr.size.max(size);
+        attr.mtime = now;
+        attr.ctime = now;
+
+        self.extend_local_file_size(ino, size);
+        self.state.handles.update_attr_for_inode(ino, &attr);
         Ok(())
     }
 
@@ -2501,6 +2537,7 @@ where
             return Ok(Vec::new());
         }
         let actual_len = len.min((file_size - offset) as usize);
+
         // Fast path for ranges fully covered by live dirty or recently committed
         // writeback-overlay data.  This also helps read-only handles opened after
         // a write handle: the slower reader path below would first fetch old
@@ -2524,12 +2561,24 @@ where
             return Ok(data);
         }
 
+        // We intentionally do NOT call flush_if_exists here: blocking every
+        // read on a full flush+commit cycle turns random-read-heavy workloads
+        // into commit-bound traffic.  Read-write handles still need one
+        // narrower guard for writeback mode:
+        // if metadata has been committed before the remote object upload
+        // finished, the reader must not fetch that range from the backend yet.
+        // Waiting only for already-committed pending uploads preserves
+        // read-after-write correctness without freezing unrelated live dirty
+        // slices on every mixed randrw read.
+        if handle.flags.read && handle.flags.write {
+            self.state
+                .writer
+                .wait_committed_uploads_for_range(handle.ino as u64, offset, actual_len)
+                .await
+                .map_err(VfsError::from)?;
+        }
         // Read committed data from the reader cache first, then overlay any
-        // uncommitted dirty writes on top.  We intentionally do NOT call
-        // flush_if_exists here: blocking every read on a full flush+commit
-        // cycle turns random-read-heavy workloads into commit-bound traffic
-        // (adding tens of milliseconds of latency per 4 KiB read).
-        //
+        // uncommitted dirty writes on top.
         // There is a narrow race where commit_chunk pops a just-committed
         // slice between handle.read() and overlay_dirty_if_exists().  In that
         // window the reader may serve a stale cached page that has already
@@ -2791,6 +2840,16 @@ where
         }
         let len = usize::try_from(copy_len).map_err(|_| VfsError::InvalidInput)?;
 
+        self.state
+            .writer
+            .wait_committed_uploads_for_range(src.ino as u64, off_in, len)
+            .await
+            .map_err(VfsError::from)?;
+        let _ = self
+            .state
+            .reader
+            .invalidate(src.ino as u64, off_in, len)
+            .await;
         let src_guard = self.open_guard(src.ino, src_attr, true, false).await?;
         let dst_guard = self.open_guard(dst.ino, dst_attr, false, true).await?;
 
@@ -2802,6 +2861,7 @@ where
         // Close guards to flush and commit before releasing locks.
         dst_guard.close().await?;
         src_guard.close().await?;
+        self.state.reader.invalidate_all(dst.ino as u64).await;
         drop(locked);
         drop(mutation_guards);
 
@@ -2995,16 +3055,19 @@ where
         // If we release the handle and remove the inode directly, there is
         // a time windows between checking and releasing. It causes the inode and writer
         // to be deleted mistakenly.
-        let release_writer = match self.lock_inode(handle.ino) {
+        let (release_writer, discard_unlinked) = match self.lock_inode(handle.ino) {
             Entry::Occupied(entry) => {
                 self.state.handles.release(fh);
                 let release_writer =
                     handle.flags.write && !self.state.handles.has_write_handle(handle.ino);
+                let no_handles = self.state.handles.has_no_handle(handle.ino);
+                let discard_unlinked =
+                    no_handles && self.state.recently_unlinked.contains_key(&handle.ino);
 
-                if self.state.handles.has_no_handle(handle.ino) {
+                if no_handles && !discard_unlinked {
                     entry.remove();
                 }
-                release_writer
+                (release_writer, discard_unlinked)
             }
             Entry::Vacant(_) => {
                 // This is weird/impossible?
@@ -3018,7 +3081,9 @@ where
             .close_for_handle(handle.ino as u64, fh)
             .await;
 
-        if release_writer {
+        if discard_unlinked {
+            self.discard_closed_unlinked_inode_state(handle.ino).await;
+        } else if release_writer {
             self.state.writer.release(handle.ino as u64).await;
         }
 
@@ -3176,6 +3241,17 @@ where
 
     pub(crate) fn forget_recently_unlinked_attr(&self, ino: i64) {
         self.state.recently_unlinked.remove(&ino);
+    }
+
+    async fn discard_closed_unlinked_inode_state(&self, ino: i64) {
+        if !self.state.handles.has_no_handle(ino) {
+            return;
+        }
+        if let Some((_, inode)) = self.state.inodes.remove(&ino) {
+            inode.bump_data_epoch();
+        }
+        self.state.reader.invalidate_all(ino as u64).await;
+        self.state.writer.discard(ino as u64).await;
     }
 
     fn remember_recently_unlinked_attr(&self, ino: i64, mut attr: FileAttr) {

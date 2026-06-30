@@ -119,6 +119,34 @@ impl CacheSlice {
             .any(|&(start, stop)| start < end && stop > offset)
     }
 
+    pub(crate) fn copy_written_into(
+        &self,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<Vec<(u64, u64)>> {
+        if buf.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let requested_end = offset.saturating_add(buf.len() as u64);
+        let mut copied = Vec::new();
+        for &(range_start, range_end) in &self.written_ranges {
+            let read_start = offset.max(range_start);
+            let read_end = requested_end.min(range_end);
+            if read_start >= read_end {
+                continue;
+            }
+
+            let dst_start = (read_start - offset).as_usize();
+            let dst_end = (read_end - offset).as_usize();
+            let copied_len = self.copy_into(read_start, &mut buf[dst_start..dst_end])?;
+            if copied_len > 0 {
+                copied.push((read_start, read_start + copied_len as u64));
+            }
+        }
+        Ok(copied)
+    }
+
     pub(crate) fn contiguous_written_len(&self) -> u64 {
         let mut cursor = 0;
         for &(start, end) in &self.written_ranges {
@@ -802,6 +830,23 @@ mod tests {
 
         assert!(slice.has_written_overlap(512, 512));
         assert_eq!(collect_all(&mut slice), expected);
+    }
+
+    #[test]
+    fn test_copy_written_into_skips_sparse_zero_hole() {
+        let (mut slice, first, tail) =
+            (CacheSlice::new(config()), vec![0x11; 512], vec![0x22; 256]);
+
+        slice.append(&first).unwrap();
+        slice.write(1024, &tail, WriteAction::GapAppend).unwrap();
+
+        let mut out = vec![0xAA; 1280];
+        let copied = slice.copy_written_into(0, &mut out).unwrap();
+
+        assert_eq!(copied, vec![(0, 512), (1024, 1280)]);
+        assert_eq!(&out[..512], first.as_slice());
+        assert_eq!(&out[512..1024], vec![0xAA; 512].as_slice());
+        assert_eq!(&out[1024..1280], tail.as_slice());
     }
 
     #[test]

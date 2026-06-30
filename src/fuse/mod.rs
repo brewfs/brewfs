@@ -67,7 +67,7 @@ fn fuse_read_direct_io_enabled() -> bool {
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "no" | "off"
         ),
-        Err(_) => true,
+        Err(_) => false,
     }
 }
 
@@ -82,6 +82,9 @@ fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
 /// Virtual inode for the `.stats` file exposed at the mount root.
 /// Uses a high inode number unlikely to collide with real inodes.
 const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
+/// Linux marks execve-driven FUSE open requests with this internal flag.
+/// It is not a public libc O_* bit, but it is visible in the FUSE open flags.
+const FUSE_OPEN_EXEC: u32 = 0x20;
 /// Name of the virtual stats file.
 const STATS_FILENAME: &str = ".stats";
 const STATS_FILE_SIZE: u64 = 16 * 1024;
@@ -484,12 +487,14 @@ where
         let read = accmode != (libc::O_WRONLY as u32);
         let write = accmode != (libc::O_RDONLY as u32);
         let append = (flags & libc::O_APPEND as u32) != 0;
+        let truncate = (flags & libc::O_TRUNC as u32) != 0;
         debug!(
             ino,
             flags,
             read,
             write,
             has_append = append,
+            has_trunc = truncate,
             has_creat = (flags & libc::O_CREAT as u32) != 0,
             "fuse.open"
         );
@@ -498,6 +503,21 @@ where
                 .await?;
             self.ensure_access_allowed(ino as i64, req.uid, req.gid, open_flags_access_mask(flags))
                 .await?;
+        }
+        if truncate {
+            if !write {
+                return Err(libc::EINVAL.into());
+            }
+            self.set_attr(
+                ino as i64,
+                &SetAttrRequest {
+                    size: Some(0),
+                    ..Default::default()
+                },
+                SetAttrFlags::empty(),
+            )
+            .await
+            .map_err(Into::<Errno>::into)?;
         }
         let fh = self
             .open_fresh_ino(ino as i64, read, write, append)
@@ -1341,6 +1361,20 @@ where
         else {
             return Err(libc::ENOENT.into());
         };
+        let vattr = if !create_result.created && (flags & libc::O_TRUNC as u32) != 0 {
+            self.set_attr(
+                create_result.ino,
+                &SetAttrRequest {
+                    size: Some(0),
+                    ..Default::default()
+                },
+                SetAttrFlags::empty(),
+            )
+            .await
+            .map_err(Into::<Errno>::into)?
+        } else {
+            vattr
+        };
         let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
 
         let accmode = flags & (libc::O_ACCMODE as u32);
@@ -1714,10 +1748,10 @@ where
                 signed_offset
             }
             libc::SEEK_HOLE => {
-                if signed_offset < 0 || signed_offset > size {
+                if signed_offset < 0 || signed_offset >= size {
                     return Err(libc::ENXIO.into());
                 }
-                signed_offset
+                size
             }
             _ => return Err(libc::EINVAL.into()),
         };
@@ -2376,10 +2410,15 @@ where
 }
 
 fn open_flags_access_mask(flags: u32) -> u32 {
-    let mut mask = match flags & (libc::O_ACCMODE as u32) {
-        value if value == libc::O_WRONLY as u32 => libc::W_OK as u32,
-        value if value == libc::O_RDWR as u32 => (libc::R_OK | libc::W_OK) as u32,
-        _ => libc::R_OK as u32,
+    let accmode = flags & (libc::O_ACCMODE as u32);
+    let mut mask = if accmode == libc::O_RDONLY as u32 && (flags & FUSE_OPEN_EXEC) != 0 {
+        libc::X_OK as u32
+    } else {
+        match accmode {
+            value if value == libc::O_WRONLY as u32 => libc::W_OK as u32,
+            value if value == libc::O_RDWR as u32 => (libc::R_OK | libc::W_OK) as u32,
+            _ => libc::R_OK as u32,
+        }
     };
     if (flags & libc::O_TRUNC as u32) != 0 {
         mask |= libc::W_OK as u32;
@@ -2784,7 +2823,7 @@ fn validate_fuse_name(name: &str) -> Result<(), Errno> {
 #[cfg(test)]
 mod mode_sanitization_tests {
     use super::{
-        access_mode_from_bits, acl_entries_access_mode, apply_creation_umask,
+        FUSE_OPEN_EXEC, access_mode_from_bits, acl_entries_access_mode, apply_creation_umask,
         mode_setattr_only_clears_suid_sgid, namespace_mutation_access_mask, open_flags_access_mask,
         opendir_access_mask, parent_namespace_mutation_access_mask, parse_proc_status_groups,
         sanitize_special_mode_bits, validate_fuse_name, vfs_kind_to_fuse, vfs_to_fuse_attr,
@@ -2926,6 +2965,10 @@ mod mode_sanitization_tests {
         assert_eq!(
             open_flags_access_mask((libc::O_RDONLY | libc::O_TRUNC) as u32),
             (libc::R_OK | libc::W_OK) as u32
+        );
+        assert_eq!(
+            open_flags_access_mask((libc::O_RDONLY as u32) | FUSE_OPEN_EXEC),
+            libc::X_OK as u32
         );
     }
 
@@ -3840,17 +3883,78 @@ mod fuse_init_tests {
         assert_eq!(fs.stat("/file.txt").await.unwrap().size, 0);
     }
 
+    #[tokio::test]
+    async fn open_with_trunc_clears_existing_file() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.write_ino(attr.ino, 0, b"old").await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+        assert_eq!(fs.stat("/file.txt").await.unwrap().size, 3);
+
+        let reply = Filesystem::open(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            (libc::O_WRONLY | libc::O_TRUNC) as u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fs.stat("/file.txt").await.unwrap().size, 0);
+        fs.close(reply.fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lseek_hole_on_empty_file_returns_enxio() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let err = Filesystem::lseek(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            0,
+            0,
+            libc::SEEK_HOLE as u32,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::ENXIO));
+    }
+
+    #[tokio::test]
+    async fn lseek_hole_on_dense_file_returns_eof() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.write_ino(attr.ino, 0, b"hello").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let reply = Filesystem::lseek(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            0,
+            2,
+            libc::SEEK_HOLE as u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.offset, 5);
+    }
+
     #[test]
-    fn open_reply_flags_use_direct_io_for_read_only_handles_by_default() {
+    fn open_reply_flags_keep_cache_for_read_only_handles_by_default() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
         }
 
-        assert_eq!(
-            fuse_open_reply_flags(true, false),
-            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
-        );
+        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_KEEP_CACHE);
         assert_eq!(fuse_open_reply_flags(true, true), FOPEN_KEEP_CACHE);
     }
 

@@ -1891,6 +1891,24 @@ fn test_deserialize_i64_from_number() {
     assert_eq!(result.value, 0);
 }
 
+#[test]
+fn test_deserialize_stored_attr_size_from_lua_float() {
+    let json = r#"{
+        "size": 2251799767892000.0,
+        "mode": 33188,
+        "rdev": 0,
+        "uid": 0,
+        "gid": 0,
+        "atime": 1769832400724200000,
+        "mtime": 1769832400724200000,
+        "ctime": 1769832400724200000,
+        "nlink": 1
+    }"#;
+
+    let attr: super::StoredAttr = serde_json::from_str(json).unwrap();
+    assert_eq!(attr.size, 2_251_799_767_892_000);
+}
+
 #[serial]
 #[tokio::test]
 #[ignore]

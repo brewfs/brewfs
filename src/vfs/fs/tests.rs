@@ -1032,6 +1032,47 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_fs_read_write_handle_read_does_not_flush_unrelated_dirty_write() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/randrw.bin").await.unwrap();
+        let attr = fs.stat("/randrw.bin").await.unwrap();
+        let block = layout.block_size as usize;
+        let block_u64 = layout.block_size as u64;
+        fs.truncate_inode(attr.ino, block_u64 * 4).await.unwrap();
+        let attr = fs.stat("/randrw.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        let payload = vec![0x33; block];
+        fs.write(fh, 0, &payload).await.unwrap();
+
+        let writer = fs
+            .state
+            .writer
+            .ensure_file(fs.ensure_inode_registered(attr.ino).await.unwrap());
+        assert!(writer.has_pending().await);
+
+        let out = fs.read(fh, block_u64 * 2, block).await.unwrap();
+        assert_eq!(out, vec![0; block]);
+        assert!(
+            writer.has_pending().await,
+            "a mixed read on an O_RDWR handle must not force-flush unrelated dirty data"
+        );
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_fs_read_only_handle_uses_fully_covered_dirty_overlay_before_backend_read() {
         let layout = ChunkLayout {
             chunk_size: 64 * 1024,
@@ -1132,6 +1173,57 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_fs_fallocate_ino_returns_enospc_when_growth_exceeds_statfs() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-full.bin").await.unwrap();
+        let attr = fs.stat("/falloc-full.bin").await.unwrap();
+        let too_big = crate::meta::store::DEFAULT_STATFS_TOTAL_SPACE + 1;
+
+        let err = fs.fallocate_ino(attr.ino, 0, too_big).await.unwrap_err();
+
+        assert!(matches!(err, crate::vfs::fs::VfsError::StorageFull));
+        assert_eq!(fs.stat("/falloc-full.bin").await.unwrap().size, 0);
+    }
+
+    #[tokio::test]
+    async fn test_fs_fallocate_ino_preserves_pending_cached_write() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-pending.bin").await.unwrap();
+        let attr = fs.stat("/falloc-pending.bin").await.unwrap();
+        let data = b"pending-mmap-data";
+
+        fs.write_cached_ino(attr.ino, 0, data, 1).await.unwrap();
+        let inode = fs.ensure_inode_registered(attr.ino).await.unwrap();
+        let writer = fs.state.writer.ensure_file(inode);
+        assert!(writer.has_pending().await);
+
+        fs.fallocate_ino(attr.ino, data.len() as u64, 64)
+            .await
+            .unwrap();
+
+        let st = fs.stat("/falloc-pending.bin").await.unwrap();
+        assert_eq!(st.size, data.len() as u64 + 64);
+        assert!(
+            writer.has_pending().await,
+            "fallocate extension must not clear pending mmap writeback"
+        );
+
+        let out = read_path(&fs, "/falloc-pending.bin", 0, st.size as usize).await;
+        assert_eq!(&out[..data.len()], data);
+        assert_eq!(&out[data.len()..], vec![0u8; 64].as_slice());
+    }
+
+    #[tokio::test]
     async fn test_fs_truncate_prunes_chunks_and_zero_fills() {
         let layout = ChunkLayout {
             chunk_size: 8 * 1024,
@@ -1184,6 +1276,62 @@ mod io_tests {
             .unwrap();
         let data = vec![1u8; 2048];
         fs.write(fh, 0, &data).await.unwrap();
+        fs.close(fh).await.unwrap();
+
+        assert!(!fs.state.writer.has_file(attr.ino as u64));
+        assert!(!fs.state.inodes.contains_key(&attr.ino));
+    }
+
+    #[tokio::test]
+    async fn test_fs_unlink_without_handles_discards_writer_and_inode() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/stale.bin").await.unwrap();
+        let attr = fs.stat("/stale.bin").await.unwrap();
+        let inode = crate::vfs::Inode::new(attr.ino, 64 * 1024);
+        fs.state.inodes.insert(attr.ino, inode.clone());
+        let writer = fs.state.writer.ensure_file(inode);
+        writer.write_at_cached(0, &[7u8; 1024], 1).await.unwrap();
+
+        assert!(fs.state.writer.has_file(attr.ino as u64));
+        assert!(fs.state.inodes.contains_key(&attr.ino));
+
+        fs.unlink("/stale.bin").await.unwrap();
+
+        assert!(!fs.state.writer.has_file(attr.ino as u64));
+        assert!(!fs.state.inodes.contains_key(&attr.ino));
+    }
+
+    #[tokio::test]
+    async fn test_fs_close_last_unlinked_handle_discards_writer_and_inode() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/open-unlinked.bin").await.unwrap();
+        let attr = fs.stat("/open-unlinked.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        fs.write(fh, 0, &[3u8; 2048]).await.unwrap();
+
+        fs.unlink("/open-unlinked.bin").await.unwrap();
+        assert!(fs.state.writer.has_file(attr.ino as u64));
+        assert!(fs.state.inodes.contains_key(&attr.ino));
+
         fs.close(fh).await.unwrap();
 
         assert!(!fs.state.writer.has_file(attr.ino as u64));
@@ -1359,12 +1507,12 @@ mod io_tests {
         fs.write(fh, 0x5d000, &src).await.unwrap();
         expected[0x5d000..0x6a000].copy_from_slice(&src);
 
-        let mut tail = vec![0u8; 0xe000];
+        let mut tail = vec![0u8; 0x1e000];
         for (i, b) in tail.iter_mut().enumerate() {
             *b = (0x90u8).wrapping_add((i * 3) as u8);
         }
         fs.write(fh, 0x2b000, &tail).await.unwrap();
-        expected[0x2b000..0x39000].copy_from_slice(&tail);
+        expected[0x2b000..0x49000].copy_from_slice(&tail);
 
         let copied = fs
             .copy_file_range(fh, 0x5d000, fh, 0x24000, 0xd000)
@@ -1376,6 +1524,17 @@ mod io_tests {
 
         let out = fs.read(fh, 0x2c000, 0xa000).await.unwrap();
         assert_eq!(out, expected[0x2c000..0x36000].to_vec());
+
+        let copied = fs
+            .copy_file_range(fh, 0x39000, fh, 0xe000, 0xe000)
+            .await
+            .unwrap();
+        assert_eq!(copied, 0xe000);
+        let copied_view = expected[0x39000..0x47000].to_vec();
+        expected[0xe000..0x1c000].copy_from_slice(&copied_view);
+
+        let out = fs.read(fh, 0x1a800, 0x1000).await.unwrap();
+        assert_eq!(out, expected[0x1a800..0x1b800].to_vec());
 
         fs.close(fh).await.unwrap();
     }
@@ -2171,6 +2330,65 @@ mod truncate_flush_tests {
         .unwrap();
 
         assert_eq!(attr.size, block as u64 * 3);
+    }
+
+    #[tokio::test]
+    async fn test_cached_write_fsync_invalidates_prior_reader_cache() {
+        let fs = Arc::new(new_vfs().await);
+        let root = fs.root_ino();
+
+        let ino = op_timeout("create_file", fs.create_file_at(root, "f", false))
+            .await
+            .unwrap();
+
+        let req = SetAttrRequest {
+            size: Some(48 * 1024),
+            ..Default::default()
+        };
+        let attr = op_timeout("extend", fs.set_attr(ino, &req, SetAttrFlags::empty()))
+            .await
+            .unwrap();
+        let fh = op_timeout("open", fs.open(ino, attr, true, true, false))
+            .await
+            .unwrap();
+
+        let zeros = op_timeout("prime read cache", fs.read(fh, 0, 48 * 1024))
+            .await
+            .unwrap();
+        assert_eq!(zeros, vec![0; 48 * 1024]);
+
+        let first = vec![0x41; 16 * 1024];
+        let second = vec![0x52; 8 * 1024];
+        let third = vec![0x63; 4 * 1024];
+        op_timeout(
+            "cached write first",
+            fs.write_cached_ino(ino, 18 * 1024, &first, 1),
+        )
+        .await
+        .unwrap();
+        op_timeout(
+            "cached write second",
+            fs.write_cached_ino(ino, 32 * 1024, &second, 2),
+        )
+        .await
+        .unwrap();
+        op_timeout(
+            "cached write third",
+            fs.write_cached_ino(ino, 40 * 1024, &third, 3),
+        )
+        .await
+        .unwrap();
+
+        op_timeout("fsync", fs.fsync(fh, false)).await.unwrap();
+
+        let out = op_timeout("read after fsync", fs.read(fh, 28 * 1024, 16 * 1024))
+            .await
+            .unwrap();
+        assert_eq!(&out[..4 * 1024], vec![0x41; 4 * 1024]);
+        assert_eq!(&out[4 * 1024..12 * 1024], vec![0x52; 8 * 1024]);
+        assert_eq!(&out[12 * 1024..], vec![0x63; 4 * 1024]);
+
+        op_timeout("close", fs.close(fh)).await.unwrap();
     }
 
     /// Write a large amount of data, then immediately truncate to zero
