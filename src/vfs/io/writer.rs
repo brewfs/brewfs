@@ -3526,11 +3526,13 @@ where
                 let wait_result = timeout(COMMIT_WAIT_SLICE, runtime.notify.notified())
                     .instrument(tracing::trace_span!("commit_chunk.wait_upload"))
                     .await;
-                shared.recent_pending_upload.record_commit_wait_upload(
-                    wait_start.elapsed(),
-                    runtime.freeze_reason,
-                    runtime.write_origin,
-                );
+                if runtime.frozen {
+                    shared.recent_pending_upload.record_commit_wait_upload(
+                        wait_start.elapsed(),
+                        runtime.freeze_reason,
+                        runtime.write_origin,
+                    );
+                }
                 if wait_result.is_ok() {
                     if Self::try_commit_before_upload_front(&shared, &slice).await {
                         commit_failures = 0;
@@ -6389,6 +6391,71 @@ mod tests {
         })
         .await
         .expect("normal write should upload once freeze_min is reached");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_writeback_commit_wait_upload_ignores_unflushable_slice() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "writeback_deferred_commit.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let config = Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .freeze_min_bytes(layout.block_size as u64 * 2)
+                .auto_flush_max_age(Duration::from_secs(60))
+                .writeback_mode(WriteBackMode::CommitBeforeUpload),
+        );
+        let writer = Arc::new(DataWriter::new(config, backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![1u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        sleep(COMMIT_WAIT_SLICE * 2 + Duration::from_millis(20)).await;
+
+        let before_flushable = writer.dirty_breakdown().await;
+        assert_eq!(before_flushable.live_slices, 1);
+        assert_eq!(before_flushable.upload_batch_ops, 0);
+        assert_eq!(
+            before_flushable.commit_wait_upload_ops, 0,
+            "writable slices should not be counted as upload wait before they can be flushed"
+        );
+
+        file_writer
+            .write_at(
+                layout.block_size as u64,
+                &vec![2u8; layout.block_size as usize],
+            )
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let breakdown = writer.dirty_breakdown().await;
+                if breakdown.upload_batch_ops > 0 {
+                    assert_eq!(breakdown.upload_batch_blocks, 2);
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("writeback upload should start once freeze_min is reached");
     }
 
     #[tokio::test]
