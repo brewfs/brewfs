@@ -777,14 +777,17 @@ where
             return Ok(Vec::new());
         }
 
+        let track_read_slices = actual_len as u64 >= self.config.layout.block_size as u64;
+
         // Evict stale slices every N reads.  Both cleanup paths scan the full
         // slice list, so keep them out of the per-read hot path.
         // 4 MiB read adds ~10-50 µs of overhead that adds up at 46 reads/sec.
-        let should_clean = self
-            .read_count
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1)
-            .is_multiple_of(64);
+        let should_clean = track_read_slices
+            && self
+                .read_count
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1)
+                .is_multiple_of(64);
         if should_clean {
             self.clean_evictable_slices(offset, actual_len)
                 .instrument(tracing::trace_span!(
@@ -802,22 +805,24 @@ where
             .in_scope(|| split_chunk_spans(self.config.layout, offset, actual_len));
 
         let mut pin_guard = Vec::new();
-        for span in spans.iter().copied() {
-            // Demand reads fill data through a single DataFetcher below; the
-            // slice records here are metadata reservations, not data owners.
-            pin_guard.push(
-                self.prepare_slices(span.index, (span.offset, span.offset + span.len))
-                    .instrument(tracing::trace_span!(
-                        "read_at.prepare_slice",
-                        index = span.index,
-                        offset = span.offset,
-                        len = span.len
-                    ))
-                    .await,
-            );
-        }
+        if track_read_slices {
+            for span in spans.iter().copied() {
+                // Demand reads fill data through a single DataFetcher below; the
+                // slice records here are metadata reservations, not data owners.
+                pin_guard.push(
+                    self.prepare_slices(span.index, (span.offset, span.offset + span.len))
+                        .instrument(tracing::trace_span!(
+                            "read_at.prepare_slice",
+                            index = span.index,
+                            offset = span.offset,
+                            len = span.len
+                        ))
+                        .await,
+                );
+            }
 
-        let _ahead = self.check_session(offset, actual_len);
+            let _ahead = self.check_session(offset, actual_len);
+        }
 
         let mut data = vec![0; actual_len];
         let result = async {
