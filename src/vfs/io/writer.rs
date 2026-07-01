@@ -2551,7 +2551,9 @@ where
         shared: &Arc<Shared<B, M>>,
         chunk: &mut ChunkState,
     ) -> anyhow::Result<bool> {
-        let Some(indices) = Self::find_cached_coalesce_run(&chunk.slices) else {
+        let Some(indices) =
+            Self::find_cached_coalesce_run(&chunk.slices, shared.config.cached_block_assembler)
+        else {
             return Ok(false);
         };
         let run_slices = indices
@@ -2583,6 +2585,7 @@ where
 
     fn find_cached_coalesce_run(
         slices: &VecDeque<Arc<ParkingMutex<SliceState>>>,
+        allow_overlap: bool,
     ) -> Option<Vec<usize>> {
         if slices.len() < 2 {
             return None;
@@ -2600,9 +2603,16 @@ where
         candidates.sort_by_key(|candidate| (candidate.start, candidate.end, candidate.index));
 
         let mut run: Vec<CachedCoalesceCandidate> = Vec::new();
+        let mut run_end = 0;
         for candidate in candidates {
-            if let Some(last) = run.last() {
-                if candidate.start == last.end {
+            if !run.is_empty() {
+                let extends_current_run = if allow_overlap {
+                    candidate.start <= run_end
+                } else {
+                    candidate.start == run_end
+                };
+                if extends_current_run {
+                    run_end = run_end.max(candidate.end);
                     run.push(candidate);
                     continue;
                 }
@@ -2612,6 +2622,7 @@ where
                 }
                 run.clear();
             }
+            run_end = candidate.end;
             run.push(candidate);
         }
 
@@ -2627,7 +2638,7 @@ where
         }
 
         let run_start = run.first()?.start;
-        let run_end = run.last()?.end;
+        let run_end = run.iter().map(|candidate| candidate.end).max()?;
         if Self::cached_coalesce_run_has_external_overlap(slices, run, run_start, run_end) {
             return None;
         }
@@ -2669,10 +2680,11 @@ where
             max_write_unique: u64,
             write_origin_mask: u8,
             data: Vec<u8>,
+            order: usize,
         }
 
         let mut pieces = Vec::with_capacity(run_slices.len());
-        for slice in run_slices {
+        for (order, slice) in run_slices.iter().enumerate() {
             let state = slice.lock();
             anyhow::ensure!(
                 state.can_coalesce_cached_writable(),
@@ -2691,44 +2703,48 @@ where
                 max_write_unique: state.max_write_unique,
                 write_origin_mask: state.write_origin_mask,
                 data,
+                order,
             });
         }
-        pieces.sort_by_key(|piece| piece.offset);
 
-        let Some(first) = pieces.first() else {
+        let Some(run_start) = pieces.iter().map(|piece| piece.offset).min() else {
             return Err(anyhow::anyhow!("cannot coalesce empty cached slice run"));
         };
+        let run_end = pieces
+            .iter()
+            .map(|piece| piece.offset.saturating_add(piece.data.len() as u64))
+            .max()
+            .unwrap_or(run_start);
 
-        let mut expected_offset = first.offset;
-        let mut creation_unique = first.creation_unique;
-        let mut max_write_unique = first.max_write_unique;
+        let merged_len = (run_end - run_start).as_usize();
+        let mut merged_data = vec![0; merged_len];
+        let mut creation_unique = u64::MAX;
+        let mut max_write_unique = 0;
         let mut write_origin_mask = 0u8;
+        pieces.sort_by_key(|piece| (piece.creation_unique, piece.order));
         for piece in &pieces {
-            anyhow::ensure!(
-                piece.offset == expected_offset,
-                "cached slice run is no longer adjacent while preparing coalesce"
-            );
-            expected_offset = expected_offset.saturating_add(piece.data.len() as u64);
-            if creation_unique == 0
-                || (piece.creation_unique != 0 && piece.creation_unique < creation_unique)
-            {
+            let start = (piece.offset - run_start).as_usize();
+            let end = start + piece.data.len();
+            merged_data[start..end].copy_from_slice(&piece.data);
+            if piece.creation_unique != 0 && piece.creation_unique < creation_unique {
                 creation_unique = piece.creation_unique;
             }
             max_write_unique = max_write_unique.max(piece.max_write_unique);
             write_origin_mask |= piece.write_origin_mask;
         }
+        if creation_unique == u64::MAX {
+            creation_unique = 0;
+        }
 
         let mut merged = SliceState::new(
             chunk_id,
-            first.offset,
+            run_start,
             shared.config.clone(),
             shared.buffer_usage.clone(),
             shared.memory_budget.clone(),
             creation_unique,
         );
-        for piece in pieces {
-            merged.data.append(&piece.data)?;
-        }
+        merged.data.append(&merged_data)?;
         merged.max_write_unique = max_write_unique;
         merged.write_origin_mask = write_origin_mask;
         merged.update_usage(merged.data.alloc_bytes());
@@ -7293,6 +7309,71 @@ mod tests {
         let out = file_reader.read(0, 2048).await.unwrap();
         assert_eq!(&out[..1024], &[1u8; 1024]);
         assert_eq!(&out[1024..], &[2u8; 1024]);
+    }
+
+    #[tokio::test]
+    async fn test_cached_block_assembler_coalesces_overlapping_cached_slices() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_overlap_coalesce.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(
+            Arc::new(
+                WriteConfig::new(layout)
+                    .page_size(4 * 1024)
+                    .freeze_min_bytes(4096)
+                    .auto_flush_max_age(Duration::from_secs(60))
+                    .cached_block_assembler(true),
+            ),
+            backend,
+            reader.clone(),
+            None,
+        ));
+        let file_writer = writer.ensure_file(inode.clone());
+
+        file_writer
+            .write_at_cached(0, &[2u8; 2048], 20)
+            .await
+            .unwrap();
+        file_writer
+            .write_at_cached(0, &[1u8; 1024], 10)
+            .await
+            .unwrap();
+
+        let before_flush = writer.dirty_breakdown().await;
+        assert_eq!(before_flush.live_slices, 2);
+        assert_eq!(before_flush.slice_create_ops, 2);
+        assert_eq!(before_flush.slice_reject_older_unique_ops, 1);
+
+        file_writer.flush().await.unwrap();
+
+        let after_flush = writer.dirty_breakdown().await;
+        assert_eq!(after_flush.flush_fragmentation_slices, 1);
+        assert_eq!(after_flush.freeze_explicit_flush_ops, 1);
+        assert_eq!(after_flush.upload_batch_ops, 1);
+
+        let cid = chunk_id_for(inode.ino(), 0).unwrap();
+        let slices = meta.get_slices(cid).await.unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].offset, 0);
+        assert_eq!(slices[0].length, 2048);
+
+        let file_reader = reader.open_for_handle(inode, 1);
+        let out = file_reader.read(0, 2048).await.unwrap();
+        assert_eq!(out, vec![2u8; 2048]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
