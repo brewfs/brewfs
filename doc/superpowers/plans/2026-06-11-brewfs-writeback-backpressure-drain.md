@@ -14,12 +14,12 @@
 
 The plan is based on the current review set under `/mnt/slayerfs/doc/`:
 
-- `/mnt/slayerfs/doc/review-writeback-writer.md`: `CommitBeforeUpload` creates metadata-visible, not-yet-uploaded slices; current soft/hard backpressure has no wait counters and can trade close tail for write p99.
-- `/mnt/slayerfs/doc/review-perf-harness-config.md`: `direct=0` mixes kernel page cache and FUSE writeback-cache; write workloads need post-write drain accounting; all accepted optimizations must include `randrw`.
-- `/mnt/slayerfs/doc/review-object-store-cache.md`: random write/mixed workloads are dominated by small object PUT amplification; concurrency tuning without object-count/drain metrics is easy to misread.
-- `/mnt/slayerfs/doc/review-metadata-cache.md`: metadata batching is not the next default attempt because the earlier batch direction improved a narrow profile but failed compose `randrw`.
-- `/mnt/slayerfs/doc/review-parallel-agents-summary.md`: implement writer pending/staging/watchdog metrics first, then improve the read/object and metadata layers.
-- `/mnt/slayerfs/doc/perf-optimization-roadmap.md`: range-prefetch pending gate and LZ4 raw-fallback zero-copy were tested and rejected; avoid repeating them.
+- `/mnt/slayerfs/doc/performance/review-writeback-writer.md`: `CommitBeforeUpload` creates metadata-visible, not-yet-uploaded slices; current soft/hard backpressure has no wait counters and can trade close tail for write p99.
+- `/mnt/slayerfs/doc/performance/review-perf-harness-config.md`: `direct=0` mixes kernel page cache and FUSE writeback-cache; write workloads need post-write drain accounting; all accepted optimizations must include `randrw`.
+- `/mnt/slayerfs/doc/performance/review-object-store-cache.md`: random write/mixed workloads are dominated by small object PUT amplification; concurrency tuning without object-count/drain metrics is easy to misread.
+- `/mnt/slayerfs/doc/performance/review-metadata-cache.md`: metadata batching is not the next default attempt because the earlier batch direction improved a narrow profile but failed compose `randrw`.
+- `/mnt/slayerfs/doc/performance/review-parallel-agents-summary.md`: implement writer pending/staging/watchdog metrics first, then improve the read/object and metadata layers.
+- `/mnt/slayerfs/doc/performance/perf-optimization-roadmap.md`: range-prefetch pending gate and LZ4 raw-fallback zero-copy were tested and rejected; avoid repeating them.
 
 ## Decision
 
@@ -48,7 +48,7 @@ Deferred:
   - Add an opt-in backpressure policy mode, parsed from `BREWFS_WRITEBACK_BACKPRESSURE_POLICY`.
 - Modify: `/mnt/slayerfs/docker/compose-xfstests/run_perf_in_container.sh`
   - Add report-only `PERF_FIO_POST_WRITE_DRAIN` support and artifact fields.
-- Modify if needed: `/mnt/slayerfs/doc/perf-optimization-roadmap.md`
+- Modify if needed: `/mnt/slayerfs/doc/performance/perf-optimization-roadmap.md`
   - Record accepted and rejected A/B results.
 
 ## Acceptance Gates
@@ -472,7 +472,7 @@ Expected:
 ## Task 4: A/B Validate The Candidate
 
 **Files:**
-- Modify: `/mnt/slayerfs/doc/perf-optimization-roadmap.md`
+- Modify: `/mnt/slayerfs/doc/performance/perf-optimization-roadmap.md`
 
 - [ ] **Step 1: Run baseline with new metrics but current policy**
 
@@ -529,7 +529,7 @@ Reject and revert the hysteresis code if:
 
 - [ ] **Step 4: Record the result**
 
-Append a result section to `/mnt/slayerfs/doc/perf-optimization-roadmap.md` with:
+Append a result section to `/mnt/slayerfs/doc/performance/perf-optimization-roadmap.md` with:
 
 ```markdown
 ## Result: Writeback Backpressure Hysteresis Experiment
@@ -565,7 +565,7 @@ If Task 4 accepts the hysteresis behavior:
 
 ```bash
 cd /mnt/slayerfs/brewfs
-git add src/vfs/config.rs src/vfs/io/writer.rs doc/perf-optimization-roadmap.md
+git add src/vfs/config.rs src/vfs/io/writer.rs doc/performance/perf-optimization-roadmap.md
 git commit -m "perf: add opt-in writeback backpressure hysteresis"
 git push
 ```
@@ -577,7 +577,7 @@ cd /mnt/slayerfs/brewfs
 git diff -- src/vfs/config.rs src/vfs/io/writer.rs
 ```
 
-Use a targeted reverse patch to remove the rejected hysteresis code, keep the useful metrics, and record the negative result in `/mnt/slayerfs/doc/perf-optimization-roadmap.md`.
+Use a targeted reverse patch to remove the rejected hysteresis code, keep the useful metrics, and record the negative result in `/mnt/slayerfs/doc/performance/perf-optimization-roadmap.md`.
 
 ## Self-Review Checklist
 

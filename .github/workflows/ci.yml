@@ -2,9 +2,29 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      docker_suite:
+        description: Docker/FUSE suite to run
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - pjdfstest
+          - stress-ng
+          - all
+      stress_ng_profile:
+        description: stress-ng profile for the Docker stress job
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - metadata-heavy
+          - link-symlink-heavy
+          - write-smallfile
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,10 +48,24 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check perf scripts
+        shell: bash
+        run: |
+          bash -n docker/compose-xfstests/run_perf_in_container.sh
+          bash -n docker/compose-xfstests/run_redis_perf.sh
+          bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh
+          bash -n docker/compose-xfstests/run_juicefs_perf.sh
+          bash docker/compose-xfstests/test_perf_report_delta.sh
+          bash docker/compose-xfstests/test_juicefs_direct_matrix.sh
+          bash docker/compose-xfstests/test_juicefs_perf_report.sh
 
       - name: Check workspace
         run: cargo check --workspace
@@ -49,3 +83,110 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace
+
+  docker-pjdfstest:
+    name: Docker pjdfstest smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      ${{
+        github.event_name != 'workflow_dispatch' ||
+        inputs.docker_suite == 'smoke' ||
+        inputs.docker_suite == 'pjdfstest' ||
+        inputs.docker_suite == 'all'
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run pjdfstest
+        run: bash docker/compose-pjdfstest/run_redis_pjdfstest.sh
+
+      - name: Upload pjdfstest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pjdfstest-artifacts
+          path: docker/compose-pjdfstest/artifacts/**
+          if-no-files-found: warn
+
+  docker-stress-ng:
+    name: Docker stress-ng smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      ${{
+        github.event_name != 'workflow_dispatch' ||
+        inputs.docker_suite == 'smoke' ||
+        inputs.docker_suite == 'stress-ng' ||
+        inputs.docker_suite == 'all'
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Select stress-ng profile
+        shell: bash
+        run: |
+          profile="${{ inputs.stress_ng_profile }}"
+          if [[ -z "$profile" ]]; then
+            profile="smoke"
+          fi
+          echo "STRESS_NG_PROFILE=$profile" >> "$GITHUB_ENV"
+
+      - name: Run stress-ng profile
+        run: bash docker/compose-xfstests/run_redis_stress_ng.sh --profile "$STRESS_NG_PROFILE"
+
+      - name: Upload stress-ng artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-ng-artifacts-${{ env.STRESS_NG_PROFILE }}
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn

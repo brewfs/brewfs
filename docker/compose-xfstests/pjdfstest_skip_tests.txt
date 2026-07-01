@@ -1,0 +1,33 @@
+# Relative pjdfstest test path regexes excluded from BrewFS' required POSIX set.
+#
+# BrewFS currently models regular files, directories, and symlinks. It does not
+# persist FIFO, socket, character device, or block device inode kinds, so the
+# special-node suites are tracked as unsupported rather than required.
+^tests/mkfifo/
+^tests/mknod/
+
+# Some pjdfstest files mix regular file coverage with FIFO/socket/device
+# subtests in the same .t file. Since prove can only include/exclude whole files
+# here, keep these out of the required set until BrewFS persists those inode
+# kinds.
+^tests/chmod/(00|01)\.t$
+^tests/chown/(00|01|07)\.t$
+^tests/link/(00|01|10)\.t$
+^tests/mkdir/(01|10)\.t$
+^tests/open/(01|06|17|22|24)\.t$
+^tests/rename/(00|12|13|14|20|23)\.t$
+^tests/rmdir/(01|06)\.t$
+^tests/symlink/08\.t$
+^tests/unlink/00\.t$
+^tests/utimensat/00\.t$
+
+# BrewFS intentionally strips setuid, setgid, and sticky bits today (see
+# doc/permissions.md). Sticky-bit authorization suites are therefore not part of
+# the current required POSIX set.
+^tests/chmod/11\.t$
+^tests/rename/(09|10)\.t$
+^tests/rmdir/11\.t$
+^tests/unlink/11\.t$
+
+# BSD file flags are not a Linux/FUSE requirement and are not implemented.
+^tests/chflags/

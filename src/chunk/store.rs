@@ -1,7 +1,7 @@
 //! Storage backends: asynchronous block-level IO traits and in-memory implementations.
 
 use crate::chunk::bandwidth::BandwidthLimiter;
-use crate::chunk::compress::{Compression, compress, decompress};
+use crate::chunk::compress::{Compression, compress, decompress_bytes};
 use crate::chunk::page_cache::{PageKey, ReadPageCache};
 use crate::chunk::singleflight::SingleFlight;
 use crate::utils::NumCastExt;
@@ -504,18 +504,6 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         }
     }
 
-    async fn populate_page_cache_from_block(&self, key: BlockKey, block_data: &[u8]) {
-        let page_size = self.page_cache.page_size();
-        for (page_idx, page) in block_data.chunks(page_size).enumerate() {
-            self.page_cache
-                .insert(
-                    (key.0, key.1, page_idx as u32),
-                    Bytes::copy_from_slice(page),
-                )
-                .await;
-        }
-    }
-
     async fn try_promote_page_cache_to_block_cache(&self, key: BlockKey) -> bool {
         let page_size = self.page_cache.page_size();
         let page_count = self.config.block_size.div_ceil(page_size);
@@ -569,7 +557,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                     let raw_bytes = match raw {
                         Some(data) => {
                             object_metrics.record_get(data.len() as u64, started.elapsed());
-                            data
+                            Bytes::from(data)
                         }
                         None => {
                             object_metrics.record_get(0, started.elapsed());
@@ -577,12 +565,12 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                         }
                     };
                     let decompressed = if !matches!(compression, Compression::None) {
-                        decompress(&raw_bytes)
+                        decompress_bytes(raw_bytes)
                             .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?
                     } else {
                         raw_bytes
                     };
-                    Ok::<_, anyhow::Error>(Bytes::from(decompressed))
+                    Ok::<_, anyhow::Error>(decompressed)
                 })
                 .await;
 
@@ -718,11 +706,31 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
     // Caller is responsible for zero-filling buf; this method only overwrites existing bytes.
     async fn read_range(&self, key: BlockKey, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
         let len = buf.len();
+        if len == 0 {
+            tracing::Span::current().record("strategy", "empty");
+            tracing::Span::current().record("read_len", 0);
+            return Ok(());
+        }
+
         let key_str = Self::key_for(key);
 
         // Try cache first — blocks are immutable once committed, so a cache
         // hit is always valid regardless of read size or offset.
-        if let Some(cached) = self.block_cache.get(&key_str).await {
+        let full_block_read = offset == 0 && len >= self.config.block_size;
+        if !full_block_read
+            && let Some(read_len) = self
+                .block_cache
+                .get_range_into(&key_str, offset as usize, buf)
+                .await
+        {
+            tracing::trace!(key = %key_str, len = read_len, "block_cache range HIT");
+            tracing::Span::current().record("strategy", "cache_range_hit");
+            tracing::Span::current().record("read_len", read_len);
+            self.object_metrics.record_read_block_cache_hit();
+            return Ok(());
+        }
+
+        if full_block_read && let Some(cached) = self.block_cache.get(&key_str).await {
             tracing::trace!(key = %key_str, len = cached.len(), "block_cache HIT");
             tracing::Span::current().record("strategy", "cache_hit");
             self.object_metrics.record_read_block_cache_hit();
@@ -878,7 +886,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                     let raw_bytes = match raw {
                         Some(data) => {
                             object_metrics.record_get(data.len() as u64, started.elapsed());
-                            data
+                            Bytes::from(data)
                         }
                         None => {
                             object_metrics.record_get(0, started.elapsed());
@@ -887,12 +895,12 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                     };
                     // Decompress if compression is enabled (auto-detects from header)
                     let decompressed = if !matches!(compression, Compression::None) {
-                        decompress(&raw_bytes)
+                        decompress_bytes(raw_bytes)
                             .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?
                     } else {
                         raw_bytes
                     };
-                    Ok::<_, anyhow::Error>(Bytes::from(decompressed))
+                    Ok::<_, anyhow::Error>(decompressed)
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("SingleFlight read failed: {e}"))?;
@@ -907,11 +915,6 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
         }
         tracing::Span::current().record("read_len", copy_len);
-
-        if !matches!(compression, Compression::None) {
-            self.populate_page_cache_from_block(key, block_data.as_ref())
-                .await;
-        }
 
         // Populate caches after serving the read — the hot cache insert is
         // fast (in-memory) so we await it to ensure subsequent reads hit.
@@ -1306,8 +1309,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compressed_small_read_uses_full_object() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_compressed_full_read_populates_only_block_cache()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::cadapter::client::{ObjectBackend, ObjectClient};
         use crate::chunk::compress::{Compression, compress};
         use async_trait::async_trait;
@@ -1402,8 +1405,24 @@ mod tests {
         assert_eq!(*backend.get_object_calls.lock().unwrap(), 1);
         assert_eq!(*backend.get_object_range_calls.lock().unwrap(), 0);
         assert!(
-            store.page_cache.get(&(7, 0, 32)).await.is_some(),
-            "decompressed full-block reads should populate page_cache for future range reads"
+            store.page_cache.get(&(7, 0, 32)).await.is_none(),
+            "full-block reads already populate block_cache, so duplicating the decompressed block into page_cache only adds copy/cache overhead"
+        );
+
+        *backend.get_object_calls.lock().unwrap() = 0;
+        *backend.get_object_range_calls.lock().unwrap() = 0;
+        let mut cached = vec![1u8; 128 * 1024];
+        store.read_range((7, 0), 64 * 1024, &mut cached).await?;
+        assert_eq!(cached, vec![0u8; 128 * 1024]);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "subsequent reads should hit block_cache without another full GET"
+        );
+        assert_eq!(
+            *backend.get_object_range_calls.lock().unwrap(),
+            0,
+            "subsequent reads should hit block_cache without range GETs"
         );
 
         Ok(())
@@ -2188,6 +2207,108 @@ mod tests {
             *backend.get_object_calls.lock().unwrap(),
             1,
             "large read after background prefetch should hit block cache"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_partial_read_uses_disk_cache_range_when_unrequested_block_is_corrupt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cadapter::client::{ObjectBackend, ObjectClient};
+        use async_trait::async_trait;
+        use std::{
+            io::{Seek, SeekFrom, Write},
+            sync::{Arc, Mutex},
+        };
+
+        const HEADER_LEN: u64 = 8;
+        const CHECKSUM_BLOCK: usize = 32 * 1024;
+
+        #[derive(Clone, Default)]
+        struct MockBackend {
+            get_object_calls: Arc<Mutex<usize>>,
+            get_object_range_calls: Arc<Mutex<usize>>,
+        }
+
+        #[async_trait]
+        impl ObjectBackend for MockBackend {
+            async fn put_object(&self, _key: &str, _data: &[u8]) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn get_object(&self, _key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+                *self.get_object_calls.lock().unwrap() += 1;
+                Ok(None)
+            }
+
+            async fn get_object_range(
+                &self,
+                _key: &str,
+                _offset: u64,
+                _buf: &mut [u8],
+            ) -> anyhow::Result<usize> {
+                *self.get_object_range_calls.lock().unwrap() += 1;
+                Ok(0)
+            }
+
+            async fn get_etag(&self, _key: &str) -> anyhow::Result<String> {
+                Ok("test_etag".to_string())
+            }
+
+            async fn delete_object(&self, _key: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let backend = MockBackend::default();
+        let block: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let cache_dir = tempfile::tempdir()?;
+        let config = BlockStoreConfig {
+            block_size: 4 * 1024 * 1024,
+            range_read_threshold: 0.25,
+            compression: Compression::None,
+            ..Default::default()
+        };
+        let store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(backend.clone()),
+            ChunksCacheConfig::with_budgets(
+                16 * 1024 * 1024,
+                16 * 1024 * 1024,
+                cache_dir.path().to_path_buf(),
+            ),
+            config,
+        )
+        .await?;
+
+        let cache_key = "chunks/89/0".to_string();
+        store
+            .block_cache
+            .store_to_disk(&cache_key, Bytes::from(block.clone()))
+            .await?;
+
+        let cache_file = std::fs::read_dir(cache_dir.path())?
+            .filter_map(Result::ok)
+            .find(|entry| entry.path().is_file())
+            .expect("disk cache file should exist")
+            .path();
+        let mut file = std::fs::OpenOptions::new().write(true).open(&cache_file)?;
+        file.seek(SeekFrom::Start(HEADER_LEN + (CHECKSUM_BLOCK * 2) as u64))?;
+        file.write_all(&[0xFF])?;
+
+        let mut out = vec![0u8; 4096];
+        store.read_range((89, 0), 1024, &mut out).await?;
+
+        assert_eq!(out, block[1024..1024 + 4096]);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "partial disk cache hit should not fall back to full object read"
+        );
+        assert_eq!(
+            *backend.get_object_range_calls.lock().unwrap(),
+            0,
+            "partial disk cache hit should not fall back to object range read"
         );
 
         Ok(())

@@ -2,7 +2,7 @@
 
 审查日期: 2026-05-23  
 范围: 读路径、写路径、缓存体系、事务引擎  
-依据: `doc/juicefs-architecture.html`, `doc/juicefs/*.md`, BrewFS 当前源码
+依据: `doc/juicefs/architecture.html`, `doc/juicefs/*.md`, BrewFS 当前源码
 
 ## 结论摘要
 

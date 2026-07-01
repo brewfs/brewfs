@@ -14,6 +14,8 @@ services:
       retries: 30
     ports:
       - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_HOST_PORT:-16379}:6379"
+    volumes:
+      - ${REDIS_PERF_DATA_MOUNT:-redis-data-juicefs-perf}:/data
     networks:
       - juicefs-xfstests
 
@@ -43,7 +45,7 @@ services:
       - ${RUSTFS_SECRET_KEY:-rustfsadmin}
       - /data
     volumes:
-      - rustfs-data-juicefs-perf:/data
+      - ${JUICEFS_PERF_RUSTFS_DATA_MOUNT:-rustfs-data-juicefs-perf}:/data
     networks:
       - juicefs-xfstests
 
@@ -102,7 +104,7 @@ services:
       - apparmor=unconfined
     volumes:
       - ./artifacts:/artifacts
-      - juicefs-state-perf:/var/lib/juicefs
+      - ${JUICEFS_PERF_STATE_MOUNT:-juicefs-state-perf}:/var/lib/juicefs
     networks:
       - juicefs-xfstests
 
@@ -111,5 +113,6 @@ networks:
     driver: bridge
 
 volumes:
+  redis-data-juicefs-perf:
   rustfs-data-juicefs-perf:
   juicefs-state-perf:

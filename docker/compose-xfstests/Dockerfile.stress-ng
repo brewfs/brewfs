@@ -1,0 +1,53 @@
+FROM debian:trixie-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        fuse3 \
+        libsqlite3-0 \
+        libssl3 \
+        procps \
+        tini \
+        util-linux \
+        acl \
+        attr \
+        bc \
+        fio \
+        gawk \
+        make \
+        perl \
+        psmisc \
+        python3 \
+        redis-tools \
+        sed \
+        stress-ng \
+        sudo && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY target/release/brewfs /usr/local/bin/brewfs
+COPY docker/compose-xfstests/run_perf_in_container.sh /usr/local/bin/run_perf_in_container.sh
+
+RUN set -e; \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/run_perf_in_container.sh; \
+    mkdir -p /opt/xfstests-dev /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts; \
+    grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
+
+ENV BREWFS_HOME=/var/lib/brewfs \
+    BREWFS_MOUNT_POINT=/mnt/brewfs \
+    BREWFS_DATA_BACKEND=local-fs \
+    BREWFS_DATA_DIR=/var/lib/brewfs/data \
+    BREWFS_S3_BUCKET=brewfs-data \
+    BREWFS_S3_ENDPOINT=http://rustfs:9000 \
+    BREWFS_S3_REGION=us-east-1 \
+    BREWFS_S3_FORCE_PATH_STYLE=true \
+    BREWFS_META_BACKEND=redis \
+    BREWFS_META_URL=redis://redis:6379/0 \
+    BREWFS_CONFIG_PATH=/run/brewfs/config.yaml \
+    BREWFS_LOG_FILE=/artifacts/brewfs.log \
+    XFSTESTS_DIR=/opt/xfstests-dev \
+    RUST_LOG=brewfs=info
+
+VOLUME ["/mnt/brewfs", "/var/lib/brewfs", "/artifacts"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/run_perf_in_container.sh"]

@@ -38,6 +38,8 @@ redis_runner="$ROOT_DIR/docker/compose-xfstests/run_redis_perf.sh"
 brewfs_container="$ROOT_DIR/docker/compose-xfstests/run_perf_in_container.sh"
 juicefs_container="$ROOT_DIR/docker/compose-xfstests/run_juicefs_perf_in_container.sh"
 juicefs_runner="$ROOT_DIR/docker/compose-xfstests/run_juicefs_perf.sh"
+brewfs_compose="$ROOT_DIR/docker/compose-xfstests/docker-compose.redis-perf.yml"
+juicefs_compose="$ROOT_DIR/docker/compose-xfstests/docker-compose.juicefs-perf.yml"
 
 assert_runner_console_capture() {
     local file="$1"
@@ -90,6 +92,11 @@ assert_manifest_keys "$juicefs_container" \
 
 assert_runner_console_capture "$redis_runner"
 assert_runner_console_capture "$juicefs_runner"
+
+assert_file_contains "$redis_runner" "REDIS_PERF_DATA_MOUNT"
+assert_file_contains "$juicefs_runner" "REDIS_PERF_DATA_MOUNT"
+assert_file_contains "$brewfs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-perf}'
+assert_file_contains "$juicefs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-juicefs-perf}'
 
 assert_file_contains "$juicefs_runner" "PERF_FIO_DIRECT_MATRIX=\"0 1\""
 assert_file_contains "$juicefs_runner" "PERF_FIO_SEQREAD_DIRECT_MATRIX"

@@ -793,6 +793,30 @@ def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
             derived.append(Metric("runtime", item, "active_plus_drain_s", active_s + drain_s, "s"))
             if active_s > 0:
                 derived.append(Metric("runtime", item, "drain_active_ratio", drain_s / active_s, "ratio"))
+        for prefix in ("read", "write"):
+            io_mib = get_metric_value(metric_map, "fio", item, f"{prefix}_io_mib")
+            if io_mib is None:
+                continue
+            if wall_s is not None and wall_s > 0:
+                derived.append(
+                    Metric(
+                        "runtime",
+                        item,
+                        f"{prefix}_effective_wall_bw_mib_s",
+                        io_mib / wall_s,
+                        "MiB/s",
+                    )
+                )
+            if active_s is not None and drain_s is not None and active_s + drain_s > 0:
+                derived.append(
+                    Metric(
+                        "runtime",
+                        item,
+                        f"{prefix}_effective_active_plus_drain_bw_mib_s",
+                        io_mib / (active_s + drain_s),
+                        "MiB/s",
+                    )
+                )
     return metrics + derived
 
 

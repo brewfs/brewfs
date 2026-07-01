@@ -1,7 +1,11 @@
 use super::*;
-use crate::CompactConfig;
-use crate::meta::config::{CacheConfig, ClientOptions, DatabaseConfig};
+use crate::meta::config::{CacheConfig, ClientOptions, CompactConfig, DatabaseConfig};
 use crate::meta::file_lock::{FileLockQuery, FileLockRange, FileLockType};
+use sea_orm::sqlx::sqlite::SqliteConnectOptions;
+use sea_orm::sqlx::{Connection, Executor, SqliteConnection};
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::time;
 
 fn test_config() -> Config {
@@ -116,6 +120,60 @@ async fn test_next_id_unique_across_store_instances() {
     assert_ne!(ino1, ino2, "inode ids must be unique across stores");
     assert!(ino1 > 1);
     assert!(ino2 > 1);
+}
+
+#[tokio::test]
+async fn sqlite_file_store_waits_for_transient_write_locks() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = temp_dir.path().join("transient-lock.db");
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let config = Config {
+        database: DatabaseConfig {
+            db_config: DatabaseType::Sqlite {
+                url: db_url.clone(),
+            },
+        },
+        cache: CacheConfig::default(),
+        client: ClientOptions::default(),
+        compact: CompactConfig::default(),
+    };
+
+    let store = Arc::new(
+        DatabaseMetaStore::from_config(config)
+            .await
+            .expect("create store"),
+    );
+    let root = store.root_ino();
+
+    let raw_options = SqliteConnectOptions::from_str(&db_url)
+        .expect("parse sqlite url")
+        .busy_timeout(Duration::from_secs(30));
+    let mut locker = SqliteConnection::connect_with(&raw_options)
+        .await
+        .expect("open raw sqlite connection");
+    locker
+        .execute("BEGIN IMMEDIATE")
+        .await
+        .expect("hold sqlite write lock");
+
+    let store_for_task = Arc::clone(&store);
+    let mkdir_task =
+        tokio::spawn(async move { store_for_task.mkdir(root, "after-lock".to_string()).await });
+
+    time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !mkdir_task.is_finished(),
+        "metadata write should wait for the transient SQLite write lock"
+    );
+
+    time::sleep(Duration::from_secs(6)).await;
+    locker.execute("COMMIT").await.expect("release sqlite lock");
+
+    let ino = mkdir_task
+        .await
+        .expect("mkdir task joins")
+        .expect("mkdir waits for transient lock and succeeds");
+    assert!(ino > root);
 }
 
 /// Helper struct to manage multiple test sessions

@@ -129,6 +129,16 @@ pub struct FsStatsSnapshot {
     pub writeback_commit_wait_upload_unknown_origin_us: u64,
     pub writeback_commit_wait_retry_ops: u64,
     pub writeback_commit_wait_retry_us: u64,
+    pub writeback_flush_wait_ops: u64,
+    pub writeback_flush_wait_us: u64,
+    pub writeback_flush_wait_slices: u64,
+    pub writeback_flush_fragmentation_ops: u64,
+    pub writeback_flush_fragmentation_slices: u64,
+    pub writeback_flush_fragmentation_bytes: u64,
+    pub writeback_flush_fragmentation_cached_sub_block_slices: u64,
+    pub writeback_flush_fragmentation_cached_sub_block_bytes: u64,
+    pub writeback_flush_fragmentation_full_block_slices: u64,
+    pub writeback_flush_fragmentation_full_block_bytes: u64,
     pub writeback_slice_create_ops: u64,
     pub writeback_slice_reuse_ops: u64,
     pub writeback_slice_reject_older_unique_ops: u64,
@@ -464,6 +474,26 @@ pub struct FsStats {
     pub writeback_commit_wait_retry_ops: AtomicU64,
     /// Total commit-loop retry backoff duration in microseconds.
     pub writeback_commit_wait_retry_us: AtomicU64,
+    /// Foreground flush/close waits observed by the writer.
+    pub writeback_flush_wait_ops: AtomicU64,
+    /// Total foreground flush/close wait duration in microseconds.
+    pub writeback_flush_wait_us: AtomicU64,
+    /// Total slices captured by foreground flush/close waits.
+    pub writeback_flush_wait_slices: AtomicU64,
+    /// Explicit flush snapshot observations.
+    pub writeback_flush_fragmentation_ops: AtomicU64,
+    /// Total slices seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_slices: AtomicU64,
+    /// Total bytes seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_bytes: AtomicU64,
+    /// Cached-writeback sub-block slices seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_cached_sub_block_slices: AtomicU64,
+    /// Cached-writeback sub-block bytes seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_cached_sub_block_bytes: AtomicU64,
+    /// Full-block-aligned slices seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_full_block_slices: AtomicU64,
+    /// Full-block-aligned bytes seen in explicit flush snapshots.
+    pub writeback_flush_fragmentation_full_block_bytes: AtomicU64,
     /// Newly-created writer slices.
     pub writeback_slice_create_ops: AtomicU64,
     /// Writes that reused an existing writer slice.
@@ -706,6 +736,16 @@ impl FsStats {
             writeback_commit_wait_upload_unknown_origin_us: AtomicU64::new(0),
             writeback_commit_wait_retry_ops: AtomicU64::new(0),
             writeback_commit_wait_retry_us: AtomicU64::new(0),
+            writeback_flush_wait_ops: AtomicU64::new(0),
+            writeback_flush_wait_us: AtomicU64::new(0),
+            writeback_flush_wait_slices: AtomicU64::new(0),
+            writeback_flush_fragmentation_ops: AtomicU64::new(0),
+            writeback_flush_fragmentation_slices: AtomicU64::new(0),
+            writeback_flush_fragmentation_bytes: AtomicU64::new(0),
+            writeback_flush_fragmentation_cached_sub_block_slices: AtomicU64::new(0),
+            writeback_flush_fragmentation_cached_sub_block_bytes: AtomicU64::new(0),
+            writeback_flush_fragmentation_full_block_slices: AtomicU64::new(0),
+            writeback_flush_fragmentation_full_block_bytes: AtomicU64::new(0),
             writeback_slice_create_ops: AtomicU64::new(0),
             writeback_slice_reuse_ops: AtomicU64::new(0),
             writeback_slice_reject_older_unique_ops: AtomicU64::new(0),
@@ -939,6 +979,26 @@ impl FsStats {
                 .load(ORD),
             writeback_commit_wait_retry_ops: self.writeback_commit_wait_retry_ops.load(ORD),
             writeback_commit_wait_retry_us: self.writeback_commit_wait_retry_us.load(ORD),
+            writeback_flush_wait_ops: self.writeback_flush_wait_ops.load(ORD),
+            writeback_flush_wait_us: self.writeback_flush_wait_us.load(ORD),
+            writeback_flush_wait_slices: self.writeback_flush_wait_slices.load(ORD),
+            writeback_flush_fragmentation_ops: self.writeback_flush_fragmentation_ops.load(ORD),
+            writeback_flush_fragmentation_slices: self
+                .writeback_flush_fragmentation_slices
+                .load(ORD),
+            writeback_flush_fragmentation_bytes: self.writeback_flush_fragmentation_bytes.load(ORD),
+            writeback_flush_fragmentation_cached_sub_block_slices: self
+                .writeback_flush_fragmentation_cached_sub_block_slices
+                .load(ORD),
+            writeback_flush_fragmentation_cached_sub_block_bytes: self
+                .writeback_flush_fragmentation_cached_sub_block_bytes
+                .load(ORD),
+            writeback_flush_fragmentation_full_block_slices: self
+                .writeback_flush_fragmentation_full_block_slices
+                .load(ORD),
+            writeback_flush_fragmentation_full_block_bytes: self
+                .writeback_flush_fragmentation_full_block_bytes
+                .load(ORD),
             writeback_slice_create_ops: self.writeback_slice_create_ops.load(ORD),
             writeback_slice_reuse_ops: self.writeback_slice_reuse_ops.load(ORD),
             writeback_slice_reject_older_unique_ops: self
@@ -1204,6 +1264,36 @@ impl FsStats {
         self.writeback_commit_wait_upload_us.store(upload_us, ORD);
         self.writeback_commit_wait_retry_ops.store(retry_ops, ORD);
         self.writeback_commit_wait_retry_us.store(retry_us, ORD);
+    }
+
+    pub fn sync_writeback_flush_wait_metrics(&self, ops: u64, us: u64, slices: u64) {
+        self.writeback_flush_wait_ops.store(ops, ORD);
+        self.writeback_flush_wait_us.store(us, ORD);
+        self.writeback_flush_wait_slices.store(slices, ORD);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_writeback_flush_fragmentation_metrics(
+        &self,
+        ops: u64,
+        slices: u64,
+        bytes: u64,
+        cached_sub_block_slices: u64,
+        cached_sub_block_bytes: u64,
+        full_block_slices: u64,
+        full_block_bytes: u64,
+    ) {
+        self.writeback_flush_fragmentation_ops.store(ops, ORD);
+        self.writeback_flush_fragmentation_slices.store(slices, ORD);
+        self.writeback_flush_fragmentation_bytes.store(bytes, ORD);
+        self.writeback_flush_fragmentation_cached_sub_block_slices
+            .store(cached_sub_block_slices, ORD);
+        self.writeback_flush_fragmentation_cached_sub_block_bytes
+            .store(cached_sub_block_bytes, ORD);
+        self.writeback_flush_fragmentation_full_block_slices
+            .store(full_block_slices, ORD);
+        self.writeback_flush_fragmentation_full_block_bytes
+            .store(full_block_bytes, ORD);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1993,6 +2083,46 @@ impl FsStats {
             snapshot.writeback_commit_wait_retry_us
         ));
         out.push_str(&format!(
+            "brewfs_writeback_flush_wait_ops_total {}\n",
+            snapshot.writeback_flush_wait_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_wait_us_total {}\n",
+            snapshot.writeback_flush_wait_us
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_wait_slices_total {}\n",
+            snapshot.writeback_flush_wait_slices
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_ops_total {}\n",
+            snapshot.writeback_flush_fragmentation_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_slices_total {}\n",
+            snapshot.writeback_flush_fragmentation_slices
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_bytes_total {}\n",
+            snapshot.writeback_flush_fragmentation_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_cached_sub_block_slices_total {}\n",
+            snapshot.writeback_flush_fragmentation_cached_sub_block_slices
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_cached_sub_block_bytes_total {}\n",
+            snapshot.writeback_flush_fragmentation_cached_sub_block_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_full_block_slices_total {}\n",
+            snapshot.writeback_flush_fragmentation_full_block_slices
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_flush_fragmentation_full_block_bytes_total {}\n",
+            snapshot.writeback_flush_fragmentation_full_block_bytes
+        ));
+        out.push_str(&format!(
             "brewfs_writeback_slice_create_ops_total {}\n",
             snapshot.writeback_slice_create_ops
         ));
@@ -2371,6 +2501,8 @@ mod tests {
         stats.sync_writeback_buffer_backpressure_metrics(70, 700, 80, 800, 90, 900);
         stats.sync_writeback_phase_metrics(1, 2, 3, 4, 5, 6, 7);
         stats.sync_writeback_commit_wait_metrics(40, 41, 42, 43);
+        stats.sync_writeback_flush_wait_metrics(64, 65, 66);
+        stats.sync_writeback_flush_fragmentation_metrics(67, 68, 69, 70, 71, 72, 73);
         stats.sync_writeback_commit_wait_breakdown_metrics(
             44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
         );
@@ -2472,6 +2604,21 @@ mod tests {
         assert!(output.contains("brewfs_writeback_commit_wait_upload_unknown_origin_us_total 63"));
         assert!(output.contains("brewfs_writeback_commit_wait_retry_ops_total 42"));
         assert!(output.contains("brewfs_writeback_commit_wait_retry_us_total 43"));
+        assert!(output.contains("brewfs_writeback_flush_wait_ops_total 64"));
+        assert!(output.contains("brewfs_writeback_flush_wait_us_total 65"));
+        assert!(output.contains("brewfs_writeback_flush_wait_slices_total 66"));
+        assert!(output.contains("brewfs_writeback_flush_fragmentation_ops_total 67"));
+        assert!(output.contains("brewfs_writeback_flush_fragmentation_slices_total 68"));
+        assert!(output.contains("brewfs_writeback_flush_fragmentation_bytes_total 69"));
+        assert!(
+            output
+                .contains("brewfs_writeback_flush_fragmentation_cached_sub_block_slices_total 70")
+        );
+        assert!(
+            output.contains("brewfs_writeback_flush_fragmentation_cached_sub_block_bytes_total 71")
+        );
+        assert!(output.contains("brewfs_writeback_flush_fragmentation_full_block_slices_total 72"));
+        assert!(output.contains("brewfs_writeback_flush_fragmentation_full_block_bytes_total 73"));
         assert!(output.contains("brewfs_writeback_slice_create_ops_total 8"));
         assert!(output.contains("brewfs_writeback_slice_reuse_ops_total 9"));
         assert!(output.contains("brewfs_writeback_slice_reject_older_unique_ops_total 10"));
@@ -2559,6 +2706,8 @@ mod tests {
         stats.sync_writeback_buffer_backpressure_metrics(166, 177, 188, 199, 200, 201);
         stats.sync_writeback_phase_metrics(111, 222, 333, 444, 555, 666, 777);
         stats.sync_writeback_commit_wait_metrics(778, 779, 780, 781);
+        stats.sync_writeback_flush_wait_metrics(804, 805, 806);
+        stats.sync_writeback_flush_fragmentation_metrics(807, 808, 809, 810, 811, 812, 813);
         stats.sync_writeback_commit_wait_breakdown_metrics(
             782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798,
             799, 800, 801,
@@ -2649,6 +2798,25 @@ mod tests {
         assert_eq!(snapshot.writeback_commit_wait_upload_unknown_origin_us, 801);
         assert_eq!(snapshot.writeback_commit_wait_retry_ops, 780);
         assert_eq!(snapshot.writeback_commit_wait_retry_us, 781);
+        assert_eq!(snapshot.writeback_flush_wait_ops, 804);
+        assert_eq!(snapshot.writeback_flush_wait_us, 805);
+        assert_eq!(snapshot.writeback_flush_wait_slices, 806);
+        assert_eq!(snapshot.writeback_flush_fragmentation_ops, 807);
+        assert_eq!(snapshot.writeback_flush_fragmentation_slices, 808);
+        assert_eq!(snapshot.writeback_flush_fragmentation_bytes, 809);
+        assert_eq!(
+            snapshot.writeback_flush_fragmentation_cached_sub_block_slices,
+            810
+        );
+        assert_eq!(
+            snapshot.writeback_flush_fragmentation_cached_sub_block_bytes,
+            811
+        );
+        assert_eq!(
+            snapshot.writeback_flush_fragmentation_full_block_slices,
+            812
+        );
+        assert_eq!(snapshot.writeback_flush_fragmentation_full_block_bytes, 813);
         assert_eq!(snapshot.writeback_slice_create_ops, 888);
         assert_eq!(snapshot.writeback_slice_reuse_ops, 999);
         assert_eq!(snapshot.writeback_slice_reject_older_unique_ops, 1000);

@@ -2444,9 +2444,28 @@ impl MetaStore for RedisMetaStore {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError> {
+        self.rename_with_outcome(old_parent, old_name, new_parent, new_name)
+            .await
+            .map(|_| ())
+    }
+
+    async fn rename_with_outcome(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+    ) -> Result<crate::meta::store::RenameOutcome, MetaError> {
         // Self-rename optimization: no-op if same location
         if old_parent == new_parent && old_name == new_name {
-            return Ok(());
+            let ino = self
+                .lookup(old_parent, old_name)
+                .await?
+                .ok_or(MetaError::NotFound(old_parent))?;
+            return Ok(crate::meta::store::RenameOutcome {
+                ino,
+                replaced_ino: None,
+            });
         }
 
         let old_parent_dir_key = self.dir_key(old_parent);
@@ -2502,11 +2521,15 @@ impl MetaStore for RedisMetaStore {
                     .ino
                     .ok_or_else(|| MetaError::Internal("missing ino in rename response".into()))?;
                 let mut invalidated = vec![old_parent, new_parent, child];
-                if let Some(replaced_ino) = response.replaced_ino {
+                let replaced_ino = response.replaced_ino.filter(|&replaced| replaced != child);
+                if let Some(replaced_ino) = replaced_ino {
                     invalidated.push(replaced_ino);
                 }
                 self.invalidate_nodes(&invalidated).await;
-                Ok(())
+                Ok(crate::meta::store::RenameOutcome {
+                    ino: child,
+                    replaced_ino,
+                })
             }
             None => Err(MetaError::Internal("unexpected Lua response".into())),
         }

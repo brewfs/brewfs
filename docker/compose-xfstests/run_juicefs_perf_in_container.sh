@@ -47,6 +47,8 @@ prepare_artifacts() {
     printf 'tool\tstatus\tseconds\tlog\n' >"$artifact_dir/perf-summary.tsv"
     printf 'tool\tmethod\tops\tbytes\tseconds\tavg_ms\n' >"$artifact_dir/juicefs-object-summary.tsv"
     write_perf_profile
+    printf 'tool\tpost_fio_drain_s\tstage_blocks\tstage_bytes\tuploading\tput_bytes\tget_bytes\n' \
+        >"$artifact_dir/post-write-drain.tsv"
     write_juicefs_profile
 }
 
@@ -341,6 +343,171 @@ clear_juicefs_cache_if_requested() {
     fi
 }
 
+juicefs_stats_path() {
+    if [[ -e "$mount_dir/.jfs.stats" ]]; then
+        printf '%s/.jfs.stats' "$mount_dir"
+    elif [[ -e "$mount_dir/.stats" ]]; then
+        printf '%s/.stats' "$mount_dir"
+    else
+        return 1
+    fi
+}
+
+stats_snapshot_after_tool() {
+    local tool="$1"
+    local stats_path
+    {
+        date -Iseconds
+        echo
+        if stats_path="$(juicefs_stats_path 2>/dev/null)"; then
+            tr -d '\000' <"$stats_path"
+        else
+            echo "missing JuiceFS stats file under $mount_dir"
+        fi
+    } >"$artifact_dir/diagnostics/juicefs-stats-${tool}-after.txt" 2>&1 || true
+}
+
+stats_snapshot_before_tool() {
+    local tool="$1"
+    local stats_path
+    {
+        date -Iseconds
+        echo
+        if stats_path="$(juicefs_stats_path 2>/dev/null)"; then
+            tr -d '\000' <"$stats_path"
+        else
+            echo "missing JuiceFS stats file under $mount_dir"
+        fi
+    } >"$artifact_dir/diagnostics/juicefs-stats-${tool}-before.txt" 2>&1 || true
+}
+
+juicefs_stat_value() {
+    local metric="$1"
+    local stats_path
+    stats_path="$(juicefs_stats_path)" || return 1
+
+    tr -d '\000' <"$stats_path" | awk -v metric="$metric" '
+        NF >= 2 {
+            name = $1
+            sub(/\{.*/, "", name)
+            if (name == metric && $2 ~ /^[-+]?[0-9.]+([eE][-+]?[0-9]+)?$/) {
+                sum += $2
+                found = 1
+            }
+        }
+        END {
+            if (found) {
+                printf "%.0f\n", sum
+            } else {
+                exit 1
+            }
+        }
+    '
+}
+
+numeric_juicefs_stat_or_zero() {
+    local metric="$1"
+    local value
+    value="$(juicefs_stat_value "$metric" 2>/dev/null || true)"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$value"
+    else
+        printf '0'
+    fi
+}
+
+wait_for_fio_prefill_drain() {
+    local tool="$1"
+    local timeout="${PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS:-600}"
+    local interval="${PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS:-2}"
+    local threshold="${PERF_FIO_PREFILL_DRAIN_PENDING_BYTES:-0}"
+    local start now elapsed staged_blocks staged_bytes uploading put_bytes get_bytes
+
+    info "等待 JuiceFS fio 预填充写回完成: $tool (stage_bytes<=${threshold}, timeout=${timeout}s)"
+    sync || true
+    start="$(date +%s)"
+
+    while true; do
+        staged_blocks="$(numeric_juicefs_stat_or_zero juicefs_staging_blocks)"
+        staged_bytes="$(numeric_juicefs_stat_or_zero juicefs_staging_block_bytes)"
+        uploading="$(numeric_juicefs_stat_or_zero juicefs_object_request_uploading)"
+        put_bytes="$(numeric_juicefs_stat_or_zero juicefs_object_request_data_bytes_PUT)"
+        get_bytes="$(numeric_juicefs_stat_or_zero juicefs_object_request_data_bytes_GET)"
+
+        now="$(date +%s)"
+        elapsed="$((now - start))"
+
+        if (( staged_bytes <= threshold && staged_blocks == 0 && uploading == 0 )); then
+            ok "JuiceFS 预填充写回已完成: $tool (stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s)"
+            stats_snapshot_after_tool "${tool}-prefill-drained"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            err "JuiceFS 预填充写回等待超时: $tool (stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s)"
+            stats_snapshot_after_tool "${tool}-prefill-drain-timeout"
+            return 1
+        fi
+
+        if (( elapsed % 10 == 0 )); then
+            info "  JuiceFS 写回等待中: stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s"
+        fi
+        sleep "$interval"
+    done
+}
+
+wait_for_fio_post_write_drain() {
+    local tool="$1"
+    local timeout="${PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS:-600}"
+    local interval="${PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS:-2}"
+    local threshold="${PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES:-0}"
+    local start now elapsed staged_blocks staged_bytes uploading put_bytes get_bytes
+
+    truthy "${PERF_FIO_POST_WRITE_DRAIN:-false}" || return 0
+    case "$tool" in
+        fio-seqwrite*|fio-randwrite*|fio-randrw*|fio-bigwrite*) ;;
+        *) return 0 ;;
+    esac
+
+    stats_snapshot_before_tool "${tool}-post-write-drained"
+    stats_snapshot_before_tool "${tool}-post-write-drain-timeout"
+    start="$(date +%s)"
+    info "等待 JuiceFS fio 写入后写回完成: $tool (stage_bytes<=${threshold}, timeout=${timeout}s)"
+    sync || true
+
+    while true; do
+        staged_blocks="$(numeric_juicefs_stat_or_zero juicefs_staging_blocks)"
+        staged_bytes="$(numeric_juicefs_stat_or_zero juicefs_staging_block_bytes)"
+        uploading="$(numeric_juicefs_stat_or_zero juicefs_object_request_uploading)"
+        put_bytes="$(numeric_juicefs_stat_or_zero juicefs_object_request_data_bytes_PUT)"
+        get_bytes="$(numeric_juicefs_stat_or_zero juicefs_object_request_data_bytes_GET)"
+
+        now="$(date +%s)"
+        elapsed="$((now - start))"
+
+        if (( staged_bytes <= threshold && staged_blocks == 0 && uploading == 0 )); then
+            ok "JuiceFS fio 写入后写回已完成: $tool (stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s)"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$staged_blocks" "$staged_bytes" "$uploading" "$put_bytes" "$get_bytes" \
+                >>"$artifact_dir/post-write-drain.tsv"
+            stats_snapshot_after_tool "${tool}-post-write-drained"
+            return 0
+        fi
+
+        if (( elapsed >= timeout )); then
+            err "JuiceFS fio 写入后写回等待超时: $tool (stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s)"
+            printf '%s\ttimeout:%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$staged_blocks" "$staged_bytes" "$uploading" "$put_bytes" "$get_bytes" \
+                >>"$artifact_dir/post-write-drain.tsv"
+            stats_snapshot_after_tool "${tool}-post-write-drain-timeout"
+            return 1
+        fi
+
+        if (( elapsed % 10 == 0 )); then
+            info "  JuiceFS 写后写回等待中: stage_blocks=$staged_blocks stage_bytes=$staged_bytes uploading=$uploading put_bytes=$put_bytes get_bytes=$get_bytes elapsed=${elapsed}s"
+        fi
+        sleep "$interval"
+    done
+}
+
 remount_juicefs_for_fio_profile() {
     local tool="$1"
 
@@ -431,6 +598,66 @@ run_looptest() {
         args=(-i "${PERF_LOOPTEST_ITERS:-200}" -o -r -w -t -f -s -v -b "${PERF_LOOPTEST_BUF_SIZE:-1048576}" "$loop_file")
     fi
     run_logged_tool looptest "$bin" "${args[@]}"
+}
+
+summarize_stress_ng_log() {
+    local log_path="$artifact_dir/tools/stress-ng.log"
+    local summary_path="$artifact_dir/tools/stress-ng-summary.tsv"
+
+    [[ -f "$log_path" ]] || return 0
+
+    awk '
+        BEGIN {
+            print "stressor\tbogo_ops\treal_secs\tusr_secs\tsys_secs\treal_ops_per_sec\tcpu_ops_per_sec"
+        }
+        $1 == "stress-ng:" && $2 == "metrc:" && $4 != "stressor" && $5 ~ /^[0-9]+$/ {
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $4, $5, $6, $7, $8, $9, $10
+        }
+    ' "$log_path" >"$summary_path"
+
+    if [[ "$(wc -l <"$summary_path" 2>/dev/null || echo 0)" -gt 1 ]]; then
+        info "stress-ng 摘要: $summary_path"
+    fi
+}
+
+run_stress_ng() {
+    local work_dir="$mount_dir/.perf-stress-ng"
+    local -a args=()
+    local status=0
+
+    if ! command -v stress-ng >/dev/null 2>&1; then
+        err "缺少 stress-ng"
+        return 1
+    fi
+
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir"
+
+    if [[ -n "${PERF_STRESS_NG_ARGS:-}" ]]; then
+        read -r -a args <<<"${PERF_STRESS_NG_ARGS}"
+    else
+        args=(
+            --temp-path "$work_dir"
+            --timeout "${PERF_STRESS_NG_TIMEOUT:-10s}"
+            --metrics-brief
+            --verify
+            --dir "${PERF_STRESS_NG_DIR_WORKERS:-1}"
+            --dir-ops "${PERF_STRESS_NG_DIR_OPS:-1000}"
+            --dentry "${PERF_STRESS_NG_DENTRY_WORKERS:-1}"
+            --dentry-ops "${PERF_STRESS_NG_DENTRY_OPS:-100}"
+            --rename "${PERF_STRESS_NG_RENAME_WORKERS:-1}"
+            --rename-ops "${PERF_STRESS_NG_RENAME_OPS:-1000}"
+            --unlink "${PERF_STRESS_NG_UNLINK_WORKERS:-1}"
+            --unlink-ops "${PERF_STRESS_NG_UNLINK_OPS:-500}"
+            --hdd "${PERF_STRESS_NG_HDD_WORKERS:-1}"
+            --hdd-bytes "${PERF_STRESS_NG_HDD_BYTES:-8M}"
+            --hdd-write-size "${PERF_STRESS_NG_HDD_WRITE_SIZE:-128K}"
+        )
+    fi
+
+    run_logged_tool stress-ng stress-ng "${args[@]}" || status=$?
+    summarize_stress_ng_log
+    return "$status"
 }
 
 prepare_fio_dataset() {
@@ -571,6 +798,7 @@ run_fio_profile() {
     local iodepth_var
     local direct_var
     local runtime_var
+
     local name rw rwmixread bs size numjobs ioengine iodepth direct runtime
     local needs_prefill=false
     local use_time_based=true
@@ -743,12 +971,12 @@ run_fio_profile() {
 
     if [[ "$needs_prefill" == true ]]; then
         prepare_fio_dataset "$tool" "$work_dir" "$name" "$size" "$direct" "$numjobs" "$bs" "$ioengine" "$iodepth" || return $?
+        stats_snapshot_after_tool "${tool}-prefill"
         if truthy "${PERF_FIO_COLD_READ:-false}" || truthy "${PERF_FIO_PREFILL_DRAIN:-false}"; then
-            info "同步 fio 预填充数据集: $tool"
-            sync
+            wait_for_fio_prefill_drain "$tool" || return $?
         fi
         if truthy "${PERF_FIO_COLD_READ:-false}" || truthy "${PERF_FIO_PREFILL_REMOUNT:-false}"; then
-            remount_juicefs_for_fio_profile "$tool"
+            remount_juicefs_for_fio_profile "$tool" || return $?
         fi
     fi
 
@@ -757,6 +985,170 @@ run_fio_profile() {
     args+=(--write_lat_log="$lat_log_prefix" --log_avg_msec=1000)
     run_logged_tool "$tool" fio "${args[@]}"
     append_fio_log_summary "$json_path" "$artifact_dir/tools/${tool}.log" "$tool"
+    wait_for_fio_post_write_drain "$tool"
+}
+
+generate_perf_report() {
+    python3 - "$artifact_dir" <<'PY'
+import csv
+import json
+import pathlib
+import sys
+
+artifact_dir = pathlib.Path(sys.argv[1])
+summary_path = artifact_dir / "perf-summary.tsv"
+profile_path = artifact_dir / "juicefs-profile.env"
+post_write_drain_path = artifact_dir / "post-write-drain.tsv"
+report_path = artifact_dir / "report.md"
+fio_json_paths = sorted((artifact_dir / "results").glob("fio*.json"))
+
+rows = []
+if summary_path.exists():
+    with summary_path.open(newline="") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+summary_by_tool = {row.get("tool", ""): row for row in rows}
+
+lines = [
+    "# JuiceFS Perf Report",
+    "",
+    "## Summary",
+    "",
+    "| Tool | Status | Seconds | Log |",
+    "| --- | --- | ---: | --- |",
+]
+
+for row in rows:
+    log = pathlib.Path(row.get("log", "")).name
+    lines.append(
+        f"| {row.get('tool', '')} | {row.get('status', '')} | "
+        f"{row.get('seconds', '')} | tools/{log} |"
+    )
+
+if profile_path.exists():
+    lines.extend([
+        "",
+        "## JuiceFS Profile",
+        "",
+        "| Key | Value |",
+        "| --- | --- |",
+    ])
+    for raw in profile_path.read_text(errors="replace").splitlines():
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        lines.append(f"| {key} | {value} |")
+
+if post_write_drain_path.exists():
+    with post_write_drain_path.open(newline="") as f:
+        drain_rows = [
+            row
+            for row in csv.DictReader(f, delimiter="\t")
+            if row.get("tool")
+        ]
+    if drain_rows:
+        lines.extend([
+            "",
+            "## Post-Write Drain",
+            "",
+            "| Tool | Drain seconds | Stage blocks | Stage bytes | Uploading | Put bytes | Get bytes |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for row in drain_rows:
+            lines.append(
+                f"| {row.get('tool', '')} | {row.get('post_fio_drain_s', '')} | "
+                f"{row.get('stage_blocks', '')} | {row.get('stage_bytes', '')} | "
+                f"{row.get('uploading', '')} | {row.get('put_bytes', '')} | "
+                f"{row.get('get_bytes', '')} |"
+            )
+
+if fio_json_paths:
+    def num(value, default=0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def fmt_bytes(value):
+        value = num(value)
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        for unit in units:
+            if abs(value) < 1024 or unit == units[-1]:
+                return f"{value:.2f} {unit}"
+            value /= 1024
+        return f"{value:.2f} TiB"
+
+    def fmt_rate(value):
+        return f"{fmt_bytes(value)}/s"
+
+    def fmt_iops(value):
+        return f"{num(value):,.2f}"
+
+    def fmt_ms_from_ns(value):
+        return f"{num(value) / 1_000_000:.3f} ms"
+
+    def latency_percentile(op, pct):
+        percentiles = op.get("clat_ns", {}).get("percentile", {})
+        return percentiles.get(f"{pct:.6f}") or percentiles.get(str(pct))
+
+    lines.extend([
+        "",
+        "## Fio",
+        "",
+        "| Tool | Workload | Direct | BS | Jobs | Read BW | Read IOPS | Write BW | Write IOPS | Read P99 | Write P99 | Raw |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+
+    runtime_rows = []
+    for fio_json_path in fio_json_paths:
+        data = json.loads(fio_json_path.read_text())
+        jobs = data.get("jobs", [])
+        if not jobs:
+            continue
+        options = next((job.get("job options", {}) for job in jobs if job.get("job options")), {})
+
+        def op_totals(op_name):
+            ops = [job.get(op_name, {}) for job in jobs]
+            runtimes = [num(op.get("runtime")) for op in ops if num(op.get("runtime")) > 0]
+            return {
+                "bw_bytes": sum(num(op.get("bw_bytes")) for op in ops),
+                "iops": sum(num(op.get("iops")) for op in ops),
+                "runtime_ms": max(runtimes) if runtimes else 0,
+                "p99_ns": max((num(latency_percentile(op, 99)) for op in ops), default=0),
+            }
+
+        read = op_totals("read")
+        write = op_totals("write")
+        tool_name = fio_json_path.stem
+        wall_seconds = num(summary_by_tool.get(tool_name, {}).get("seconds"))
+        active_runtime_ms = max(read["runtime_ms"], write["runtime_ms"])
+        runtime_rows.append((tool_name, options.get("direct", "unknown"), wall_seconds, active_runtime_ms))
+        lines.append(
+            f"| {tool_name} | {options.get('rw', 'unknown')} | {options.get('direct', 'unknown')} | "
+            f"{options.get('bs', 'unknown')} | {options.get('numjobs', 'unknown')} | "
+            f"{fmt_rate(read['bw_bytes'])} | {fmt_iops(read['iops'])} | "
+            f"{fmt_rate(write['bw_bytes'])} | {fmt_iops(write['iops'])} | "
+            f"{fmt_ms_from_ns(read['p99_ns'])} | {fmt_ms_from_ns(write['p99_ns'])} | "
+            f"results/{fio_json_path.name} |"
+        )
+
+    if runtime_rows:
+        lines.extend([
+            "",
+            "## Fio Runtime Accounting",
+            "",
+            "| Tool | Direct | Script wall | active_io_runtime | wall-active_io |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ])
+        for tool_name, direct, wall_seconds, active_runtime_ms in runtime_rows:
+            active_seconds = active_runtime_ms / 1000.0 if active_runtime_ms else 0.0
+            delta = wall_seconds - active_seconds if wall_seconds and active_seconds else 0.0
+            lines.append(
+                f"| {tool_name} | {direct} | {wall_seconds:.0f} s | "
+                f"{active_seconds:.3f} s | {delta:+.3f} s |"
+            )
+
+report_path.write_text("\n".join(lines) + "\n")
+PY
 }
 
 run_perf_suite() {
@@ -776,6 +1168,7 @@ run_perf_suite() {
             dirperf)      run_dirperf || status=1 ;;
             metaperf)     run_metaperf || status=1 ;;
             looptest)     run_looptest || status=1 ;;
+            stress-ng)    run_stress_ng || status=1 ;;
             fio)          run_fio_custom || status=1 ;;
             fio-seqread)  run_fio_profile "$tool" seqread || status=1 ;;
             fio-seqwrite) run_fio_profile "$tool" seqwrite || status=1 ;;
@@ -843,6 +1236,7 @@ main() {
     run_perf_suite
     local status=$?
     set -e
+    generate_perf_report || true
 
     if [[ "$status" -eq 0 ]]; then
         ok "性能测试全部完成"

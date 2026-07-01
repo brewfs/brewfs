@@ -307,6 +307,17 @@ pub struct MetaStoreCapabilities {
     pub watch_invalidation: bool,
 }
 
+/// Inodes affected by a successful POSIX rename.
+///
+/// Backends that execute rename atomically can return this from the same
+/// transaction/script, letting higher layers update caches without issuing
+/// duplicate pre-rename lookups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenameOutcome {
+    pub ino: i64,
+    pub replaced_ino: Option<i64>,
+}
+
 /// Directory entry
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -657,6 +668,35 @@ pub trait MetaStore: Send + Sync {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError>;
+
+    async fn rename_with_outcome(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+    ) -> Result<RenameOutcome, MetaError> {
+        if old_parent == new_parent && old_name == new_name {
+            let ino = self
+                .lookup(old_parent, old_name)
+                .await?
+                .ok_or(MetaError::NotFound(old_parent))?;
+            return Ok(RenameOutcome {
+                ino,
+                replaced_ino: None,
+            });
+        }
+
+        let ino = self
+            .lookup(old_parent, old_name)
+            .await?
+            .ok_or(MetaError::NotFound(old_parent))?;
+        let replaced_ino = self.lookup(new_parent, &new_name).await?;
+        let replaced_ino = replaced_ino.filter(|&replaced| replaced != ino);
+        self.rename(old_parent, old_name, new_parent, new_name)
+            .await?;
+        Ok(RenameOutcome { ino, replaced_ino })
+    }
 
     /// Atomically exchange two files (RENAME_EXCHANGE)
     /// Both entries must exist

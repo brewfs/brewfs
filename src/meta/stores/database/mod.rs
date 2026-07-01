@@ -243,6 +243,9 @@ impl DatabaseMetaStore {
                     // File-based databases can use more connections
                     opts.max_connections(10).min_connections(1);
                 }
+                opts.map_sqlx_sqlite_opts(|sqlite_opts| {
+                    sqlite_opts.busy_timeout(Duration::from_secs(30))
+                });
                 opts.connect_timeout(Duration::from_secs(30))
                     .idle_timeout(Duration::from_secs(30))
                     .acquire_timeout(Duration::from_secs(30));

@@ -22,9 +22,10 @@ use tokio::pin;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-/// Maximum entries to return per readdir/readdirplus call
-/// The setting should be based on the size of the cache handled by the kernel at one time.
-const MAX_READDIR_ENTRIES: usize = 50;
+/// Maximum entries to return per readdir/readdirplus call.
+/// Keep this comfortably below the kernel FUSE reply buffer while avoiding
+/// excessive userspace pagination for large directory scans.
+const MAX_READDIR_ENTRIES: usize = 256;
 
 struct GateState {
     readers: u32,

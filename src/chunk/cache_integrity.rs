@@ -5,6 +5,9 @@
 //! on x86_64 via SSE4.2). The trailing 8-byte `data_len` allows the decoder
 //! to split data from checksums without knowing the original size upfront.
 
+use bytes::Bytes;
+use std::ops::Range;
+
 /// Disk cache integrity mode.
 ///
 /// `Full` preserves the current behavior: every cached block is wrapped with
@@ -19,13 +22,13 @@ pub enum CacheIntegrityMode {
 }
 
 /// Block size for checksum calculation (32KB, matching JuiceFS)
-const CS_BLOCK: usize = 32 * 1024;
+pub(crate) const CS_BLOCK: usize = 32 * 1024;
 
 /// Magic bytes to identify integrity-wrapped cache files.
-const MAGIC: [u8; 4] = [0x53, 0x46, 0x43, 0x31]; // "SFC1"
+pub(crate) const MAGIC: [u8; 4] = [0x53, 0x46, 0x43, 0x31]; // "SFC1"
 
 /// Header: [MAGIC(4)][data_len(4 bytes LE)]
-const HEADER_LEN: usize = 8;
+pub(crate) const HEADER_LEN: usize = 8;
 
 /// Encode data with CRC32C checksums for disk storage.
 /// Format: [MAGIC(4)][data_len_u32(4)][data][checksums]
@@ -78,11 +81,31 @@ pub fn compute_framing(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// Decode and verify a cache file. Returns the data if checksums pass.
 /// Returns None if the file is corrupted or has an invalid format.
 /// Legacy files (without magic header) are returned as-is without verification.
+#[allow(dead_code)]
 pub fn decode(raw: &[u8]) -> Option<Vec<u8>> {
+    match verified_payload_range(raw)? {
+        Some(range) => Some(raw[range].to_vec()),
+        None => Some(raw.to_vec()),
+    }
+}
+
+/// Decode and verify a cache file while preserving ownership of the input
+/// buffer. Framed cache files return a `Bytes` slice over the verified payload;
+/// legacy files return the original buffer unchanged.
+pub fn decode_bytes(raw: Vec<u8>) -> Option<Bytes> {
+    let payload = verified_payload_range(&raw)?;
+    let raw = Bytes::from(raw);
+    match payload {
+        Some(range) => Some(raw.slice(range)),
+        None => Some(raw),
+    }
+}
+
+fn verified_payload_range(raw: &[u8]) -> Option<Option<Range<usize>>> {
     // Check for magic header
     if raw.len() < HEADER_LEN || raw[..4] != MAGIC {
-        // Legacy format: no checksums, return as-is
-        return Some(raw.to_vec());
+        // Legacy format: no checksums, return as-is.
+        return Some(None);
     }
 
     let data_len = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
@@ -113,7 +136,7 @@ pub fn decode(raw: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    Some(data.to_vec())
+    Some(Some(HEADER_LEN..HEADER_LEN + data_len))
 }
 
 #[cfg(test)]
@@ -168,6 +191,38 @@ mod tests {
         let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
         let decoded = decode(&data).unwrap();
         assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn decode_bytes_reuses_framed_payload_without_copy() {
+        let data = vec![0x5Au8; CS_BLOCK + 17];
+        let encoded = encode(&data);
+        let payload_ptr = unsafe { encoded.as_ptr().add(HEADER_LEN) };
+
+        let decoded = decode_bytes(encoded).unwrap();
+
+        assert_eq!(&decoded[..], data.as_slice());
+        assert_eq!(decoded.as_ptr(), payload_ptr);
+    }
+
+    #[test]
+    fn decode_bytes_reuses_legacy_payload_without_copy() {
+        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        let payload_ptr = data.as_ptr();
+
+        let decoded = decode_bytes(data).unwrap();
+
+        assert_eq!(&decoded[..], &[0x01, 0x02, 0x03, 0x04, 0x05]);
+        assert_eq!(decoded.as_ptr(), payload_ptr);
+    }
+
+    #[test]
+    fn decode_bytes_detects_corruption() {
+        let data = vec![0xABu8; 50_000];
+        let mut encoded = encode(&data);
+        encoded[HEADER_LEN + 25_000] ^= 0xFF;
+
+        assert!(decode_bytes(encoded).is_none());
     }
 
     #[test]

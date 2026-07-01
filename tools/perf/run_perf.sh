@@ -14,6 +14,8 @@
 # Useful environment knobs:
 #   PERF_FIO_WORKLOADS="randrw" PERF_FIO_DIRECT=1 ./run_perf.sh --quick --skip-oncpu --skip-offcpu
 #   PERF_RECORD_FREQ=19          # Lower perf sample frequency to keep perf.data smaller.
+#   PERF_EVENT=task-clock         # Software event used for on-CPU profiling.
+#   PERF_MMAP_PAGES=8             # Smaller perf mmap buffer for space-constrained hosts.
 #   KEEP_PERF_DATA=1             # Preserve perf.data; default removes it after flame/report generation.
 #   PERF_WORK_BASE=/mnt/perf     # Base directory for mount/cache staging.
 #   PERF_WARMUP_DRAIN=false      # Skip post-warmup writeback drain before measured fio.
@@ -80,6 +82,8 @@ WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-4}"
 WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-1073741824}"
 WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-2147483648}"
 PERF_RECORD_FREQ="${PERF_RECORD_FREQ:-49}"
+PERF_EVENT="${PERF_EVENT:-task-clock}"
+PERF_MMAP_PAGES="${PERF_MMAP_PAGES:-8}"
 PERF_FIO_WORKLOADS="${PERF_FIO_WORKLOADS:-seqwrite seqread randwrite randread randrw}"
 PERF_FIO_DIRECT="${PERF_FIO_DIRECT:-0}"
 PERF_WARMUP_DRAIN="${PERF_WARMUP_DRAIN:-true}"
@@ -157,6 +161,7 @@ else
     BINARY="${CARGO_TARGET_DIR:-$PROJECT_DIR/target}/release/brewfs"
     [ -x "$BINARY" ] || { err "binary not found: $BINARY"; exit 1; }
 fi
+[ -x "$BINARY" ] || { err "binary not found: $BINARY"; exit 1; }
 
 # Verify the binary exists and has debug info
 if [ -x "$BINARY" ]; then
@@ -510,11 +515,12 @@ generate_libc_report() {
 # ON-CPU FLAME GRAPH
 # =========================================================================
 if [ "$SKIP_ONCPU" -eq 0 ]; then
-    info "=== ON-CPU profiling (perf record -F $PERF_RECORD_FREQ --call-graph fp) ==="
+    info "=== ON-CPU profiling (perf record -e $PERF_EVENT -F $PERF_RECORD_FREQ -m $PERF_MMAP_PAGES --call-graph fp) ==="
 
     # Use frame-pointer based call graphs (fp) — faster and more reliable
     # than dwarf for large binaries. Requires -C force-frame-pointers=yes at build.
-    perf record -F "$PERF_RECORD_FREQ" --call-graph fp -p "$BREWFS_PID" -o "$FLAME_DIR/oncpu-perf.data" &
+    perf record -e "$PERF_EVENT" -F "$PERF_RECORD_FREQ" -m "$PERF_MMAP_PAGES" \
+        --call-graph fp -p "$BREWFS_PID" -o "$FLAME_DIR/oncpu-perf.data" &
     PERF_ONCPU_PID=$!
     sleep 1
 

@@ -9,6 +9,13 @@ pub const DEFAULT_BUFFER_SIZE: u64 = 1024 * 1024 * 300; // 300MB
 pub const DEFAULT_WRITE_BUFFER_SIZE: u64 = 1024 * 1024 * 300; // 300MB
 pub const DEFAULT_FLUSH_ALL_INTERVAL: Duration = Duration::from_secs(5);
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
 #[derive(Clone)]
 pub struct ReadConfig {
     pub layout: ChunkLayout,
@@ -74,6 +81,8 @@ pub struct WriteConfig {
     pub upload_concurrency: usize,
     /// Controls ordering of upload vs metadata commit.
     pub writeback_mode: crate::vfs::cache::config::WriteBackMode,
+    /// Experimental page-to-block assembler for cached writeback writes.
+    pub cached_block_assembler: bool,
     /// Soft limit for committed-but-not-uploaded dirty bytes. 0 disables this gate.
     pub writeback_recent_pending_soft_limit: u64,
     /// Hard limit for committed-but-not-uploaded dirty bytes. 0 falls back to the soft limit.
@@ -125,6 +134,7 @@ impl Default for WriteConfig {
             // sequential throughput and lowers random-write tail latency.
             upload_concurrency: 10,
             writeback_mode,
+            cached_block_assembler: env_flag_enabled("BREWFS_CACHED_BLOCK_ASSEMBLER"),
             writeback_recent_pending_soft_limit,
             writeback_recent_pending_hard_limit,
         }
@@ -182,6 +192,13 @@ impl WriteConfig {
     pub fn writeback_mode(self, writeback_mode: crate::vfs::cache::config::WriteBackMode) -> Self {
         Self {
             writeback_mode,
+            ..self
+        }
+    }
+
+    pub fn cached_block_assembler(self, cached_block_assembler: bool) -> Self {
+        Self {
+            cached_block_assembler,
             ..self
         }
     }
@@ -248,7 +265,9 @@ impl VFSConfig {
                 .freeze_min_bytes(cache.dirty_slice_target_size)
                 .auto_flush_max_age(Duration::from_millis(cache.dirty_slice_max_age_ms))
                 .upload_concurrency(cache.upload_concurrency)
-                .writeback_mode(cache.writeback_mode),
+                .writeback_mode(cache.writeback_mode)
+                .writeback_recent_pending_soft_limit(cache.writeback_recent_pending_soft_bytes)
+                .writeback_recent_pending_hard_limit(cache.writeback_recent_pending_hard_bytes),
         );
 
         Self { read, write, cache }
@@ -259,6 +278,46 @@ impl VFSConfig {
 mod tests {
     use super::*;
     use crate::vfs::cache::config::WriteBackMode;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_cached_block_assembler_env(value: Option<&str>, f: impl FnOnce()) {
+        let _guard = env_lock().lock().unwrap();
+        let previous = std::env::var_os("BREWFS_CACHED_BLOCK_ASSEMBLER");
+        match value {
+            Some(value) => {
+                // SAFETY: This test serializes access to this process-wide env var
+                // and restores the previous value before releasing the lock.
+                unsafe { std::env::set_var("BREWFS_CACHED_BLOCK_ASSEMBLER", value) };
+            }
+            None => {
+                // SAFETY: This test serializes access to this process-wide env var
+                // and restores the previous value before releasing the lock.
+                unsafe { std::env::remove_var("BREWFS_CACHED_BLOCK_ASSEMBLER") };
+            }
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match previous {
+            Some(previous) => {
+                // SAFETY: The lock above serializes writes to this env var.
+                unsafe { std::env::set_var("BREWFS_CACHED_BLOCK_ASSEMBLER", previous) };
+            }
+            None => {
+                // SAFETY: The lock above serializes writes to this env var.
+                unsafe { std::env::remove_var("BREWFS_CACHED_BLOCK_ASSEMBLER") };
+            }
+        }
+
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
 
     #[test]
     fn vfs_config_applies_cache_budget_knobs() {
@@ -274,6 +333,8 @@ mod tests {
             prefetch_max_bytes: 3 * 1024 * 1024,
             upload_concurrency: 7,
             writeback_mode: WriteBackMode::CommitBeforeUpload,
+            writeback_recent_pending_soft_bytes: 123,
+            writeback_recent_pending_hard_bytes: 456,
             ..CacheConfig::default()
         };
 
@@ -285,6 +346,8 @@ mod tests {
         assert_eq!(config.write.page_size, DEFAULT_PAGE_SIZE);
         assert_eq!(config.write.freeze_min_bytes, cache.dirty_slice_target_size);
         assert_eq!(config.write.upload_concurrency, cache.upload_concurrency);
+        assert_eq!(config.write.writeback_recent_pending_soft_limit, 123);
+        assert_eq!(config.write.writeback_recent_pending_hard_limit, 456);
         assert_eq!(
             config.write.auto_flush_max_age,
             Duration::from_millis(cache.dirty_slice_max_age_ms)
@@ -305,14 +368,27 @@ mod tests {
 
     #[test]
     fn write_config_defaults_and_sets_recent_pending_backpressure_limits() {
-        let default_config = WriteConfig::new(ChunkLayout::default());
-        assert_eq!(default_config.writeback_recent_pending_soft_limit, 0);
-        assert_eq!(default_config.writeback_recent_pending_hard_limit, 0);
+        with_cached_block_assembler_env(None, || {
+            let default_config = WriteConfig::new(ChunkLayout::default());
+            assert_eq!(default_config.writeback_recent_pending_soft_limit, 0);
+            assert_eq!(default_config.writeback_recent_pending_hard_limit, 0);
+            assert!(!default_config.cached_block_assembler);
+        });
 
         let configured = WriteConfig::new(ChunkLayout::default())
             .writeback_recent_pending_soft_limit(123)
-            .writeback_recent_pending_hard_limit(456);
+            .writeback_recent_pending_hard_limit(456)
+            .cached_block_assembler(true);
         assert_eq!(configured.writeback_recent_pending_soft_limit, 123);
         assert_eq!(configured.writeback_recent_pending_hard_limit, 456);
+        assert!(configured.cached_block_assembler);
+    }
+
+    #[test]
+    fn write_config_parses_cached_block_assembler_env() {
+        with_cached_block_assembler_env(Some("1"), || {
+            let config = WriteConfig::new(ChunkLayout::default());
+            assert!(config.cached_block_assembler);
+        });
     }
 }

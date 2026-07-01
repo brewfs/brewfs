@@ -932,6 +932,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         (read || write) && !append
     }
 
+    fn timestamp_only_setattr(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
+        if req.mode.is_some()
+            || req.uid.is_some()
+            || req.gid.is_some()
+            || req.size.is_some()
+            || req.flags.is_some()
+        {
+            return false;
+        }
+
+        let timestamp_request = req.atime.is_some() || req.mtime.is_some() || req.ctime.is_some();
+        let timestamp_flags = SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW;
+        let non_timestamp_flags =
+            SetAttrFlags::from_bits_retain(flags.bits() & !timestamp_flags.bits());
+
+        (timestamp_request || flags.intersects(timestamp_flags)) && non_timestamp_flags.is_empty()
+    }
+
     async fn invalidate_open_file_cache_inode(&self, inode: i64) {
         if let Some(cache) = &self.open_file_cache {
             cache.invalidate_inode(inode).await;
@@ -1154,30 +1172,6 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
 
         info!("Cache invalidation handler stopped (channel closed)");
-    }
-
-    /// Preloads commonly accessed cache entries after operations that might benefit from caching.
-    /// This helps maintain cache consistency and improves performance for subsequent operations.
-    async fn preload_cache_entries(&self, inodes: &[i64]) -> Result<(), MetaError> {
-        for &ino in inodes {
-            // Preload inode attributes if not already cached
-            if self.inode_cache.get_attr(ino).await.is_none()
-                && let Ok(Some(attr)) = self.store.stat(ino).await
-            {
-                // For single-link files, we can cache the parent relationship
-                // For multi-link files, parent is stored in LinkParentMeta
-                let cache_parent = if attr.nlink <= 1 {
-                    // Try to find parent from ContentMeta (best effort)
-                    // This is a performance optimization - not critical for correctness
-                    None // We'll let it be resolved lazily
-                } else {
-                    None // Multi-link files don't cache parent
-                };
-
-                self.inode_cache.insert_node(ino, attr, cache_parent).await;
-            }
-        }
-        Ok(())
     }
 
     /// Intelligently invalidates path cache entries for a parent directory.
@@ -1488,6 +1482,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     /// * `Err(MetaError)` - On storage errors
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn cached_lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
+        Self::validate_entry_name(name)?;
         let parent = self.check_root(parent);
 
         if let Some(result) = self.inode_cache.lookup_if_loaded(parent, name).await {
@@ -1544,12 +1539,34 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             .await;
     }
 
+    async fn refresh_cached_attr_after_namespace_mutation(&self, ino: i64) {
+        if self.inode_cache.get_node(ino).await.is_none() {
+            return;
+        }
+
+        match self.store.stat(ino).await {
+            Ok(Some(attr)) => {
+                self.inode_cache.refresh_attr(ino, attr).await;
+            }
+            Ok(None) => {
+                self.inode_cache.invalidate_inode(ino).await;
+            }
+            Err(err) => {
+                warn!(
+                    "MetaClient: failed to refresh cached inode {} after namespace mutation: {}",
+                    ino, err
+                );
+            }
+        }
+    }
+
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn cached_lookup_with_attr(
         &self,
         parent: i64,
         name: &str,
     ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        Self::validate_entry_name(name)?;
         let parent = self.check_root(parent);
 
         if let Some(result) = self.inode_cache.lookup_if_loaded(parent, name).await {
@@ -1756,11 +1773,6 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             self.inode_cache.invalidate_inode(old_parent).await;
             if old_parent != new_parent {
                 self.inode_cache.invalidate_inode(new_parent).await;
-            }
-
-            if let Some(child_ino) = child_info {
-                // Preload the renamed entry and its new parent for better subsequent access.
-                let _ = self.preload_cache_entries(&[child_ino, new_parent]).await;
             }
 
             Ok::<(), MetaError>(())
@@ -2245,6 +2257,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             self.inode_cache.mark_children_complete_empty(ino).await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
+        self.refresh_cached_attr_after_namespace_mutation(parent)
+            .await;
 
         self.invalidate_parent_after_namespace_mutation(parent)
             .await;
@@ -2255,6 +2269,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
         self.ensure_writable()?;
+        Self::validate_entry_name(name)?;
         let parent = self.check_root(parent);
         info!("MetaClient: rmdir operation for ({}, '{}')", parent, name);
 
@@ -2282,6 +2297,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
         self.ensure_writable()?;
+        Self::validate_entry_name(&name)?;
         let parent = self.check_root(parent);
         info!(
             "MetaClient: create_file operation for ({}, '{}')",
@@ -2300,6 +2316,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             self.inode_cache.insert_node(ino, attr, cache_parent).await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
+        self.refresh_cached_attr_after_namespace_mutation(parent)
+            .await;
 
         self.invalidate_parent_after_namespace_mutation(parent)
             .await;
@@ -2364,6 +2382,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.inode_cache
             .add_child(parent, name.to_string(), inode)
             .await;
+        self.refresh_cached_attr_after_namespace_mutation(parent)
+            .await;
 
         self.invalidate_parent_after_namespace_mutation(parent)
             .await;
@@ -2405,6 +2425,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .await;
         self.inode_cache
             .add_child(parent, name.to_string(), ino)
+            .await;
+        self.refresh_cached_attr_after_namespace_mutation(parent)
             .await;
 
         self.invalidate_parent_after_namespace_mutation(parent)
@@ -2769,11 +2791,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     ) -> Result<FileAttr, MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let timestamp_only = Self::timestamp_only_setattr(req, &flags);
         let attr = self.store.set_attr(inode, req, flags).await?;
         self.inode_cache
             .insert_node(inode, attr.clone(), None)
             .await;
-        self.invalidate_open_file_cache_inode(inode).await;
+        if timestamp_only {
+            if let Some(cache) = &self.open_file_cache {
+                cache.update_attr_if_present(inode, attr.clone()).await;
+            }
+        } else {
+            self.invalidate_open_file_cache_inode(inode).await;
+        }
         Ok(attr)
     }
 

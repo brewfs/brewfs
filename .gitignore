@@ -1,6 +1,7 @@
 target/
 **/target/
 .worktrees/
+juicefs/
 
 # Local runtime data and logs
 data/

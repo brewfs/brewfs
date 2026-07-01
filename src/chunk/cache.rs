@@ -24,6 +24,7 @@ use tracing::{debug, error, info, trace, warn};
 static DISK_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DISK_CACHE_READ_CONCURRENCY: usize = 16;
 const DISK_CACHE_WRITE_CONCURRENCY: usize = 16;
+const DISK_HIT_FAST_PROMOTE_MAX_UTILIZATION_PER_MILLE: u64 = 800;
 
 /// Configuration for the intelligent dual-layer cache system.
 ///
@@ -543,6 +544,35 @@ impl DiskStorage {
         self.write_sem.clone()
     }
 
+    fn touch_atime(filepath: &Path) {
+        // Touch atime so LRU eviction keeps hot data longer.
+        // Uses futimens with UTIME_NOW on atime only (mtime unchanged).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let _ = std::fs::metadata(filepath).map(|m| {
+                let mtime = libc::timespec {
+                    tv_sec: m.mtime(),
+                    tv_nsec: m.mtime_nsec(),
+                };
+                let times = [
+                    libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: libc::UTIME_NOW,
+                    },
+                    mtime,
+                ];
+                let c_path = std::ffi::CString::new(filepath.as_os_str().as_encoded_bytes()).ok();
+                if let Some(p) = c_path {
+                    unsafe {
+                        // SAFETY: valid null-terminated path and timespec array.
+                        libc::utimensat(libc::AT_FDCWD, p.as_ptr(), times.as_ptr(), 0);
+                    }
+                }
+            });
+        }
+    }
+
     /// Evict oldest files (by access time) to free at least `needed_bytes`
     async fn evict_lru(&self, needed_bytes: u64) {
         let target = self.max_bytes.saturating_sub(needed_bytes);
@@ -598,7 +628,7 @@ impl DiskStorage {
         );
     }
 
-    pub async fn load(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+    pub async fn load(&self, key: &str) -> anyhow::Result<bytes::Bytes> {
         let filename = Self::key_to_filename(key);
         let filepath = self.base_dir.join(filename);
 
@@ -614,35 +644,9 @@ impl DiskStorage {
         };
 
         // Decode with CRC32C verification (handles legacy unencoded files too)
-        match super::cache_integrity::decode(&raw) {
+        match super::cache_integrity::decode_bytes(raw) {
             Some(data) => {
-                // Touch atime so LRU eviction keeps hot data longer.
-                // Uses futimens with UTIME_NOW on atime only (mtime unchanged).
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    let _ = std::fs::metadata(&filepath).map(|m| {
-                        let mtime = libc::timespec {
-                            tv_sec: m.mtime(),
-                            tv_nsec: m.mtime_nsec(),
-                        };
-                        let times = [
-                            libc::timespec {
-                                tv_sec: 0,
-                                tv_nsec: libc::UTIME_NOW,
-                            },
-                            mtime,
-                        ];
-                        let c_path =
-                            std::ffi::CString::new(filepath.as_os_str().as_encoded_bytes()).ok();
-                        if let Some(p) = c_path {
-                            unsafe {
-                                // SAFETY: valid null-terminated path and timespec array
-                                libc::utimensat(libc::AT_FDCWD, p.as_ptr(), times.as_ptr(), 0);
-                            }
-                        }
-                    });
-                }
+                Self::touch_atime(&filepath);
                 Ok(data)
             }
             None => {
@@ -656,7 +660,156 @@ impl DiskStorage {
         }
     }
 
-    pub async fn load_with_health(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    pub async fn load_range_with_health(
+        &self,
+        key: &str,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<Option<usize>> {
+        if self.health.is_bypassed() {
+            return Ok(None);
+        }
+
+        let filename = Self::key_to_filename(key);
+        let filepath = self.base_dir.join(filename);
+        if tokio::fs::metadata(&filepath).await.is_err() {
+            return Ok(None);
+        }
+
+        match self.load_range(key, offset, buf).await {
+            Ok(read_len) => {
+                self.health.record_success();
+                Ok(Some(read_len))
+            }
+            Err(err) => {
+                self.health.record_error();
+                warn!(key, error = ?err, "disk cache range load failed; treating as cache miss");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn load_range(&self, key: &str, offset: u64, buf: &mut [u8]) -> anyhow::Result<usize> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let filename = Self::key_to_filename(key);
+        let filepath = self.base_dir.join(filename);
+
+        let _permit = self.read_sem.clone().acquire_owned().await?;
+        let mut file = match tokio::fs::File::open(&filepath).await {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow!("file {} does not exist", filepath.display()));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let file_len = file.metadata().await?.len();
+
+        let mut header = [0u8; super::cache_integrity::HEADER_LEN];
+        let header_len = file.read(&mut header).await?;
+        if header_len < super::cache_integrity::HEADER_LEN
+            || header[..4] != super::cache_integrity::MAGIC
+        {
+            let read_len = Self::read_legacy_range(&mut file, file_len, offset, buf).await?;
+            Self::touch_atime(&filepath);
+            return Ok(read_len);
+        }
+
+        let data_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let checksum_blocks = data_len.div_ceil(super::cache_integrity::CS_BLOCK);
+        let expected_total = super::cache_integrity::HEADER_LEN + data_len + checksum_blocks * 4;
+        if file_len < expected_total as u64 {
+            let _ = tokio::fs::remove_file(&filepath).await;
+            return Err(anyhow!(
+                "truncated cache key '{}': file_len={}, expected={}",
+                key,
+                file_len,
+                expected_total
+            ));
+        }
+
+        if offset >= data_len as u64 {
+            Self::touch_atime(&filepath);
+            return Ok(0);
+        }
+
+        let offset = offset as usize;
+        let copy_len = buf.len().min(data_len - offset);
+        if copy_len == 0 {
+            Self::touch_atime(&filepath);
+            return Ok(0);
+        }
+
+        let first_block = offset / super::cache_integrity::CS_BLOCK;
+        let last_block = (offset + copy_len - 1) / super::cache_integrity::CS_BLOCK;
+        let aligned_start = first_block * super::cache_integrity::CS_BLOCK;
+        let aligned_end = ((last_block + 1) * super::cache_integrity::CS_BLOCK).min(data_len);
+        let block_count = last_block - first_block + 1;
+
+        let mut aligned = vec![0u8; aligned_end - aligned_start];
+        file.seek(std::io::SeekFrom::Start(
+            (super::cache_integrity::HEADER_LEN + aligned_start) as u64,
+        ))
+        .await?;
+        file.read_exact(&mut aligned).await?;
+
+        let mut checksums = vec![0u8; block_count * 4];
+        file.seek(std::io::SeekFrom::Start(
+            (super::cache_integrity::HEADER_LEN + data_len + first_block * 4) as u64,
+        ))
+        .await?;
+        file.read_exact(&mut checksums).await?;
+
+        for local_block in 0..block_count {
+            let global_block = first_block + local_block;
+            let block_start = global_block * super::cache_integrity::CS_BLOCK;
+            let block_end = (block_start + super::cache_integrity::CS_BLOCK).min(data_len);
+            let local_start = block_start - aligned_start;
+            let local_end = block_end - aligned_start;
+            let expected = u32::from_le_bytes([
+                checksums[local_block * 4],
+                checksums[local_block * 4 + 1],
+                checksums[local_block * 4 + 2],
+                checksums[local_block * 4 + 3],
+            ]);
+            let actual = crc32c::crc32c(&aligned[local_start..local_end]);
+            if actual != expected {
+                let _ = tokio::fs::remove_file(&filepath).await;
+                return Err(anyhow!(
+                    "CRC32C verification failed for cache key '{}', file deleted",
+                    key
+                ));
+            }
+        }
+
+        let local_offset = offset - aligned_start;
+        buf[..copy_len].copy_from_slice(&aligned[local_offset..local_offset + copy_len]);
+        Self::touch_atime(&filepath);
+        Ok(copy_len)
+    }
+
+    async fn read_legacy_range(
+        file: &mut tokio::fs::File,
+        file_len: u64,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<usize> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        if offset >= file_len {
+            return Ok(0);
+        }
+        let read_len = buf.len().min((file_len - offset) as usize);
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        file.read_exact(&mut buf[..read_len]).await?;
+        Ok(read_len)
+    }
+
+    pub async fn load_with_health(&self, key: &str) -> anyhow::Result<Option<bytes::Bytes>> {
         if self.health.is_bypassed() {
             return Ok(None);
         }
@@ -1810,15 +1963,81 @@ impl ChunksCache {
         // Re-populate cold cache index so future lookups are faster
         self.cold_cache.insert(key.clone(), ()).await;
 
-        if self.policy.should_promote(key.clone()).await {
+        if self.should_fast_promote_disk_hit(value.len())
+            || self.policy.should_promote(key.clone()).await
+        {
             debug!("Promoting key to hot cache: {}", key);
-            let b = bytes::Bytes::from(value.clone());
-            self.hot_bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
-            self.hot_cache.insert(key.clone(), b).await;
+            self.insert_hot(key, value.clone()).await;
         }
 
         self.update_utilization_metrics();
-        Some(bytes::Bytes::from(value))
+        Some(value)
+    }
+
+    pub async fn get_range_into(
+        &self,
+        key: &String,
+        offset: usize,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        if buf.is_empty() {
+            return Some(0);
+        }
+
+        if let Some(value) = self.hot_cache.get(key).await {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
+            self.policy.record_cache_request(true);
+            let end = offset.saturating_add(buf.len()).min(value.len());
+            let copy_len = end.saturating_sub(offset);
+            if copy_len > 0 {
+                buf[..copy_len].copy_from_slice(&value[offset..end]);
+            }
+            return Some(copy_len);
+        }
+
+        trace!("Hot cache range MISS: {}", key);
+        self.policy.record_cache_request(false);
+
+        let read_len = match self
+            .disk_storage
+            .load_range_with_health(key, offset as u64, buf)
+            .await
+        {
+            Ok(Some(read_len)) => read_len,
+            Ok(None) | Err(_) => {
+                self.cache_misses.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        debug!(
+            "Loaded {} ranged bytes from disk for key: {}",
+            read_len, key
+        );
+        self.policy.record_access(key.clone()).await;
+        self.cold_cache.insert(key.clone(), ()).await;
+        self.update_utilization_metrics();
+        Some(read_len)
+    }
+
+    fn should_fast_promote_disk_hit(&self, value_len: usize) -> bool {
+        if value_len == 0 || self.config.max_hot_bytes == 0 {
+            return false;
+        }
+
+        let current_bytes = self.hot_cache.weighted_size();
+        let next_bytes = current_bytes
+            .saturating_add(value_len as u64)
+            .saturating_add(64);
+        let fast_promote_ceiling = self
+            .config
+            .max_hot_bytes
+            .saturating_mul(DISK_HIT_FAST_PROMOTE_MAX_UTILIZATION_PER_MILLE)
+            / 1000;
+
+        next_bytes <= fast_promote_ceiling
     }
 
     /// Update cache utilization metrics (using byte-based utilization)
@@ -2101,6 +2320,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_load_range_ignores_corruption_outside_requested_checksum_block() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        const HEADER_LEN: u64 = 8;
+        const CHECKSUM_BLOCK: usize = 32 * 1024;
+
+        let temp_dir = tempdir().unwrap();
+        let storage = DiskStorage::new_with_integrity(temp_dir.path(), 0, CacheIntegrityMode::Full)
+            .await
+            .unwrap();
+        let etag = "range_read_etag";
+        let test_data = generate_test_data(CHECKSUM_BLOCK * 3);
+
+        storage.store(etag, &test_data).await.unwrap();
+
+        let filename = DiskStorage::key_to_filename(etag);
+        let filepath = temp_dir.path().join(filename);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&filepath)
+            .unwrap();
+        file.seek(SeekFrom::Start(HEADER_LEN + (CHECKSUM_BLOCK * 2) as u64))
+            .unwrap();
+        file.write_all(&[0xFF]).unwrap();
+
+        let offset = 1024;
+        let mut out = vec![0u8; 4096];
+        let read_len = storage
+            .load_range_with_health(etag, offset as u64, &mut out)
+            .await
+            .unwrap();
+
+        assert_eq!(read_len, Some(out.len()));
+        assert_eq!(out, test_data[offset..offset + 4096]);
+    }
+
+    #[tokio::test]
     async fn test_store_and_load_empty_data() {
         let (storage, _temp_dir) = setup_test_storage().await;
         let etag = "empty_data_etag";
@@ -2353,6 +2609,86 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.get(&key.to_string()).await, Some(data));
+    }
+
+    #[tokio::test]
+    async fn disk_hit_promotes_to_hot_cache_when_hot_tier_has_room() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            4 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "disk-hit-fast-promote-key".to_string();
+        let data = vec![42u8; 128 * 1024];
+        cache.insert(&key, &data).await.unwrap();
+
+        cache.hot_cache.invalidate(&key).await;
+        cache.hot_cache.run_pending_tasks().await;
+        cache.hot_bytes.store(0, Ordering::Relaxed);
+        assert!(cache.hot_cache.get(&key).await.is_none());
+
+        assert_eq!(
+            cache
+                .get(&key)
+                .await
+                .expect("disk cache should contain key"),
+            bytes::Bytes::from(data)
+        );
+
+        cache.hot_cache.run_pending_tasks().await;
+        assert!(
+            cache.hot_cache.get(&key).await.is_some(),
+            "disk cache hits should warm the hot cache while memory budget is available"
+        );
+    }
+
+    #[tokio::test]
+    async fn disk_hit_fast_promotion_respects_hot_tier_budget() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            4 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        cache
+            .insert_hot("hot-filler", bytes::Bytes::from(vec![1u8; 3 * 1024 * 1024]))
+            .await;
+        assert!(cache.hot_cache.weighted_size() > cache.config.max_hot_bytes * 700 / 1000);
+
+        let key = "disk-hit-budget-key".to_string();
+        let data = vec![24u8; 512 * 1024];
+        let next_weight = cache
+            .hot_cache
+            .weighted_size()
+            .saturating_add(data.len() as u64)
+            .saturating_add(64);
+        let fast_promote_ceiling =
+            cache.config.max_hot_bytes * DISK_HIT_FAST_PROMOTE_MAX_UTILIZATION_PER_MILLE / 1000;
+        assert!(next_weight > fast_promote_ceiling);
+
+        cache.disk_storage.store(&key, &data).await.unwrap();
+        cache.cold_cache.insert(key.clone(), ()).await;
+
+        assert_eq!(
+            cache
+                .get(&key)
+                .await
+                .expect("disk cache should contain key"),
+            bytes::Bytes::from(data)
+        );
+
+        cache.hot_cache.run_pending_tasks().await;
+        assert!(
+            cache.hot_cache.get(&key).await.is_none(),
+            "fast disk-hit promotion should stop before the hot tier is too full"
+        );
     }
 
     #[test]

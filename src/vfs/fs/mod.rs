@@ -10,6 +10,7 @@ use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLoc
 use crate::meta::store::{
     AclRule, MetaError, MetaStore, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
+use crate::posix::NAME_MAX;
 use dashmap::{DashMap, Entry};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ use tokio::sync::Mutex;
 
 // Re-export types from meta::store for convenience
 pub use crate::meta::store::{DirEntry, FileAttr, FileType};
+
+const SPARSE_ZERO_MAX_SCAN_BYTES: usize = 128 * 1024;
 
 /// Rename operation flags (similar to Linux renameat2 flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,10 +105,11 @@ fn vfs_timing_enabled_from_env() -> bool {
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::CacheConfig;
+use crate::vfs::chunk_id_for;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::{PathHint, VfsError};
 use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags};
-use crate::vfs::io::{DataReader, DataWriter};
+use crate::vfs::io::{DataReader, DataWriter, split_chunk_spans};
 use crate::vfs::memory::MemoryBudget;
 
 struct HandleRegistry<B, M>
@@ -737,6 +741,20 @@ where
     S: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
+    fn validate_entry_name(name: &str) -> Result<(), VfsError> {
+        if name.is_empty() || name.contains('/') || name.contains('\0') {
+            return Err(VfsError::InvalidFilename);
+        }
+
+        if name.len() > NAME_MAX {
+            return Err(VfsError::FilenameTooLong {
+                path: PathHint::none(),
+            });
+        }
+
+        Ok(())
+    }
+
     fn from_components_with_background(
         config: VFSConfig,
         store: Arc<S>,
@@ -829,6 +847,20 @@ where
                         dirty.commit_wait_upload_us,
                         dirty.commit_wait_retry_ops,
                         dirty.commit_wait_retry_us,
+                    );
+                    fuse_stats.sync_writeback_flush_wait_metrics(
+                        dirty.flush_wait_ops,
+                        dirty.flush_wait_us,
+                        dirty.flush_wait_slices,
+                    );
+                    fuse_stats.sync_writeback_flush_fragmentation_metrics(
+                        dirty.flush_fragmentation_ops,
+                        dirty.flush_fragmentation_slices,
+                        dirty.flush_fragmentation_bytes,
+                        dirty.flush_fragmentation_cached_sub_block_slices,
+                        dirty.flush_fragmentation_cached_sub_block_bytes,
+                        dirty.flush_fragmentation_full_block_slices,
+                        dirty.flush_fragmentation_full_block_bytes,
                     );
                     fuse_stats.sync_writeback_commit_wait_breakdown_metrics(
                         dirty.commit_wait_upload_size_ops,
@@ -1076,6 +1108,87 @@ where
         Ok(attr.size)
     }
 
+    async fn try_sparse_zero_extend(
+        &self,
+        ino: i64,
+        offset: u64,
+        data: &[u8],
+        visible_size: u64,
+    ) -> Result<bool, VfsError> {
+        // JuiceFS stores holes with slice id 0. BrewFS slice precedence is based
+        // on monotonically increasing slice ids, so sparse-zero writes stay a
+        // VFS fast path instead of materializing id-0 slice metadata.
+        if data.is_empty()
+            || data.len() > SPARSE_ZERO_MAX_SCAN_BYTES
+            || data.iter().any(|&byte| byte != 0)
+        {
+            return Ok(false);
+        }
+
+        if self.state.writer.has_dirty_state(ino as u64).await {
+            return Ok(false);
+        }
+
+        let new_end = offset
+            .checked_add(data.len() as u64)
+            .ok_or(VfsError::InvalidInput)?;
+
+        if offset < visible_size
+            && self
+                .range_has_committed_slices(ino, offset, data.len())
+                .await?
+        {
+            return Ok(false);
+        }
+
+        if new_end > visible_size {
+            self.meta_extend_file_size(ino, new_end).await?;
+        }
+
+        if let Some(inode) = self.state.inodes.get(&ino) {
+            inode.extend_size(new_end);
+            inode.extend_committed_size(new_end);
+        }
+        self.extend_local_file_size(ino, new_end);
+
+        let _ = self
+            .state
+            .reader
+            .invalidate(ino as u64, offset, data.len())
+            .await;
+
+        Ok(true)
+    }
+
+    async fn range_has_committed_slices(
+        &self,
+        ino: i64,
+        offset: u64,
+        len: usize,
+    ) -> Result<bool, VfsError> {
+        let layout = self.core.layout;
+        for span in split_chunk_spans(layout, offset, len) {
+            let chunk_id = chunk_id_for(ino, span.index).map_err(VfsError::from)?;
+            let span_start = span.offset;
+            let span_end = span.offset + span.len;
+            let slices = self
+                .meta_layer()
+                .get_slices(chunk_id)
+                .await
+                .map_err(|err| VfsError::from_meta(PathHint::none(), err))?;
+
+            if slices.iter().any(|slice| {
+                let slice_start = slice.offset;
+                let slice_end = slice.offset + slice.length;
+                slice_start < span_end && span_start < slice_end
+            }) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     /// get the node's parent inode.
     pub async fn parent_of(&self, ino: i64) -> Option<i64> {
         self.meta_get_dir_parent(ino).await.ok().flatten()
@@ -1100,12 +1213,14 @@ where
     }
 
     /// get the node's child inode and attributes by name.
-    pub(crate) async fn child_attr_of(&self, parent: i64, name: &str) -> Option<(i64, FileAttr)> {
-        let (ino, mut attr) = self
-            .meta_lookup_with_attr(parent, name)
-            .await
-            .ok()
-            .flatten()?;
+    pub(crate) async fn child_attr_of(
+        &self,
+        parent: i64,
+        name: &str,
+    ) -> Result<Option<(i64, FileAttr)>, VfsError> {
+        let Some((ino, mut attr)) = self.meta_lookup_with_attr(parent, name).await? else {
+            return Ok(None);
+        };
 
         // close-to-open semantics: if there is a local state, it should be considered as the newest state.
         if let Some(size) = self.inode_size_cached(ino) {
@@ -1113,7 +1228,7 @@ where
         }
 
         tracing::debug!(ino, nlink = attr.nlink, kind = ?attr.kind, "child_attr_of");
-        Some((ino, attr))
+        Ok(Some((ino, attr)))
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
@@ -1338,9 +1453,7 @@ where
         parent_ino: i64,
         name: &str,
     ) -> Result<FileAttr, VfsError> {
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         let attr = self.meta_link(src_ino, parent_ino, name).await?;
 
@@ -1355,9 +1468,7 @@ where
         name: &str,
         existing_dir_ok: bool,
     ) -> Result<i64, VfsError> {
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         match self.meta_mkdir(parent_ino, name.to_string()).await {
             Ok(ino) => Ok(ino),
@@ -1420,9 +1531,7 @@ where
             &self.stats().vfs_create_total_ops,
             &self.stats().vfs_create_total_lat_us,
         );
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         let create_result = {
             let _meta_timer = self.vfs_timing_timer(
@@ -1571,9 +1680,7 @@ where
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), VfsError> {
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         let parent_attr = self
             .meta_stat_required(parent_ino, PathHint::none())
@@ -1601,9 +1708,7 @@ where
             &self.stats().vfs_unlink_total_ops,
             &self.stats().vfs_unlink_total_lat_us,
         );
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         let ino = {
             let _lookup_timer = self.vfs_timing_timer(
@@ -1647,9 +1752,7 @@ where
     /// Remove an empty directory using parent inode and name directly.
     #[tracing::instrument(level = "debug", skip(self), fields(parent_ino, name))]
     pub(crate) async fn rmdir_at(&self, parent_ino: i64, name: &str) -> Result<(), VfsError> {
-        if name.is_empty() || name.contains('/') || name.contains('\0') {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(name)?;
 
         let ino = self
             .meta_lookup_required(parent_ino, name, PathHint::none())
@@ -1700,15 +1803,8 @@ where
         new_parent_ino: i64,
         new_name: &str,
     ) -> Result<(), VfsError> {
-        if old_name.is_empty()
-            || new_name.is_empty()
-            || old_name.contains('/')
-            || old_name.contains('\0')
-            || new_name.contains('/')
-            || new_name.contains('\0')
-        {
-            return Err(VfsError::InvalidFilename);
-        }
+        Self::validate_entry_name(old_name)?;
+        Self::validate_entry_name(new_name)?;
 
         if old_parent_ino == new_parent_ino && old_name == new_name {
             return Ok(());
@@ -2640,7 +2736,17 @@ where
             let _handle_guard = handle.lock_write().await;
 
             let append_offset = self.inode_size(handle.ino).await?;
-            let written = handle.write_unlocked(append_offset, data).await?;
+            let written = if self
+                .try_sparse_zero_extend(handle.ino, append_offset, data, append_offset)
+                .await?
+            {
+                handle.update_offset(append_offset + data.len() as u64);
+                handle.extend_size(append_offset + data.len() as u64);
+                handle.mark_write_dirty();
+                data.len()
+            } else {
+                handle.write_unlocked(append_offset, data).await?
+            };
             tracing::debug!(
                 fh,
                 ino = handle.ino,
@@ -2651,7 +2757,20 @@ where
             );
             (append_offset, written)
         } else {
-            (offset, handle.write(offset, data).await?)
+            let _handle_guard = handle.lock_write().await;
+            let visible_size = handle.attr().size;
+            let written = if self
+                .try_sparse_zero_extend(handle.ino, offset, data, visible_size)
+                .await?
+            {
+                handle.update_offset(offset + data.len() as u64);
+                handle.extend_size(offset + data.len() as u64);
+                handle.mark_write_dirty();
+                data.len()
+            } else {
+                handle.write_unlocked(offset, data).await?
+            };
+            (offset, written)
         };
 
         // Invalidate reader cache for the written range so subsequent reads
@@ -2703,6 +2822,13 @@ where
         }
 
         let inode = self.ensure_inode_registered(ino).await?;
+        if self
+            .try_sparse_zero_extend(ino, offset, data, inode.file_size())
+            .await?
+        {
+            return Ok(data.len());
+        }
+
         let writer = self.state.writer.ensure_file(inode);
         let written = writer
             .write_at(offset, data)
@@ -2754,6 +2880,17 @@ where
         }
 
         let inode = self.ensure_inode_registered(ino).await?;
+        if data.len() <= SPARSE_ZERO_MAX_SCAN_BYTES {
+            let mutation_lock = self.state.append_lock(ino);
+            let _mutation_guard = mutation_lock.lock_owned().await;
+            if self
+                .try_sparse_zero_extend(ino, offset, data, inode.file_size())
+                .await?
+            {
+                return Ok(data.len());
+            }
+        }
+
         let writer = self.state.writer.ensure_file(inode.clone());
         let written = writer
             .write_at_cached(offset, data, creation_unique)
@@ -2917,8 +3054,12 @@ where
         write: bool,
         append: bool,
     ) -> Result<u64, VfsError> {
-        self.open_with_attr_refresh(ino, attr, read, write, append, false)
-            .await
+        let fh = self
+            .open_with_attr_refresh(ino, attr.clone(), read, write, append, false)
+            .await?;
+        self.meta_record_open(ino, attr, read, write, append)
+            .await?;
+        Ok(fh)
     }
 
     pub(crate) async fn open_fresh_ino(

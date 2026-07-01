@@ -23,22 +23,26 @@ usage() {
 
 选项:
   --writeback-throughput-profile
-                             启用 JuiceFS 对齐吞吐 profile（writeback, buffer=8192MiB, cache=4096MiB, upload/download concurrency=4/16, open-cache=1s/65536, compression=none, backup-meta=0, fio prefill sync+remount）
+                             启用 JuiceFS 对齐吞吐 profile（writeback, buffer=8192MiB, cache=4096MiB, upload/download concurrency=4/16, open-cache=1s/65536, compression=none, backup-meta=0, fio prefill staging drain+remount, write fio post-drain）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --keep                     结束后不执行 compose down（便于调试）
   -h, --help                 显示帮助
 
 支持的 PERF_TOOLS:
-  fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw fio dirstress dirperf metaperf looptest
+  fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw fio dirstress dirperf metaperf looptest stress-ng
 
 可通过环境变量覆盖各工具参数:
   PERF_DIRSTRESS_ARGS PERF_DIRPERF_ARGS PERF_METAPERF_ARGS PERF_LOOPTEST_ARGS
+  PERF_STRESS_NG_ARGS 可完全覆盖默认 stress-ng 参数；如需 link/symlink stressor 请用该变量显式指定
   PERF_FIO_ARGS PERF_FIO_RUNTIME PERF_FIO_SIZE PERF_FIO_BS PERF_FIO_NUMJOBS PERF_FIO_DIRECT
   PERF_FIO_DIRECT_MATRIX="0 1" 可对 fio profile 显式跑 buffered/direct 矩阵（默认不启用）
   PERF_FIO_{SEQREAD,SEQWRITE,RANDREAD,RANDWRITE,RANDRW,BIGREAD,BIGWRITE}_{ARGS,BS,SIZE,NUMJOBS,IOENGINE,IODEPTH,DIRECT,DIRECT_MATRIX,RUNTIME}
-  PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_DROP_CACHES PERF_FIO_COLD_READ_DROP_CACHES PERF_FIO_COLD_READ_CLEAR_CACHE
+  PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS PERF_FIO_PREFILL_DRAIN_PENDING_BYTES
+  PERF_FIO_POST_WRITE_DRAIN PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES
+  PERF_FIO_DROP_CACHES PERF_FIO_COLD_READ_DROP_CACHES PERF_FIO_COLD_READ_CLEAR_CACHE
   JFS_COMPRESS JFS_WRITEBACK JFS_BUFFER_SIZE_MIB JFS_CACHE_SIZE_MIB JFS_MAX_UPLOADS JFS_MAX_DOWNLOADS
   JFS_OPEN_CACHE JFS_OPEN_CACHE_LIMIT JFS_BACKUP_META JFS_NO_USAGE_REPORT JFS_CACHE_DIR
+  REDIS_PERF_DATA_MOUNT 可把 Redis AOF/RDB 数据挂到大容量目录或命名卷（例如 /data/slayer/juicefs-perf-redis）
   PERF_LOG_TO_CONSOLE=true 可恢复压测工具日志输出到终端（默认关闭）
 EOF
     exit 0
@@ -97,6 +101,7 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export PERF_FIO_PREFILL_DRAIN="${PERF_FIO_PREFILL_DRAIN:-true}"
     export PERF_FIO_PREFILL_REMOUNT="${PERF_FIO_PREFILL_REMOUNT:-true}"
     export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-true}"
+    export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
 fi
 
 if [[ "${PERF_FIO_COLD_READ:-false}" =~ ^(1|true|yes|on)$ \
@@ -195,6 +200,19 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_METAPERF_BG_FILES \
     -e PERF_LOOPTEST_ITERS \
     -e PERF_LOOPTEST_BUF_SIZE \
+    -e PERF_STRESS_NG_ARGS \
+    -e PERF_STRESS_NG_TIMEOUT \
+    -e PERF_STRESS_NG_DIR_WORKERS \
+    -e PERF_STRESS_NG_DIR_OPS \
+    -e PERF_STRESS_NG_DENTRY_WORKERS \
+    -e PERF_STRESS_NG_DENTRY_OPS \
+    -e PERF_STRESS_NG_RENAME_WORKERS \
+    -e PERF_STRESS_NG_RENAME_OPS \
+    -e PERF_STRESS_NG_UNLINK_WORKERS \
+    -e PERF_STRESS_NG_UNLINK_OPS \
+    -e PERF_STRESS_NG_HDD_WORKERS \
+    -e PERF_STRESS_NG_HDD_BYTES \
+    -e PERF_STRESS_NG_HDD_WRITE_SIZE \
     -e PERF_FIO_ARGS \
     -e PERF_FIO_SEQREAD_ARGS \
     -e PERF_FIO_SEQREAD_BS \
@@ -271,6 +289,13 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_COLD_READ \
     -e PERF_FIO_PREFILL_DRAIN \
     -e PERF_FIO_PREFILL_REMOUNT \
+    -e PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS \
+    -e PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS \
+    -e PERF_FIO_PREFILL_DRAIN_PENDING_BYTES \
+    -e PERF_FIO_POST_WRITE_DRAIN \
+    -e PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS \
+    -e PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS \
+    -e PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES \
     -e PERF_FIO_DROP_CACHES \
     -e PERF_FIO_COLD_READ_DROP_CACHES \
     -e PERF_FIO_COLD_READ_CLEAR_CACHE \

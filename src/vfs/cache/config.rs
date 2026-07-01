@@ -1,8 +1,28 @@
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::chunk::bandwidth::BandwidthConfig;
 use crate::chunk::cache_integrity::CacheIntegrityMode;
 use crate::chunk::compress::Compression;
+
+#[cfg(test)]
+static TEST_CACHE_ROOT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn default_cache_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        let seq = TEST_CACHE_ROOT_SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("brewfs-test-cache-{}-{seq}", std::process::id()))
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("brewfs")
+    }
+}
 
 /// Write-back mode controls when data becomes globally visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,6 +73,8 @@ pub struct CacheConfig {
     // Semantics
     pub strict_posix: bool,
     pub writeback_mode: WriteBackMode,
+    pub writeback_recent_pending_soft_bytes: u64,
+    pub writeback_recent_pending_hard_bytes: u64,
 
     // Disk safety
     pub min_free_disk_bytes: u64,
@@ -72,9 +94,7 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            cache_root: dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("brewfs"),
+            cache_root: default_cache_root(),
             read_memory_bytes: 4096 * 1024 * 1024,
             read_ssd_bytes: 20 * 1024 * 1024 * 1024,
             write_memory_bytes: 384 * 1024 * 1024,
@@ -91,6 +111,8 @@ impl Default for CacheConfig {
             persist_write_cache_after_upload: false,
             strict_posix: true,
             writeback_mode: WriteBackMode::UploadBeforeCommit,
+            writeback_recent_pending_soft_bytes: 0,
+            writeback_recent_pending_hard_bytes: 0,
             min_free_disk_bytes: 1024 * 1024 * 1024,
             writeback_persist_sync: true,
             compression: Compression::Lz4,

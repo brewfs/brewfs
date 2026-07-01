@@ -1,15 +1,14 @@
 // Read pipeline (high-level):
-// - FileReader::read_at splits a file read into chunk spans and prepares slices.
-// - prepare_slices ensures SliceState records exist for target ranges without
-//   issuing FileReader-owned prefetch I/O.
+// - FileReader::read_at splits a file read into chunk spans.
 // - read_chunk_span reads through BlockStore/DataFetcher so all data is served by
-//   the unified cache layer; SliceState is only updated as metadata.
+//   the unified cache layer; committed demand reads do not create FileReader
+//   SliceState reservations.
 // - Writer commit calls DataReader::invalidate(...) to mark slice metadata stale.
 
 use crate::chunk::reader::DataFetcher;
 use crate::chunk::{BlockStore, ChunkLayout};
 use crate::meta::MetaLayer;
-use crate::utils::{Intervals, NumCastExt};
+use crate::utils::NumCastExt;
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::prefetch::{PrefetchPriority, PrefetchTask, Prefetcher};
@@ -64,6 +63,13 @@ fn is_transient_read_error(e: &anyhow::Error) -> bool {
 fn retry_delay(attempt: u32) -> Duration {
     let attempt = attempt.saturating_add(1);
     Duration::from_millis(u64::from((attempt * attempt * 10).min(1000)))
+}
+
+fn align_up_to(value: u64, align: u64) -> u64 {
+    if align == 0 {
+        return value;
+    }
+    value.div_ceil(align).saturating_mul(align)
 }
 
 #[allow(clippy::type_complexity)]
@@ -364,21 +370,6 @@ struct SliceState {
 }
 
 impl SliceState {
-    fn new(index: u64, range: (u64, u64), refs: u16) -> Self {
-        Self {
-            index,
-            range,
-            state: SliceStatus::New,
-            err: None,
-            notify: Arc::new(Notify::new()),
-            generation: 0,
-            refs,
-            queue_delay_ms: None,
-            fetch_ms: None,
-            last_access: Instant::now(),
-        }
-    }
-
     fn in_flight(&self) -> bool {
         matches!(
             self.state,
@@ -483,29 +474,6 @@ impl SliceState {
             }
             guard.notify.notify_waiters();
         });
-    }
-}
-
-struct SlicePinGuard {
-    slices: Vec<Arc<ParkingMutex<SliceState>>>,
-}
-
-impl SlicePinGuard {
-    pub fn new() -> Self {
-        Self { slices: Vec::new() }
-    }
-
-    pub fn add(&mut self, slice: Arc<ParkingMutex<SliceState>>) {
-        self.slices.push(slice);
-    }
-}
-
-impl Drop for SlicePinGuard {
-    fn drop(&mut self) {
-        for slice in self.slices.drain(..) {
-            let mut guard = slice.lock();
-            guard.refs = guard.refs.saturating_sub(1);
-        }
     }
 }
 
@@ -690,6 +658,42 @@ where
             .saturating_add(1) as usize
     }
 
+    fn prefetch_range_after_read(&self, offset: u64, read_len: u64) -> Option<(u64, u64)> {
+        if read_len == 0 {
+            return None;
+        }
+
+        let block_size = self.config.layout.block_size as u64;
+        let read_end = offset.checked_add(read_len)?;
+        let file_size = self.inode.file_size();
+        if read_end >= file_size {
+            return None;
+        }
+
+        let ahead = {
+            let sessions = self.sessions.lock();
+            sessions
+                .iter()
+                .filter(|session| {
+                    session.total > 0 && session.last_off == read_end && session.ahead >= block_size
+                })
+                .map(|session| session.ahead)
+                .max()
+        }?;
+
+        let ahead_start = align_up_to(read_end, block_size);
+        if ahead_start >= file_size {
+            return None;
+        }
+
+        let requested = read_len.max(block_size).min(ahead);
+        let remaining = file_size - ahead_start;
+        let ahead_len = requested.min(remaining);
+        let ahead_end = align_up_to(ahead_start.saturating_add(ahead_len), block_size);
+        let ahead_len = ahead_end.min(file_size).saturating_sub(ahead_start);
+        (ahead_len > 0).then_some((ahead_start, ahead_len))
+    }
+
     async fn clean_evictable_slices(&self, offset: u64, len: usize) {
         let sessions = *self.sessions.lock();
         let windows = sessions
@@ -804,23 +808,7 @@ where
         let spans = tracing::trace_span!("read_at.split_spans", offset, len = actual_len)
             .in_scope(|| split_chunk_spans(self.config.layout, offset, actual_len));
 
-        let mut pin_guard = Vec::new();
         if track_read_slices {
-            for span in spans.iter().copied() {
-                // Demand reads fill data through a single DataFetcher below; the
-                // slice records here are metadata reservations, not data owners.
-                pin_guard.push(
-                    self.prepare_slices(span.index, (span.offset, span.offset + span.len))
-                        .instrument(tracing::trace_span!(
-                            "read_at.prepare_slice",
-                            index = span.index,
-                            offset = span.offset,
-                            len = span.len
-                        ))
-                        .await,
-                );
-            }
-
             let _ahead = self.check_session(offset, actual_len);
         }
 
@@ -853,8 +841,6 @@ where
         }
         .instrument(tracing::trace_span!("read_at.read_spans"))
         .await;
-
-        drop(pin_guard);
 
         if should_clean {
             self.cleanup_invalid()
@@ -903,11 +889,7 @@ where
             .await;
 
             match result {
-                Ok(()) => {
-                    self.complete_demand_slices(index, offset, out.len(), None::<&anyhow::Error>)
-                        .await;
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(err)
                     if attempt + 1 < MAX_SLICE_READ_RETRIES && is_transient_read_error(&err) =>
                 {
@@ -919,85 +901,11 @@ where
                         .await;
                     tokio::time::sleep(retry_delay(attempt)).await;
                 }
-                Err(err) => {
-                    self.complete_demand_slices(index, offset, out.len(), Some(&err))
-                        .await;
-                    return Err(err);
-                }
+                Err(err) => return Err(err),
             }
         }
 
         unreachable!("read_chunk_span retry loop should return before exhausting attempts")
-    }
-
-    async fn complete_demand_slices(
-        &self,
-        index: u64,
-        offset: u64,
-        len: usize,
-        err: Option<&anyhow::Error>,
-    ) {
-        let end = offset.saturating_add(len as u64);
-        let slices = {
-            let guard = self.slices.lock().await;
-            guard
-                .iter()
-                .filter(|slice| {
-                    let state = slice.lock();
-                    state.index == index && state.range.0 < end && offset < state.range.1
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-
-        for slice in slices {
-            let mut state = slice.lock();
-            state.last_access = Instant::now();
-            if let Some(err) = err {
-                state.state = SliceStatus::Invalid;
-                state.err = Some(err.to_string());
-            } else if !matches!(state.state, SliceStatus::Invalid) {
-                state.state = SliceStatus::Ready;
-                state.err = None;
-            }
-            state.notify.notify_waiters();
-        }
-    }
-
-    async fn prepare_slices(&self, index: u64, (start, end): (u64, u64)) -> SlicePinGuard {
-        let mut pinned = SlicePinGuard::new();
-        let mut cutter = Intervals::new(start, end);
-
-        let mut guard = self.slices.lock().await;
-        for slice in guard.iter() {
-            let mut guard = slice.lock();
-
-            if guard.index != index {
-                continue;
-            }
-
-            if matches!(guard.state, SliceStatus::Invalid) {
-                continue;
-            }
-
-            // The "reservation" needs to read this slice.
-            if guard.overlaps(start, end.saturating_sub(start)) {
-                guard.refs = guard.refs.saturating_add(1);
-                guard.last_access = Instant::now();
-                pinned.add(slice.clone());
-            }
-
-            let (l, r) = guard.range;
-            cutter.cut(l, r);
-        }
-
-        for range in cutter.collect() {
-            let slice = Arc::new(ParkingMutex::new(SliceState::new(index, range, 1)));
-            pinned.add(slice.clone());
-            guard.push_back(slice);
-        }
-
-        pinned
     }
 
     async fn invalidate(&self, offset: u64, len: usize) {
@@ -1105,6 +1013,7 @@ mod tests {
     use crate::meta::factory::create_meta_store_from_url;
     use crate::meta::store::MetaStore;
     use crate::vfs::Inode;
+    use crate::vfs::cache::prefetch::{PrefetchTask, Prefetcher};
     use crate::vfs::config::{ReadConfig, WriteConfig};
     use crate::vfs::io::writer::FileWriter;
     use bytes::Bytes;
@@ -1121,6 +1030,26 @@ mod tests {
             chunk_size: 8 * 1024,
             block_size: 4 * 1024,
         }
+    }
+
+    #[derive(Default)]
+    struct CapturePrefetcher {
+        tasks: StdMutex<Vec<PrefetchTask>>,
+    }
+
+    impl CapturePrefetcher {
+        fn tasks(&self) -> Vec<PrefetchTask> {
+            self.tasks.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Prefetcher for CapturePrefetcher {
+        async fn submit(&self, task: PrefetchTask) {
+            self.tasks.lock().unwrap().push(task);
+        }
+
+        async fn cancel_for_handle(&self, _ino: i64, _fh: u64) {}
     }
 
     #[tokio::test]
@@ -1325,16 +1254,81 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        // After the synchronous demand read, no ahead slices should be created.
-        // Readahead is handled asynchronously by the GlobalPrefetcher at the VFS
-        // layer, not by FileReader::read_at.
-        let demand_end = layout.block_size as u64;
         assert!(
-            ranges
-                .iter()
-                .any(|&(start, end)| start == 0 && end >= demand_end),
-            "demand range should be in slices, ranges={ranges:?}"
+            ranges.is_empty(),
+            "demand reads should not retain FileReader slice state; ranges={ranges:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_first_nonzero_read_does_not_start_readahead() {
+        let layout = small_layout();
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(block_store, meta));
+        let inode = Inode::new(77, layout.chunk_size as u64 * 8);
+        let reader = DataReader::new(
+            Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
+            backend,
+        );
+        let file_reader = reader.open_for_handle(inode, 1);
+
+        let first_offset = layout.block_size as u64 * 3;
+        let read_len = layout.block_size as usize;
+        let first_ahead = file_reader.check_session(first_offset, read_len);
+        assert_eq!(
+            first_ahead, 0,
+            "a first read at a non-zero offset is random until a contiguous follow-up read confirms a stream"
+        );
+
+        let second_ahead =
+            file_reader.check_session(first_offset + layout.block_size as u64, read_len);
+        assert!(
+            second_ahead >= layout.block_size as u64,
+            "the next contiguous read should enable readahead for the detected stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_prefetch_requires_confirmed_stream_and_aligns_to_next_block() {
+        let layout = small_layout();
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(block_store, meta));
+        let capture = Arc::new(CapturePrefetcher::default());
+        let ino = 78;
+        let fh = 2;
+        let inode = Inode::new(ino, layout.chunk_size as u64 * 8);
+        let reader = DataReader::new(
+            Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
+            backend,
+        )
+        .with_prefetcher(capture.clone());
+        let file_reader = reader.open_for_handle(inode, fh);
+
+        let first_offset = layout.block_size as u64 * 3;
+        let fragment_len = 512;
+        assert_eq!(file_reader.check_session(first_offset, fragment_len), 0);
+        reader.submit_prefetch(ino, fh, first_offset, fragment_len as u64);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            capture.tasks().is_empty(),
+            "a first non-zero offset read should not schedule speculative readahead"
+        );
+
+        let second_offset = layout.block_size as u64 * 4;
+        let read_len = layout.block_size as usize;
+        let ahead = file_reader.check_session(second_offset, read_len);
+        assert!(ahead >= layout.block_size as u64);
+        reader.submit_prefetch(ino, fh, second_offset, read_len as u64);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let tasks = capture.tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].start, layout.block_size as u64 * 5);
+        assert_eq!(tasks[0].len, layout.block_size as u64);
     }
 
     #[derive(Default)]

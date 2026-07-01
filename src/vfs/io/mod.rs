@@ -1,5 +1,6 @@
 use crate::chunk::{ChunkLayout, ChunkSpan, ChunkTag};
 
+pub(crate) mod cached_block_assembler;
 pub(crate) mod reader;
 pub(crate) mod writer;
 

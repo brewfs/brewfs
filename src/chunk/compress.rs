@@ -5,6 +5,8 @@
 //! so that decompression can automatically detect the algorithm without external metadata.
 
 use std::borrow::Cow;
+
+use bytes::Bytes;
 use tracing::{debug, trace};
 
 /// Magic bytes identifying compressed data (0xSF = SlayerFs)
@@ -94,10 +96,10 @@ pub fn compress<'a>(data: &'a [u8], algo: Compression) -> Cow<'a, [u8]> {
 
 /// Decompress data, auto-detecting compression from the header.
 /// If data has no compression header (no magic bytes), returns as-is.
-pub fn decompress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+pub fn decompress(data: &[u8]) -> anyhow::Result<Cow<'_, [u8]>> {
     if data.len() < 4 || data[0] != MAGIC[0] || data[1] != MAGIC[1] {
         // No compression header — return raw data
-        return Ok(data.to_vec());
+        return Ok(Cow::Borrowed(data));
     }
 
     let algo = Compression::from_algo_byte(data[2])
@@ -106,13 +108,33 @@ pub fn decompress(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let body = &data[4..];
 
     match algo {
-        Compression::None => Ok(body.to_vec()),
+        Compression::None => Ok(Cow::Borrowed(body)),
         Compression::Lz4 => lz4_flex::decompress_size_prepended(body)
+            .map(Cow::Owned)
             .map_err(|e| anyhow::anyhow!("LZ4 decompression failed: {}", e)),
         Compression::Zstd(_) => {
             zstd::bulk::decompress(body, 64 * 1024 * 1024) // max 64MB decompressed
+                .map(Cow::Owned)
                 .map_err(|e| anyhow::anyhow!("Zstd decompression failed: {}", e))
         }
+    }
+}
+
+/// Decompress an owned Bytes buffer while preserving zero-copy raw fallback.
+pub fn decompress_bytes(data: Bytes) -> anyhow::Result<Bytes> {
+    match decompress(data.as_ref())? {
+        Cow::Borrowed(borrowed) => {
+            let base = data.as_ptr() as usize;
+            let start = (borrowed.as_ptr() as usize)
+                .checked_sub(base)
+                .ok_or_else(|| anyhow::anyhow!("decompressed slice is outside source buffer"))?;
+            let end = start
+                .checked_add(borrowed.len())
+                .filter(|end| *end <= data.len())
+                .ok_or_else(|| anyhow::anyhow!("decompressed slice exceeds source buffer"))?;
+            Ok(data.slice(start..end))
+        }
+        Cow::Owned(decompressed) => Ok(Bytes::from(decompressed)),
     }
 }
 
@@ -126,7 +148,7 @@ mod tests {
         let compressed = compress(data, Compression::None);
         assert_eq!(&*compressed, &data[..]);
         let decompressed = decompress(&compressed).unwrap();
-        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.as_ref(), data);
     }
 
     #[test]
@@ -138,7 +160,7 @@ mod tests {
         assert_eq!(&compressed[..2], &MAGIC);
         assert_eq!(compressed[2], 1); // LZ4
         let decompressed = decompress(&compressed).unwrap();
-        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.as_ref(), data);
     }
 
     #[test]
@@ -149,7 +171,7 @@ mod tests {
         assert_eq!(&compressed[..2], &MAGIC);
         assert_eq!(compressed[2], 2); // Zstd
         let decompressed = decompress(&compressed).unwrap();
-        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.as_ref(), data);
     }
 
     #[test]
@@ -160,7 +182,7 @@ mod tests {
         // Should be stored raw (no header) since compression isn't beneficial
         // Or it might still be smaller — just verify roundtrip
         let decompressed = decompress(&compressed).unwrap();
-        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.as_ref(), data);
     }
 
     #[test]
@@ -176,6 +198,40 @@ mod tests {
         // Data that doesn't start with magic bytes should pass through
         let data = b"raw data without compression";
         let decompressed = decompress(data).unwrap();
-        assert_eq!(decompressed, data);
+        assert_eq!(decompressed.as_ref(), data);
+    }
+
+    #[test]
+    fn test_raw_data_without_header_is_borrowed() {
+        let data = b"incompressible raw block payload";
+        let decompressed = decompress(data).unwrap();
+        assert!(
+            matches!(decompressed, Cow::Borrowed(_)),
+            "raw fallback should avoid copying the object buffer"
+        );
+    }
+
+    #[test]
+    fn test_decompress_bytes_reuses_raw_buffer() {
+        let data = Bytes::from_static(b"raw object payload");
+        let raw_ptr = data.as_ptr();
+        let decompressed = decompress_bytes(data).unwrap();
+        assert_eq!(decompressed.as_ref(), b"raw object payload");
+        assert_eq!(decompressed.as_ptr(), raw_ptr);
+    }
+
+    #[test]
+    fn test_decompress_bytes_slices_none_header_without_copy() {
+        let mut encoded = Vec::from(MAGIC);
+        encoded.push(Compression::None.algo_byte());
+        encoded.push(0);
+        encoded.extend_from_slice(b"raw body");
+
+        let data = Bytes::from(encoded);
+        let expected_ptr = data.as_ptr().wrapping_add(4);
+        let decompressed = decompress_bytes(data).unwrap();
+
+        assert_eq!(decompressed.as_ref(), b"raw body");
+        assert_eq!(decompressed.as_ptr(), expected_ptr);
     }
 }

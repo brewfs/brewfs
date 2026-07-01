@@ -500,6 +500,7 @@ fn default_heavy_force_fragment_threshold() -> f64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct CompactConfig {
     /// Minimum slice count to trigger compaction (JuiceFS: 5)
     pub min_slice_count: usize,

@@ -328,6 +328,14 @@ impl InodeCache {
         Some(node.attr.read().await.clone())
     }
 
+    pub(crate) async fn refresh_attr(&self, ino: i64, attr: FileAttr) -> bool {
+        let Some(node) = self.ttl_manager.get(&ino).await else {
+            return false;
+        };
+        *node.attr.write().await = attr;
+        true
+    }
+
     pub(crate) async fn get_node(&self, ino: i64) -> Option<Arc<InodeEntry>> {
         self.ttl_manager.get(&ino).await
     }
@@ -504,6 +512,16 @@ impl OpenFileCache {
         if let Some(entry) = self.ttl_manager.get(&ino).await {
             entry.close().await;
         }
+    }
+
+    pub(crate) async fn update_attr_if_present(&self, ino: i64, attr: FileAttr) -> bool {
+        let Some(entry) = self.ttl_manager.get(&ino).await else {
+            return false;
+        };
+
+        *entry.attr.write().await = attr;
+        *entry.last_check.write().await = Instant::now();
+        true
     }
 
     pub(crate) async fn invalidate_inode(&self, ino: i64) {

@@ -43,8 +43,8 @@
 
 ## 交互式可视化
 
-[../juicefs-architecture.html](../juicefs-architecture.html) — 7 个 tab 的交互式 SVG 架构图。
+[architecture.html](architecture.html) — 7 个 tab 的交互式 SVG 架构图。
 
 ## 对比文档
 
-[../brewfs-vs-juicefs-analysis.md](../brewfs-vs-juicefs-analysis.md) — 高层面的 BrewFS vs JuiceFS 差距分析。
+[../performance/brewfs-vs-juicefs-analysis.md](../performance/brewfs-vs-juicefs-analysis.md) — 高层面的 BrewFS vs JuiceFS 差距分析。

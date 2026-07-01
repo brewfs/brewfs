@@ -29,6 +29,7 @@ RUN apt-get update && \
         quota \
         redis-tools \
         sed \
+        stress-ng \
         sudo \
         uuid-runtime \
         xfsdump \

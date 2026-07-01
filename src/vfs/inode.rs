@@ -109,6 +109,22 @@ impl Inode {
         self.committed_size.store(size, Ordering::Release);
     }
 
+    /// Ensure the committed size is at least `min_size`, growing monotonically.
+    pub fn extend_committed_size(&self, min_size: u64) {
+        let mut cur = self.committed_size.load(Ordering::Acquire);
+        while min_size > cur {
+            match self.committed_size.compare_exchange_weak(
+                cur,
+                min_size,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(seen) => cur = seen,
+            }
+        }
+    }
+
     // ---- allocated bytes (best-effort) ----
 
     /// Best-effort allocated bytes.  Only use for `st_blocks` when

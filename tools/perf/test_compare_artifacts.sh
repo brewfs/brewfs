@@ -240,6 +240,10 @@ grep -F $'amplification	fio-randrw-direct1	put_ops_per_gib_written	64.000	128.00
 grep -F $'amplification	fio-randrw-direct1	writeback_avg_upload_batch_mib	8.000	16.000	+100.0	MiB/op' "$tmp_dir/out.tsv" >/dev/null
 grep -F $'amplification	fio-randrw-direct1	s3_puts_per_upload_batch	4.000	8.000	+100.0	ops/batch' "$tmp_dir/out.tsv" >/dev/null
 grep -F $'amplification	fio-randrw-direct1	writeback_partial_tail_ratio	0.250	0.500	+100.0	ratio' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'runtime	fio-seqwrite-direct1	write_effective_wall_bw_mib_s	181.818	181.818	+0.0	MiB/s' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'runtime	fio-seqwrite-direct1	write_effective_active_plus_drain_bw_mib_s	142.857	111.111	-22.2	MiB/s' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'runtime	fio-randrw-direct1	read_effective_wall_bw_mib_s	47.619	47.619	+0.0	MiB/s' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'runtime	fio-randrw-direct1	write_effective_wall_bw_mib_s	95.238	95.238	+0.0	MiB/s' "$tmp_dir/out.tsv" >/dev/null
 grep -F $'runtime	fio-seqwrite-direct1	active_plus_drain_s	14.000	18.000	+28.6	s' "$tmp_dir/out.tsv" >/dev/null
 grep -F $'runtime	fio-randrw-direct1	wall_active_tail_s	11.000	11.000	+0.0	s' "$tmp_dir/out.tsv" >/dev/null
 grep -F $'gap	fio-missing	missing_critical_stats	none	brewfs_s3_put_bytes_total,brewfs_s3_get_bytes_total		' "$tmp_dir/out.tsv" >/dev/null

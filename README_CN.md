@@ -12,16 +12,18 @@
 
 ## ✨ 项目概览
 
-BrewFS 是一个使用 Rust 构建、面向容器与 AI 场景的分布式文件系统原型（MVP）。它采用 chunk/block 的数据布局，并与对象存储后端对接（LocalFS 已实现；S3/Rustfs 预留），提供基于路径的读写、目录操作、截断等基础能力，便于与 SDK 与 FUSE 集成。
+BrewFS 是一个使用 Rust 构建、面向容器、AI 与对象存储密集场景的分布式文件系统。它采用 chunk/block 的数据布局，支持 LocalFS 与 S3 兼容对象存储后端，并通过可插拔事务元数据后端维护命名空间与 slice 信息。
 
-核心理念：计算与存储解耦。应用通过 POSIX 风格接口访问数据，由调度/缓存层决定数据的驻留位置与访问路径。
+核心理念：计算与存储解耦。应用通过 POSIX 风格接口访问数据，由 BrewFS 负责 chunk 布局、对象 IO、缓存、元数据事务、compaction 与 GC。
+
+BrewFS 不是 JuiceFS fork，但 JuiceFS 是当前最重要的生产级参考基线。性能优化和差距分析会持续对照 JuiceFS 的元数据缓存、读写缓存、writeback 语义、对象存储放大、compaction 与测试覆盖，避免只在单一场景里“看起来变快”。
 
 ## 🖼 架构
 
 组件概览：
-- chuck：ChunkLayout、ChunkReader/Writer，负责将文件偏移映射到 chunk/block，处理跨块 IO 与洞零填充；
-- cadapter：对象后端抽象与实现（LocalFs 已实现，S3/Rustfs 预留）；
-- meta：内存版元数据与事务（InMemoryMetaStore），记录 size 与 slice，支持提交/回滚；
+- chunk：ChunkLayout、ChunkReader/Writer，负责将文件偏移映射到 chunk/block，处理跨块 IO 与洞零填充；
+- cadapter：对象后端抽象与实现，支持 LocalFS 与 S3 兼容服务；
+- meta：元数据客户端、事务后端、session、控制面、compaction hook 与 GC 元数据；
 - fs：基于路径的 FileSystem（mkdir/mkdir_all/create/read/write/readdir/stat/unlink/rmdir/rename/truncate）；
 - vfs：面向 FUSE 的 inode-based VFS；
 - sdk：面向应用的轻量客户端封装（基于 FileSystem，提供 LocalClient 便捷构造）。
@@ -30,7 +32,7 @@ BrewFS 是一个使用 Rust 构建、面向容器与 AI 场景的分布式文件
 
 ### 环境要求
 
-- Rust: >= 1.75.0
+- Rust: >= 1.85.0
 - 操作系统：Linux (Ubuntu 20.04+, CentOS 8+)
 
 ```bash
@@ -68,7 +70,7 @@ fuse:
 
 ---
 
-## 🌟 当前能力（MVP）
+## 🌟 当前能力
 
 ### 基于路径的 FileSystem
 - mkdir/mkdir_all/create/read/write/readdir/stat/exists/unlink/rmdir/rename/truncate
@@ -79,19 +81,27 @@ fuse:
 - 写路径按 block 拆分；读路径对未写区域返回 0
 
 ### 对象存储 BlockStore
-- LocalFs 已实现（用于测试/示例）；S3/Rustfs 预留接口
+- LocalFS 用于测试/示例
+- S3 兼容后端支持 RustFS、MinIO、Ceph RGW 等服务
 
 ### 带事务的元数据
-- InMemoryMetaStore：alloc_inode、record_slice、update_size（支持截断收缩）
-- 已覆盖提交/回滚测试
+- 支持 SQLite/PostgreSQL、Redis、etcd、TiKV 等元数据后端
+- Redis 后端使用 Lua/CAS 保护 chunk slice 更新
 
-更多细节：参见 `doc/sdk.md` 与源码注释。
+更多细节：参见 `doc/operations/sdk.md` 与源码注释。
 
 ---
 
 ## 📚 文档
-- 设计：`doc/arch.md`
-- SDK 使用：`doc/sdk.md`
+- 文档索引：`doc/README.md`
+- 架构设计：`doc/architecture/arch.md`
+- 配置说明：`doc/operations/configuration.md`
+- VFS 内部实现：`doc/vfs/README.md`
+- 测试与 CI：`doc/README.md#testing-and-ci`
+- 性能与 JuiceFS 对比：`doc/README.md#performance-and-juicefs-comparison`
+- JuiceFS 内部机制分析：`doc/juicefs/README.md`
+- BrewFS/JuiceFS 差距分析：`doc/gap/README.md`
+- SDK 使用：`doc/operations/sdk.md`
 
 ---
 

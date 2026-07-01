@@ -310,6 +310,18 @@ where
         tail.fill(0);
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) async fn read_at_into_prepared(
+        layout: ChunkLayout,
+        chunk_id: u64,
+        backend: &Backend<B, M>,
+        slices: &[SliceDesc],
+        offset: ChunkOffset,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        Self::read_at_into_from_slices(layout, chunk_id, backend, slices, offset, buf).await
+    }
 }
 
 #[cfg(test)]
@@ -467,6 +479,50 @@ mod tests {
                 .iter()
                 .all(|&b| b == 1)
         );
+    }
+
+    #[tokio::test]
+    async fn test_read_at_into_prepared_borrows_slice_metadata() {
+        let layout = ChunkLayout::default();
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta = create_meta_store_from_url("sqlite::memory:")
+            .await
+            .unwrap()
+            .layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+
+        let data = vec![3u8; layout.block_size as usize];
+        let slice_id = meta.next_id(SLICE_ID_KEY).await.unwrap();
+        let uploader = DataUploader::new(layout, backend.as_ref());
+        uploader
+            .write_at_vectored(
+                slice_id as u64,
+                0u64.into(),
+                &[bytes::Bytes::copy_from_slice(&data)],
+            )
+            .await
+            .unwrap();
+
+        let slices = vec![SliceDesc {
+            slice_id: slice_id as u64,
+            chunk_id: 11,
+            offset: 0,
+            length: data.len() as u64,
+        }];
+        let mut out = vec![0u8; data.len()];
+
+        DataFetcher::read_at_into_prepared(
+            layout,
+            11,
+            backend.as_ref(),
+            &slices,
+            0u64.into(),
+            &mut out,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(out, data);
     }
 
     #[tokio::test]

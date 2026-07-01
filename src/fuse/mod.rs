@@ -458,7 +458,8 @@ where
             .await?;
 
         let name_str = name.to_string_lossy();
-        let Some((_child_ino, vattr)) = self.child_attr_of(parent as i64, name_str.as_ref()).await
+        let Some((_child_ino, vattr)) =
+            self.child_attr_of(parent as i64, name_str.as_ref()).await?
         else {
             info!(parent, name = %name_str, "fuse.lookup ENOENT");
             return Err(libc::ENOENT.into());
@@ -1582,9 +1583,10 @@ where
 
         // Ensure the source exists and keep its attributes for the later VFS
         // rename checks instead of statting it again.
-        let Some((src_ino, src_attr)) = self.child_attr_of(parent as i64, name.as_ref()).await
-        else {
-            return Err(libc::ENOENT.into());
+        let (src_ino, src_attr) = match self.child_attr_of(parent as i64, name.as_ref()).await {
+            Ok(Some(attr)) => attr,
+            Ok(None) => return Err(libc::ENOENT.into()),
+            Err(err) => return Err(Errno::from(err)),
         };
 
         // Validate the destination parent
@@ -2140,6 +2142,10 @@ where
         uid: u32,
         gid: u32,
     ) -> FuseResult<()> {
+        if uid == 0 {
+            return Ok(());
+        }
+
         if ino == self.root_ino() {
             return Ok(());
         }
@@ -2370,7 +2376,7 @@ where
         if !matches!(parent_attr.kind, VfsFileType::Dir) {
             return Err(libc::ENOTDIR.into());
         }
-        if (parent_attr.mode & libc::S_ISVTX as u32) == 0 {
+        if (parent_attr.mode & libc::S_ISVTX) == 0 {
             return Ok(());
         }
 
@@ -2529,6 +2535,8 @@ impl From<MetaError> for Errno {
             MetaError::LockConflict { .. } => libc::EAGAIN,
             MetaError::NotSupported(_) | MetaError::NotImplemented => libc::ENOSYS,
             MetaError::InvalidPath(_) => libc::EINVAL,
+            MetaError::InvalidFilename => libc::EINVAL,
+            MetaError::FilenameTooLong => libc::ENAMETOOLONG,
             _ => libc::EIO,
         };
         Errno::from(code)
@@ -2653,15 +2661,15 @@ fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     if let Some(mode) = set_attr.mode {
         req.mode = Some(sanitize_special_mode_bits(mode.into()));
     }
-    if let Some(uid) = set_attr.uid {
-        if uid != u32::MAX {
-            req.uid = Some(uid);
-        }
+    if let Some(uid) = set_attr.uid
+        && uid != u32::MAX
+    {
+        req.uid = Some(uid);
     }
-    if let Some(gid) = set_attr.gid {
-        if gid != u32::MAX {
-            req.gid = Some(gid);
-        }
+    if let Some(gid) = set_attr.gid
+        && gid != u32::MAX
+    {
+        req.gid = Some(gid);
     }
     if let Some(size) = set_attr.size {
         req.size = Some(size);

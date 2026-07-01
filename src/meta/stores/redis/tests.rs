@@ -1596,6 +1596,51 @@ async fn test_rename_same_dir_skips_redundant_parent_get_set() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn test_meta_client_rename_avoids_redundant_prelookups() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+
+    let src_ino = client
+        .create_file(root, "client_src.txt".to_string())
+        .await
+        .unwrap();
+    store.node_cache.invalidate(&root).await;
+    store.node_cache.invalidate(&src_ino).await;
+
+    reset_redis_commandstats(&store).await;
+    client
+        .rename(root, "client_src.txt", root, "client_dst.txt".to_string())
+        .await
+        .unwrap();
+
+    let hget_calls = redis_command_calls(&store, "hget").await;
+    let get_calls = redis_command_calls(&store, "get").await;
+    assert!(
+        hget_calls <= 3,
+        "MetaClient rename should let Lua own the two dentry lookups; observed {hget_calls} Redis HGET calls, allowing one session-cleanup lock HGET"
+    );
+    assert!(
+        get_calls <= 2,
+        "MetaClient rename should avoid source/destination/new-parent pre-stats; observed {get_calls} Redis GET calls"
+    );
+
+    assert_eq!(
+        client.lookup(root, "client_dst.txt").await.unwrap(),
+        Some(src_ino)
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_rename_lua_hardlink() {
     let store = new_test_store().await;
     let root = store.root_ino();
