@@ -23,14 +23,16 @@ static GLOBAL: Jemalloc = Jemalloc;
 use std::fs::File;
 #[cfg(feature = "profiling")]
 use std::io::BufWriter;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "profiling")]
 use std::sync::{LazyLock, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 pub mod config;
 use config::*;
 
+use bytes::Bytes;
 use clap::Parser;
 #[cfg(not(feature = "profiling"))]
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -71,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Gc(args) => gc_cmd(args).await,
         Command::Info(args) => info_cmd(args).await,
         Command::Console(args) => console::serve_cmd(args).await,
+        Command::ObjectPutBench(args) => object_put_bench_cmd(args).await,
     };
     shutdown_flame();
     shutdown_chrome();
@@ -379,6 +382,8 @@ where
         block_size: layout.block_size as usize,
         compression: cache.compression,
         range_background_prefetch: cache.range_background_prefetch,
+        populate_write_cache_after_upload: cache.populate_write_cache_after_upload,
+        persist_write_cache_after_upload: cache.persist_write_cache_after_upload,
         ..BlockStoreConfig::default()
     };
     let bandwidth = BandwidthLimiter::new(&cache.bandwidth);
@@ -406,26 +411,209 @@ async fn create_s3_client(args: &MountConfig) -> anyhow::Result<ObjectClient<S3B
         .clone()
         .ok_or_else(|| anyhow::anyhow!("s3 bucket must be set when data backend is s3"))?;
 
-    if args.s3_part_size == 0 {
+    create_s3_client_from_parts(
+        bucket,
+        args.s3_region.clone(),
+        args.s3_endpoint.clone(),
+        args.s3_part_size,
+        args.s3_max_concurrency,
+        args.s3_force_path_style,
+        args.s3_disable_payload_checksum,
+    )
+    .await
+}
+
+async fn create_s3_client_from_parts(
+    bucket: String,
+    region: Option<String>,
+    endpoint: Option<String>,
+    part_size: usize,
+    max_concurrency: usize,
+    force_path_style: bool,
+    disable_payload_checksum: bool,
+) -> anyhow::Result<ObjectClient<S3Backend>> {
+    if bucket.is_empty() {
+        anyhow::bail!("s3 bucket must not be empty");
+    }
+
+    if part_size == 0 {
         anyhow::bail!("--s3-part-size must be greater than 0");
     }
-    if args.s3_max_concurrency == 0 {
+    if max_concurrency == 0 {
         anyhow::bail!("--s3-max-concurrency must be greater than 0");
     }
 
     let config = S3Config {
         bucket,
-        region: args.s3_region.clone(),
-        part_size: args.s3_part_size,
-        max_concurrency: args.s3_max_concurrency,
-        endpoint: args.s3_endpoint.clone(),
-        force_path_style: args.s3_force_path_style,
-        disable_payload_checksum: args.s3_disable_payload_checksum,
+        region,
+        part_size,
+        max_concurrency,
+        endpoint,
+        force_path_style,
+        disable_payload_checksum,
         ..Default::default()
     };
 
     let backend = S3Backend::with_config(config).await?;
     Ok(ObjectClient::new(backend))
+}
+
+async fn object_put_bench_cmd(args: ObjectPutBenchArgs) -> anyhow::Result<()> {
+    if args.object_size == 0 {
+        anyhow::bail!("--object-size must be greater than 0");
+    }
+    if args.workers == 0 {
+        anyhow::bail!("--workers must be greater than 0");
+    }
+    if args.duration_secs == 0 && args.objects == 0 {
+        anyhow::bail!("either --duration-secs or --objects must be greater than 0");
+    }
+
+    let client = create_s3_client_from_parts(
+        args.s3_bucket.clone(),
+        Some(args.s3_region.clone()),
+        args.s3_endpoint.clone(),
+        args.s3_part_size,
+        args.s3_max_concurrency,
+        args.s3_force_path_style,
+        args.s3_disable_payload_checksum,
+    )
+    .await?;
+    let payload = Bytes::from(pattern_payload(args.object_size));
+    let prefix = format!(
+        "{}/{}",
+        args.prefix.trim_end_matches('/'),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    let issued = Arc::new(AtomicU64::new(0));
+    let completed = Arc::new(AtomicU64::new(0));
+    let bytes = Arc::new(AtomicU64::new(0));
+    let lat_us_total = Arc::new(AtomicU64::new(0));
+    let lat_us_max = Arc::new(AtomicU64::new(0));
+    let latencies = Arc::new(Mutex::new(Vec::new()));
+    let started = Instant::now();
+    let deadline = if args.duration_secs == 0 {
+        None
+    } else {
+        Some(started + Duration::from_secs(args.duration_secs))
+    };
+    let max_objects = if args.objects == 0 {
+        None
+    } else {
+        Some(args.objects)
+    };
+
+    let mut handles = Vec::with_capacity(args.workers);
+    for worker in 0..args.workers {
+        let client = client.clone();
+        let payload = payload.clone();
+        let prefix = prefix.clone();
+        let issued = issued.clone();
+        let completed = completed.clone();
+        let bytes = bytes.clone();
+        let lat_us_total = lat_us_total.clone();
+        let lat_us_max = lat_us_max.clone();
+        let latencies = latencies.clone();
+        let object_size = args.object_size as u64;
+
+        handles.push(tokio::spawn(async move {
+            loop {
+                if let Some(deadline) = deadline
+                    && Instant::now() >= deadline
+                {
+                    break;
+                }
+
+                let index = issued.fetch_add(1, Ordering::Relaxed);
+                if let Some(max_objects) = max_objects
+                    && index >= max_objects
+                {
+                    break;
+                }
+
+                let key = format!("{prefix}/worker-{worker}/{index:020}");
+                let started = Instant::now();
+                client
+                    .put_object_vectored(&key, vec![payload.clone()])
+                    .await?;
+                let elapsed_us = started.elapsed().as_micros() as u64;
+
+                completed.fetch_add(1, Ordering::Relaxed);
+                bytes.fetch_add(object_size, Ordering::Relaxed);
+                lat_us_total.fetch_add(elapsed_us, Ordering::Relaxed);
+                lat_us_max.fetch_max(elapsed_us, Ordering::Relaxed);
+                latencies
+                    .lock()
+                    .expect("object-put latency vector poisoned")
+                    .push(elapsed_us);
+            }
+            Ok::<(), anyhow::Error>(())
+        }));
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(result) => result?,
+            Err(err) => anyhow::bail!("object PUT worker join failed: {err}"),
+        }
+    }
+
+    let elapsed = started.elapsed().as_secs_f64();
+    let completed = completed.load(Ordering::Relaxed);
+    let bytes = bytes.load(Ordering::Relaxed);
+    let avg_ms = if completed == 0 {
+        0.0
+    } else {
+        lat_us_total.load(Ordering::Relaxed) as f64 / completed as f64 / 1000.0
+    };
+    let mut latencies = latencies
+        .lock()
+        .expect("object-put latency vector poisoned")
+        .clone();
+    latencies.sort_unstable();
+
+    println!(
+        "object_put_bench_summary objects={} bytes={} seconds={:.6} throughput_mib_s={:.3} workers={} object_size={} avg_ms={:.3} p50_ms={:.3} p90_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} endpoint={} bucket={} prefix={}",
+        completed,
+        bytes,
+        elapsed,
+        if elapsed > 0.0 {
+            bytes as f64 / 1048576.0 / elapsed
+        } else {
+            0.0
+        },
+        args.workers,
+        args.object_size,
+        avg_ms,
+        percentile_ms(&latencies, 0.50),
+        percentile_ms(&latencies, 0.90),
+        percentile_ms(&latencies, 0.95),
+        percentile_ms(&latencies, 0.99),
+        lat_us_max.load(Ordering::Relaxed) as f64 / 1000.0,
+        args.s3_endpoint.as_deref().unwrap_or("default"),
+        args.s3_bucket,
+        prefix,
+    );
+
+    Ok(())
+}
+
+fn pattern_payload(size: usize) -> Vec<u8> {
+    (0..size).map(|idx| (idx % 251) as u8).collect()
+}
+
+fn percentile_ms(sorted_latencies_us: &[u64], percentile: f64) -> f64 {
+    if sorted_latencies_us.is_empty() {
+        return 0.0;
+    }
+    let index = ((sorted_latencies_us.len() as f64 * percentile).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted_latencies_us.len() - 1);
+    sorted_latencies_us[index] as f64 / 1000.0
 }
 
 async fn mount_with_store<S>(

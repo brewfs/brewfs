@@ -4326,8 +4326,56 @@ where
     deserializer.deserialize_any(I64OrFloatVisitor)
 }
 
+/// Deserializer that accepts both integer and integer-valued floating-point
+/// numbers for unsigned fields updated by Redis Lua scripts.
+fn deserialize_u64_from_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Visitor};
+
+    struct U64OrFloatVisitor;
+
+    impl<'de> Visitor<'de> for U64OrFloatVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an unsigned integer or integer-valued floating-point number")
+        }
+
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            u64::try_from(v).map_err(|_| E::custom("negative value for u64 field"))
+        }
+
+        fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
+            if !v.is_finite() {
+                return Err(E::custom("non-finite float for u64 field"));
+            }
+            if v < 0.0 || v > u64::MAX as f64 {
+                return Err(E::custom("float out of u64 range"));
+            }
+            if v.fract() != 0.0 {
+                return Err(E::custom("fractional float for u64 field"));
+            }
+            Ok(v as u64)
+        }
+
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            v.parse::<u64>()
+                .map_err(|_| E::custom("invalid string for u64 field"))
+        }
+    }
+
+    deserializer.deserialize_any(U64OrFloatVisitor)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredAttr {
+    #[serde(deserialize_with = "deserialize_u64_from_number")]
     size: u64,
     mode: u32,
     #[serde(default)]

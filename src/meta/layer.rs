@@ -146,6 +146,26 @@ pub trait MetaLayer: Send + Sync {
         new_name: String,
     ) -> Result<(), MetaError>;
 
+    /// Rename after the caller already resolved the source and destination
+    /// parent attributes. Implementations that cannot use this context can
+    /// fall back to the regular rename path.
+    #[allow(clippy::too_many_arguments)]
+    async fn rename_with_known_attrs(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+        _src_ino: i64,
+        _src_attr: FileAttr,
+        _new_parent_attr: FileAttr,
+        _dest_ino: Option<i64>,
+        _destination_checked: bool,
+    ) -> Result<(), MetaError> {
+        self.rename(old_parent, old_name, new_parent, new_name)
+            .await
+    }
+
     /// Atomically exchange two files (RENAME_EXCHANGE).
     /// Both entries must exist.
     async fn rename_exchange(

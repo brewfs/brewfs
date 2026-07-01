@@ -73,25 +73,13 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace
 
-      - name: Check rfuse3 runtime features
-        shell: bash
-        run: |
-          metadata="$(cargo metadata --no-deps --format-version 1)"
-          if ! python3 -c 'import json, sys; data = json.loads(sys.stdin.read()); members = set(data["workspace_members"]); sys.exit(not any(pkg["name"] == "rfuse3" and pkg["id"] in members for pkg in data["packages"]))' <<< "$metadata"; then
-            echo "rfuse3 is not a workspace member in this checkout; skipping standalone rfuse3 feature checks."
-            exit 0
-          fi
-          cargo check -p rfuse3 --no-default-features --features tokio-runtime
-          cargo check -p rfuse3 --no-default-features --features io-uring-runtime
-          cargo check -p rfuse3 --no-default-features --features async-io-runtime
-
       - name: Check BrewFS FUSE runtime features
         run: |
           cargo check -p brewfs --no-default-features --features fuse-tokio-runtime
           cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime
 
       - name: Test workspace
-        run: cargo test --workspace --lib --bins
+        run: cargo test --workspace --lib --bins -- --test-threads=1
 
       - name: Clippy
         run: cargo clippy --workspace

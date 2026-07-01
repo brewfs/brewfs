@@ -7,8 +7,9 @@
 //!
 //! All methods return `io::Result<T>` for consistent error handling.
 
+use crate::chunk::cache::ChunksCacheConfig;
 use crate::chunk::layout::ChunkLayout;
-use crate::chunk::store::BlockStore;
+use crate::chunk::store::{BlockStore, BlockStoreConfig};
 use crate::fs::{FileSystem, FileSystemConfig, OpenFlags};
 use crate::meta::MetaStore;
 use crate::meta::factory::create_meta_store_from_url;
@@ -248,15 +249,23 @@ pub type LocalClient = VfsClient<ObjectBlockStore<LocalFsBackend>, DatabaseMetaS
 impl LocalClient {
     #[allow(dead_code)]
     pub async fn new_local<P: AsRef<Path>>(root: P, layout: ChunkLayout) -> io::Result<Self> {
+        let root = root.as_ref();
         let client = ObjectClient::new(LocalFsBackend::new(root));
         let meta_handle = create_meta_store_from_url("sqlite::memory:")
             .await
             .map_err(io::Error::other)?;
         let meta_layer = meta_handle.layer();
         let store = Arc::new(
-            ObjectBlockStore::new_async(client)
-                .await
-                .map_err(io::Error::other)?,
+            ObjectBlockStore::new_with_configs_async(
+                client,
+                ChunksCacheConfig {
+                    disk_storage_dir: Some(root.join(".brewfs-cache")),
+                    ..ChunksCacheConfig::default()
+                },
+                BlockStoreConfig::default(),
+            )
+            .await
+            .map_err(io::Error::other)?,
         );
         let fs = FileSystem::from_components(
             layout,
@@ -273,15 +282,23 @@ impl LocalClient {
         layout: ChunkLayout,
         config: FileSystemConfig,
     ) -> io::Result<Self> {
+        let root = root.as_ref();
         let client = ObjectClient::new(LocalFsBackend::new(root));
         let meta_handle = create_meta_store_from_url("sqlite::memory:")
             .await
             .map_err(io::Error::other)?;
         let meta_layer = meta_handle.layer();
         let store = Arc::new(
-            ObjectBlockStore::new_async(client)
-                .await
-                .map_err(io::Error::other)?,
+            ObjectBlockStore::new_with_configs_async(
+                client,
+                ChunksCacheConfig {
+                    disk_storage_dir: Some(root.join(".brewfs-cache")),
+                    ..ChunksCacheConfig::default()
+                },
+                BlockStoreConfig::default(),
+            )
+            .await
+            .map_err(io::Error::other)?,
         );
         let fs = FileSystem::from_components(layout, Arc::clone(&store), meta_layer, config)?;
         Ok(VfsClient { fs })

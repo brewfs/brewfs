@@ -38,9 +38,7 @@ pub struct S3Config {
     pub endpoint: Option<String>,
     /// Force path-style access (required for some S3-compatible services)
     pub force_path_style: bool,
-    /// Disable SDK-level payload checksum calculation (SigV4 payload signing).
-    /// When true, sets `RequestChecksumCalculation::WhenRequired` to skip
-    /// unnecessary SHA-256 payload hashing, saving ~20% CPU on write paths.
+    /// Disable SDK-level request checksums and SigV4 payload hashing.
     /// Safe for self-hosted S3 backends (RustFS/MinIO) over trusted networks.
     pub disable_payload_checksum: bool,
 }
@@ -182,7 +180,13 @@ impl S3Backend {
                 request = request.content_md5(sum.clone());
             }
 
-            match request.send().await {
+            let result = if self.config.disable_payload_checksum {
+                request.customize().disable_payload_signing().send().await
+            } else {
+                request.send().await
+            };
+
+            match result {
                 Ok(_) => return Ok(()),
                 Err(_e) if attempt < self.config.max_retries => {
                     let delay = self.config.retry_base_delay * (1 << (attempt - 1));
@@ -213,7 +217,13 @@ impl S3Backend {
                 request = request.content_md5(checksum);
             }
 
-            match request.send().await {
+            let result = if self.config.disable_payload_checksum {
+                request.customize().disable_payload_signing().send().await
+            } else {
+                request.send().await
+            };
+
+            match result {
                 Ok(_) => return Ok(()),
                 Err(_e) if attempt < self.config.max_retries => {
                     let delay = self.config.retry_base_delay * (1 << (attempt - 1));
@@ -270,6 +280,7 @@ impl S3Backend {
             let enable_md5 = self.config.enable_md5;
             let max_retries = self.config.max_retries;
             let retry_base_delay = self.config.retry_base_delay;
+            let disable_payload_checksum = self.config.disable_payload_checksum;
 
             let fut = async move {
                 // Concurrency control
@@ -294,7 +305,13 @@ impl S3Backend {
                         request = request.content_md5(part_md5);
                     }
 
-                    match request.send().await {
+                    let result = if disable_payload_checksum {
+                        request.customize().disable_payload_signing().send().await
+                    } else {
+                        request.send().await
+                    };
+
+                    match result {
                         Ok(ok) => break Ok((pn, ok.e_tag().map(|s| s.to_string()))),
                         Err(_e) if attempt < max_retries => {
                             let delay = retry_base_delay * (1 << (attempt - 1));
@@ -415,6 +432,7 @@ impl S3Backend {
             let sem_cloned = sem.clone();
             let max_retries = self.config.max_retries;
             let retry_base_delay = self.config.retry_base_delay;
+            let disable_payload_checksum = self.config.disable_payload_checksum;
 
             let fut = async move {
                 let _permit = sem_cloned.acquire_owned().await;
@@ -436,7 +454,13 @@ impl S3Backend {
                         request = request.content_md5(md5.clone());
                     }
 
-                    match request.send().await {
+                    let result = if disable_payload_checksum {
+                        request.customize().disable_payload_signing().send().await
+                    } else {
+                        request.send().await
+                    };
+
+                    match result {
                         Ok(ok) => break Ok((pn, ok.e_tag().map(|s| s.to_string()))),
                         Err(_e) if attempt < max_retries => {
                             let delay = retry_base_delay * (1 << (attempt - 1));

@@ -92,6 +92,12 @@ pub struct FsStatsSnapshot {
     pub writeback_backpressure_soft_sleep_us: u64,
     pub writeback_backpressure_hard_wait_ops: u64,
     pub writeback_backpressure_hard_wait_us: u64,
+    pub writeback_buffer_soft_sleep_ops: u64,
+    pub writeback_buffer_soft_sleep_us: u64,
+    pub writeback_buffer_moderate_sleep_ops: u64,
+    pub writeback_buffer_moderate_sleep_us: u64,
+    pub writeback_buffer_hard_sleep_ops: u64,
+    pub writeback_buffer_hard_sleep_us: u64,
     pub writeback_stage_inflight_bytes: u64,
     pub writeback_remote_upload_inflight_bytes: u64,
     pub writeback_stage_ops: u64,
@@ -404,6 +410,18 @@ pub struct FsStats {
     pub writeback_backpressure_hard_wait_ops: AtomicU64,
     /// Total hard backpressure wait duration in microseconds.
     pub writeback_backpressure_hard_wait_us: AtomicU64,
+    /// Light sleeps caused by the writer buffer exceeding its soft limit.
+    pub writeback_buffer_soft_sleep_ops: AtomicU64,
+    /// Total light writer-buffer sleep duration in microseconds.
+    pub writeback_buffer_soft_sleep_us: AtomicU64,
+    /// Moderate sleeps caused by the writer buffer approaching its hard limit.
+    pub writeback_buffer_moderate_sleep_ops: AtomicU64,
+    /// Total moderate writer-buffer sleep duration in microseconds.
+    pub writeback_buffer_moderate_sleep_us: AtomicU64,
+    /// Hard-limit writer-buffer sleep loops.
+    pub writeback_buffer_hard_sleep_ops: AtomicU64,
+    /// Total hard-limit writer-buffer sleep duration in microseconds.
+    pub writeback_buffer_hard_sleep_us: AtomicU64,
     /// Bytes currently being persisted to the local writeback stage.
     pub writeback_stage_inflight_bytes: AtomicU64,
     /// Bytes currently being uploaded from the writer pipeline to object storage.
@@ -681,6 +699,12 @@ impl FsStats {
             writeback_backpressure_soft_sleep_us: AtomicU64::new(0),
             writeback_backpressure_hard_wait_ops: AtomicU64::new(0),
             writeback_backpressure_hard_wait_us: AtomicU64::new(0),
+            writeback_buffer_soft_sleep_ops: AtomicU64::new(0),
+            writeback_buffer_soft_sleep_us: AtomicU64::new(0),
+            writeback_buffer_moderate_sleep_ops: AtomicU64::new(0),
+            writeback_buffer_moderate_sleep_us: AtomicU64::new(0),
+            writeback_buffer_hard_sleep_ops: AtomicU64::new(0),
+            writeback_buffer_hard_sleep_us: AtomicU64::new(0),
             writeback_stage_inflight_bytes: AtomicU64::new(0),
             writeback_remote_upload_inflight_bytes: AtomicU64::new(0),
             writeback_stage_ops: AtomicU64::new(0),
@@ -876,6 +900,12 @@ impl FsStats {
                 .writeback_backpressure_hard_wait_ops
                 .load(ORD),
             writeback_backpressure_hard_wait_us: self.writeback_backpressure_hard_wait_us.load(ORD),
+            writeback_buffer_soft_sleep_ops: self.writeback_buffer_soft_sleep_ops.load(ORD),
+            writeback_buffer_soft_sleep_us: self.writeback_buffer_soft_sleep_us.load(ORD),
+            writeback_buffer_moderate_sleep_ops: self.writeback_buffer_moderate_sleep_ops.load(ORD),
+            writeback_buffer_moderate_sleep_us: self.writeback_buffer_moderate_sleep_us.load(ORD),
+            writeback_buffer_hard_sleep_ops: self.writeback_buffer_hard_sleep_ops.load(ORD),
+            writeback_buffer_hard_sleep_us: self.writeback_buffer_hard_sleep_us.load(ORD),
             writeback_stage_inflight_bytes: self.writeback_stage_inflight_bytes.load(ORD),
             writeback_remote_upload_inflight_bytes: self
                 .writeback_remote_upload_inflight_bytes
@@ -1175,6 +1205,29 @@ impl FsStats {
             .store(hard_wait_ops, ORD);
         self.writeback_backpressure_hard_wait_us
             .store(hard_wait_us, ORD);
+    }
+
+    pub fn sync_writeback_buffer_backpressure_metrics(
+        &self,
+        soft_sleep_ops: u64,
+        soft_sleep_us: u64,
+        moderate_sleep_ops: u64,
+        moderate_sleep_us: u64,
+        hard_sleep_ops: u64,
+        hard_sleep_us: u64,
+    ) {
+        self.writeback_buffer_soft_sleep_ops
+            .store(soft_sleep_ops, ORD);
+        self.writeback_buffer_soft_sleep_us
+            .store(soft_sleep_us, ORD);
+        self.writeback_buffer_moderate_sleep_ops
+            .store(moderate_sleep_ops, ORD);
+        self.writeback_buffer_moderate_sleep_us
+            .store(moderate_sleep_us, ORD);
+        self.writeback_buffer_hard_sleep_ops
+            .store(hard_sleep_ops, ORD);
+        self.writeback_buffer_hard_sleep_us
+            .store(hard_sleep_us, ORD);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1882,6 +1935,30 @@ impl FsStats {
             snapshot.writeback_backpressure_hard_wait_us
         ));
         out.push_str(&format!(
+            "brewfs_writeback_buffer_soft_sleep_ops {}\n",
+            snapshot.writeback_buffer_soft_sleep_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_buffer_soft_sleep_us {}\n",
+            snapshot.writeback_buffer_soft_sleep_us
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_buffer_moderate_sleep_ops {}\n",
+            snapshot.writeback_buffer_moderate_sleep_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_buffer_moderate_sleep_us {}\n",
+            snapshot.writeback_buffer_moderate_sleep_us
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_buffer_hard_sleep_ops {}\n",
+            snapshot.writeback_buffer_hard_sleep_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_buffer_hard_sleep_us {}\n",
+            snapshot.writeback_buffer_hard_sleep_us
+        ));
+        out.push_str(&format!(
             "brewfs_writeback_stage_inflight_bytes {}\n",
             snapshot.writeback_stage_inflight_bytes
         ));
@@ -2421,6 +2498,7 @@ mod tests {
         stats.sync_writeback_live_origin_metrics(128, 1, 256, 2, 512, 3, 1024, 4);
         stats.add_writeback_backpressure_soft_sleep(Duration::from_micros(12));
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(34));
+        stats.sync_writeback_buffer_backpressure_metrics(70, 700, 80, 800, 90, 900);
         stats.sync_writeback_phase_metrics(1, 2, 3, 4, 5, 6, 7);
         stats.sync_writeback_commit_wait_metrics(40, 41, 42, 43);
         stats.sync_writeback_flush_wait_metrics(64, 65, 66);
@@ -2489,6 +2567,12 @@ mod tests {
         assert!(output.contains("brewfs_writeback_backpressure_soft_sleep_us 12"));
         assert!(output.contains("brewfs_writeback_backpressure_hard_wait_ops 1"));
         assert!(output.contains("brewfs_writeback_backpressure_hard_wait_us 34"));
+        assert!(output.contains("brewfs_writeback_buffer_soft_sleep_ops 70"));
+        assert!(output.contains("brewfs_writeback_buffer_soft_sleep_us 700"));
+        assert!(output.contains("brewfs_writeback_buffer_moderate_sleep_ops 80"));
+        assert!(output.contains("brewfs_writeback_buffer_moderate_sleep_us 800"));
+        assert!(output.contains("brewfs_writeback_buffer_hard_sleep_ops 90"));
+        assert!(output.contains("brewfs_writeback_buffer_hard_sleep_us 900"));
         assert!(output.contains("brewfs_writeback_stage_inflight_bytes 1"));
         assert!(output.contains("brewfs_writeback_remote_upload_inflight_bytes 2"));
         assert!(output.contains("brewfs_writeback_stage_ops_total 3"));
@@ -2619,6 +2703,7 @@ mod tests {
         stats.add_writeback_backpressure_soft_sleep(Duration::from_micros(44));
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(55));
         stats.sync_writeback_backpressure_metrics(66, 77, 88, 99);
+        stats.sync_writeback_buffer_backpressure_metrics(166, 177, 188, 199, 200, 201);
         stats.sync_writeback_phase_metrics(111, 222, 333, 444, 555, 666, 777);
         stats.sync_writeback_commit_wait_metrics(778, 779, 780, 781);
         stats.sync_writeback_flush_wait_metrics(804, 805, 806);
@@ -2667,6 +2752,12 @@ mod tests {
         assert_eq!(snapshot.writeback_backpressure_soft_sleep_us, 77);
         assert_eq!(snapshot.writeback_backpressure_hard_wait_ops, 88);
         assert_eq!(snapshot.writeback_backpressure_hard_wait_us, 99);
+        assert_eq!(snapshot.writeback_buffer_soft_sleep_ops, 166);
+        assert_eq!(snapshot.writeback_buffer_soft_sleep_us, 177);
+        assert_eq!(snapshot.writeback_buffer_moderate_sleep_ops, 188);
+        assert_eq!(snapshot.writeback_buffer_moderate_sleep_us, 199);
+        assert_eq!(snapshot.writeback_buffer_hard_sleep_ops, 200);
+        assert_eq!(snapshot.writeback_buffer_hard_sleep_us, 201);
         assert_eq!(snapshot.writeback_stage_inflight_bytes, 111);
         assert_eq!(snapshot.writeback_remote_upload_inflight_bytes, 222);
         assert_eq!(snapshot.writeback_stage_ops, 333);

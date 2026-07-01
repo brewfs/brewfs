@@ -104,6 +104,11 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
 fi
 
+if [[ "${PERF_FIO_COLD_READ:-false}" =~ ^(1|true|yes|on)$ \
+    || "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}" =~ ^(1|true|yes|on)$ ]]; then
+    export JFS_CACHE_DIR="${JFS_CACHE_DIR:-/var/lib/juicefs/cache}"
+fi
+
 mkdir -p "$ARTIFACTS_DIR"
 
 preclean_ports() {
@@ -147,8 +152,12 @@ write_warning_summary() {
     {
         printf 'pattern\tcount\n'
         for pattern in WARNING timeout 'slow request' 'slow operation'; do
+            local regex="$pattern"
+            if [[ "$pattern" == "timeout" ]]; then
+                regex='(^|[^[:alnum:]_=-])(timeout|timed out|超时)([^[:alnum:]_=-]|$)'
+            fi
             local count
-            count=$(awk -v pat="$pattern" 'BEGIN { IGNORECASE = 1 } $0 ~ pat { c++ } END { print c + 0 }' "$log_path")
+            count=$(awk -v pat="$regex" 'BEGIN { IGNORECASE = 1 } $0 ~ pat { c++ } END { print c + 0 }' "$log_path")
             printf '%s\t%s\n' "$pattern" "$count"
         done
     } >"$summary_path"

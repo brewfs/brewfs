@@ -100,6 +100,18 @@ fi
 
 mkdir -p "$ARTIFACTS_DIR"
 
+# xfstests generic/074 generates many 512B random overwrite slices.  Keep the
+# correctness harness resource-bounded while preserving production defaults for
+# normal mounts and perf profiles.
+export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
+export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-268435456}"
+export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-134217728}"
+export BREWFS_DIRTY_SLICE_TARGET_SIZE="${BREWFS_DIRTY_SLICE_TARGET_SIZE:-4194304}"
+export BREWFS_DIRTY_SLICE_MAX_AGE_MS="${BREWFS_DIRTY_SLICE_MAX_AGE_MS:-500}"
+export BREWFS_UPLOAD_CONCURRENCY="${BREWFS_UPLOAD_CONCURRENCY:-4}"
+export BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-false}"
+export BREWFS_MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-536870912}"
+
 ts="$(date +%s)-$RANDOM"
 PROJECT_NAME="brewfs-${ts}"
 COMPOSE_ARGS=(-f "$COMPOSE_FILE" -p "$PROJECT_NAME")

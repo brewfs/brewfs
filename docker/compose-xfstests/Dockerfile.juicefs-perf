@@ -9,20 +9,26 @@ FROM debian:trixie-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         fuse3 \
         fio \
-        procps \
-        stress-ng && \
+        python3 \
+        procps && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/juicefs /usr/local/bin/juicefs
 COPY tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /opt/xfstests-prebuilt.tar.gz
 COPY docker/compose-xfstests/run_juicefs_perf_in_container.sh /usr/local/bin/run_juicefs_perf_in_container.sh
+COPY docker/compose-xfstests/perf_metadata_fallback.py /usr/local/bin/perf_metadata_fallback.py
 
 RUN set -e; \
-    chmod +x /usr/local/bin/juicefs /usr/local/bin/run_juicefs_perf_in_container.sh; \
+    chmod +x /usr/local/bin/juicefs /usr/local/bin/run_juicefs_perf_in_container.sh /usr/local/bin/perf_metadata_fallback.py; \
     mkdir -p /opt/xfstests-dev /mnt/juicefs /artifacts; \
-    tar -xzf /opt/xfstests-prebuilt.tar.gz -C /opt --transform 's|^xfstests|xfstests-dev|'; \
+    if gzip -t /opt/xfstests-prebuilt.tar.gz >/dev/null 2>&1; then \
+        tar -xzf /opt/xfstests-prebuilt.tar.gz -C /opt --transform 's|^xfstests|xfstests-dev|'; \
+    else \
+        echo "warning: xfstests prebuilt archive is unavailable; fio-only perf runs can still proceed" >&2; \
+    fi; \
     chmod +x /opt/xfstests-dev/src/* 2>/dev/null || true; \
     rm -f /opt/xfstests-prebuilt.tar.gz; \
     grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf

@@ -41,6 +41,7 @@ class FioResult:
     rw: str
     bs: str
     numjobs: int
+    error: int = 0
     # Read metrics
     read_bw_bytes: float = 0
     read_iops: float = 0
@@ -63,7 +64,11 @@ class FioResult:
 def parse_fio_json(path: pathlib.Path) -> Optional[FioResult]:
     """Parse a single fio JSON output file."""
     try:
-        data = json.loads(path.read_text())
+        text = path.read_text(errors="replace")
+        start = text.find("{")
+        if start < 0:
+            return None
+        data = json.loads(text[start:])
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -80,6 +85,7 @@ def parse_fio_json(path: pathlib.Path) -> Optional[FioResult]:
         rw=options.get("rw", "unknown"),
         bs=options.get("bs", "unknown"),
         numjobs=int(options.get("numjobs", 1)),
+        error=int(job.get("error", 0) or 0),
     )
 
     read_op = job.get("read", {})
@@ -104,6 +110,25 @@ def parse_fio_json(path: pathlib.Path) -> Optional[FioResult]:
             result.runtime_ms = write_op.get("runtime", 0)
 
     return result
+
+
+def fio_json_files(artifact_dir: pathlib.Path) -> list[pathlib.Path]:
+    """Return fio JSON files from both historical and current result layouts."""
+    candidates = []
+    seen = set()
+    for subdir in ("fio", "results"):
+        path = artifact_dir / subdir
+        if path.exists():
+            for item in path.glob("fio*.json"):
+                try:
+                    key = item.resolve()
+                except OSError:
+                    key = item
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(item)
+    return sorted(candidates)
 
 
 def fmt_bw(bw_bytes: float) -> str:
@@ -202,6 +227,11 @@ def generate_bottleneck_analysis(results: list[FioResult]) -> list[str]:
 
     for r in results:
         findings = []
+        if r.error:
+            findings.append(
+                f"  - **fio error**: job failed with error={r.error}; "
+                "throughput/latency values are incomplete and this run should not be used as a clean performance baseline."
+            )
 
         # Analyze read path
         if r.read_lat_percentiles:
@@ -348,6 +378,13 @@ def generate_optimization_roadmap(results: list[FioResult]) -> list[str]:
     suggestions = []
 
     for r in results:
+        if r.error:
+            suggestions.append((
+                "Fix Failed Benchmark Workload",
+                f"{r.name} failed with fio error={r.error}. Fix the filesystem/tooling error before treating this run as a performance baseline.",
+                0,
+            ))
+
         # High write tail latency → buffer management
         if r.write_lat_percentiles:
             p99 = r.write_lat_percentiles.get("99.000000", 0) / 1e6
@@ -442,14 +479,12 @@ def generate_meta_perf_analysis(artifact_dir: pathlib.Path) -> list[str]:
 
 def generate_report(artifact_dir: pathlib.Path, bottleneck: bool = False) -> str:
     """Generate comprehensive performance report."""
-    results_dir = artifact_dir / "results"
     results: list[FioResult] = []
 
-    if results_dir.exists():
-        for json_file in sorted(results_dir.glob("fio*.json")):
-            r = parse_fio_json(json_file)
-            if r:
-                results.append(r)
+    for json_file in fio_json_files(artifact_dir):
+        r = parse_fio_json(json_file)
+        if r:
+            results.append(r)
 
     lines = [
         "# BrewFS Detailed Performance Profile",
@@ -462,12 +497,13 @@ def generate_report(artifact_dir: pathlib.Path, bottleneck: bool = False) -> str
     lines.extend([
         "## Throughput Summary",
         "",
-        "| Workload | Mode | BS | Jobs | Read BW | Write BW | Read IOPS | Write IOPS |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Workload | Mode | BS | Jobs | Error | Read BW | Write BW | Read IOPS | Write IOPS |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for r in results:
         lines.append(
             f"| {r.name} | {r.rw} | {r.bs} | {r.numjobs} | "
+            f"{r.error or '-'} | "
             f"{fmt_bw(r.read_bw_bytes)} | {fmt_bw(r.write_bw_bytes)} | "
             f"{fmt_iops(r.read_iops)} | {fmt_iops(r.write_iops)} |"
         )
@@ -511,12 +547,12 @@ def generate_comparison_report(
     baseline_results = []
     current_results = []
 
-    for json_file in sorted((baseline_dir / "results").glob("fio*.json")):
+    for json_file in fio_json_files(baseline_dir):
         r = parse_fio_json(json_file)
         if r:
             baseline_results.append(r)
 
-    for json_file in sorted((current_dir / "results").glob("fio*.json")):
+    for json_file in fio_json_files(current_dir):
         r = parse_fio_json(json_file)
         if r:
             current_results.append(r)
@@ -607,6 +643,8 @@ def _llm_throughput(results: list) -> list[str]:
     lines = ["Throughput:"]
     for r in results:
         parts = [f"  {r.name:<14} {r.rw:<10} bs={r.bs} jobs={r.numjobs}"]
+        if getattr(r, "error", 0):
+            parts.append(f"ERROR={r.error}")
         if r.read_bw_bytes > 0:
             parts.append(f"read {fmt_bw(r.read_bw_bytes):>10s}  {fmt_iops(r.read_iops):>6s} IOPS")
         if r.write_bw_bytes > 0:
@@ -657,6 +695,10 @@ def _llm_bottlenecks(results: list) -> list[str]:
     found = 0
 
     for r in results:
+        if getattr(r, "error", 0):
+            found += 1
+            lines.append(f"  [HIGH] {r.name}: fio job failed with error={r.error}; performance numbers are incomplete")
+
         if r.read_lat_percentiles:
             p50 = r.read_lat_percentiles.get("50.000000", 0) / 1e6
             p99 = r.read_lat_percentiles.get("99.000000", 0) / 1e6
@@ -709,6 +751,9 @@ def _llm_roadmap(results: list) -> list[str]:
     items: list[tuple[int, str, str, str, str]] = []
 
     for r in results:
+        if getattr(r, "error", 0):
+            items.append((0, "Fix Failed Benchmark Workload", "HIGH", "MED",
+                          "src/vfs/io/writer.rs, tools/perf/run_perf.sh"))
         if r.write_lat_percentiles:
             p99 = r.write_lat_percentiles.get("99.000000", 0) / 1e6
             if p99 > 300:
@@ -826,12 +871,10 @@ def generate_llm_text(
         results = current_results
     else:
         results = []
-        results_dir = artifact_dir / "results"
-        if results_dir.exists():
-            for f in sorted(results_dir.glob("fio*.json")):
-                r = parse_fio_json(f)
-                if r:
-                    results.append(r)
+        for f in fio_json_files(artifact_dir):
+            r = parse_fio_json(f)
+            if r:
+                results.append(r)
 
     if not results:
         out.append("(no fio results found)")
@@ -887,12 +930,10 @@ def generate_llm_text(
 def _load_results_from_dir(d: pathlib.Path) -> list:
     """Parse all fio JSON results from a directory."""
     results = []
-    results_dir = d / "results"
-    if results_dir.exists():
-        for f in sorted(results_dir.glob("fio*.json")):
-            r = parse_fio_json(f)
-            if r:
-                results.append(r)
+    for f in fio_json_files(d):
+        r = parse_fio_json(f)
+        if r:
+            results.append(r)
     return results
 
 

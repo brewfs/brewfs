@@ -1,8 +1,8 @@
 name: Docker Images
 
 on:
-  push:
-    branches: [main]
+  # Temporarily disabled for automatic main pushes while GHCR image builds are unstable.
+  # Keep manual dispatch available for debugging the image pipeline without blocking CI.
   workflow_dispatch:
 
 permissions:

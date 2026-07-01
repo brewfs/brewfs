@@ -9,12 +9,20 @@ impl<T: Copy + Ord> Intervals<T> {
     }
 
     pub(crate) fn cut(&mut self, slice_l: T, slice_r: T) -> Vec<(T, T)> {
+        let mut cut = Vec::new();
+        self.cut_each(slice_l, slice_r, |l, r| cut.push((l, r)));
+        cut
+    }
+
+    pub(crate) fn cut_each<F>(&mut self, slice_l: T, slice_r: T, mut on_cut: F) -> bool
+    where
+        F: FnMut(T, T),
+    {
         if self.0.is_empty() {
-            return Vec::new();
+            return false;
         }
 
-        let mut remaining = Vec::new();
-        let mut cut = Vec::new();
+        let mut remaining = Vec::with_capacity(self.0.len() + 1);
         let mut touched = false;
 
         for &(l, r) in &self.0 {
@@ -27,7 +35,7 @@ impl<T: Copy + Ord> Intervals<T> {
             let cut_l = max(l, slice_l);
             let cut_r = min(r, slice_r);
             if cut_l < cut_r {
-                cut.push((cut_l, cut_r));
+                on_cut(cut_l, cut_r);
             }
             if l < cut_l {
                 remaining.push((l, cut_l));
@@ -38,14 +46,18 @@ impl<T: Copy + Ord> Intervals<T> {
         }
 
         if !touched {
-            return Vec::new();
+            return false;
         }
 
-        self.0 = remaining.into_iter().filter(|(l, r)| l < r).collect();
-        cut
+        self.0 = remaining;
+        true
     }
 
     pub(crate) fn collect(self) -> Vec<(T, T)> {
         self.0
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }

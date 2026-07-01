@@ -62,9 +62,12 @@ PERF_FIO_POST_WRITE_DRAIN=${PERF_FIO_POST_WRITE_DRAIN:-false}
 PERF_FIO_DIRECT_MATRIX=${PERF_FIO_DIRECT_MATRIX:-}
 BREWFS_DATA_BACKEND=${data_backend}
 BREWFS_META_BACKEND=${meta_backend}
+BREWFS_CHUNK_SIZE=${BREWFS_CHUNK_SIZE:-67108864}
+BREWFS_BLOCK_SIZE=${BREWFS_BLOCK_SIZE:-4194304}
 BREWFS_COMPRESSION=${BREWFS_COMPRESSION:-none}
 BREWFS_FUSE_WORKERS=${BREWFS_FUSE_WORKERS:-}
 BREWFS_FUSE_MAX_BACKGROUND=${BREWFS_FUSE_MAX_BACKGROUND:-}
+BREWFS_FUSE_WRITEBACK=${BREWFS_FUSE_WRITEBACK:-}
 BREWFS_WRITEBACK_MODE=${BREWFS_WRITEBACK_MODE:-}
 BREWFS_WRITEBACK_UPLOAD_CONCURRENCY=${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-}
 BREWFS_S3_MAX_CONCURRENCY=${BREWFS_S3_MAX_CONCURRENCY:-}
@@ -77,9 +80,17 @@ BREWFS_WRITE_MEMORY_BYTES=${BREWFS_WRITE_MEMORY_BYTES:-}
 BREWFS_WRITE_SSD_BYTES=${BREWFS_WRITE_SSD_BYTES:-}
 BREWFS_MEMORY_BUDGET_BYTES=${BREWFS_MEMORY_BUDGET_BYTES:-}
 BREWFS_VERIFY_CACHE_CHECKSUM=${BREWFS_VERIFY_CACHE_CHECKSUM:-}
+BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD=${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-}
 BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES=${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}
 BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES=${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}
 BREWFS_WRITEBACK_PERSIST_SYNC=${BREWFS_WRITEBACK_PERSIST_SYNC:-}
+BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS=${BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS:-}
+BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS=${BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS:-}
+PERF_OBJECT_PUT_DURATION_SECS=${PERF_OBJECT_PUT_DURATION_SECS:-60}
+PERF_OBJECT_PUT_OBJECTS=${PERF_OBJECT_PUT_OBJECTS:-0}
+PERF_OBJECT_PUT_OBJECT_SIZE=${PERF_OBJECT_PUT_OBJECT_SIZE:-${BREWFS_BLOCK_SIZE:-4194304}}
+PERF_OBJECT_PUT_WORKERS=${PERF_OBJECT_PUT_WORKERS:-${BREWFS_UPLOAD_CONCURRENCY:-32}}
+PERF_OBJECT_PUT_PREFIX=${PERF_OBJECT_PUT_PREFIX:-bench/direct-put}
 EOF
 
     {
@@ -293,10 +304,10 @@ EOF
             || -n "${BREWFS_COMPRESSION:-}" \
             || -n "${BREWFS_VERIFY_CACHE_CHECKSUM:-}" \
             || -n "${BREWFS_WRITEBACK_PERSIST_SYNC:-}" \
-            || -n "${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}" \
-            || -n "${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}" \
+            || -n "${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}" \
             || -n "${BREWFS_UPLOAD_LIMIT_MIBPS:-}" \
             || -n "${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}" \
+            || -n "$comp" \
             || -n "$writeback_mode" ]]; then
             echo
             echo "cache:"
@@ -312,8 +323,10 @@ EOF
             [[ -n "${BREWFS_PREFETCH_MAX_BYTES:-}" ]] && echo "  prefetch_max_bytes: ${BREWFS_PREFETCH_MAX_BYTES}"
             [[ -n "${BREWFS_PREFETCH_CONCURRENCY:-}" ]] && echo "  prefetch_concurrency: ${BREWFS_PREFETCH_CONCURRENCY}"
             [[ -n "${BREWFS_RANGE_BACKGROUND_PREFETCH:-}" ]] && echo "  range_background_prefetch: ${BREWFS_RANGE_BACKGROUND_PREFETCH}"
+            [[ -n "${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-}" ]] && echo "  populate_write_cache_after_upload: ${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD}"
+            [[ -n "${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}" ]] && echo "  persist_write_cache_after_upload: ${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD}"
             [[ -n "${BREWFS_MEMORY_BUDGET_BYTES:-}" ]] && echo "  memory_budget_bytes: ${BREWFS_MEMORY_BUDGET_BYTES}"
-            [[ -n "${BREWFS_COMPRESSION:-}" ]] && echo "  compression: ${comp}"
+            echo "  compression: ${comp}"
             [[ -n "${BREWFS_VERIFY_CACHE_CHECKSUM:-}" ]] && echo "  verify_cache_checksum: ${BREWFS_VERIFY_CACHE_CHECKSUM}"
             [[ -n "${BREWFS_WRITEBACK_PERSIST_SYNC:-}" ]] && echo "  writeback_persist_sync: ${BREWFS_WRITEBACK_PERSIST_SYNC}"
             [[ -n "${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}" ]] && echo "  writeback_recent_pending_soft_bytes: ${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES}"
@@ -384,10 +397,13 @@ EOF
     append_env_export BREWFS_PRE_MOUNT_WAIT_SECS "10"
     append_env_export BREWFS_MOUNT_READY_DELAY_SECS "1"
     append_env_export BREWFS_NOFILE_LIMIT "1048576"
+    append_env_export BREWFS_FUSE_WRITEBACK
     append_env_export BREWFS_FUSE_READ_DIRECT_IO
     append_env_export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
     append_env_export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES
     append_env_export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
+    append_env_export BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS
+    append_env_export BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS
     append_env_export PERF_FUSE_OPS_LOG "0"
     append_env_export BREWFS_FUSE_OP_LOG "0"
     append_env_export BREWFS_FUSE_LOG_FILE
@@ -445,6 +461,8 @@ prepare_artifacts() {
     printf 'tool\tstatus\tseconds\tlog\n' >"$artifact_dir/perf-summary.tsv"
     printf 'tool\tpost_fio_drain_s\tpending_bytes\tdirty_bytes\tbuffer_dirty_bytes\n' \
         >"$artifact_dir/post-write-drain.tsv"
+    printf 'ts\ttool\telapsed_s\tbuffer_dirty_bytes\tlive_dirty_bytes\tlive_slices\trecent_pending_upload_bytes\trecent_uploaded_bytes\tstage_inflight_bytes\tremote_upload_inflight_bytes\ts3_put_ops\ts3_put_bytes\tbuffer_soft_sleep_ops\tbuffer_moderate_sleep_ops\tbuffer_hard_sleep_ops\tfuse_write_bytes\tupload_batch_ops\n' \
+        >"$artifact_dir/writeback-samples.tsv"
     write_perf_profile
     if truthy_env "${PERF_FUSE_OPS_LOG:-0}" || truthy_env "${BREWFS_FUSE_OP_LOG:-0}"; then
         export BREWFS_FUSE_OP_LOG=1
@@ -499,6 +517,18 @@ require_tool_bin() {
         err "找不到可执行工具: $bin"
         exit 1
     fi
+}
+
+run_metadata_fallback() {
+    local tool="$1"
+    local work_dir="$2"
+    local fallback="${PERF_METADATA_FALLBACK_BIN:-/usr/local/bin/perf_metadata_fallback.py}"
+
+    require_tool_bin "$fallback"
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir"
+    info "使用 metadata fallback: $tool ($fallback)"
+    run_logged_tool "$tool" python3 "$fallback" "$tool" "$work_dir"
 }
 
 redis_diag_enabled() {
@@ -602,6 +632,53 @@ numeric_stat_or_zero() {
     else
         printf '0'
     fi
+}
+
+start_writeback_sampler() {
+    local tool="$1"
+    local interval="${PERF_WRITEBACK_SAMPLE_INTERVAL_SECS:-1}"
+    local sample_path="$artifact_dir/writeback-samples.tsv"
+    local start_ts
+
+    WRITEBACK_SAMPLER_PID=""
+    truthy_env "${PERF_WRITEBACK_SAMPLER:-true}" || return 0
+
+    start_ts="$(date +%s)"
+    (
+        while true; do
+            local now elapsed
+            now="$(date +%s)"
+            elapsed="$((now - start_ts))"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$(date -Iseconds)" \
+                "$tool" \
+                "$elapsed" \
+                "$(numeric_stat_or_zero brewfs_writeback_dirty_bytes)" \
+                "$(numeric_stat_or_zero brewfs_writeback_live_dirty_bytes)" \
+                "$(numeric_stat_or_zero brewfs_writeback_live_slices)" \
+                "$(numeric_stat_or_zero brewfs_writeback_recent_pending_upload_bytes)" \
+                "$(numeric_stat_or_zero brewfs_writeback_recent_uploaded_bytes)" \
+                "$(numeric_stat_or_zero brewfs_writeback_stage_inflight_bytes)" \
+                "$(numeric_stat_or_zero brewfs_writeback_remote_upload_inflight_bytes)" \
+                "$(numeric_stat_or_zero brewfs_s3_put_ops_total)" \
+                "$(numeric_stat_or_zero brewfs_s3_put_bytes_total)" \
+                "$(numeric_stat_or_zero brewfs_writeback_buffer_soft_sleep_ops)" \
+                "$(numeric_stat_or_zero brewfs_writeback_buffer_moderate_sleep_ops)" \
+                "$(numeric_stat_or_zero brewfs_writeback_buffer_hard_sleep_ops)" \
+                "$(numeric_stat_or_zero brewfs_fuse_write_bytes_total)" \
+                "$(numeric_stat_or_zero brewfs_writeback_upload_batch_ops_total)" \
+                >>"$sample_path"
+            sleep "$interval"
+        done
+    ) &
+    WRITEBACK_SAMPLER_PID="$!"
+}
+
+stop_writeback_sampler() {
+    local pid="${1:-}"
+    [[ -n "$pid" ]] || return 0
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" >/dev/null 2>&1 || true
 }
 
 max_u64() {
@@ -766,13 +843,14 @@ run_logged_tool() {
     local tool="$1"
     shift
     local log_path="$artifact_dir/tools/${tool}.log"
-    local start end elapsed status
+    local start end elapsed status sampler_pid
 
     start="$(date +%s)"
     info "运行压力工具: $tool"
     info "  命令: $*"
     redis_diag_before_tool "$tool"
-    stats_snapshot_before_tool "$tool"
+    start_writeback_sampler "$tool" || true
+    sampler_pid="${WRITEBACK_SAMPLER_PID:-}"
     set +e
     if [[ "${PERF_LOG_TO_CONSOLE:-false}" == "true" ]]; then
         "$@" 2>&1 | tee "$log_path"
@@ -782,6 +860,7 @@ run_logged_tool() {
         status=$?
     fi
     set -e
+    stop_writeback_sampler "$sampler_pid"
     end="$(date +%s)"
     elapsed="$((end - start))"
     stats_snapshot_after_tool "$tool"
@@ -813,7 +892,10 @@ run_dirstress() {
     local work_dir="$mount_dir/.perf-dirstress"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback dirstress "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -848,7 +930,10 @@ run_dirperf() {
     local work_dir="$mount_dir/.perf-dirperf"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback dirperf "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -874,7 +959,10 @@ run_metaperf() {
     local work_dir="$mount_dir/.perf-metaperf"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback metaperf "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -906,7 +994,10 @@ run_looptest() {
     local loop_file="$work_dir/looptest.dat"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback looptest "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -1323,6 +1414,45 @@ run_fio_profile() {
     wait_for_fio_post_write_drain "$tool"
 }
 
+run_object_put_bench() {
+    if [[ "$data_backend" != "s3" ]]; then
+        err "object-put-bench requires BREWFS_DATA_BACKEND=s3"
+        return 1
+    fi
+
+    local bucket="${BREWFS_S3_BUCKET:-brewfs-data}"
+    local endpoint="${BREWFS_S3_ENDPOINT:-http://rustfs:9000}"
+    local region="${BREWFS_S3_REGION:-us-east-1}"
+    local force_path="${BREWFS_S3_FORCE_PATH_STYLE:-true}"
+    local part_size="${BREWFS_S3_PART_SIZE:-16777216}"
+    local s3_max_conc="${BREWFS_S3_MAX_CONCURRENCY:-8}"
+    local checksum_disabled="${BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM:-true}"
+    local object_size="${PERF_OBJECT_PUT_OBJECT_SIZE:-${BREWFS_BLOCK_SIZE:-4194304}}"
+    local workers="${PERF_OBJECT_PUT_WORKERS:-${BREWFS_UPLOAD_CONCURRENCY:-32}}"
+    local duration="${PERF_OBJECT_PUT_DURATION_SECS:-60}"
+    local objects="${PERF_OBJECT_PUT_OBJECTS:-0}"
+    local prefix="${PERF_OBJECT_PUT_PREFIX:-bench/direct-put}"
+
+    export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-rustfsadmin}"
+    export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-rustfsadmin}"
+    export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$region}"
+    export AWS_EC2_METADATA_DISABLED="${AWS_EC2_METADATA_DISABLED:-true}"
+
+    run_logged_tool object-put-bench /usr/local/bin/brewfs object-put-bench \
+        --s3-bucket "$bucket" \
+        --s3-endpoint "$endpoint" \
+        --s3-region "$region" \
+        --s3-part-size "$part_size" \
+        --s3-max-concurrency "$s3_max_conc" \
+        --s3-force-path-style "$force_path" \
+        --s3-disable-payload-checksum "$checksum_disabled" \
+        --object-size "$object_size" \
+        --workers "$workers" \
+        --duration-secs "$duration" \
+        --objects "$objects" \
+        --prefix "$prefix"
+}
+
 generate_perf_report() {
     python3 - "$artifact_dir" "$meta_backend" <<'PY'
 import csv
@@ -1594,25 +1724,86 @@ if fio_json_paths:
     except Exception:
         pass
 
-# --- Metadata Performance ---
-metaperf_log = artifact_dir / "tools" / "metaperf.log"
-if metaperf_log.exists():
+# --- Direct Object PUT Benchmark ---
+object_put_logs = sorted((artifact_dir / "tools").glob("object-put-bench*.log"))
+object_put_rows = []
+for path in object_put_logs:
     try:
-        lines.extend([
-            "",
-            "## Metadata Performance",
-            "",
-            "| Operation | Ops/sec | Latency (µs/op) |",
-            "| --- | ---: | ---: |",
-        ])
-        for mline in metaperf_log.read_text().splitlines():
-            if "ops/sec=" in mline and "usec/op" in mline:
+        for raw in path.read_text(errors="replace").splitlines():
+            if not raw.startswith("object_put_bench_summary "):
+                continue
+            fields = {}
+            for item in raw.split()[1:]:
+                if "=" in item:
+                    key, value = item.split("=", 1)
+                    fields[key] = value
+            fields["log"] = str(path.relative_to(artifact_dir))
+            object_put_rows.append(fields)
+            break
+    except Exception:
+        pass
+
+if object_put_rows:
+    lines.extend([
+        "",
+        "## Direct Object PUT",
+        "",
+        "| Tool | Objects | Bytes | Seconds | MiB/s | Workers | Object size | Avg | P50 | P90 | P95 | P99 | Max | Log |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ])
+    for row in object_put_rows:
+        lines.append(
+            f"| object-put-bench | {row.get('objects', '')} | {row.get('bytes', '')} | "
+            f"{row.get('seconds', '')} | {row.get('throughput_mib_s', '')} | "
+            f"{row.get('workers', '')} | {row.get('object_size', '')} | "
+            f"{row.get('avg_ms', '')} ms | {row.get('p50_ms', '')} ms | "
+            f"{row.get('p90_ms', '')} ms | {row.get('p95_ms', '')} ms | "
+            f"{row.get('p99_ms', '')} ms | {row.get('max_ms', '')} ms | {row.get('log', '')} |"
+        )
+
+# --- Metadata Performance ---
+metadata_rows = []
+for meta_log in sorted((artifact_dir / "tools").glob("*.log")):
+    try:
+        for mline in meta_log.read_text(errors="replace").splitlines():
+            if mline.startswith("metadata_summary "):
+                row = {"log": str(meta_log.relative_to(artifact_dir))}
+                for item in mline.split()[1:]:
+                    if "=" in item:
+                        key, value = item.split("=", 1)
+                        row[key] = value
+                metadata_rows.append(row)
+            elif "ops/sec=" in mline and "usec/op" in mline:
                 op = mline.split(":")[0].strip()
                 ops_sec = mline.split("ops/sec=")[1].split(",")[0]
                 usec_op = mline.split("usec/op")[1].strip().lstrip("= ")
-                lines.append(f"| {op} | {float(ops_sec):.1f} | {float(usec_op):.0f} |")
+                metadata_rows.append(
+                    {
+                        "tool": meta_log.stem,
+                        "op": op,
+                        "ops_per_sec": ops_sec,
+                        "usec_per_op": usec_op,
+                        "log": str(meta_log.relative_to(artifact_dir)),
+                    }
+                )
     except Exception:
         pass
+
+if metadata_rows:
+    lines.extend([
+        "",
+        "## Metadata Performance",
+        "",
+        "| Tool | Operation | Ops | Errors | Ops/sec | Latency (µs/op) | Log |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ])
+    for row in metadata_rows:
+        lines.append(
+            f"| {row.get('tool', '')} | {row.get('op', '')} | "
+            f"{row.get('ops', '')} | {row.get('errors', '')} | "
+            f"{float(row.get('ops_per_sec', 0.0)):.1f} | "
+            f"{float(row.get('usec_per_op', 0.0)):.0f} | {row.get('log', '')} |"
+        )
 
 # --- Diagnostics ---
 diag_dir = artifact_dir / "diagnostics"
@@ -1661,6 +1852,62 @@ if redis_diag_paths:
 
 brewfs_stats_paths = sorted(diag_dir.glob("stats-*-after.txt")) if diag_dir.exists() else []
 if brewfs_stats_paths:
+    sample_summaries = {}
+    sample_path = artifact_dir / "writeback-samples.tsv"
+    if sample_path.exists():
+        try:
+            import csv
+
+            def as_float(value):
+                try:
+                    return float(value)
+                except Exception:
+                    return 0.0
+
+            with sample_path.open(newline="") as fh:
+                for row in csv.DictReader(fh, delimiter="\t"):
+                    tool = row.get("tool", "")
+                    if not tool:
+                        continue
+                    summary = sample_summaries.setdefault(
+                        tool,
+                        {
+                            "count": 0,
+                            "max_buffer_dirty": 0.0,
+                            "max_live_dirty": 0.0,
+                            "max_live_slices": 0.0,
+                            "max_recent_pending": 0.0,
+                            "max_recent_uploaded": 0.0,
+                            "max_stage_inflight": 0.0,
+                            "max_remote_inflight": 0.0,
+                            "last_buffer_dirty": 0.0,
+                            "last_live_dirty": 0.0,
+                            "last_recent_pending": 0.0,
+                            "last_recent_uploaded": 0.0,
+                        },
+                    )
+                    summary["count"] += 1
+                    buffer_dirty = as_float(row.get("buffer_dirty_bytes"))
+                    live_dirty = as_float(row.get("live_dirty_bytes"))
+                    live_slices = as_float(row.get("live_slices"))
+                    recent_pending = as_float(row.get("recent_pending_upload_bytes"))
+                    recent_uploaded = as_float(row.get("recent_uploaded_bytes"))
+                    stage_inflight = as_float(row.get("stage_inflight_bytes"))
+                    remote_inflight = as_float(row.get("remote_upload_inflight_bytes"))
+                    summary["max_buffer_dirty"] = max(summary["max_buffer_dirty"], buffer_dirty)
+                    summary["max_live_dirty"] = max(summary["max_live_dirty"], live_dirty)
+                    summary["max_live_slices"] = max(summary["max_live_slices"], live_slices)
+                    summary["max_recent_pending"] = max(summary["max_recent_pending"], recent_pending)
+                    summary["max_recent_uploaded"] = max(summary["max_recent_uploaded"], recent_uploaded)
+                    summary["max_stage_inflight"] = max(summary["max_stage_inflight"], stage_inflight)
+                    summary["max_remote_inflight"] = max(summary["max_remote_inflight"], remote_inflight)
+                    summary["last_buffer_dirty"] = buffer_dirty
+                    summary["last_live_dirty"] = live_dirty
+                    summary["last_recent_pending"] = recent_pending
+                    summary["last_recent_uploaded"] = recent_uploaded
+        except Exception:
+            sample_summaries = {}
+
     lines.extend([
         "",
         "## BrewFS Stats",
@@ -1765,17 +2012,26 @@ if brewfs_stats_paths:
         commit_before_stage = delta(
             "brewfs_writeback_commit_before_stage_ops_total",
         )
-        remote_inflight = value("brewfs_writeback_remote_upload_inflight_bytes", 0.0)
-        live_slices = value("brewfs_writeback_live_slices", 0.0)
-        live_normal_only_slices = value("brewfs_writeback_live_normal_only_slices", 0.0)
-        live_cached_only_slices = value("brewfs_writeback_live_cached_only_slices", 0.0)
-        live_mixed_origin_slices = value("brewfs_writeback_live_mixed_origin_slices", 0.0)
-        live_unknown_origin_slices = value("brewfs_writeback_live_unknown_origin_slices", 0.0)
-        slice_create = delta("brewfs_writeback_slice_create_ops_total")
-        slice_reuse = delta("brewfs_writeback_slice_reuse_ops_total")
-        reject_older = delta("brewfs_writeback_slice_reject_older_unique_ops_total")
-        reject_prefix = delta(
+        remote_inflight = metrics.get("brewfs_writeback_remote_upload_inflight_bytes", 0.0)
+        buffer_soft_ops = metrics.get("brewfs_writeback_buffer_soft_sleep_ops", 0.0)
+        buffer_soft_ms = metrics.get("brewfs_writeback_buffer_soft_sleep_us", 0.0) / 1000.0
+        buffer_moderate_ops = metrics.get("brewfs_writeback_buffer_moderate_sleep_ops", 0.0)
+        buffer_moderate_ms = (
+            metrics.get("brewfs_writeback_buffer_moderate_sleep_us", 0.0) / 1000.0
+        )
+        buffer_hard_ops = metrics.get("brewfs_writeback_buffer_hard_sleep_ops", 0.0)
+        buffer_hard_ms = metrics.get("brewfs_writeback_buffer_hard_sleep_us", 0.0) / 1000.0
+        live_slices = metrics.get("brewfs_writeback_live_slices", 0.0)
+        live_normal_only_slices = metrics.get("brewfs_writeback_live_normal_only_slices", 0.0)
+        live_cached_only_slices = metrics.get("brewfs_writeback_live_cached_only_slices", 0.0)
+        live_mixed_origin_slices = metrics.get("brewfs_writeback_live_mixed_origin_slices", 0.0)
+        live_unknown_origin_slices = metrics.get("brewfs_writeback_live_unknown_origin_slices", 0.0)
+        slice_create = metrics.get("brewfs_writeback_slice_create_ops_total", 0.0)
+        slice_reuse = metrics.get("brewfs_writeback_slice_reuse_ops_total", 0.0)
+        reject_older = metrics.get("brewfs_writeback_slice_reject_older_unique_ops_total", 0.0)
+        reject_prefix = metrics.get(
             "brewfs_writeback_slice_reject_dispatched_prefix_ops_total",
+            0.0,
         )
         batch_ops = delta("brewfs_writeback_upload_batch_ops_total")
         batch_bytes = delta("brewfs_writeback_upload_batch_bytes_total")
@@ -1837,11 +2093,25 @@ if brewfs_stats_paths:
         partial_tail_age = delta(
             "brewfs_writeback_upload_partial_tail_commit_age_ops_total",
         )
-        freeze_size = delta("brewfs_writeback_freeze_size_ops_total")
-        freeze_flush = delta("brewfs_writeback_freeze_explicit_flush_ops_total")
-        freeze_auto = delta("brewfs_writeback_freeze_auto_ops_total")
-        freeze_max = delta("brewfs_writeback_freeze_max_unflushed_ops_total")
-        freeze_age = delta("brewfs_writeback_freeze_commit_age_ops_total")
+        sample = sample_summaries.get(tool, {})
+        sample_detail = "samples=n/a"
+        if sample:
+            sample_detail = (
+                f"samples={int(sample.get('count', 0))}, "
+                f"max_buffer_dirty={fmt_mib(sample.get('max_buffer_dirty', 0.0))}, "
+                f"max_live_dirty={fmt_mib(sample.get('max_live_dirty', 0.0))}, "
+                f"max_live_slices={int(sample.get('max_live_slices', 0.0))}, "
+                f"max_recent_pending={fmt_mib(sample.get('max_recent_pending', 0.0))}, "
+                f"max_recent_uploaded={fmt_mib(sample.get('max_recent_uploaded', 0.0))}, "
+                f"max_stage_inflight={fmt_mib(sample.get('max_stage_inflight', 0.0))}, "
+                f"max_remote_inflight={fmt_mib(sample.get('max_remote_inflight', 0.0))}, "
+                f"last_buffer_dirty={fmt_mib(sample.get('last_buffer_dirty', 0.0))}"
+            )
+        freeze_size = metrics.get("brewfs_writeback_freeze_size_ops_total", 0.0)
+        freeze_flush = metrics.get("brewfs_writeback_freeze_explicit_flush_ops_total", 0.0)
+        freeze_auto = metrics.get("brewfs_writeback_freeze_auto_ops_total", 0.0)
+        freeze_max = metrics.get("brewfs_writeback_freeze_max_unflushed_ops_total", 0.0)
+        freeze_age = metrics.get("brewfs_writeback_freeze_commit_age_ops_total", 0.0)
         avg_batch_blocks = batch_blocks / batch_ops if batch_ops else 0.0
         partial_tail_ratio = partial_tail / batch_ops if batch_ops else 0.0
         rel = path.relative_to(artifact_dir)
@@ -1857,6 +2127,10 @@ if brewfs_stats_paths:
             f"flush_wait={int(flush_wait_ops)} ops/{flush_wait_s:.2f}s/{int(flush_wait_slices)} slices, "
             f"stage_fail={int(stage_failures)}, commit_before_stage={int(commit_before_stage)}, "
             f"remote_inflight={fmt_mib(remote_inflight)}, "
+            f"buffer_sleep=soft {int(buffer_soft_ops)}/{buffer_soft_ms:.1f}ms "
+            f"moderate {int(buffer_moderate_ops)}/{buffer_moderate_ms:.1f}ms "
+            f"hard {int(buffer_hard_ops)}/{buffer_hard_ms:.1f}ms, "
+            f"{sample_detail}, "
             f"slices=create {int(slice_create)}/reuse {int(slice_reuse)}/"
             f"reject_unique {int(reject_older)}/reject_prefix {int(reject_prefix)}, "
             f"live_slices={int(live_slices)} avg={fmt_avg_mib(live_dirty, live_slices)}, "
@@ -1928,7 +2202,7 @@ if fio_json_paths:
                 if p50 < 10 and p99 > 200:
                     findings.append(f"- **{name}**: Write stall p50={p50:.1f}ms p99={p99:.0f}ms — auto_flush/buffer-limit triggers S3 upload backpressure.")
                 elif p99 > 500:
-                    findings.append(f"- **{name}**: Write P99={p99:.0f}ms > 500ms — consider increasing write buffer or S3 concurrency.")
+                    findings.append(f"- **{name}**: Write P99={p99:.0f}ms > 500ms — inspect writeback samples and tune upload queue depth, slice age, or write buffer.")
 
         if findings:
             lines.extend(["", "## Bottleneck Analysis", ""])
@@ -1991,6 +2265,9 @@ run_perf_suite() {
                 ;;
             fio-bigread)
                 run_fio_profile "$tool" bigread || status=1
+                ;;
+            object-put-bench)
+                run_object_put_bench || status=1
                 ;;
             *)
                 err "不支持的 PERF_TOOLS 项: $tool"

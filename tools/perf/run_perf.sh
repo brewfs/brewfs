@@ -17,6 +17,9 @@
 #   PERF_EVENT=task-clock         # Software event used for on-CPU profiling.
 #   PERF_MMAP_PAGES=8             # Smaller perf mmap buffer for space-constrained hosts.
 #   KEEP_PERF_DATA=1             # Preserve perf.data; default removes it after flame/report generation.
+#   PERF_WORK_BASE=/mnt/perf     # Base directory for mount/cache staging.
+#   PERF_WARMUP_DRAIN=false      # Skip post-warmup writeback drain before measured fio.
+#   PERF_POST_FIO_DRAIN=false    # Skip writeback drain between write-heavy fio workloads.
 #
 # For detailed libc frames, install matching system debuginfo first:
 #   Ubuntu/Debian: apt-get install libc6-dbg
@@ -24,6 +27,7 @@
 #
 # Results are saved to: tools/perf/results/<timestamp>/
 #   ├── config.yaml       # Mount config used
+#   ├── diagnostics/      # BrewFS .stats snapshots
 #   ├── flame/            # Flame graphs (.svg) and folded stacks
 #   ├── fio/              # Fio JSON outputs
 #   ├── llm-report.txt    # LLM-readable analysis
@@ -39,8 +43,11 @@ RUN_TS="$(date +%Y%m%d-%H%M%S)"
 RESULTS_BASE="$SCRIPT_DIR/results"
 RUN_DIR="$RESULTS_BASE/$RUN_TS"
 
-# Working directory (temp, cleaned up)
-WORK_DIR="/tmp/brewfs-perf-$$"
+# Working directory (temp, cleaned up). Keep it under the repository target
+# directory by default: commit-before-upload staging can need multiple GiB, and
+# /tmp is often backed by a much smaller root partition in CI/dev hosts.
+WORK_BASE="${PERF_WORK_BASE:-$PROJECT_DIR/target/perf-work}"
+WORK_DIR="$WORK_BASE/$RUN_TS-$$"
 CONFIG_PATH="$WORK_DIR/config.yaml"
 MNT_DIR="$WORK_DIR/mnt"
 DATA_DIR="$WORK_DIR/data"
@@ -62,16 +69,28 @@ VERIFY_CACHE_CHECKSUM="${BREWFS_VERIFY_CACHE_CHECKSUM:-full}"
 WRITEBACK_MODE="${BREWFS_WRITEBACK_MODE:-commit_before_upload}"
 WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
 READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-4294967296}"
+READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-4294967296}"
 WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-4294967296}"
+WRITE_SSD_BYTES="${BREWFS_WRITE_SSD_BYTES:-4294967296}"
 MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-12884901888}"
+DIRTY_SLICE_TARGET_SIZE="${BREWFS_DIRTY_SLICE_TARGET_SIZE:-67108864}"
+DIRTY_SLICE_MAX_AGE_MS="${BREWFS_DIRTY_SLICE_MAX_AGE_MS:-2000}"
 FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-6}"
 RANGE_BACKGROUND_PREFETCH="${BREWFS_RANGE_BACKGROUND_PREFETCH:-true}"
 UPLOAD_CONCURRENCY="${BREWFS_UPLOAD_CONCURRENCY:-32}"
+WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-4}"
+WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-1073741824}"
+WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-2147483648}"
 PERF_RECORD_FREQ="${PERF_RECORD_FREQ:-49}"
 PERF_EVENT="${PERF_EVENT:-task-clock}"
 PERF_MMAP_PAGES="${PERF_MMAP_PAGES:-8}"
 PERF_FIO_WORKLOADS="${PERF_FIO_WORKLOADS:-seqwrite seqread randwrite randread randrw}"
 PERF_FIO_DIRECT="${PERF_FIO_DIRECT:-0}"
+PERF_WARMUP_DRAIN="${PERF_WARMUP_DRAIN:-true}"
+PERF_WARMUP_DRAIN_TIMEOUT_SECS="${PERF_WARMUP_DRAIN_TIMEOUT_SECS:-180}"
+PERF_WARMUP_DRAIN_INTERVAL_SECS="${PERF_WARMUP_DRAIN_INTERVAL_SECS:-2}"
+PERF_WARMUP_DRAIN_PENDING_BYTES="${PERF_WARMUP_DRAIN_PENDING_BYTES:-0}"
+PERF_POST_FIO_DRAIN="${PERF_POST_FIO_DRAIN:-true}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -136,10 +155,11 @@ if [ "$BUILD" -eq 1 ]; then
     # Split debuginfo keeps the binary smaller and perf can still find symbols.
     RUSTFLAGS="-C force-frame-pointers=yes -C debuginfo=2 -C split-debuginfo=off" \
         CARGO_PROFILE_RELEASE_DEBUG=2 \
-        cargo build --release -p brewfs --features profiling 2>&1 | grep -E "error|warning|Finished"
-    BINARY="$PROJECT_DIR/target/release/brewfs"
+        cargo build --release -p brewfs --features profiling 2>&1 | grep -E "error|warning|Finished" || true
+    BINARY="${CARGO_TARGET_DIR:-$PROJECT_DIR/target}/release/brewfs"
 else
-    BINARY="$PROJECT_DIR/target/release/brewfs"
+    BINARY="${CARGO_TARGET_DIR:-$PROJECT_DIR/target}/release/brewfs"
+    [ -x "$BINARY" ] || { err "binary not found: $BINARY"; exit 1; }
 fi
 [ -x "$BINARY" ] || { err "binary not found: $BINARY"; exit 1; }
 
@@ -155,10 +175,11 @@ fi
 info "setting up environment..."
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" "$MNT_DIR" "$DATA_DIR" "$CACHE_DIR"
-mkdir -p "$RUN_DIR/flame" "$RUN_DIR/fio"
+mkdir -p "$RUN_DIR/flame" "$RUN_DIR/fio" "$RUN_DIR/diagnostics"
 
 FLAME_DIR="$RUN_DIR/flame"
 FIO_DIR="$RUN_DIR/fio"
+DIAG_DIR="$RUN_DIR/diagnostics"
 
 # ---- Start infrastructure ----
 info "starting redis + rustfs..."
@@ -217,8 +238,12 @@ fuse:
 cache:
   root: $CACHE_DIR
   read_memory_bytes: $READ_MEMORY_BYTES
+  read_ssd_bytes: $READ_SSD_BYTES
   write_memory_bytes: $WRITE_MEMORY_BYTES
+  write_ssd_bytes: $WRITE_SSD_BYTES
   memory_budget_bytes: $MEMORY_BUDGET_BYTES
+  dirty_slice_target_size: $DIRTY_SLICE_TARGET_SIZE
+  dirty_slice_max_age_ms: $DIRTY_SLICE_MAX_AGE_MS
   upload_concurrency: $UPLOAD_CONCURRENCY
   range_background_prefetch: $RANGE_BACKGROUND_PREFETCH
   compression: $COMPRESSION
@@ -229,7 +254,7 @@ YEOF
 
 # Save a copy of the config to results
 cp "$CONFIG_PATH" "$RUN_DIR/config.yaml"
-info "config: compression=$COMPRESSION verify_cache_checksum=$VERIFY_CACHE_CHECKSUM writeback_mode=$WRITEBACK_MODE upload_concurrency=$UPLOAD_CONCURRENCY range_background_prefetch=$RANGE_BACKGROUND_PREFETCH"
+info "config: compression=$COMPRESSION verify_cache_checksum=$VERIFY_CACHE_CHECKSUM writeback_mode=$WRITEBACK_MODE upload_concurrency=$UPLOAD_CONCURRENCY dirty_slice_target_size=$DIRTY_SLICE_TARGET_SIZE writeback_upload_concurrency=$WRITEBACK_UPLOAD_CONCURRENCY pending_soft=$WRITEBACK_RECENT_PENDING_SOFT_BYTES pending_hard=$WRITEBACK_RECENT_PENDING_HARD_BYTES range_background_prefetch=$RANGE_BACKGROUND_PREFETCH"
 
 # ---- Mount ----
 info "mounting brewfs..."
@@ -240,8 +265,11 @@ AWS_ACCESS_KEY_ID="$RUSTFS_ACCESS_KEY" \
     AWS_SECRET_ACCESS_KEY="$RUSTFS_SECRET_KEY" \
     AWS_DEFAULT_REGION=us-east-1 \
     AWS_EC2_METADATA_DISABLED=true \
-    RUST_LOG=error \
-    "$BINARY" mount --privileged --config "$CONFIG_PATH" 2>/dev/null &
+    BREWFS_WRITEBACK_UPLOAD_CONCURRENCY="$WRITEBACK_UPLOAD_CONCURRENCY" \
+    BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES="$WRITEBACK_RECENT_PENDING_SOFT_BYTES" \
+    BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES="$WRITEBACK_RECENT_PENDING_HARD_BYTES" \
+    RUST_LOG="${RUST_LOG:-error}" \
+    "$BINARY" mount --privileged --config "$CONFIG_PATH" >"$RUN_DIR/brewfs-mount.log" 2>&1 &
 BREWFS_PID=$!
 
 for i in $(seq 1 15); do
@@ -251,33 +279,131 @@ done
 mount | grep -q " on $MNT_DIR " || { err "mount failed"; exit 1; }
 info "mounted at $MNT_DIR"
 
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+stats_snapshot() {
+    local label="$1"
+    local stats_path="$MNT_DIR/.stats"
+    if [ -e "$stats_path" ]; then
+        tr -d '\000' <"$stats_path" >"$DIAG_DIR/stats-${label}.txt" 2>/dev/null || true
+    fi
+}
+
+stat_value() {
+    local metric="$1"
+    local stats_path="$MNT_DIR/.stats"
+    local value
+    [ -e "$stats_path" ] || { printf '0'; return 0; }
+    value="$(tr -d '\000' <"$stats_path" 2>/dev/null | awk -v metric="$metric" '$1 == metric { print $2; found=1; exit } END { if (!found) print "0" }')"
+    case "$value" in
+        ''|*[!0-9]*) printf '0' ;;
+        *) printf '%s' "$value" ;;
+    esac
+}
+
+max_u64() {
+    if [ "$1" -ge "$2" ]; then
+        printf '%s' "$1"
+    else
+        printf '%s' "$2"
+    fi
+}
+
+wait_for_writeback_drain() {
+    local label="$1"
+    local timeout="$2"
+    local interval="$3"
+    local threshold="$4"
+    local start now elapsed pending dirty buffer_dirty drain_bytes
+
+    start="$(date +%s)"
+    while true; do
+        pending="$(stat_value brewfs_writeback_recent_pending_upload_bytes)"
+        dirty="$(stat_value brewfs_writeback_dirty_bytes)"
+        buffer_dirty="$(stat_value brewfs_buffer_dirty_bytes)"
+        drain_bytes="$(max_u64 "$pending" "$dirty")"
+        drain_bytes="$(max_u64 "$drain_bytes" "$buffer_dirty")"
+        now="$(date +%s)"
+        elapsed="$((now - start))"
+
+        if [ "$drain_bytes" -le "$threshold" ]; then
+            info "writeback drained after $label: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s"
+            stats_snapshot "${label}-drained"
+            return 0
+        fi
+
+        if [ "$elapsed" -ge "$timeout" ]; then
+            warn "writeback drain timed out after $label: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s"
+            stats_snapshot "${label}-drain-timeout"
+            return 1
+        fi
+
+        if [ $((elapsed % 10)) -eq 0 ]; then
+            info "  waiting for writeback drain after $label: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s"
+        fi
+        sleep "$interval"
+    done
+}
+
 # ---- Warmup ----
 info "warming up filesystem..."
 fio --name=warmup --directory="$MNT_DIR" --rw=write --bs=4m --size=256m \
-    --numjobs=1 --ioengine=sync --direct=0 --runtime=10 --time_based \
+    --numjobs=1 --ioengine=sync --direct=0 \
     --group_reporting --eta=never --output-format=terse 2>/dev/null || true
 rm -rf "$MNT_DIR"/* 2>/dev/null || true
+stats_snapshot "warmup-after-rm"
+if truthy "$PERF_WARMUP_DRAIN"; then
+    wait_for_writeback_drain "warmup" "$PERF_WARMUP_DRAIN_TIMEOUT_SECS" "$PERF_WARMUP_DRAIN_INTERVAL_SECS" "$PERF_WARMUP_DRAIN_PENDING_BYTES" || true
+fi
 
 # ---- Helper: run fio and print summary ----
 run_fio() {
     local label="$1"; shift
     info "  fio $label..."
     local tmp_json="$FIO_DIR/fio-${label}.json.tmp"
+    local tmp_err="$FIO_DIR/fio-${label}.err.tmp"
+    local status=0
     fio "$@" --directory="$MNT_DIR" --runtime="$RUNTIME" --time_based \
-        --group_reporting --eta=never --output-format=json 2>/dev/null \
-        | tee "$tmp_json" \
-        | python3 -c "
+        --group_reporting --eta=never --output-format=json >"$tmp_json" 2>"$tmp_err" \
+        || status=$?
+    python3 -c "
 import json,sys
-d=json.load(sys.stdin)
+s=sys.stdin.read()
+start=s.find('{')
+if start < 0:
+    raise SystemExit(0)
+d=json.loads(s[start:])
 for j in d.get('jobs',[]):
+    if j.get('error', 0):
+        print(f\"    error: fio job failed with code {j.get('error')}\")
     for op in ('read','write'):
         bw=j.get(op,{}).get('bw_bytes',0)
         if bw>0:
             iops=j[op]['iops']
             lat=j[op]['lat_ns']['mean']/1e6
             print(f'    {op}: {bw/1024/1024:.0f} MiB/s, iops={iops:.1f}, lat_avg={lat:.2f}ms')
-" 2>/dev/null || true
+" <"$tmp_json" 2>/dev/null || true
+    if [ "$status" -ne 0 ]; then
+        warn "  fio $label exited with status $status"
+        if [ -s "$tmp_err" ]; then
+            sed 's/^/    /' "$tmp_err" | tail -20
+        fi
+    fi
+    stats_snapshot "fio-${label}-after"
     mv "$tmp_json" "$FIO_DIR/fio-${label}.json" 2>/dev/null || true
+    mv "$tmp_err" "$FIO_DIR/fio-${label}.err" 2>/dev/null || true
+    if truthy "$PERF_POST_FIO_DRAIN"; then
+        case "$label" in
+            seqwrite|randwrite|randrw)
+                wait_for_writeback_drain "fio-$label" "$PERF_WARMUP_DRAIN_TIMEOUT_SECS" "$PERF_WARMUP_DRAIN_INTERVAL_SECS" "$PERF_WARMUP_DRAIN_PENDING_BYTES" || true
+                ;;
+        esac
+    fi
 }
 
 run_fio_suite() {

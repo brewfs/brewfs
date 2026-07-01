@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$(realpath "$SCRIPT_DIR/..")"
-PROJECT_DIR="$(realpath "$DOCKER_DIR/../..")"
+PROJECT_DIR="$(realpath "$DOCKER_DIR/..")"
 
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.redis-perf.yml"
 ARTIFACTS_DIR="$SCRIPT_DIR/artifacts"
@@ -30,7 +30,7 @@ usage() {
   --local-fs                 改为使用本地目录作为对象存储
   --s3-writeback             启用 S3 commit-before-upload 写回语义（等价于 BREWFS_WRITEBACK_MODE=commit_before_upload）
   --writeback-throughput-profile
-                             启用 S3 writeback 全场景吞吐 profile（4GiB read/write memory+SSD cache, 12GiB memory budget, S3 max concurrency=16, writer upload_concurrency=32, writeback upload concurrency=6, pending soft/hard=1GiB/2GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=6, fuse max_background=512, fio prefill drain+remount, write fio post-drain）
+                             启用 S3 writeback 全场景吞吐 profile（cache root=/var/lib/brewfs/cache, 4GiB read/write memory+SSD cache, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=4, pending soft/hard=1GiB/2GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=6, fuse max_background=512, fio prefill/post-write drain+remount）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --brewfs-bench           额外运行一次宿主机 cargo bench --bench brewfs_bench
   --bench-args "<args...>"   透传给 cargo bench 之后的 Criterion 参数
@@ -38,7 +38,7 @@ usage() {
   -h, --help                 显示帮助
 
 支持的 PERF_TOOLS:
-  fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw fio dirstress dirperf metaperf looptest stress-ng
+  fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw fio dirstress dirperf metaperf looptest object-put-bench
 
 可通过环境变量覆盖各工具参数:
   PERF_DIRSTRESS_ARGS PERF_DIRPERF_ARGS PERF_METAPERF_ARGS PERF_LOOPTEST_ARGS
@@ -47,15 +47,20 @@ usage() {
   PERF_FIO_DIRECT_MATRIX="0 1" 可对 fio profile 显式跑 buffered/direct 矩阵（默认不启用）
   PERF_FIO_{SEQREAD,SEQWRITE,RANDREAD,RANDWRITE,RANDRW,BIGREAD,BIGWRITE}_{ARGS,BS,SIZE,NUMJOBS,IOENGINE,IODEPTH,DIRECT,DIRECT_MATRIX,RUNTIME}
   PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS PERF_FIO_PREFILL_DRAIN_PENDING_BYTES
-  PERF_FIO_POST_WRITE_DRAIN PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES
-  PERF_FIO_COLD_READ_CLEAR_CACHE PERF_FIO_DROP_CACHES PERF_STATS_READ_TIMEOUT_SECS
+  PERF_FIO_POST_WRITE_DRAIN PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES
+  PERF_FIO_COLD_READ_CLEAR_CACHE PERF_FIO_DROP_CACHES
+  PERF_OBJECT_PUT_DURATION_SECS PERF_OBJECT_PUT_OBJECTS PERF_OBJECT_PUT_OBJECT_SIZE PERF_OBJECT_PUT_WORKERS PERF_OBJECT_PUT_PREFIX
+  BREWFS_CHUNK_SIZE BREWFS_BLOCK_SIZE
   BREWFS_READ_MEMORY_BYTES BREWFS_READ_SSD_BYTES BREWFS_WRITE_MEMORY_BYTES BREWFS_WRITE_SSD_BYTES
   BREWFS_DIRTY_SLICE_TARGET_SIZE BREWFS_DIRTY_SLICE_MAX_AGE_MS BREWFS_UPLOAD_CONCURRENCY
   BREWFS_PREFETCH_ENABLED BREWFS_PREFETCH_MAX_BYTES BREWFS_PREFETCH_CONCURRENCY BREWFS_RANGE_BACKGROUND_PREFETCH BREWFS_MEMORY_BUDGET_BYTES
-  BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_READ_DIRECT_IO
+  BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_READ_DIRECT_IO BREWFS_FUSE_WRITEBACK
   BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
   BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
   BREWFS_WRITEBACK_PERSIST_SYNC
+  BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD=false 可关闭上传后最近写内存读缓存
+  BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD=true 可把上传后写缓存同时持久化到本地磁盘读缓存
+  BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS
   BREWFS_VERIFY_CACHE_CHECKSUM
   BREWFS_UPLOAD_LIMIT_MIBPS BREWFS_DOWNLOAD_LIMIT_MIBPS
   BREWFS_METADATA_OPEN_CACHE_TTL_MS BREWFS_METADATA_OPEN_CACHE_CAPACITY
@@ -64,6 +69,7 @@ usage() {
   REDIS_PERF_DATA_MOUNT 可把 Redis AOF/RDB 数据挂到大容量目录或命名卷（例如 /data/slayer/brewfs-perf-redis）
   PERF_FIO_COLD_READ=true 可在读类 fio 预填充后等待写回 drain、清理 BrewFS 本地 cache root 并重挂载，再执行读测试
   PERF_FIO_DROP_CACHES=true 可在 cold-read 重挂载前尝试 drop_caches（失败时继续）
+  BREWFS_FUSE_READ_DIRECT_IO=0 可关闭只读句柄默认 direct_io
   PERF_LOG_TO_CONSOLE=true 可恢复压测工具日志输出到终端（默认关闭）
 EOF
     exit 0
@@ -144,6 +150,7 @@ fi
 export BREWFS_WRITEBACK_MODE="$BREWFS_WRITEBACK_MODE_VALUE"
 
 if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
+    export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
     export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-4294967296}"
     export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-4294967296}"
     export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-4294967296}"
@@ -152,6 +159,7 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export BREWFS_S3_MAX_CONCURRENCY="${BREWFS_S3_MAX_CONCURRENCY:-16}"
     export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-6}"
     export BREWFS_UPLOAD_CONCURRENCY="${BREWFS_UPLOAD_CONCURRENCY:-32}"
+    export BREWFS_DIRTY_SLICE_TARGET_SIZE="${BREWFS_DIRTY_SLICE_TARGET_SIZE:-67108864}"
     export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-1073741824}"
     export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-2147483648}"
     export BREWFS_WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
@@ -218,6 +226,7 @@ run_brewfs_bench() {
     fi
 
     info "运行宿主机 brewfs_bench（redis backend）"
+    set +e
     (
         cd "$PROJECT_DIR"
         env \
@@ -234,11 +243,15 @@ run_brewfs_bench() {
             AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
             cargo bench -p brewfs --bench brewfs_bench -- "${bench_args[@]}"
     ) 2>&1 | tee "$bench_artifact_dir/console.log"
+    local bench_status="${PIPESTATUS[0]}"
+    set -e
 
     if [[ -d "$PROJECT_DIR/target/criterion" ]]; then
         rm -rf "$bench_artifact_dir/criterion"
         cp -a "$PROJECT_DIR/target/criterion" "$bench_artifact_dir/criterion" || true
     fi
+
+    return "$bench_status"
 }
 
 write_warning_summary() {
@@ -248,8 +261,12 @@ write_warning_summary() {
     {
         printf 'pattern\tcount\n'
         for pattern in WARNING timeout 'slow request' 'slow operation'; do
+            local regex="$pattern"
+            if [[ "$pattern" == "timeout" ]]; then
+                regex='(^|[^[:alnum:]_=-])(timeout|timed out|超时)([^[:alnum:]_=-]|$)'
+            fi
             local count
-            count=$(awk -v pat="$pattern" 'BEGIN { IGNORECASE = 1 } $0 ~ pat { c++ } END { print c + 0 }' "$log_path")
+            count=$(awk -v pat="$regex" 'BEGIN { IGNORECASE = 1 } $0 ~ pat { c++ } END { print c + 0 }' "$log_path")
             printf '%s\t%s\n' "$pattern" "$count"
         done
     } >"$summary_path"
@@ -433,13 +450,20 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_DROP_CACHES \
     -e PERF_FIO_COLD_READ_DROP_CACHES \
     -e PERF_FIO_COLD_READ_CLEAR_CACHE \
-    -e PERF_STATS_READ_TIMEOUT_SECS \
+    -e PERF_OBJECT_PUT_DURATION_SECS \
+    -e PERF_OBJECT_PUT_OBJECTS \
+    -e PERF_OBJECT_PUT_OBJECT_SIZE \
+    -e PERF_OBJECT_PUT_WORKERS \
+    -e PERF_OBJECT_PUT_PREFIX \
     -e PERF_FUSE_OPS_LOG \
     -e BREWFS_FUSE_OP_LOG \
     -e BREWFS_FUSE_WORKERS \
     -e BREWFS_FUSE_MAX_BACKGROUND \
     -e BREWFS_FUSE_READ_DIRECT_IO \
+    -e BREWFS_FUSE_WRITEBACK \
     -e BREWFS_NOFILE_LIMIT \
+    -e BREWFS_CHUNK_SIZE \
+    -e BREWFS_BLOCK_SIZE \
     -e BREWFS_S3_PART_SIZE \
     -e BREWFS_S3_MAX_CONCURRENCY \
     -e BREWFS_CACHE_ROOT \
@@ -461,6 +485,10 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES \
     -e BREWFS_CACHED_BLOCK_ASSEMBLER \
     -e BREWFS_WRITEBACK_PERSIST_SYNC \
+    -e BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD \
+    -e BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD \
+    -e BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS \
+    -e BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS \
     -e BREWFS_VERIFY_CACHE_CHECKSUM \
     -e BREWFS_UPLOAD_LIMIT_MIBPS \
     -e BREWFS_DOWNLOAD_LIMIT_MIBPS \

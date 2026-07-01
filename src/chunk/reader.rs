@@ -13,6 +13,8 @@ use futures_util::stream::FuturesUnordered;
 use std::cmp::{max, min};
 use tracing::Instrument;
 
+type VisibleRead = (u64, u64, SliceDesc);
+
 /// A Send-able wrapper around a mutable buffer pointer.
 ///
 /// SAFETY: The caller must guarantee that:
@@ -30,6 +32,25 @@ impl SendBuf {
     unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
+}
+
+fn visible_reads(slices: &[SliceDesc], offset: u64, len: usize) -> Vec<VisibleRead> {
+    let mut intervals = Intervals::new(offset, offset + len as u64);
+    let mut need_read = Vec::new();
+
+    for slice in slices.iter().copied().rev() {
+        intervals.cut_each(slice.offset, slice.offset + slice.length, |l, r| {
+            need_read.push((l, r, slice));
+        });
+        if intervals.is_empty() {
+            break;
+        }
+    }
+
+    if need_read.len() > 1 {
+        need_read.sort_by_key(|(l, _, _)| *l);
+    }
+    need_read
 }
 
 pub(crate) struct DataFetcher<'a, B, M> {
@@ -88,7 +109,6 @@ where
         fields(chunk_id = self.id, offset = offset.0, len, need_reads = tracing::field::Empty)
     )]
     pub(crate) async fn read_at(&mut self, offset: ChunkOffset, len: usize) -> Result<Vec<u8>> {
-        let offset = offset.get();
         if len == 0 {
             return Ok(Vec::new());
         }
@@ -97,26 +117,35 @@ where
             "DataFetcher::read_at requires prepare_slices() to run first"
         );
 
+        Self::read_at_from_slices(
+            self.layout,
+            self.id,
+            self.backend,
+            &self.slices,
+            offset,
+            len,
+        )
+        .await
+    }
+
+    pub(crate) async fn read_at_from_slices(
+        layout: ChunkLayout,
+        chunk_id: u64,
+        backend: &Backend<B, M>,
+        slices: &[SliceDesc],
+        offset: ChunkOffset,
+        len: usize,
+    ) -> Result<Vec<u8>> {
+        let offset = offset.get();
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
         let mut buf = vec![0; len];
 
         let need_read = tracing::trace_span!("fetch.read_at.build_need_read", offset, len)
-            .in_scope(|| {
-                let mut intervals = Intervals::new(offset, offset + len as u64);
-                let mut need_read = Vec::new();
-
-                for slice in self.slices.iter().copied().rev() {
-                    for (l, r) in intervals.cut(slice.offset, slice.offset + slice.length) {
-                        need_read.push((l, r, slice));
-                    }
-                }
-
-                need_read.sort_by_key(|(l, _, _)| *l);
-                need_read
-            });
+            .in_scope(|| visible_reads(slices, offset, len));
         tracing::Span::current().record("need_reads", need_read.len());
-
-        let layout = self.layout;
-        let backend = self.backend;
 
         {
             let mut cursor = 0;
@@ -153,6 +182,7 @@ where
                     let block_offset = block.offset;
                     let span = tracing::trace_span!(
                         "fetch.read_block",
+                        chunk_id,
                         slice_id,
                         block_idx = block.index.as_u32(),
                     );
@@ -201,8 +231,7 @@ where
             self.prepared,
             "DataFetcher::read_at_into requires prepare_slices() to run first"
         );
-
-        Self::read_at_into_prepared(
+        Self::read_at_into_from_slices(
             self.layout,
             self.id,
             self.backend,
@@ -213,15 +242,9 @@ where
         .await
     }
 
-    #[tracing::instrument(
-        name = "DataFetcher.read_at_into_prepared",
-        level = "trace",
-        skip(backend, slices, buf),
-        fields(chunk_id = id, offset = offset.0, len = buf.len(), slice_count = slices.len())
-    )]
-    pub(crate) async fn read_at_into_prepared(
+    pub(crate) async fn read_at_into_from_slices(
         layout: ChunkLayout,
-        id: u64,
+        chunk_id: u64,
         backend: &Backend<B, M>,
         slices: &[SliceDesc],
         offset: ChunkOffset,
@@ -233,18 +256,7 @@ where
             return Ok(());
         }
 
-        let need_read = {
-            let mut intervals = Intervals::new(offset, offset + len as u64);
-            let mut need_read = Vec::new();
-            for slice in slices.iter().copied().rev() {
-                for (l, r) in intervals.cut(slice.offset, slice.offset + slice.length) {
-                    need_read.push((l, r, slice));
-                }
-            }
-            need_read.sort_by_key(|(l, _, _)| *l);
-            need_read
-        };
-
+        let need_read = visible_reads(slices, offset, len);
         let mut cursor = 0;
         let mut tail = buf;
         let mut futures = FuturesUnordered::new();
@@ -274,12 +286,21 @@ where
                     ptr: block_buf.as_mut_ptr(),
                     len: block_buf.len(),
                 };
-                futures.push(async move {
-                    backend
-                        .store()
-                        .read_range(block_key, block_offset, unsafe { send_buf.as_mut_slice() })
-                        .await
-                });
+                let span = tracing::trace_span!(
+                    "fetch.read_block_into",
+                    chunk_id,
+                    slice_id,
+                    block_idx = block.index.as_u32(),
+                );
+                futures.push(
+                    async move {
+                        backend
+                            .store()
+                            .read_range(block_key, block_offset, unsafe { send_buf.as_mut_slice() })
+                            .await
+                    }
+                    .instrument(span),
+                );
             }
         }
 
@@ -288,6 +309,18 @@ where
         }
         tail.fill(0);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn read_at_into_prepared(
+        layout: ChunkLayout,
+        chunk_id: u64,
+        backend: &Backend<B, M>,
+        slices: &[SliceDesc],
+        offset: ChunkOffset,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        Self::read_at_into_from_slices(layout, chunk_id, backend, slices, offset, buf).await
     }
 }
 
@@ -300,6 +333,46 @@ mod tests {
     use crate::meta::factory::create_meta_store_from_url;
     use crate::vfs::backend::Backend;
     use std::sync::Arc;
+
+    #[test]
+    fn test_visible_reads_latest_slice_covers_range() {
+        let old = SliceDesc {
+            slice_id: 1,
+            chunk_id: 9,
+            offset: 0,
+            length: 4096,
+        };
+        let new = SliceDesc {
+            slice_id: 2,
+            chunk_id: 9,
+            offset: 0,
+            length: 4096,
+        };
+
+        let reads = visible_reads(&[old, new], 512, 1024);
+
+        assert_eq!(reads, vec![(512, 1536, new)]);
+    }
+
+    #[test]
+    fn test_visible_reads_overlapping_slices_latest_wins() {
+        let old = SliceDesc {
+            slice_id: 1,
+            chunk_id: 9,
+            offset: 0,
+            length: 2048,
+        };
+        let new = SliceDesc {
+            slice_id: 2,
+            chunk_id: 9,
+            offset: 1024,
+            length: 2048,
+        };
+
+        let reads = visible_reads(&[old, new], 0, 3072);
+
+        assert_eq!(reads, vec![(0, 1024, old), (1024, 3072, new)]);
+    }
 
     #[tokio::test]
     async fn test_reader_zero_fills_holes() {

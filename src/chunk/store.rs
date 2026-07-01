@@ -327,6 +327,10 @@ pub struct BlockStoreConfig {
     /// Block compression algorithm for storage and transfer.
     /// Blocks are compressed before S3 upload and decompressed on read.
     pub compression: Compression,
+    /// Whether freshly uploaded write blocks should be inserted into the read cache.
+    pub populate_write_cache_after_upload: bool,
+    /// Whether uploaded write blocks should also be persisted into the disk read cache.
+    pub persist_write_cache_after_upload: bool,
 }
 
 impl Default for BlockStoreConfig {
@@ -338,6 +342,8 @@ impl Default for BlockStoreConfig {
             page_cache_capacity: 4096,   // 4096 pages × 64KB = 256MB
             range_background_prefetch: true,
             compression: Compression::Lz4,
+            populate_write_cache_after_upload: true,
+            persist_write_cache_after_upload: false,
         }
     }
 }
@@ -390,6 +396,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn new_async(client: ObjectClient<B>) -> anyhow::Result<Self> {
         Self::new_with_configs_async(
             client,
@@ -474,10 +481,17 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     }
 
     async fn populate_write_cache_after_upload(&self, key: String, data: Bytes) {
-        // Make freshly uploaded data immediately visible in the hottest read
-        // tier before returning to the caller. Disk persistence stays best-
-        // effort so foreground uploads are not blocked by local cache I/O.
-        self.block_cache.insert_hot(&key, data.clone()).await;
+        // Make freshly uploaded data immediately visible through a protected
+        // read-after-write tier. The normal hot cache uses admission control,
+        // and older read-hot blocks can otherwise reject newly written data
+        // before it has built read frequency.
+        self.block_cache
+            .insert_recent_write_hot(&key, data.clone())
+            .await;
+
+        if !self.config.persist_write_cache_after_upload {
+            return;
+        }
 
         // Persist to disk if a write permit is available. Skipping under
         // extreme I/O pressure avoids queuing hundreds of background tasks
@@ -575,6 +589,21 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
 }
 
 impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
+    fn concat_bytes(parts: &[Bytes]) -> Bytes {
+        match parts {
+            [] => Bytes::new(),
+            [single] => single.clone(),
+            _ => {
+                let total_len = parts.iter().map(|part| part.len()).sum::<usize>();
+                let mut out = Vec::with_capacity(total_len);
+                for part in parts {
+                    out.extend_from_slice(part);
+                }
+                Bytes::from(out)
+            }
+        }
+    }
+
     async fn write_fresh_vectored_inner(
         &self,
         key: BlockKey,
@@ -595,38 +624,50 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         }
         parts.extend(chunks);
 
-        // Assemble full block (uncompressed) for cache population.
-        let full_block = Bytes::from(
-            parts
-                .iter()
-                .flat_map(|b| b.iter().copied())
-                .collect::<Vec<_>>(),
-        );
-
-        // Compress for S3 upload if configured (Cow avoids copy when incompressible)
-        let compressed = compress(&full_block, self.config.compression);
-        let upload_bytes = match compressed {
-            std::borrow::Cow::Borrowed(_) => full_block.clone(),
-            std::borrow::Cow::Owned(v) => Bytes::from(v),
+        let cache_block = if matches!(self.config.compression, Compression::None) {
+            let full_block = Self::concat_bytes(&parts);
+            let upload_len = full_block.len();
+            self.bandwidth.acquire_upload(upload_len).await;
+            self.object_metrics
+                .record_put_prepare(prepare_started.elapsed());
+            let started = Instant::now();
+            self.client
+                .put_object_vectored(&key_str, vec![full_block.clone()])
+                .await
+                .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
+            self.object_metrics
+                .record_put(upload_len as u64, started.elapsed());
+            full_block
+        } else {
+            let full_block = Self::concat_bytes(&parts);
+            let compressed = compress(&full_block, self.config.compression);
+            let upload_bytes = match compressed {
+                std::borrow::Cow::Borrowed(_) => full_block.clone(),
+                std::borrow::Cow::Owned(v) => Bytes::from(v),
+            };
+            self.bandwidth.acquire_upload(upload_bytes.len()).await;
+            let upload_len = upload_bytes.len() as u64;
+            self.object_metrics
+                .record_put_prepare(prepare_started.elapsed());
+            let started = Instant::now();
+            self.client
+                .put_object_vectored(&key_str, vec![upload_bytes])
+                .await
+                .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
+            self.object_metrics
+                .record_put(upload_len, started.elapsed());
+            full_block
         };
-        // Rate limit upload bandwidth
-        self.bandwidth.acquire_upload(upload_bytes.len()).await;
-        let upload_len = upload_bytes.len() as u64;
-        self.object_metrics
-            .record_put_prepare(prepare_started.elapsed());
-        let started = Instant::now();
-        self.client
-            .put_object_vectored(&key_str, vec![upload_bytes])
-            .await
-            .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
-        self.object_metrics
-            .record_put(upload_len, started.elapsed());
 
-        let cache_started = Instant::now();
-        self.populate_write_cache_after_upload(key_str, full_block)
-            .await;
-        self.object_metrics
-            .record_put_cache(cache_started.elapsed());
+        if self.config.populate_write_cache_after_upload
+            && cache_block.len() <= self.config.block_size
+        {
+            let cache_started = Instant::now();
+            self.populate_write_cache_after_upload(key_str, cache_block)
+                .await;
+            self.object_metrics
+                .record_put_cache(cache_started.elapsed());
+        }
 
         Ok(total_len as u64)
     }
@@ -1388,7 +1429,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_write_fresh_range_populates_hot_cache_before_return()
+    async fn test_write_fresh_range_write_cache_population_is_configurable()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::cadapter::client::{ObjectBackend, ObjectClient};
         use async_trait::async_trait;
@@ -1444,6 +1485,85 @@ mod tests {
             }
         }
 
+        let default_cache_dir = tempfile::tempdir()?;
+        let block_size = 128 * 1024;
+        let default_store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(MockBackend::default()),
+            ChunksCacheConfig::with_budgets(
+                16 * 1024 * 1024,
+                16 * 1024 * 1024,
+                default_cache_dir.path().to_path_buf(),
+            ),
+            BlockStoreConfig {
+                block_size,
+                compression: Compression::None,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let data = vec![3u8; block_size / 2];
+        default_store.write_fresh_range((122, 0), 0, &data).await?;
+        assert_eq!(
+            default_store.block_cache.stats().write_hot_entries,
+            1,
+            "partial-block uploads should populate the recent-write hot tier by default"
+        );
+        assert!(
+            !default_store
+                .block_cache
+                .is_disk_cached(&"chunks/122/0".to_string())
+                .await,
+            "default upload-time read cache population should not persist blocks to disk"
+        );
+
+        let mut out = vec![0u8; data.len()];
+        default_store.read_range((122, 0), 0, &mut out).await?;
+        assert_eq!(
+            out, data,
+            "default upload-time read cache population must preserve read-after-write"
+        );
+
+        let large_data = vec![5u8; block_size];
+        default_store
+            .write_fresh_range((122, 1), 0, &large_data)
+            .await?;
+        assert_eq!(
+            default_store.block_cache.stats().write_hot_entries,
+            2,
+            "full-block-sized writes should populate the upload-time recent-write hot tier"
+        );
+        let mut large_out = vec![0u8; large_data.len()];
+        default_store
+            .read_range((122, 1), 0, &mut large_out)
+            .await?;
+        assert_eq!(large_out, large_data);
+
+        let disabled_cache_dir = tempfile::tempdir()?;
+        let disabled_store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(MockBackend::default()),
+            ChunksCacheConfig::with_budgets(
+                16 * 1024 * 1024,
+                16 * 1024 * 1024,
+                disabled_cache_dir.path().to_path_buf(),
+            ),
+            BlockStoreConfig {
+                block_size,
+                compression: Compression::None,
+                populate_write_cache_after_upload: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        disabled_store.write_fresh_range((123, 0), 0, &data).await?;
+
+        assert_eq!(
+            disabled_store.block_cache.stats().write_hot_entries,
+            0,
+            "write_fresh_range should skip upload-time read cache population when disabled"
+        );
+
         let cache_dir = tempfile::tempdir()?;
         let store = ObjectBlockStore::new_with_configs_async(
             ObjectClient::new(MockBackend::default()),
@@ -1453,27 +1573,34 @@ mod tests {
                 cache_dir.path().to_path_buf(),
             ),
             BlockStoreConfig {
-                block_size: 4 * 1024 * 1024,
+                block_size,
                 compression: Compression::None,
+                populate_write_cache_after_upload: true,
+                persist_write_cache_after_upload: true,
                 ..Default::default()
             },
         )
         .await?;
 
-        let data = vec![3u8; 128 * 1024];
-        store.write_fresh_range((123, 0), 0, &data).await?;
+        store.write_fresh_range((123, 0), 0, &large_data).await?;
 
         assert_eq!(
-            store.block_cache.stats().hot_entries,
+            store.block_cache.stats().write_hot_entries,
             1,
-            "write_fresh_range should synchronously populate hot cache before returning"
+            "write_fresh_range should synchronously populate the recent-write hot tier before returning"
         );
         assert_eq!(
             store.block_cache.get(&"chunks/123/0".to_string()).await,
-            Some(data.into())
+            Some(large_data.into())
         );
-
-        Ok(())
+        let disk_key = "chunks/123/0".to_string();
+        for _ in 0..20 {
+            if store.block_cache.is_disk_cached(&disk_key).await {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Err("explicit disk persistence should populate the local disk read cache".into())
     }
 
     #[tokio::test(flavor = "current_thread")]

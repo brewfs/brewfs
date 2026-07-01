@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$(realpath "$SCRIPT_DIR/..")"
-PROJECT_DIR="$(realpath "$DOCKER_DIR/../..")"
+PROJECT_DIR="$(realpath "$DOCKER_DIR/..")"
 
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.etcd-perf.yml"
 ARTIFACTS_DIR="$SCRIPT_DIR/artifacts"
@@ -121,6 +121,7 @@ run_brewfs_bench() {
     fi
 
     info "运行宿主机 brewfs_bench（etcd backend）"
+    set +e
     (
         cd "$PROJECT_DIR"
         env \
@@ -137,11 +138,15 @@ run_brewfs_bench() {
             AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
             cargo bench -p brewfs --bench brewfs_bench -- "${bench_args[@]}"
     ) 2>&1 | tee "$bench_artifact_dir/console.log"
+    local bench_status="${PIPESTATUS[0]}"
+    set -e
 
     if [[ -d "$PROJECT_DIR/target/criterion" ]]; then
         rm -rf "$bench_artifact_dir/criterion"
         cp -a "$PROJECT_DIR/target/criterion" "$bench_artifact_dir/criterion" || true
     fi
+
+    return "$bench_status"
 }
 
 info "构建宿主机 brewfs release 二进制（供镜像 COPY）"

@@ -38,16 +38,21 @@ RUN apt-get update && \
         udftools && \
     rm -rf /var/lib/apt/lists/*
 
-COPY target/release/brewfs /usr/local/bin/brewfs
+COPY target/docker/brewfs /usr/local/bin/brewfs
 COPY tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /opt/xfstests-prebuilt.tar.gz
 COPY tests/scripts/xfstests_slayer.exclude /opt/xfstests_slayer.exclude
 COPY docker/xfstests_report.sh /usr/local/bin/xfstests_report.sh
 COPY docker/compose-xfstests/run_xfstests_in_container.sh /usr/local/bin/run_xfstests_in_container.sh
+COPY docker/compose-xfstests/perf_metadata_fallback.py /usr/local/bin/perf_metadata_fallback.py
 
 RUN set -e; \
-    chmod +x /usr/local/bin/brewfs /usr/local/bin/xfstests_report.sh /usr/local/bin/run_xfstests_in_container.sh; \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/xfstests_report.sh /usr/local/bin/run_xfstests_in_container.sh /usr/local/bin/perf_metadata_fallback.py; \
     mkdir -p /opt/xfstests-dev /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts; \
-    tar -xzf /opt/xfstests-prebuilt.tar.gz -C /opt --transform 's|^xfstests|xfstests-dev|'; \
+    if gzip -t /opt/xfstests-prebuilt.tar.gz >/dev/null 2>&1; then \
+        tar -xzf /opt/xfstests-prebuilt.tar.gz -C /opt --transform 's|^xfstests|xfstests-dev|'; \
+    else \
+        echo "warning: xfstests prebuilt archive is unavailable; fio-only perf runs can still proceed" >&2; \
+    fi; \
     chmod +x /opt/xfstests-dev/check /opt/xfstests-dev/src/* 2>/dev/null || true; \
     cp -f /opt/xfstests_slayer.exclude /opt/xfstests-dev/xfstests_slayer.exclude; \
     rm -f /opt/xfstests-prebuilt.tar.gz; \

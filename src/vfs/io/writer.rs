@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, LazyLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::task::JoinSet;
@@ -57,28 +57,63 @@ const UPLOAD_MAX_RETRIES: u64 = 5;
 const COMMIT_RETRY_BASE_MS: u64 = 20;
 const COMMIT_RETRY_MAX_MS: u64 = 2000;
 const COMMIT_META_MAX_RETRIES: u32 = 15;
-const WRITE_SLICE_MAX_RETRIES: u32 = 64;
+// High-throughput foreground writes can race with background freeze/flush for
+// several scheduler turns; keep this below "spin forever", but high enough not
+// to surface an internal slice handoff as EIO.
+const WRITE_SLICE_MAX_RETRIES: u32 = 1024;
 /// Maximum age of a Writable slice before auto_flush freezes it and starts
 /// background upload, regardless of idle time.  For S3 backends, a longer
 /// threshold aggregates more data per slice, reducing small-object PUT
 /// amplification.  fsync/close still force-seal immediately.
 /// NOTE: This is the fallback; prefer config.auto_flush_max_age when available.
-const AUTO_FLUSH_MAX_AGE: Duration = Duration::from_millis(500);
+const AUTO_FLUSH_MAX_AGE: Duration = Duration::from_millis(2000);
 
 const MAX_UNFLUSHED_SLICES: usize = 3;
 const MAX_SLICES_THRESHOLD: usize = 800;
 const WRITE_MAX_WAIT: Duration = Duration::from_secs(30);
 const WRITEBACK_WRITE_MAX_WAIT: Duration = Duration::from_secs(300);
 const CACHED_SUB_BLOCK_IDLE_GRACE: Duration = Duration::from_secs(3);
+const CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE: Duration = Duration::from_secs(1);
 const CACHED_SUB_BLOCK_AUTO_FREEZE_MIN_AGE: Duration = Duration::from_secs(10);
 const WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP: Duration = Duration::from_millis(1);
 const WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP: Duration = Duration::from_millis(6);
+const WRITEBACK_HARD_BACKPRESSURE_MAX_SLEEP: Duration = Duration::from_millis(6);
 /// Minimum number of bytes a Writable slice must hold before `should_freeze`
 /// returns true on a size basis.  32 MiB gives 8 blocks per upload batch,
 /// maximizing pipeline parallelism while keeping flush latency reasonable.
 /// fsync/close bypass this threshold and force-seal regardless of size.
 /// NOTE: This is the fallback; prefer config.freeze_min_bytes when available.
 const SHOULD_FREEZE_MIN_BYTES: u64 = 8 * 1024 * 1024;
+
+static CACHED_SUB_BLOCK_IDLE_GRACE_CONFIG: LazyLock<Duration> = LazyLock::new(|| {
+    env_duration_ms(
+        "BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS",
+        CACHED_SUB_BLOCK_IDLE_GRACE,
+    )
+});
+
+static CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_CONFIG: LazyLock<Duration> = LazyLock::new(|| {
+    env_duration_ms(
+        "BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS",
+        CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE,
+    )
+});
+
+fn env_duration_ms(name: &str, default: Duration) -> Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(default)
+}
+
+fn cached_sub_block_idle_grace() -> Duration {
+    *CACHED_SUB_BLOCK_IDLE_GRACE_CONFIG
+}
+
+fn cached_sub_block_too_many_min_age() -> Duration {
+    *CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_CONFIG
+}
 
 enum WritebackBackpressureDecision {
     Allow,
@@ -219,7 +254,7 @@ fn should_stage_first_writeback_upload(
         && matches!(write_origin, WriteOriginKind::CachedOnly)
 }
 
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SliceStatus {
     /// Writable: slice is writable and there may be uploaded blocks.
     #[default]
@@ -401,7 +436,12 @@ impl SliceState {
         self.writeback_data_fully_persisted() && self.writeback_record_sealed
     }
 
-    pub(crate) fn can_write(&self, offset: u64, len: usize) -> Option<PageWriteAction> {
+    pub(crate) fn can_write(
+        &self,
+        offset: u64,
+        len: usize,
+        allow_gap_from: Option<u64>,
+    ) -> Option<PageWriteAction> {
         if !matches!(self.state, SliceStatus::Writable) || offset < self.offset {
             return None;
         }
@@ -416,9 +456,13 @@ impl SliceState {
             return None;
         }
 
+        let allow_gap = allow_gap_from
+            .is_some_and(|safe_from| self.offset.saturating_add(self.data.len()) >= safe_from);
+
         // For this function, the `offset` is relative to the chunk start,
         // whereas in `CacheSlice.append`, it is relative to the slice start.
-        self.data.can_write(off_to_slice, len as u64)
+        self.data
+            .can_write_with_gap(off_to_slice, len as u64, allow_gap)
     }
 
     #[tracing::instrument(level = "trace", skip(self, buf), fields(len = buf.len()))]
@@ -447,6 +491,14 @@ impl SliceState {
         }
     }
 
+    fn write_range_has_written_overlap(&self, offset: u64, len: usize) -> bool {
+        if offset < self.offset {
+            return false;
+        }
+        self.data
+            .has_written_overlap(offset - self.offset, len as u64)
+    }
+
     fn can_overlay_read(&self) -> bool {
         match self.state {
             SliceStatus::Writable
@@ -465,7 +517,8 @@ impl SliceState {
         // uploaded or in-flight.
         let pending_end = (self.dispatched_end as u64 * size as u64).max(self.uploaded);
 
-        let remaining = self.data.len().saturating_sub(pending_end);
+        let ready_len = self.upload_ready_len();
+        let remaining = ready_len.saturating_sub(pending_end);
 
         if matches!(
             self.state,
@@ -482,20 +535,29 @@ impl SliceState {
         // Start from dispatched_end (not uploaded) — pipeline allows dispatching
         // new blocks while earlier ones are still in-flight.
         let start = self.dispatched_end;
+        let ready_len = self.upload_ready_len();
         let end = if matches!(
             self.state,
             SliceStatus::Readonly | SliceStatus::Failed | SliceStatus::Committed
         ) {
-            if self.data.len() == 0 {
+            if ready_len == 0 {
                 0
             } else {
-                self.data.len().div_ceil(size) as usize
+                ready_len.div_ceil(size) as usize
             }
         } else {
-            (self.data.len() / size) as usize
+            (ready_len / size) as usize
         };
 
         (start, end)
+    }
+
+    fn upload_ready_len(&self) -> u64 {
+        if matches!(self.state, SliceStatus::Writable) {
+            self.data.contiguous_written_len()
+        } else {
+            self.data.len()
+        }
     }
 
     fn upload_complete(&self) -> bool {
@@ -548,8 +610,17 @@ where
         f(&guard)
     }
 
-    fn can_write(&self, offset: u64, len: usize) -> Option<PageWriteAction> {
-        self.with_ref(|s| s.can_write(offset, len))
+    fn can_write(
+        &self,
+        offset: u64,
+        len: usize,
+        allow_gap_from: Option<u64>,
+    ) -> Option<PageWriteAction> {
+        self.with_ref(|s| s.can_write(offset, len, allow_gap_from))
+    }
+
+    fn has_written_overlap(&self, offset: u64, len: usize) -> bool {
+        self.with_ref(|s| s.write_range_has_written_overlap(offset, len))
     }
 
     fn rejects_dispatched_prefix(&self, offset: u64, len: usize) -> bool {
@@ -571,11 +642,17 @@ where
     }
 
     fn can_freeze_for_max_unflushed(&self) -> bool {
-        self.with_ref(|s| s.data.len() >= s.data.block_size() as u64)
+        self.with_ref(|s| matches!(s.state, SliceStatus::Writable) && s.has_idle_block())
     }
 
-    fn try_write(&self, offset: u64, buf: &[u8], origin: WriteOrigin) -> anyhow::Result<bool> {
-        let wrote = self.with_mut(|s| match s.can_write(offset, buf.len()) {
+    fn try_write(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        origin: WriteOrigin,
+        allow_gap_from: Option<u64>,
+    ) -> anyhow::Result<bool> {
+        let wrote = self.with_mut(|s| match s.can_write(offset, buf.len(), allow_gap_from) {
             Some(action) => {
                 s.write(offset, buf, action, origin)?;
                 s.update_usage(s.data.alloc_bytes());
@@ -650,7 +727,10 @@ where
     /// Marks the blocks done in the bitmask and advances `uploaded` through
     /// the highest contiguous completed boundary.
     fn advance_upload_range(&self, start_idx: usize, end_idx: usize, _len: u64) {
-        self.with_mut(|s| {
+        let made_progress = self.with_mut(|s| {
+            let previous_uploaded = s.uploaded;
+            let previous_state = s.state;
+
             // Mark completed blocks in bitmask (guard against overflow).
             for idx in start_idx..end_idx {
                 if idx < 64 {
@@ -682,12 +762,19 @@ where
             }
             self.clear_recent_pending_if_complete(s);
             s.notify.notify_waiters();
-        })
+            s.uploaded != previous_uploaded || s.state != previous_state
+        });
+        if made_progress {
+            self.shared.flush_notify.notify_waiters();
+        }
     }
 
     /// Legacy advance_upload for backward compatibility with single-batch callers.
     fn advance_upload(&self, len: u64, _uploaded_blocks: Vec<usize>) {
-        self.with_mut(|s| {
+        let made_progress = self.with_mut(|s| {
+            let previous_uploaded = s.uploaded;
+            let previous_state = s.state;
+
             s.in_flight = s.in_flight.saturating_sub(1);
             s.uploaded += len;
 
@@ -709,7 +796,11 @@ where
             }
             self.clear_recent_pending_if_complete(s);
             s.notify.notify_waiters();
-        })
+            s.uploaded != previous_uploaded || s.state != previous_state
+        });
+        if made_progress {
+            self.shared.flush_notify.notify_waiters();
+        }
     }
 
     fn clear_recent_pending_accounting(&self, s: &mut SliceState) {
@@ -736,9 +827,13 @@ where
 
     fn should_freeze(&self) -> bool {
         self.with_ref(|s| {
-            let end = s.offset + s.data.len();
+            let ready_len = s.upload_ready_len();
+            if ready_len < s.data.len() {
+                return false;
+            }
+            let end = s.offset + ready_len;
             let freeze_min = self.shared.config.freeze_min_bytes;
-            end >= self.shared.config.layout.chunk_size || s.data.len() >= freeze_min
+            end >= self.shared.config.layout.chunk_size || ready_len >= freeze_min
         })
     }
 
@@ -930,6 +1025,18 @@ where
             return;
         }
 
+        let slice_epoch = self.slice.lock().frozen_epoch;
+        if slice_epoch != 0 && self.shared.inode.data_epoch() != slice_epoch {
+            tracing::warn!(
+                ino = self.shared.inode.ino(),
+                slice_epoch,
+                current_epoch = self.shared.inode.data_epoch(),
+                "skipping stale try_commit after inode epoch change"
+            );
+            self.mark_committed();
+            return;
+        }
+
         // Claim the right to write metadata for this slice.  Both try_commit
         // (from upload task) and commit_chunk (from commit loop) race here;
         // the first to set `meta_write_started` wins and the other skips.
@@ -1097,6 +1204,7 @@ where
         offset: u64,
         len: usize,
         creation_unique: u64,
+        allow_gap_from: Option<u64>,
     ) -> anyhow::Result<(Arc<ParkingMutex<SliceState>>, WriteAction)> {
         let (chunk_id, mut slices) = {
             let chunk = self
@@ -1122,14 +1230,19 @@ where
                 shared: self.shared,
             };
 
-            if handle.can_write(offset, len).is_some() {
+            if handle.can_write(offset, len, allow_gap_from).is_some() {
                 // Reject reuse if this write is older than the newest write
                 // already in the slice.  Without this check, an older concurrent
                 // FUSE write (lower unique) processed after a newer one could
-                // overwrite the newer data in the overlapping region.
+                // overwrite the newer data in the overlapping region.  Sparse
+                // gap append tracks actual user-written ranges, so an older
+                // request may still fill a zero gap left by a newer tail write.
                 if creation_unique != 0 {
                     let max_u = slice.lock().max_write_unique;
-                    if max_u != 0 && creation_unique < max_u {
+                    if max_u != 0
+                        && creation_unique < max_u
+                        && handle.has_written_overlap(offset, len)
+                    {
                         self.shared
                             .recent_pending_upload
                             .record_slice_reject_older_unique();
@@ -1230,6 +1343,7 @@ where
         buf: &[u8],
         creation_unique: u64,
         origin: WriteOrigin,
+        allow_gap_from: Option<u64>,
     ) -> anyhow::Result<WriteAction> {
         let mut start_commit = false;
         let mut flush = Vec::new();
@@ -1242,7 +1356,8 @@ where
         let mut failed_cnt = 0;
 
         loop {
-            let (slice, action) = self.find_slice_or_create(offset, buf.len(), creation_unique)?;
+            let (slice, action) =
+                self.find_slice_or_create(offset, buf.len(), creation_unique, allow_gap_from)?;
             start_commit |= action.start_commit;
             flush.extend(action.flush);
 
@@ -1251,11 +1366,20 @@ where
                 shared: self.shared,
             };
 
-            if handle.try_write(offset, buf, origin)? {
-                if handle.can_continue_upload()
-                    || handle.should_freeze()
-                        && handle.freeze_with_reason(SliceFreezeReason::SizeOrChunkEnd)
+            if handle.try_write(offset, buf, origin, allow_gap_from)? {
+                let should_flush = if matches!(
+                    self.shared.config.writeback_mode,
+                    WriteBackMode::CommitBeforeUpload
+                ) || matches!(origin, WriteOrigin::Normal)
                 {
+                    handle.should_freeze()
+                        && handle.freeze_with_reason(SliceFreezeReason::SizeOrChunkEnd)
+                } else {
+                    handle.can_continue_upload()
+                        || handle.should_freeze()
+                            && handle.freeze_with_reason(SliceFreezeReason::SizeOrChunkEnd)
+                };
+                if should_flush {
                     flush.push(slice);
                 }
 
@@ -1321,6 +1445,12 @@ struct RecentPendingUploadState {
     soft_sleep_us: AtomicU64,
     hard_wait_ops: AtomicU64,
     hard_wait_us: AtomicU64,
+    buffer_soft_sleep_ops: AtomicU64,
+    buffer_soft_sleep_us: AtomicU64,
+    buffer_moderate_sleep_ops: AtomicU64,
+    buffer_moderate_sleep_us: AtomicU64,
+    buffer_hard_sleep_ops: AtomicU64,
+    buffer_hard_sleep_us: AtomicU64,
     stage_inflight_bytes: Arc<AtomicU64>,
     remote_upload_inflight_bytes: Arc<AtomicU64>,
     stage_ops: AtomicU64,
@@ -1424,6 +1554,12 @@ impl RecentPendingUploadState {
             soft_sleep_us: AtomicU64::new(0),
             hard_wait_ops: AtomicU64::new(0),
             hard_wait_us: AtomicU64::new(0),
+            buffer_soft_sleep_ops: AtomicU64::new(0),
+            buffer_soft_sleep_us: AtomicU64::new(0),
+            buffer_moderate_sleep_ops: AtomicU64::new(0),
+            buffer_moderate_sleep_us: AtomicU64::new(0),
+            buffer_hard_sleep_ops: AtomicU64::new(0),
+            buffer_hard_sleep_us: AtomicU64::new(0),
             stage_inflight_bytes: Arc::new(AtomicU64::new(0)),
             remote_upload_inflight_bytes: Arc::new(AtomicU64::new(0)),
             stage_ops: AtomicU64::new(0),
@@ -1520,6 +1656,31 @@ impl RecentPendingUploadState {
     fn record_hard_wait(&self, duration: Duration) {
         self.hard_wait_ops.fetch_add(1, Ordering::Relaxed);
         self.hard_wait_us.fetch_add(
+            duration.as_micros().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn record_buffer_soft_sleep(&self, duration: Duration) {
+        self.buffer_soft_sleep_ops.fetch_add(1, Ordering::Relaxed);
+        self.buffer_soft_sleep_us.fetch_add(
+            duration.as_micros().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn record_buffer_moderate_sleep(&self, duration: Duration) {
+        self.buffer_moderate_sleep_ops
+            .fetch_add(1, Ordering::Relaxed);
+        self.buffer_moderate_sleep_us.fetch_add(
+            duration.as_micros().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn record_buffer_hard_sleep(&self, duration: Duration) {
+        self.buffer_hard_sleep_ops.fetch_add(1, Ordering::Relaxed);
+        self.buffer_hard_sleep_us.fetch_add(
             duration.as_micros().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
@@ -1886,6 +2047,12 @@ where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
+    async fn wait_for_buffer_progress(&self, max_sleep: Duration) -> Duration {
+        let start = Instant::now();
+        let _ = timeout(max_sleep, self.shared.flush_notify.notified()).await;
+        start.elapsed()
+    }
+
     async fn back_pressure(&self) -> anyhow::Result<()> {
         if let Some(budget) = &self.shared.memory_budget {
             let level = budget.pressure_level();
@@ -1909,24 +2076,36 @@ where
         }
 
         // Graduated backpressure: sleep proportionally to buffer fullness.
-        // This smooths write throughput instead of the harsh yield → 100ms jump
-        // that caused P99 spikes at the hard limit boundary.
+        // Keep sleeps short because FUSE writes arrive on the foreground path;
+        // long fixed sleeps dominate p50 latency once usage hovers near the limit.
         let hard_limit = soft_limit.saturating_mul(2);
         let mid_limit = soft_limit + soft_limit / 2; // 1.5x soft
 
         if usage <= mid_limit {
             // Between soft and 1.5x: light sleep to let uploads drain
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            let elapsed = self
+                .wait_for_buffer_progress(WRITEBACK_SOFT_BACKPRESSURE_MIN_SLEEP)
+                .await;
+            self.shared
+                .recent_pending_upload
+                .record_buffer_soft_sleep(elapsed);
             return Ok(());
         }
 
         if usage <= hard_limit {
             // Between 1.5x and 2x: moderate sleep
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let elapsed = self
+                .wait_for_buffer_progress(WRITEBACK_SOFT_BACKPRESSURE_MAX_SLEEP)
+                .await;
+            self.shared
+                .recent_pending_upload
+                .record_buffer_moderate_sleep(elapsed);
             return Ok(());
         }
 
-        // Above hard limit: aggressive sleep loop until buffer drains
+        // Above hard limit: wait for actual flush progress, but keep the wait
+        // quantum small. A fixed 20ms sleep here turns brief S3 completions
+        // into foreground write tail latency.
         let mut total_wait = Duration::ZERO;
         let max_wait = write_buffer_max_wait(self.shared.config.writeback_mode);
         while self.shared.buffer_usage.load(Ordering::Relaxed) > hard_limit {
@@ -1939,9 +2118,13 @@ where
                 ));
             }
 
-            warn!("Reach write buffer hard limit: sleep for 50 millis");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            total_wait += Duration::from_millis(50);
+            let elapsed = self
+                .wait_for_buffer_progress(WRITEBACK_HARD_BACKPRESSURE_MAX_SLEEP)
+                .await;
+            self.shared
+                .recent_pending_upload
+                .record_buffer_hard_sleep(elapsed);
+            total_wait += elapsed;
         }
         Ok(())
     }
@@ -2134,7 +2317,7 @@ where
             let cid = chunk_id_for(self.shared.inode.ino(), chunk_index)?;
             let ckey = guard.get_or_create_chunk(cid);
             let mut handle = guard.chunk_handle(&self.shared, ckey);
-            let action = handle.write_at(within_offset, buf, creation_unique, origin)?;
+            let action = handle.write_at(within_offset, buf, creation_unique, origin, None)?;
             drop(guard);
 
             for slice in action.flush {
@@ -2158,6 +2341,7 @@ where
                     &buf[position..position + span_len],
                     creation_unique,
                     origin,
+                    None,
                 )?;
                 drop(guard);
 
@@ -2230,7 +2414,16 @@ where
                 if !state.can_overlay_read() {
                     continue;
                 }
-                if span_start < state.offset + state.data.len() && state.offset < span_end {
+                let slice_start = state.offset;
+                let slice_end = state.offset + state.data.len();
+                let read_start = span_start.max(slice_start);
+                let read_end = span_end.min(slice_end);
+                if read_start < read_end
+                    && state.write_range_has_written_overlap(
+                        read_start,
+                        (read_end - read_start).as_usize(),
+                    )
+                {
                     has_overlap = true;
                     break;
                 }
@@ -2275,10 +2468,15 @@ where
 
                 let dst_start = (chunk_start + read_start - offset).as_usize();
                 let dst_end = (chunk_start + read_end - offset).as_usize();
-                state
+                let copied = state
                     .data
-                    .copy_into(read_start - slice_start, &mut buf[dst_start..dst_end])?;
-                missing.cut(chunk_start + read_start, chunk_start + read_end);
+                    .copy_written_into(read_start - slice_start, &mut buf[dst_start..dst_end])?;
+                for (copied_start, copied_end) in copied {
+                    missing.cut(
+                        chunk_start + slice_start + copied_start,
+                        chunk_start + slice_start + copied_end,
+                    );
+                }
             }
         }
 
@@ -2317,6 +2515,117 @@ where
     #[tracing::instrument(level = "trace", skip(self))]
     pub(crate) async fn flush(&self) -> anyhow::Result<()> {
         self.flush_with_deadline(FLUSH_DEADLINE).await
+    }
+
+    async fn pending_committed_uploads_for_range(
+        &self,
+        offset: u64,
+        len: usize,
+    ) -> anyhow::Result<Vec<Arc<ParkingMutex<SliceState>>>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let layout = self.shared.config.layout;
+        let spans = split_chunk_spans(layout, offset, len);
+        let span_cids: Vec<_> = spans
+            .iter()
+            .map(|span| chunk_id_for(self.shared.inode.ino(), span.index))
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        let mut pending = Vec::new();
+        let guard = self.shared.inner.lock().await;
+        for (span, cid) in spans.iter().zip(span_cids.iter()) {
+            let Some(chunk) = guard.chunks.get(cid) else {
+                continue;
+            };
+            let chunk_start = span.index * layout.chunk_size;
+            let span_start = span.offset;
+            let span_end = span.offset + span.len;
+
+            for slice in chunk.recently_committed.iter().chain(chunk.slices.iter()) {
+                let state = slice.lock();
+                if !matches!(state.state, SliceStatus::Committed) || state.upload_complete() {
+                    continue;
+                }
+
+                let slice_start = state.offset;
+                let slice_end = state.offset + state.data.len();
+                if span_start < slice_end && slice_start < span_end {
+                    tracing::trace!(
+                        ino = self.shared.inode.ino(),
+                        chunk_id = *cid,
+                        offset = chunk_start + slice_start,
+                        len = state.data.len(),
+                        "waiting for committed writeback upload before source read"
+                    );
+                    pending.push(slice.clone());
+                }
+            }
+        }
+
+        Ok(pending)
+    }
+
+    async fn wait_committed_uploads_for_range(
+        &self,
+        offset: u64,
+        len: usize,
+        deadline: Duration,
+    ) -> anyhow::Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+        loop {
+            self.shared.writeback_result()?;
+            let pending = self
+                .pending_committed_uploads_for_range(offset, len)
+                .await?;
+            if pending.is_empty() {
+                return Ok(());
+            }
+
+            for slice in &pending {
+                let handle = SliceHandle {
+                    slice,
+                    shared: &self.shared,
+                };
+                if handle.can_continue_upload() {
+                    Self::spawn_flush_slice(self.shared.clone(), slice.clone());
+                }
+            }
+
+            if start.elapsed() > deadline {
+                let states: Vec<_> = pending
+                    .iter()
+                    .map(|slice| {
+                        let state = slice.lock();
+                        format!(
+                            "{:?}@{}+{} uploaded={} in_flight={}",
+                            state.state,
+                            state.offset,
+                            state.data.len(),
+                            state.uploaded,
+                            state.in_flight
+                        )
+                    })
+                    .collect();
+                let ino = self.shared.inode.ino();
+                return Err(anyhow::anyhow!(
+                    "upload wait timeout after {:?} for ino {ino}, offset {offset}, len {len}, pending: {:?}",
+                    deadline,
+                    states
+                ));
+            }
+
+            let _ = timeout(
+                Duration::from_millis(20),
+                self.shared.flush_notify.notified(),
+            )
+            .await;
+        }
     }
 
     pub(crate) async fn flush_with_deadline(&self, deadline: Duration) -> anyhow::Result<()> {
@@ -2531,10 +2840,13 @@ where
 
     pub(crate) async fn has_overlay_state(&self) -> bool {
         let guard = self.shared.inner.lock().await;
-        guard
-            .chunks
-            .values()
-            .any(|chunk| !chunk.slices.is_empty() || !chunk.recently_committed.is_empty())
+        guard.chunks.values().any(|chunk| {
+            chunk
+                .recently_committed
+                .iter()
+                .chain(chunk.slices.iter())
+                .any(|slice| slice.lock().can_overlay_read())
+        })
     }
 
     fn mark_active(&self) {
@@ -2672,7 +2984,14 @@ where
 
                     // Spawn a sub-task for this batch of blocks.
                     let shared2 = shared.clone();
-                    let wb_ref = shared.write_back.clone();
+                    let wb_ref = if matches!(
+                        shared.config.writeback_mode,
+                        WriteBackMode::CommitBeforeUpload
+                    ) {
+                        shared.write_back.clone()
+                    } else {
+                        None
+                    };
                     let slice_for_persist = slice.clone();
                     let ino = shared.inode.ino();
                     let layout = shared.config.layout;
@@ -2685,7 +3004,8 @@ where
                         UploadPriority::Foreground
                     };
                     join_set.spawn(async move {
-                        // Best-effort SSD persist for crash recovery.
+                        // Persist locally only for commit-before-upload, where
+                        // metadata may become visible before remote upload lands.
                         let persist = wb_ref.as_ref().map(|wb| {
                             let wb = wb.clone();
                             let chunks = all_chunks.clone();
@@ -2858,6 +3178,12 @@ where
                             shared: &shared,
                         };
                         handle.advance_upload_range(start_idx, end_idx, data_len);
+                        Self::split_uploaded_prefix_tail(
+                            &shared,
+                            handle.with_ref(|s| s.chunk_id),
+                            &slice,
+                        )
+                        .await;
                         Self::remove_writeback_record_if_uploaded_committed(&shared, &slice).await;
                         handle.try_commit().await;
                     }
@@ -2961,6 +3287,141 @@ where
         }
     }
 
+    fn keep_recently_committed_if_overlay_needed(
+        slice: Arc<ParkingMutex<SliceState>>,
+        recently_committed: &mut VecDeque<Arc<ParkingMutex<SliceState>>>,
+    ) {
+        let needs_overlay = {
+            let mut state = slice.lock();
+            if state.can_overlay_read() {
+                true
+            } else {
+                state.data.release_all();
+                state.update_usage(0);
+                false
+            }
+        };
+        if needs_overlay {
+            recently_committed.push_back(slice);
+        }
+    }
+
+    async fn split_uploaded_prefix_tail(
+        shared: &Arc<Shared<B, M>>,
+        chunk_id: u64,
+        expected: &Arc<ParkingMutex<SliceState>>,
+    ) -> bool {
+        if !matches!(
+            shared.config.writeback_mode,
+            WriteBackMode::UploadBeforeCommit
+        ) {
+            return false;
+        }
+
+        let mut guard = shared.inner.lock().await;
+        let Some(chunk) = guard.chunks.get_mut(&chunk_id) else {
+            return false;
+        };
+        let is_front = chunk
+            .slices
+            .front()
+            .is_some_and(|front| Arc::ptr_eq(front, expected));
+        if !is_front {
+            return false;
+        }
+
+        let mut state = expected.lock();
+        if !matches!(state.state, SliceStatus::Writable)
+            || state.in_flight != 0
+            || state.meta_write_started
+            || state.slice_id.is_none()
+        {
+            return false;
+        }
+
+        let block_size = state.data.block_size() as u64;
+        let uploaded = state.uploaded;
+        let data_len = state.data.len();
+        let dispatched_end = state.dispatched_end as u64 * block_size;
+        if uploaded == 0
+            || uploaded >= data_len
+            || uploaded != dispatched_end
+            || !uploaded.is_multiple_of(block_size)
+        {
+            return false;
+        }
+
+        let tail_len = data_len - uploaded;
+        if tail_len >= block_size {
+            return false;
+        }
+
+        let mut tail_buf = vec![0_u8; tail_len.as_usize()];
+        match state.data.copy_into(uploaded, &mut tail_buf) {
+            Ok(read) if read == tail_buf.len() => {}
+            Ok(read) => {
+                warn!(
+                    chunk_id,
+                    uploaded, tail_len, read, "prefix split could not copy the full tail"
+                );
+                return false;
+            }
+            Err(err) => {
+                warn!(
+                    chunk_id,
+                    uploaded,
+                    tail_len,
+                    error = ?err,
+                    "prefix split tail copy failed"
+                );
+                return false;
+            }
+        }
+
+        let tail_offset = state.offset + uploaded;
+        let mut tail = SliceState::new(
+            chunk_id,
+            tail_offset,
+            shared.config.clone(),
+            shared.buffer_usage.clone(),
+            shared.memory_budget.clone(),
+            state.creation_unique,
+        );
+        tail.max_write_unique = state.max_write_unique;
+        tail.write_origin_mask = state.write_origin_mask;
+        if let Err(err) = tail.data.append(&tail_buf) {
+            warn!(
+                chunk_id,
+                tail_offset,
+                tail_len,
+                error = ?err,
+                "prefix split tail append failed"
+            );
+            return false;
+        }
+        let tail_alloc = tail.data.alloc_bytes();
+        tail.update_usage(tail_alloc);
+
+        if let Err(err) = state.data.truncate(uploaded) {
+            warn!(
+                chunk_id,
+                uploaded,
+                error = ?err,
+                "prefix split truncate failed"
+            );
+            return false;
+        }
+        let prefix_alloc = state.data.alloc_bytes();
+        state.update_usage(prefix_alloc);
+        state.state = SliceStatus::Uploaded;
+        state.notify.notify_waiters();
+        drop(state);
+
+        chunk.slices.insert(1, Arc::new(ParkingMutex::new(tail)));
+        shared.flush_notify.notify_waiters();
+        true
+    }
+
     async fn move_front_slice_to_recently_committed(
         shared: &Arc<Shared<B, M>>,
         chunk_id: u64,
@@ -2981,7 +3442,10 @@ where
                 .is_some_and(|front| Arc::ptr_eq(front, expected));
             if is_front && let Some(slice) = chunk.slices.pop_front() {
                 Self::account_recent_pending_if_needed(shared, &slice);
-                chunk.recently_committed.push_back(slice);
+                Self::keep_recently_committed_if_overlay_needed(
+                    slice,
+                    &mut chunk.recently_committed,
+                );
             }
         }
 
@@ -3023,6 +3487,18 @@ where
         let Some(desc) = handle.desc_for_commit() else {
             return false;
         };
+
+        let slice_epoch = slice.lock().frozen_epoch;
+        if slice_epoch != 0 && shared.inode.data_epoch() != slice_epoch {
+            tracing::warn!(
+                ino = shared.inode.ino(),
+                slice_epoch,
+                current_epoch = shared.inode.data_epoch(),
+                "skipping stale commit-before-upload after inode epoch change"
+            );
+            handle.mark_committed();
+            return true;
+        }
 
         if let Err(err) = Self::seal_writeback_record_if_ready(shared, slice).await {
             warn!(
@@ -3177,6 +3653,8 @@ where
                 return;
             };
 
+            Self::split_uploaded_prefix_tail(&shared, chunk_id, &slice).await;
+
             // Get a snapshot of the current slice to check its status.
             // The `notification` in `Notify` is not queued (but the waiters are), this may result in a lost wake-up.
             // So it is needed to wait for an extra cycle to check timeout (COMMIT_WAIT_SLICE).
@@ -3216,11 +3694,13 @@ where
                 let wait_result = timeout(COMMIT_WAIT_SLICE, runtime.notify.notified())
                     .instrument(tracing::trace_span!("commit_chunk.wait_upload"))
                     .await;
-                shared.recent_pending_upload.record_commit_wait_upload(
-                    wait_start.elapsed(),
-                    runtime.freeze_reason,
-                    runtime.write_origin,
-                );
+                if runtime.frozen {
+                    shared.recent_pending_upload.record_commit_wait_upload(
+                        wait_start.elapsed(),
+                        runtime.freeze_reason,
+                        runtime.write_origin,
+                    );
+                }
                 if wait_result.is_ok() {
                     if Self::try_commit_before_upload_front(&shared, &slice).await {
                         commit_failures = 0;
@@ -3526,7 +4006,10 @@ where
                     && let Some(s) = chunk.slices.pop_front()
                 {
                     Self::account_recent_pending_if_needed(&shared, &s);
-                    chunk.recently_committed.push_back(s);
+                    Self::keep_recently_committed_if_overlay_needed(
+                        s,
+                        &mut chunk.recently_committed,
+                    );
                 }
                 if guard.flush_waiting > 0 {
                     shared.flush_notify.notify_waiters();
@@ -3543,6 +4026,8 @@ where
     async fn auto_flush(shared: Weak<Shared<B, M>>) {
         let idle = Duration::from_secs(1);
         let mut tick: u64 = 0;
+        let cached_sub_block_idle_grace = cached_sub_block_idle_grace();
+        let cached_sub_block_too_many_min_age = cached_sub_block_too_many_min_age();
 
         loop {
             let Some(shared) = shared.upgrade() else {
@@ -3614,18 +4099,23 @@ where
                             shared: &shared,
                         };
 
-                        let (age, idle_time, data_len, writeable, cached_sub_block) = handle
+                        let (age, idle_time, data_len, writeable, cached_small_tail) = handle
                             .with_ref(|s| {
                                 let data_len = s.data.len();
-                                let cached_sub_block =
+                                let block_size = s.data.block_size() as u64;
+                                let pending_end =
+                                    (s.dispatched_end as u64 * block_size).max(s.uploaded);
+                                let unuploaded_tail = data_len.saturating_sub(pending_end);
+                                let cached_small_tail =
                                     matches!(s.write_origin_kind(), WriteOriginKind::CachedOnly)
-                                        && data_len < s.data.block_size() as u64;
+                                        && unuploaded_tail > 0
+                                        && unuploaded_tail < block_size;
                                 (
                                     now.duration_since(s.started),
                                     now.duration_since(s.last_mod),
                                     data_len,
                                     matches!(s.state, SliceStatus::Writable),
-                                    cached_sub_block,
+                                    cached_small_tail,
                                 )
                             });
 
@@ -3641,19 +4131,13 @@ where
                         // already frozen the slice and kicked off the upload,
                         // so flush only waits for in-flight work to land.
                         let auto_flush_max = shared.config.auto_flush_max_age;
-                        let cached_auto_freeze_ready =
-                            !cached_sub_block || age > CACHED_SUB_BLOCK_AUTO_FREEZE_MIN_AGE;
-                        let cached_idle_grace =
-                            cached_sub_block && age <= CACHED_SUB_BLOCK_IDLE_GRACE;
-                        let mut trigger = if age > auto_flush_max && !cached_sub_block {
+                        let cached_tail_in_grace =
+                            cached_small_tail && age <= cached_sub_block_idle_grace;
+                        let mut trigger = if age > auto_flush_max && !cached_small_tail {
                             Some(AutoFreezeTrigger::Age)
-                        } else if idle_time > idle
-                            && age > idle
-                            && !cached_idle_grace
-                            && cached_auto_freeze_ready
-                        {
+                        } else if idle_time > idle && age > idle && !cached_tail_in_grace {
                             Some(AutoFreezeTrigger::Idle)
-                        } else if age > FLUSH_DURATION && cached_auto_freeze_ready {
+                        } else if age > FLUSH_DURATION && !cached_tail_in_grace {
                             Some(AutoFreezeTrigger::FlushDuration)
                         } else {
                             None
@@ -3665,9 +4149,9 @@ where
                             trigger = Some(AutoFreezeTrigger::Pressure);
                         }
                         let cached_too_many_too_young =
-                            cached_sub_block && !cached_auto_freeze_ready;
+                            cached_small_tail && age <= cached_sub_block_too_many_min_age;
                         let cached_too_many_has_block_relief =
-                            cached_sub_block && too_many_has_block_sized_relief;
+                            cached_small_tail && too_many_has_block_sized_relief;
                         if trigger.is_none()
                             && too_many
                             && !cached_too_many_too_young
@@ -3803,6 +4287,12 @@ pub(crate) struct WritebackDirtyBreakdown {
     pub backpressure_soft_sleep_us: u64,
     pub backpressure_hard_wait_ops: u64,
     pub backpressure_hard_wait_us: u64,
+    pub buffer_soft_sleep_ops: u64,
+    pub buffer_soft_sleep_us: u64,
+    pub buffer_moderate_sleep_ops: u64,
+    pub buffer_moderate_sleep_us: u64,
+    pub buffer_hard_sleep_ops: u64,
+    pub buffer_hard_sleep_us: u64,
     pub stage_inflight_bytes: u64,
     pub remote_upload_inflight_bytes: u64,
     pub stage_ops: u64,
@@ -3961,6 +4451,30 @@ where
             backpressure_hard_wait_us: self
                 .recent_pending_upload
                 .hard_wait_us
+                .load(Ordering::Relaxed),
+            buffer_soft_sleep_ops: self
+                .recent_pending_upload
+                .buffer_soft_sleep_ops
+                .load(Ordering::Relaxed),
+            buffer_soft_sleep_us: self
+                .recent_pending_upload
+                .buffer_soft_sleep_us
+                .load(Ordering::Relaxed),
+            buffer_moderate_sleep_ops: self
+                .recent_pending_upload
+                .buffer_moderate_sleep_ops
+                .load(Ordering::Relaxed),
+            buffer_moderate_sleep_us: self
+                .recent_pending_upload
+                .buffer_moderate_sleep_us
+                .load(Ordering::Relaxed),
+            buffer_hard_sleep_ops: self
+                .recent_pending_upload
+                .buffer_hard_sleep_ops
+                .load(Ordering::Relaxed),
+            buffer_hard_sleep_us: self
+                .recent_pending_upload
+                .buffer_hard_sleep_us
                 .load(Ordering::Relaxed),
             stage_inflight_bytes: self
                 .recent_pending_upload
@@ -4450,6 +4964,21 @@ where
         Ok(false)
     }
 
+    pub(crate) async fn wait_committed_uploads_for_range(
+        &self,
+        ino: u64,
+        offset: u64,
+        len: usize,
+    ) -> anyhow::Result<()> {
+        let writer = self.files.get(&ino).map(|entry| entry.value().clone());
+        if let Some(writer) = writer {
+            writer
+                .wait_committed_uploads_for_range(offset, len, FLUSH_DEADLINE)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Truncate/ftruncate runs on the kernel SETATTR path.  A 300s writeback
     /// wait looks like a stuck FUSE request, so use a short, explicit deadline
     /// and log the operation boundary for xfstests-style debugging.
@@ -4501,6 +5030,13 @@ where
         }
     }
 
+    pub(crate) async fn discard(&self, ino: u64) {
+        if let Some((_, removed)) = self.files.remove(&ino) {
+            removed.shared.inode.bump_data_epoch();
+            removed.clear().await;
+        }
+    }
+
     pub(crate) async fn release(&self, ino: u64) {
         let writer = self.files.get(&ino).map(|entry| entry.value().clone());
         if let Some(writer) = writer
@@ -4529,7 +5065,8 @@ where
             .collect();
 
         for (ino, writer) in writers {
-            if writer.has_pending().await {
+            let released = writer.shared.released.load(Ordering::Acquire);
+            if released && writer.has_pending().await {
                 let _ = writer.flush().await;
             }
             if writer.released_cleanup_ready().await
@@ -4778,6 +5315,57 @@ mod tests {
         assert!(slice.writeback_fully_persisted());
     }
 
+    #[tokio::test]
+    async fn test_upload_before_commit_skips_local_writeback_stage() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "upload_before_commit_no_stage.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+        let write_back = Arc::new(
+            crate::vfs::cache::write_back::FsWriteBackCache::new_with_sync(
+                temp.path().to_path_buf(),
+                false,
+            ),
+        );
+        let writer = Arc::new(DataWriter::new(
+            test_config_with_writeback(layout, WriteBackMode::UploadBeforeCommit),
+            backend,
+            reader,
+            Some(write_back.clone()),
+        ));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![5u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), file_writer.flush())
+            .await
+            .expect("upload-before-commit flush should finish")
+            .unwrap();
+
+        let breakdown = writer.dirty_breakdown().await;
+        assert_eq!(breakdown.stage_ops, 0);
+        assert!(
+            write_back.recover().await.unwrap().is_empty(),
+            "upload-before-commit must not create recoverable local dirty records"
+        );
+    }
+
     fn blocks_len(data: &[(usize, Vec<Bytes>)]) -> usize {
         data.iter()
             .map(|(_, pages)| pages.iter().map(|b| b.len()).sum::<usize>())
@@ -4906,6 +5494,43 @@ mod tests {
     }
 
     #[test]
+    fn test_idx_need_upload_writable_stops_before_sparse_gap() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let mut slice = SliceState::new(
+            1,
+            0,
+            test_config(layout),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            0,
+        );
+        let block = layout.block_size as usize;
+        slice.data.append(&vec![1u8; block]).unwrap();
+        slice
+            .data
+            .write(
+                (block * 2) as u64,
+                &vec![3u8; block],
+                PageWriteAction::GapAppend,
+            )
+            .unwrap();
+
+        assert_eq!(slice.data.len(), (block * 3) as u64);
+        let (start, end) = slice.idx_need_upload();
+        assert_eq!((start, end), (0, 1));
+
+        slice
+            .data
+            .write_at(block as u64, &vec![2u8; block])
+            .unwrap();
+        let (start, end) = slice.idx_need_upload();
+        assert_eq!((start, end), (0, 3));
+    }
+
+    #[test]
     fn test_idx_need_upload_readonly_includes_partial_block() {
         let layout = ChunkLayout {
             chunk_size: 16 * 1024,
@@ -5006,8 +5631,50 @@ mod tests {
             .unwrap();
         slice.uploaded = layout.block_size as u64;
 
-        assert!(slice.can_write(0, 16).is_none());
-        assert!(slice.can_write(layout.block_size as u64, 16).is_some());
+        assert!(slice.can_write(0, 16, None).is_none());
+        assert!(
+            slice
+                .can_write(layout.block_size as u64, 16, None)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_gap_append_requires_uncommitted_tail_range() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let mut slice = SliceState::new(
+            1,
+            0,
+            test_config(layout),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            1,
+        );
+        slice
+            .data
+            .append(&vec![1u8; layout.block_size as usize])
+            .unwrap();
+
+        assert_eq!(
+            slice.can_write(
+                layout.block_size as u64 * 2,
+                layout.block_size as usize,
+                Some(layout.block_size as u64)
+            ),
+            Some(PageWriteAction::GapAppend)
+        );
+        assert!(
+            slice
+                .can_write(
+                    layout.block_size as u64 * 2,
+                    layout.block_size as usize,
+                    Some(layout.block_size as u64 * 2)
+                )
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -5108,6 +5775,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cached_out_of_order_gap_backfill_commits_dense_slices() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_gap_backfill.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode.clone(),
+            test_config(layout),
+            backend.clone(),
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        let block = layout.block_size as usize;
+        let first = vec![1u8; block];
+        let middle = vec![2u8; block];
+        let tail = vec![3u8; block];
+
+        writer.write_at_cached(0, &first, 1).await.unwrap();
+        writer
+            .write_at_cached((block * 2) as u64, &tail, 3)
+            .await
+            .unwrap();
+        writer
+            .write_at_cached(block as u64, &middle, 2)
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let cid = chunk_id_for(inode.ino(), 0).unwrap();
+        let slices = meta_store.get_slices(cid).await.unwrap();
+        assert_eq!(slices.len(), 2);
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.offset == 0 && s.length == (block * 2) as u64)
+        );
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.offset == (block * 2) as u64 && s.length == block as u64)
+        );
+        assert!(
+            !slices
+                .iter()
+                .any(|s| s.offset == 0 && s.length >= (block * 3) as u64),
+            "out-of-order cached writes must not commit a sparse range as dense metadata"
+        );
+
+        let mut expected = first;
+        expected.extend_from_slice(&middle);
+        expected.extend_from_slice(&tail);
+
+        let mut reader = DataFetcher::new(layout, cid, backend.as_ref());
+        reader.prepare_slices().await.unwrap();
+        let out = reader.read_at(0u64.into(), expected.len()).await.unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[tokio::test]
     async fn test_overlay_dirty_prefers_live_slice_over_recently_committed() {
         let layout = ChunkLayout::default();
         let store = Arc::new(InMemoryBlockStore::new());
@@ -5192,7 +5934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recently_committed_keeps_overlay_state_after_flush() {
+    async fn test_upload_before_commit_uploaded_slices_do_not_keep_overlay_state_after_flush() {
         let layout = ChunkLayout::default();
         let store = Arc::new(InMemoryBlockStore::new());
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
@@ -5224,9 +5966,112 @@ mod tests {
             "flush should drain live pending writes"
         );
         assert!(
-            writer.has_overlay_state().await,
-            "recently_committed slices must remain visible to overlay after flush"
+            !writer.has_overlay_state().await,
+            "upload-before-commit slices are already durable before metadata commit and must not keep the read path in overlay mode"
         );
+    }
+
+    #[tokio::test]
+    async fn test_upload_before_commit_discards_uploaded_recently_committed_slices() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "recently_committed_discard.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![1u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        file_writer.flush().await.unwrap();
+
+        let breakdown = writer.dirty_breakdown().await;
+        assert_eq!(
+            breakdown.recently_committed_uploaded_slices, 0,
+            "uploaded committed slices no longer need overlay data in upload-before-commit mode"
+        );
+        assert_eq!(breakdown.recently_committed_pending_upload_slices, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_upload_before_commit_splits_uploaded_prefix_and_keeps_tail_writable() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "uploaded_prefix_split.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(
+            test_config(layout),
+            backend,
+            reader.clone(),
+            None,
+        ));
+        let file_writer = writer.ensure_file(inode.clone());
+        let block = layout.block_size as usize;
+
+        file_writer
+            .write_at_cached(0, &vec![1u8; block + 1024], 10)
+            .await
+            .unwrap();
+
+        let cid = chunk_id_for(inode.ino(), 0).unwrap();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let slices = meta.get_slices(cid).await.unwrap();
+                if slices
+                    .iter()
+                    .any(|s| s.offset == 0 && s.length == block as u64)
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("uploaded full-block prefix should commit before the partial tail freezes");
+
+        assert!(
+            file_writer.has_pending().await,
+            "partial tail should remain writable after prefix commit"
+        );
+
+        file_writer
+            .write_at_cached((block + 1024) as u64, &vec![2u8; block - 1024], 11)
+            .await
+            .unwrap();
+        file_writer.flush().await.unwrap();
+
+        let file_reader = reader.open_for_handle(inode, 31);
+        let out = file_reader.read(0, block * 2).await.unwrap();
+        let mut expected = vec![1u8; block + 1024];
+        expected.extend_from_slice(&vec![2u8; block - 1024]);
+        assert_eq!(out, expected);
     }
 
     #[tokio::test]
@@ -5314,6 +6159,123 @@ mod tests {
         })
         .await
         .expect("uploaded committed data should stop participating in overlay");
+    }
+
+    #[tokio::test]
+    async fn test_commit_before_upload_waits_source_range_until_upload_finishes() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "writeback_copy_source.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode,
+            test_config_with_writeback(layout, WriteBackMode::CommitBeforeUpload),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        let data = vec![0x5au8; layout.block_size as usize / 2];
+        writer.write_at(0, &data).await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert!(
+            timeout(
+                Duration::from_millis(50),
+                writer.wait_committed_uploads_for_range(0, data.len(), Duration::from_secs(2))
+            )
+            .await
+            .is_err(),
+            "source-range wait should not finish while the remote upload is blocked"
+        );
+
+        store.unblock();
+        timeout(
+            Duration::from_secs(2),
+            writer.wait_committed_uploads_for_range(0, data.len(), Duration::from_secs(2)),
+        )
+        .await
+        .expect("upload wait should finish after unblocking the store")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cached_gap_writes_commit_as_separate_dense_slices() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_gap_dense_slices.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode.clone(),
+            test_config(layout),
+            backend,
+            reader.clone(),
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        let block = layout.block_size as usize;
+        writer
+            .write_at_cached(0, &vec![0x11; block], 10)
+            .await
+            .unwrap();
+        writer
+            .write_at_cached((block * 2) as u64, &vec![0x22; block], 11)
+            .await
+            .unwrap();
+        writer.flush().await.unwrap();
+
+        let chunk_id = chunk_id_for(ino, 0).unwrap();
+        let slices = meta.get_slices(chunk_id).await.unwrap();
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.offset == 0 && s.length == block as u64)
+        );
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.offset == (block * 2) as u64 && s.length == block as u64)
+        );
+        assert!(
+            !slices
+                .iter()
+                .any(|s| s.offset == 0 && s.length >= (block * 3) as u64),
+            "a cached sparse gap must not be committed as one dense slice"
+        );
+
+        let file_reader = reader.open_for_handle(inode, 41);
+        let out = file_reader.read(0, block * 3).await.unwrap();
+        assert_eq!(&out[..block], vec![0x11; block].as_slice());
+        assert_eq!(&out[block..block * 2], vec![0; block].as_slice());
+        assert_eq!(&out[block * 2..], vec![0x22; block].as_slice());
     }
 
     #[tokio::test]
@@ -5946,6 +6908,133 @@ mod tests {
         assert_eq!(after_flush.upload_partial_tail_max_unflushed_ops, 0);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_normal_write_waits_for_freeze_min_before_pipeline_upload() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "normal_freeze_min_pipeline.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let config = Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .freeze_min_bytes(layout.block_size as u64 * 2)
+                .auto_flush_max_age(Duration::from_secs(60)),
+        );
+        let writer = Arc::new(DataWriter::new(config, backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![1u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        sleep(Duration::from_millis(50)).await;
+        let before_min = writer.dirty_breakdown().await;
+        assert_eq!(
+            before_min.upload_batch_ops, 0,
+            "normal writes should aggregate until freeze_min before pipeline upload"
+        );
+
+        file_writer
+            .write_at(
+                layout.block_size as u64,
+                &vec![2u8; layout.block_size as usize],
+            )
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let breakdown = writer.dirty_breakdown().await;
+                if breakdown.upload_batch_ops > 0 {
+                    assert_eq!(breakdown.upload_batch_ops, 1);
+                    assert_eq!(breakdown.upload_batch_blocks, 2);
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("normal write should upload once freeze_min is reached");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_writeback_commit_wait_upload_ignores_unflushable_slice() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "writeback_deferred_commit.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let config = Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .freeze_min_bytes(layout.block_size as u64 * 2)
+                .auto_flush_max_age(Duration::from_secs(60))
+                .writeback_mode(WriteBackMode::CommitBeforeUpload),
+        );
+        let writer = Arc::new(DataWriter::new(config, backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+
+        file_writer
+            .write_at(0, &vec![1u8; layout.block_size as usize])
+            .await
+            .unwrap();
+        sleep(COMMIT_WAIT_SLICE * 2 + Duration::from_millis(20)).await;
+
+        let before_flushable = writer.dirty_breakdown().await;
+        assert_eq!(before_flushable.live_slices, 1);
+        assert_eq!(before_flushable.upload_batch_ops, 0);
+        assert_eq!(
+            before_flushable.commit_wait_upload_ops, 0,
+            "writable slices should not be counted as upload wait before they can be flushed"
+        );
+
+        file_writer
+            .write_at(
+                layout.block_size as u64,
+                &vec![2u8; layout.block_size as usize],
+            )
+            .await
+            .unwrap();
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let breakdown = writer.dirty_breakdown().await;
+                if breakdown.upload_batch_ops > 0 {
+                    assert_eq!(breakdown.upload_batch_blocks, 2);
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("writeback upload should start once freeze_min is reached");
+    }
+
     #[tokio::test]
     async fn test_dirty_breakdown_reports_live_write_origin_mix() {
         let layout = ChunkLayout {
@@ -6141,7 +7230,7 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(1200)).await;
 
         let before_flush = writer.dirty_breakdown().await;
         assert_eq!(
@@ -6161,7 +7250,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_auto_flush_defers_cached_sub_block_idle_freeze_until_explicit_flush() {
+    async fn test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_tail_auto_age_deferral.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
+        let file_writer = writer.ensure_file(inode);
+        let len = layout.block_size as usize + 1024;
+
+        file_writer
+            .write_at_cached(0, &vec![4u8; len], 10)
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(50)).await;
+
+        let before_flush = writer.dirty_breakdown().await;
+        assert_eq!(
+            before_flush.freeze_auto_ops, 0,
+            "cached partial tails should get the same coalescing grace after full blocks are dispatched"
+        );
+        assert_eq!(before_flush.upload_partial_tail_auto_age_ops, 0);
+        assert_eq!(before_flush.upload_partial_tail_ops, 0);
+
+        file_writer.flush().await.unwrap();
+
+        let after_flush = writer.dirty_breakdown().await;
+        assert_eq!(after_flush.freeze_explicit_flush_ops, 1);
+        assert_eq!(after_flush.upload_partial_tail_explicit_flush_ops, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_auto_flush_defers_cached_sub_block_idle_freeze_with_bounded_grace() {
         let layout = ChunkLayout {
             chunk_size: 16 * 1024,
             block_size: 4 * 1024,
@@ -6187,7 +7321,7 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(3500)).await;
+        sleep(Duration::from_millis(50)).await;
 
         let before_flush = writer.dirty_breakdown().await;
         assert_eq!(
@@ -6228,16 +7362,12 @@ mod tests {
 
         for idx in 0..(MAX_SLICES_THRESHOLD + 16) as u64 {
             file_writer
-                .write_at_cached(
-                    idx * layout.block_size as u64 * 2,
-                    &[idx as u8; 1024],
-                    idx + 1,
-                )
+                .write_at_cached(idx * layout.chunk_size, &[idx as u8; 1024], idx + 1)
                 .await
                 .unwrap();
         }
 
-        sleep(Duration::from_millis(1500)).await;
+        sleep(Duration::from_millis(500)).await;
 
         let breakdown = writer.dirty_breakdown().await;
         store.unblock();
@@ -6879,5 +8009,47 @@ mod tests {
         })
         .await
         .expect("flush-all should commit");
+    }
+
+    #[tokio::test]
+    async fn test_background_flush_does_not_force_active_cached_sub_block() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(block_store, meta.clone()));
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let write_cfg = Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .flush_all_interval(Duration::from_millis(20)),
+        );
+        let writer_pool = Arc::new(DataWriter::new(write_cfg, backend, reader, None));
+        writer_pool.start_flush_background();
+
+        let ino = meta
+            .create_file(1, "background_no_active_flush.txt".to_string())
+            .await
+            .unwrap();
+        let writer = writer_pool.ensure_file(Inode::new(ino, 0));
+        writer.write_at_cached(0, &[9u8; 1024], 1).await.unwrap();
+
+        sleep(Duration::from_millis(80)).await;
+
+        let breakdown = writer_pool.dirty_breakdown().await;
+        assert_eq!(
+            breakdown.freeze_explicit_flush_ops, 0,
+            "background maintenance must not force active cached writers through explicit flush"
+        );
+        assert!(
+            writer.has_pending().await,
+            "active cached sub-block data should wait for explicit flush/close"
+        );
     }
 }

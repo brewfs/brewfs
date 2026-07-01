@@ -45,6 +45,7 @@ env_or_default() {
 prepare_artifacts() {
     mkdir -p "$artifact_dir/results" "$artifact_dir/tools" "$artifact_dir/diagnostics"
     printf 'tool\tstatus\tseconds\tlog\n' >"$artifact_dir/perf-summary.tsv"
+    printf 'tool\tmethod\tops\tbytes\tseconds\tavg_ms\n' >"$artifact_dir/juicefs-object-summary.tsv"
     write_perf_profile
     printf 'tool\tpost_fio_drain_s\tstage_blocks\tstage_bytes\tuploading\tput_bytes\tget_bytes\n' \
         >"$artifact_dir/post-write-drain.tsv"
@@ -131,12 +132,83 @@ require_tool_bin() {
     fi
 }
 
+run_metadata_fallback() {
+    local tool="$1"
+    local work_dir="$2"
+    local fallback="${PERF_METADATA_FALLBACK_BIN:-/usr/local/bin/perf_metadata_fallback.py}"
+
+    require_tool_bin "$fallback"
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir"
+    info "使用 metadata fallback: $tool ($fallback)"
+    run_logged_tool "$tool" python3 "$fallback" "$tool" "$work_dir"
+}
+
+scrape_juicefs_metrics() {
+    local label="$1"
+    local out="$artifact_dir/diagnostics/juicefs-metrics-${label}.txt"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS --max-time 2 "http://127.0.0.1:9567/metrics" >"$out" 2>/dev/null || : >"$out"
+    else
+        : >"$out"
+    fi
+
+    printf '%s' "$out"
+}
+
+metric_value() {
+    local file="$1"
+    local metric="$2"
+    local method="$3"
+
+    if [[ ! -s "$file" ]]; then
+        printf '0'
+        return
+    fi
+
+    awk -v metric="$metric" -v method="$method" '
+        $1 ~ "^" metric "\\{" && $0 ~ "method=\"" method "\"" { total += $NF }
+        END { printf "%.6f", total + 0 }
+    ' "$file"
+}
+
+append_juicefs_object_summary() {
+    local tool="$1"
+    local before="$2"
+    local after="$3"
+    local method
+
+    for method in GET PUT DELETE; do
+        local before_ops after_ops ops
+        local before_seconds after_seconds seconds
+        local before_bytes after_bytes bytes
+        local avg_ms
+
+        before_ops="$(metric_value "$before" juicefs_object_request_durations_histogram_seconds_count "$method")"
+        after_ops="$(metric_value "$after" juicefs_object_request_durations_histogram_seconds_count "$method")"
+        before_seconds="$(metric_value "$before" juicefs_object_request_durations_histogram_seconds_sum "$method")"
+        after_seconds="$(metric_value "$after" juicefs_object_request_durations_histogram_seconds_sum "$method")"
+        before_bytes="$(metric_value "$before" juicefs_object_request_data_bytes "$method")"
+        after_bytes="$(metric_value "$after" juicefs_object_request_data_bytes "$method")"
+
+        ops="$(awk -v a="$after_ops" -v b="$before_ops" 'BEGIN { printf "%.0f", a - b }')"
+        seconds="$(awk -v a="$after_seconds" -v b="$before_seconds" 'BEGIN { printf "%.6f", a - b }')"
+        bytes="$(awk -v a="$after_bytes" -v b="$before_bytes" 'BEGIN { printf "%.0f", a - b }')"
+        avg_ms="$(awk -v s="$seconds" -v n="$ops" 'BEGIN { if (n > 0) printf "%.3f", (s / n) * 1000; else printf "0.000" }')"
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$method" "$ops" "$bytes" "$seconds" "$avg_ms" >>"$artifact_dir/juicefs-object-summary.tsv"
+    done
+}
+
 run_logged_tool() {
     local tool="$1"
     shift
     local log_path="$artifact_dir/tools/${tool}.log"
     local start end elapsed status
+    local metrics_before metrics_after
 
+    metrics_before="$(scrape_juicefs_metrics "${tool}-before")"
     start="$(date +%s)"
     info "运行压力工具: $tool"
     info "  命令: $*"
@@ -151,6 +223,8 @@ run_logged_tool() {
     set -e
     end="$(date +%s)"
     elapsed="$((end - start))"
+    metrics_after="$(scrape_juicefs_metrics "${tool}-after")"
+    append_juicefs_object_summary "$tool" "$metrics_before" "$metrics_after"
 
     local log_size
     log_size=$(wc -c < "$log_path" 2>/dev/null || echo 0)
@@ -450,7 +524,10 @@ run_dirstress() {
     local work_dir="$mount_dir/.perf-dirstress"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback dirstress "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -467,7 +544,10 @@ run_dirperf() {
     local work_dir="$mount_dir/.perf-dirperf"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback dirperf "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -484,7 +564,10 @@ run_metaperf() {
     local work_dir="$mount_dir/.perf-metaperf"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback metaperf "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -502,7 +585,10 @@ run_looptest() {
     local loop_file="$work_dir/looptest.dat"
     local -a args=()
 
-    require_tool_bin "$bin"
+    if [[ ! -x "$bin" ]]; then
+        run_metadata_fallback looptest "$work_dir"
+        return
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 

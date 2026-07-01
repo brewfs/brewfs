@@ -21,7 +21,7 @@ use crate::meta::file_lock::{FileLockQuery, FileLockRange, FileLockType};
 use crate::meta::store::{MetaError, SetAttrFlags, SetAttrRequest};
 use crate::posix::NAME_MAX;
 use crate::vfs::error::VfsError;
-use crate::vfs::fs::{FileAttr as VfsFileAttr, FileType as VfsFileType, VFS};
+use crate::vfs::fs::{CreateFileAtResult, FileAttr as VfsFileAttr, FileType as VfsFileType, VFS};
 use asyncfuse::Errno;
 use asyncfuse::Result as FuseResult;
 use asyncfuse::raw::Request;
@@ -62,14 +62,13 @@ fn fuse_cache_ttl() -> Duration {
 }
 
 fn fuse_read_direct_io_enabled() -> bool {
-    std::env::var("BREWFS_FUSE_READ_DIRECT_IO")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    match std::env::var("BREWFS_FUSE_READ_DIRECT_IO") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
 }
 
 fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
@@ -83,6 +82,9 @@ fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
 /// Virtual inode for the `.stats` file exposed at the mount root.
 /// Uses a high inode number unlikely to collide with real inodes.
 const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
+/// Linux marks execve-driven FUSE open requests with this internal flag.
+/// It is not a public libc O_* bit, but it is visible in the FUSE open flags.
+const FUSE_OPEN_EXEC: u32 = 0x20;
 /// Name of the virtual stats file.
 const STATS_FILENAME: &str = ".stats";
 const STATS_FILE_SIZE: u64 = 16 * 1024;
@@ -357,6 +359,20 @@ where
             Err(_err) => self.stat_ino(ino).await,
         }
     }
+
+    async fn attr_for_create_result(
+        &self,
+        result: CreateFileAtResult,
+        uid: u32,
+        gid: u32,
+        mode: Option<u32>,
+    ) -> Option<VfsFileAttr> {
+        if result.created && !result.attrs_applied {
+            self.apply_new_entry_attrs(result.ino, uid, gid, mode).await
+        } else {
+            self.stat_ino(result.ino).await
+        }
+    }
 }
 
 fn fuse_lock_end_to_exclusive(end: u64) -> u64 {
@@ -472,12 +488,14 @@ where
         let read = accmode != (libc::O_WRONLY as u32);
         let write = accmode != (libc::O_RDONLY as u32);
         let append = (flags & libc::O_APPEND as u32) != 0;
+        let truncate = (flags & libc::O_TRUNC as u32) != 0;
         debug!(
             ino,
             flags,
             read,
             write,
             has_append = append,
+            has_trunc = truncate,
             has_creat = (flags & libc::O_CREAT as u32) != 0,
             "fuse.open"
         );
@@ -486,6 +504,21 @@ where
                 .await?;
             self.ensure_access_allowed(ino as i64, req.uid, req.gid, open_flags_access_mask(flags))
                 .await?;
+        }
+        if truncate {
+            if !write {
+                return Err(libc::EINVAL.into());
+            }
+            self.set_attr(
+                ino as i64,
+                &SetAttrRequest {
+                    size: Some(0),
+                    ..Default::default()
+                },
+                SetAttrFlags::empty(),
+            )
+            .await
+            .map_err(Into::<Errno>::into)?;
         }
         let fh = self
             .open_fresh_ino(ino as i64, read, write, append)
@@ -1155,21 +1188,28 @@ where
         const S_IFBLK: u32 = libc::S_IFBLK as u32;
         let file_type = mode & S_IFMT;
 
-        let ino = match file_type {
+        let (ino, created_attr) = match file_type {
             // Linux accepts mknod(path, 0, 0) as a regular file with mode 000.
             0 | S_IFREG => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
                     .await?;
-                self.create_file_at(parent as i64, &name, true)
+                let result = self
+                    .create_file_at_with_attrs(parent as i64, &name, true, mode, req.uid, req.gid)
                     .await
-                    .map_err(Errno::from)?
+                    .map_err(Errno::from)?;
+                let attr = self
+                    .attr_for_create_result(result, req.uid, req.gid, Some(mode))
+                    .await;
+                (result.ino, attr)
             }
             S_IFDIR => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
                     .await?;
-                self.mkdir_at_new(parent as i64, &name)
+                let ino = self
+                    .mkdir_at_new(parent as i64, &name)
                     .await
-                    .map_err(Errno::from)?
+                    .map_err(Errno::from)?;
+                (ino, None)
             }
             S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK => {
                 self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
@@ -1181,17 +1221,19 @@ where
                     S_IFBLK => VfsFileType::BlockDevice,
                     _ => unreachable!("special file type already matched"),
                 };
-                self.create_special_node_at(
-                    parent as i64,
-                    &name,
-                    kind,
-                    mode,
-                    req.uid,
-                    req.gid,
-                    rdev,
-                )
-                .await
-                .map_err(Errno::from)?
+                let ino = self
+                    .create_special_node_at(
+                        parent as i64,
+                        &name,
+                        kind,
+                        mode,
+                        req.uid,
+                        req.gid,
+                        rdev,
+                    )
+                    .await
+                    .map_err(Errno::from)?;
+                (ino, self.stat_ino(ino).await)
             }
             _ => {
                 return Err(libc::EINVAL.into());
@@ -1199,10 +1241,14 @@ where
         };
 
         // Apply mode after normalizing to POSIX permission bits.
-        let Some(vattr) = self
+        let vattr = if let Some(attr) = created_attr {
+            attr
+        } else if let Some(attr) = self
             .apply_new_entry_attrs(ino, req.uid, req.gid, Some(mode))
             .await
-        else {
+        {
+            attr
+        } else {
             return Err(libc::ENOENT.into());
         };
 
@@ -1277,23 +1323,33 @@ where
         let create_new = (flags & libc::O_EXCL as u32) != 0;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
-        let ino = match self.create_file_at(parent as i64, &name, create_new).await {
-            Ok(ino) => {
+        let create_result = match self
+            .create_file_at_with_attrs(parent as i64, &name, create_new, mode, req.uid, req.gid)
+            .await
+        {
+            Ok(result) => {
                 debug!(
-                    ino,
+                    ino = result.ino,
                     name = %name,
                     flags,
+                    created = result.created,
+                    attrs_applied = result.attrs_applied,
                     has_append = (flags & libc::O_APPEND as u32) != 0,
                     "fuse.create ok"
                 );
-                ino
+                result
             }
             Err(VfsError::AlreadyExists { .. }) if !create_new => {
                 debug!(name = %name, "fuse.create EEXIST, falling back to lookup");
-                self.child_of(parent as i64, &name).await.ok_or_else(|| {
+                let ino = self.child_of(parent as i64, &name).await.ok_or_else(|| {
                     debug!(name = %name, "fuse.create fallback lookup also failed");
                     Errno::from(libc::EIO)
-                })?
+                })?;
+                CreateFileAtResult {
+                    ino,
+                    created: false,
+                    attrs_applied: false,
+                }
             }
             Err(e) => {
                 debug!(name = %name, flags, error = %e, "fuse.create err");
@@ -1301,10 +1357,24 @@ where
             }
         };
         let Some(vattr) = self
-            .apply_new_entry_attrs(ino, req.uid, req.gid, Some(mode))
+            .attr_for_create_result(create_result, req.uid, req.gid, Some(mode))
             .await
         else {
             return Err(libc::ENOENT.into());
+        };
+        let vattr = if !create_result.created && (flags & libc::O_TRUNC as u32) != 0 {
+            self.set_attr(
+                create_result.ino,
+                &SetAttrRequest {
+                    size: Some(0),
+                    ..Default::default()
+                },
+                SetAttrFlags::empty(),
+            )
+            .await
+            .map_err(Into::<Errno>::into)?
+        } else {
+            vattr
         };
         let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
 
@@ -1313,7 +1383,7 @@ where
         let write = accmode != (libc::O_RDONLY as u32);
         let append = (flags & libc::O_APPEND as u32) != 0;
         let fh = self
-            .open_with_cached_attr(ino, vattr.clone(), read, write, append)
+            .open_with_cached_attr(create_result.ino, vattr.clone(), read, write, append)
             .await
             .map_err(Into::<Errno>::into)?;
         Ok(ReplyCreated {
@@ -1511,9 +1581,12 @@ where
             return Ok(());
         }
 
-        // Ensure the source exists
-        let Some(src_ino) = self.child_of(parent as i64, name.as_ref()).await else {
-            return Err(libc::ENOENT.into());
+        // Ensure the source exists and keep its attributes for the later VFS
+        // rename checks instead of statting it again.
+        let (src_ino, src_attr) = match self.child_attr_of(parent as i64, name.as_ref()).await {
+            Ok(Some(attr)) => attr,
+            Ok(None) => return Err(libc::ENOENT.into()),
+            Err(err) => return Err(Errno::from(err)),
         };
 
         // Validate the destination parent
@@ -1532,13 +1605,11 @@ where
         }
         self.ensure_sticky_parent_allows_child_mutation(parent, src_ino, req.uid)
             .await?;
-        if let Some(dst_ino) = self.child_of(new_parent as i64, new_name.as_ref()).await {
+        let dst_ino = self.child_of(new_parent as i64, new_name.as_ref()).await;
+        if let Some(dst_ino) = dst_ino {
             self.ensure_sticky_parent_allows_child_mutation(new_parent, dst_ino, req.uid)
                 .await?;
         }
-        let Some(src_attr) = self.stat_ino(src_ino).await else {
-            return Err(libc::ENOENT.into());
-        };
         if parent != new_parent && matches!(src_attr.kind, VfsFileType::Dir) {
             self.ensure_access_allowed(src_ino, req.uid, req.gid, namespace_mutation_access_mask())
                 .await?;
@@ -1549,8 +1620,17 @@ where
         // do not race with in-flight write-back commit tasks.
         self.flush_inode(src_ino as u64).await;
 
-        self.rename_at(parent as i64, &name, new_parent as i64, &new_name)
-            .await
+        self.rename_at_with_known_attrs(
+            parent as i64,
+            &name,
+            new_parent as i64,
+            new_name.to_string(),
+            src_ino,
+            &src_attr,
+            &pattr,
+            Some(dst_ino),
+        )
+        .await
             .map_err(|e| {
                 match e {
                     VfsError::NotFound { .. } => libc::ENOENT,
@@ -1670,10 +1750,10 @@ where
                 signed_offset
             }
             libc::SEEK_HOLE => {
-                if signed_offset < 0 || signed_offset > size {
+                if signed_offset < 0 || signed_offset >= size {
                     return Err(libc::ENXIO.into());
                 }
-                signed_offset
+                size
             }
             _ => return Err(libc::EINVAL.into()),
         };
@@ -2336,10 +2416,15 @@ where
 }
 
 fn open_flags_access_mask(flags: u32) -> u32 {
-    let mut mask = match flags & (libc::O_ACCMODE as u32) {
-        value if value == libc::O_WRONLY as u32 => libc::W_OK as u32,
-        value if value == libc::O_RDWR as u32 => (libc::R_OK | libc::W_OK) as u32,
-        _ => libc::R_OK as u32,
+    let accmode = flags & (libc::O_ACCMODE as u32);
+    let mut mask = if accmode == libc::O_RDONLY as u32 && (flags & FUSE_OPEN_EXEC) != 0 {
+        libc::X_OK as u32
+    } else {
+        match accmode {
+            value if value == libc::O_WRONLY as u32 => libc::W_OK as u32,
+            value if value == libc::O_RDWR as u32 => (libc::R_OK | libc::W_OK) as u32,
+            _ => libc::R_OK as u32,
+        }
     };
     if (flags & libc::O_TRUNC as u32) != 0 {
         mask |= libc::W_OK as u32;
@@ -2746,7 +2831,7 @@ fn validate_fuse_name(name: &str) -> Result<(), Errno> {
 #[cfg(test)]
 mod mode_sanitization_tests {
     use super::{
-        access_mode_from_bits, acl_entries_access_mode, apply_creation_umask,
+        FUSE_OPEN_EXEC, access_mode_from_bits, acl_entries_access_mode, apply_creation_umask,
         mode_setattr_only_clears_suid_sgid, namespace_mutation_access_mask, open_flags_access_mask,
         opendir_access_mask, parent_namespace_mutation_access_mask, parse_proc_status_groups,
         sanitize_special_mode_bits, validate_fuse_name, vfs_kind_to_fuse, vfs_to_fuse_attr,
@@ -2888,6 +2973,10 @@ mod mode_sanitization_tests {
         assert_eq!(
             open_flags_access_mask((libc::O_RDONLY | libc::O_TRUNC) as u32),
             (libc::R_OK | libc::W_OK) as u32
+        );
+        assert_eq!(
+            open_flags_access_mask((libc::O_RDONLY as u32) | FUSE_OPEN_EXEC),
+            libc::X_OK as u32
         );
     }
 
@@ -3351,6 +3440,40 @@ mod fuse_init_tests {
     }
 
     #[tokio::test]
+    async fn create_existing_file_preserves_existing_mode() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/scratch").await.unwrap();
+        let scratch = fs.stat("/scratch").await.unwrap();
+        fs.chmod(scratch.ino, 0o777).await.unwrap();
+
+        let first = Filesystem::create(
+            &fs,
+            user_request(),
+            scratch.ino as u64,
+            OsStr::new("existing.txt"),
+            0o600,
+            (libc::O_CREAT | libc::O_RDWR) as u32,
+        )
+        .await
+        .unwrap();
+
+        let second = Filesystem::create(
+            &fs,
+            user_request(),
+            scratch.ino as u64,
+            OsStr::new("existing.txt"),
+            0o777,
+            (libc::O_CREAT | libc::O_RDWR) as u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(second.attr.ino, first.attr.ino);
+        let attr = fs.stat("/scratch/existing.txt").await.unwrap();
+        assert_eq!(attr.mode & 0o7777, 0o600);
+    }
+
+    #[tokio::test]
     async fn mknod_creates_fifo_metadata() {
         let fs = new_fuse_test_vfs().await;
         let reply = Filesystem::mknod(
@@ -3768,18 +3891,86 @@ mod fuse_init_tests {
         assert_eq!(fs.stat("/file.txt").await.unwrap().size, 0);
     }
 
+    #[tokio::test]
+    async fn open_with_trunc_clears_existing_file() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.write_ino(attr.ino, 0, b"old").await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+        assert_eq!(fs.stat("/file.txt").await.unwrap().size, 3);
+
+        let reply = Filesystem::open(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            (libc::O_WRONLY | libc::O_TRUNC) as u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fs.stat("/file.txt").await.unwrap().size, 0);
+        fs.close(reply.fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lseek_hole_on_empty_file_returns_enxio() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let err = Filesystem::lseek(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            0,
+            0,
+            libc::SEEK_HOLE as u32,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, Errno::from(libc::ENXIO));
+    }
+
+    #[tokio::test]
+    async fn lseek_hole_on_dense_file_returns_eof() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.write_ino(attr.ino, 0, b"hello").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+
+        let reply = Filesystem::lseek(
+            &fs,
+            Request::default(),
+            attr.ino as u64,
+            0,
+            2,
+            libc::SEEK_HOLE as u32,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reply.offset, 5);
+    }
+
     #[test]
-    fn open_reply_flags_keep_cache_by_default() {
+    fn open_reply_flags_use_direct_io_for_read_only_handles_by_default() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
         }
 
-        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_KEEP_CACHE);
+        assert_eq!(
+            fuse_open_reply_flags(true, false),
+            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
+        );
+        assert_eq!(fuse_open_reply_flags(true, true), FOPEN_KEEP_CACHE);
     }
 
     #[test]
-    fn open_reply_flags_enable_direct_io_for_read_only_handles() {
+    fn open_reply_flags_keep_direct_io_for_read_only_handles_explicitly() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
             std::env::set_var("BREWFS_FUSE_READ_DIRECT_IO", "1");
@@ -3790,6 +3981,20 @@ mod fuse_init_tests {
             FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
         );
         assert_eq!(fuse_open_reply_flags(true, true), FOPEN_KEEP_CACHE);
+
+        unsafe {
+            std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
+        }
+    }
+
+    #[test]
+    fn open_reply_flags_can_disable_direct_io_for_read_only_handles() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("BREWFS_FUSE_READ_DIRECT_IO", "0");
+        }
+
+        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_KEEP_CACHE);
 
         unsafe {
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");

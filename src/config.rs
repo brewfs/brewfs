@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -63,6 +63,10 @@ pub enum Command {
 
     /// Run the BrewFS web console.
     Console(ConsoleArgs),
+
+    /// Run a direct S3 object PUT benchmark without going through FUSE.
+    #[command(hide = true)]
+    ObjectPutBench(ObjectPutBenchArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -211,6 +215,57 @@ pub struct ConsoleArgs {
     pub enable_csi_dashboard: bool,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct ObjectPutBenchArgs {
+    /// S3 bucket name.
+    #[arg(long, value_name = "BUCKET")]
+    pub s3_bucket: String,
+
+    /// S3-compatible endpoint URL.
+    #[arg(long, value_name = "URL")]
+    pub s3_endpoint: Option<String>,
+
+    /// S3 region.
+    #[arg(long, value_name = "REGION", default_value = "us-east-1")]
+    pub s3_region: String,
+
+    /// S3 part size in bytes.
+    #[arg(long, default_value_t = DEFAULT_S3_PART_SIZE)]
+    pub s3_part_size: usize,
+
+    /// S3 maximum concurrent multipart upload parts.
+    #[arg(long, default_value_t = DEFAULT_S3_MAX_CONCURRENCY)]
+    pub s3_max_concurrency: usize,
+
+    /// Force path-style S3 access.
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub s3_force_path_style: bool,
+
+    /// Disable S3 payload checksum/signing.
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub s3_disable_payload_checksum: bool,
+
+    /// Object payload size in bytes.
+    #[arg(long, default_value_t = DEFAULT_BLOCK_SIZE as usize)]
+    pub object_size: usize,
+
+    /// Number of concurrent object PUT workers.
+    #[arg(long, default_value_t = DEFAULT_S3_MAX_CONCURRENCY)]
+    pub workers: usize,
+
+    /// Maximum benchmark duration. Use 0 to rely only on --objects.
+    #[arg(long, default_value_t = 60)]
+    pub duration_secs: u64,
+
+    /// Maximum objects to upload. Use 0 for duration-only mode.
+    #[arg(long, default_value_t = 0)]
+    pub objects: u64,
+
+    /// Object key prefix.
+    #[arg(long, default_value = "bench/direct-put")]
+    pub prefix: String,
+}
+
 #[derive(ValueEnum, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub enum DataBackendKind {
@@ -318,6 +373,8 @@ pub struct CacheFileConfig {
     pub prefetch_max_bytes: Option<u64>,
     pub prefetch_concurrency: Option<usize>,
     pub range_background_prefetch: Option<bool>,
+    pub populate_write_cache_after_upload: Option<bool>,
+    pub persist_write_cache_after_upload: Option<bool>,
     pub memory_budget_bytes: Option<u64>,
     pub compression: Option<String>,
     pub zstd_level: Option<i32>,
@@ -518,6 +575,12 @@ impl CacheFileConfig {
         if let Some(range_background_prefetch) = self.range_background_prefetch {
             cache.range_background_prefetch = range_background_prefetch;
         }
+        if let Some(populate_write_cache_after_upload) = self.populate_write_cache_after_upload {
+            cache.populate_write_cache_after_upload = populate_write_cache_after_upload;
+        }
+        if let Some(persist_write_cache_after_upload) = self.persist_write_cache_after_upload {
+            cache.persist_write_cache_after_upload = persist_write_cache_after_upload;
+        }
         if let Some(memory_budget_bytes) = self.memory_budget_bytes {
             cache.memory_budget_bytes = memory_budget_bytes;
         }
@@ -657,6 +720,37 @@ mod tests {
         assert!(args.kubeconfig.is_none());
         assert_eq!(args.csi_driver_name, "csi.brewfs.io");
         assert!(args.auth_token_file.is_none());
+    }
+
+    #[test]
+    fn object_put_bench_parses_s3_options() {
+        let cli = Cli::parse_from([
+            "brewfs",
+            "object-put-bench",
+            "--s3-bucket",
+            "bench-bucket",
+            "--s3-endpoint",
+            "http://rustfs:9000",
+            "--s3-force-path-style",
+            "false",
+            "--s3-disable-payload-checksum",
+            "false",
+            "--workers",
+            "7",
+            "--duration-secs",
+            "3",
+        ]);
+
+        let Command::ObjectPutBench(args) = cli.cmd else {
+            panic!("expected object-put-bench command");
+        };
+
+        assert_eq!(args.s3_bucket, "bench-bucket");
+        assert_eq!(args.s3_endpoint.as_deref(), Some("http://rustfs:9000"));
+        assert!(!args.s3_force_path_style);
+        assert!(!args.s3_disable_payload_checksum);
+        assert_eq!(args.workers, 7);
+        assert_eq!(args.duration_secs, 3);
     }
 
     #[test]
@@ -824,6 +918,8 @@ cache:
   prefetch_max_bytes: 8388608
   prefetch_concurrency: 7
   range_background_prefetch: false
+  populate_write_cache_after_upload: true
+  persist_write_cache_after_upload: true
   memory_budget_bytes: 9437184
   compression: zstd
   zstd_level: 5
@@ -854,6 +950,8 @@ cache:
         assert_eq!(config.cache.prefetch_max_bytes, 8388608);
         assert_eq!(config.cache.prefetch_concurrency, 7);
         assert!(!config.cache.range_background_prefetch);
+        assert!(config.cache.populate_write_cache_after_upload);
+        assert!(config.cache.persist_write_cache_after_upload);
         assert_eq!(config.cache.memory_budget_bytes, 9437184);
         assert_eq!(config.cache.compression, Compression::Zstd(5));
         assert_eq!(config.cache.verify_cache_checksum, CacheIntegrityMode::None);

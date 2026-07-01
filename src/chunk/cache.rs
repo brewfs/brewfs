@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -14,6 +14,7 @@ use crate::chunk::cache_integrity::CacheIntegrityMode;
 use anyhow::anyhow;
 use dashmap::DashSet;
 use dirs::cache_dir;
+use parking_lot::Mutex as ParkingMutex;
 use sea_orm::sea_query::WindowSelectType;
 use sha2::{Digest, Sha256, digest::KeyInit};
 use tokio::fs;
@@ -231,6 +232,96 @@ impl ChunksCacheConfig {
     pub fn with_integrity_mode(mut self, mode: CacheIntegrityMode) -> Self {
         self.disk_integrity_mode = mode;
         self
+    }
+}
+
+fn recent_write_hot_capacity(max_hot_bytes: u64) -> u64 {
+    const MAX_RECENT_WRITE_HOT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+    max_hot_bytes.min(MAX_RECENT_WRITE_HOT_BYTES)
+}
+
+#[derive(Clone)]
+struct RecentWriteEntry {
+    generation: u64,
+    data: bytes::Bytes,
+}
+
+#[derive(Clone)]
+struct RecentWriteHotCache {
+    entries: Arc<dashmap::DashMap<String, RecentWriteEntry>>,
+    order: Arc<ParkingMutex<VecDeque<(String, u64)>>>,
+    bytes: Arc<AtomicU64>,
+    generation: Arc<AtomicU64>,
+    max_bytes: u64,
+}
+
+impl RecentWriteHotCache {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            entries: Arc::new(dashmap::DashMap::new()),
+            order: Arc::new(ParkingMutex::new(VecDeque::new())),
+            bytes: Arc::new(AtomicU64::new(0)),
+            generation: Arc::new(AtomicU64::new(0)),
+            max_bytes,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<bytes::Bytes> {
+        self.entries.get(key).map(|entry| entry.data.clone())
+    }
+
+    fn insert(&self, key: String, data: bytes::Bytes) {
+        let len = data.len() as u64;
+        if self.max_bytes == 0 || len > self.max_bytes {
+            if let Some((_, old)) = self.entries.remove(&key) {
+                self.bytes
+                    .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
+            }
+            return;
+        }
+
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(old) = self
+            .entries
+            .insert(key.clone(), RecentWriteEntry { generation, data })
+        {
+            self.bytes
+                .fetch_sub(old.data.len() as u64, Ordering::Relaxed);
+        }
+        self.bytes.fetch_add(len, Ordering::Relaxed);
+
+        let mut order = self.order.lock();
+        order.push_back((key, generation));
+        self.evict_locked(&mut order);
+    }
+
+    fn evict_locked(&self, order: &mut VecDeque<(String, u64)>) {
+        while self.bytes.load(Ordering::Relaxed) > self.max_bytes {
+            let Some((key, generation)) = order.pop_front() else {
+                break;
+            };
+            let should_remove = self
+                .entries
+                .get(&key)
+                .map(|entry| entry.generation == generation)
+                .unwrap_or(false);
+            if should_remove && let Some((_, removed)) = self.entries.remove(&key) {
+                self.bytes
+                    .fetch_sub(removed.data.len() as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn weighted_size(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    fn entry_count(&self) -> u64 {
+        self.entries.len() as u64
+    }
+
+    fn max_bytes(&self) -> u64 {
+        self.max_bytes
     }
 }
 
@@ -1690,6 +1781,9 @@ pub struct CacheStats {
     pub hot_bytes: u64,
     pub hot_entries: u64,
     pub max_hot_bytes: u64,
+    pub write_hot_bytes: u64,
+    pub write_hot_entries: u64,
+    pub max_write_hot_bytes: u64,
     pub disk_bytes: u64,
     pub max_disk_bytes: u64,
     pub cache_hits: u64,
@@ -1713,6 +1807,11 @@ pub struct ChunksCache {
 
     /// Approximate hot cache bytes (sum of Bytes lengths)
     hot_bytes: Arc<AtomicU64>,
+
+    /// Recently uploaded write data. This protects read-after-write workloads
+    /// from the normal TinyLFU admission policy, where older read-hot blocks can
+    /// reject newly written blocks that have not yet built read frequency.
+    write_hot_cache: RecentWriteHotCache,
 
     /// Cold cache tier tracking all accessed keys for pattern analysis
     /// Stores empty tuples () as lightweight metadata markers
@@ -1764,6 +1863,7 @@ impl ChunksCache {
 
         let hot_bytes = Arc::new(AtomicU64::new(0));
         let hot_bytes_evict = hot_bytes.clone();
+        let max_write_hot_bytes = recent_write_hot_capacity(config.max_hot_bytes);
         // Use byte-weighted capacity: moka evicts entries when total weight exceeds max_capacity.
         // The weigher returns the byte size of each entry (clamped to u32::MAX).
         let hot_cache_builder = moka::future::Cache::builder()
@@ -1806,6 +1906,7 @@ impl ChunksCache {
             disk_storage,
             hot_cache: hot_cache_builder.build(),
             hot_bytes,
+            write_hot_cache: RecentWriteHotCache::new(max_write_hot_bytes),
             cold_cache: cold_cache_builder.build(),
             disk_insert_inflight: Arc::new(DashSet::new()),
             policy,
@@ -1816,6 +1917,17 @@ impl ChunksCache {
     }
 
     pub async fn get(&self, key: &String) -> Option<bytes::Bytes> {
+        if let Some(value) = self.write_hot_cache.get(key) {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                "Recent-write hot cache HIT: {} ({} bytes)",
+                key,
+                value.len()
+            );
+            self.policy.record_cache_request(true);
+            return Some(value);
+        }
+
         // Check hot cache first — fastest path, no promotion tracking needed.
         if let Some(value) = self.hot_cache.get(key).await {
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -1955,6 +2067,9 @@ impl ChunksCache {
             hot_bytes: self.hot_cache.weighted_size(),
             hot_entries: self.hot_cache.entry_count(),
             max_hot_bytes: self.config.max_hot_bytes,
+            write_hot_bytes: self.write_hot_cache.weighted_size(),
+            write_hot_entries: self.write_hot_cache.entry_count(),
+            max_write_hot_bytes: self.write_hot_cache.max_bytes(),
             disk_bytes: self.disk_storage.bytes_used(),
             max_disk_bytes: self.config.max_disk_bytes,
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
@@ -1967,6 +2082,10 @@ impl ChunksCache {
         self.hot_cache.insert(key.to_owned(), data).await;
         self.hot_cache.run_pending_tasks().await;
         self.hot_bytes.fetch_add(len, Ordering::Relaxed);
+    }
+
+    pub async fn insert_recent_write_hot(&self, key: &str, data: bytes::Bytes) {
+        self.write_hot_cache.insert(key.to_owned(), data);
     }
 
     pub async fn insert_opportunistic(&self, key: String, data: bytes::Bytes) {
@@ -2413,6 +2532,58 @@ mod tests {
         );
 
         drop(permits);
+    }
+
+    #[test]
+    fn test_recent_write_hot_capacity_is_bounded() {
+        assert_eq!(recent_write_hot_capacity(0), 0);
+        assert_eq!(
+            recent_write_hot_capacity(32 * 1024 * 1024),
+            32 * 1024 * 1024
+        );
+        assert_eq!(
+            recent_write_hot_capacity(4 * 1024 * 1024 * 1024),
+            4 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            recent_write_hot_capacity(16 * 1024 * 1024 * 1024),
+            4 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recent_write_hot_cache_serves_read_after_write_under_hot_pressure() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            512 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        for idx in 0..8 {
+            cache
+                .insert_hot(
+                    &format!("old-read-hot-{idx}"),
+                    vec![idx as u8; 256 * 1024].into(),
+                )
+                .await;
+        }
+
+        let key = "fresh-write-block";
+        let data = bytes::Bytes::from(vec![42u8; 256 * 1024]);
+        cache.insert_recent_write_hot(key, data.clone()).await;
+
+        assert_eq!(
+            cache.get(&key.to_string()).await.as_deref(),
+            Some(data.as_ref())
+        );
+        let stats = cache.stats();
+        assert!(
+            stats.write_hot_entries >= 1,
+            "recent write tier should retain freshly uploaded blocks independently of normal hot admission"
+        );
     }
 
     #[tokio::test]

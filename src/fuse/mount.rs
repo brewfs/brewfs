@@ -28,8 +28,9 @@ fn default_mount_options() -> MountOptions {
     let mut mo = MountOptions::default();
     mo.fs_name("brewfs");
     mo.default_permissions(true);
-    // Required for coherent mmap/page-cache writeback under fsx-style workloads.
-    mo.write_back(true);
+    // BrewFS userspace writeback currently coalesces large writes more predictably without
+    // kernel writeback-cache. Keep the kernel mode opt-in for workloads that need it.
+    mo.write_back(fuse_writeback_enabled());
     // Allow other users to access the filesystem (required for multi-user scenarios and xfstests)
     // Note: Requires 'user_allow_other' in /etc/fuse.conf for non-root mounts
     mo.allow_other(true);
@@ -42,6 +43,19 @@ fn default_mount_options() -> MountOptions {
     // deeper look-ahead independently.
     mo.max_readahead(Some(16 * 1024 * 1024));
     mo
+}
+
+fn fuse_writeback_enabled() -> bool {
+    parse_fuse_writeback_enabled(std::env::var("BREWFS_FUSE_WRITEBACK").ok())
+}
+
+fn parse_fuse_writeback_enabled(value: Option<String>) -> bool {
+    value
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 fn configure_session<FS>(
@@ -186,5 +200,13 @@ mod tests {
             debug.contains("default_permissions: true"),
             "BrewFS needs kernel checks for special-node opens such as FIFO permissions: {debug}"
         );
+    }
+
+    #[test]
+    fn fuse_writeback_cache_is_opt_in() {
+        assert!(!parse_fuse_writeback_enabled(None));
+        assert!(parse_fuse_writeback_enabled(Some("1".to_string())));
+        assert!(parse_fuse_writeback_enabled(Some("true".to_string())));
+        assert!(!parse_fuse_writeback_enabled(Some("0".to_string())));
     }
 }

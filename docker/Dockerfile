@@ -15,7 +15,7 @@ RUN apt-get update && \
         xfsprogs && \
     rm -rf /var/lib/apt/lists/*
 
-COPY target/release/brewfs /usr/local/bin/brewfs
+COPY target/docker/brewfs /usr/local/bin/brewfs
 COPY tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /tmp/xfstests-prebuilt.tar.gz
 COPY docker/entrypoint.sh /usr/local/bin/brewfs-entrypoint
 

@@ -156,7 +156,7 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
       RUST_LOG: ${RUST_LOG:-error}
-    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_perf_in_container.sh"]
+    entrypoint: ["/usr/bin/tini", "--", "bash", "/usr/local/bin/run_perf_in_container.sh"]
     privileged: true
     devices:
       - /dev/fuse:/dev/fuse

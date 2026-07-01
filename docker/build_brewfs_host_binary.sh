@@ -10,7 +10,7 @@ case "$TARGET_DIR" in
     *) TARGET_DIR="$PROJECT_DIR/$TARGET_DIR" ;;
 esac
 BIN_PATH="$TARGET_DIR/release/brewfs"
-DOCKER_BIN_PATH="$PROJECT_DIR/target/release/brewfs"
+DOCKER_BIN_PATH="$PROJECT_DIR/target/docker/brewfs"
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 info() { log "INFO  $*"; }
@@ -46,11 +46,14 @@ fi
 
 before_size=$(stat -c%s "$BIN_PATH")
 
+mkdir -p "$(dirname "$DOCKER_BIN_PATH")"
+install -m 755 "$BIN_PATH" "$DOCKER_BIN_PATH"
+
 if strip_tool=$(pick_strip_tool); then
     info "去除符号表: $strip_tool"
-    if ! "$strip_tool" --strip-debug --strip-unneeded "$BIN_PATH" 2>/dev/null; then
-        if ! "$strip_tool" --strip-unneeded "$BIN_PATH" 2>/dev/null; then
-            "$strip_tool" "$BIN_PATH"
+    if ! "$strip_tool" --strip-debug --strip-unneeded "$DOCKER_BIN_PATH" 2>/dev/null; then
+        if ! "$strip_tool" --strip-unneeded "$DOCKER_BIN_PATH" 2>/dev/null; then
+            "$strip_tool" "$DOCKER_BIN_PATH"
         fi
     fi
 else
@@ -58,16 +61,10 @@ else
     exit 1
 fi
 
-after_size=$(stat -c%s "$BIN_PATH")
+after_size=$(stat -c%s "$DOCKER_BIN_PATH")
 chmod 755 "$BIN_PATH"
-
-if [[ "$BIN_PATH" != "$DOCKER_BIN_PATH" ]]; then
-    mkdir -p "$(dirname "$DOCKER_BIN_PATH")"
-    install -m 755 "$BIN_PATH" "$DOCKER_BIN_PATH"
-fi
+chmod 755 "$DOCKER_BIN_PATH"
 
 ok "宿主机二进制已就绪: $BIN_PATH"
-if [[ "$BIN_PATH" != "$DOCKER_BIN_PATH" ]]; then
-    info "Docker build context 二进制已同步: $DOCKER_BIN_PATH"
-fi
+info "Docker build context 二进制已同步: $DOCKER_BIN_PATH"
 info "二进制大小: ${before_size} -> ${after_size} 字节"

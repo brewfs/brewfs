@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pprof::criterion::{Output, PProfProfiler};
@@ -273,9 +274,20 @@ struct BenchEnv {
     _data_root: Option<BenchRoot>,
 }
 
+struct BenchObjectEnv {
+    client: BenchObjectClient,
+    _data_root: Option<BenchRoot>,
+}
+
 enum BenchStore {
     Local(ObjectBlockStore<LocalFsBackend>),
     S3(ObjectBlockStore<S3Backend>),
+}
+
+#[derive(Clone)]
+enum BenchObjectClient {
+    Local(ObjectClient<LocalFsBackend>),
+    S3(ObjectClient<S3Backend>),
 }
 
 #[async_trait]
@@ -355,6 +367,34 @@ impl BenchEnv {
     }
 }
 
+impl BenchObjectClient {
+    async fn put_object_vectored(&self, key: &str, chunks: Vec<Bytes>) -> Result<()> {
+        match self {
+            BenchObjectClient::Local(client) => client.put_object_vectored(key, chunks).await,
+            BenchObjectClient::S3(client) => client.put_object_vectored(key, chunks).await,
+        }
+    }
+}
+
+impl BenchObjectEnv {
+    async fn new(cfg: &BenchConfig) -> Result<Self> {
+        let (client, root) = create_object_client(cfg).await?;
+
+        Ok(Self {
+            client,
+            _data_root: root,
+        })
+    }
+
+    fn client(&self) -> BenchObjectClient {
+        self.client.clone()
+    }
+
+    fn teardown(self) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn create_root_dir(cfg: &BenchConfig) -> Result<BenchRoot> {
     if let Some(dir) = cfg.data_dir.as_ref() {
         let base = dir.to_path_buf();
@@ -411,6 +451,29 @@ async fn create_backend_store(cfg: &BenchConfig) -> Result<(BenchStore, Option<B
             let client = ObjectClient::new(backend);
             let store = ObjectBlockStore::new(client);
             Ok((BenchStore::S3(store), None))
+        }
+    }
+}
+
+async fn create_object_client(cfg: &BenchConfig) -> Result<(BenchObjectClient, Option<BenchRoot>)> {
+    match &cfg.backend {
+        BackendMode::Local => {
+            let root = create_root_dir(cfg)?;
+            let client = ObjectClient::new(LocalFsBackend::new(root.path()));
+            Ok((BenchObjectClient::Local(client), Some(root)))
+        }
+        BackendMode::S3(opts) => {
+            let s3_config = S3Config {
+                bucket: opts.bucket.clone(),
+                region: opts.region.clone(),
+                endpoint: opts.endpoint.clone(),
+                force_path_style: opts.force_path_style,
+                ..Default::default()
+            };
+            let backend = S3Backend::with_config(s3_config)
+                .await
+                .context("initialize s3 backend")?;
+            Ok((BenchObjectClient::S3(ObjectClient::new(backend)), None))
         }
     }
 }
@@ -567,6 +630,21 @@ async fn run_big_write(cfg: &BenchConfig, iter: usize) -> Result<Duration> {
     Ok(cost)
 }
 
+async fn run_object_direct_put(cfg: &BenchConfig, iter: usize) -> Result<Duration> {
+    let env = BenchObjectEnv::new(cfg).await?;
+    let client = env.client();
+    let prefix = format!(
+        "bench/direct-put/{}/{iter}",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let cost = measure_future(put_direct_objects(client, cfg, prefix)).await?;
+    env.teardown()?;
+    Ok(cost)
+}
+
 async fn run_big_write_baseline(cfg: &BenchConfig, iter: usize) -> Result<Duration> {
     let root = create_baseline_root(cfg)?;
     let base = root.path().join(format!("baseline-run-{iter}/big"));
@@ -643,6 +721,35 @@ async fn write_big_files(fs: SharedFs, cfg: &BenchConfig, base: String) -> Resul
             Result::<()>::Ok(())
         }));
     }
+    for handle in handles {
+        handle.await??;
+    }
+    Ok(())
+}
+
+async fn put_direct_objects(
+    client: BenchObjectClient,
+    cfg: &BenchConfig,
+    prefix: String,
+) -> Result<()> {
+    let objects_per_thread = (cfg.big_file_bytes / cfg.block_size_bytes).max(1);
+    let mut handles = Vec::with_capacity(cfg.threads);
+
+    for tid in 0..cfg.threads {
+        let client = client.clone();
+        let payload = Bytes::from(make_block_payload(cfg.block_size_bytes, tid));
+        let prefix = prefix.clone();
+        handles.push(tokio::spawn(async move {
+            for idx in 0..objects_per_thread {
+                let key = format!("{prefix}/thread-{tid}/object-{idx}");
+                client
+                    .put_object_vectored(&key, vec![payload.clone()])
+                    .await?;
+            }
+            Result::<()>::Ok(())
+        }));
+    }
+
     for handle in handles {
         handle.await??;
     }
@@ -861,6 +968,31 @@ fn bench_big_files(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_object_direct(c: &mut Criterion) {
+    let cfg = BenchConfig::from_env();
+    let runtime = tokio_runtime(cfg.threads);
+    let objects_per_thread = (cfg.big_file_bytes / cfg.block_size_bytes).max(1);
+    let total_bytes = (cfg.block_size_bytes * objects_per_thread * cfg.threads) as u64;
+    let mut group = c.benchmark_group("brewfs_object");
+    group.sample_size(cfg.sample_size);
+    group.throughput(Throughput::Bytes(total_bytes));
+
+    group.bench_function(BenchmarkId::new("direct_put", cfg.threads), |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for i in 0..iters {
+                let elapsed = runtime
+                    .block_on(run_object_direct_put(&cfg, i as usize))
+                    .expect("object direct put bench");
+                total += elapsed;
+            }
+            total
+        })
+    });
+
+    group.finish();
+}
+
 fn bench_small_files(c: &mut Criterion) {
     let cfg = BenchConfig::from_env();
     let runtime = tokio_runtime(cfg.threads);
@@ -933,6 +1065,6 @@ fn build_criterion() -> Criterion {
 criterion_group! {
     name = brewfs_benches;
     config = build_criterion();
-    targets = bench_big_files, bench_small_files, bench_small_stats
+    targets = bench_big_files, bench_small_files, bench_small_stats, bench_object_direct
 }
 criterion_main!(brewfs_benches);
