@@ -1513,7 +1513,8 @@ where
         validate_fuse_name(name.as_ref())?;
         self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
-        // Target must exist and be a file
+        // Target must exist and be a file. Keep the resolved inode/attr so VFS
+        // does not need to repeat the same lookup/stat work before unlinking.
         let Some(child) = self.child_of(parent as i64, name.as_ref()).await else {
             return Err(libc::ENOENT.into());
         };
@@ -1525,7 +1526,7 @@ where
         }
         self.ensure_sticky_parent_allows_child_mutation(parent, child, req.uid)
             .await?;
-        self.unlink_at(parent as i64, &name)
+        self.unlink_at_with_known_attr(parent as i64, &name, child, cattr)
             .await
             .map_err(Errno::from)
     }

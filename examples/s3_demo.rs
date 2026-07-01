@@ -120,6 +120,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 brewfs::VfsFileType::Dir => "directory",
                 brewfs::VfsFileType::File => "file",
                 brewfs::VfsFileType::Symlink => "symlink",
+                brewfs::VfsFileType::Fifo => "fifo",
+                brewfs::VfsFileType::Socket => "socket",
+                brewfs::VfsFileType::CharDevice => "char-device",
+                brewfs::VfsFileType::BlockDevice => "block-device",
             }
         );
     }

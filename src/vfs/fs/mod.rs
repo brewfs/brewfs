@@ -1731,6 +1731,44 @@ where
             });
         }
 
+        self.unlink_at_with_known_attr_inner(parent_ino, name, ino, attr)
+            .await
+    }
+
+    /// Remove a regular file or symlink after the caller has already resolved
+    /// the child inode and attributes. This avoids duplicate lookup/stat work
+    /// on the FUSE unlink path while keeping store-level unlink checks.
+    #[tracing::instrument(level = "debug", skip(self, attr), fields(parent_ino, name, ino))]
+    pub(crate) async fn unlink_at_with_known_attr(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        ino: i64,
+        attr: FileAttr,
+    ) -> Result<(), VfsError> {
+        let _total_timer = self.vfs_timing_timer(
+            &self.stats().vfs_unlink_total_ops,
+            &self.stats().vfs_unlink_total_lat_us,
+        );
+        Self::validate_entry_name(name)?;
+
+        self.unlink_at_with_known_attr_inner(parent_ino, name, ino, attr)
+            .await
+    }
+
+    async fn unlink_at_with_known_attr_inner(
+        &self,
+        parent_ino: i64,
+        name: &str,
+        ino: i64,
+        attr: FileAttr,
+    ) -> Result<(), VfsError> {
+        if attr.kind == FileType::Dir {
+            return Err(VfsError::IsADirectory {
+                path: PathHint::none(),
+            });
+        }
+
         {
             let _meta_timer = self.vfs_timing_timer(
                 &self.stats().vfs_unlink_meta_ops,

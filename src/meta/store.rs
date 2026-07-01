@@ -190,6 +190,14 @@ pub struct WriteOutcome {
     pub inode_delta: i64,
 }
 
+/// Result for namespace create operations that can return the freshly-created
+/// attributes without an additional backend lookup.
+#[derive(Debug, Clone)]
+pub struct CreateEntryResult {
+    pub ino: i64,
+    pub attr: Option<FileAttr>,
+}
+
 /// Snapshot returned by `stat_fs` providing capacity/inode information.
 #[derive(Debug, Clone, Default)]
 pub struct StatFsSnapshot {
@@ -641,9 +649,29 @@ pub trait MetaStore: Send + Sync {
 
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError>;
 
+    async fn mkdir_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
+        let ino = self.mkdir(parent, name).await?;
+        let attr = self.stat(ino).await.ok().flatten();
+        Ok(CreateEntryResult { ino, attr })
+    }
+
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError>;
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError>;
+
+    async fn create_file_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
+        let ino = self.create_file(parent, name).await?;
+        let attr = self.stat(ino).await.ok().flatten();
+        Ok(CreateEntryResult { ino, attr })
+    }
 
     async fn create_node(
         &self,
@@ -657,6 +685,23 @@ pub trait MetaStore: Send + Sync {
     ) -> Result<i64, MetaError> {
         let _ = (parent, name, kind, mode, uid, gid, rdev);
         Err(MetaError::NotImplemented)
+    }
+
+    async fn create_node_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<CreateEntryResult, MetaError> {
+        let ino = self
+            .create_node(parent, name, kind, mode, uid, gid, rdev)
+            .await?;
+        let attr = self.stat(ino).await.ok().flatten();
+        Ok(CreateEntryResult { ino, attr })
     }
 
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError>;

@@ -14,8 +14,8 @@ use crate::meta::file_lock::{
     FileLockInfo, FileLockQuery, FileLockRange, FileLockType, PlockRecord,
 };
 use crate::meta::store::{
-    DirEntry, FileAttr, FileType, LockName, MetaError, MetaStore, RetryReason, SetAttrFlags,
-    SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage, stat_fs_used_bytes,
+    CreateEntryResult, DirEntry, FileAttr, FileType, LockName, MetaError, MetaStore, RetryReason,
+    SetAttrFlags, SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
 use async_trait::async_trait;
@@ -1692,7 +1692,7 @@ impl RedisMetaStore {
         parent: i64,
         name: String,
         kind: FileType,
-    ) -> Result<i64, MetaError> {
+    ) -> Result<CreateEntryResult, MetaError> {
         let default_mode = if kind == FileType::Dir {
             0o040755
         } else if kind == FileType::Symlink {
@@ -1714,7 +1714,7 @@ impl RedisMetaStore {
         uid: u32,
         gid: u32,
         rdev: u32,
-    ) -> Result<i64, MetaError> {
+    ) -> Result<CreateEntryResult, MetaError> {
         let parent_dir_key = self.dir_key(parent);
         let parent_node_key = self.node_key(parent);
         let counter_key = COUNTER_INODE_KEY;
@@ -1795,8 +1795,12 @@ impl RedisMetaStore {
                     parent_node.attr.ctime = now;
                     self.node_cache.insert(parent, Some(parent_node)).await;
                 }
+                let attr = new_node.as_file_attr();
                 self.node_cache.insert(new_ino, Some(new_node)).await;
-                Ok(new_ino)
+                Ok(CreateEntryResult {
+                    ino: new_ino,
+                    attr: Some(attr),
+                })
             }
             None => Err(MetaError::Internal("unexpected Lua response".into())),
         }
@@ -2197,6 +2201,15 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        Ok(self.create_entry(parent, name, FileType::Dir).await?.ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn mkdir_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
         self.create_entry(parent, name, FileType::Dir).await
     }
 
@@ -2252,6 +2265,15 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        Ok(self.create_entry(parent, name, FileType::File).await?.ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn create_file_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
         self.create_entry(parent, name, FileType::File).await
     }
 
@@ -2266,6 +2288,30 @@ impl MetaStore for RedisMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        if kind.is_dir() || kind.is_symlink() {
+            return Err(MetaError::NotSupported(format!(
+                "create_node does not create {:?}",
+                kind
+            )));
+        }
+
+        Ok(self
+            .create_entry_with_attrs(parent, name, kind, mode, uid, gid, rdev)
+            .await?
+            .ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<CreateEntryResult, MetaError> {
         if kind.is_dir() || kind.is_symlink() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -2357,9 +2403,10 @@ impl MetaStore for RedisMetaStore {
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
-        let ino = self
+        let created = self
             .create_entry(parent, name.to_string(), FileType::Symlink)
             .await?;
+        let ino = created.ino;
         let now = current_time();
 
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;

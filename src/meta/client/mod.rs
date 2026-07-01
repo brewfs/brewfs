@@ -2247,12 +2247,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
         info!("MetaClient: mkdir operation for ({}, '{}')", parent, name);
 
-        let ino = self.store.mkdir(parent, name.clone()).await?;
+        let created = self.store.mkdir_with_attr(parent, name.clone()).await?;
+        let ino = created.ino;
 
         debug!("MetaClient: mkdir created inode {}, updating cache", ino);
 
         // Cache the new directory node
-        if let Ok(Some(attr)) = self.store.stat(ino).await {
+        if let Some(attr) = created.attr {
             self.inode_cache.insert_node(ino, attr, Some(parent)).await;
             self.inode_cache.mark_children_complete_empty(ino).await;
         }
@@ -2304,14 +2305,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             parent, name
         );
 
-        let ino = self.store.create_file(parent, name.clone()).await?;
+        let created = self
+            .store
+            .create_file_with_attr(parent, name.clone())
+            .await?;
+        let ino = created.ino;
 
         info!(
             "MetaClient: create_file created inode {}, updating cache",
             ino
         );
 
-        if let Ok(Some(attr)) = self.store.stat(ino).await {
+        if let Some(attr) = created.attr {
             let cache_parent = (attr.nlink <= 1).then_some(parent);
             self.inode_cache.insert_node(ino, attr, cache_parent).await;
         }
@@ -2340,12 +2345,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let parent = self.check_root(parent);
         Self::validate_entry_name(&name)?;
 
-        let ino = self
+        let created = self
             .store
-            .create_node(parent, name.clone(), kind, mode, uid, gid, rdev)
+            .create_node_with_attr(parent, name.clone(), kind, mode, uid, gid, rdev)
             .await?;
+        let ino = created.ino;
 
-        if let Ok(Some(attr)) = self.store.stat(ino).await {
+        if let Some(attr) = created.attr {
             let cache_parent = (attr.nlink <= 1).then_some(parent);
             self.inode_cache.insert_node(ino, attr, cache_parent).await;
         }
