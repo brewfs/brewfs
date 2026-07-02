@@ -594,6 +594,55 @@ mod basic_tests {
     }
 
     #[tokio::test]
+    async fn test_close_refreshes_open_cache_with_final_attr() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let config = MetaClientConfig {
+            options: MetaClientOptions {
+                open_file_cache: OpenFileCacheConfig {
+                    ttl: Duration::from_secs(60),
+                    capacity: 128,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let fs = VFS::with_meta_client_config(layout, store, meta_store, config)
+            .await
+            .unwrap();
+        let root = fs.root_ino();
+        let file_ino = fs
+            .create_file_at(root, "fresh-write-cache", false)
+            .await
+            .unwrap();
+
+        let write_fh = fs
+            .open_fresh_ino(file_ino, false, true, false)
+            .await
+            .unwrap();
+        fs.write(write_fh, 0, b"cached after close").await.unwrap();
+        fs.close(write_fh).await.unwrap();
+
+        let before = fs.meta_layer().metrics().snapshot();
+        let read_fh = fs
+            .open_fresh_ino(file_ino, true, false, false)
+            .await
+            .unwrap();
+        fs.close(read_fh).await.unwrap();
+        let after = fs.meta_layer().metrics().snapshot();
+
+        assert_eq!(after.open_fresh_stat, before.open_fresh_stat);
+        assert_eq!(after.open_file_cache_hit, before.open_file_cache_hit + 1);
+        assert_eq!(
+            fs.handle_attr(read_fh).map(|attr| attr.size),
+            None,
+            "closed handle should be released"
+        );
+    }
+
+    #[tokio::test]
     async fn test_open_defers_reader_until_first_read() {
         let fs = new_basic_fs().await;
         let root = fs.root_ino();

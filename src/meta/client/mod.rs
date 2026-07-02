@@ -14,8 +14,8 @@ use crate::meta::config::{CacheCapacity, CacheTtl};
 use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLockType};
 use crate::meta::layer::MetaLayer;
 use crate::meta::store::{
-    AclRule, DirEntry, FileAttr, MetaError, MetaStore, OpenFlags, SetAttrFlags, SetAttrRequest,
-    StatFsSnapshot,
+    AclRule, CreateEntryResult, DirEntry, FileAttr, MetaError, MetaStore, OpenFlags, SetAttrFlags,
+    SetAttrRequest, StatFsSnapshot,
 };
 use crate::meta::stores::{CacheInvalidationEvent, EtcdMetaStore, EtcdWatchWorker, WatchConfig};
 use crate::posix::NAME_MAX;
@@ -2110,6 +2110,25 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip(self, attr), fields(ino, read, write, append))]
+    async fn record_close_with_attr(
+        &self,
+        ino: i64,
+        attr: FileAttr,
+        read: bool,
+        write: bool,
+        append: bool,
+    ) -> Result<(), MetaError> {
+        let inode = self.check_root(ino);
+        if let Some(cache) = &self.open_file_cache {
+            if Self::open_file_cache_eligible(read, write, append) {
+                cache.refresh_idle_attr(inode, attr).await;
+            }
+            cache.close(inode).await;
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
         self.cached_lookup(parent, name).await
@@ -2297,6 +2316,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        Ok(self.create_file_with_attr(parent, name).await?.ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
+    async fn create_file_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
         self.ensure_writable()?;
         Self::validate_entry_name(&name)?;
         let parent = self.check_root(parent);
@@ -2316,9 +2344,11 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             ino
         );
 
-        if let Some(attr) = created.attr {
+        if let Some(attr) = created.attr.as_ref() {
             let cache_parent = (attr.nlink <= 1).then_some(parent);
-            self.inode_cache.insert_node(ino, attr, cache_parent).await;
+            self.inode_cache
+                .insert_node(ino, attr.clone(), cache_parent)
+                .await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
         self.refresh_cached_attr_after_namespace_mutation(parent)
@@ -2327,7 +2357,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.invalidate_parent_after_namespace_mutation(parent)
             .await;
 
-        Ok(ino)
+        Ok(created)
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
@@ -2341,6 +2371,23 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        Ok(self
+            .create_node_with_attr(parent, name, kind, mode, uid, gid, rdev)
+            .await?
+            .ino)
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<CreateEntryResult, MetaError> {
         self.ensure_writable()?;
         let parent = self.check_root(parent);
         Self::validate_entry_name(&name)?;
@@ -2351,16 +2398,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .await?;
         let ino = created.ino;
 
-        if let Some(attr) = created.attr {
+        if let Some(attr) = created.attr.as_ref() {
             let cache_parent = (attr.nlink <= 1).then_some(parent);
-            self.inode_cache.insert_node(ino, attr, cache_parent).await;
+            self.inode_cache
+                .insert_node(ino, attr.clone(), cache_parent)
+                .await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
 
         self.invalidate_parent_after_namespace_mutation(parent)
             .await;
 
-        Ok(ino)
+        Ok(created)
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]

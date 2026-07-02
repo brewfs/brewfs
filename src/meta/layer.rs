@@ -6,8 +6,8 @@ use crate::meta::client::MetaClientMetrics;
 use crate::meta::client::session::SessionInfo;
 use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLockType};
 use crate::meta::store::{
-    AclRule, DirEntry, FileAttr, FileType, MetaError, OpenFlags, SetAttrFlags, SetAttrRequest,
-    StatFsSnapshot, chmod_request, chown_request,
+    AclRule, CreateEntryResult, DirEntry, FileAttr, FileType, MetaError, OpenFlags, SetAttrFlags,
+    SetAttrRequest, StatFsSnapshot, chmod_request, chown_request,
 };
 use crate::vfs::handles::DirHandle;
 
@@ -77,6 +77,18 @@ pub trait MetaLayer: Send + Sync {
         Ok(())
     }
 
+    /// Record that VFS released a handle and can provide the final handle attr.
+    async fn record_close_with_attr(
+        &self,
+        ino: i64,
+        _attr: FileAttr,
+        _read: bool,
+        _write: bool,
+        _append: bool,
+    ) -> Result<(), MetaError> {
+        self.record_close(ino).await
+    }
+
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError>;
 
     async fn lookup_with_attr(
@@ -115,6 +127,16 @@ pub trait MetaLayer: Send + Sync {
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError>;
 
+    async fn create_file_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, MetaError> {
+        let ino = self.create_file(parent, name).await?;
+        let attr = self.stat(ino).await.ok().flatten();
+        Ok(CreateEntryResult { ino, attr })
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn create_node(
         &self,
@@ -126,6 +148,24 @@ pub trait MetaLayer: Send + Sync {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_node_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<CreateEntryResult, MetaError> {
+        let ino = self
+            .create_node(parent, name, kind, mode, uid, gid, rdev)
+            .await?;
+        let attr = self.stat(ino).await.ok().flatten();
+        Ok(CreateEntryResult { ino, attr })
+    }
 
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError>;
 

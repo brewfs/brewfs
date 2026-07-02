@@ -362,11 +362,25 @@ where
 
     async fn attr_for_create_result(
         &self,
-        result: CreateFileAtResult,
+        result: &CreateFileAtResult,
         uid: u32,
         gid: u32,
         mode: Option<u32>,
     ) -> Option<VfsFileAttr> {
+        let sanitized_mode = mode.map(sanitize_special_mode_bits);
+        if let Some(attr) = result.attr.as_ref() {
+            if !result.created || result.attrs_applied {
+                return Some(attr.clone());
+            }
+
+            let mode_matches = sanitized_mode
+                .map(|mode| attr.mode & 0o7777 == mode)
+                .unwrap_or(true);
+            if attr.uid == uid && attr.gid == gid && mode_matches {
+                return Some(attr.clone());
+            }
+        }
+
         if result.created && !result.attrs_applied {
             self.apply_new_entry_attrs(result.ino, uid, gid, mode).await
         } else {
@@ -1198,7 +1212,7 @@ where
                     .await
                     .map_err(Errno::from)?;
                 let attr = self
-                    .attr_for_create_result(result, req.uid, req.gid, Some(mode))
+                    .attr_for_create_result(&result, req.uid, req.gid, Some(mode))
                     .await;
                 (result.ino, attr)
             }
@@ -1347,6 +1361,7 @@ where
                 })?;
                 CreateFileAtResult {
                     ino,
+                    attr: None,
                     created: false,
                     attrs_applied: false,
                 }
@@ -1357,7 +1372,7 @@ where
             }
         };
         let Some(vattr) = self
-            .attr_for_create_result(create_result, req.uid, req.gid, Some(mode))
+            .attr_for_create_result(&create_result, req.uid, req.gid, Some(mode))
             .await
         else {
             return Err(libc::ENOENT.into());

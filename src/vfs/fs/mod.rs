@@ -587,9 +587,10 @@ where
     background_tasks: Option<VfsBackgroundTasks>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct CreateFileAtResult {
     pub(crate) ino: i64,
+    pub(crate) attr: Option<FileAttr>,
     pub(crate) created: bool,
     pub(crate) attrs_applied: bool,
 }
@@ -1540,7 +1541,7 @@ where
             );
             if let Some((mode, uid, gid)) = create_attrs {
                 match self
-                    .meta_create_node(
+                    .meta_create_node_with_attr(
                         parent_ino,
                         name.to_string(),
                         FileType::File,
@@ -1551,23 +1552,24 @@ where
                     )
                     .await
                 {
-                    Ok(ino) => Ok((ino, true)),
+                    Ok(created) => Ok((created.ino, created.attr, true)),
                     Err(VfsError::Unsupported) => self
-                        .meta_create_file(parent_ino, name.to_string())
+                        .meta_create_file_with_attr(parent_ino, name.to_string())
                         .await
-                        .map(|ino| (ino, false)),
+                        .map(|created| (created.ino, created.attr, false)),
                     Err(err) => Err(err),
                 }
             } else {
-                self.meta_create_file(parent_ino, name.to_string())
+                self.meta_create_file_with_attr(parent_ino, name.to_string())
                     .await
-                    .map(|ino| (ino, false))
+                    .map(|created| (created.ino, created.attr, false))
             }
         };
 
         match create_result {
-            Ok((ino, attrs_applied)) => Ok(CreateFileAtResult {
+            Ok((ino, attr, attrs_applied)) => Ok(CreateFileAtResult {
                 ino,
+                attr,
                 created: true,
                 attrs_applied,
             }),
@@ -1590,6 +1592,7 @@ where
                 } else {
                     Ok(CreateFileAtResult {
                         ino: existing,
+                        attr: Some(attr),
                         created: false,
                         attrs_applied: false,
                     })
@@ -3259,7 +3262,18 @@ where
             self.state.writer.release(handle.ino as u64).await;
         }
 
-        self.meta_record_close(handle.ino).await?;
+        if discard_unlinked {
+            self.meta_record_close(handle.ino).await?;
+        } else {
+            self.meta_record_close_with_attr(
+                handle.ino,
+                handle.attr(),
+                handle.flags.read,
+                handle.flags.write,
+                handle.flags.append,
+            )
+            .await?;
+        }
 
         tracing::trace!(fh, ino = handle.ino, "vfs.close_done");
         Ok(())

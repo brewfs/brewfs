@@ -524,6 +524,20 @@ impl OpenFileCache {
         true
     }
 
+    pub(crate) async fn refresh_idle_attr(&self, ino: i64, attr: FileAttr) {
+        match self.ttl_manager.get(&ino).await {
+            Some(entry) => {
+                *entry.attr.write().await = attr;
+                *entry.last_check.write().await = Instant::now();
+            }
+            None => {
+                let entry = Arc::new(OpenFileEntry::new(attr));
+                self.entries.insert(ino, entry.clone());
+                self.ttl_manager.insert(ino, entry).await;
+            }
+        }
+    }
+
     pub(crate) async fn invalidate_inode(&self, ino: i64) {
         self.ttl_manager.invalidate(&ino).await;
         self.entries.remove(&ino);

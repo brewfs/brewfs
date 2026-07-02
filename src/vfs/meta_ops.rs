@@ -12,7 +12,8 @@ use crate::chunk::store::BlockStore;
 use crate::meta::MetaLayer;
 use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLockType};
 use crate::meta::store::{
-    AclRule, DirEntry, FileAttr, FileType, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
+    AclRule, CreateEntryResult, DirEntry, FileAttr, FileType, SetAttrFlags, SetAttrRequest,
+    StatFsSnapshot,
 };
 use crate::vfs::error::{PathHint, VfsError};
 use crate::vfs::fs::VFS;
@@ -74,6 +75,20 @@ where
     pub(super) async fn meta_record_close(&self, ino: i64) -> Result<(), VfsError> {
         self.meta_layer()
             .record_close(ino)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
+    pub(super) async fn meta_record_close_with_attr(
+        &self,
+        ino: i64,
+        attr: FileAttr,
+        read: bool,
+        write: bool,
+        append: bool,
+    ) -> Result<(), VfsError> {
+        self.meta_layer()
+            .record_close_with_attr(ino, attr, read, write, append)
             .await
             .map_err(meta_err_to_vfs)
     }
@@ -194,6 +209,17 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    pub(super) async fn meta_create_file_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+    ) -> Result<CreateEntryResult, VfsError> {
+        self.meta_layer()
+            .create_file_with_attr(parent, name)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn meta_create_node(
         &self,
@@ -207,6 +233,23 @@ where
     ) -> Result<i64, VfsError> {
         self.meta_layer()
             .create_node(parent, name, kind, mode, uid, gid, rdev)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn meta_create_node_with_attr(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<CreateEntryResult, VfsError> {
+        self.meta_layer()
+            .create_node_with_attr(parent, name, kind, mode, uid, gid, rdev)
             .await
             .map_err(meta_err_to_vfs)
     }
