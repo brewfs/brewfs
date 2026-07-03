@@ -1124,6 +1124,7 @@ where
                 .await
             {
                 Ok(()) => {
+                    self.shared.inode.set_committed_size(new_size);
                     self.shared
                         .inode
                         .add_estimated_allocated_bytes(desc.length.as_usize() as u64);
@@ -3570,6 +3571,9 @@ where
         ) {
             return false;
         }
+        if !shared.config.upload_before_commit_prefix_split {
+            return false;
+        }
 
         let mut guard = shared.inner.lock().await;
         let Some(chunk) = guard.chunks.get_mut(&chunk_id) else {
@@ -4159,6 +4163,7 @@ where
                             }
                         } else {
                             commit_failures = 0;
+                            shared.inode.set_committed_size(new_size);
 
                             // Track committed bytes on the inode for accurate st_blocks.
                             shared
@@ -5375,6 +5380,17 @@ mod tests {
         test_config_with_writeback(layout, WriteBackMode::UploadBeforeCommit)
     }
 
+    fn test_config_with_prefix_split(layout: ChunkLayout) -> Arc<WriteConfig> {
+        Arc::new(
+            WriteConfig::new(layout)
+                .page_size(4 * 1024)
+                .freeze_min_bytes(4096)
+                .auto_flush_max_age(Duration::from_millis(5))
+                .writeback_mode(WriteBackMode::UploadBeforeCommit)
+                .upload_before_commit_prefix_split(true),
+        )
+    }
+
     fn test_config_without_auto_flush(layout: ChunkLayout) -> Arc<WriteConfig> {
         // Keep live-slice assertions deterministic instead of racing auto_flush.
         test_config_with_writeback_and_auto_flush(
@@ -6263,6 +6279,51 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_upload_before_commit_does_not_publish_uploaded_prefix_by_default() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "uploaded_prefix_no_split.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
+        let file_writer = writer.ensure_file(inode.clone());
+        let block = layout.block_size as usize;
+
+        file_writer
+            .write_at_cached(0, &vec![1u8; block + 1024], 10)
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(200)).await;
+        let cid = chunk_id_for(inode.ino(), 0).unwrap();
+        assert!(
+            meta.get_slices(cid).await.unwrap().is_empty(),
+            "uploaded full-block prefixes should not become visible before close/flush by default"
+        );
+
+        file_writer.flush().await.unwrap();
+        let slices = meta.get_slices(cid).await.unwrap();
+        assert!(
+            slices
+                .iter()
+                .any(|s| s.offset == 0 && s.length == (block + 1024) as u64),
+            "explicit flush should publish the complete slice"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_upload_before_commit_splits_uploaded_prefix_and_keeps_tail_writable() {
         let layout = ChunkLayout {
             chunk_size: 16 * 1024,
@@ -6282,7 +6343,7 @@ mod tests {
             backend.clone(),
         ));
         let writer = Arc::new(DataWriter::new(
-            test_config(layout),
+            test_config_with_prefix_split(layout),
             backend,
             reader.clone(),
             None,

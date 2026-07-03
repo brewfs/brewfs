@@ -325,6 +325,16 @@ impl RecentWriteHotCache {
     }
 }
 
+fn copy_full_cached_range(value: &bytes::Bytes, offset: usize, buf: &mut [u8]) -> Option<usize> {
+    let end = offset.checked_add(buf.len())?;
+    if end > value.len() {
+        return None;
+    }
+
+    buf.copy_from_slice(&value[offset..end]);
+    Some(buf.len())
+}
+
 #[derive(Debug, Clone)]
 struct DiskStorage {
     base_dir: PathBuf,
@@ -1984,24 +1994,51 @@ impl ChunksCache {
             return Some(0);
         }
 
-        if let Some(value) = self.hot_cache.get(key).await {
-            self.cache_hits.fetch_add(1, Ordering::Relaxed);
-            trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
-            self.policy.record_cache_request(true);
-            let end = offset.saturating_add(buf.len()).min(value.len());
-            let copy_len = end.saturating_sub(offset);
-            if copy_len > 0 {
-                buf[..copy_len].copy_from_slice(&value[offset..end]);
+        if let Some(value) = self.write_hot_cache.get(key) {
+            if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                trace!(
+                    "Recent-write hot cache range HIT: {} ({} bytes)",
+                    key,
+                    value.len()
+                );
+                self.policy.record_cache_request(true);
+                return Some(read_len);
             }
-            return Some(copy_len);
+
+            trace!(
+                "Recent-write hot cache range MISS: {} ({} bytes too short for offset={} len={})",
+                key,
+                value.len(),
+                offset,
+                buf.len()
+            );
+        }
+
+        if let Some(value) = self.hot_cache.get(key).await {
+            if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
+                self.policy.record_cache_request(true);
+                return Some(read_len);
+            }
+
+            trace!(
+                "Hot cache range MISS: {} ({} bytes too short for offset={} len={})",
+                key,
+                value.len(),
+                offset,
+                buf.len()
+            );
         }
 
         trace!("Hot cache range MISS: {}", key);
         self.policy.record_cache_request(false);
 
+        let mut disk_buf = vec![0u8; buf.len()];
         let read_len = match self
             .disk_storage
-            .load_range_with_health(key, offset as u64, buf)
+            .load_range_with_health(key, offset as u64, &mut disk_buf)
             .await
         {
             Ok(Some(read_len)) => read_len,
@@ -2010,6 +2047,19 @@ impl ChunksCache {
                 return None;
             }
         };
+
+        if read_len != buf.len() {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            trace!(
+                "Disk cache range MISS: {} (read {} bytes, requested {})",
+                key,
+                read_len,
+                buf.len()
+            );
+            return None;
+        }
+
+        buf.copy_from_slice(&disk_buf);
 
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
         debug!(
@@ -2584,6 +2634,70 @@ mod tests {
             stats.write_hot_entries >= 1,
             "recent write tier should retain freshly uploaded blocks independently of normal hot admission"
         );
+    }
+
+    #[tokio::test]
+    async fn test_recent_write_hot_cache_serves_range_before_hot_cache() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "fresh-write-range-block".to_string();
+        cache
+            .insert_hot(&key, bytes::Bytes::from_static(b"stale-data"))
+            .await;
+        cache
+            .insert_recent_write_hot(&key, bytes::Bytes::from_static(b"fresh-data"))
+            .await;
+
+        let mut out = vec![0u8; 5];
+        assert_eq!(cache.get_range_into(&key, 0, &mut out).await, Some(5));
+        assert_eq!(&out, b"fresh");
+    }
+
+    #[tokio::test]
+    async fn test_range_cache_miss_when_cached_value_does_not_cover_request() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "short-range-cache-entry".to_string();
+        cache
+            .insert_hot(&key, bytes::Bytes::from_static(b"abc"))
+            .await;
+
+        let mut out = vec![9u8; 5];
+        assert_eq!(cache.get_range_into(&key, 0, &mut out).await, None);
+        assert_eq!(out, vec![9u8; 5]);
+    }
+
+    #[tokio::test]
+    async fn test_disk_range_cache_miss_when_cached_value_does_not_cover_request() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "short-disk-range-cache-entry".to_string();
+        cache.disk_storage.store(&key, b"abc").await.unwrap();
+
+        let mut out = vec![9u8; 5];
+        assert_eq!(cache.get_range_into(&key, 0, &mut out).await, None);
+        assert_eq!(out, vec![9u8; 5]);
     }
 
     #[tokio::test]

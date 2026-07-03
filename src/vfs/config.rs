@@ -101,6 +101,10 @@ pub struct WriteConfig {
     pub writeback_recent_pending_hard_limit: u64,
     /// Require local writeback stage to be sealed before publishing metadata.
     pub writeback_require_stage_before_commit: bool,
+    /// Allow upload-before-commit writers to publish uploaded full-block
+    /// prefixes before a writable partial tail is closed. Disabled by default
+    /// because build tools rely on close-to-open artifact publication.
+    pub upload_before_commit_prefix_split: bool,
 }
 
 impl Default for WriteConfig {
@@ -154,6 +158,10 @@ impl Default for WriteConfig {
             writeback_require_stage_before_commit: env_bool(
                 "BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT",
                 true,
+            ),
+            upload_before_commit_prefix_split: env_bool(
+                "BREWFS_UPLOAD_BEFORE_COMMIT_PREFIX_SPLIT",
+                false,
             ),
         }
     }
@@ -238,6 +246,13 @@ impl WriteConfig {
     pub fn writeback_require_stage_before_commit(self, require: bool) -> Self {
         Self {
             writeback_require_stage_before_commit: require,
+            ..self
+        }
+    }
+
+    pub fn upload_before_commit_prefix_split(self, enabled: bool) -> Self {
+        Self {
+            upload_before_commit_prefix_split: enabled,
             ..self
         }
     }
@@ -401,6 +416,7 @@ mod tests {
             assert_eq!(default_config.writeback_recent_pending_soft_limit, 0);
             assert_eq!(default_config.writeback_recent_pending_hard_limit, 0);
             assert!(default_config.writeback_require_stage_before_commit);
+            assert!(!default_config.upload_before_commit_prefix_split);
             assert!(!default_config.cached_block_assembler);
         });
 
@@ -408,10 +424,12 @@ mod tests {
             .writeback_recent_pending_soft_limit(123)
             .writeback_recent_pending_hard_limit(456)
             .writeback_require_stage_before_commit(false)
+            .upload_before_commit_prefix_split(true)
             .cached_block_assembler(true);
         assert_eq!(configured.writeback_recent_pending_soft_limit, 123);
         assert_eq!(configured.writeback_recent_pending_hard_limit, 456);
         assert!(!configured.writeback_require_stage_before_commit);
+        assert!(configured.upload_before_commit_prefix_split);
         assert!(configured.cached_block_assembler);
     }
 
