@@ -45,9 +45,9 @@ use tracing::{debug, error, info, trace, warn};
 
 /// Runtime-configurable kernel attribute/entry cache TTL.
 /// Non-zero lets the kernel serve repeated getattr/lookup from its own cache
-/// without round-tripping to userspace — eliminating the stat() performance gap.
-/// Default: 1s (matches JuiceFS).  Override via BREWFS_CACHE_TTL_MS=0 for
-/// strict multi-client coherency.
+/// without round-tripping to userspace.  Default: 1s, matching JuiceFS' usual
+/// metadata cache balance.  Override via BREWFS_CACHE_TTL_MS=0 for strict
+/// multi-client coherency or targeted debugging.
 fn fuse_cache_ttl() -> Duration {
     static TTL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *TTL.get_or_init(|| {
@@ -61,19 +61,44 @@ fn fuse_cache_ttl() -> Duration {
     })
 }
 
-fn fuse_read_direct_io_enabled() -> bool {
-    match std::env::var("BREWFS_FUSE_READ_DIRECT_IO") {
-        Ok(value) => !matches!(
+/// A just-created regular file is commonly returned with size 0 and then
+/// written, closed, reopened, and mmap'ed immediately by build tools.  Do not
+/// let the kernel cache that creation attr, or the mmap may observe length 0
+/// even though later writes have already updated BrewFS metadata.
+fn fuse_create_cache_ttl() -> Duration {
+    Duration::ZERO
+}
+
+fn fuse_direct_io_enabled() -> bool {
+    let value = std::env::var("BREWFS_FUSE_DIRECT_IO")
+        .ok()
+        .or_else(|| std::env::var("BREWFS_FUSE_READ_DIRECT_IO").ok());
+    match value {
+        Some(value) => !matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "no" | "off"
         ),
-        Err(_) => true,
+        None => true,
+    }
+}
+
+fn fuse_keep_cache_enabled() -> bool {
+    match std::env::var("BREWFS_FUSE_KEEP_CACHE") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
     }
 }
 
 fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
-    let mut flags = FOPEN_KEEP_CACHE;
-    if read && !write && fuse_read_direct_io_enabled() {
+    let mut flags = if fuse_keep_cache_enabled() {
+        FOPEN_KEEP_CACHE
+    } else {
+        0
+    };
+    if (read || write) && fuse_direct_io_enabled() {
         flags |= FOPEN_DIRECT_IO;
     }
     flags
@@ -540,11 +565,6 @@ where
             .map_err(Into::<Errno>::into)?;
 
         // ReplyOpen.flags carries FUSE FOPEN_* bits, not the caller's O_* flags.
-        // With writeback cache enabled, set FOPEN_KEEP_CACHE so that the kernel
-        // does not invalidate clean page-cache pages on every open().  Without it
-        // any concurrent open (even from an unrelated process) evicts clean pages
-        // that may have been written back, forcing FUSE_READ on the next access
-        // and exposing a window where overlay_dirty may miss in-flight data.
         Ok(ReplyOpen {
             fh,
             flags: fuse_open_reply_flags(read, write),
@@ -1402,11 +1422,11 @@ where
             .await
             .map_err(Into::<Errno>::into)?;
         Ok(ReplyCreated {
-            ttl: fuse_cache_ttl(),
+            ttl: fuse_create_cache_ttl(),
             attr,
             generation: 0,
             fh,
-            flags: FOPEN_KEEP_CACHE,
+            flags: fuse_open_reply_flags(read, write),
         })
     }
 
@@ -3975,28 +3995,38 @@ mod fuse_init_tests {
     fn open_reply_flags_use_direct_io_for_read_only_handles_by_default() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
+            std::env::remove_var("BREWFS_FUSE_DIRECT_IO");
+            std::env::remove_var("BREWFS_FUSE_KEEP_CACHE");
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
         }
 
-        assert_eq!(
-            fuse_open_reply_flags(true, false),
-            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
-        );
-        assert_eq!(fuse_open_reply_flags(true, true), FOPEN_KEEP_CACHE);
+        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_DIRECT_IO);
+        assert_eq!(fuse_open_reply_flags(true, true), FOPEN_DIRECT_IO);
+        assert_eq!(fuse_open_reply_flags(false, true), FOPEN_DIRECT_IO);
+    }
+
+    #[test]
+    fn cache_ttl_defaults_keep_create_attrs_uncached() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("BREWFS_CACHE_TTL_MS");
+        }
+
+        assert_eq!(fuse_cache_ttl(), Duration::from_secs(1));
+        assert_eq!(fuse_create_cache_ttl(), Duration::ZERO);
     }
 
     #[test]
     fn open_reply_flags_keep_direct_io_for_read_only_handles_explicitly() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
+            std::env::remove_var("BREWFS_FUSE_DIRECT_IO");
+            std::env::remove_var("BREWFS_FUSE_KEEP_CACHE");
             std::env::set_var("BREWFS_FUSE_READ_DIRECT_IO", "1");
         }
 
-        assert_eq!(
-            fuse_open_reply_flags(true, false),
-            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
-        );
-        assert_eq!(fuse_open_reply_flags(true, true), FOPEN_KEEP_CACHE);
+        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_DIRECT_IO);
+        assert_eq!(fuse_open_reply_flags(true, true), FOPEN_DIRECT_IO);
 
         unsafe {
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
@@ -4007,13 +4037,40 @@ mod fuse_init_tests {
     fn open_reply_flags_can_disable_direct_io_for_read_only_handles() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
+            std::env::set_var("BREWFS_FUSE_DIRECT_IO", "0");
+            std::env::remove_var("BREWFS_FUSE_KEEP_CACHE");
             std::env::set_var("BREWFS_FUSE_READ_DIRECT_IO", "0");
         }
 
-        assert_eq!(fuse_open_reply_flags(true, false), FOPEN_KEEP_CACHE);
+        assert_eq!(fuse_open_reply_flags(true, false), 0);
+        assert_eq!(fuse_open_reply_flags(true, true), 0);
 
         unsafe {
+            std::env::remove_var("BREWFS_FUSE_DIRECT_IO");
             std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
+        }
+    }
+
+    #[test]
+    fn open_reply_flags_can_opt_into_keep_cache() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("BREWFS_FUSE_DIRECT_IO");
+            std::env::set_var("BREWFS_FUSE_KEEP_CACHE", "1");
+            std::env::remove_var("BREWFS_FUSE_READ_DIRECT_IO");
+        }
+
+        assert_eq!(
+            fuse_open_reply_flags(true, false),
+            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
+        );
+        assert_eq!(
+            fuse_open_reply_flags(true, true),
+            FOPEN_KEEP_CACHE | FOPEN_DIRECT_IO
+        );
+
+        unsafe {
+            std::env::remove_var("BREWFS_FUSE_KEEP_CACHE");
         }
     }
 }

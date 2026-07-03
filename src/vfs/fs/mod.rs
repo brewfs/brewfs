@@ -2693,20 +2693,16 @@ where
 
         // We intentionally do NOT call flush_if_exists here: blocking every
         // read on a full flush+commit cycle turns random-read-heavy workloads
-        // into commit-bound traffic.  Read-write handles still need one
-        // narrower guard for writeback mode:
-        // if metadata has been committed before the remote object upload
-        // finished, the reader must not fetch that range from the backend yet.
-        // Waiting only for already-committed pending uploads preserves
-        // read-after-write correctness without freezing unrelated live dirty
-        // slices on every mixed randrw read.
-        if handle.flags.read && handle.flags.write {
-            self.state
-                .writer
-                .wait_committed_uploads_for_range(handle.ino as u64, offset, actual_len)
-                .await
-                .map_err(VfsError::from)?;
-        }
+        // into commit-bound traffic.  Still, writeback mode can make metadata
+        // visible before the remote object upload completes.  Any reader, even
+        // a read-only handle opened after close(), must wait before fetching an
+        // overlapping range from the backend; otherwise mmap/read-after-close
+        // can observe a zero-length or stale object.
+        self.state
+            .writer
+            .wait_committed_uploads_for_range(handle.ino as u64, offset, actual_len)
+            .await
+            .map_err(VfsError::from)?;
         // Read committed data from the reader cache first, then overlay any
         // uncommitted dirty writes on top.
         // There is a narrow race where commit_chunk pops a just-committed
