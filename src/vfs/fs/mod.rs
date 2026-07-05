@@ -111,7 +111,7 @@ use crate::vfs::cache::config::CacheConfig;
 use crate::vfs::chunk_id_for;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::{PathHint, VfsError};
-use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags};
+use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags, WriteDirtyState};
 use crate::vfs::io::{DataReader, DataWriter, split_chunk_spans};
 use crate::vfs::memory::MemoryBudget;
 
@@ -178,21 +178,21 @@ where
         true
     }
 
-    fn take_write_dirty_for_inode(&self, ino: i64) -> bool {
-        let mut dirty = false;
+    fn take_write_dirty_for_inode(&self, ino: i64) -> WriteDirtyState {
+        let mut state = WriteDirtyState::clean();
         for fh in self.handles_for(ino) {
             if let Some(handle) = self.handles.get(&fh) {
-                dirty |= handle.take_write_dirty();
+                state.merge(handle.take_write_dirty());
             }
         }
-        dirty
+        state
     }
 
-    fn take_write_dirty(&self, fh: u64) -> bool {
+    fn take_write_dirty(&self, fh: u64) -> WriteDirtyState {
         self.handles
             .get(&fh)
             .map(|handle| handle.take_write_dirty())
-            .unwrap_or(false)
+            .unwrap_or_default()
     }
 
     fn handles_for(&self, ino: i64) -> Vec<u64> {
@@ -1445,6 +1445,13 @@ where
         }
 
         Ok(())
+    }
+
+    fn flush_needs_mtime_ctime_update(dirty_state: WriteDirtyState, flushed_pending: bool) -> bool {
+        if !dirty_state.dirty {
+            return flushed_pending;
+        }
+        dirty_state.needs_timestamp_update
     }
 
     /// List directory entries by inode
@@ -3006,10 +3013,14 @@ where
             {
                 handle.update_offset(append_end);
                 handle.extend_size(append_end);
-                handle.mark_write_dirty();
+                handle.mark_write_dirty_extending_size();
                 data.len()
             } else {
-                handle.write_unlocked(append_offset, data).await?
+                let written = handle.write_unlocked(append_offset, data).await?;
+                if written > 0 {
+                    handle.mark_write_dirty_extending_size();
+                }
+                written
             };
             tracing::debug!(
                 fh,
@@ -3033,10 +3044,23 @@ where
             {
                 handle.update_offset(write_end);
                 handle.extend_size(write_end);
-                handle.mark_write_dirty();
+                if write_end > visible_size {
+                    handle.mark_write_dirty_extending_size();
+                } else {
+                    handle.mark_write_dirty();
+                }
                 data.len()
             } else {
-                handle.write_unlocked(offset, data).await?
+                let written = handle.write_unlocked(offset, data).await?;
+                if written > 0 {
+                    let new_end = offset + written as u64;
+                    if new_end > visible_size {
+                        handle.mark_write_dirty_extending_size();
+                    } else {
+                        handle.mark_write_dirty();
+                    }
+                }
+                written
             };
             (offset, written)
         };
@@ -3444,8 +3468,8 @@ where
         if handle.flags.write {
             let _handle_guard = handle.lock_write().await;
 
-            let had_write = self.state.handles.take_write_dirty(fh);
-            let flushed_pending = if had_write {
+            let dirty_state = self.state.handles.take_write_dirty(fh);
+            let flushed_pending = if dirty_state.dirty {
                 self.state
                     .writer
                     .flush_for_close(handle.ino as u64)
@@ -3454,10 +3478,10 @@ where
             } else {
                 false
             };
-            if (had_write || flushed_pending)
+            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
                 && let Err(err) = self.update_mtime_ctime(handle.ino).await
             {
-                if had_write {
+                if dirty_state.dirty {
                     handle.mark_write_dirty();
                 }
                 return Err(err);
@@ -3527,8 +3551,8 @@ where
             "vfs.flush_dirty_handle_snapshot"
         );
 
-        let had_write = self.state.handles.take_write_dirty(fh);
-        if !had_write {
+        let dirty_state = self.state.handles.take_write_dirty(fh);
+        if !dirty_state.dirty {
             return Ok(());
         }
 
@@ -3539,7 +3563,7 @@ where
             .await
             .map_err(VfsError::from)?;
 
-        if (had_write || flushed_pending)
+        if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
             && let Err(err) = self.update_mtime_ctime(handle.ino).await
         {
             handle.mark_write_dirty();
@@ -3558,7 +3582,7 @@ where
         let handle = self.file_handle_required(fh)?;
 
         tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
-        let had_write = self.state.handles.take_write_dirty_for_inode(handle.ino);
+        let dirty_state = self.state.handles.take_write_dirty_for_inode(handle.ino);
         let flushed_pending = self
             .state
             .writer
@@ -3567,10 +3591,10 @@ where
             .map_err(VfsError::from)?;
         tracing::trace!(fh, ino = handle.ino, "vfs.flush_handle_done");
 
-        if (had_write || flushed_pending)
+        if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
             && let Err(err) = self.update_mtime_ctime(handle.ino).await
         {
-            if had_write {
+            if dirty_state.dirty {
                 handle.mark_write_dirty();
             }
             return Err(err);
@@ -3630,7 +3654,7 @@ where
         );
 
         tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
-        let had_write = self.state.handles.take_write_dirty_for_inode(handle.ino);
+        let dirty_state = self.state.handles.take_write_dirty_for_inode(handle.ino);
         let flushed_pending = self
             .state
             .writer
@@ -3639,10 +3663,10 @@ where
             .map_err(VfsError::from)?;
         tracing::trace!(fh, ino = handle.ino, "vfs.flush_handle_done");
 
-        if (had_write || flushed_pending)
+        if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
             && let Err(err) = self.update_mtime_ctime(handle.ino).await
         {
-            if had_write {
+            if dirty_state.dirty {
                 handle.mark_write_dirty();
             }
             return Err(err);

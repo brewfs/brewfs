@@ -8,7 +8,7 @@ use crate::vfs::io::{FileReader, FileWriter};
 use anyhow::anyhow;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::SystemTime;
 
 fn current_time_secs() -> i64 {
@@ -26,6 +26,32 @@ use tokio::task::JoinHandle;
 /// Keep this comfortably below the kernel FUSE reply buffer while avoiding
 /// excessive userspace pagination for large directory scans.
 const MAX_READDIR_ENTRIES: usize = 256;
+const WRITE_DIRTY_DATA: u8 = 0b0000_0001;
+const WRITE_DIRTY_NEEDS_TIMESTAMP: u8 = 0b0000_0010;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WriteDirtyState {
+    pub(crate) dirty: bool,
+    pub(crate) needs_timestamp_update: bool,
+}
+
+impl WriteDirtyState {
+    pub(crate) fn clean() -> Self {
+        Self::default()
+    }
+
+    fn from_bits(bits: u8) -> Self {
+        Self {
+            dirty: bits & WRITE_DIRTY_DATA != 0,
+            needs_timestamp_update: bits & WRITE_DIRTY_NEEDS_TIMESTAMP != 0,
+        }
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.dirty |= other.dirty;
+        self.needs_timestamp_update |= other.needs_timestamp_update;
+    }
+}
 
 struct GateState {
     readers: u32,
@@ -194,7 +220,7 @@ where
     pub(crate) ino: i64,
     pub(crate) opened_at: Instant,
     pub(crate) flags: HandleFlags,
-    write_dirty: AtomicBool,
+    write_dirty: AtomicU8,
     gate: Arc<HandleGate>,
     state: StdMutex<FileHandleState<B, M>>,
 }
@@ -213,7 +239,7 @@ where
             ino,
             opened_at: Instant::now(),
             flags,
-            write_dirty: AtomicBool::new(false),
+            write_dirty: AtomicU8::new(0),
             gate: Arc::new(HandleGate::new()),
             state: StdMutex::new(FileHandleState {
                 attr,
@@ -302,15 +328,23 @@ where
     }
 
     pub(crate) fn mark_write_dirty(&self) {
-        self.write_dirty.store(true, Ordering::Release);
+        self.write_dirty.fetch_or(
+            WRITE_DIRTY_DATA | WRITE_DIRTY_NEEDS_TIMESTAMP,
+            Ordering::AcqRel,
+        );
+    }
+
+    pub(crate) fn mark_write_dirty_extending_size(&self) {
+        self.write_dirty
+            .fetch_or(WRITE_DIRTY_DATA, Ordering::AcqRel);
     }
 
     pub(crate) fn has_write_dirty(&self) -> bool {
-        self.write_dirty.load(Ordering::Acquire)
+        self.write_dirty.load(Ordering::Acquire) & WRITE_DIRTY_DATA != 0
     }
 
-    pub(crate) fn take_write_dirty(&self) -> bool {
-        self.write_dirty.swap(false, Ordering::AcqRel)
+    pub(crate) fn take_write_dirty(&self) -> WriteDirtyState {
+        WriteDirtyState::from_bits(self.write_dirty.swap(0, Ordering::AcqRel))
     }
 
     #[allow(dead_code)]
@@ -353,7 +387,11 @@ where
 
     pub(crate) async fn write(&self, offset: u64, data: &[u8]) -> anyhow::Result<usize> {
         let _guard = self.gate.write_lock().await;
-        self.write_unlocked(offset, data).await
+        let written = self.write_unlocked(offset, data).await?;
+        if written > 0 {
+            self.mark_write_dirty();
+        }
+        Ok(written)
     }
 
     /// Write while the caller already holds the required handle write locks.
@@ -367,9 +405,6 @@ where
         };
         let written = writer.write_at(offset, data).await?;
         self.update_offset(offset + written as u64);
-        if written > 0 {
-            self.mark_write_dirty();
-        }
         Ok(written)
     }
 
@@ -493,5 +528,29 @@ impl Drop for DirHandle {
                 task.abort();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_dirty_state_tracks_extending_writes_without_timestamp_update() {
+        let state = WriteDirtyState::from_bits(WRITE_DIRTY_DATA);
+
+        assert!(state.dirty);
+        assert!(!state.needs_timestamp_update);
+    }
+
+    #[test]
+    fn write_dirty_state_merge_keeps_timestamp_requirement() {
+        let mut state = WriteDirtyState::from_bits(WRITE_DIRTY_DATA);
+        state.merge(WriteDirtyState::from_bits(
+            WRITE_DIRTY_DATA | WRITE_DIRTY_NEEDS_TIMESTAMP,
+        ));
+
+        assert!(state.dirty);
+        assert!(state.needs_timestamp_update);
     }
 }

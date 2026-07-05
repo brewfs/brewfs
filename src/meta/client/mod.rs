@@ -29,7 +29,7 @@ use moka::future::Cache;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, process};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{Instrument, debug, info, trace, warn};
@@ -54,7 +54,7 @@ const ROOT_INODE: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFileCacheConfig {
-    /// Attribute reuse window for repeated non-append opens. `Duration::ZERO`
+    /// Attribute reuse window for repeated readonly opens. `Duration::ZERO`
     /// disables this cache and preserves strict close-to-open refresh.
     pub ttl: Duration,
     /// Maximum number of recently opened inodes retained by the cache.
@@ -70,7 +70,7 @@ impl OpenFileCacheConfig {
 impl Default for OpenFileCacheConfig {
     fn default() -> Self {
         Self {
-            ttl: Duration::ZERO,
+            ttl: Duration::from_secs(1),
             capacity: 8192,
         }
     }
@@ -99,7 +99,9 @@ pub struct MetaClientOptions {
     pub max_symlinks: usize,
     /// Batch attribute prefetch configuration
     pub batch_prefetch: BatchPrefetchConfig,
-    /// Opt-in JuiceFS-style cache scoped to recently opened files.
+    /// JuiceFS-style cache scoped to recently active files. Reuse is limited
+    /// to readonly opens; close may seed the final attr for a later readonly
+    /// open without allowing write opens to skip their fresh stat.
     pub open_file_cache: OpenFileCacheConfig,
 }
 
@@ -929,6 +931,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     }
 
     fn open_file_cache_eligible(read: bool, write: bool, append: bool) -> bool {
+        read && !write && !append
+    }
+
+    fn open_file_cache_refresh_on_close(read: bool, write: bool, append: bool) -> bool {
         (read || write) && !append
     }
 
@@ -1427,7 +1433,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
 
     async fn invalidate_parent_after_namespace_mutation(&self, parent_ino: i64) {
         let parent_ino = self.check_root(parent_ino);
-        self.inode_cache.invalidate_inode(parent_ino).await;
+        self.refresh_cached_attr_after_namespace_mutation(parent_ino)
+            .await;
         self.invalidate_parent_path(parent_ino).await;
     }
 
@@ -1558,6 +1565,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 );
             }
         }
+    }
+
+    fn current_time_nanos() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64
+    }
+
+    async fn touch_cached_parent_after_namespace_mutation(&self, parent_ino: i64) {
+        let parent_ino = self.check_root(parent_ino);
+        if let Some(node) = self.inode_cache.get_node(parent_ino).await {
+            let now = Self::current_time_nanos();
+            let mut attr = node.attr.write().await;
+            attr.mtime = now;
+            attr.ctime = now;
+        }
+        self.invalidate_parent_path(parent_ino).await;
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
@@ -1763,16 +1788,23 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 }
             }
 
-            // Precise path cache invalidation.
-            self.invalidate_parent_path(old_parent).await;
-            if old_parent != new_parent {
-                self.invalidate_parent_path(new_parent).await;
-            }
-
-            // Invalidate directory stat caches (mtime/ctime changed).
-            self.inode_cache.invalidate_inode(old_parent).await;
-            if old_parent != new_parent {
-                self.inode_cache.invalidate_inode(new_parent).await;
+            // Precise path cache invalidation while retaining the updated child
+            // maps for subsequent lookups on the same hot directory.
+            let needs_parent_nlink_refresh =
+                matches!(src_attr.as_ref().map(|attr| attr.kind), Some(FileType::Dir))
+                    && old_parent != new_parent;
+            if needs_parent_nlink_refresh {
+                self.invalidate_parent_after_namespace_mutation(old_parent)
+                    .await;
+                self.invalidate_parent_after_namespace_mutation(new_parent)
+                    .await;
+            } else {
+                self.touch_cached_parent_after_namespace_mutation(old_parent)
+                    .await;
+                if old_parent != new_parent {
+                    self.touch_cached_parent_after_namespace_mutation(new_parent)
+                        .await;
+                }
             }
 
             Ok::<(), MetaError>(())
@@ -2121,7 +2153,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     ) -> Result<(), MetaError> {
         let inode = self.check_root(ino);
         if let Some(cache) = &self.open_file_cache {
-            if Self::open_file_cache_eligible(read, write, append) {
+            if Self::open_file_cache_refresh_on_close(read, write, append) {
                 cache.refresh_idle_attr(inode, attr).await;
             }
             cache.close(inode).await;
@@ -2277,10 +2309,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             self.inode_cache.mark_children_complete_empty(ino).await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
-        self.refresh_cached_attr_after_namespace_mutation(parent)
-            .await;
 
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.touch_cached_parent_after_namespace_mutation(parent)
             .await;
 
         Ok(ino)
@@ -2351,10 +2381,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
                 .await;
         }
         self.inode_cache.add_child(parent, name, ino).await;
-        self.refresh_cached_attr_after_namespace_mutation(parent)
-            .await;
 
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.touch_cached_parent_after_namespace_mutation(parent)
             .await;
 
         Ok(created)
@@ -2437,10 +2465,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.inode_cache
             .add_child(parent, name.to_string(), inode)
             .await;
-        self.refresh_cached_attr_after_namespace_mutation(parent)
-            .await;
 
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.touch_cached_parent_after_namespace_mutation(parent)
             .await;
 
         Ok(attr)
@@ -2481,10 +2507,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.inode_cache
             .add_child(parent, name.to_string(), ino)
             .await;
-        self.refresh_cached_attr_after_namespace_mutation(parent)
-            .await;
 
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.touch_cached_parent_after_namespace_mutation(parent)
             .await;
 
         Ok((ino, attr))
@@ -2513,7 +2537,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         if let Some(ino) = target_ino {
             self.invalidate_open_file_cache_inode(ino).await;
         }
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.touch_cached_parent_after_namespace_mutation(parent)
             .await;
 
         Ok(())
@@ -2609,18 +2633,17 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
         // Update cache to reflect the exchange
         let cache_result = async {
-            // Invalidate all affected caches
+            // Invalidate replaced child caches while preserving the parent child
+            // maps we rebuild below.
             self.inode_cache.invalidate_inode(old_ino).await;
             self.inode_cache.invalidate_inode(new_ino).await;
-            self.inode_cache.invalidate_inode(old_parent).await;
-            if old_parent != new_parent {
-                self.inode_cache.invalidate_inode(new_parent).await;
-            }
 
             // Invalidate path caches
-            self.invalidate_parent_path(old_parent).await;
+            self.invalidate_parent_after_namespace_mutation(old_parent)
+                .await;
             if old_parent != new_parent {
-                self.invalidate_parent_path(new_parent).await;
+                self.invalidate_parent_after_namespace_mutation(new_parent)
+                    .await;
             }
 
             // Update directory entries
@@ -3412,6 +3435,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_namespace_create_keeps_parent_child_cache_for_lookup_with_attr() {
+        let client = create_test_client().await;
+        let parent = client.mkdir(1, "cached-parent".to_string()).await.unwrap();
+
+        let ino = client
+            .create_file(parent, "created-child.txt".to_string())
+            .await
+            .unwrap();
+        let before = client.metrics().snapshot();
+
+        let (found, attr) = client
+            .lookup_with_attr(parent, "created-child.txt")
+            .await
+            .unwrap()
+            .expect("created child should be visible through parent cache");
+
+        assert_eq!(found, ino);
+        assert_eq!(attr.ino, ino);
+
+        let after = client.metrics().snapshot();
+        assert_eq!(after.lookup_cache_hit, before.lookup_cache_hit + 1);
+        assert_eq!(
+            after.lookup_attr_fused_hit,
+            before.lookup_attr_fused_hit + 1
+        );
+        assert_eq!(
+            after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
+            "lookup_with_attr after a local create should not go back to the store"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rename_keeps_parent_child_cache_for_followup_lookup() {
+        let client = create_test_client().await;
+        let parent = client
+            .mkdir(1, "rename-cache-parent".to_string())
+            .await
+            .unwrap();
+        let ino = client
+            .create_file(parent, "before.txt".to_string())
+            .await
+            .unwrap();
+
+        client
+            .rename(parent, "before.txt", parent, "after.txt".to_string())
+            .await
+            .unwrap();
+        let before = client.metrics().snapshot();
+
+        let (found, attr) = client
+            .lookup_with_attr(parent, "after.txt")
+            .await
+            .unwrap()
+            .expect("renamed child should be visible through parent cache");
+
+        assert_eq!(found, ino);
+        assert_eq!(attr.ino, ino);
+
+        let after = client.metrics().snapshot();
+        assert_eq!(after.lookup_cache_hit, before.lookup_cache_hit + 1);
+        assert_eq!(
+            after.lookup_attr_fused_hit,
+            before.lookup_attr_fused_hit + 1
+        );
+        assert_eq!(
+            after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
+            "lookup_with_attr after a local rename should not go back to the store"
+        );
+    }
+
+    #[tokio::test]
     async fn test_meta_client_lookup_only_does_not_count_lookup_attr_fused_path() {
         let client = create_test_client().await;
         let ino = client
@@ -3437,7 +3531,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_file_cache_disabled_preserves_fresh_open_stat() {
-        let client = create_test_client().await;
+        let options = MetaClientOptions {
+            open_file_cache: OpenFileCacheConfig {
+                ttl: Duration::ZERO,
+                capacity: 128,
+            },
+            ..Default::default()
+        };
+        let client = create_test_client_with_options(options).await;
         let ino = client
             .create_file(1, "open-cache-disabled.txt".to_string())
             .await
@@ -3509,15 +3610,39 @@ mod tests {
         assert_eq!(metrics.open_file_cache_miss, 1);
         assert_eq!(metrics.open_file_cache_hit, 1);
 
-        let rdwr_cached = client
+        let rdwr_fresh = client
             .stat_for_open(ino, true, true, false)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(rdwr_cached.size, first.size);
+        assert_eq!(rdwr_fresh.size, first.size);
+        client
+            .record_open(ino, rdwr_fresh, true, true, false)
+            .await
+            .unwrap();
+        client.record_close(ino).await.unwrap();
+
         let metrics = client.metrics().snapshot();
-        assert_eq!(metrics.open_fresh_stat, 1);
-        assert_eq!(metrics.open_file_cache_hit, 2);
+        assert_eq!(metrics.open_fresh_stat, 2);
+        assert_eq!(metrics.open_file_cache_hit, 1);
+        assert_eq!(metrics.open_file_cache_miss, 1);
+
+        let reopened = client
+            .stat_for_open(ino, true, false, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.size, first.size);
+        client
+            .record_open(ino, reopened, true, false, false)
+            .await
+            .unwrap();
+        client.record_close(ino).await.unwrap();
+
+        let metrics = client.metrics().snapshot();
+        assert_eq!(metrics.open_fresh_stat, 3);
+        assert_eq!(metrics.open_file_cache_hit, 1);
+        assert_eq!(metrics.open_file_cache_miss, 2);
 
         client
             .set_attr(
@@ -3539,9 +3664,9 @@ mod tests {
         assert_eq!(refreshed.size, first.size + 4096);
 
         let metrics = client.metrics().snapshot();
-        assert_eq!(metrics.open_fresh_stat, 2);
-        assert_eq!(metrics.open_file_cache_hit, 2);
-        assert_eq!(metrics.open_file_cache_miss, 2);
+        assert_eq!(metrics.open_fresh_stat, 4);
+        assert_eq!(metrics.open_file_cache_hit, 1);
+        assert_eq!(metrics.open_file_cache_miss, 3);
     }
 
     #[tokio::test]

@@ -592,11 +592,11 @@ mod basic_tests {
             .unwrap();
         let attr = fs.stat_ino(file_ino).await.unwrap();
 
-        let write_fh = fs
-            .open_with_cached_attr(file_ino, attr, false, true, false)
+        let read_fh = fs
+            .open_with_cached_attr(file_ino, attr, true, false, false)
             .await
             .unwrap();
-        fs.close(write_fh).await.unwrap();
+        fs.close(read_fh).await.unwrap();
 
         let before = fs.meta_layer().metrics().snapshot();
         let read_fh = fs
@@ -608,7 +608,7 @@ mod basic_tests {
 
         assert_eq!(
             after.open_fresh_stat, before.open_fresh_stat,
-            "cached-attr opens should warm the open-file cache for the next open"
+            "readonly cached-attr opens should warm the open-file cache for the next open"
         );
         assert_eq!(
             after.open_file_cache_hit,
@@ -618,7 +618,7 @@ mod basic_tests {
     }
 
     #[tokio::test]
-    async fn test_close_refreshes_open_cache_with_final_attr() {
+    async fn test_write_close_warms_readonly_open_cache_with_final_attr() {
         let layout = ChunkLayout::default();
         let store = InMemoryBlockStore::new();
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
@@ -659,6 +659,19 @@ mod basic_tests {
 
         assert_eq!(after.open_fresh_stat, before.open_fresh_stat);
         assert_eq!(after.open_file_cache_hit, before.open_file_cache_hit + 1);
+
+        let second_read_fh = fs
+            .open_fresh_ino(file_ino, true, false, false)
+            .await
+            .unwrap();
+        fs.close(second_read_fh).await.unwrap();
+        let after_second_read = fs.meta_layer().metrics().snapshot();
+
+        assert_eq!(after_second_read.open_fresh_stat, after.open_fresh_stat);
+        assert_eq!(
+            after_second_read.open_file_cache_hit,
+            after.open_file_cache_hit + 1
+        );
         assert_eq!(
             fs.handle_attr(read_fh).map(|attr| attr.size),
             None,

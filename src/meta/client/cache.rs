@@ -458,11 +458,11 @@ impl OpenFileEntry {
 
 /// JuiceFS-style metadata cache scoped to files that are recently active.
 ///
-/// This cache is created only when explicitly enabled by configuration. It is
-/// intentionally narrower than `InodeCache`: it is used for close-to-open
-/// refresh avoidance on repeated non-append opens and is invalidated on local
-/// metadata mutations. Entries expire after an idle window, matching JuiceFS'
-/// `openfiles.lastCheck` behavior more closely than a fixed lifetime.
+/// This cache is enabled when the configured TTL is non-zero. It is intentionally
+/// narrower than `InodeCache`: it is used for close-to-open refresh avoidance on
+/// repeated readonly opens and is invalidated on local metadata mutations.
+/// Entries expire after an idle window, matching JuiceFS' `openfiles.lastCheck`
+/// behavior more closely than a fixed lifetime.
 pub(crate) struct OpenFileCache {
     entries: Arc<DashMap<i64, Arc<OpenFileEntry>>>,
     ttl_manager: Cache<i64, Arc<OpenFileEntry>>,
