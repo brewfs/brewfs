@@ -14,8 +14,8 @@ use crate::meta::config::{CacheCapacity, CacheTtl};
 use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLockType};
 use crate::meta::layer::MetaLayer;
 use crate::meta::store::{
-    AclRule, CreateEntryResult, DirEntry, FileAttr, MetaError, MetaStore, OpenFlags, SetAttrFlags,
-    SetAttrRequest, StatFsSnapshot,
+    AclRule, CreateEntryResult, DirEntry, DirStat, FileAttr, MetaError, MetaStore, OpenFlags,
+    SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::meta::stores::{CacheInvalidationEvent, EtcdMetaStore, EtcdWatchWorker, WatchConfig};
 use crate::posix::NAME_MAX;
@@ -2784,6 +2784,54 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.inode_cache.invalidate_inode(inode).await;
         self.invalidate_open_file_cache_inode(inode).await;
         Ok(())
+    }
+
+    #[tracing::instrument(
+        level = "trace",
+        skip(self),
+        fields(ino, mode, offset, size, block_size)
+    )]
+    async fn fallocate_file(
+        &self,
+        ino: i64,
+        mode: u8,
+        offset: u64,
+        size: u64,
+        block_size: u64,
+    ) -> Result<FileAttr, MetaError> {
+        self.ensure_writable()?;
+        let inode = self.check_root(ino);
+        let mut attr = self
+            .store
+            .stat(inode)
+            .await?
+            .ok_or(MetaError::NotFound(inode))?;
+        let mut delta = DirStat::default();
+
+        match self
+            .store
+            .fallocate_file(inode, mode, offset, size, block_size, &mut delta, &mut attr)
+            .await
+        {
+            Ok(()) => {
+                self.inode_cache.invalidate_inode(inode).await;
+                self.invalidate_open_file_cache_inode(inode).await;
+                Ok(attr)
+            }
+            Err(MetaError::NotImplemented) => {
+                let end = offset
+                    .checked_add(size)
+                    .ok_or_else(|| MetaError::Internal("fallocate size overflow".into()))?;
+                self.store.extend_file_size(inode, end).await?;
+                self.inode_cache.invalidate_inode(inode).await;
+                self.invalidate_open_file_cache_inode(inode).await;
+                self.store
+                    .stat(inode)
+                    .await?
+                    .ok_or(MetaError::NotFound(inode))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]

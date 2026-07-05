@@ -22,6 +22,9 @@ use tokio::sync::{Mutex, Notify};
 pub use crate::meta::store::{DirEntry, FileAttr, FileType};
 
 const SPARSE_ZERO_MAX_SCAN_BYTES: usize = 128 * 1024;
+const FUSE_STATFS_CACHE_TTL: Duration = Duration::from_secs(1);
+const FALLOCATE_STATFS_CACHE_TTL: Duration = Duration::from_millis(100);
+const FALLOCATE_ALLOCATION_UNIT: u64 = 4096;
 
 /// Rename operation flags (similar to Linux renameat2 flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -185,6 +188,13 @@ where
         dirty
     }
 
+    fn take_write_dirty(&self, fh: u64) -> bool {
+        self.handles
+            .get(&fh)
+            .map(|handle| handle.take_write_dirty())
+            .unwrap_or(false)
+    }
+
     fn handles_for(&self, ino: i64) -> Vec<u64> {
         self.inode_handles
             .get(&ino)
@@ -278,11 +288,23 @@ where
     writer: Arc<DataWriter<S, M>>,
     append_locks: DashMap<i64, Arc<Mutex<()>>>,
     fuse_cached_write_order: Arc<FuseCachedWriteOrder>,
+    statfs_cache: StdMutex<Option<StatFsCache>>,
+    fallocate_statfs_cache: StdMutex<Option<FallocateStatFsCache>>,
     posix_lock_owners: DashMap<(i64, i64), ()>,
     fuse_lock_owners_by_handle: DashMap<(i64, u64, i64), ()>,
     pub(crate) stats: Arc<crate::vfs::stats::FsStats>,
     memory_budget: Option<MemoryBudget>,
     vfs_timing_enabled: bool,
+}
+
+struct FallocateStatFsCache {
+    snapshot: StatFsSnapshot,
+    cached_at: Instant,
+}
+
+struct StatFsCache {
+    snapshot: StatFsSnapshot,
+    cached_at: Instant,
 }
 
 #[derive(Default)]
@@ -473,6 +495,8 @@ where
             writer,
             append_locks: DashMap::new(),
             fuse_cached_write_order: Arc::new(FuseCachedWriteOrder::default()),
+            statfs_cache: StdMutex::new(None),
+            fallocate_statfs_cache: StdMutex::new(None),
             posix_lock_owners: DashMap::new(),
             fuse_lock_owners_by_handle: DashMap::new(),
             stats: Arc::new(crate::vfs::stats::FsStats::new()),
@@ -2500,13 +2524,12 @@ where
 
         let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
         let current_size = self.inode_size_cached(ino).unwrap_or(attr.size);
-        if end <= current_size {
-            return Ok(());
-        }
 
-        self.ensure_fallocate_space_available(current_size, end)
-            .await?;
-        self.extend_inode_size_for_fallocate(ino, end).await?;
+        if end > current_size {
+            self.ensure_fallocate_space_available(current_size, end)
+                .await?;
+        }
+        self.apply_fallocate_metadata(ino, offset, length).await?;
         Ok(())
     }
 
@@ -2542,32 +2565,25 @@ where
 
         let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
         let current_size = self.inode_size_cached(ino).unwrap_or(attr.size);
-        if end <= current_size {
-            return Ok(());
+
+        if end > current_size {
+            self.ensure_fallocate_space_available(current_size, end)
+                .await?;
         }
 
         // The handle path is used by FUSE fallocate while the file is open.
-        // BrewFS represents the newly allocated range as a sparse hole, so a
-        // per-byte statfs round-trip would not reserve real backend space and
-        // makes mmap+fallocate workloads prohibitively slow. Keep the strict
-        // ENOSPC check on fallocate_ino(), which is used by metadata-persistent
-        // callers.
+        // BrewFS represents the newly allocated range as a sparse hole, so the
+        // check above is an early ENOSPC guard rather than a backend reservation.
         let _handle_guard = handle.lock_write().await;
-        let inode = self.ensure_inode_registered(ino).await?;
-        let writer = self.state.writer.ensure_file(inode);
-        writer
-            .record_sparse_fallocate(current_size, end - current_size)
-            .await
-            .map_err(VfsError::from)?;
-        self.extend_local_file_size(ino, end);
-
-        let now = Self::current_timestamp_nanos()?;
-        let mut attr = attr;
-        attr.size = attr.size.max(end);
-        attr.mtime = now;
-        attr.ctime = now;
-        self.state.handles.update_attr_for_inode(ino, &attr);
-        handle.mark_write_dirty();
+        if end > current_size {
+            let inode = self.ensure_inode_registered(ino).await?;
+            let writer = self.state.writer.ensure_file(inode);
+            writer
+                .record_sparse_fallocate(current_size, end - current_size)
+                .await
+                .map_err(VfsError::from)?;
+        }
+        self.apply_fallocate_metadata(ino, offset, length).await?;
         Ok(())
     }
 
@@ -2581,29 +2597,65 @@ where
             return Ok(());
         }
 
-        let stat = self.meta_stat_fs().await?;
+        let stat = self.stat_fs_for_fallocate().await?;
         if growth > stat.available_space {
             return Err(VfsError::StorageFull);
         }
         Ok(())
     }
 
-    async fn extend_inode_size_for_fallocate(&self, ino: i64, size: u64) -> Result<(), VfsError> {
-        let now = Self::current_timestamp_nanos()?;
-        let req = SetAttrRequest {
-            size: Some(size),
-            mtime: Some(now),
-            ctime: Some(now),
-            ..Default::default()
-        };
-        let mut attr = self.meta_set_attr(ino, &req, SetAttrFlags::empty()).await?;
-        attr.size = attr.size.max(size);
-        attr.mtime = now;
-        attr.ctime = now;
+    async fn stat_fs_for_fallocate(&self) -> Result<StatFsSnapshot, VfsError> {
+        if let Some(snapshot) = {
+            let cache = self
+                .state
+                .fallocate_statfs_cache
+                .lock()
+                .expect("fallocate statfs cache lock poisoned");
+            cache
+                .as_ref()
+                .filter(|entry| entry.cached_at.elapsed() <= FALLOCATE_STATFS_CACHE_TTL)
+                .map(|entry| entry.snapshot.clone())
+        } {
+            return Ok(snapshot);
+        }
 
-        self.extend_local_file_size(ino, size);
+        let snapshot = self.meta_stat_fs().await?;
+        let mut cache = self
+            .state
+            .fallocate_statfs_cache
+            .lock()
+            .expect("fallocate statfs cache lock poisoned");
+        *cache = Some(FallocateStatFsCache {
+            snapshot: snapshot.clone(),
+            cached_at: Instant::now(),
+        });
+        Ok(snapshot)
+    }
+
+    async fn apply_fallocate_metadata(
+        &self,
+        ino: i64,
+        offset: u64,
+        length: u64,
+    ) -> Result<FileAttr, VfsError> {
+        let mut attr = self
+            .meta_fallocate_file(ino, offset, length, FALLOCATE_ALLOCATION_UNIT)
+            .await?;
+
+        let local_size = self
+            .inode_size_cached(ino)
+            .into_iter()
+            .chain(self.state.handles.attr_for_inode(ino).map(|attr| attr.size))
+            .max()
+            .unwrap_or(attr.size);
+        attr.size = attr.size.max(local_size);
+
+        self.extend_local_file_size(ino, attr.size);
+        if let Some(inode) = self.state.inodes.get(&ino) {
+            inode.set_exact_allocated_bytes(attr.blocks.saturating_mul(512));
+        }
         self.state.handles.update_attr_for_inode(ino, &attr);
-        Ok(())
+        Ok(attr)
     }
 
     #[tracing::instrument(level = "trace", skip(self, req), fields(ino, flags = ?flags))]
@@ -2924,6 +2976,7 @@ where
         if data.is_empty() {
             return Ok(0);
         }
+        let data_len = data.len() as u64;
 
         let handle = self.file_handle_required(fh)?;
 
@@ -2941,12 +2994,18 @@ where
             let _handle_guard = handle.lock_write().await;
 
             let append_offset = self.inode_size(handle.ino).await?;
+            let append_end = append_offset
+                .checked_add(data_len)
+                .ok_or(VfsError::FileTooLarge)?;
+            if append_end >= i64::MAX as u64 {
+                return Err(VfsError::FileTooLarge);
+            }
             let written = if self
                 .try_sparse_zero_extend(handle.ino, append_offset, data, append_offset)
                 .await?
             {
-                handle.update_offset(append_offset + data.len() as u64);
-                handle.extend_size(append_offset + data.len() as u64);
+                handle.update_offset(append_end);
+                handle.extend_size(append_end);
                 handle.mark_write_dirty();
                 data.len()
             } else {
@@ -2963,13 +3022,17 @@ where
             (append_offset, written)
         } else {
             let _handle_guard = handle.lock_write().await;
+            let write_end = offset.checked_add(data_len).ok_or(VfsError::FileTooLarge)?;
+            if write_end >= i64::MAX as u64 {
+                return Err(VfsError::FileTooLarge);
+            }
             let visible_size = handle.attr().size;
             let written = if self
                 .try_sparse_zero_extend(handle.ino, offset, data, visible_size)
                 .await?
             {
-                handle.update_offset(offset + data.len() as u64);
-                handle.extend_size(offset + data.len() as u64);
+                handle.update_offset(write_end);
+                handle.extend_size(write_end);
                 handle.mark_write_dirty();
                 data.len()
             } else {
@@ -3175,6 +3238,12 @@ where
         if copy_len == 0 {
             return Ok(0);
         }
+        let dst_end = off_out
+            .checked_add(copy_len)
+            .ok_or(VfsError::FileTooLarge)?;
+        if dst_end >= i64::MAX as u64 {
+            return Err(VfsError::FileTooLarge);
+        }
         let len = usize::try_from(copy_len).map_err(|_| VfsError::InvalidInput)?;
 
         self.state
@@ -3375,13 +3444,16 @@ where
         if handle.flags.write {
             let _handle_guard = handle.lock_write().await;
 
-            let had_write = self.state.handles.take_write_dirty_for_inode(handle.ino);
-            let flushed_pending = self
-                .state
-                .writer
-                .flush_for_close(handle.ino as u64)
-                .await
-                .map_err(VfsError::from)?;
+            let had_write = self.state.handles.take_write_dirty(fh);
+            let flushed_pending = if had_write {
+                self.state
+                    .writer
+                    .flush_for_close(handle.ino as u64)
+                    .await
+                    .map_err(VfsError::from)?
+            } else {
+                false
+            };
             if (had_write || flushed_pending)
                 && let Err(err) = self.update_mtime_ctime(handle.ino).await
             {
@@ -3442,6 +3514,37 @@ where
         }
 
         tracing::trace!(fh, ino = handle.ino, "vfs.close_done");
+        Ok(())
+    }
+
+    pub(crate) async fn flush_dirty_handle_snapshot(&self, fh: u64) -> Result<(), VfsError> {
+        let handle = self.file_handle_required(fh)?;
+
+        tracing::trace!(
+            fh,
+            ino = handle.ino,
+            write = handle.flags.write,
+            "vfs.flush_dirty_handle_snapshot"
+        );
+
+        let had_write = self.state.handles.take_write_dirty(fh);
+        if !had_write {
+            return Ok(());
+        }
+
+        let flushed_pending = self
+            .state
+            .writer
+            .flush_required_snapshot(handle.ino as u64)
+            .await
+            .map_err(VfsError::from)?;
+
+        if (had_write || flushed_pending)
+            && let Err(err) = self.update_mtime_ctime(handle.ino).await
+        {
+            handle.mark_write_dirty();
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -3510,6 +3613,42 @@ where
 
         let ino = self.flush_and_sync_handle(fh).await?;
         tracing::trace!(fh, ino, "vfs.fsync_done");
+        Ok(())
+    }
+
+    /// Sync file content for a FUSE fsync request after the adapter has waited
+    /// for earlier cached-write requests.  This flushes the current dirty
+    /// snapshot without chasing writes that arrive after this fsync started.
+    pub(crate) async fn fsync_snapshot(&self, fh: u64, _datasync: bool) -> Result<(), VfsError> {
+        let handle = self.file_handle_required(fh)?;
+
+        tracing::trace!(
+            fh,
+            ino = handle.ino,
+            write = handle.flags.write,
+            "vfs.fsync_snapshot"
+        );
+
+        tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
+        let had_write = self.state.handles.take_write_dirty_for_inode(handle.ino);
+        let flushed_pending = self
+            .state
+            .writer
+            .flush_required_snapshot(handle.ino as u64)
+            .await
+            .map_err(VfsError::from)?;
+        tracing::trace!(fh, ino = handle.ino, "vfs.flush_handle_done");
+
+        if (had_write || flushed_pending)
+            && let Err(err) = self.update_mtime_ctime(handle.ino).await
+        {
+            if had_write {
+                handle.mark_write_dirty();
+            }
+            return Err(err);
+        }
+
+        tracing::trace!(fh, ino = handle.ino, "vfs.fsync_snapshot_done");
         Ok(())
     }
 
@@ -3798,6 +3937,34 @@ where
     /// Get file system statistics (total/available space and inodes).
     pub async fn stat_fs(&self) -> Result<StatFsSnapshot, VfsError> {
         self.meta_stat_fs().await
+    }
+
+    pub(crate) async fn stat_fs_cached_for_fuse(&self) -> Result<StatFsSnapshot, VfsError> {
+        if let Some(snapshot) = {
+            let cache = self
+                .state
+                .statfs_cache
+                .lock()
+                .expect("statfs cache lock poisoned");
+            cache
+                .as_ref()
+                .filter(|entry| entry.cached_at.elapsed() <= FUSE_STATFS_CACHE_TTL)
+                .map(|entry| entry.snapshot.clone())
+        } {
+            return Ok(snapshot);
+        }
+
+        let snapshot = self.meta_stat_fs().await?;
+        let mut cache = self
+            .state
+            .statfs_cache
+            .lock()
+            .expect("statfs cache lock poisoned");
+        *cache = Some(StatFsCache {
+            snapshot: snapshot.clone(),
+            cached_at: Instant::now(),
+        });
+        Ok(snapshot)
     }
 
     async fn ensure_inode_registered(&self, ino: i64) -> Result<Arc<Inode>, VfsError> {

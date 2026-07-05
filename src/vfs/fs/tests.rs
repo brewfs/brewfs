@@ -1139,6 +1139,47 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_close_of_unrelated_handle_does_not_flush_cached_writer() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/mmap-like.bin").await.unwrap();
+        let attr = fs.stat("/mmap-like.bin").await.unwrap();
+        let writer_fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+        let unrelated_fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.fallocate_handle(writer_fh, attr.ino, 0, 4096)
+            .await
+            .unwrap();
+        fs.write_cached_ino(attr.ino, 0, &[0x78; 4096], 1)
+            .await
+            .unwrap();
+        assert!(fs.mark_handle_write_dirty(writer_fh));
+
+        let inode = fs.ensure_inode_registered(attr.ino).await.unwrap();
+        let writer = fs.state.writer.ensure_file(inode);
+        assert!(writer.has_pending().await);
+
+        fs.close(unrelated_fh).await.unwrap();
+        assert!(
+            writer.has_pending().await,
+            "closing an unrelated fd must not drain mmap writeback for the inode"
+        );
+
+        fs.flush_dirty_handle_snapshot(writer_fh).await.unwrap();
+        fs.close(writer_fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_fs_read_fully_covered_by_dirty_write_skips_backend_read() {
         let layout = ChunkLayout {
             chunk_size: 64 * 1024,
@@ -1387,7 +1428,7 @@ mod io_tests {
     }
 
     #[tokio::test]
-    async fn test_fs_fallocate_handle_defers_metadata_until_flush() {
+    async fn test_fs_fallocate_handle_persists_metadata_immediately() {
         let layout = ChunkLayout::default();
         let store = InMemoryBlockStore::new();
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
@@ -1406,16 +1447,176 @@ mod io_tests {
         assert_eq!(fs.stat_ino(attr.ino).await.unwrap().size, 192);
         assert_eq!(
             fs.meta_layer().stat(attr.ino).await.unwrap().unwrap().size,
-            0
-        );
-
-        fs.flush(fh).await.unwrap();
-        assert_eq!(
-            fs.meta_layer().stat(attr.ino).await.unwrap().unwrap().size,
             192
         );
 
+        fs.flush(fh).await.unwrap();
         fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_interior_fallocate_does_not_shrink_dirty_handle_attr() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-interior-dirty.bin").await.unwrap();
+        let attr = fs.stat("/falloc-interior-dirty.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.write(fh, 0, b"dirty").await.unwrap();
+        assert_eq!(fs.file_handle_required(fh).unwrap().attr().size, 5);
+
+        fs.fallocate_handle(fh, attr.ino, 1, 1).await.unwrap();
+
+        assert_eq!(
+            fs.file_handle_required(fh).unwrap().attr().size,
+            5,
+            "interior fallocate must not replace local dirty size with stale metadata size"
+        );
+        assert_eq!(fs.read(fh, 0, 5).await.unwrap(), b"dirty");
+
+        fs.flush(fh).await.unwrap();
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_fallocate_handle_returns_enospc_when_growth_exceeds_statfs() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-handle-full.bin").await.unwrap();
+        let attr = fs.stat("/falloc-handle-full.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+        let too_big = crate::meta::store::DEFAULT_STATFS_TOTAL_SPACE + 1;
+
+        let err = fs
+            .fallocate_handle(fh, attr.ino, 0, too_big)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, crate::vfs::fs::VfsError::StorageFull));
+        assert_eq!(fs.stat("/falloc-handle-full.bin").await.unwrap().size, 0);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fallocate_space_guard_uses_short_lived_statfs_cache() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        {
+            let mut cache = fs
+                .state
+                .fallocate_statfs_cache
+                .lock()
+                .expect("fallocate statfs cache lock poisoned");
+            *cache = Some(crate::vfs::fs::FallocateStatFsCache {
+                snapshot: crate::meta::store::StatFsSnapshot {
+                    total_space: 64,
+                    available_space: 64,
+                    used_inodes: 0,
+                    available_inodes: 1,
+                },
+                cached_at: Instant::now(),
+            });
+        }
+
+        let err = fs
+            .ensure_fallocate_space_available(0, 65)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::vfs::fs::VfsError::StorageFull));
+
+        {
+            let mut cache = fs
+                .state
+                .fallocate_statfs_cache
+                .lock()
+                .expect("fallocate statfs cache lock poisoned");
+            *cache = Some(crate::vfs::fs::FallocateStatFsCache {
+                snapshot: crate::meta::store::StatFsSnapshot {
+                    total_space: 64,
+                    available_space: 64,
+                    used_inodes: 0,
+                    available_inodes: 1,
+                },
+                cached_at: Instant::now()
+                    - crate::vfs::fs::FALLOCATE_STATFS_CACHE_TTL
+                    - Duration::from_millis(1),
+            });
+        }
+
+        fs.ensure_fallocate_space_available(0, 65).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fuse_statfs_uses_short_lived_cache() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        {
+            let mut cache = fs
+                .state
+                .statfs_cache
+                .lock()
+                .expect("statfs cache lock poisoned");
+            *cache = Some(crate::vfs::fs::StatFsCache {
+                snapshot: crate::meta::store::StatFsSnapshot {
+                    total_space: 64,
+                    available_space: 64,
+                    used_inodes: 0,
+                    available_inodes: 1,
+                },
+                cached_at: Instant::now(),
+            });
+        }
+
+        let cached = fs.stat_fs_cached_for_fuse().await.unwrap();
+        assert_eq!(cached.available_space, 64);
+
+        {
+            let mut cache = fs
+                .state
+                .statfs_cache
+                .lock()
+                .expect("statfs cache lock poisoned");
+            *cache = Some(crate::vfs::fs::StatFsCache {
+                snapshot: crate::meta::store::StatFsSnapshot {
+                    total_space: 64,
+                    available_space: 64,
+                    used_inodes: 0,
+                    available_inodes: 1,
+                },
+                cached_at: Instant::now()
+                    - crate::vfs::fs::FUSE_STATFS_CACHE_TTL
+                    - Duration::from_millis(1),
+            });
+        }
+
+        let refreshed = fs.stat_fs_cached_for_fuse().await.unwrap();
+        assert!(
+            refreshed.available_space > 64,
+            "expired FUSE statfs cache should refresh from metadata"
+        );
     }
 
     #[tokio::test]
@@ -1446,6 +1647,78 @@ mod io_tests {
 
         let out = read_path(&fs, "/falloc-zero-tail.bin", 120, 8).await;
         assert_eq!(out[3], 0x78);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_sparse_fallocate_cached_page_zero_tail_beyond_growth_is_not_materialized() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-page-tail.bin").await.unwrap();
+        let attr = fs.stat("/falloc-page-tail.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.fallocate_handle(fh, attr.ino, 0, 1024).await.unwrap();
+        let mut page = vec![0u8; 4096];
+        page[..1024].fill(0x78);
+        fs.write_cached_ino(attr.ino, 0, &page, 10).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let meta_attr = fs.meta_layer().stat(attr.ino).await.unwrap().unwrap();
+        assert_eq!(meta_attr.size, 1024);
+
+        let cid = crate::vfs::chunk_id_for(attr.ino, 0).unwrap();
+        let max_committed_end = fs
+            .meta_layer()
+            .get_slices(cid)
+            .await
+            .unwrap()
+            .iter()
+            .map(|slice| slice.offset + slice.length)
+            .max()
+            .unwrap_or(0);
+        assert_eq!(max_committed_end, 1024);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_sparse_fallocate_cached_mixed_zero_bytes_overwrite_old_data() {
+        let layout = ChunkLayout::default();
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/falloc-mixed-zero.bin").await.unwrap();
+        let attr = fs.stat("/falloc-mixed-zero.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.fallocate_handle(fh, attr.ino, 0, 4096).await.unwrap();
+        fs.write_cached_ino(attr.ino, 0, &vec![0x9f; 4096], 10)
+            .await
+            .unwrap();
+
+        let mut mixed = Vec::with_capacity(4096);
+        for _ in 0..2048 {
+            mixed.extend_from_slice(&[0xbc, 0x00]);
+        }
+        fs.write_cached_ino(attr.ino, 0, &mixed, 11).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let out = read_path(&fs, "/falloc-mixed-zero.bin", 0, 16).await;
+        assert_eq!(out, mixed[..16]);
 
         fs.close(fh).await.unwrap();
     }
@@ -1768,6 +2041,52 @@ mod io_tests {
 
         let out = fs.read(fh, 0x1a800, 0x1000).await.unwrap();
         assert_eq!(out, expected[0x1a800..0x1b800].to_vec());
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_copy_file_range_reports_efbig_only_after_source_data_exists() {
+        let layout = ChunkLayout {
+            chunk_size: 512 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/copy-limit.bin").await.unwrap();
+        let attr = fs.stat("/copy-limit.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        let max_off = 8 * (1u64 << 60) - 65_536 - 1;
+        let min_len = 65_537;
+        let fuse_trimmed_len = min_len - 1;
+        assert_eq!(
+            fs.copy_file_range(fh, max_off, fh, 0, min_len)
+                .await
+                .unwrap(),
+            0
+        );
+
+        fs.write(fh, 0, &vec![0x61; min_len as usize])
+            .await
+            .unwrap();
+        let err = fs
+            .copy_file_range(fh, 0, fh, max_off, fuse_trimmed_len)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::vfs::error::VfsError::FileTooLarge));
+
+        let err = fs
+            .write(fh, max_off, &vec![0x62; fuse_trimmed_len as usize])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::vfs::error::VfsError::FileTooLarge));
 
         fs.close(fh).await.unwrap();
     }

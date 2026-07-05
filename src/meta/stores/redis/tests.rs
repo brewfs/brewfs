@@ -1954,6 +1954,48 @@ fn test_deserialize_stored_attr_size_from_lua_float() {
     assert_eq!(attr.size, 2_251_799_767_892_000);
 }
 
+#[test]
+fn test_stored_attr_blocks_compat_and_sparse_zero() {
+    let compat_json = r#"{
+        "size": 4096,
+        "mode": 33188,
+        "rdev": 0,
+        "uid": 0,
+        "gid": 0,
+        "atime": 1,
+        "mtime": 1,
+        "ctime": 1,
+        "nlink": 1
+    }"#;
+    let compat: super::StoredAttr = serde_json::from_str(compat_json).unwrap();
+    assert_eq!(
+        compat
+            .to_file_attr(7, crate::meta::store::FileType::File)
+            .blocks,
+        8
+    );
+
+    let sparse_json = r#"{
+        "size": 4096,
+        "blocks": 0,
+        "mode": 33188,
+        "rdev": 0,
+        "uid": 0,
+        "gid": 0,
+        "atime": 1,
+        "mtime": 1,
+        "ctime": 1,
+        "nlink": 1
+    }"#;
+    let sparse: super::StoredAttr = serde_json::from_str(sparse_json).unwrap();
+    assert_eq!(
+        sparse
+            .to_file_attr(7, crate::meta::store::FileType::File)
+            .blocks,
+        0
+    );
+}
+
 #[serial]
 #[tokio::test]
 #[ignore]
