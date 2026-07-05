@@ -1575,10 +1575,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     }
 
     async fn touch_cached_parent_after_namespace_mutation(&self, parent_ino: i64) {
+        self.adjust_cached_parent_after_namespace_mutation(parent_ino, 0)
+            .await;
+    }
+
+    async fn adjust_cached_parent_after_namespace_mutation(
+        &self,
+        parent_ino: i64,
+        nlink_delta: i32,
+    ) {
         let parent_ino = self.check_root(parent_ino);
         if let Some(node) = self.inode_cache.get_node(parent_ino).await {
             let now = Self::current_time_nanos();
             let mut attr = node.attr.write().await;
+            if nlink_delta > 0 {
+                attr.nlink = attr.nlink.saturating_add(nlink_delta as u32);
+            } else if nlink_delta < 0 {
+                attr.nlink = attr.nlink.saturating_sub((-nlink_delta) as u32);
+            }
             attr.mtime = now;
             attr.ctime = now;
         }
@@ -1734,6 +1748,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             Some(dest_ino) => dest_ino.map(|ino| self.check_root(ino)),
             None => self.cached_lookup(new_parent, &new_name).await?,
         };
+        if dest_ino == Some(src_ino) {
+            return Ok(());
+        }
+        let dest_attr = match dest_ino {
+            Some(dest) => self.cached_stat(dest).await?,
+            None => None,
+        };
 
         // Execute the store-level rename with atomic cache updates.
         self.store
@@ -1778,11 +1799,27 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             }
 
             // Keep an overwritten destination inode addressable while it may
-            // still be held open by the kernel, but expose it as unlinked.
+            // still be held open by the kernel, but refresh the link count from
+            // the store.  A replaced inode may still have other hard links.
             if let Some(dest) = dest_ino {
                 if let Some(dest_node) = self.inode_cache.get_node(dest).await {
-                    dest_node.attr.write().await.nlink = 0;
-                    dest_node.clear_parent().await;
+                    match self.store.stat(dest).await {
+                        Ok(Some(attr)) => {
+                            *dest_node.attr.write().await = attr;
+                            dest_node.clear_parent().await;
+                        }
+                        Ok(None) => {
+                            self.inode_cache.invalidate_inode(dest).await;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "MetaClient: failed to refresh replaced inode {} after rename: {}",
+                                dest, err
+                            );
+                            dest_node.attr.write().await.nlink = 0;
+                            dest_node.clear_parent().await;
+                        }
+                    }
                 } else {
                     self.inode_cache.invalidate_inode(dest).await;
                 }
@@ -1790,21 +1827,36 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
 
             // Precise path cache invalidation while retaining the updated child
             // maps for subsequent lookups on the same hot directory.
-            let needs_parent_nlink_refresh =
-                matches!(src_attr.as_ref().map(|attr| attr.kind), Some(FileType::Dir))
-                    && old_parent != new_parent;
-            if needs_parent_nlink_refresh {
-                self.invalidate_parent_after_namespace_mutation(old_parent)
-                    .await;
-                self.invalidate_parent_after_namespace_mutation(new_parent)
-                    .await;
+            let src_is_dir = matches!(src_attr.as_ref().map(|attr| attr.kind), Some(FileType::Dir));
+            let dest_is_dir = matches!(
+                dest_attr.as_ref().map(|attr| attr.kind),
+                Some(FileType::Dir)
+            );
+            let old_parent_delta = if src_is_dir && old_parent != new_parent {
+                -1
             } else {
-                self.touch_cached_parent_after_namespace_mutation(old_parent)
+                0
+            };
+            let mut new_parent_delta = if src_is_dir && old_parent != new_parent {
+                1
+            } else {
+                0
+            };
+            if dest_is_dir {
+                new_parent_delta -= 1;
+            }
+
+            if old_parent == new_parent {
+                self.adjust_cached_parent_after_namespace_mutation(
+                    old_parent,
+                    old_parent_delta + new_parent_delta,
+                )
+                .await;
+            } else {
+                self.adjust_cached_parent_after_namespace_mutation(old_parent, old_parent_delta)
                     .await;
-                if old_parent != new_parent {
-                    self.touch_cached_parent_after_namespace_mutation(new_parent)
-                        .await;
-                }
+                self.adjust_cached_parent_after_namespace_mutation(new_parent, new_parent_delta)
+                    .await;
             }
 
             Ok::<(), MetaError>(())
@@ -2310,7 +2362,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         }
         self.inode_cache.add_child(parent, name, ino).await;
 
-        self.touch_cached_parent_after_namespace_mutation(parent)
+        self.adjust_cached_parent_after_namespace_mutation(parent, 1)
             .await;
 
         Ok(ino)
@@ -2338,7 +2390,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             child_node.attr.write().await.nlink = 0;
             child_node.clear_parent().await;
         }
-        self.invalidate_parent_after_namespace_mutation(parent)
+        self.adjust_cached_parent_after_namespace_mutation(parent, -1)
             .await;
 
         Ok(())
@@ -3335,6 +3387,59 @@ mod tests {
         assert_eq!(
             path, "/dir2/moved_file.txt",
             "get_path should return new path"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_over_linked_destination_refreshes_replaced_inode_nlink() {
+        let client = create_test_client().await;
+
+        let src = client.create_file(1, "src".to_string()).await.unwrap();
+        let dst = client.create_file(1, "dst".to_string()).await.unwrap();
+        client.link(dst, 1, "dstlnk").await.unwrap();
+
+        let linked_before = client
+            .lookup_with_attr(1, "dstlnk")
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(linked_before.nlink, 2);
+
+        client.rename(1, "src", 1, "dst".to_string()).await.unwrap();
+
+        assert_eq!(client.lookup(1, "dst").await.unwrap(), Some(src));
+        let linked_after = client
+            .lookup_with_attr(1, "dstlnk")
+            .await
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_eq!(linked_after.ino, dst);
+        assert_eq!(linked_after.nlink, 1);
+    }
+
+    #[tokio::test]
+    async fn directory_namespace_mutations_keep_cached_parent_nlink_current() {
+        let client = create_test_client().await;
+
+        let src_parent = client.mkdir(1, "src-parent".to_string()).await.unwrap();
+        let dst_parent = client.mkdir(1, "dst-parent".to_string()).await.unwrap();
+        let child = client.mkdir(src_parent, "child".to_string()).await.unwrap();
+
+        assert_eq!(client.stat(src_parent).await.unwrap().unwrap().nlink, 3);
+        assert_eq!(client.stat(dst_parent).await.unwrap().unwrap().nlink, 2);
+
+        client
+            .rename(src_parent, "child", dst_parent, "moved".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(client.stat(src_parent).await.unwrap().unwrap().nlink, 2);
+        assert_eq!(client.stat(dst_parent).await.unwrap().unwrap().nlink, 3);
+        assert_eq!(
+            client.lookup(dst_parent, "moved").await.unwrap(),
+            Some(child)
         );
     }
 
