@@ -14,8 +14,9 @@ use crate::meta::file_lock::{
     FileLockInfo, FileLockQuery, FileLockRange, FileLockType, PlockRecord,
 };
 use crate::meta::store::{
-    CreateEntryResult, DirEntry, FileAttr, FileType, LockName, MetaError, MetaStore, RetryReason,
-    SetAttrFlags, SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage, stat_fs_used_bytes,
+    CreateEntryResult, DirEntry, DirStat, FileAttr, FileType, LockName, MetaError, MetaStore,
+    RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage,
+    stat_fs_used_bytes,
 };
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
 use async_trait::async_trait;
@@ -409,9 +410,11 @@ const UNCOMMITTED_PENDING_INDEX_KEY: &str = "uc_pending_idx";
 const UNCOMMITTED_ORPHAN_INDEX_KEY: &str = "uc_orphan_idx";
 const COMPACT_RETRY_LIMIT: usize = 64;
 
-// Lua script for atomically appending a slice AND extending file size in one RTT.
+// Lua script for atomically appending a slice, extending file size, and updating
+// best-effort allocated block accounting in one RTT.
 // KEYS[1] = chunk_key, KEYS[2] = version_key, KEYS[3] = node_key
 // ARGV[1] = serialized slice data, ARGV[2] = new_size, ARGV[3] = timestamp
+// ARGV[4] = allocated_blocks_delta (512-byte units)
 const WRITE_SLICE_LUA: &str = r#"
     redis.call('RPUSH', KEYS[1], ARGV[1])
     redis.call('INCR', KEYS[2])
@@ -425,10 +428,45 @@ const WRITE_SLICE_LUA: &str = r#"
     end
     local new_size = tonumber(ARGV[2])
     local timestamp = tonumber(ARGV[3])
-    if new_size <= node.attr.size then
+    local allocated_blocks_delta = tonumber(ARGV[4]) or 0
+    local old_size = tonumber(node.attr.size)
+    local current_blocks = tonumber(node.attr.blocks)
+    if new_size <= old_size then
+        if current_blocks == nil then
+            return cjson.encode({ok=true, updated=false})
+        end
+        local full_blocks_old = math.ceil(old_size / 512)
+        if allocated_blocks_delta <= 0 or current_blocks >= full_blocks_old then
+            return cjson.encode({ok=true, updated=false})
+        end
+    end
+    if current_blocks == nil then
+        current_blocks = math.ceil(old_size / 512)
+    end
+
+    local updated = false
+    if new_size > old_size then
+        node.attr.size = new_size
+        updated = true
+    end
+
+    local full_blocks_old = math.ceil(old_size / 512)
+    local full_blocks_new = math.ceil(tonumber(node.attr.size) / 512)
+    local new_blocks = current_blocks
+    if allocated_blocks_delta > 0 and (new_size > old_size or current_blocks < full_blocks_old) then
+        new_blocks = current_blocks + allocated_blocks_delta
+        if new_blocks > full_blocks_new then
+            new_blocks = full_blocks_new
+        end
+    end
+    if new_blocks > current_blocks then
+        node.attr.blocks = new_blocks
+        updated = true
+    end
+
+    if not updated then
         return cjson.encode({ok=true, updated=false})
     end
-    node.attr.size = new_size
     node.attr.mtime = timestamp
     node.attr.ctime = timestamp
     if node.attr.mode then
@@ -462,6 +500,65 @@ const EXTEND_FILE_SIZE_LUA: &str = r#"
     end
     redis.call('SET', KEYS[1], cjson.encode(node))
     return cjson.encode({ok=true, updated=true})
+"#;
+
+// Lua script for mode=0 fallocate. This extends the logical size when needed
+// and records preallocated 512-byte blocks separately from size.
+// KEYS[1] = node_key
+// ARGV[1] = offset, ARGV[2] = length, ARGV[3] = timestamp, ARGV[4] = block_size
+const FALLOCATE_FILE_LUA: &str = r#"
+    local node_json = redis.call('GET', KEYS[1])
+    if not node_json then
+        return cjson.encode({ok=false, error="node_not_found"})
+    end
+    local ok, node = pcall(cjson.decode, node_json)
+    if not ok or not node or not node.attr or not node.attr.size then
+        return cjson.encode({ok=false, error="corrupt_node"})
+    end
+    if node.kind ~= "File" then
+        return cjson.encode({ok=false, error="not_regular"})
+    end
+
+    local offset = tonumber(ARGV[1])
+    local length = tonumber(ARGV[2])
+    local timestamp = tonumber(ARGV[3])
+    local block_size = tonumber(ARGV[4])
+    if not block_size or block_size < 512 then
+        block_size = 512
+    end
+    if length <= 0 then
+        return cjson.encode({ok=true, node=cjson.encode(node), updated=false})
+    end
+
+    local end_pos = offset + length
+    local old_size = tonumber(node.attr.size)
+    local current_blocks = tonumber(node.attr.blocks)
+    if current_blocks == nil then
+        current_blocks = math.ceil(old_size / 512)
+    end
+
+    local alloc_start = math.floor(offset / block_size) * block_size
+    local alloc_end = math.ceil(end_pos / block_size) * block_size
+    local range_blocks = math.ceil((alloc_end - alloc_start) / 512)
+    local new_blocks = current_blocks + range_blocks
+
+    local updated = false
+    if end_pos > old_size then
+        node.attr.size = end_pos
+        updated = true
+    end
+    if new_blocks > current_blocks then
+        node.attr.blocks = new_blocks
+        updated = true
+    end
+
+    if updated then
+        node.attr.mtime = timestamp
+        node.attr.ctime = timestamp
+        redis.call('SET', KEYS[1], cjson.encode(node))
+    end
+
+    return cjson.encode({ok=true, node=cjson.encode(node), updated=updated})
 "#;
 
 // Lua script for atomically incrementing nlink and updating link_parents
@@ -1482,6 +1579,7 @@ impl RedisMetaStore {
         let now = current_time();
         let attr = StoredAttr {
             size: 0,
+            blocks: Some(0),
             mode: 0o040755,
             rdev: 0,
             uid: 0,
@@ -1774,6 +1872,7 @@ impl RedisMetaStore {
                     kind: node_kind,
                     attr: StoredAttr {
                         size: 0,
+                        blocks: Some(0),
                         mode,
                         rdev,
                         uid,
@@ -2411,6 +2510,7 @@ impl MetaStore for RedisMetaStore {
 
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         node.attr.size = target.len() as u64;
+        node.attr.blocks = Some(node.attr.size.div_ceil(512));
         node.attr.atime = now;
         node.attr.mtime = now;
         node.attr.ctime = now;
@@ -2705,8 +2805,12 @@ impl MetaStore for RedisMetaStore {
                     "truncate flag only supported for regular files".into(),
                 ));
             }
+            let old_size = node.attr.size;
             if node.attr.size != size {
                 node.attr.size = size;
+                if size < old_size {
+                    node.attr.clamp_blocks_to_size();
+                }
                 node.attr.mtime = now;
             }
             ctime_update = true;
@@ -2743,7 +2847,11 @@ impl MetaStore for RedisMetaStore {
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         let now = current_time();
+        let old_size = node.attr.size;
         node.attr.size = size;
+        if size < old_size {
+            node.attr.clamp_blocks_to_size();
+        }
         node.attr.mtime = now;
         node.attr.ctime = now;
         self.save_node(&node).await
@@ -2786,9 +2894,78 @@ impl MetaStore for RedisMetaStore {
         self.prune_slices_for_truncate(ino, size, old_size, chunk_size)
             .await?;
         node.attr.size = size;
+        if size < old_size {
+            node.attr.clamp_blocks_to_size();
+        }
         node.attr.mtime = now;
         node.attr.ctime = now;
         self.save_node(&node).await
+    }
+
+    #[tracing::instrument(
+        level = "trace",
+        skip(self, delta, attr),
+        fields(ino, mode, offset, size, block_size)
+    )]
+    async fn fallocate_file(
+        &self,
+        ino: i64,
+        mode: u8,
+        offset: u64,
+        size: u64,
+        block_size: u64,
+        delta: &mut DirStat,
+        attr: &mut FileAttr,
+    ) -> Result<(), MetaError> {
+        if mode != 0 {
+            return Err(MetaError::NotSupported(format!(
+                "Redis fallocate mode {mode} is not supported"
+            )));
+        }
+
+        let script = redis::Script::new(FALLOCATE_FILE_LUA);
+        let node_key = self.node_key(ino);
+        let now = current_time();
+        let result: String = script
+            .key(&node_key)
+            .arg(offset)
+            .arg(size)
+            .arg(now)
+            .arg(block_size.max(512))
+            .invoke_async(&mut self.conn.clone())
+            .await
+            .map_err(redis_err)?;
+
+        let response: LuaResponse = serde_json::from_str(&result)
+            .map_err(|e| MetaError::Internal(format!("Lua response parse error: {e}")))?;
+
+        match response.error.as_deref() {
+            Some("node_not_found") => Err(MetaError::NotFound(ino)),
+            Some("not_regular") => Err(MetaError::NotSupported(
+                "fallocate is supported only for regular files".into(),
+            )),
+            Some("corrupt_node") => Err(MetaError::Internal("corrupt node data".into())),
+            Some(other) => Err(MetaError::Internal(format!("Lua error: {other}"))),
+            None if response.ok => {
+                let node_json = response.node.ok_or_else(|| {
+                    MetaError::Internal("missing node in fallocate response".into())
+                })?;
+                let node: StoredNode = serde_json::from_str(&node_json).map_err(|e| {
+                    MetaError::Internal(format!("Lua node response parse error: {e}"))
+                })?;
+                let new_attr = node.as_file_attr();
+                if new_attr.blocks > attr.blocks {
+                    let added = new_attr.blocks.saturating_sub(attr.blocks);
+                    delta.space = delta
+                        .space
+                        .saturating_add(added.saturating_mul(512).min(i64::MAX as u64) as i64);
+                }
+                *attr = new_attr;
+                self.node_cache.insert(ino, Some(node)).await;
+                Ok(())
+            }
+            None => Err(MetaError::Internal("unexpected Lua response".into())),
+        }
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
@@ -3148,6 +3325,7 @@ impl MetaStore for RedisMetaStore {
         let node_key = self.node_key(ino);
         let data = crate::meta::serialization::serialize_meta(&slice)?;
         let now = current_time();
+        let allocated_blocks_delta = slice.length.div_ceil(512);
 
         let response: LuaResponse = {
             let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
@@ -3159,6 +3337,7 @@ impl MetaStore for RedisMetaStore {
                 .arg(data)
                 .arg(new_size)
                 .arg(now)
+                .arg(allocated_blocks_delta)
                 .invoke_async(&mut self.conn.clone())
                 .await
                 .map_err(redis_err)?;
@@ -4420,10 +4599,47 @@ where
     deserializer.deserialize_any(U64OrFloatVisitor)
 }
 
+fn deserialize_optional_u64_from_number<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Visitor;
+
+    struct OptionalU64OrFloatVisitor;
+
+    impl<'de> Visitor<'de> for OptionalU64OrFloatVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter
+                .write_str("null, an unsigned integer, or integer-valued floating-point number")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+        where
+            D2: serde::Deserializer<'de>,
+        {
+            deserialize_u64_from_number(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptionalU64OrFloatVisitor)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredAttr {
     #[serde(deserialize_with = "deserialize_u64_from_number")]
     size: u64,
+    #[serde(default, deserialize_with = "deserialize_optional_u64_from_number")]
+    blocks: Option<u64>,
     mode: u32,
     #[serde(default)]
     rdev: u32,
@@ -4439,11 +4655,21 @@ struct StoredAttr {
 }
 
 impl StoredAttr {
+    fn blocks_or_compat(&self) -> u64 {
+        self.blocks.unwrap_or_else(|| self.size.div_ceil(512))
+    }
+
+    fn clamp_blocks_to_size(&mut self) {
+        let max_blocks = self.size.div_ceil(512);
+        let blocks = self.blocks_or_compat().min(max_blocks);
+        self.blocks = Some(blocks);
+    }
+
     fn to_file_attr(&self, ino: i64, kind: FileType) -> FileAttr {
         FileAttr {
             ino,
             size: self.size,
-            blocks: self.size.div_ceil(512),
+            blocks: self.blocks_or_compat(),
             kind,
             mode: self.mode,
             rdev: self.rdev,

@@ -284,6 +284,7 @@ EOF
     append_env_export BREWFS_FUSE_DIRECT_IO
     append_env_export BREWFS_FUSE_READ_DIRECT_IO
     append_env_export BREWFS_FUSE_WRITE_DIRECT_IO
+    append_env_export BREWFS_FUSE_COPY_FILE_RANGE
     append_env_export BREWFS_FUSE_WRITEBACK
     append_env_export BREWFS_WRITEBACK_MODE
     append_env_export BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT

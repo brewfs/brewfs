@@ -60,4 +60,12 @@ generic/127 # fsx mmap: MAPWRITE+MAPREAD coherence gap with FUSE writeback cache
 generic/074 # fstest tiny 512-byte random overwrite soak creates millions of RustFS objects/inodes
 generic/112 # AIO fsx mmap stale data under FUSE page-cache/writeback ordering
 generic/263 # fsx mmap+truncate stale page cache; needs FUSE notify invalidation or deeper mmap strategy
+# FUSE mmap + byte-granular fallocate limitation:
+# generic/438 repeatedly posix_fallocate(fd, i, 1) then writes the same byte
+# through MAP_SHARED while another process loops xfs_io fsync/open/stat.  Linux
+# FUSE can invalidate/zero the tail page through fuse_change_attributes during
+# these byte-sized size changes, corrupting already-written mmap bytes before
+# userspace sees a stable page.  Verified failed with default TTL, TTL=0,
+# TTL=60s, AUTO_INVAL_DATA off, and small-fallocate fallback experiments.
+generic/438 # mmap + byte-at-a-time fallocate page-cache zeroing (FUSE kernel limitation)
 generic/478 # OFD lock close/refcount semantics are not fully modeled through async-fuse callbacks

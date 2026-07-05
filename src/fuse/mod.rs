@@ -82,7 +82,7 @@ fn fuse_write_direct_io_enabled() -> bool {
 }
 
 fn fuse_copy_file_range_enabled() -> bool {
-    env_flag("BREWFS_FUSE_COPY_FILE_RANGE").unwrap_or(false)
+    env_flag("BREWFS_FUSE_COPY_FILE_RANGE").unwrap_or(true)
 }
 
 fn env_flag(name: &str) -> Option<bool> {
@@ -1255,7 +1255,7 @@ where
     async fn statfs(&self, _req: Request, _ino: u64) -> FuseResult<ReplyStatFs> {
         let bsize: u32 = 4096;
         let frsize: u32 = 4096;
-        let (blocks, bfree, bavail, files, ffree) = match self.stat_fs().await {
+        let (blocks, bfree, bavail, files, ffree) = match self.stat_fs_cached_for_fuse().await {
             Ok(snapshot) => {
                 let blocks = snapshot.total_space / frsize as u64;
                 let bfree = snapshot.available_space / frsize as u64;
@@ -1802,22 +1802,27 @@ where
 
     // Flush file data to backend (called on every close of a file descriptor).
     // Must actually persist dirty data so that close() semantics are honored.
-    async fn flush(&self, _req: Request, inode: u64, fh: u64, lock_owner: u64) -> FuseResult<()> {
+    async fn flush(&self, req: Request, inode: u64, fh: u64, lock_owner: u64) -> FuseResult<()> {
         // Virtual .stats file: nothing to flush.
         if inode == STATS_INODE {
             return Ok(());
         }
         debug!(fh, inode, "fuse.flush");
+        self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+            .await;
         self.unlock_owner_locks(inode, lock_owner).await;
-        // VFS::flush persists pending writes (full 300s deadline).
-        self.flush(fh).await.map_err(Errno::from)?;
+        self.flush_dirty_handle_snapshot(fh)
+            .await
+            .map_err(Errno::from)?;
         Ok(())
     }
 
     // Sync file content to backend
-    async fn fsync(&self, _req: Request, _inode: u64, fh: u64, datasync: bool) -> FuseResult<()> {
+    async fn fsync(&self, req: Request, inode: u64, fh: u64, datasync: bool) -> FuseResult<()> {
         debug!(fh, datasync, "fuse.fsync");
-        self.fsync(fh, datasync).await.map_err(Errno::from)
+        self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+            .await;
+        self.fsync_snapshot(fh, datasync).await.map_err(Errno::from)
     }
 
     async fn fallocate(
@@ -1841,6 +1846,8 @@ where
                 inode_mutation_access_mask(),
             )
             .await?;
+            self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+                .await;
         }
         if fh != 0 {
             self.fallocate_handle(fh, inode as i64, offset, length)
@@ -1920,7 +1927,7 @@ where
             return Err(libc::EINVAL.into());
         }
         if !fuse_copy_file_range_enabled() {
-            return Err(libc::EOPNOTSUPP.into());
+            return Err(libc::ENOSYS.into());
         }
 
         let copied = self
@@ -4218,23 +4225,23 @@ mod fuse_init_tests {
     }
 
     #[test]
-    fn fuse_copy_file_range_defaults_off_and_can_opt_in() {
+    fn fuse_copy_file_range_defaults_on_and_can_opt_out() {
         let _guard = env_lock().lock().unwrap();
         unsafe {
             std::env::remove_var("BREWFS_FUSE_COPY_FILE_RANGE");
         }
 
-        assert!(!fuse_copy_file_range_enabled());
+        assert!(fuse_copy_file_range_enabled());
 
         unsafe {
-            std::env::set_var("BREWFS_FUSE_COPY_FILE_RANGE", "1");
+            std::env::set_var("BREWFS_FUSE_COPY_FILE_RANGE", "0");
         }
-        assert!(fuse_copy_file_range_enabled());
+        assert!(!fuse_copy_file_range_enabled());
 
         unsafe {
             std::env::set_var("BREWFS_FUSE_COPY_FILE_RANGE", "");
         }
-        assert!(!fuse_copy_file_range_enabled());
+        assert!(fuse_copy_file_range_enabled());
 
         unsafe {
             std::env::remove_var("BREWFS_FUSE_COPY_FILE_RANGE");

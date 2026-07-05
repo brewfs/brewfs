@@ -1228,10 +1228,11 @@ pub trait MetaStore: Send + Sync {
         mode: u8,
         offset: u64,
         size: u64,
+        block_size: u64,
         delta: &mut DirStat,
         attr: &mut FileAttr,
     ) -> Result<(), MetaError> {
-        let _ = (inode, mode, offset, size, delta, attr);
+        let _ = (inode, mode, offset, size, block_size, delta, attr);
         Err(MetaError::NotImplemented)
     }
 

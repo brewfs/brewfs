@@ -2214,28 +2214,18 @@ fn cached_write_debug_window(buf: &[u8], index: usize) -> String {
     out
 }
 
-fn push_nonzero_cached_segments(
+fn push_sparse_cached_segment_if_materialized(
     out: &mut Vec<CachedWriteSegment>,
     file_offset: u64,
     buf_offset: usize,
     buf: &[u8],
 ) {
-    let mut pos = 0usize;
-    while pos < buf.len() {
-        while pos < buf.len() && buf[pos] == 0 {
-            pos += 1;
-        }
-        let start = pos;
-        while pos < buf.len() && buf[pos] != 0 {
-            pos += 1;
-        }
-        if start < pos {
-            out.push(CachedWriteSegment {
-                file_offset: file_offset + start as u64,
-                buf_offset: buf_offset + start,
-                len: pos - start,
-            });
-        }
+    if buf.iter().any(|byte| *byte != 0) {
+        out.push(CachedWriteSegment {
+            file_offset,
+            buf_offset,
+            len: buf.len(),
+        });
     }
 }
 
@@ -2733,16 +2723,19 @@ where
                 let mut cursor = span.offset;
                 for (sparse_start, sparse_end) in sparse_ranges {
                     if cursor < sparse_start {
-                        out.push(CachedWriteSegment {
-                            file_offset: span.index * layout.chunk_size + cursor,
-                            buf_offset: span_buf_offset + (cursor - span.offset).as_usize(),
-                            len: (sparse_start - cursor).as_usize(),
-                        });
+                        let gap_buf_offset = span_buf_offset + (cursor - span.offset).as_usize();
+                        push_sparse_cached_segment_if_materialized(
+                            &mut out,
+                            span.index * layout.chunk_size + cursor,
+                            gap_buf_offset,
+                            &buf[gap_buf_offset
+                                ..gap_buf_offset + (sparse_start - cursor).as_usize()],
+                        );
                     }
 
                     let sparse_buf_offset =
                         span_buf_offset + (sparse_start - span.offset).as_usize();
-                    push_nonzero_cached_segments(
+                    push_sparse_cached_segment_if_materialized(
                         &mut out,
                         span.index * layout.chunk_size + sparse_start,
                         sparse_buf_offset,
@@ -2753,11 +2746,13 @@ where
                 }
 
                 if cursor < span_end {
-                    out.push(CachedWriteSegment {
-                        file_offset: span.index * layout.chunk_size + cursor,
-                        buf_offset: span_buf_offset + (cursor - span.offset).as_usize(),
-                        len: (span_end - cursor).as_usize(),
-                    });
+                    let gap_buf_offset = span_buf_offset + (cursor - span.offset).as_usize();
+                    push_sparse_cached_segment_if_materialized(
+                        &mut out,
+                        span.index * layout.chunk_size + cursor,
+                        gap_buf_offset,
+                        &buf[gap_buf_offset..gap_buf_offset + (span_end - cursor).as_usize()],
+                    );
                 }
                 span_buf_offset += span_len;
             }
@@ -3215,7 +3210,7 @@ where
     // instead of being treated as a successful flush.
     #[tracing::instrument(level = "trace", skip(self))]
     pub(crate) async fn flush(&self) -> anyhow::Result<()> {
-        self.flush_with_deadline(FLUSH_DEADLINE).await
+        self.flush_with_deadline_inner(FLUSH_DEADLINE, true).await
     }
 
     async fn pending_committed_uploads_for_range(
@@ -3329,7 +3324,19 @@ where
         }
     }
 
+    pub(crate) async fn flush_snapshot(&self) -> anyhow::Result<()> {
+        self.flush_with_deadline_inner(FLUSH_DEADLINE, false).await
+    }
+
     pub(crate) async fn flush_with_deadline(&self, deadline: Duration) -> anyhow::Result<()> {
+        self.flush_with_deadline_inner(deadline, true).await
+    }
+
+    async fn flush_with_deadline_inner(
+        &self,
+        deadline: Duration,
+        chase_new_writes: bool,
+    ) -> anyhow::Result<()> {
         self.shared.writeback_result()?;
         {
             let mut guard = self.shared.inner.lock().await;
@@ -3342,6 +3349,7 @@ where
 
         let start = Instant::now();
         let mut captured_slices = 0u64;
+        let mut completed_gen_for_cache = None;
         let result = {
             let mut flushed_gen = self.shared.write_gen.load(Ordering::Acquire);
             loop {
@@ -3472,7 +3480,14 @@ where
                 batch_result?;
 
                 let current_gen = self.shared.write_gen.load(Ordering::Acquire);
+                if !chase_new_writes {
+                    if current_gen == flushed_gen {
+                        completed_gen_for_cache = Some(current_gen);
+                    }
+                    break Ok(());
+                }
                 if current_gen == flushed_gen {
+                    completed_gen_for_cache = Some(current_gen);
                     break Ok(());
                 }
                 flushed_gen = current_gen;
@@ -3492,11 +3507,12 @@ where
         }
 
         // Let has_pending() short-circuit when no new writes arrived since we finished.
-        if result.is_ok() {
-            self.shared.last_flushed_gen.store(
-                self.shared.write_gen.load(Ordering::Acquire),
-                Ordering::Release,
-            );
+        if result.is_ok()
+            && let Some(gen_val) = completed_gen_for_cache
+        {
+            self.shared
+                .last_flushed_gen
+                .store(gen_val, Ordering::Release);
         }
 
         result
@@ -5669,6 +5685,22 @@ where
             let ms = start.elapsed().as_millis();
             if ms > 100 {
                 tracing::info!(ino, elapsed_ms = ms, "flush_required: slow flush");
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(crate) async fn flush_required_snapshot(&self, ino: u64) -> anyhow::Result<bool> {
+        let writer = self.files.get(&ino).map(|entry| entry.value().clone());
+        if let Some(writer) = writer
+            && writer.has_pending().await
+        {
+            let start = std::time::Instant::now();
+            writer.flush_snapshot().await?;
+            let ms = start.elapsed().as_millis();
+            if ms > 100 {
+                tracing::info!(ino, elapsed_ms = ms, "flush_required_snapshot: slow flush");
             }
             return Ok(true);
         }

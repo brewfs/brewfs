@@ -398,6 +398,19 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    pub(super) async fn meta_fallocate_file(
+        &self,
+        ino: i64,
+        offset: u64,
+        size: u64,
+        block_size: u64,
+    ) -> Result<FileAttr, VfsError> {
+        self.meta_layer()
+            .fallocate_file(ino, 0, offset, size, block_size)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     // ------------------------------------------------------------------
     // Symlink content
     // ------------------------------------------------------------------

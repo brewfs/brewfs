@@ -303,6 +303,22 @@ pub trait MetaLayer: Send + Sync {
 
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError>;
 
+    async fn fallocate_file(
+        &self,
+        ino: i64,
+        mode: u8,
+        offset: u64,
+        size: u64,
+        block_size: u64,
+    ) -> Result<FileAttr, MetaError> {
+        let _ = (mode, block_size);
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| MetaError::Internal("fallocate size overflow".into()))?;
+        self.extend_file_size(ino, end).await?;
+        self.stat_fresh(ino).await?.ok_or(MetaError::NotFound(ino))
+    }
+
     async fn get_names(&self, ino: i64) -> Result<Vec<(Option<i64>, String)>, MetaError>;
 
     async fn get_dentries(&self, ino: i64) -> Result<Vec<(i64, String)>, MetaError>;
