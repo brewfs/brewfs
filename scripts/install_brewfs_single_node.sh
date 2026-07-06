@@ -53,6 +53,21 @@ RUSTFS_CONSOLE_PORT="${RUSTFS_CONSOLE_PORT:-9001}"
 RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-rustfsadmin}"
 
+BREWFS_S3_PART_SIZE="${BREWFS_S3_PART_SIZE:-16777216}"
+BREWFS_S3_MAX_CONCURRENCY="${BREWFS_S3_MAX_CONCURRENCY:-32}"
+BREWFS_S3_FORCE_PATH_STYLE="${BREWFS_S3_FORCE_PATH_STYLE:-true}"
+BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM="${BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM:-true}"
+BREWFS_META_OPEN_FILE_CACHE_TTL_MS="${BREWFS_META_OPEN_FILE_CACHE_TTL_MS:-30000}"
+BREWFS_META_OPEN_FILE_CACHE_CAPACITY="${BREWFS_META_OPEN_FILE_CACHE_CAPACITY:-65536}"
+BREWFS_WRITEBACK_MODE="${BREWFS_WRITEBACK_MODE:-commit_before_upload}"
+BREWFS_WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
+BREWFS_PREFETCH_ENABLED="${BREWFS_PREFETCH_ENABLED:-true}"
+BREWFS_CACHE_TTL_MS="${BREWFS_CACHE_TTL_MS:-1000}"
+BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-1}"
+BREWFS_FUSE_MAX_BACKGROUND="${BREWFS_FUSE_MAX_BACKGROUND:-512}"
+BREWFS_FUSE_PRIVILEGED="${BREWFS_FUSE_PRIVILEGED:-true}"
+BREWFS_LOG_LEVEL="${BREWFS_LOG_LEVEL:-${RUST_LOG:-brewfs=info}}"
+
 BREWFS_USER="${BREWFS_USER:-root}"
 BREWFS_GROUP="${BREWFS_GROUP:-root}"
 
@@ -95,7 +110,7 @@ Environment overrides:
   DEFAULT_BREWFS_VERSION=v0.1.1
                                Opt-in fallback version.
   BREWFS_DOWNLOAD_URL=""       Explicit BrewFS binary archive or executable URL.
-  RUSTFS_DOWNLOAD_URL=""      RustFS binary archive or executable URL.
+  RUSTFS_DOWNLOAD_URL=""       RustFS binary archive or executable URL.
   REDIS_DOWNLOAD_URL=""       Redis binary archive or executable URL.
   MOUNT_POINT=/mnt/brewfs
   STATE_DIR=/var/lib/brewfs
@@ -106,6 +121,21 @@ Environment overrides:
   RUSTFS_CONSOLE_PORT=9001
   RUSTFS_ACCESS_KEY=rustfsadmin
   RUSTFS_SECRET_KEY=rustfsadmin
+  BREWFS_S3_PART_SIZE=16777216
+  BREWFS_S3_MAX_CONCURRENCY=32
+  BREWFS_S3_FORCE_PATH_STYLE=true
+  BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM=true
+  BREWFS_META_OPEN_FILE_CACHE_TTL_MS=30000
+  BREWFS_META_OPEN_FILE_CACHE_CAPACITY=65536
+  BREWFS_WRITEBACK_MODE=commit_before_upload
+                               Use upload_before_commit for safer crash behavior.
+  BREWFS_WRITEBACK_PERSIST_SYNC=false
+  BREWFS_PREFETCH_ENABLED=true
+  BREWFS_CACHE_TTL_MS=1000     FUSE attr/entry TTL in milliseconds.
+  BREWFS_FUSE_WORKERS=1
+  BREWFS_FUSE_MAX_BACKGROUND=512
+  BREWFS_FUSE_PRIVILEGED=true
+  BREWFS_LOG_LEVEL=brewfs=info
 
 Notes:
   - Redis is maintained as brewfs-redis.service. If redis-server already exists
@@ -116,7 +146,7 @@ Notes:
     script downloads brewfs-${OS}-${ARCH} from:
       ${BREWFS_BASE_URL}/${BREWFS_VERSION}/brewfs-${OS}-${ARCH}
     For example:
-      https://download.brewfs.ai/brewfs/releases/v0.1.1/brewfs-darwin-arm64
+      https://download.brewfs.ai/brewfs/releases/v0.1.1/brewfs-linux-amd64
   - Put an existing RustFS binary at /usr/local/bin/rustfs, or set
     RUSTFS_DOWNLOAD_URL.
   - Uninstall removes services and config files, but keeps data and logs.
@@ -148,6 +178,59 @@ normalize_version() {
     v*|"") printf '%s' "$version" ;;
     *) printf 'v%s' "$version" ;;
   esac
+}
+
+normalize_bool_var() {
+  local name="$1"
+  local value="${!name}"
+  case "${value,,}" in
+    1|true|yes|on) printf -v "$name" '%s' "true" ;;
+    0|false|no|off) printf -v "$name" '%s' "false" ;;
+    *) err "$name must be a boolean value: true/false, 1/0, yes/no, or on/off." ;;
+  esac
+}
+
+normalize_writeback_mode() {
+  local normalized
+  normalized="${BREWFS_WRITEBACK_MODE,,}"
+  normalized="${normalized//-/_}"
+  case "$normalized" in
+    upload_before_commit|upload_first|safe|default)
+      BREWFS_WRITEBACK_MODE="upload_before_commit"
+      ;;
+    commit_before_upload|commit_first|writeback|s3_writeback)
+      BREWFS_WRITEBACK_MODE="commit_before_upload"
+      ;;
+    *)
+      err "BREWFS_WRITEBACK_MODE must be upload_before_commit or commit_before_upload."
+      ;;
+  esac
+}
+
+require_uint_var() {
+  local name="$1"
+  local min="$2"
+  local value="${!name}"
+  if ! [[ "$value" =~ ^[0-9]+$ ]] || (( value < min )); then
+    err "$name must be an integer >= $min."
+  fi
+}
+
+validate_runtime_config() {
+  normalize_bool_var BREWFS_S3_FORCE_PATH_STYLE
+  normalize_bool_var BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM
+  normalize_bool_var BREWFS_WRITEBACK_PERSIST_SYNC
+  normalize_bool_var BREWFS_PREFETCH_ENABLED
+  normalize_bool_var BREWFS_FUSE_PRIVILEGED
+  normalize_writeback_mode
+
+  require_uint_var BREWFS_S3_PART_SIZE 1
+  require_uint_var BREWFS_S3_MAX_CONCURRENCY 1
+  require_uint_var BREWFS_META_OPEN_FILE_CACHE_TTL_MS 0
+  require_uint_var BREWFS_META_OPEN_FILE_CACHE_CAPACITY 1
+  require_uint_var BREWFS_CACHE_TTL_MS 0
+  require_uint_var BREWFS_FUSE_WORKERS 0
+  require_uint_var BREWFS_FUSE_MAX_BACKGROUND 1
 }
 
 detect_release_platform() {
@@ -196,6 +279,7 @@ resolve_brewfs_release_version() {
 
 preflight() {
   need_root
+  validate_runtime_config
 
   local required=(systemctl mktemp find grep chmod mkdir install sed)
   local missing=()
@@ -474,7 +558,8 @@ AWS_REGION="$BREWFS_REGION"
 AWS_DEFAULT_REGION="$BREWFS_REGION"
 AWS_CONFIG_FILE="$AWS_CONFIG_FILE"
 AWS_EC2_METADATA_DISABLED=true
-RUST_LOG=info
+BREWFS_CACHE_TTL_MS="$BREWFS_CACHE_TTL_MS"
+RUST_LOG="$BREWFS_LOG_LEVEL"
 EOF
 }
 
@@ -487,23 +572,25 @@ data:
     bucket: $BREWFS_BUCKET
     endpoint: http://$RUSTFS_HOST:$RUSTFS_PORT
     region: $BREWFS_REGION
-    force_path_style: true
-    disable_payload_checksum: true
+    part_size: $BREWFS_S3_PART_SIZE
+    max_concurrency: $BREWFS_S3_MAX_CONCURRENCY
+    force_path_style: $BREWFS_S3_FORCE_PATH_STYLE
+    disable_payload_checksum: $BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM
 meta:
   backend: redis
   redis:
     url: redis://$REDIS_HOST:$REDIS_PORT/0
-  open_file_cache_ttl_ms: 30000
-  open_file_cache_capacity: 65536
+  open_file_cache_ttl_ms: $BREWFS_META_OPEN_FILE_CACHE_TTL_MS
+  open_file_cache_capacity: $BREWFS_META_OPEN_FILE_CACHE_CAPACITY
 cache:
   root: $BREWFS_CACHE_DIR
-  writeback_mode: commit_before_upload
-  writeback_persist_sync: false
-  prefetch_enabled: true
+  writeback_mode: $BREWFS_WRITEBACK_MODE
+  writeback_persist_sync: $BREWFS_WRITEBACK_PERSIST_SYNC
+  prefetch_enabled: $BREWFS_PREFETCH_ENABLED
 fuse:
-  workers: 1
-  max_background: 512
-  privileged: true
+  workers: $BREWFS_FUSE_WORKERS
+  max_background: $BREWFS_FUSE_MAX_BACKGROUND
+  privileged: $BREWFS_FUSE_PRIVILEGED
 EOF
 }
 
@@ -568,7 +655,7 @@ EOF
   cat >"$SYSTEMD_DIR/$BREWFS_SERVICE" <<EOF
 [Unit]
 Description=BrewFS Single Node Mount
-Documentation=https://github.com/slayerfs/brewfs
+Documentation=https://github.com/brewfs/brewfs
 After=network-online.target $REDIS_SERVICE $RUSTFS_SERVICE
 Wants=network-online.target $REDIS_SERVICE $RUSTFS_SERVICE
 Requires=$REDIS_SERVICE $RUSTFS_SERVICE

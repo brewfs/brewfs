@@ -5,6 +5,7 @@ guidance. Keep user-facing operational behavior here instead of mixing it into
 architecture or performance notes.
 
 - [configuration.md](configuration.md): runtime configuration and tuning knobs.
+- [binary-deployment.md](binary-deployment.md): binary installation, systemd, and single-node deployment.
 - [control-plane.md](control-plane.md): control-plane design and workflows.
 - [observability.md](observability.md): metrics, tracing, and visibility.
 - [profiling.md](profiling.md): profiling workflow.

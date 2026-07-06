@@ -158,7 +158,7 @@ meta:
     namespace: tenant-a
 ```
 
-See [doc/operations/configuration.md](doc/operations/configuration.md) and the files under [examples/](examples/) for the full configuration surface.
+See [doc/operations/configuration.md](doc/operations/configuration.md), [doc/operations/binary-deployment.md](doc/operations/binary-deployment.md), and the files under [examples/](examples/) for the full configuration and deployment surface.
 
 ## CLI
 
@@ -1938,6 +1938,7 @@ Start with the [documentation index](doc/README.md).
 Common entry points:
 
 - [Configuration](doc/operations/configuration.md)
+- [Binary deployment](doc/operations/binary-deployment.md)
 - [Architecture](doc/architecture/arch.md)
 - [VFS internals](doc/vfs/README.md)
 - [Testing and CI guides](doc/README.md#testing-and-ci)

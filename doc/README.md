@@ -10,6 +10,7 @@ plans under `doc/` unless a tool explicitly requires another location.
 |---|---|
 | Architecture overview | [architecture/arch.md](architecture/arch.md) |
 | Configuration | [operations/configuration.md](operations/configuration.md) |
+| Binary deployment | [operations/binary-deployment.md](operations/binary-deployment.md) |
 | Current performance roadmap | [performance/perf-optimization-roadmap.md](performance/perf-optimization-roadmap.md) |
 | BrewFS vs JuiceFS comparison | [performance/brewfs-vs-juicefs-analysis.md](performance/brewfs-vs-juicefs-analysis.md) |
 | Docker and CI test guide | [testing/docker-compose-test-guide.md](testing/docker-compose-test-guide.md) |
@@ -49,6 +50,7 @@ plans under `doc/` unless a tool explicitly requires another location.
 | Topic | Document |
 |---|---|
 | Configuration | [operations/configuration.md](operations/configuration.md) |
+| Binary deployment | [operations/binary-deployment.md](operations/binary-deployment.md) |
 | Control plane | [operations/control-plane.md](operations/control-plane.md) |
 | Observability | [operations/observability.md](operations/observability.md) |
 | Profiling | [operations/profiling.md](operations/profiling.md) |
