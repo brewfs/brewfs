@@ -110,16 +110,16 @@ jobs:
             curl https://rclone.org/install.sh | sudo bash
           fi
 
-          # R2_BUCKET_NAME is the bucket name only, such as "artifact".
-          # Public download URLs intentionally omit the bucket name.
-          bucket_name="${{ secrets.R2_BUCKET_NAME }}"
+          # The rclone R2 remote is already scoped to the Cloudflare bucket.
+          # Do not add the bucket name here, or it becomes an object prefix
+          # such as artifacts/brewfs/releases instead of brewfs/releases.
           release_prefix="${BREWFS_RELEASE_R2_PREFIX#/}"
           release_prefix="${release_prefix%/}"
-          if [[ -z "${bucket_name}" || "${bucket_name}" == */* ]]; then
-            echo "::error::R2_BUCKET_NAME must be the R2 bucket name only; put object directories in BREWFS_RELEASE_R2_PREFIX."
+          if [[ -z "${release_prefix}" || "${release_prefix}" == */../* || "${release_prefix}" == ../* ]]; then
+            echo "::error::BREWFS_RELEASE_R2_PREFIX must be a non-empty object prefix."
             exit 1
           fi
-          rclone copy ./build/ "r2:${bucket_name}/${release_prefix}/${{ github.ref_name }}/" -v
+          rclone copy ./build/ "r2:${release_prefix}/${{ github.ref_name }}/" -v
 
           echo "Uploaded object prefix: ${release_prefix}/${{ github.ref_name }}/"
           echo "Upload completed for ${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
