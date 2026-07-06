@@ -4,8 +4,8 @@
 #
 # This script installs and maintains a local BrewFS stack managed by systemd:
 # Redis for metadata, RustFS for S3-compatible object storage, and BrewFS as
-# the mounted filesystem. BrewFS release binaries are resolved from the same
-# R2 layout used by the release workflow: brewfs/releases/<version>/brewfs-linux-<arch>.
+# the mounted filesystem. BrewFS release binaries are resolved from the public
+# R2 download layout: brewfs/releases/<version>/brewfs-linux-<arch>.
 
 set -euo pipefail
 
