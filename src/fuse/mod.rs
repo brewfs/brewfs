@@ -2519,7 +2519,7 @@ where
         if !matches!(parent_attr.kind, VfsFileType::Dir) {
             return Err(libc::ENOTDIR.into());
         }
-        if (parent_attr.mode & libc::S_ISVTX) == 0 {
+        if (parent_attr.mode & libc::S_ISVTX as u32) == 0 {
             return Ok(());
         }
 

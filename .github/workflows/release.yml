@@ -10,6 +10,7 @@ permissions:
 
 env:
   BREWFS_RELEASE_BASE_URL: https://download.brewfs.ai/brewfs/releases
+  BREWFS_RELEASE_R2_PREFIX: brewfs/releases
 
 jobs:
   build-and-upload:
@@ -26,6 +27,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -66,6 +69,7 @@ jobs:
         id: build
         shell: bash
         run: |
+          release_base="${BREWFS_RELEASE_BASE_URL%/}"
           binary_name="${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
           cargo_args=(--locked --release --target "${{ matrix.target.rust }}" --bin "${{ matrix.component }}")
 
@@ -79,11 +83,15 @@ jobs:
           mkdir -p build
           cp "target/${{ matrix.target.rust }}/release/${{ matrix.component }}" "build/${binary_name}"
           chmod +x "build/${binary_name}"
-          (cd build && sha256sum "${binary_name}" > "${binary_name}.sha256")
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd build && sha256sum "${binary_name}" > "${binary_name}.sha256")
+          else
+            (cd build && shasum -a 256 "${binary_name}" > "${binary_name}.sha256")
+          fi
 
           echo "binary_name=${binary_name}" >> "$GITHUB_OUTPUT"
-          echo "download_url=${BREWFS_RELEASE_BASE_URL}/${{ github.ref_name }}/${binary_name}" >> "$GITHUB_OUTPUT"
-          echo "checksum_url=${BREWFS_RELEASE_BASE_URL}/${{ github.ref_name }}/${binary_name}.sha256" >> "$GITHUB_OUTPUT"
+          echo "download_url=${release_base}/${{ github.ref_name }}/${binary_name}" >> "$GITHUB_OUTPUT"
+          echo "checksum_url=${release_base}/${{ github.ref_name }}/${binary_name}.sha256" >> "$GITHUB_OUTPUT"
           echo "Built binary: ${binary_name}"
 
       - name: Upload to Cloudflare R2
@@ -101,8 +109,19 @@ jobs:
           else
             curl https://rclone.org/install.sh | sudo bash
           fi
-          rclone copy ./build/ r2:${{ secrets.R2_BUCKET_NAME }}/brewfs/releases/${{ github.ref_name }}/ -v
 
+          # R2_BUCKET_NAME is the bucket name only, such as "artifact".
+          # Public download URLs intentionally omit the bucket name.
+          bucket_name="${{ secrets.R2_BUCKET_NAME }}"
+          release_prefix="${BREWFS_RELEASE_R2_PREFIX#/}"
+          release_prefix="${release_prefix%/}"
+          if [[ -z "${bucket_name}" || "${bucket_name}" == */* ]]; then
+            echo "::error::R2_BUCKET_NAME must be the R2 bucket name only; put object directories in BREWFS_RELEASE_R2_PREFIX."
+            exit 1
+          fi
+          rclone copy ./build/ "r2:${bucket_name}/${release_prefix}/${{ github.ref_name }}/" -v
+
+          echo "Uploaded object prefix: ${release_prefix}/${{ github.ref_name }}/"
           echo "Upload completed for ${{ matrix.component }}-${{ matrix.target.os }}-${{ matrix.target.arch }}"
 
       - name: Publish download links
