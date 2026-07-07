@@ -9,6 +9,96 @@ BrewFS 是单二进制程序。挂载时主要通过 `brewfs mount` 的命令行
 - `src/vfs/cache/config.rs`: VFS 读写缓存默认值。
 - `src/meta/config.rs`: meta client cache 和 compaction 默认值。
 
+## Single-node installer
+
+单机部署可以直接使用 `scripts/install_brewfs_single_node.sh`。这个脚本会安装并
+维护三个 systemd 服务：
+
+| 服务 | 作用 |
+|---|---|
+| `brewfs-redis.service` | Redis 元数据服务 |
+| `brewfs-rustfs.service` | RustFS S3 兼容对象存储 |
+| `brewfs.service` | BrewFS FUSE 挂载 |
+
+当前分支合并到 main 后，可以通过 GitHub raw URL 一行安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh | sudo bash -s -- install
+```
+
+指定挂载点和调优档位：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env MOUNT_POINT=/mnt/brewfs BREWFS_TUNING_PROFILE=balanced bash -s -- install
+```
+
+常用动作：
+
+```bash
+sudo /usr/local/bin/brewfs --version
+sudo systemctl status brewfs.service brewfs-redis.service brewfs-rustfs.service
+sudo bash scripts/install_brewfs_single_node.sh status
+sudo bash scripts/install_brewfs_single_node.sh restart
+sudo bash scripts/install_brewfs_single_node.sh upgrade
+sudo bash scripts/install_brewfs_single_node.sh uninstall
+```
+
+安装脚本默认写入：
+
+| 路径 | 内容 |
+|---|---|
+| `/usr/local/bin/brewfs` | BrewFS 二进制 |
+| `/usr/local/bin/rustfs` | RustFS 二进制 |
+| `/etc/brewfs/mount.yaml` | BrewFS 挂载配置 |
+| `/etc/default/brewfs*` | systemd 环境文件 |
+| `/etc/systemd/system/brewfs*.service` | systemd unit |
+| `/var/lib/brewfs` | Redis、RustFS、BrewFS cache 状态 |
+| `/var/log/brewfs` | 服务日志 |
+
+挂载点必须是空目录。默认是 `/mnt/brewfs`，如果该目录已有内容，请使用：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env MOUNT_POINT=/mnt/brewfs-single bash -s -- install
+```
+
+调优档位：
+
+| `BREWFS_TUNING_PROFILE` | 用途 |
+|---|---|
+| `compat` | 尽量接近旧配置，适合排查回归 |
+| `balanced` | 默认值，适合单机 Redis + RustFS 的通用负载 |
+| `throughput` | 更激进的吞吐配置，适合专门压读或随机混合 IO |
+
+关键参数都可以用环境变量覆盖，例如：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env \
+      MOUNT_POINT=/mnt/brewfs \
+      BREWFS_TUNING_PROFILE=balanced \
+      BREWFS_FUSE_WORKERS=4 \
+      BREWFS_UPLOAD_CONCURRENCY=16 \
+      BREWFS_MEMORY_BUDGET_BYTES=2147483648 \
+      bash -s -- install
+```
+
+如果只想安装指定 BrewFS 版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env BREWFS_VERSION=v0.0.1 bash -s -- install
+```
+
+脚本会优先选择可下载的 BrewFS release artifact；当最新 tag 没有对应 R2 二进制时，
+会跳过该 tag 并继续查找可用版本。
+
+RustFS 默认使用官方安装脚本 `https://rustfs.com/install_rustfs.sh` 对应的
+`https://dl.rustfs.com/artifacts/rustfs/release` 二进制镜像源。官方脚本本身是交互式的，
+并会创建独立 `rustfs.service`；BrewFS 单机安装脚本只复用它的二进制来源，
+再由 `brewfs-rustfs.service` 统一维护服务生命周期。
+
 ## 快速模板
 
 最小配置只需要挂载点。其余字段使用默认值：本地对象目录 `./data`、SQLx 元数据、内存 SQLite、64 MiB chunk、4 MiB block。
