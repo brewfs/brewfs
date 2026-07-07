@@ -1209,6 +1209,13 @@ daemon_reload() {
   systemctl daemon-reload
 }
 
+stop_existing_brewfs_mount() {
+  if systemctl is-active --quiet "$BREWFS_SERVICE" 2>/dev/null; then
+    info "Stopping existing $BREWFS_SERVICE before rewriting its systemd unit."
+    systemctl stop "$BREWFS_SERVICE"
+  fi
+}
+
 enable_and_start() {
   systemctl enable "$REDIS_SERVICE" "$RUSTFS_SERVICE" "$BREWFS_SERVICE"
   systemctl restart "$REDIS_SERVICE"
@@ -1225,6 +1232,7 @@ install_stack() {
   install_brewfs_binary
   check_ports "$REDIS_SERVICE" "$REDIS_PORT"
   check_ports "$RUSTFS_SERVICE" "$RUSTFS_PORT" "$RUSTFS_CONSOLE_PORT"
+  stop_existing_brewfs_mount
   write_redis_config
   write_env_files
   write_brewfs_config
@@ -1247,6 +1255,7 @@ upgrade_stack() {
   install_binary_from_url "redis-server" "$REDIS_DOWNLOAD_URL" "$INSTALL_DIR/redis-server" "$REDIS_REQUIRE_CHECKSUM" || true
   install_binary_from_url "rustfs" "$RUSTFS_DOWNLOAD_URL" "$RUSTFS_BIN" "$RUSTFS_REQUIRE_CHECKSUM" || true
   install_brewfs_binary 1
+  stop_existing_brewfs_mount
   write_redis_config
   write_env_files
   write_brewfs_config
