@@ -2258,10 +2258,7 @@ mod io_tests {
             block_size: 4 * 1024,
         };
         let store = InMemoryBlockStore::new();
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db_path = temp_dir.path().join("fuzz.sqlite");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-        let meta_handle = create_meta_store_from_url(&db_url).await.unwrap();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
         let meta_store = meta_handle.store();
         let fs = Arc::new(VFS::new(layout, store, meta_store).await.unwrap());
 

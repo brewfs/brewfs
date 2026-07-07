@@ -63,6 +63,39 @@ Requirements:
 - Linux for FUSE mounting
 - `fuse3` / `fusermount3` for unprivileged mounts
 
+### Single-node binary install
+
+For a local Linux host, BrewFS can install and manage a complete single-node
+stack with systemd: Redis for metadata, RustFS for S3-compatible object
+storage, and BrewFS mounted through FUSE.
+
+After this branch is merged, the one-line installer is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh | sudo bash -s -- install
+```
+
+Useful overrides:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env MOUNT_POINT=/mnt/brewfs BREWFS_TUNING_PROFILE=balanced bash -s -- install
+```
+
+The mount point must be empty. The installer writes `brewfs.service`,
+`brewfs-redis.service`, and `brewfs-rustfs.service`, then keeps all three
+enabled under systemd. Use `sudo systemctl status brewfs.service` to inspect
+the mount.
+
+RustFS is installed from the same official binary mirror used by
+`https://rustfs.com/install_rustfs.sh`; the BrewFS installer owns the generated
+`brewfs-rustfs.service` so the single-node stack has one systemd lifecycle.
+
+See [doc/operations/configuration.md](doc/operations/configuration.md#single-node-installer)
+for install, upgrade, status, restart, uninstall, and tuning options.
+
+### Build from source
+
 Run the SDK demo without FUSE:
 
 ```bash

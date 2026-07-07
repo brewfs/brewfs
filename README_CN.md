@@ -35,6 +35,40 @@ BrewFS 不是 JuiceFS fork，但 JuiceFS 是当前最重要的生产级参考基
 - Rust: >= 1.85.0
 - 操作系统：Linux (Ubuntu 20.04+, CentOS 8+)
 
+### 单机二进制安装
+
+在一台 Linux 机器上，可以用一个脚本安装并由 systemd 维护完整单机栈：
+Redis 作为元数据服务，RustFS 作为 S3 兼容对象存储，BrewFS 通过 FUSE 挂载。
+
+当前分支合并到 main 后，一行安装命令如下：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh | sudo bash -s -- install
+```
+
+常用覆盖参数：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_brewfs_single_node.sh \
+  | sudo env MOUNT_POINT=/mnt/brewfs BREWFS_TUNING_PROFILE=balanced bash -s -- install
+```
+
+挂载点必须为空。脚本会生成并启用 `brewfs.service`、`brewfs-redis.service`
+和 `brewfs-rustfs.service`。状态检查：
+
+```bash
+sudo systemctl status brewfs.service
+```
+
+RustFS 会使用 `https://rustfs.com/install_rustfs.sh` 对应的官方二进制镜像源安装；
+BrewFS 脚本自己生成并维护 `brewfs-rustfs.service`，避免和独立 `rustfs.service`
+抢占端口或生命周期。
+
+更多安装、升级、卸载和调优参数见
+`doc/operations/configuration.md#single-node-installer`。
+
+### 从源码运行 SDK demo
+
 ```bash
 cargo run -q --bin sdk_demo -- /tmp/brewfs-objroot
 ```
