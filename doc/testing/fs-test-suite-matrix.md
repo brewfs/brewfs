@@ -21,8 +21,11 @@ cover the heavier open-source filesystem suites.
 | xfstests smoke | A small FUSE sanity slice | `bash docker/compose-xfstests/run_redis_xfstests.sh --cases "generic/001 generic/002 generic/100"` | Manual workflow or before risky VFS/FUSE changes. |
 | xfstests full Redis+RustFS | Main correctness gate for Redis metadata plus RustFS object storage | `bash docker/compose-xfstests/run_redis_xfstests.sh` | Before merge when touching writeback, mmap, FUSE, metadata, locking, or object-store commit paths. |
 | xfstests targeted excluded case | Re-check one excluded case without the default exclude file | `bash docker/compose-xfstests/run_redis_xfstests.sh --check-args "-fuse generic/091"` | Use before removing a case from `xfstests_slayer.exclude`. |
-| LTP fs | Linux Test Project filesystem scenario | `bash docker/compose-xfstests/run_redis_ltp.sh` | Manual workflow or local extended run after metadata/cache changes. `iogen01` remains a known failing diagnostic and is skipped by default. |
+| LTP fs | Linux Test Project filesystem scenario | `bash docker/compose-xfstests/run_redis_ltp.sh` | Manual workflow or local extended run after metadata/cache changes. `iogen01` remains a default skip. POSIX record-lock growfiles variants are enabled. |
 | LTP iogen01 diagnostic | Lock-heavy buffered+sync doio verifier | `BREWFS_FUSE_OP_LOG=1 bash docker/compose-xfstests/run_redis_ltp.sh --no-default-skip --extra-args "-s iogen01"` | Buffered profile currently expected to fail; direct-I/O profile passes after the dirty-overlay fix. Use it to debug FUSE writeback page-cache coherency before removing the default skip. |
+| xfstests smoke TiKV+RustFS | TiKV metadata plus RustFS object-store sanity slice | `bash docker/compose-xfstests/run_tikv_xfstests.sh --cases "generic/001 generic/002 generic/100"` | Manual workflow before TiKV metadata-store changes. Uses a per-run RustFS data directory so interrupted runs are easy to clean. |
+| pjdfstest TiKV+RustFS | POSIX path behavior against TiKV metadata | `bash docker/compose-xfstests/run_tikv_pjdfstest.sh` | Manual workflow after MetaStore API or TiKV transaction changes; mirrors the Redis pjdfstest supported set. |
+| LTP TiKV+RustFS | Linux Test Project filesystem scenario against TiKV metadata | `bash docker/compose-xfstests/run_tikv_ltp.sh` | Manual workflow for TiKV backend regression hunting. Uses the same BrewFS LTP skip file as Redis, including buffered `iogen01`. |
 | stress-ng profiles | Longer metadata/link/symlink/small-write stress | `bash docker/compose-xfstests/run_redis_stress_ng.sh --profile metadata-heavy` | Local regression hunting and release validation. |
 | fio/perf | Performance guard | `bash docker/compose-xfstests/run_redis_perf.sh --s3` | Required after changes in read/write hot paths. Keep regression below 5%. |
 
@@ -76,6 +79,35 @@ All compose suites write under `docker/compose-xfstests/artifacts/` except the
 legacy `docker/compose-pjdfstest` runner. Prefer the `compose-xfstests` runners
 for new work because they provide skip files, reports, and consistent RustFS
 object-store setup.
+
+## TiKV + RustFS Coverage
+
+TiKV suites are manual `workflow_dispatch` jobs because they start PD, TiKV,
+RustFS, and a privileged FUSE runner. Use them when touching
+`src/meta/stores/tikv`, store-level transactions, FUSE writeback behavior, or
+shared object-store commit paths.
+
+| Suite | Runner |
+| --- | --- |
+| xfstests smoke | `bash docker/compose-xfstests/run_tikv_xfstests.sh --cases "generic/001 generic/002 generic/100"` |
+| pjdfstest supported set | `bash docker/compose-xfstests/run_tikv_pjdfstest.sh` |
+| LTP fs | `bash docker/compose-xfstests/run_tikv_ltp.sh` |
+| perf | `bash docker/compose-xfstests/run_tikv_perf.sh --s3 --tools "fio-randrw"` |
+
+Latest TiKV+RustFS evidence:
+
+| Suite | Artifact | Result |
+| --- | --- | --- |
+| LTP fs | `run-1783570840-10024` | PASS; `failures_count: 0`, including `rwtest02`. |
+| xfstests smoke | `run-1783571812-7088` | PASS; `generic/001 generic/002 generic/100`. |
+| pjdfstest supported set | `pjdfstest-run-1783572002-27469` | PASS; 176 files / 1389 tests, 70 skipped. |
+| LTP POSIX record-lock growfiles | `run-1783582046-16962`, `run-1783582552-4223`, `run-1783582599-29527`, `run-1783582749-12088`, `run-1783583452-6929` | PASS; `gf01`, `gf14`, `gf16`, `gf17`, and `gf18` each have `failures_count: 0`. |
+
+TiKV now implements POSIX byte-range locks (`fcntl` / `F_SETLK` /
+`F_SETLKW` / `F_GETLK`) through the BrewFS `plock` MetaStore API. BSD
+`flock(2)` is separate: if future xfstests require `/proc/locks` visibility
+for BSD locks, revisit asyncfuse `FUSE_FLOCK_LOCKS` negotiation and expose
+`FUSE_LK_FLOCK` to BrewFS.
 
 ## LTP Cache Profiles
 

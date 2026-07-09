@@ -156,6 +156,80 @@ fn link_parent_values_round_trip() {
 }
 
 #[test]
+fn plock_values_round_trip() {
+    let sid = Uuid::new_v4();
+    let plocks = vec![StoredPlock {
+        sid,
+        owner: 42,
+        records: vec![PlockRecord::new(FileLockType::Write, 1234, 10, 20)],
+    }];
+
+    let encoded = TiKvMetaStore::encode(&plocks).unwrap();
+    let decoded = TiKvMetaStore::decode_plocks(&encoded).unwrap();
+
+    assert_eq!(decoded, plocks);
+}
+
+#[test]
+fn plock_update_detects_conflicts_and_unlocks_ranges() {
+    let inode = 99;
+    let sid_a = Uuid::new_v4();
+    let sid_b = Uuid::new_v4();
+    let range = FileLockRange { start: 0, end: 100 };
+    let mut plocks = Vec::new();
+
+    TiKvMetaStore::apply_plock_update(
+        &mut plocks,
+        sid_a,
+        1,
+        PlockRecord::new(FileLockType::Write, 111, range.start, range.end),
+        FileLockType::Write,
+        range,
+        inode,
+    )
+    .unwrap();
+
+    let conflict = TiKvMetaStore::apply_plock_update(
+        &mut plocks,
+        sid_b,
+        2,
+        PlockRecord::new(FileLockType::Read, 222, 50, 60),
+        FileLockType::Read,
+        FileLockRange { start: 50, end: 60 },
+        inode,
+    )
+    .expect_err("overlapping read should conflict with another owner's write lock");
+    assert!(matches!(
+        conflict,
+        MetaError::LockConflict {
+            inode: 99,
+            owner: 2,
+            ..
+        }
+    ));
+
+    TiKvMetaStore::apply_plock_update(
+        &mut plocks,
+        sid_a,
+        1,
+        PlockRecord::new(FileLockType::UnLock, 0, 25, 75),
+        FileLockType::UnLock,
+        FileLockRange { start: 25, end: 75 },
+        inode,
+    )
+    .unwrap();
+
+    assert_eq!(plocks.len(), 1);
+    assert_eq!(
+        plocks[0].records,
+        vec![
+            PlockRecord::new(FileLockType::Write, 111, 0, 25),
+            PlockRecord::new(FileLockType::Write, 111, 75, 100),
+        ]
+    );
+}
+
+#[test]
 fn gc_record_values_round_trip() {
     let delayed = StoredDelayedSliceRecord {
         id: 1,

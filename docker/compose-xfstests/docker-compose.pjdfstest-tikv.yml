@@ -11,9 +11,9 @@ services:
       - --initial-cluster=pd=http://pd:2380
       - --log-level=warn
     volumes:
-      - pd-data-tikv:/data/pd
+      - pd-data-pjdfstest-tikv:/data/pd
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
 
   tikv:
     image: pingcap/tikv:v8.5.0
@@ -28,9 +28,9 @@ services:
       - --data-dir=/data/tikv
       - --log-level=warn
     volumes:
-      - tikv-data:/data/tikv
+      - tikv-data-pjdfstest-tikv:/data/tikv
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
     ulimits:
       nofile:
         soft: 1048576
@@ -54,7 +54,7 @@ services:
           done
         '
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
 
   rustfs:
     image: rustfs/rustfs:latest
@@ -78,9 +78,9 @@ services:
       - ${RUSTFS_SECRET_KEY:-rustfsadmin}
       - /data
     volumes:
-      - ${RUSTFS_DATA_HOST_DIR:-rustfs-data-tikv}:/data
+      - ${RUSTFS_DATA_HOST_DIR:-rustfs-data-pjdfstest-tikv}:/data
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
     ulimits:
       nofile:
         soft: 65536
@@ -109,13 +109,13 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
 
-  xfstests:
-    image: brewfs-xfstests:local
+  pjdfstest:
+    image: brewfs-pjdfstest:local
     build:
       context: ../..
-      dockerfile: docker/compose-xfstests/Dockerfile
+      dockerfile: docker/compose-xfstests/Dockerfile.pjdfstest
     depends_on:
       tikv-ready:
         condition: service_completed_successfully
@@ -125,14 +125,16 @@ services:
       BREWFS_META_BACKEND: tikv
       BREWFS_META_TIKV_PD_ENDPOINTS: pd:2379
       BREWFS_META_TIKV_NAMESPACE: ${BREWFS_META_TIKV_NAMESPACE:-brewfs}
-      BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-s3}
+      BREWFS_DATA_BACKEND: s3
       BREWFS_DATA_DIR: /var/lib/brewfs/data
       BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
       BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
       BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
       BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
       BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
-      BREWFS_CACHE_TTL_MS: ${BREWFS_CACHE_TTL_MS:-}
+      BREWFS_LOG_FILE: /artifacts/brewfs.log
+      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+      BREWFS_CACHE_TTL_MS: ${BREWFS_CACHE_TTL_MS:-0}
       BREWFS_CACHE_ROOT: ${BREWFS_CACHE_ROOT:-}
       BREWFS_READ_MEMORY_BYTES: ${BREWFS_READ_MEMORY_BYTES:-}
       BREWFS_READ_SSD_BYTES: ${BREWFS_READ_SSD_BYTES:-}
@@ -144,37 +146,26 @@ services:
       BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD: ${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-}
       BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD: ${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}
       BREWFS_WRITEBACK_MODE: ${BREWFS_WRITEBACK_MODE:-}
+      BREWFS_WRITEBACK_PERSIST_SYNC: ${BREWFS_WRITEBACK_PERSIST_SYNC:-}
       BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT: ${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-}
       BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES: ${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}
       BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES: ${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}
-      BREWFS_CACHED_BLOCK_ASSEMBLER: ${BREWFS_CACHED_BLOCK_ASSEMBLER:-}
-      BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS: ${BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS:-}
-      BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS: ${BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS:-}
-      BREWFS_DEBUG_CACHED_WRITE_OFFSET: ${BREWFS_DEBUG_CACHED_WRITE_OFFSET:-}
       BREWFS_MEMORY_BUDGET_BYTES: ${BREWFS_MEMORY_BUDGET_BYTES:-}
       BREWFS_VERIFY_CACHE_CHECKSUM: ${BREWFS_VERIFY_CACHE_CHECKSUM:-}
-      BREWFS_LOG_FILE: /artifacts/brewfs.log
-      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
-      BREWFS_FUSE_DIRECT_IO: ${BREWFS_FUSE_DIRECT_IO:-}
-      BREWFS_FUSE_READ_DIRECT_IO: ${BREWFS_FUSE_READ_DIRECT_IO:-}
-      BREWFS_FUSE_WRITE_DIRECT_IO: ${BREWFS_FUSE_WRITE_DIRECT_IO:-}
-      BREWFS_FUSE_COPY_FILE_RANGE: ${BREWFS_FUSE_COPY_FILE_RANGE:-}
-      BREWFS_FUSE_KEEP_CACHE: ${BREWFS_FUSE_KEEP_CACHE:-}
-      BREWFS_FUSE_WRITEBACK: ${BREWFS_FUSE_WRITEBACK:-}
       BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
       BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
       BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
       BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
       BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
       BREWFS_ARTIFACT_ROOT: /artifacts
-      XFSTESTS_CASES: ${XFSTESTS_CASES:-}
-      XFSTESTS_SKIP_CASES: ${XFSTESTS_SKIP_CASES:-0}
-      XFSTESTS_CHECK_ARGS: ${XFSTESTS_CHECK_ARGS:-}
-      RUST_LOG: ${RUST_LOG:-brewfs=info}
+      PJDFSTEST_SKIP_PATTERNS: ${PJDFSTEST_SKIP_PATTERNS:-}
+      PJDFSTEST_SKIP_PATTERNS_FILE: ${PJDFSTEST_SKIP_PATTERNS_FILE:-}
+      PJDFSTEST_EXTRA_ARGS: ${PJDFSTEST_EXTRA_ARGS:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-brewfs=info}
     privileged: true
     devices:
       - /dev/fuse:/dev/fuse
@@ -184,20 +175,20 @@ services:
       - apparmor=unconfined
     volumes:
       - ./artifacts:/artifacts
-      - brewfs-state-tikv:/var/lib/brewfs
+      - brewfs-state-pjdfstest-tikv:/var/lib/brewfs
     networks:
-      - brewfs-xfstests
+      - brewfs-pjdfstest
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
 
 networks:
-  brewfs-xfstests:
+  brewfs-pjdfstest:
     driver: bridge
 
 volumes:
-  brewfs-state-tikv:
-  pd-data-tikv:
-  tikv-data:
-  rustfs-data-tikv:
+  brewfs-state-pjdfstest-tikv:
+  pd-data-pjdfstest-tikv:
+  tikv-data-pjdfstest-tikv:
+  rustfs-data-pjdfstest-tikv:

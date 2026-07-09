@@ -55,7 +55,7 @@ services:
         timeout 180 sh -ec '
           while true; do
             body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
-            echo "$$body" | grep -Eq '"state_name"[[:space:]]*:[[:space:]]*"Up"' && exit 0
+            echo "$$body" | grep -Eq "\"state_name\"[[:space:]]*:[[:space:]]*\"Up\"" && exit 0
             sleep 2
           done
         '

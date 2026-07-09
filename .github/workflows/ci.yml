@@ -17,6 +17,9 @@ on:
           - stress-ng
           - xfstests-smoke
           - ltp
+          - tikv-xfstests-smoke
+          - tikv-pjdfstest
+          - tikv-ltp
           - all
       stress_ng_profile:
         description: stress-ng profile for the Docker stress job
@@ -63,6 +66,10 @@ jobs:
         run: |
           bash -n docker/compose-xfstests/run_perf_in_container.sh
           bash -n docker/compose-xfstests/run_redis_perf.sh
+          bash -n docker/compose-xfstests/run_tikv_xfstests.sh
+          bash -n docker/compose-xfstests/run_tikv_ltp.sh
+          bash -n docker/compose-xfstests/run_tikv_pjdfstest.sh
+          bash -n docker/compose-xfstests/run_tikv_perf.sh
           bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh
           bash -n docker/compose-xfstests/run_juicefs_perf.sh
           bash docker/compose-xfstests/test_perf_report_delta.sh
@@ -284,5 +291,146 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ltp-fs-artifacts
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn
+
+  docker-tikv-xfstests-smoke:
+    name: Docker TiKV xfstests smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.docker_suite == 'tikv-xfstests-smoke' || inputs.docker_suite == 'all')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run TiKV xfstests smoke
+        run: bash docker/compose-xfstests/run_tikv_xfstests.sh --cases "generic/001 generic/002 generic/100"
+
+      - name: Upload TiKV xfstests artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-xfstests-smoke-artifacts
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn
+
+  docker-tikv-pjdfstest:
+    name: Docker TiKV pjdfstest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.docker_suite == 'tikv-pjdfstest' || inputs.docker_suite == 'all')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run TiKV pjdfstest
+        run: bash docker/compose-xfstests/run_tikv_pjdfstest.sh
+
+      - name: Upload TiKV pjdfstest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-pjdfstest-artifacts
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn
+
+  docker-tikv-ltp:
+    name: Docker TiKV LTP fs
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.docker_suite == 'tikv-ltp' || inputs.docker_suite == 'all')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run TiKV LTP fs
+        run: bash docker/compose-xfstests/run_tikv_ltp.sh
+
+      - name: Upload TiKV LTP artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tikv-ltp-fs-artifacts
           path: docker/compose-xfstests/artifacts/**
           if-no-files-found: warn

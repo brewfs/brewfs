@@ -6,32 +6,41 @@
 //! participate in the metadata CAS.
 
 use crate::chunk::SliceDesc;
-use crate::meta::INODE_ID_KEY;
 use crate::meta::config::{Config, DatabaseType, default_tikv_namespace};
+use crate::meta::file_lock::{
+    FileLockInfo, FileLockQuery, FileLockRange, FileLockType, PlockRecord,
+};
 use crate::meta::store::{
     DirEntry, FileAttr, FileType, MetaError, MetaStore, MetaStoreCapabilities, OpenFlags,
     RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage,
     stat_fs_used_bytes,
 };
+use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::{RngCore, rng};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::ops::Bound;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
-use tikv_client::{BoundRange, Key, KvPair, Transaction, TransactionClient};
+use tikv_client::{
+    BoundRange, CheckLevel, Key, KvPair, Transaction, TransactionClient, TransactionOptions,
+};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 const ROOT_INODE: i64 = 1;
 const ROOT_SIZE: u64 = 4096;
 const FIRST_ALLOCATED_INODE: i64 = 2;
 const SCAN_BATCH_LIMIT: u32 = 1024;
 const TXN_MAX_RETRIES: usize = 10;
+const SLICE_ID_LEASE_SIZE: i64 = 1024;
 const DELAYED_PENDING_PREFIX: &str = "gc/delayed/pending/";
 const DELAYED_META_DELETED_PREFIX: &str = "gc/delayed/meta_deleted/";
 const UNCOMMITTED_PENDING_PREFIX: &str = "gc/uncommitted/pending/";
@@ -40,6 +49,12 @@ const DELAYED_ID_COUNTER: &str = "gc/delayed/id";
 const UNCOMMITTED_ID_COUNTER: &str = "gc/uncommitted/id";
 
 type TiKvTxnFuture<'txn, T> = Pin<Box<dyn Future<Output = Result<T, MetaError>> + Send + 'txn>>;
+
+#[derive(Debug, Clone, Copy)]
+struct CounterLease {
+    next: i64,
+    end: i64,
+}
 
 #[derive(Clone, Copy)]
 enum TiKvTxnMode {
@@ -53,6 +68,8 @@ pub struct TiKvMetaStore {
     pd_endpoints: Vec<String>,
     namespace: String,
     client: TransactionClient,
+    lock_session: Uuid,
+    counter_leases: Arc<Mutex<HashMap<String, CounterLease>>>,
     _config: Config,
 }
 
@@ -93,6 +110,8 @@ impl TiKvMetaStore {
             pd_endpoints,
             namespace,
             client,
+            lock_session: Uuid::new_v4(),
+            counter_leases: Arc::new(Mutex::new(HashMap::new())),
             _config: config,
         })
     }
@@ -148,6 +167,10 @@ impl TiKvMetaStore {
 
     fn link_parent_key(&self, ino: i64) -> Vec<u8> {
         self.key_bytes(&format!("link_parent/{ino}"))
+    }
+
+    fn plock_key(&self, ino: i64) -> Vec<u8> {
+        self.key_bytes(&format!("plock/{ino}"))
     }
 
     fn delayed_pending_key(&self, id: i64) -> Vec<u8> {
@@ -209,15 +232,17 @@ impl TiKvMetaStore {
     }
 
     async fn begin_read(&self, operation: &str) -> Result<Transaction, MetaError> {
+        let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
         self.client
-            .begin_optimistic()
+            .begin_with_options(options)
             .await
             .map_err(|e| Self::tikv_err(operation, e))
     }
 
     async fn begin_write(&self, operation: &str) -> Result<Transaction, MetaError> {
+        let options = TransactionOptions::new_pessimistic().drop_check(CheckLevel::Warn);
         self.client
-            .begin_pessimistic()
+            .begin_with_options(options)
             .await
             .map_err(|e| Self::tikv_err(operation, e))
     }
@@ -280,8 +305,13 @@ impl TiKvMetaStore {
                 (TiKvTxnMode::Write, Ok(value)) => {
                     match self.commit_write(&mut txn, operation).await {
                         Ok(()) => return Ok(value),
-                        Err(MetaError::ContinueRetry(RetryReason::TransactionConflict)) => {}
-                        Err(err) => return Err(err),
+                        Err(MetaError::ContinueRetry(RetryReason::TransactionConflict)) => {
+                            Self::rollback_best_effort(&mut txn, operation).await;
+                        }
+                        Err(err) => {
+                            Self::rollback_best_effort(&mut txn, operation).await;
+                            return Err(err);
+                        }
                     }
                 }
                 (
@@ -370,6 +400,11 @@ impl TiKvMetaStore {
     fn decode_link_parents(bytes: &[u8]) -> Result<Vec<StoredLinkParent>, MetaError> {
         serde_json::from_slice(bytes)
             .map_err(|e| MetaError::Serialization(format!("TiKV link parent decode failed: {e}")))
+    }
+
+    fn decode_plocks(bytes: &[u8]) -> Result<Vec<StoredPlock>, MetaError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| MetaError::Serialization(format!("TiKV plock decode failed: {e}")))
     }
 
     fn decode_delayed_slice(bytes: &[u8]) -> Result<StoredDelayedSliceRecord, MetaError> {
@@ -540,6 +575,36 @@ impl TiKvMetaStore {
         Self::txn_delete_raw(txn, self.link_parent_key(ino), operation).await
     }
 
+    async fn txn_get_plocks(
+        &self,
+        txn: &mut Transaction,
+        ino: i64,
+        lock: bool,
+        operation: &str,
+    ) -> Result<Vec<StoredPlock>, MetaError> {
+        Self::txn_get_raw(txn, self.plock_key(ino), lock, operation)
+            .await?
+            .as_deref()
+            .map(Self::decode_plocks)
+            .transpose()
+            .map(|plocks| plocks.unwrap_or_default())
+    }
+
+    async fn txn_put_plocks_or_delete(
+        &self,
+        txn: &mut Transaction,
+        ino: i64,
+        plocks: &[StoredPlock],
+        operation: &str,
+    ) -> Result<(), MetaError> {
+        let key = self.plock_key(ino);
+        if plocks.is_empty() {
+            Self::txn_delete_raw(txn, key, operation).await
+        } else {
+            Self::txn_put_raw(txn, key, Self::encode(&plocks)?, operation).await
+        }
+    }
+
     async fn txn_get_dentry(
         &self,
         txn: &mut Transaction,
@@ -596,6 +661,23 @@ impl TiKvMetaStore {
         first_value: i64,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        self.txn_alloc_counter_range(txn, name, first_value, 1, operation)
+            .await
+    }
+
+    async fn txn_alloc_counter_range(
+        &self,
+        txn: &mut Transaction,
+        name: &str,
+        first_value: i64,
+        count: i64,
+        operation: &str,
+    ) -> Result<i64, MetaError> {
+        if count <= 0 {
+            return Err(MetaError::Internal(format!(
+                "TiKV counter allocation count must be positive: {count}"
+            )));
+        }
         let key = self.counter_key(name);
         let current = Self::txn_get_raw(txn, key.clone(), true, operation)
             .await?
@@ -604,10 +686,133 @@ impl TiKvMetaStore {
             .transpose()?
             .unwrap_or(first_value);
         let next = current
-            .checked_add(1)
+            .checked_add(count)
             .ok_or_else(|| MetaError::Internal(format!("TiKV counter overflow: {name}")))?;
         Self::txn_put_raw(txn, key, Self::encode(&next)?, operation).await?;
         Ok(current)
+    }
+
+    async fn alloc_counter_range(&self, name: String, count: i64) -> Result<i64, MetaError> {
+        let operation = "next_id";
+        self.write_txn(operation, |store, txn| {
+            let name = name.clone();
+            Box::pin(async move {
+                store
+                    .txn_alloc_counter_range(txn, &name, 1, count, operation)
+                    .await
+            })
+        })
+        .await
+    }
+
+    async fn next_leased_slice_id(&self) -> Result<i64, MetaError> {
+        let mut leases = self.counter_leases.lock().await;
+        if let Some(lease) = leases.get_mut(SLICE_ID_KEY)
+            && lease.next < lease.end
+        {
+            let id = lease.next;
+            lease.next += 1;
+            return Ok(id);
+        }
+
+        let start = self
+            .alloc_counter_range(SLICE_ID_KEY.to_string(), SLICE_ID_LEASE_SIZE)
+            .await?;
+        let end = start
+            .checked_add(SLICE_ID_LEASE_SIZE)
+            .ok_or_else(|| MetaError::Internal("TiKV slice id lease overflow".to_string()))?;
+        leases.insert(
+            SLICE_ID_KEY.to_string(),
+            CounterLease {
+                next: start + 1,
+                end,
+            },
+        );
+        Ok(start)
+    }
+
+    async fn try_set_plock(
+        &self,
+        inode: i64,
+        owner: i64,
+        new_lock: PlockRecord,
+        lock_type: FileLockType,
+        range: FileLockRange,
+    ) -> Result<(), MetaError> {
+        let operation = "set_plock";
+        let sid = self.lock_session;
+
+        self.write_txn(operation, |store, txn| {
+            Box::pin(async move {
+                let mut plocks = store.txn_get_plocks(txn, inode, true, operation).await?;
+                Self::apply_plock_update(
+                    &mut plocks,
+                    sid,
+                    owner,
+                    new_lock,
+                    lock_type,
+                    range,
+                    inode,
+                )?;
+                store
+                    .txn_put_plocks_or_delete(txn, inode, &plocks, operation)
+                    .await
+            })
+        })
+        .await
+    }
+
+    fn apply_plock_update(
+        plocks: &mut Vec<StoredPlock>,
+        sid: Uuid,
+        owner: i64,
+        new_lock: PlockRecord,
+        lock_type: FileLockType,
+        range: FileLockRange,
+        inode: i64,
+    ) -> Result<(), MetaError> {
+        let current_idx = plocks
+            .iter()
+            .position(|plock| plock.sid == sid && plock.owner == owner);
+
+        if lock_type == FileLockType::UnLock {
+            if let Some(idx) = current_idx {
+                let updated = PlockRecord::update_locks(plocks[idx].records.clone(), new_lock);
+                if updated.is_empty() {
+                    plocks.remove(idx);
+                } else {
+                    plocks[idx].records = updated;
+                }
+            }
+            return Ok(());
+        }
+
+        for plock in plocks.iter() {
+            if plock.sid == sid && plock.owner == owner {
+                continue;
+            }
+            if PlockRecord::check_conflict(&lock_type, &range, &plock.records) {
+                return Err(MetaError::LockConflict {
+                    inode,
+                    owner,
+                    range,
+                });
+            }
+        }
+
+        match current_idx {
+            Some(idx) => {
+                plocks[idx].records =
+                    PlockRecord::update_locks(plocks[idx].records.clone(), new_lock);
+            }
+            None => plocks.push(StoredPlock {
+                sid,
+                owner,
+                records: vec![new_lock],
+            }),
+        }
+
+        Ok(())
     }
 
     async fn txn_next_inode(
@@ -917,6 +1122,13 @@ struct StoredLinkParent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredPlock {
+    sid: Uuid,
+    owner: i64,
+    records: Vec<PlockRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredDelayedSliceRecord {
     id: i64,
     slice_id: u64,
@@ -1004,6 +1216,7 @@ impl MetaStore for TiKvMetaStore {
             rename_exchange: true,
             stat_fs: true,
             compaction: true,
+            plocks: true,
             ..MetaStoreCapabilities::default()
         }
     }
@@ -2555,7 +2768,80 @@ impl MetaStore for TiKvMetaStore {
         .await
     }
 
+    async fn get_plock(
+        &self,
+        inode: i64,
+        query: &FileLockQuery,
+    ) -> Result<FileLockInfo, MetaError> {
+        let operation = "get_plock";
+        let sid = self.lock_session;
+        let query = *query;
+        self.read_txn(operation, |store, txn| {
+            Box::pin(async move {
+                let plocks = store.txn_get_plocks(txn, inode, false, operation).await?;
+
+                if let Some(current) = plocks
+                    .iter()
+                    .find(|plock| plock.sid == sid && plock.owner == query.owner)
+                    && let Some(info) =
+                        PlockRecord::get_plock(&current.records, &query, &sid, &current.sid)
+                {
+                    return Ok(info);
+                }
+
+                for plock in &plocks {
+                    if plock.sid == sid && plock.owner == query.owner {
+                        continue;
+                    }
+                    if let Some(info) =
+                        PlockRecord::get_plock(&plock.records, &query, &sid, &plock.sid)
+                    {
+                        return Ok(info);
+                    }
+                }
+
+                Ok(FileLockInfo {
+                    lock_type: FileLockType::UnLock,
+                    range: FileLockRange { start: 0, end: 0 },
+                    pid: 0,
+                })
+            })
+        })
+        .await
+    }
+
+    async fn set_plock(
+        &self,
+        inode: i64,
+        owner: i64,
+        block: bool,
+        lock_type: FileLockType,
+        range: FileLockRange,
+        pid: u32,
+    ) -> Result<(), MetaError> {
+        let new_lock = PlockRecord::new(lock_type, pid, range.start, range.end);
+        let mut attempt = 0usize;
+
+        loop {
+            match self
+                .try_set_plock(inode, owner, new_lock, lock_type, range)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(MetaError::LockConflict { .. }) if block => {
+                    Self::retry_delay(attempt).await;
+                    attempt = attempt.saturating_add(1);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
+        if key == SLICE_ID_KEY {
+            return self.next_leased_slice_id().await;
+        }
+
         let operation = "next_id";
         let key = key.to_string();
         self.write_txn(operation, |store, txn| {

@@ -14,6 +14,8 @@ data_dir="${BREWFS_DATA_DIR:-${BREWFS_HOME:-/var/lib/brewfs}/data}"
 meta_backend="${BREWFS_META_BACKEND:-redis}"
 meta_url="${BREWFS_META_URL:-}"
 meta_etcd_urls="${BREWFS_META_ETCD_URLS:-http://etcd:2379}"
+meta_tikv_pd_endpoints="${BREWFS_META_TIKV_PD_ENDPOINTS:-pd:2379}"
+meta_tikv_namespace="${BREWFS_META_TIKV_NAMESPACE:-brewfs}"
 sqlite_path="${BREWFS_SQLITE_PATH:-${BREWFS_HOME:-/var/lib/brewfs}/metadata.db}"
 log_file="${BREWFS_LOG_FILE:-/artifacts/brewfs.log}"
 artifact_root="${BREWFS_ARTIFACT_ROOT:-/artifacts}"
@@ -106,6 +108,21 @@ YAML
                 done
                 IFS="$old_ifs"
                 ;;
+            tikv)
+                cat <<YAML
+meta:
+  backend: tikv
+  tikv:
+    pd_endpoints:
+YAML
+                local old_ifs="$IFS"
+                IFS=','
+                for endpoint in $meta_tikv_pd_endpoints; do
+                    echo "      - \"${endpoint}\""
+                done
+                IFS="$old_ifs"
+                echo "    namespace: \"${meta_tikv_namespace}\""
+                ;;
             *)
                 err "unsupported BREWFS_META_BACKEND: $meta_backend"
                 exit 1
@@ -118,7 +135,45 @@ layout:
   chunk_size: ${BREWFS_CHUNK_SIZE:-67108864}
   block_size: ${BREWFS_BLOCK_SIZE:-4194304}
 YAML
+        if [[ -n "${BREWFS_CACHE_ROOT:-}" \
+            || -n "${BREWFS_READ_MEMORY_BYTES:-}" \
+            || -n "${BREWFS_READ_SSD_BYTES:-}" \
+            || -n "${BREWFS_WRITE_MEMORY_BYTES:-}" \
+            || -n "${BREWFS_WRITE_SSD_BYTES:-}" \
+            || -n "${BREWFS_DIRTY_SLICE_TARGET_SIZE:-}" \
+            || -n "${BREWFS_DIRTY_SLICE_MAX_AGE_MS:-}" \
+            || -n "${BREWFS_UPLOAD_CONCURRENCY:-}" \
+            || -n "${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-}" \
+            || -n "${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}" \
+            || -n "${BREWFS_WRITEBACK_MODE:-}" \
+            || -n "${BREWFS_WRITEBACK_PERSIST_SYNC:-}" \
+            || -n "${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-}" \
+            || -n "${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}" \
+            || -n "${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}" \
+            || -n "${BREWFS_MEMORY_BUDGET_BYTES:-}" \
+            || -n "${BREWFS_VERIFY_CACHE_CHECKSUM:-}" ]]; then
+            echo
+            echo "cache:"
+            [[ -n "${BREWFS_CACHE_ROOT:-}" ]] && echo "  root: ${BREWFS_CACHE_ROOT}"
+            [[ -n "${BREWFS_READ_MEMORY_BYTES:-}" ]] && echo "  read_memory_bytes: ${BREWFS_READ_MEMORY_BYTES}"
+            [[ -n "${BREWFS_READ_SSD_BYTES:-}" ]] && echo "  read_ssd_bytes: ${BREWFS_READ_SSD_BYTES}"
+            [[ -n "${BREWFS_WRITE_MEMORY_BYTES:-}" ]] && echo "  write_memory_bytes: ${BREWFS_WRITE_MEMORY_BYTES}"
+            [[ -n "${BREWFS_WRITE_SSD_BYTES:-}" ]] && echo "  write_ssd_bytes: ${BREWFS_WRITE_SSD_BYTES}"
+            [[ -n "${BREWFS_DIRTY_SLICE_TARGET_SIZE:-}" ]] && echo "  dirty_slice_target_size: ${BREWFS_DIRTY_SLICE_TARGET_SIZE}"
+            [[ -n "${BREWFS_DIRTY_SLICE_MAX_AGE_MS:-}" ]] && echo "  dirty_slice_max_age_ms: ${BREWFS_DIRTY_SLICE_MAX_AGE_MS}"
+            [[ -n "${BREWFS_UPLOAD_CONCURRENCY:-}" ]] && echo "  upload_concurrency: ${BREWFS_UPLOAD_CONCURRENCY}"
+            [[ -n "${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-}" ]] && echo "  populate_write_cache_after_upload: ${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD}"
+            [[ -n "${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}" ]] && echo "  persist_write_cache_after_upload: ${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD}"
+            [[ -n "${BREWFS_WRITEBACK_MODE:-}" ]] && echo "  writeback_mode: ${BREWFS_WRITEBACK_MODE}"
+            [[ -n "${BREWFS_WRITEBACK_PERSIST_SYNC:-}" ]] && echo "  writeback_persist_sync: ${BREWFS_WRITEBACK_PERSIST_SYNC}"
+            [[ -n "${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-}" ]] && echo "  writeback_require_stage_before_commit: ${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT}"
+            [[ -n "${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-}" ]] && echo "  writeback_recent_pending_soft_bytes: ${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES}"
+            [[ -n "${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}" ]] && echo "  writeback_recent_pending_hard_bytes: ${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES}"
+            [[ -n "${BREWFS_MEMORY_BUDGET_BYTES:-}" ]] && echo "  memory_budget_bytes: ${BREWFS_MEMORY_BUDGET_BYTES}"
+            [[ -n "${BREWFS_VERIFY_CACHE_CHECKSUM:-}" ]] && echo "  verify_cache_checksum: ${BREWFS_VERIFY_CACHE_CHECKSUM}"
+        fi
     } >"$config_path"
+    return 0
 }
 
 install_mount_helper() {
