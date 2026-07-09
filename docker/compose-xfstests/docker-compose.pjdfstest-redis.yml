@@ -71,7 +71,7 @@ services:
   pjdfstest:
     image: brewfs-pjdfstest:local
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/compose-xfstests/Dockerfile.pjdfstest
     depends_on:
       redis:

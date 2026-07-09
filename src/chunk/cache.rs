@@ -403,7 +403,7 @@ impl DiskStorage {
             if let Ok(meta) = entry.metadata().await
                 && meta.is_file()
             {
-                total += meta.len();
+                total = total.saturating_add(meta.len());
             }
         }
         total
@@ -420,6 +420,30 @@ impl DiskStorage {
     /// Get current bytes used on disk
     pub fn bytes_used(&self) -> u64 {
         self.bytes_used.load(Ordering::Relaxed)
+    }
+
+    fn saturating_fetch_add_bytes(&self, value: u64) -> u64 {
+        let mut current = self.bytes_used.load(Ordering::Relaxed);
+        loop {
+            let next = current.saturating_add(value);
+            match self.bytes_used.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return current,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn saturating_fetch_sub_bytes(&self, value: u64) {
+        let _ = self
+            .bytes_used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(value))
+            });
     }
 
     pub async fn store(&self, key: &str, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
@@ -490,19 +514,18 @@ impl DiskStorage {
         let total_len = (header.len() + data.len() + checksums.len()) as u64;
 
         // Atomically reserve space and trigger eviction if over budget.
-        // fetch_add is atomic — no race between multiple concurrent store() calls.
         if self.max_bytes > 0 {
-            let prev = self.bytes_used.fetch_add(total_len, Ordering::Relaxed);
-            if prev + total_len > self.max_bytes {
+            let prev = self.saturating_fetch_add_bytes(total_len);
+            if prev > self.max_bytes.saturating_sub(total_len) {
                 self.evict_lru(total_len).await;
             }
         } else {
-            self.bytes_used.fetch_add(total_len, Ordering::Relaxed);
+            self.saturating_fetch_add_bytes(total_len);
         }
 
         // If the file already exists, subtract its old size (we already added total_len)
         if let Ok(meta) = tokio::fs::metadata(&filepath).await {
-            self.bytes_used.fetch_sub(meta.len(), Ordering::Relaxed);
+            self.saturating_fetch_sub_bytes(meta.len());
         }
 
         // Write to a private temp file first, then atomically publish it with
@@ -531,7 +554,7 @@ impl DiskStorage {
         if let Err(e) = write_result {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             // Roll back the pre-reserved bytes on write failure
-            self.bytes_used.fetch_sub(total_len, Ordering::Relaxed);
+            self.saturating_fetch_sub_bytes(total_len);
             return Err(e);
         }
 
@@ -627,7 +650,7 @@ impl DiskStorage {
             }
             if tokio::fs::remove_file(path).await.is_ok() {
                 freed += size;
-                self.bytes_used.fetch_sub(*size, Ordering::Relaxed);
+                self.saturating_fetch_sub_bytes(*size);
                 trace!("Evicted cache file: {:?} ({} bytes)", path, size);
             }
         }
@@ -866,7 +889,7 @@ impl DiskStorage {
         let _permit = self.write_sem.clone().acquire_owned().await?;
         match tokio::fs::remove_file(&filepath).await {
             Ok(_) => {
-                self.bytes_used.fetch_sub(file_size, Ordering::Relaxed);
+                self.saturating_fetch_sub_bytes(file_size);
                 debug!("Successfully removed file for key '{}'", key);
                 Ok(())
             }
@@ -2352,6 +2375,23 @@ mod tests {
         storage.store(etag, &test_data).await.unwrap();
 
         // Load the data
+        let loaded_data = storage.load(etag).await.unwrap();
+        assert_eq!(loaded_data, test_data);
+    }
+
+    #[tokio::test]
+    async fn test_store_handles_saturated_disk_usage_counter() {
+        let temp_dir = tempdir().unwrap();
+        let storage = DiskStorage::new(temp_dir.path(), 1024).await.unwrap();
+        storage.bytes_used.store(u64::MAX - 4, Ordering::Relaxed);
+        storage.saturating_fetch_sub_bytes(u64::MAX);
+        assert_eq!(storage.bytes_used(), 0);
+
+        storage.bytes_used.store(u64::MAX - 4, Ordering::Relaxed);
+        let etag = "saturated-budget-counter";
+        let test_data = vec![7u8; 128];
+
+        storage.store(etag, &test_data).await.unwrap();
         let loaded_data = storage.load(etag).await.unwrap();
         assert_eq!(loaded_data, test_data);
     }

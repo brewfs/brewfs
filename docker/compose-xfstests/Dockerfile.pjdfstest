@@ -46,7 +46,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/pjdfstest /opt/pjdfstest
-COPY target/release/brewfs /usr/local/bin/brewfs
+COPY target/docker/brewfs /usr/local/bin/brewfs
 COPY docker/compose-xfstests/run_pjdfstest_in_container.sh /usr/local/bin/run_pjdfstest_in_container.sh
 COPY docker/compose-xfstests/pjdfstest_skip_tests.txt /usr/local/share/brewfs/pjdfstest_skip_tests.txt
 COPY docker/compose-xfstests/pjdfstest-brewfs /opt/pjdfstest/tests/brewfs

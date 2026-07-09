@@ -15,6 +15,8 @@ on:
           - smoke
           - pjdfstest
           - stress-ng
+          - xfstests-smoke
+          - ltp
           - all
       stress_ng_profile:
         description: stress-ng profile for the Docker stress job
@@ -123,14 +125,61 @@ jobs:
           docker compose version
 
       - name: Run pjdfstest
-        run: bash docker/compose-pjdfstest/run_redis_pjdfstest.sh
+        run: bash docker/compose-xfstests/run_redis_pjdfstest.sh
 
       - name: Upload pjdfstest artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pjdfstest-artifacts
-          path: docker/compose-pjdfstest/artifacts/**
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn
+
+  docker-xfstests-smoke:
+    name: Docker xfstests smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.docker_suite == 'xfstests-smoke' || inputs.docker_suite == 'all')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run xfstests smoke
+        run: bash docker/compose-xfstests/run_redis_xfstests.sh --cases "generic/001 generic/002 generic/100"
+
+      - name: Upload xfstests artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-smoke-artifacts
+          path: docker/compose-xfstests/artifacts/**
           if-no-files-found: warn
 
   docker-stress-ng:
@@ -188,5 +237,52 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stress-ng-artifacts-${{ env.STRESS_NG_PROFILE }}
+          path: docker/compose-xfstests/artifacts/**
+          if-no-files-found: warn
+
+  docker-ltp:
+    name: Docker LTP fs
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.docker_suite == 'ltp' || inputs.docker_suite == 'all')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler fuse3
+
+      - name: Enable FUSE
+        run: |
+          sudo modprobe fuse
+          test -e /dev/fuse
+          sudo chmod 666 /dev/fuse
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Run LTP fs
+        run: bash docker/compose-xfstests/run_redis_ltp.sh
+
+      - name: Upload LTP artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ltp-fs-artifacts
           path: docker/compose-xfstests/artifacts/**
           if-no-files-found: warn

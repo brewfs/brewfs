@@ -26,6 +26,7 @@ description:
 options:
   --skip-tests "<case...>"      extra testcase names to skip
   --extra-args "<args...>"      extra arguments passed to runltp
+  --no-default-skip             ignore the built-in BrewFS LTP skip file
   --keep                        do not run compose down after exit (for debugging)
   -h, --help                    show help
 EOF
@@ -42,6 +43,7 @@ require_value() {
 }
 
 KEEP=false
+NO_DEFAULT_SKIP=false
 LTP_SKIP_TESTS_VALUE=""
 LTP_EXTRA_ARGS_VALUE=""
 
@@ -59,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep)
             KEEP=true
+            shift
+            ;;
+        --no-default-skip)
+            NO_DEFAULT_SKIP=true
             shift
             ;;
         -h|--help)
@@ -94,6 +100,9 @@ docker compose "${COMPOSE_ARGS[@]}" build ltp
 export BREWFS_ARTIFACT_DIR="/artifacts/run-${ts}"
 export LTP_SKIP_TESTS="${LTP_SKIP_TESTS_VALUE:-}"
 export LTP_EXTRA_ARGS="${LTP_EXTRA_ARGS_VALUE:-}"
+if [[ "$NO_DEFAULT_SKIP" == true ]]; then
+    export LTP_DEFAULT_SKIP_TESTS_FILE="/dev/null"
+fi
 
 info "start dependency services: redis + rustfs"
 docker compose "${COMPOSE_ARGS[@]}" up -d redis rustfs

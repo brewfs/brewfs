@@ -345,10 +345,16 @@ prepare_ltp_cmdfiles() {
         source_cmdfile="$(resolve_ltp_cmdfile "$scenario")"
         filtered_cmdfile="$ltp_tmp_dir/$(basename "$source_cmdfile").filtered"
 
-        awk '
-            NR == FNR {
-                skip[$1] = 1
-                next
+        awk -v skipfile="$skipfile" '
+            BEGIN {
+                while ((getline line < skipfile) > 0) {
+                    if (line ~ /^[[:space:]]*(#|$)/) {
+                        continue
+                    }
+                    split(line, fields)
+                    skip[fields[1]] = 1
+                }
+                close(skipfile)
             }
             /^[[:space:]]*#/ || NF == 0 {
                 print
@@ -357,7 +363,7 @@ prepare_ltp_cmdfiles() {
             !($1 in skip) {
                 print
             }
-        ' "$skipfile" "$source_cmdfile" >"$filtered_cmdfile"
+        ' "$source_cmdfile" >"$filtered_cmdfile"
 
         filtered_cmdfiles+=("$filtered_cmdfile")
     done

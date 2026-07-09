@@ -52,7 +52,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/ltp /opt/ltp
-COPY target/release/brewfs /usr/local/bin/brewfs
+COPY target/docker/brewfs /usr/local/bin/brewfs
 COPY docker/compose-xfstests/run_ltp_in_container.sh /usr/local/bin/run_ltp_in_container.sh
 COPY docker/compose-xfstests/ltp_skip_tests.txt /usr/local/share/brewfs/ltp_skip_tests.txt
 COPY docker/ltp_report.sh /usr/local/bin/ltp_report.sh

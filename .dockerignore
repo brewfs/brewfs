@@ -6,6 +6,11 @@ target/
 **/target/
 **/.DS_Store
 *.log
+docker/compose-xfstests/artifacts/
+docker/compose-xfstests/results/
+docker/compose-xfstests/logs/
 !target/
-!target/release/
-!target/release/brewfs
+target/*
+!target/docker/
+target/docker/*
+!target/docker/brewfs
