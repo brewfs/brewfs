@@ -153,6 +153,18 @@ impl S3Backend {
         ByteStream::from_body_0_4(Body::wrap_stream(stream))
     }
 
+    fn direct_stream_from_chunks(chunks: &[Bytes], total_size: usize) -> ByteStream {
+        if let [chunk] = chunks {
+            return SdkBody::from(chunk.clone()).into();
+        }
+
+        let mut data = Vec::with_capacity(total_size);
+        for chunk in chunks {
+            data.extend_from_slice(chunk);
+        }
+        SdkBody::from(data).into()
+    }
+
     #[tracing::instrument(level = "debug", skip(self, chunks), fields(key, total_size))]
     async fn put_object_vectored_simple(&self, key: &str, chunks: Vec<Bytes>) -> Result<()> {
         let total_size = chunks.iter().map(|c| c.len()).sum::<usize>();
@@ -167,7 +179,7 @@ impl S3Backend {
         loop {
             attempt += 1;
 
-            let body = Self::stream_from_chunks(&chunks);
+            let body = Self::direct_stream_from_chunks(&chunks, total_size);
             let mut request = self
                 .client
                 .put_object()
@@ -545,7 +557,8 @@ impl ObjectBackend for S3Backend {
             return self.put_object_simple(key, &[]).await;
         }
         if total_size <= self.config.part_size {
-            // Use streaming body to avoid copying chunks into a contiguous Vec.
+            // RustFS is more reliable with a direct small-object body; single-chunk
+            // writes keep the Bytes allocation shared and multi-chunk writes copy once.
             return self.put_object_vectored_simple(key, chunks).await;
         }
 
@@ -669,6 +682,7 @@ mod tests {
     use super::*;
     use aws_sdk_s3::Config;
     use aws_sdk_s3::config::{Credentials, Region};
+    use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
 
     #[test]
@@ -676,6 +690,23 @@ mod tests {
         let config = S3Config::default();
 
         assert_eq!(config.max_concurrency, 32);
+    }
+
+    #[tokio::test]
+    async fn small_vectored_direct_stream_preserves_chunks() {
+        let chunks = vec![
+            Bytes::from_static(b"small-"),
+            Bytes::from_static(b"vectored-"),
+            Bytes::from_static(b"put"),
+        ];
+        let total_size = chunks.iter().map(|chunk| chunk.len()).sum();
+        let mut reader =
+            S3Backend::direct_stream_from_chunks(&chunks, total_size).into_async_read();
+        let mut actual = Vec::new();
+
+        reader.read_to_end(&mut actual).await.unwrap();
+
+        assert_eq!(actual, b"small-vectored-put");
     }
 
     fn test_backend() -> S3Backend {
@@ -718,12 +749,12 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires live S3-compatible endpoint; set BREWFS_S3_ENDPOINT and BREWFS_S3_BUCKET"]
-    async fn rustfs_small_object_streaming_body_compat() {
+    async fn rustfs_small_object_vectored_put_compat() {
         let backend = test_backend();
-        let prefix = format!("diagnostics/rustfs-streaming-body/{}/", std::process::id());
+        let prefix = format!("diagnostics/rustfs-vectored-put/{}/", std::process::id());
         let simple_key = format!("{prefix}simple");
-        let streaming_key = format!("{prefix}streaming");
-        let payload = b"small-object-streaming-body-compat-payload";
+        let vectored_key = format!("{prefix}vectored");
+        let payload = b"small-object-vectored-put-compat-payload";
         let chunks = vec![
             Bytes::copy_from_slice(&payload[..7]),
             Bytes::copy_from_slice(&payload[7..24]),
@@ -741,19 +772,18 @@ mod tests {
 
         timeout(
             Duration::from_secs(10),
-            backend.put_object_vectored_simple(&streaming_key, chunks),
+            backend.put_object_vectored_simple(&vectored_key, chunks),
         )
         .await
-        .expect("streaming body put_object timed out; contiguous put_object already succeeded")
-        .expect("streaming body put_object returned an error");
+        .expect("vectored put_object timed out; contiguous put_object already succeeded")
+        .expect("vectored put_object returned an error");
 
-        assert_eq!((), ());
         assert_eq!(
-            backend.get_object(&streaming_key).await.unwrap().as_deref(),
+            backend.get_object(&vectored_key).await.unwrap().as_deref(),
             Some(payload.as_slice())
         );
 
         let _ = backend.delete_object(&simple_key).await;
-        let _ = backend.delete_object(&streaming_key).await;
+        let _ = backend.delete_object(&vectored_key).await;
     }
 }

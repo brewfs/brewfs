@@ -24,8 +24,6 @@ generic/647 # mmap-rw-fault: O_DIRECT pread from hole returns wrong data
 generic/729 # same as 647, different test variant
 # Fallocate insert range: brewfs fallocate only supports mode=0 (alloc)
 generic/735 # xfs_io finsert requires FALLOC_FL_INSERT_RANGE
-# Test binary buffer overflow triggered by FUSE readdir behavior
-generic/736 # readdir-while-renames buffer overflow (test binary issue with FUSE)
 # FUSE mount subtype detection: xfstests _check_mounted_on expects "fuse" but
 # /proc/mounts shows "fuse.brewfs" due to kernel subtype registration
 generic/095 # _check_mounted_on fstype mismatch: fuse vs fuse.brewfs

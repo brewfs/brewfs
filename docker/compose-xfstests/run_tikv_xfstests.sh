@@ -22,6 +22,7 @@ usage() {
   - 对象存储固定使用 rustfs（BREWFS_DATA_BACKEND=s3）
   - 测试产物输出到: $ARTIFACTS_DIR
   - 当前 TiKV MetaStore 仍是第一版骨架；该脚本用于持续维护测试入口并暴露真实失败点
+  - 本地重复调试可设置 BREWFS_REUSE_HOST_BINARY=1 复用 target/docker/brewfs
 
 选项:
   --cases "<case...>"        只跑指定用例，例如: "generic/001 generic/002"
@@ -107,9 +108,28 @@ fi
 
 mkdir -p "$ARTIFACTS_DIR"
 
+# Keep the heavy RustFS object data scoped to this run.  Compose named volumes
+# can survive interrupted TiKV/FUSE diagnostics; a per-run host directory is
+# cheaper to inspect and remove.
+export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
+export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-268435456}"
+export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-1048576}"
+export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-134217728}"
+export BREWFS_WRITE_SSD_BYTES="${BREWFS_WRITE_SSD_BYTES:-1048576}"
+export BREWFS_DIRTY_SLICE_TARGET_SIZE="${BREWFS_DIRTY_SLICE_TARGET_SIZE:-4194304}"
+export BREWFS_DIRTY_SLICE_MAX_AGE_MS="${BREWFS_DIRTY_SLICE_MAX_AGE_MS:-500}"
+export BREWFS_UPLOAD_CONCURRENCY="${BREWFS_UPLOAD_CONCURRENCY:-4}"
+export BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-false}"
+export BREWFS_MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-536870912}"
+
 ts="$(date +%s)-$RANDOM"
 PROJECT_NAME="brewfs-tikv-${ts}"
 COMPOSE_ARGS=(-f "$COMPOSE_FILE" -p "$PROJECT_NAME")
+DEFAULT_RUSTFS_DATA_HOST_DIR="$ARTIFACTS_DIR/rustfs-data-tikv-${ts}"
+RUSTFS_DATA_HOST_DIR_WAS_SET="${RUSTFS_DATA_HOST_DIR:+1}"
+export RUSTFS_DATA_HOST_DIR="${RUSTFS_DATA_HOST_DIR:-$DEFAULT_RUSTFS_DATA_HOST_DIR}"
+mkdir -p "$RUSTFS_DATA_HOST_DIR"
+chmod 0777 "$RUSTFS_DATA_HOST_DIR"
 
 cleanup() {
     if [[ "$KEEP" == true ]]; then
@@ -117,6 +137,9 @@ cleanup() {
         return 0
     fi
     docker compose "${COMPOSE_ARGS[@]}" down -v >/dev/null 2>&1 || true
+    if [[ -z "$RUSTFS_DATA_HOST_DIR_WAS_SET" ]]; then
+        rm -rf "$RUSTFS_DATA_HOST_DIR"
+    fi
 }
 trap cleanup EXIT INT TERM
 

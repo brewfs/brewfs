@@ -1,6 +1,4 @@
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,7 +24,7 @@ fn main() {
     let dirty = git_output(&manifest_dir, &["status", "--porcelain"])
         .map(|status| if status.is_empty() { "false" } else { "true" })
         .unwrap_or("unknown");
-    let build_timestamp = build_timestamp();
+    let build_timestamp = build_timestamp(&manifest_dir);
 
     println!("cargo:rustc-env=BREWFS_GIT_COMMIT={commit}");
     println!("cargo:rustc-env=BREWFS_GIT_COMMIT_SHORT={short_commit}");
@@ -50,39 +48,32 @@ fn git_output(cwd: &str, args: &[&str]) -> Option<String> {
 }
 
 fn emit_git_rerun_hints(manifest_dir: &str) {
-    let Some(git_dir) = git_output(manifest_dir, &["rev-parse", "--git-dir"]) else {
-        return;
-    };
+    if let Some(head_path) = git_path(manifest_dir, "HEAD") {
+        println!("cargo:rerun-if-changed={head_path}");
+    }
 
-    let git_dir = absolutize_git_dir(manifest_dir, &git_dir);
-    let head_path = git_dir.join("HEAD");
-    println!("cargo:rerun-if-changed={}", head_path.display());
+    if let Some(ref_name) = git_output(manifest_dir, &["symbolic-ref", "-q", "HEAD"])
+        && let Some(ref_path) = git_path(manifest_dir, &ref_name)
+    {
+        println!("cargo:rerun-if-changed={ref_path}");
+    }
 
-    let Ok(head) = fs::read_to_string(&head_path) else {
-        return;
-    };
-
-    let Some(ref_name) = head.strip_prefix("ref:").map(str::trim) else {
-        return;
-    };
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join(ref_name).display()
-    );
-}
-
-fn absolutize_git_dir(manifest_dir: &str, git_dir: &str) -> PathBuf {
-    let git_path = PathBuf::from(git_dir);
-    if git_path.is_absolute() {
-        git_path
-    } else {
-        Path::new(manifest_dir).join(git_path)
+    if let Some(index_path) = git_path(manifest_dir, "index") {
+        println!("cargo:rerun-if-changed={index_path}");
     }
 }
 
-fn build_timestamp() -> String {
+fn git_path(manifest_dir: &str, path: &str) -> Option<String> {
+    git_output(manifest_dir, &["rev-parse", "--git-path", path])
+}
+
+fn build_timestamp(manifest_dir: &str) -> String {
     if let Ok(epoch) = env::var("SOURCE_DATE_EPOCH") {
         return format!("unix:{epoch}");
+    }
+
+    if let Some(commit_epoch) = git_output(manifest_dir, &["show", "-s", "--format=%ct", "HEAD"]) {
+        return format!("unix:{commit_epoch}");
     }
 
     let seconds = SystemTime::now()

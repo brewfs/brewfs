@@ -24,6 +24,7 @@ usage() {
   - 可选附带运行宿主机上的 brewfs_bench
   - 测试产物输出到: $ARTIFACTS_DIR/perf-run-*
   - 当前 TiKV MetaStore 仍是第一版骨架；该脚本用于持续维护性能入口并暴露真实失败点
+  - 本地重复调试可设置 BREWFS_REUSE_HOST_BINARY=1 复用 target/docker/brewfs
 
 选项:
   --s3                       使用 rustfs 作为对象存储（默认）

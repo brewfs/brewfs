@@ -11,6 +11,7 @@ use crate::meta::store::{
     AclRule, MetaError, MetaStore, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::posix::NAME_MAX;
+use asyncfuse::notify::Notify as FuseNotify;
 use dashmap::{DashMap, Entry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +26,11 @@ const SPARSE_ZERO_MAX_SCAN_BYTES: usize = 128 * 1024;
 const FUSE_STATFS_CACHE_TTL: Duration = Duration::from_secs(1);
 const FALLOCATE_STATFS_CACHE_TTL: Duration = Duration::from_millis(100);
 const FALLOCATE_ALLOCATION_UNIT: u64 = 4096;
+const FUSE_SPLIT_WRITE_ALIGNMENT: u64 = 4096;
+const FUSE_SPLIT_WRITE_BARRIER_TTL: Duration = Duration::from_millis(10);
+const FUSE_LOCKED_SPLIT_WRITE_BARRIER_TTL: Duration = Duration::from_millis(50);
+// FUSE_NOTIFY_INVAL_INODE uses len=0 to invalidate all cached pages for an inode.
+const FUSE_KERNEL_INVALIDATE_ALL_LEN: i64 = 0;
 
 /// Rename operation flags (similar to Linux renameat2 flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -287,7 +293,9 @@ where
     reader: Arc<DataReader<S, M>>,
     writer: Arc<DataWriter<S, M>>,
     append_locks: DashMap<i64, Arc<Mutex<()>>>,
-    fuse_cached_write_order: Arc<FuseCachedWriteOrder>,
+    split_write_barriers: DashMap<i64, SplitWriteBarrier>,
+    fuse_write_order: Arc<FuseWriteOrder>,
+    fuse_notify: StdMutex<Option<FuseNotify>>,
     statfs_cache: StdMutex<Option<StatFsCache>>,
     fallocate_statfs_cache: StdMutex<Option<FallocateStatFsCache>>,
     posix_lock_owners: DashMap<(i64, i64), ()>,
@@ -295,6 +303,13 @@ where
     pub(crate) stats: Arc<crate::vfs::stats::FsStats>,
     memory_budget: Option<MemoryBudget>,
     vfs_timing_enabled: bool,
+}
+
+#[derive(Clone)]
+struct SplitWriteBarrier {
+    boundary: u64,
+    until: Instant,
+    notify: Arc<Notify>,
 }
 
 struct FallocateStatFsCache {
@@ -308,26 +323,26 @@ struct StatFsCache {
 }
 
 #[derive(Default)]
-pub(crate) struct FuseCachedWriteOrder {
+pub(crate) struct FuseWriteOrder {
     pending: StdMutex<BTreeMap<i64, BTreeSet<u64>>>,
     notify: Notify,
 }
 
-pub(crate) struct FuseCachedWriteGuard {
-    order: Arc<FuseCachedWriteOrder>,
+pub(crate) struct FuseWriteGuard {
+    order: Arc<FuseWriteOrder>,
     ino: i64,
     unique: u64,
 }
 
-impl FuseCachedWriteOrder {
-    fn begin(self: &Arc<Self>, ino: i64, unique: u64) -> FuseCachedWriteGuard {
+impl FuseWriteOrder {
+    fn begin(self: &Arc<Self>, ino: i64, unique: u64) -> FuseWriteGuard {
         self.pending
             .lock()
-            .expect("fuse cached write order lock poisoned")
+            .expect("fuse write order lock poisoned")
             .entry(ino)
             .or_default()
             .insert(unique);
-        FuseCachedWriteGuard {
+        FuseWriteGuard {
             order: Arc::clone(self),
             ino,
             unique,
@@ -351,7 +366,7 @@ impl FuseCachedWriteOrder {
     fn has_prior(&self, ino: i64, unique: u64) -> bool {
         self.pending
             .lock()
-            .expect("fuse cached write order lock poisoned")
+            .expect("fuse write order lock poisoned")
             .get(&ino)
             .and_then(|pending| pending.iter().next().copied())
             .is_some_and(|first| first < unique)
@@ -359,10 +374,7 @@ impl FuseCachedWriteOrder {
 
     fn finish(&self, ino: i64, unique: u64) {
         let removed = {
-            let mut pending = self
-                .pending
-                .lock()
-                .expect("fuse cached write order lock poisoned");
+            let mut pending = self.pending.lock().expect("fuse write order lock poisoned");
             let Some(writes) = pending.get_mut(&ino) else {
                 return;
             };
@@ -378,7 +390,7 @@ impl FuseCachedWriteOrder {
     }
 }
 
-impl Drop for FuseCachedWriteGuard {
+impl Drop for FuseWriteGuard {
     fn drop(&mut self) {
         self.order.finish(self.ino, self.unique);
     }
@@ -494,7 +506,9 @@ where
             reader,
             writer,
             append_locks: DashMap::new(),
-            fuse_cached_write_order: Arc::new(FuseCachedWriteOrder::default()),
+            split_write_barriers: DashMap::new(),
+            fuse_write_order: Arc::new(FuseWriteOrder::default()),
+            fuse_notify: StdMutex::new(None),
             statfs_cache: StdMutex::new(None),
             fallocate_statfs_cache: StdMutex::new(None),
             posix_lock_owners: DashMap::new(),
@@ -1173,15 +1187,145 @@ where
         self.state.handles.mark_write_dirty(fh)
     }
 
-    pub(crate) fn begin_fuse_cached_write(&self, ino: i64, unique: u64) -> FuseCachedWriteGuard {
-        self.state.fuse_cached_write_order.begin(ino, unique)
+    pub(crate) fn begin_fuse_write(&self, ino: i64, unique: u64) -> FuseWriteGuard {
+        self.state.fuse_write_order.begin(ino, unique)
     }
 
-    pub(crate) async fn wait_for_prior_fuse_cached_writes(&self, ino: i64, unique: u64) {
+    pub(crate) async fn wait_for_prior_fuse_writes(&self, ino: i64, unique: u64) {
         self.state
-            .fuse_cached_write_order
+            .fuse_write_order
             .wait_for_prior(ino, unique)
             .await;
+    }
+
+    pub(crate) fn set_fuse_notify(&self, notify: FuseNotify) {
+        *self
+            .state
+            .fuse_notify
+            .lock()
+            .expect("fuse notify lock poisoned") = Some(notify);
+    }
+
+    fn fuse_notify(&self) -> Option<FuseNotify> {
+        self.state
+            .fuse_notify
+            .lock()
+            .expect("fuse notify lock poisoned")
+            .clone()
+    }
+
+    fn notify_kernel_invalidate_inode_all(&self, ino: i64) {
+        self.notify_kernel_invalidate_inode(ino, 0, FUSE_KERNEL_INVALIDATE_ALL_LEN);
+    }
+
+    fn notify_kernel_invalidate_inode_range(&self, ino: i64, offset: u64, len: u64) {
+        if len == 0 {
+            return;
+        }
+        let Ok(offset) = i64::try_from(offset) else {
+            return;
+        };
+        let len = i64::try_from(len).unwrap_or(i64::MAX);
+        self.notify_kernel_invalidate_inode(ino, offset, len);
+    }
+
+    fn notify_kernel_invalidate_inode(&self, ino: i64, offset: i64, len: i64) {
+        let Some(notify) = self.fuse_notify() else {
+            return;
+        };
+        tokio::spawn(async move {
+            notify.invalid_inode(ino as u64, offset, len).await;
+        });
+    }
+
+    fn update_split_write_barrier(&self, ino: i64, offset: u64, written: usize) {
+        if written == 0 {
+            return;
+        }
+
+        let should_clear = self
+            .state
+            .split_write_barriers
+            .get(&ino)
+            .is_some_and(|barrier| barrier.boundary == offset);
+        if should_clear {
+            if let Some((_, barrier)) = self.state.split_write_barriers.remove(&ino) {
+                barrier.notify.notify_waiters();
+            }
+            return;
+        }
+
+        let written = written as u64;
+        let end = offset.saturating_add(written);
+        let prefix_to_alignment = !offset.is_multiple_of(FUSE_SPLIT_WRITE_ALIGNMENT)
+            && end.is_multiple_of(FUSE_SPLIT_WRITE_ALIGNMENT)
+            && written <= FUSE_SPLIT_WRITE_ALIGNMENT;
+        if prefix_to_alignment {
+            let ttl = if self.has_posix_locks_for_inode(ino) {
+                FUSE_LOCKED_SPLIT_WRITE_BARRIER_TTL
+            } else {
+                FUSE_SPLIT_WRITE_BARRIER_TTL
+            };
+            self.state.split_write_barriers.insert(
+                ino,
+                SplitWriteBarrier {
+                    boundary: end,
+                    until: Instant::now() + ttl,
+                    notify: Arc::new(Notify::new()),
+                },
+            );
+        }
+    }
+
+    async fn wait_split_write_barrier(&self, ino: i64, offset: u64, len: usize) {
+        if len == 0 {
+            return;
+        }
+
+        let end = offset.saturating_add(len as u64);
+        let Some(barrier) = self
+            .state
+            .split_write_barriers
+            .get(&ino)
+            .map(|barrier| barrier.value().clone())
+        else {
+            return;
+        };
+        if end <= barrier.boundary {
+            return;
+        }
+
+        let now = Instant::now();
+        if now >= barrier.until {
+            self.state.split_write_barriers.remove(&ino);
+            return;
+        }
+
+        let notified = barrier.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        let still_current = self
+            .state
+            .split_write_barriers
+            .get(&ino)
+            .is_some_and(|current| {
+                current.boundary == barrier.boundary
+                    && Arc::ptr_eq(&current.notify, &barrier.notify)
+            });
+        if !still_current {
+            return;
+        }
+
+        tokio::select! {
+            _ = notified => {}
+            _ = tokio::time::sleep(barrier.until - now) => {
+                let _ = self.state.split_write_barriers.remove_if(&ino, |_, current| {
+                    current.boundary == barrier.boundary
+                        && Arc::ptr_eq(&current.notify, &barrier.notify)
+                });
+            }
+        }
     }
 
     pub(crate) fn handle_allows_write_for_inode(&self, fh: u64, ino: i64) -> bool {
@@ -2503,6 +2647,7 @@ where
             attr.size = size;
             self.state.handles.update_attr_for_inode(ino, &attr);
         }
+        self.notify_kernel_invalidate_inode_all(ino);
 
         drop(guards);
         Ok(())
@@ -2662,6 +2807,7 @@ where
             inode.set_exact_allocated_bytes(attr.blocks.saturating_mul(512));
         }
         self.state.handles.update_attr_for_inode(ino, &attr);
+        self.notify_kernel_invalidate_inode_range(ino, offset, length);
         Ok(attr)
     }
 
@@ -2791,6 +2937,9 @@ where
         }
 
         self.state.handles.update_attr_for_inode(ino, &attr);
+        if req.size.is_some() {
+            self.notify_kernel_invalidate_inode_all(ino);
+        }
 
         // _guards dropped here — after meta_set_attr has read the correct state
         Ok(attr)
@@ -2901,6 +3050,8 @@ where
             return Ok(Vec::new());
         }
         let actual_len = len.min((file_size - offset) as usize);
+        self.wait_split_write_barrier(handle.ino, offset, actual_len)
+            .await;
 
         // Fast path for ranges fully covered by live dirty or recently committed
         // writeback-overlay data.  This also helps read-only handles opened after
@@ -2937,15 +3088,19 @@ where
             .wait_committed_uploads_for_range(handle.ino as u64, offset, actual_len)
             .await
             .map_err(VfsError::from)?;
+        let dirty_snapshot = self
+            .state
+            .writer
+            .snapshot_dirty_overlay_if_exists(handle.ino as u64, offset, actual_len)
+            .await
+            .map_err(VfsError::from)?;
         // Read committed data from the reader cache first, then overlay any
         // uncommitted dirty writes on top.
         // There is a narrow race where commit_chunk pops a just-committed
         // slice between handle.read() and overlay_dirty_if_exists().  In that
-        // window the reader may serve a stale cached page that has already
-        // been superseded.  The window is on the order of microseconds and a
-        // subsequent read will see the correct data, so this is an acceptable
-        // trade-off versus the 35+ ms read latency incurred by the
-        // synchronous flush.
+        // window the reader may serve a stale cached page.  Keep a small
+        // snapshot of overlapping dirty bytes taken before the backend read so
+        // the current read can still see the write that won the race.
         let inode = self.ensure_inode_registered(handle.ino).await?;
         handle.ensure_reader_with(|| self.state.reader.open_for_handle(inode, fh));
         let mut data = {
@@ -2958,6 +3113,13 @@ where
                 .await
                 .map_err(VfsError::from)?
         };
+        for patch in dirty_snapshot {
+            if patch.offset >= data.len() {
+                continue;
+            }
+            let end = (patch.offset + patch.data.len()).min(data.len());
+            data[patch.offset..end].copy_from_slice(&patch.data[..end - patch.offset]);
+        }
         {
             let _overlay_timer = self.vfs_timing_timer(
                 &self.state.stats.vfs_read_overlay_ops,
@@ -2983,8 +3145,6 @@ where
         if data.is_empty() {
             return Ok(0);
         }
-        let data_len = data.len() as u64;
-
         let handle = self.file_handle_required(fh)?;
 
         if !handle.flags.write {
@@ -2995,9 +3155,20 @@ where
 
         tracing::trace!(fh, ino = handle.ino, offset, len = data.len(), "vfs.write");
 
+        let mutation_lock = self.state.append_lock(handle.ino);
+        let _mutation_guard = mutation_lock.lock_owned().await;
+
+        self.write_with_inode_lock_held(handle, offset, data).await
+    }
+
+    async fn write_with_inode_lock_held(
+        &self,
+        handle: Arc<FileHandle<S, M>>,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<usize, VfsError> {
+        let data_len = data.len() as u64;
         let (write_offset, written) = if handle.flags.append {
-            let append_lock = self.state.append_lock(handle.ino);
-            let _append_guard = append_lock.lock().await;
             let _handle_guard = handle.lock_write().await;
 
             let append_offset = self.inode_size(handle.ino).await?;
@@ -3023,7 +3194,7 @@ where
                 written
             };
             tracing::debug!(
-                fh,
+                fh = handle.fh,
                 ino = handle.ino,
                 append_offset,
                 len = data.len(),
@@ -3071,9 +3242,8 @@ where
         let _ = self
             .state
             .reader
-            .invalidate(handle.ino as u64, write_offset, data.len())
+            .invalidate(handle.ino as u64, write_offset, written)
             .await;
-
         // Keep local inode and handle sizes in sync immediately.  Metadata size
         // is persisted by the writer commit/flush path; doing it here forces
         // every write through metadata and makes buffered writes serialize on
@@ -3082,9 +3252,10 @@ where
         if new_end > handle.attr().size {
             self.extend_local_file_size(handle.ino, new_end);
         }
+        self.update_split_write_barrier(handle.ino, write_offset, written);
 
         tracing::trace!(
-            fh,
+            fh = handle.fh,
             ino = handle.ino,
             offset = write_offset,
             written,
@@ -3135,13 +3306,13 @@ where
             .reader
             .invalidate(ino as u64, offset, data.len())
             .await;
-
         // Keep local size visible immediately; metadata is extended when the
         // writer commits dirty slices.
         let new_end = offset + written as u64;
         if new_end > attr.size {
             self.extend_local_file_size(ino, new_end);
         }
+        self.update_split_write_barrier(ino, offset, written);
 
         Ok(written)
     }
@@ -3149,17 +3320,11 @@ where
     /// Write back a kernel-cached page by inode. This is the hot path for
     /// FUSE_WRITE_CACHE (mmap writeback, kernel page cache flush).
     ///
-    /// Unlike normal writes, cached writeback does NOT acquire the per-inode
-    /// mutation lock.  The writer's internal slice-level locking is sufficient
-    /// to handle concurrent cached pages.  Truncate correctness is preserved
-    /// because truncate_inode / set_attr first drain all pending writes via
-    /// flush_before_truncate, then acquire the mutation lock and call
-    /// writer.clear().
-    ///
-    /// We also skip meta_stat_required (the kernel only sends WRITE_CACHE for
-    /// inodes that are already open files) and reader.invalidate (commit_chunk
-    /// invalidates the reader at commit time; doing it on every page write
-    /// adds measurable latency under heavy mmap traffic).
+    /// The kernel only sends WRITE_CACHE for inodes that are already open files,
+    /// so this path skips meta_stat_required.  It still invalidates BrewFS'
+    /// userspace reader cache immediately: commit-time invalidation is too late
+    /// for read-after-write workloads that keep dirty pages in memory before
+    /// fsync/flush.
     pub async fn write_cached_ino(
         &self,
         ino: i64,
@@ -3188,6 +3353,16 @@ where
             .write_at_cached(offset, data, creation_unique)
             .await
             .map_err(VfsError::from)?;
+
+        let _ = self
+            .state
+            .reader
+            .invalidate(ino as u64, offset, written)
+            .await;
+        let new_end = offset + written as u64;
+        if new_end > inode.file_size() {
+            self.extend_local_file_size(ino, new_end);
+        }
 
         Ok(written)
     }
@@ -3228,18 +3403,6 @@ where
             return Err(VfsError::PermissionDenied {
                 path: PathHint::none(),
             });
-        }
-
-        let mut locked = Vec::new();
-        let mut unique = BTreeMap::new();
-        for handle in self.file_handles_for_inode(src.ino) {
-            unique.insert(handle.fh, handle);
-        }
-        for handle in self.file_handles_for_inode(dst.ino) {
-            unique.insert(handle.fh, handle);
-        }
-        for handle in unique.into_values() {
-            locked.push(handle.lock_write().await);
         }
 
         self.state
@@ -3286,13 +3449,16 @@ where
         // Read the full source snapshot before writing so same-file overlap keeps
         // copy_file_range semantics close to a memmove-style copy.
         let data = src_guard.read(off_in, len).await?;
-        let written = dst_guard.write(off_out, &data).await?;
+        let dst_handle = self.file_handle_required(dst_guard.fh())?;
+        let written = self
+            .write_with_inode_lock_held(dst_handle, off_out, &data)
+            .await?;
 
         // Close guards to flush and commit before releasing locks.
         dst_guard.close().await?;
         src_guard.close().await?;
         self.state.reader.invalidate_all(dst.ino as u64).await;
-        drop(locked);
+        self.notify_kernel_invalidate_inode_range(dst.ino, off_out, written as u64);
         drop(mutation_guards);
 
         Ok(written)
@@ -3882,6 +4048,13 @@ where
             .posix_lock_owners
             .remove(&(inode, owner))
             .is_some()
+    }
+
+    pub(crate) fn has_posix_locks_for_inode(&self, inode: i64) -> bool {
+        self.state
+            .posix_lock_owners
+            .iter()
+            .any(|entry| entry.key().0 == inode)
     }
 
     /// Set xattr for a given inode.

@@ -24,6 +24,7 @@ use crate::vfs::error::{PathHint, VfsError};
 use crate::vfs::fs::{CreateFileAtResult, FileAttr as VfsFileAttr, FileType as VfsFileType, VFS};
 use asyncfuse::Errno;
 use asyncfuse::Result as FuseResult;
+use asyncfuse::notify::Notify as FuseNotify;
 use asyncfuse::raw::Request;
 use asyncfuse::raw::flags::{FOPEN_DIRECT_IO, FOPEN_KEEP_CACHE, FUSE_WRITE_CACHE};
 use asyncfuse::raw::reply::{
@@ -136,6 +137,7 @@ const STATS_FILE_SIZE: u64 = 16 * 1024;
 const STATS_FILE_BLOCKS: u64 = 32;
 const STATS_FILE_BLOCK_SIZE: u32 = 4096;
 pub(crate) const BREWFS_FUSE_MAX_WRITE: u32 = 4 * 1024 * 1024;
+const FUSE_LOCKED_READ_ORDER_GRACE: Duration = Duration::from_millis(1);
 #[cfg(all(test, target_os = "linux"))]
 mod mount_tests {
     use super::*;
@@ -522,6 +524,14 @@ where
         })
     }
 
+    async fn init_with_notify(&self, _req: Request, notify: FuseNotify) -> FuseResult<ReplyInit> {
+        self.set_fuse_notify(notify);
+        Ok(ReplyInit {
+            max_write: NonZeroU32::new(BREWFS_FUSE_MAX_WRITE)
+                .expect("BrewFS FUSE max_write must be non-zero"),
+        })
+    }
+
     async fn destroy(&self, _req: Request) {}
 
     // Call into VFS to resolve parent inode + name → child inode; if found, build ReplyEntry
@@ -694,7 +704,14 @@ where
             &self.stats().fuse_read_lat_us,
         );
         debug!(ino, fh, offset, size, "fuse.read");
-        self.wait_for_prior_fuse_cached_writes(ino as i64, req.unique)
+        if self.has_posix_locks_for_inode(ino as i64) {
+            // asyncfuse can schedule a later read before an earlier write task
+            // has registered itself.  Locked workloads such as LTP doio issue
+            // page-aligned reads across adjacent locked ranges and expect FUSE
+            // unique order to be preserved.
+            tokio::time::sleep(FUSE_LOCKED_READ_ORDER_GRACE).await;
+        }
+        self.wait_for_prior_fuse_writes(ino as i64, req.unique)
             .await;
 
         let data = if fh != 0 {
@@ -779,8 +796,8 @@ where
             write_flags,
             "fuse.write"
         );
-        let _cached_write_guard = if write_flags & FUSE_WRITE_CACHE != 0 && !data.is_empty() {
-            Some(self.begin_fuse_cached_write(ino as i64, req.unique))
+        let _write_guard = if !data.is_empty() {
+            Some(self.begin_fuse_write(ino as i64, req.unique))
         } else {
             None
         };
@@ -1808,7 +1825,7 @@ where
             return Ok(());
         }
         debug!(fh, inode, "fuse.flush");
-        self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+        self.wait_for_prior_fuse_writes(inode as i64, req.unique)
             .await;
         self.unlock_owner_locks(inode, lock_owner).await;
         self.flush_dirty_handle_snapshot(fh)
@@ -1820,7 +1837,7 @@ where
     // Sync file content to backend
     async fn fsync(&self, req: Request, inode: u64, fh: u64, datasync: bool) -> FuseResult<()> {
         debug!(fh, datasync, "fuse.fsync");
-        self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+        self.wait_for_prior_fuse_writes(inode as i64, req.unique)
             .await;
         self.fsync_snapshot(fh, datasync).await.map_err(Errno::from)
     }
@@ -1846,7 +1863,7 @@ where
                 inode_mutation_access_mask(),
             )
             .await?;
-            self.wait_for_prior_fuse_cached_writes(inode as i64, req.unique)
+            self.wait_for_prior_fuse_writes(inode as i64, req.unique)
                 .await;
         }
         if fh != 0 {

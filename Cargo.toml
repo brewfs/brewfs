@@ -31,7 +31,7 @@ rks = { path = "rks" }
 dagrs-derive = { path = "dagrs-derive", version = "0.5.0" }
 quote = "1.0"
 proc-macro2 = "1.0"
-asyncfuse = { version = "0.0.8", default-features = false }
+asyncfuse = { version = "0.0.9", default-features = false }
 brewfs = { path = "." }
 libcgroups = { version = "0.5.7", default-features = false }
 libcontainer = "0.5.7"

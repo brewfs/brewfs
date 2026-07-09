@@ -371,6 +371,11 @@ pub(crate) struct SliceState {
     /// FUSE request unique id that created this slice, used to order overlapping
     /// slices for correct commit sequencing (lower unique = older data = commit first).
     creation_unique: u64,
+    /// Writer-local monotonic order used for dirty overlay and commit order.
+    /// Unlike `creation_unique`, this is assigned to every write path, so
+    /// ordinary buffered writes and FUSE_WRITE_CACHE writes share one ordering
+    /// domain inside this writer.
+    write_order: u64,
     /// Highest FUSE unique that has written to this slice.  A write with
     /// unique < max_write_unique is rejected (must go to its own slice) to
     /// prevent an older concurrent write from overwriting newer data.
@@ -417,6 +422,7 @@ impl SliceState {
             freeze_reason: None,
             auto_freeze_trigger: None,
             creation_unique,
+            write_order: creation_unique,
             max_write_unique: creation_unique,
             write_origin_mask: 0,
         }
@@ -528,11 +534,20 @@ impl SliceState {
     }
 
     fn write_range_has_written_overlap(&self, offset: u64, len: usize) -> bool {
-        if offset < self.offset {
+        let end = offset.saturating_add(len as u64);
+        if offset >= end {
+            return false;
+        }
+
+        let slice_start = self.offset;
+        let slice_end = self.offset.saturating_add(self.data.len());
+        let overlap_start = offset.max(slice_start);
+        let overlap_end = end.min(slice_end);
+        if overlap_start >= overlap_end {
             return false;
         }
         self.data
-            .has_written_overlap(offset - self.offset, len as u64)
+            .has_written_overlap(overlap_start - slice_start, overlap_end - overlap_start)
     }
 
     fn can_overlay_read(&self) -> bool {
@@ -1226,6 +1241,11 @@ struct WriteAction {
     flush: Vec<Arc<ParkingMutex<SliceState>>>,
 }
 
+pub(crate) struct DirtyOverlayPatch {
+    pub(crate) offset: usize,
+    pub(crate) data: Vec<u8>,
+}
+
 struct ChunkHandle<'a, B, M>
 where
     B: BlockStore,
@@ -1248,16 +1268,18 @@ where
         offset: u64,
         len: usize,
         creation_unique: u64,
+        write_order: u64,
         allow_gap_from: Option<u64>,
     ) -> anyhow::Result<(Arc<ParkingMutex<SliceState>>, WriteAction)> {
-        let (chunk_id, mut slices) = {
+        let (chunk_id, mut slices, recently_committed) = {
             let chunk = self
                 .inner
                 .chunks
                 .get_mut(&self.chunk_id)
                 .ok_or_else(|| anyhow::anyhow!("invalid chunk id"))?;
             let slices = std::mem::take(&mut chunk.slices);
-            (chunk.chunk_id, slices)
+            let recently_committed = chunk.recently_committed.iter().cloned().collect::<Vec<_>>();
+            (chunk.chunk_id, slices, recently_committed)
         };
 
         anyhow::ensure!(
@@ -1268,13 +1290,34 @@ where
         let mut found: Option<Arc<ParkingMutex<SliceState>>> = None;
         let mut flush = Vec::new();
         let mut rejected_dispatched_prefix = false;
+        let mut newer_written_overlap = false;
         for (idx, slice) in slices.iter().rev().enumerate() {
             let handle = SliceHandle {
                 slice,
                 shared: self.shared,
             };
 
-            if handle.can_write(offset, len, allow_gap_from).is_some() {
+            if let Some(write_action) = handle.can_write(offset, len, allow_gap_from) {
+                if matches!(write_action, PageWriteAction::Overlap)
+                    && handle.has_written_overlap(offset, len)
+                {
+                    newer_written_overlap = true;
+                    continue;
+                }
+                let candidate_order = slice.lock().write_order;
+                // Do not place a newer overlapping write into an older slice
+                // when a later slice already covers part of the same range.
+                // Dirty overlay is slice-ordered, so reusing the older slice
+                // would let the later slice overwrite this write on readback.
+                let newer_recently_committed_overlap = recently_committed.iter().any(|recent| {
+                    let state = recent.lock();
+                    let recent_order = state.write_order;
+                    (candidate_order == 0 || recent_order == 0 || recent_order > candidate_order)
+                        && state.write_range_has_written_overlap(offset, len)
+                });
+                if newer_written_overlap || newer_recently_committed_overlap {
+                    continue;
+                }
                 // Reject reuse if this write is older than the newest write
                 // already in the slice.  Without this check, an older concurrent
                 // FUSE write (lower unique) processed after a newer one could
@@ -1297,6 +1340,9 @@ where
                 break;
             } else if handle.rejects_dispatched_prefix(offset, len) {
                 rejected_dispatched_prefix = true;
+            }
+            if handle.has_written_overlap(offset, len) {
+                newer_written_overlap = true;
             }
 
             // Prevent slices from remaining unflushed for too long.
@@ -1321,32 +1367,37 @@ where
                 slice
             }
             None => {
-                let slice = Arc::new(ParkingMutex::new(SliceState::new(
+                let mut state = SliceState::new(
                     chunk_id,
                     offset,
                     self.shared.config.clone(),
                     self.shared.buffer_usage.clone(),
                     self.shared.memory_budget.clone(),
                     creation_unique,
-                )));
+                );
+                state.write_order = write_order;
+                let slice = Arc::new(ParkingMutex::new(state));
                 self.shared.recent_pending_upload.record_slice_create();
                 if rejected_dispatched_prefix {
                     self.shared
                         .recent_pending_upload
                         .record_slice_reject_dispatched_prefix();
                 }
-                // Insert in sorted position by creation_unique so that slices
+                // Insert in sorted position by writer-local order so that slices
                 // committed in FIFO (front-first) order reflect the kernel's
                 // temporal write ordering. This prevents a race where concurrent
                 // FUSE request processing reorders overlapping writes.
-                // creation_unique=0 means the ordering is unknown (non-cached
-                // write path); append to back to preserve original FIFO behavior.
-                let insert_pos = if creation_unique == 0 {
+                // write_order=0 means the ordering is unknown; append to back to
+                // preserve original FIFO behavior for legacy/recovered slices.
+                let insert_pos = if write_order == 0 {
                     slices.len()
                 } else {
                     slices
                         .iter()
-                        .position(|s| s.lock().creation_unique > creation_unique)
+                        .position(|s| {
+                            let existing = s.lock().write_order;
+                            existing != 0 && existing > write_order
+                        })
                         .unwrap_or(slices.len())
                 };
                 slices.insert(insert_pos, slice.clone());
@@ -1386,6 +1437,7 @@ where
         offset: u64,
         buf: &[u8],
         creation_unique: u64,
+        write_order: u64,
         origin: WriteOrigin,
         allow_gap_from: Option<u64>,
     ) -> anyhow::Result<WriteAction> {
@@ -1400,8 +1452,13 @@ where
         let mut failed_cnt = 0;
 
         loop {
-            let (slice, action) =
-                self.find_slice_or_create(offset, buf.len(), creation_unique, allow_gap_from)?;
+            let (slice, action) = self.find_slice_or_create(
+                offset,
+                buf.len(),
+                creation_unique,
+                write_order,
+                allow_gap_from,
+            )?;
             start_commit |= action.start_commit;
             flush.extend(action.flush);
 
@@ -1466,6 +1523,8 @@ struct Shared<B, M> {
     /// Local SSD write-back cache for persisting frozen slices before upload.
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
     memory_budget: Option<MemoryBudget>,
+    /// Monotonically incremented for dirty-slice ordering.
+    write_order: AtomicU64,
     /// Monotonically incremented on each write.  Used together with
     /// `last_flushed_gen` to let `has_pending()` avoid a lock acquisition
     /// when no new data has arrived since the last successful flush.
@@ -2014,6 +2073,7 @@ where
             reader,
             write_back,
             memory_budget,
+            write_order: AtomicU64::new(0),
             write_gen: AtomicU64::new(0),
             last_flushed_gen: AtomicU64::new(0),
             recent_pending_upload,
@@ -2041,6 +2101,12 @@ where
             Some(err) => Err(anyhow::anyhow!("writeback failed: {err}")),
             None => Ok(()),
         }
+    }
+
+    fn next_write_order(&self) -> u64 {
+        self.write_order
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1)
     }
 }
 
@@ -2773,6 +2839,7 @@ where
         self.back_pressure().await?;
         self.wait_for_writeback_backpressure(buf.len()).await?;
         let mut guard = self.shared.inner.lock().await;
+        let write_order = self.shared.next_write_order();
 
         if !bypass_flush_gate {
             // Wait for any ongoing flush to finish. This serializes ordinary
@@ -2798,7 +2865,14 @@ where
             let cid = chunk_id_for(self.shared.inode.ino(), chunk_index)?;
             let ckey = guard.get_or_create_chunk(cid);
             let mut handle = guard.chunk_handle(&self.shared, ckey);
-            let action = handle.write_at(within_offset, buf, creation_unique, origin, None)?;
+            let action = handle.write_at(
+                within_offset,
+                buf,
+                creation_unique,
+                write_order,
+                origin,
+                None,
+            )?;
             drop(guard);
 
             for slice in action.flush {
@@ -2821,6 +2895,7 @@ where
                     span.offset,
                     &buf[position..position + span_len],
                     creation_unique,
+                    write_order,
                     origin,
                     None,
                 )?;
@@ -2852,6 +2927,23 @@ where
         Ok(buf.len())
     }
 
+    fn overlay_slices_for_chunk(chunk: &ChunkState) -> Vec<Arc<ParkingMutex<SliceState>>> {
+        let mut slices = chunk
+            .recently_committed
+            .iter()
+            .chain(chunk.slices.iter())
+            .cloned()
+            .enumerate()
+            .collect::<Vec<_>>();
+
+        slices.sort_by_key(|(idx, slice)| {
+            let order = slice.lock().write_order;
+            (order != 0, order, *idx)
+        });
+
+        slices.into_iter().map(|(_, slice)| slice).collect()
+    }
+
     async fn overlay_dirty_impl(&self, offset: u64, buf: &mut [u8]) -> anyhow::Result<bool> {
         if buf.is_empty() {
             return Ok(true);
@@ -2872,16 +2964,7 @@ where
             let guard = self.shared.inner.lock().await;
             span_cids
                 .iter()
-                .map(|cid| {
-                    guard.chunks.get(cid).map(|chunk| {
-                        chunk
-                            .recently_committed
-                            .iter()
-                            .chain(chunk.slices.iter())
-                            .cloned()
-                            .collect()
-                    })
-                })
+                .map(|cid| guard.chunks.get(cid).map(Self::overlay_slices_for_chunk))
                 .collect()
         };
 
@@ -2930,11 +3013,9 @@ where
             let span_start = span.offset;
             let span_end = span.offset + span.len;
 
-            // Slices are append-only in creation order; later slices must win
-            // over earlier dirty data for overlapping rewrites.  A slice in
-            // `recently_committed` is always older than any live slice still
-            // queued in `chunk.slices`, so apply committed grace-period data
-            // first and let live dirty slices overwrite it when ranges overlap.
+            // Apply slices in writer-local order so later dirty writes win over
+            // earlier data, even if slices moved between live and recently
+            // committed queues while upload/commit was running.
             for slice in slices {
                 let state = slice.lock();
                 if !state.can_overlay_read() {
@@ -2969,6 +3050,72 @@ where
     pub(crate) async fn overlay_dirty(&self, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
         self.overlay_dirty_impl(offset, buf).await?;
         Ok(())
+    }
+
+    pub(crate) async fn snapshot_dirty_overlay(
+        &self,
+        offset: u64,
+        len: usize,
+    ) -> anyhow::Result<Vec<DirtyOverlayPatch>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let layout = self.shared.config.layout;
+        let spans = split_chunk_spans(layout, offset, len);
+        let span_cids: Vec<_> = spans
+            .iter()
+            .map(|s| chunk_id_for(self.shared.inode.ino(), s.index))
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        let slice_refs: Vec<Option<Vec<Arc<ParkingMutex<SliceState>>>>> = {
+            let guard = self.shared.inner.lock().await;
+            span_cids
+                .iter()
+                .map(|cid| guard.chunks.get(cid).map(Self::overlay_slices_for_chunk))
+                .collect()
+        };
+
+        let mut patches = Vec::new();
+        for (span, slices_opt) in spans.iter().zip(slice_refs.iter()) {
+            let Some(slices) = slices_opt else {
+                continue;
+            };
+
+            let chunk_start = span.index * layout.chunk_size;
+            let span_start = span.offset;
+            let span_end = span.offset + span.len;
+
+            for slice in slices {
+                let state = slice.lock();
+                if !state.can_overlay_read() {
+                    continue;
+                }
+
+                let slice_start = state.offset;
+                let slice_end = state.offset + state.data.len();
+                let read_start = span_start.max(slice_start);
+                let read_end = span_end.min(slice_end);
+                if read_start >= read_end {
+                    continue;
+                }
+
+                let mut patch_buf = vec![0; (read_end - read_start).as_usize()];
+                let copied = state
+                    .data
+                    .copy_written_into(read_start - slice_start, &mut patch_buf)?;
+                for (copied_start, copied_end) in copied {
+                    let src_start = (copied_start - (read_start - slice_start)).as_usize();
+                    let src_end = (copied_end - (read_start - slice_start)).as_usize();
+                    patches.push(DirtyOverlayPatch {
+                        offset: (chunk_start + slice_start + copied_start - offset).as_usize(),
+                        data: patch_buf[src_start..src_end].to_vec(),
+                    });
+                }
+            }
+        }
+
+        Ok(patches)
     }
 
     pub(crate) async fn read_dirty_if_fully_covered(
@@ -3014,14 +3161,17 @@ where
             .slices
             .retain(|slice| !run_slices.iter().any(|old| Arc::ptr_eq(slice, old)));
 
-        let creation_unique = merged.lock().creation_unique;
-        let insert_pos = if creation_unique == 0 {
+        let write_order = merged.lock().write_order;
+        let insert_pos = if write_order == 0 {
             chunk.slices.len()
         } else {
             chunk
                 .slices
                 .iter()
-                .position(|slice| slice.lock().creation_unique > creation_unique)
+                .position(|slice| {
+                    let existing = slice.lock().write_order;
+                    existing != 0 && existing > write_order
+                })
                 .unwrap_or(chunk.slices.len())
         };
         chunk.slices.insert(insert_pos, merged);
@@ -3122,6 +3272,7 @@ where
         struct CachedPiece {
             offset: u64,
             creation_unique: u64,
+            write_order: u64,
             max_write_unique: u64,
             write_origin_mask: u8,
             data: Vec<u8>,
@@ -3145,6 +3296,7 @@ where
             pieces.push(CachedPiece {
                 offset: state.offset,
                 creation_unique: state.creation_unique,
+                write_order: state.write_order,
                 max_write_unique: state.max_write_unique,
                 write_origin_mask: state.write_origin_mask,
                 data,
@@ -3164,9 +3316,10 @@ where
         let merged_len = (run_end - run_start).as_usize();
         let mut merged_data = vec![0; merged_len];
         let mut creation_unique = u64::MAX;
+        let mut write_order = 0;
         let mut max_write_unique = 0;
         let mut write_origin_mask = 0u8;
-        pieces.sort_by_key(|piece| (piece.creation_unique, piece.order));
+        pieces.sort_by_key(|piece| (piece.write_order != 0, piece.write_order, piece.order));
         for piece in &pieces {
             let start = (piece.offset - run_start).as_usize();
             let end = start + piece.data.len();
@@ -3174,6 +3327,7 @@ where
             if piece.creation_unique != 0 && piece.creation_unique < creation_unique {
                 creation_unique = piece.creation_unique;
             }
+            write_order = write_order.max(piece.write_order);
             max_write_unique = max_write_unique.max(piece.max_write_unique);
             write_origin_mask |= piece.write_origin_mask;
         }
@@ -3190,6 +3344,7 @@ where
             creation_unique,
         );
         merged.data.append(&merged_data)?;
+        merged.write_order = write_order;
         merged.max_write_unique = max_write_unique;
         merged.write_origin_mask = write_origin_mask;
         merged.update_usage(merged.data.alloc_bytes());
@@ -4111,6 +4266,7 @@ where
             shared.memory_budget.clone(),
             state.creation_unique,
         );
+        tail.write_order = state.write_order;
         tail.max_write_unique = state.max_write_unique;
         tail.write_origin_mask = state.write_origin_mask;
         if let Err(err) = tail.data.append(&tail_buf) {
@@ -4719,7 +4875,7 @@ where
             // Move committed slices to recently_committed so overlay_dirty can
             // still serve their data during the grace period.  Failed or empty
             // slices are discarded immediately.
-            let committed = matches!(runtime.status, SliceStatus::Committed);
+            let committed = matches!(slice.lock().state, SliceStatus::Committed);
             if committed {
                 // Move from slices to recently_committed.
                 let mut guard = shared
@@ -5658,6 +5814,21 @@ where
         Ok(())
     }
 
+    pub(crate) async fn snapshot_dirty_overlay_if_exists(
+        &self,
+        ino: u64,
+        offset: u64,
+        len: usize,
+    ) -> anyhow::Result<Vec<DirtyOverlayPatch>> {
+        let writer = self.files.get(&ino).map(|entry| entry.value().clone());
+        match writer {
+            Some(ref writer) if writer.has_overlay_state().await => {
+                writer.snapshot_dirty_overlay(offset, len).await
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
     pub(crate) async fn read_dirty_if_fully_covered(
         &self,
         ino: u64,
@@ -5668,6 +5839,36 @@ where
         match writer {
             Some(ref writer) if writer.has_overlay_state().await => {
                 writer.read_dirty_if_fully_covered(offset, len).await
+            }
+            #[cfg(not(test))]
+            None => {
+                if let Some(wb) = &self.write_back {
+                    let layout = self.config.layout;
+                    let spans = split_chunk_spans(layout, offset, len);
+                    if spans.is_empty() {
+                        return Ok(Some(Vec::new()));
+                    }
+
+                    let mut out = Vec::with_capacity(len);
+                    for span in spans {
+                        let cid = chunk_id_for(ino as i64, span.index)?;
+                        let Some(mut data) = wb
+                            .read_dirty_range_if_fully_covered(
+                                ino as i64,
+                                cid,
+                                span.offset,
+                                span.len.as_usize(),
+                            )
+                            .await?
+                        else {
+                            return Ok(None);
+                        };
+                        out.append(&mut data);
+                    }
+                    Ok(Some(out))
+                } else {
+                    Ok(None)
+                }
             }
             _ => Ok(None),
         }
@@ -5782,15 +5983,8 @@ where
 
     pub(crate) async fn release(&self, ino: u64) {
         let writer = self.files.get(&ino).map(|entry| entry.value().clone());
-        if let Some(writer) = writer
-            && (writer.has_pending().await || writer.has_overlay_state().await)
-        {
+        if let Some(writer) = writer {
             writer.mark_released();
-            return;
-        }
-
-        if let Some((_, removed)) = self.files.remove(&ino) {
-            removed.clear().await;
         }
     }
 
@@ -5813,7 +6007,9 @@ where
                 let _ = writer.flush().await;
             }
             if writer.released_cleanup_ready().await
-                && let Some((_, removed)) = self.files.remove(&ino)
+                && let Some((_, removed)) = self.files.remove_if(&ino, |_, current| {
+                    Arc::ptr_eq(current, &writer) && current.shared.released.load(Ordering::Acquire)
+                })
             {
                 removed.clear().await;
             }
@@ -6678,6 +6874,217 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dirty_overlay_prefers_later_overlapping_normal_write() {
+        let layout = ChunkLayout {
+            chunk_size: 512 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "overlay_normal_overlap.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode,
+            test_config(layout),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        let old_offset = 52_119;
+        let old = vec![b'F'; 88_137];
+        writer.write_at(old_offset, &old).await.unwrap();
+
+        let new_offset = 31_647;
+        let new = vec![b'L'; 83_962];
+        writer.write_at(new_offset, &new).await.unwrap();
+
+        let out = writer
+            .read_dirty_if_fully_covered(new_offset, new.len())
+            .await
+            .unwrap()
+            .expect("later overlapping normal write should fully cover its readback range");
+        assert_eq!(out, new);
+
+        store.unblock();
+        writer.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dirty_overlay_does_not_reuse_old_slice_behind_newer_overlap() {
+        let layout = ChunkLayout {
+            chunk_size: 512 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "overlay_old_slice_reuse.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode,
+            test_config(layout),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        writer.write_at(6_524, &vec![b'A'; 116_617]).await.unwrap();
+        writer.write_at(123_141, &vec![b'A'; 89_736]).await.unwrap();
+        writer.write_at(212_877, &vec![b'A'; 93_776]).await.unwrap();
+        writer.write_at(0, &vec![b'K'; 102_758]).await.unwrap();
+
+        let new_offset = 76_382;
+        let new_len = 88_824;
+        writer
+            .write_at(new_offset, &vec![b'U'; new_len])
+            .await
+            .unwrap();
+
+        let out = writer
+            .read_dirty_if_fully_covered(new_offset, new_len)
+            .await
+            .unwrap()
+            .expect("new write should fully cover its readback range");
+        assert_eq!(out, vec![b'U'; new_len]);
+
+        store.unblock();
+        writer.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dirty_overlay_prefers_latest_tiny_tail_overlap() {
+        let layout = ChunkLayout {
+            chunk_size: 512 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(BlockingStore::new(true));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store.clone(), meta.clone()));
+        let ino = meta
+            .create_file(1, "overlay_tiny_tail_overlap.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode,
+            test_config(layout),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        let old_offset = 255_993;
+        let new_offset = 255_992;
+        writer.write_at(255_977, b"prefix-prefix!!").await.unwrap();
+        writer.write_at(old_offset, b"Z:1").await.unwrap();
+        assert_eq!(
+            writer
+                .read_dirty_if_fully_covered(old_offset, 3)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"Z:1"
+        );
+
+        writer.write_at(new_offset, b"V:1").await.unwrap();
+
+        let out = writer
+            .read_dirty_if_fully_covered(new_offset, 3)
+            .await
+            .unwrap()
+            .expect("latest tiny overlap should fully cover its readback range");
+        assert_eq!(out, b"V:1");
+
+        let mut backend_buf = vec![b'?'; 3];
+        let patches = writer.snapshot_dirty_overlay(new_offset, 3).await.unwrap();
+        for patch in patches {
+            let end = patch.offset + patch.data.len();
+            backend_buf[patch.offset..end].copy_from_slice(&patch.data);
+        }
+        writer
+            .overlay_dirty(new_offset, &mut backend_buf)
+            .await
+            .unwrap();
+        assert_eq!(backend_buf, b"V:1");
+
+        store.unblock();
+        writer.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dirty_overlay_snapshot_captures_unaligned_tail() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "overlay_snapshot_tail.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = FileWriter::new(
+            inode,
+            test_config_without_auto_flush(layout),
+            backend,
+            reader,
+            Arc::new(AtomicU64::new(0)),
+            None,
+        );
+
+        writer.write_at(0, &vec![0x54; 14_629]).await.unwrap();
+        let replacement = vec![0x48; 22_621];
+        writer.write_at(14_629, &replacement).await.unwrap();
+
+        let patches = writer.snapshot_dirty_overlay(36_864, 4_096).await.unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].offset, 0);
+        assert_eq!(patches[0].data.len(), 386);
+        assert_eq!(patches[0].data, replacement[22_235..].to_vec());
+
+        let mut read_buf = vec![0x54; 4_096];
+        for patch in patches {
+            let end = patch.offset + patch.data.len();
+            read_buf[patch.offset..end].copy_from_slice(&patch.data);
+        }
+        assert_eq!(&read_buf[..386], replacement[22_235..].as_ref());
+        assert_eq!(&read_buf[386..], vec![0x54; 4_096 - 386].as_slice());
+    }
+
+    #[tokio::test]
     async fn test_reader_cache_sees_overwrite_after_flush() {
         let layout = ChunkLayout::default();
         let store = Arc::new(InMemoryBlockStore::new());
@@ -6791,6 +7198,74 @@ mod tests {
             "uploaded committed slices no longer need overlay data in upload-before-commit mode"
         );
         assert_eq!(breakdown.recently_committed_pending_upload_slices, 0);
+    }
+
+    #[tokio::test]
+    async fn test_release_keeps_writer_until_background_cleanup() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer_pool = DataWriter::new(test_config(layout), backend, reader, None);
+        let ino = meta
+            .create_file(1, "release_keep_writer.txt".to_string())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+
+        let first = writer_pool.ensure_file(inode.clone());
+        writer_pool.release(ino as u64).await;
+        assert!(
+            writer_pool.has_file(ino as u64),
+            "release should mark the writer instead of removing it synchronously"
+        );
+
+        let reopened = writer_pool.ensure_file(inode);
+        assert!(Arc::ptr_eq(&first, &reopened));
+
+        writer_pool.flush_once().await;
+        assert!(
+            writer_pool.has_file(ino as u64),
+            "background cleanup must not remove a writer reactivated by a new open"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_background_cleanup_removes_inactive_released_writer() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer_pool = DataWriter::new(test_config(layout), backend, reader, None);
+        let ino = meta
+            .create_file(1, "release_cleanup_writer.txt".to_string())
+            .await
+            .unwrap();
+
+        writer_pool.ensure_file(Inode::new(ino, 0));
+        writer_pool.release(ino as u64).await;
+        writer_pool.flush_once().await;
+
+        assert!(
+            !writer_pool.has_file(ino as u64),
+            "inactive released writers should still be cleaned up by maintenance"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

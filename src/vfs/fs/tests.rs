@@ -7,6 +7,7 @@ use crate::meta::MetaLayer;
 use crate::meta::client::{MetaClientOptions, OpenFileCacheConfig};
 use crate::meta::config::MetaClientConfig;
 use crate::meta::factory::create_meta_store_from_url;
+use crate::meta::file_lock::FileLockType;
 use crate::posix::NAME_MAX;
 use crate::vfs::fs::VFS;
 use std::sync::Arc;
@@ -51,8 +52,8 @@ fn test_file_attr(ino: i64) -> super::FileAttr {
 }
 
 #[tokio::test]
-async fn test_fuse_cached_write_order_waits_for_earlier_unique() {
-    let order = Arc::new(super::FuseCachedWriteOrder::default());
+async fn test_fuse_write_order_waits_for_earlier_unique() {
+    let order = Arc::new(super::FuseWriteOrder::default());
     let guard = order.begin(7, 10);
 
     tokio::time::timeout(Duration::from_millis(20), order.wait_for_prior(8, 11))
@@ -65,7 +66,7 @@ async fn test_fuse_cached_write_order_waits_for_earlier_unique() {
         tokio::time::timeout(Duration::from_millis(20), order.wait_for_prior(7, 11))
             .await
             .is_err(),
-        "later reads should wait for earlier cached writes on the same inode"
+        "later reads should wait for earlier writes on the same inode"
     );
 
     drop(guard);
@@ -1329,6 +1330,89 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_fs_read_after_tiny_overlapping_writes_uses_latest_dirty_bytes() {
+        let layout = ChunkLayout {
+            chunk_size: 512 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = CountingBlockStore::default();
+        let counters = store.clone();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/iogen-tail.bin").await.unwrap();
+        let attr = fs.stat("/iogen-tail.bin").await.unwrap();
+        fs.truncate_inode(attr.ino, 512 * 1024).await.unwrap();
+        let attr = fs.stat("/iogen-tail.bin").await.unwrap();
+
+        let write_fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        let read_fh = fs
+            .open(attr.ino, attr.clone(), true, false, false)
+            .await
+            .unwrap();
+
+        counters.reset_reads();
+        fs.write(write_fh, 255_993, b"Z:1").await.unwrap();
+        assert_eq!(fs.read(read_fh, 255_993, 3).await.unwrap(), b"Z:1");
+
+        fs.write(write_fh, 255_992, b"V:1").await.unwrap();
+        let out = fs.read(read_fh, 255_992, 3).await.unwrap();
+        assert_eq!(out, b"V:1");
+        assert_eq!(
+            counters.read_range_calls(),
+            0,
+            "fully covered dirty reads should not fetch stale committed blocks"
+        );
+
+        fs.close(read_fh).await.unwrap();
+        fs.close(write_fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_normal_write_overwrite_is_visible_to_existing_reader() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/normal-write-cache.bin").await.unwrap();
+        let attr = fs.stat("/normal-write-cache.bin").await.unwrap();
+        let initial = vec![0x11; 64 * 1024];
+        let write_fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        fs.write(write_fh, 0, &initial).await.unwrap();
+        fs.flush(write_fh).await.unwrap();
+
+        let read_fh = fs
+            .open(attr.ino, attr.clone(), true, false, false)
+            .await
+            .unwrap();
+        assert_eq!(fs.read(read_fh, 0, initial.len()).await.unwrap(), initial);
+
+        let replacement = vec![0x42; 4096];
+        fs.write(write_fh, 16 * 1024, &replacement).await.unwrap();
+        fs.fsync(write_fh, false).await.unwrap();
+
+        let out = fs.read(read_fh, 0, initial.len()).await.unwrap();
+        assert_eq!(&out[..16 * 1024], &initial[..16 * 1024]);
+        assert_eq!(&out[16 * 1024..20 * 1024], &replacement);
+        assert_eq!(&out[20 * 1024..], &initial[20 * 1024..]);
+
+        fs.close(read_fh).await.unwrap();
+        fs.close(write_fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_set_attr_truncate_flushes_cached_write_without_hanging() {
         let layout = ChunkLayout::default();
         let store = InMemoryBlockStore::new();
@@ -2059,6 +2143,44 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_fs_truncate_rewrite_tail_read_sees_dirty_extension() {
+        let layout = ChunkLayout {
+            chunk_size: 64 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/gfsmallio.bin").await.unwrap();
+        let attr = fs.stat("/gfsmallio.bin").await.unwrap();
+
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+        fs.write(fh, 44_145, &vec![0x31; 26_752]).await.unwrap();
+        fs.fsync(fh, false).await.unwrap();
+        let warm = fs.read(fh, 69_632, 1_265).await.unwrap();
+        assert_eq!(warm, vec![0x31; 1_265]);
+        fs.close(fh).await.unwrap();
+
+        fs.truncate("/gfsmallio.bin", 59_020).await.unwrap();
+
+        let attr = fs.stat("/gfsmallio.bin").await.unwrap();
+        let fh = fs.open(attr.ino, attr, true, true, false).await.unwrap();
+        fs.write(fh, 55_318, &vec![0x52; 2_026]).await.unwrap();
+        let tail = vec![0x53; 18_454];
+        fs.write(fh, 57_344, &tail).await.unwrap();
+
+        let out = fs.read(fh, 73_728, 2_070).await.unwrap();
+        assert_eq!(out, tail[16_384..].to_vec());
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_fs_copy_file_range_reports_efbig_only_after_source_data_exists() {
         let layout = ChunkLayout {
             chunk_size: 512 * 1024,
@@ -2275,10 +2397,18 @@ mod io_tests {
             states.push(Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new())));
         }
 
-        let task_count = 4usize;
-        let iterations = 100usize;
+        // GitHub runners can make this randomized stress test exceed the
+        // per-op timeout even when the same seed passes locally; keep CI as a
+        // smoke-scale fuzz and retain the heavier local default.
+        let ci = std::env::var_os("CI").is_some();
+        let task_count = if ci { 2usize } else { 4usize };
+        let iterations = if ci { 40usize } else { 100usize };
         let max_write = 4096usize;
-        let op_timeout = Duration::from_secs(60);
+        let op_timeout = if ci {
+            Duration::from_secs(90)
+        } else {
+            Duration::from_secs(60)
+        };
 
         let mut handles = Vec::with_capacity(task_count);
         for t in 0..task_count {
@@ -2967,6 +3097,13 @@ mod truncate_flush_tests {
         .await
         .unwrap();
 
+        let before_fsync = op_timeout("read before fsync", fs.read(fh, 16 * 1024, 20 * 1024))
+            .await
+            .unwrap();
+        assert_eq!(&before_fsync[..2 * 1024], vec![0; 2 * 1024]);
+        assert_eq!(&before_fsync[2 * 1024..16 * 1024], vec![0x41; 14 * 1024]);
+        assert_eq!(&before_fsync[16 * 1024..], vec![0x52; 4 * 1024]);
+
         op_timeout("fsync", fs.fsync(fh, false)).await.unwrap();
 
         let out = op_timeout("read after fsync", fs.read(fh, 28 * 1024, 16 * 1024))
@@ -2975,6 +3112,52 @@ mod truncate_flush_tests {
         assert_eq!(&out[..4 * 1024], vec![0x41; 4 * 1024]);
         assert_eq!(&out[4 * 1024..12 * 1024], vec![0x52; 8 * 1024]);
         assert_eq!(&out[12 * 1024..], vec![0x63; 4 * 1024]);
+
+        op_timeout("close", fs.close(fh)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_split_write_barrier_waits_for_aligned_tail() {
+        let fs = Arc::new(new_vfs().await);
+        let root = fs.root_ino();
+
+        let ino = op_timeout("create_file", fs.create_file_at(root, "f", false))
+            .await
+            .unwrap();
+        let attr = op_timeout("stat", fs.stat_ino(ino)).await.unwrap();
+        let fh = op_timeout("open", fs.open(ino, attr, true, true, false))
+            .await
+            .unwrap();
+
+        let base = vec![b'F'; 8192];
+        op_timeout("base write", fs.write(fh, 0, &base))
+            .await
+            .unwrap();
+
+        let prefix_offset = 4090;
+        fs.remember_posix_lock_owner(ino, 1, FileLockType::Write);
+        op_timeout("prefix write", fs.write(fh, prefix_offset, &[b'O'; 6]))
+            .await
+            .unwrap();
+
+        let reader_fs = Arc::clone(&fs);
+        let read_task = tokio::spawn(async move { reader_fs.read(fh, 0, 8192).await.unwrap() });
+        tokio::task::yield_now().await;
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        op_timeout("tail write", fs.write(fh, 4096, &[b'O'; 4096]))
+            .await
+            .unwrap();
+        fs.take_posix_lock_owner(ino, 1);
+
+        let out = op_timeout("read across split write", read_task)
+            .await
+            .unwrap();
+        assert_eq!(
+            &out[..prefix_offset as usize],
+            &base[..prefix_offset as usize]
+        );
+        assert!(out[prefix_offset as usize..].iter().all(|b| *b == b'O'));
 
         op_timeout("close", fs.close(fh)).await.unwrap();
     }

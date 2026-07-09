@@ -309,6 +309,62 @@ impl FsWriteBackCache {
         Ok(())
     }
 
+    async fn read_covered_from_meta_dir(
+        &self,
+        dir: &Path,
+        ino: i64,
+        chunk_id: u64,
+        chunk_offset: u64,
+        buf: &mut [u8],
+        covered: &mut Vec<(u64, u64)>,
+    ) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !entry.file_type().await?.is_file() {
+                continue;
+            }
+
+            let record = if Self::is_meta_path(&path) {
+                match self.read_meta(&path).await {
+                    Ok(record) if record.ino == ino && record.chunk_id == chunk_id => record,
+                    Ok(_) | Err(_) => continue,
+                }
+            } else if Self::is_sealed_path(&path) {
+                match Self::sealed_record_from_path(path) {
+                    Some(record) if record.ino == ino && record.chunk_id == chunk_id => record,
+                    Some(_) | None => continue,
+                }
+            } else {
+                continue;
+            };
+
+            if !record.path.exists() {
+                continue;
+            }
+
+            let slice_start = record.chunk_offset;
+            let slice_end = slice_start + record.length;
+            let buf_end = chunk_offset + buf.len() as u64;
+
+            let overlap_start = chunk_offset.max(slice_start);
+            let overlap_end = buf_end.min(slice_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            let file_offset = overlap_start - slice_start;
+            let dst_start = (overlap_start - chunk_offset) as usize;
+            let dst_end = (overlap_end - chunk_offset) as usize;
+
+            let mut file = fs::File::open(&record.path).await?;
+            file.seek(std::io::SeekFrom::Start(file_offset)).await?;
+            file.read_exact(&mut buf[dst_start..dst_end]).await?;
+            covered.push((overlap_start - chunk_offset, overlap_end - chunk_offset));
+        }
+        Ok(())
+    }
+
     async fn write_json_record(
         &self,
         key: DirtySliceKey,
@@ -541,6 +597,67 @@ impl FsWriteBackCache {
 
         Ok(())
     }
+
+    pub async fn read_dirty_range_if_fully_covered(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        chunk_offset: u64,
+        len: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if len == 0 {
+            return Ok(Some(Vec::new()));
+        }
+
+        let dirty_root = self.root.join("dirty");
+        if !dirty_root.exists() {
+            return Ok(None);
+        }
+
+        let mut buf = vec![0; len];
+        let mut covered = Vec::new();
+        let mut entries = fs::read_dir(&dirty_root).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                self.read_covered_from_meta_dir(
+                    &entry.path(),
+                    ino,
+                    chunk_id,
+                    chunk_offset,
+                    &mut buf,
+                    &mut covered,
+                )
+                .await?;
+            }
+        }
+
+        let chunk_dir = dirty_root.join(ino.to_string()).join(chunk_id.to_string());
+        if chunk_dir.exists() {
+            self.read_covered_from_meta_dir(
+                &chunk_dir,
+                ino,
+                chunk_id,
+                chunk_offset,
+                &mut buf,
+                &mut covered,
+            )
+            .await?;
+        }
+
+        covered.sort_unstable_by_key(|(start, _)| *start);
+        let mut end = 0_u64;
+        for (start, next_end) in covered {
+            if start > end {
+                break;
+            }
+            end = end.max(next_end);
+            if end >= len as u64 {
+                return Ok(Some(buf));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -700,6 +817,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(&buf[4..11], b"payload");
+    }
+
+    #[tokio::test]
+    async fn read_dirty_range_requires_full_local_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        let key = DirtySliceKey {
+            ino: 9,
+            chunk_id: 21,
+            local_seq: 2,
+            epoch: 0,
+        };
+
+        cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"abcdefghij")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(key, 100, 10).await.unwrap();
+
+        assert_eq!(
+            cache
+                .read_dirty_range_if_fully_covered(9, 21, 102, 5)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"cdefg"
+        );
+        assert!(
+            cache
+                .read_dirty_range_if_fully_covered(9, 21, 96, 8)
+                .await
+                .unwrap()
+                .is_none(),
+            "a leading gap must not be treated as covered"
+        );
+        assert!(
+            cache
+                .read_dirty_range_if_fully_covered(9, 21, 108, 8)
+                .await
+                .unwrap()
+                .is_none(),
+            "a trailing gap must not be treated as covered"
+        );
     }
 
     #[tokio::test]
