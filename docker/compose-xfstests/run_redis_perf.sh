@@ -29,8 +29,11 @@ usage() {
   --minio                    使用 MinIO 作为对象存储
   --local-fs                 改为使用本地目录作为对象存储
   --s3-writeback             启用 S3 commit-before-upload 写回语义（等价于 BREWFS_WRITEBACK_MODE=commit_before_upload）
+  --read-throughput-profile  启用读吞吐 profile：只读句柄返回 FOPEN_DIRECT_IO，减少 buffered FUSE 大读拆分（会禁用这些只读 fd 的 mmap）
+  --bigwrite-throughput-profile
+                             启用 fio-bigwrite/大 buffered write 吞吐 profile；这是 --writeback-throughput-profile 的明确别名，会启用 commit-before-upload 写回语义
   --writeback-throughput-profile
-                             启用 S3 writeback 全场景吞吐 profile（cache root=/var/lib/brewfs/cache, 4GiB read/write memory+SSD cache, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=6, pending soft/hard=2GiB/3GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=6, fuse max_background=512, fio prefill/post-write drain+remount）
+                             启用 S3 writeback 全场景吞吐 profile（cache root=/var/lib/brewfs/cache, 4GiB read/write memory+SSD cache, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=6, pending soft/hard=2GiB/3GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=6, fuse max_background=512, read-throughput profile, fio prefill/post-write drain+remount）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --brewfs-bench           额外运行一次宿主机 cargo bench --bench brewfs_bench
   --bench-args "<args...>"   透传给 cargo bench 之后的 Criterion 参数
@@ -52,10 +55,11 @@ usage() {
   PERF_FIO_COLD_READ_CLEAR_CACHE PERF_FIO_DROP_CACHES
   PERF_OBJECT_PUT_DURATION_SECS PERF_OBJECT_PUT_OBJECTS PERF_OBJECT_PUT_OBJECT_SIZE PERF_OBJECT_PUT_WORKERS PERF_OBJECT_PUT_PREFIX
   BREWFS_CHUNK_SIZE BREWFS_BLOCK_SIZE
+  BREWFS_S3_PART_SIZE BREWFS_S3_MAX_CONCURRENCY BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM
   BREWFS_READ_MEMORY_BYTES BREWFS_READ_SSD_BYTES BREWFS_WRITE_MEMORY_BYTES BREWFS_WRITE_SSD_BYTES
   BREWFS_DIRTY_SLICE_TARGET_SIZE BREWFS_DIRTY_SLICE_MAX_AGE_MS BREWFS_UPLOAD_CONCURRENCY
   BREWFS_PREFETCH_ENABLED BREWFS_PREFETCH_MAX_BYTES BREWFS_PREFETCH_CONCURRENCY BREWFS_RANGE_BACKGROUND_PREFETCH BREWFS_MEMORY_BUDGET_BYTES
-  BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_READ_DIRECT_IO BREWFS_FUSE_WRITE_DIRECT_IO BREWFS_FUSE_WRITEBACK
+  BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_DIRECT_IO BREWFS_FUSE_READ_DIRECT_IO BREWFS_FUSE_WRITE_DIRECT_IO BREWFS_FUSE_KEEP_CACHE BREWFS_FUSE_WRITEBACK
   BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
   BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
   BREWFS_WRITEBACK_PERSIST_SYNC BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT
@@ -90,6 +94,7 @@ require_value() {
 KEEP=false
 STORAGE_BACKEND="rustfs"  # rustfs | minio | local-fs
 RUN_BREWFS_BENCH=false
+READ_THROUGHPUT_PROFILE=false
 WRITEBACK_THROUGHPUT_PROFILE=false
 PERF_TOOLS_VALUE="fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
 BENCH_ARGS_VALUE=""
@@ -113,7 +118,18 @@ while [[ $# -gt 0 ]]; do
             BREWFS_WRITEBACK_MODE_VALUE="commit_before_upload"
             shift
             ;;
+        --read-throughput-profile)
+            READ_THROUGHPUT_PROFILE=true
+            shift
+            ;;
+        --bigwrite-throughput-profile)
+            READ_THROUGHPUT_PROFILE=true
+            WRITEBACK_THROUGHPUT_PROFILE=true
+            BREWFS_WRITEBACK_MODE_VALUE="commit_before_upload"
+            shift
+            ;;
         --writeback-throughput-profile)
+            READ_THROUGHPUT_PROFILE=true
             WRITEBACK_THROUGHPUT_PROFILE=true
             BREWFS_WRITEBACK_MODE_VALUE="commit_before_upload"
             shift
@@ -152,7 +168,15 @@ if [[ -n "$BREWFS_WRITEBACK_MODE_VALUE" && "$STORAGE_BACKEND" == "local-fs" ]]; 
 fi
 export BREWFS_WRITEBACK_MODE="$BREWFS_WRITEBACK_MODE_VALUE"
 
-if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
+if [[ "$READ_THROUGHPUT_PROFILE" == true ]]; then
+    # Keep the default mount mmap-friendly. The throughput profile is explicit
+    # because FOPEN_DIRECT_IO disables mmap on the affected read-only handles.
+    export BREWFS_FUSE_READ_DIRECT_IO="${BREWFS_FUSE_READ_DIRECT_IO:-1}"
+fi
+
+enable_writeback_throughput_profile() {
+    # Opt-in profile for evidence-backed large-write benchmarks. It favors
+    # local writeback throughput over upload-before-commit durability semantics.
     export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
     export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-4294967296}"
     export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-4294967296}"
@@ -179,6 +203,10 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-true}"
     export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
     export PERF_METADATA_POST_TOOL_DRAIN="${PERF_METADATA_POST_TOOL_DRAIN:-true}"
+}
+
+if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
+    enable_writeback_throughput_profile
 fi
 
 mkdir -p "$ARTIFACTS_DIR"
@@ -467,16 +495,19 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_OBJECT_PUT_PREFIX \
     -e PERF_FUSE_OPS_LOG \
     -e BREWFS_FUSE_OP_LOG \
+    -e BREWFS_FUSE_DIRECT_IO \
     -e BREWFS_FUSE_WORKERS \
     -e BREWFS_FUSE_MAX_BACKGROUND \
     -e BREWFS_FUSE_READ_DIRECT_IO \
     -e BREWFS_FUSE_WRITE_DIRECT_IO \
+    -e BREWFS_FUSE_KEEP_CACHE \
     -e BREWFS_FUSE_WRITEBACK \
     -e BREWFS_NOFILE_LIMIT \
     -e BREWFS_CHUNK_SIZE \
     -e BREWFS_BLOCK_SIZE \
     -e BREWFS_S3_PART_SIZE \
     -e BREWFS_S3_MAX_CONCURRENCY \
+    -e BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM \
     -e BREWFS_CACHE_ROOT \
     -e BREWFS_READ_MEMORY_BYTES \
     -e BREWFS_READ_SSD_BYTES \

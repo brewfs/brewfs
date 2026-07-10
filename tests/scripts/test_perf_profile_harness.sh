@@ -12,13 +12,13 @@ fail() {
 assert_file_contains() {
     local file="$1"
     local needle="$2"
-    grep -qF "$needle" "$file" || fail "$file missing: $needle"
+    grep -qF -- "$needle" "$file" || fail "$file missing: $needle"
 }
 
 assert_file_not_contains() {
     local file="$1"
     local needle="$2"
-    ! grep -qF "$needle" "$file" || fail "$file should not contain: $needle"
+    ! grep -qF -- "$needle" "$file" || fail "$file should not contain: $needle"
 }
 
 assert_manifest_keys() {
@@ -52,6 +52,8 @@ assert_runner_console_capture() {
 
 assert_file_contains "$redis_runner" "compression=none"
 assert_file_contains "$redis_runner" 'BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-none}"'
+assert_file_contains "$redis_runner" "--bigwrite-throughput-profile"
+assert_file_contains "$redis_runner" "enable_writeback_throughput_profile"
 assert_file_not_contains "$redis_runner" "compression=lz4"
 assert_file_not_contains "$redis_runner" 'BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-lz4}"'
 
@@ -70,16 +72,35 @@ common_keys=(
 assert_manifest_keys "$brewfs_container" \
     "${common_keys[@]}" \
     BREWFS_COMPRESSION \
+    BREWFS_S3_PART_SIZE \
+    BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM \
     BREWFS_FUSE_WORKERS \
     BREWFS_FUSE_MAX_BACKGROUND \
+    BREWFS_FUSE_DIRECT_IO \
+    BREWFS_FUSE_READ_DIRECT_IO \
+    BREWFS_FUSE_WRITE_DIRECT_IO \
+    BREWFS_FUSE_KEEP_CACHE \
     BREWFS_WRITEBACK_MODE \
     BREWFS_WRITEBACK_UPLOAD_CONCURRENCY \
     BREWFS_S3_MAX_CONCURRENCY \
+    BREWFS_UPLOAD_CONCURRENCY \
+    BREWFS_CACHE_ROOT \
+    BREWFS_DIRTY_SLICE_TARGET_SIZE \
+    BREWFS_DIRTY_SLICE_MAX_AGE_MS \
+    BREWFS_PREFETCH_ENABLED \
+    BREWFS_PREFETCH_MAX_BYTES \
+    BREWFS_PREFETCH_CONCURRENCY \
+    BREWFS_RANGE_BACKGROUND_PREFETCH \
     BREWFS_METADATA_OPEN_CACHE_TTL_MS \
     BREWFS_METADATA_OPEN_CACHE_CAPACITY \
     BREWFS_READ_SSD_BYTES \
     BREWFS_WRITE_SSD_BYTES \
-    BREWFS_VERIFY_CACHE_CHECKSUM
+    BREWFS_VERIFY_CACHE_CHECKSUM \
+    BREWFS_CACHED_BLOCK_ASSEMBLER \
+    BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT \
+    BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD \
+    BREWFS_UPLOAD_LIMIT_MIBPS \
+    BREWFS_DOWNLOAD_LIMIT_MIBPS
 
 assert_manifest_keys "$juicefs_container" \
     "${common_keys[@]}" \
@@ -96,6 +117,7 @@ assert_runner_console_capture "$juicefs_runner"
 assert_file_contains "$redis_runner" "REDIS_PERF_DATA_MOUNT"
 assert_file_contains "$juicefs_runner" "REDIS_PERF_DATA_MOUNT"
 assert_file_contains "$brewfs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-perf}'
+assert_file_contains "$brewfs_compose" 'BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM'
 assert_file_contains "$juicefs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-juicefs-perf}'
 
 assert_file_contains "$juicefs_runner" "PERF_FIO_DIRECT_MATRIX=\"0 1\""
