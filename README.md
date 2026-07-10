@@ -18,7 +18,16 @@
   </p>
 </div>
 
-BrewFS is an independent distributed filesystem for container, AI, and object-storage-heavy workloads. It combines a POSIX-like FUSE interface with pluggable transactional metadata and S3-compatible data storage.
+BrewFS is an independent distributed filesystem for container, AI, and object-storage-heavy workloads. It combines a POSIX-like FUSE interface with pluggable transactional metadata and S3-compatible data storage. BrewFS is developed together with the [RustFS community](https://github.com/rustfs/rustfs), which helps keep the stack compatible with object-store-backed distributed workloads.
+
+<p align="center">
+  <a href="https://github.com/rustfs/rustfs">
+    <img src="https://github.com/rustfs.png" alt="RustFS" width="220" height="220" />
+  </a>
+  <a href="https://github.com/rustfs/rustfs">
+    <img src="https://img.shields.io/github/stars/rustfs/rustfs?style=flat-square" alt="RustFS GitHub stars" />
+  </a>
+</p>
 
 Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/juicefs)) in the current Redis + RustFS benchmark, BrewFS delivers **2.45x random-read throughput**, **2.62x file-create throughput**, and about **12x mixed random-I/O throughput**. The full results, including workloads where the two systems are at parity or JuiceFS leads, are below.
 
@@ -34,19 +43,6 @@ Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/j
 - **Rust throughout:** one modern, memory-safe implementation from FUSE and VFS to metadata and object storage.
 - **Storage freedom:** Redis, TiKV, etcd, PostgreSQL, or SQLite metadata with S3-compatible or local object data.
 - **Operationally testable:** xfstests, pjdfstest, LTP, stress-ng, fio, metadata benchmarks, fuzzing, and Docker Compose runners live in the repository.
-
-### RustFS Community Collaboration
-
-<p>
-  <a href="https://github.com/rustfs/rustfs">
-    <img src="https://github.com/rustfs.png" alt="RustFS" width="280" height="280" />
-  </a>
-  <a href="https://github.com/rustfs/rustfs">
-    <img src="https://img.shields.io/github/stars/rustfs/rustfs?style=flat-square" alt="RustFS GitHub stars" />
-  </a>
-</p>
-
-BrewFS is developed together with the RustFS community as a complementary stack for distributed storage, bringing FUSE-native, metadata-efficient POSIX semantics to RustFS-backed object/object-like data layers.
 
 ## Performance vs JuiceFS
 
