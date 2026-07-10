@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+<rect width="1280" height="760" rx="20" fill="#0b1220" />
+<text x="58" y="68" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="32" font-weight="700" fill="#f8fafc">Selected benchmark wins vs JuiceFS</text>
+<text x="58" y="102" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="400" fill="#94a3b8">BrewFS relative performance · JuiceFS = 1.0× · higher is better</text>
+<rect x="48" y="132" width="752.0" height="568" rx="14" fill="#111827" />
+<rect x="824" y="132" width="408.0" height="568" rx="14" fill="#111827" />
+<text x="78" y="178" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#5eead4">CORE THROUGHPUT + METADATA</text>
+<text x="854" y="178" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#bef264">MIXED RANDOM I/O</text>
+<text x="78" y="205" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#64748b">Same Redis + RustFS benchmark</text>
+<text x="854" y="205" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#64748b">70% read / 30% write</text>
+<line x1="431.7" y1="225" x2="431.7" y2="650" stroke="#fb7185" stroke-width="2" stroke-dasharray="5 7" />
+<text x="403" y="674" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#fb7185">1.0×</text>
+<text x="78" y="263" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">Large write</text>
+<rect x="275" y="238" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="238" width="183.3" height="34" rx="7" fill="#2dd4bf" />
+<text x="470" y="262" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">1.17×</text>
+<text x="78" y="331" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">Large read</text>
+<rect x="275" y="306" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="306" width="358.8" height="34" rx="7" fill="#2dd4bf" />
+<text x="645" y="330" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">2.29×</text>
+<text x="78" y="399" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">Sequential read</text>
+<rect x="275" y="374" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="374" width="246.0" height="34" rx="7" fill="#2dd4bf" />
+<text x="532" y="398" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">1.57×</text>
+<text x="78" y="467" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">Random read</text>
+<rect x="275" y="442" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="442" width="383.8" height="34" rx="7" fill="#2dd4bf" />
+<text x="670" y="466" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">2.45×</text>
+<text x="78" y="535" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">File create</text>
+<rect x="275" y="510" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="510" width="410.5" height="34" rx="7" fill="#2dd4bf" />
+<text x="697" y="534" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">2.62×</text>
+<text x="78" y="603" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" fill="#e2e8f0">Directory read</text>
+<rect x="275" y="578" width="470.0" height="34" rx="7" fill="#1f2937" />
+<rect x="275" y="578" width="253.8" height="34" rx="7" fill="#2dd4bf" />
+<text x="540" y="602" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#f8fafc">1.62×</text>
+<line x1="879.4" y1="238" x2="879.4" y2="510" stroke="#fb7185" stroke-width="2" stroke-dasharray="5 7" />
+<text x="854" y="540" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#fb7185">JuiceFS baseline</text>
+<text x="854" y="255" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#e2e8f0">Read</text>
+<rect x="854" y="273" width="330.0" height="52" rx="9" fill="#1f2937" />
+<rect x="854" y="273" width="306.9" height="52" rx="9" fill="#a3e635" />
+<text x="854" y="357" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="28" font-weight="700" fill="#f8fafc">12.09×</text>
+<text x="854" y="400" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#e2e8f0">Write</text>
+<rect x="854" y="418" width="330.0" height="52" rx="9" fill="#1f2937" />
+<rect x="854" y="418" width="301.1" height="52" rx="9" fill="#a3e635" />
+<text x="854" y="502" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="28" font-weight="700" fill="#f8fafc">11.86×</text>
+<text x="854" y="600" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="600" fill="#94a3b8">Local snapshot · July 2026</text>
+<text x="854" y="627" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#64748b">Buffered fio, compression off</text>
+<text x="854" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#64748b">See README for full results</text>
+</svg>

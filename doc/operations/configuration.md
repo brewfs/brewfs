@@ -424,6 +424,9 @@ compact:
 - `data.s3.disable_payload_checksum=true`
 - cache root 放到可靠 SSD
 - 如启用 `commit_before_upload`，必须理解本地写回缓存丢失风险
+- 大读吞吐测试可用 `docker/compose-xfstests/run_redis_perf.sh --read-throughput-profile`，该 profile 会设置 `BREWFS_FUSE_READ_DIRECT_IO=1`，减少 buffered FUSE 大读拆分；它只适合性能 profile，因为对应只读 fd 会禁用 mmap。
+- 大写吞吐测试可用 `docker/compose-xfstests/run_redis_perf.sh --bigwrite-throughput-profile --tools fio-bigwrite`。该 profile 是 `--writeback-throughput-profile` 的明确别名，会启用 `commit_before_upload`、更大的本地读写缓存和写回队列，并在 fio 后等待写回 drain；它适合验证 `fio-bigwrite` 上限，不建议替代默认 `upload_before_commit` 语义。
+- 在本机 Redis + RustFS 对照中，默认 `fio-bigwrite` 约 528 MiB/s，JuiceFS 约 703 MiB/s，`--bigwrite-throughput-profile` 约 774 MiB/s。这个结果说明 BrewFS 写路径有足够吞吐空间，但收益来自显式写回 profile，而不是无风险默认参数调整。
 
 多节点或分布式部署：
 
