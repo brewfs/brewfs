@@ -1,7 +1,6 @@
 <div align="center">
-  <img src="doc/icon.png" alt="BrewFS" width="96" height="96" />
-  <h1>BrewFS</h1>
-  <p><strong>High-performance distributed storage, built in Rust.</strong></p>
+  <img src="doc/assets/brewfs.png" alt="BrewFS" width="366" height="167" />
+  <p><strong>BrewFS: High-performance distributed storage, built in Rust.</strong></p>
 
   <p>
     <a href="https://github.com/brewfs/brewfs/actions/workflows/ci.yml"><img src="https://github.com/brewfs/brewfs/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
@@ -22,7 +21,7 @@ BrewFS is an independent distributed filesystem for container, AI, and object-st
 
 <p align="center">
   <a href="https://github.com/rustfs/rustfs">
-    <img src="https://github.com/rustfs.png" alt="RustFS" width="220" height="220" />
+    <img src="doc/assets/rustfs.png" alt="RustFS" width="220" height="60" />
   </a>
   <a href="https://github.com/rustfs/rustfs">
     <img src="https://img.shields.io/github/stars/rustfs/rustfs?style=flat-square" alt="RustFS GitHub stars" />
@@ -51,10 +50,10 @@ This local snapshot was collected on the same host with Redis metadata, RustFS S
 ### Benchmark Environment (local machine)
 
 - **CPU:** Intel Xeon Platinum (x86_64, 1 socket / 8 vCPU, 2 threads per core)
-- **Memory:** 14 GiB total
+- **Memory:** 16 GiB total
 - **Kernel:** Linux 6.8.0-117-generic
 - **OS:** Ubuntu-based kernel image (GNU/Linux)
-- **Storage:** `vda` (25.4G ext4 for `/`, `vda1` EFI) and `vdb` (`/mnt` and workspace on `/mnt/root-home/.codex/worktrees/d8ec`, 130G)
+- **Storage:** 150GB aliyun ESSD AutoPL (8300 IOPS)
 
 Environment file and full logs for each run are stored in `docker/compose-xfstests/artifacts/<run>/` (contains raw profile env and generated reports).
 
