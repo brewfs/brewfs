@@ -14,7 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Configuration file path (e.g. brewfs-sqlite.yml, brewfs-etcd.yml)
+    /// Configuration file path (e.g. examples/config/metadata-sqlite.yml)
     #[arg(short, long)]
     config: PathBuf,
 
@@ -112,9 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config_file.display()
             );
             eprintln!();
-            eprintln!("Please create a config file or use existing ones:");
-            eprintln!("  brewfs-sqlite.yml   # SQLite database backend");
-            eprintln!("  brewfs-etcd.yml    # etcd distributed backend");
+            eprintln!("Please create a config file or use an example:");
+            eprintln!("  examples/config/metadata-sqlite.yml  # SQLite metadata backend");
+            eprintln!("  examples/config/metadata-redis.yml   # Redis metadata backend");
             std::process::exit(1);
         }
 

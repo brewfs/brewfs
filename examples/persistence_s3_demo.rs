@@ -15,8 +15,8 @@ use brewfs::daemon::worker::start_gc;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Configuration file path (e.g. brewfs-sqlite.yml, brewfs-etcd.yml)
-    #[arg(short, long, default_value = "./brewfs-sqlite.yml")]
+    /// Configuration file path (e.g. examples/config/metadata-sqlite.yml)
+    #[arg(short, long, default_value = "examples/config/metadata-sqlite.yml")]
     config: PathBuf,
 
     /// Mount point path

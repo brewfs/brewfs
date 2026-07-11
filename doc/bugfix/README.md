@@ -10,6 +10,7 @@ that future tests should preserve.
 - [736-readdir-while-renames.md](736-readdir-while-renames.md)
 - [generic-013-014-sequence-hang.md](generic-013-014-sequence-hang.md)
 - [generic-074-debug-history.md](generic-074-debug-history.md)
+- [generic-089-analysis.md](generic-089-analysis.md)
 - [generic-438-fixes.md](generic-438-fixes.md)
 - [rustfs-013-hang-analysis.md](rustfs-013-hang-analysis.md)
 - [write-path-stall-retrospective.md](write-path-stall-retrospective.md)

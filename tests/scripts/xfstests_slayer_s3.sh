@@ -4,7 +4,7 @@ set -euo pipefail
 
 current_dir=$(dirname "$(realpath "$0")")
 workspace_dir=$(realpath "$current_dir/../../..")
-redis_config="$workspace_dir/brewfs-sqlite.yml"
+redis_config="$workspace_dir/examples/config/metadata-sqlite.yml"
 backend_dir=/tmp/data
 mount_dir=/tmp/mount
 log_file=/tmp/brewfs.log

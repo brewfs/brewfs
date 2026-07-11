@@ -24,6 +24,9 @@ notes, and focused review outputs from previous tuning passes.
   BrewFS/JuiceFS comparison (2026-05).
 - [small-file-read-write-performance-optimization.md](small-file-read-write-performance-optimization.md):
   small-file read/write optimization notes.
+- [performance-agent-guide.md](performance-agent-guide.md): detailed
+  performance-work guidance, acceptance criteria, and current optimization
+  gaps.
 
 ## Review Notes
 

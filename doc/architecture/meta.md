@@ -208,10 +208,10 @@ cache:
 
 ```sh
 # 使用 Redis 持久化存储元数据
-cargo run --example persistence_demo -- -c redis.yml -s /tmp/redisdata -m /tmp/mount
+cargo run --example persistence_demo -- -c examples/config/metadata-redis.yml -s /tmp/redisdata -m /tmp/mount
 ```
 
-redis.yml
+examples/config/metadata-redis.yml
 
 ```yml
 database:
