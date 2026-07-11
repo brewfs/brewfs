@@ -19,6 +19,8 @@ benchmark improves.
   the sole acceptance baseline.
 - `doc/performance/`: current performance analysis, JuiceFS comparison, and
   accepted/rejected tuning notes.
+- `doc/performance/performance-agent-guide.md`: extended guidance for
+  performance-focused agent work and current optimization gaps.
 - `doc/superpowers/plans/`: detailed implementation and experiment logs.
 
 ## Development Discipline

@@ -255,7 +255,7 @@ Latest continuation verification:
 | `BREWFS_S3_MAX_CONCURRENCY=4 PERF_METAPERF_ARGS='-d /mnt/brewfs/.perf-metaperf -t 15 -s 4096 -l 16 -L 16 -n 200 -N 2000 create' ./docker/compose-xfstests/run_redis_perf.sh --tools "metaperf"` | Passed: `perf-run-1780197857-13682`, generated config showed `max_concurrency: 4`, create 211.1 ops/s |
 | `BREWFS_S3_MAX_CONCURRENCY=1 PERF_METAPERF_ARGS='-d /mnt/brewfs/.perf-metaperf -t 15 -s 4096 -l 16 -L 16 -n 200 -N 2000 create' ./docker/compose-xfstests/run_redis_perf.sh --tools "metaperf"` | Passed: `perf-run-1780197948-14241`, generated config showed `max_concurrency: 1`, create 205.0 ops/s |
 | `bash -n docker/compose-xfstests/run_redis_perf.sh` | Passed after adding S3 perf env pass-through |
-| `git diff --check` | Passed after updating `plan.md` and perf runner pass-through |
+| `git diff --check` | Passed after updating this plan and perf runner pass-through |
 | `cargo test -p brewfs vfs::io::writer::tests::test_best_effort_persist_runs_concurrently_with_upload --lib -- --nocapture` | Red/green verified: failed before the helper existed, then passed after running best-effort persist concurrently with upload |
 | `cargo test -p brewfs vfs::io::writer::tests::test_flush_blocks_write_until_upload_done --lib -- --nocapture` | Passed after the writeback overlap change |
 | `cargo test -p brewfs vfs::io::writer::tests::test_flush_reports_upload_failure --lib -- --nocapture` | Passed after the writeback overlap change |
@@ -309,7 +309,7 @@ Latest continuation verification:
 ## Task 1: Maintain The Verified Baseline
 
 **Files:**
-- Modify: `plan.md`
+- Modify: `doc/superpowers/plans/2026-06-17-metadata-maintenance-performance-stability.md`
 - Read: `git status --short`
 - Read: `git show --stat --oneline HEAD`
 
@@ -346,7 +346,8 @@ Current known unrelated local files. Do not stage these with the perf/cache meta
 ?? examples/sdk_fio_bench.rs
 ```
 
-`plan.md` belongs to this working iteration and should be staged together with the related perf/cache metadata patch if this iteration is committed.
+This plan belongs to the working iteration and should be staged together with
+the related perf/cache metadata patch if the iteration is committed.
 
 ## Task 2: Verify Metadata Compaction Conflict Safety
 

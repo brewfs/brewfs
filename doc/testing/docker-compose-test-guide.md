@@ -45,10 +45,10 @@ For older installations using the standalone `docker-compose` binary (with hyphe
 Example for older versions:
 ```bash
 # Start services (older docker-compose v1 syntax)
-docker-compose up -d
+docker-compose -f docker/docker-compose.integration.yml up -d
 
 # Stop services
-docker-compose down
+docker-compose -f docker/docker-compose.integration.yml down
 ```
 
 Both `podman-compose` and `podman compose` syntaxes are supported.
@@ -68,7 +68,7 @@ These credentials are **NOT secure** and must NEVER be used in production or any
 
 ```bash
 # Start services in background
-docker compose up -d
+docker compose -f docker/docker-compose.integration.yml up -d
 
 # Run tests
 cargo test --lib meta::stores::redis_store -- --nocapture
@@ -76,14 +76,14 @@ cargo test --lib meta::stores::etcd_store -- --nocapture
 cargo test --lib meta::stores::database_store -- --nocapture
 
 # Stop services when done
-docker compose down
+docker compose -f docker/docker-compose.integration.yml down
 ```
 
 ### Podman
 
 ```bash
 # Start services in background
-podman-compose up -d
+podman-compose -f docker/docker-compose.integration.yml up -d
 
 # Run tests (same commands as above)
 cargo test --lib meta::stores::redis_store -- --nocapture
@@ -91,7 +91,7 @@ cargo test --lib meta::stores::etcd_store -- --nocapture
 cargo test --lib meta::stores::database_store -- --nocapture
 
 # Stop services when done
-podman-compose down
+podman-compose -f docker/docker-compose.integration.yml down
 ```
 
 ## Alternative

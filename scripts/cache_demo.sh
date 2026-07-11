@@ -2,14 +2,19 @@
 # Simple script to demonstrate BrewFS cache hits
 set -e
 
-CONFIG_FILE="brewfs-sqlite.yml"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+CONFIG_FILE="$REPO_ROOT/examples/config/metadata-sqlite.yml"
 LOG_FILE="cache_hits.log"
 
 echo "=== BrewFS Cache Hit Demo ==="
 
 
 echo "Starting BrewFS..."
-cargo run --example persistence_demo -- --config "$CONFIG_FILE" --mount "/tmp/mount" --storage "/tmp/sqlite" > "$LOG_FILE" 2>&1 &
+(
+    cd "$REPO_ROOT"
+    cargo run --example persistence_demo -- --config "$CONFIG_FILE" --mount "/tmp/mount" --storage "/tmp/sqlite"
+) > "$LOG_FILE" 2>&1 &
 DEMO_PID=$!
 
 # Ensure background process is killed on exit or error
