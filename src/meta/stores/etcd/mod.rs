@@ -41,7 +41,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, warn};
 use uuid::Uuid;
 
-use self::txn::{EtcdTxn, EtcdTxnCtx};
+use self::txn::{EtcdTxn, EtcdTxnCtx, get_with_retry, read_txn_with_retry};
 
 /// ID allocation batch size
 /// TODO: make configurable.
@@ -179,17 +179,15 @@ impl EtcdMetaStore {
 
         let limit = i64::try_from(limit)
             .map_err(|_| MetaError::Internal("etcd scan limit overflow".to_string()))?;
-        let mut client = self.client.clone();
         let options = GetOptions::new()
             .with_range(Self::prefix_range_end(prefix))
             .with_limit(limit)
             .with_keys_only();
-        let resp = client
-            .get(start_key.unwrap_or(prefix), Some(options))
-            .await
-            .map_err(|e| {
-                MetaError::Internal(format!("Etcd prefix scan failed for {prefix}: {e}"))
-            })?;
+        let resp = get_with_retry(&self.client, start_key.unwrap_or(prefix), || {
+            Some(options.clone())
+        })
+        .await
+        .map_err(|e| MetaError::Internal(format!("Etcd prefix scan failed for {prefix}: {e}")))?;
 
         resp.kvs()
             .iter()
@@ -266,8 +264,7 @@ impl EtcdMetaStore {
             rkyv::Deserialize<T, rkyv::rancor::Strategy<rkyv::de::Pool, rkyv::rancor::Error>>,
         for<'de> T: serde::de::DeserializeOwned,
     {
-        let mut client = self.client.clone();
-        match client.get(key.to_string(), None).await {
+        match get_with_retry(&self.client, key, || None).await {
             Ok(resp) => {
                 if let Some(kv) = resp.kvs().first() {
                     let obj: T = crate::meta::serialization::deserialize_meta(kv.value())?;
@@ -285,8 +282,7 @@ impl EtcdMetaStore {
 
     #[cfg(not(feature = "rkyv-serialization"))]
     async fn etcd_get_json<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, MetaError> {
-        let mut client = self.client.clone();
-        match client.get(key.to_string(), None).await {
+        match get_with_retry(&self.client, key, || None).await {
             Ok(resp) => {
                 if let Some(kv) = resp.kvs().first() {
                     let obj: T = crate::meta::serialization::deserialize_meta(kv.value())?;
@@ -306,8 +302,7 @@ impl EtcdMetaStore {
         &self,
         key: &str,
     ) -> Result<Option<T>, MetaError> {
-        let mut client = self.client.clone();
-        match client.get(key.to_string(), None).await {
+        match get_with_retry(&self.client, key, || None).await {
             Ok(resp) => {
                 if let Some(kv) = resp.kvs().first() {
                     let obj: T = serde_json::from_slice(kv.value()).map_err(|e| {
@@ -565,16 +560,14 @@ impl EtcdMetaStore {
 
         let limit = i64::try_from(limit)
             .map_err(|_| MetaError::Internal("etcd scan limit overflow".to_string()))?;
-        let mut client = self.client.clone();
         let options = GetOptions::new()
             .with_range(Self::prefix_range_end(prefix))
             .with_limit(limit);
-        let resp = client
-            .get(start_key.unwrap_or(prefix), Some(options))
-            .await
-            .map_err(|e| {
-                MetaError::Internal(format!("Etcd prefix scan failed for {prefix}: {e}"))
-            })?;
+        let resp = get_with_retry(&self.client, start_key.unwrap_or(prefix), || {
+            Some(options.clone())
+        })
+        .await
+        .map_err(|e| MetaError::Internal(format!("Etcd prefix scan failed for {prefix}: {e}")))?;
 
         let mut out = Vec::new();
         for kv in resp.kvs() {
@@ -847,15 +840,14 @@ impl EtcdMetaStore {
     ) -> Result<Option<Vec<ContentMetaModel>>, MetaError> {
         // Optimization: Batch fetch all forward entries with a single prefix query
         // Use one range request for f:{parent_inode}:
-        let mut client = self.client.clone();
         let forward_prefix = format!("f:{}:", parent_inode);
 
-        let mut content_list: Vec<ContentMetaModel> = match client
-            .get(
-                forward_prefix.clone(),
-                Some(etcd_client::GetOptions::new().with_prefix()),
-            )
-            .await
+        let mut content_list: Vec<ContentMetaModel> = match get_with_retry(
+            &self.client,
+            &forward_prefix,
+            || Some(etcd_client::GetOptions::new().with_prefix()),
+        )
+        .await
         {
             Ok(resp) => {
                 let mut list = Vec::new();
@@ -1338,8 +1330,8 @@ impl EtcdMetaStore {
 
                             let lock_key = (*sid, owner);
 
-                            for ((lock_sid, _), records) in &locks {
-                                if (*lock_sid, owner) == lock_key {
+                            for ((lock_sid, lock_owner), records) in &locks {
+                                if (*lock_sid, *lock_owner) == lock_key {
                                     continue;
                                 }
 
@@ -1525,39 +1517,47 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
-        let mut client = self.client.clone();
-        let resp = client
-            .get(
-                "r:".to_string(),
-                Some(etcd_client::GetOptions::new().with_prefix()),
-            )
-            .await
-            .map_err(|e| MetaError::Internal(format!("Failed to scan statfs entries: {e}")))?;
-
         let mut used_space = 0u64;
         let mut used_inodes = 0u64;
+        let mut start_key: Option<String> = None;
+        const STAT_FS_PAGE_SIZE: usize = 256;
 
-        for kv in resp.kvs() {
-            let key = std::str::from_utf8(kv.key()).map_err(|e| {
-                MetaError::Internal(format!("Invalid statfs reverse key bytes: {e}"))
-            })?;
-            let Some(inode_str) = key.strip_prefix("r:") else {
-                continue;
-            };
-            let Ok(ino) = inode_str.parse::<i64>() else {
-                continue;
-            };
-            let entry_info = serde_json::from_slice::<EtcdEntryInfo>(kv.value())
-                .map_err(|e| MetaError::Internal(format!("Failed to parse {key}: {e}")))?;
-            if entry_info.deleted || entry_info.nlink == 0 {
-                continue;
+        loop {
+            let page = self
+                .scan_json_page::<EtcdEntryInfo>("r:", start_key.as_deref(), STAT_FS_PAGE_SIZE)
+                .await?;
+            if page.is_empty() {
+                break;
             }
 
-            let attr = entry_info.to_file_attr(ino);
-            if attr.kind != FileType::Dir {
-                used_space = used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+            let page_len = page.len();
+            let last_key = page.last().map(|(key, _)| key.clone());
+            for (key, entry_info) in page {
+                let Some(inode_str) = key.strip_prefix("r:") else {
+                    continue;
+                };
+                let Ok(ino) = inode_str.parse::<i64>() else {
+                    continue;
+                };
+                if entry_info.deleted || entry_info.nlink == 0 {
+                    continue;
+                }
+
+                let attr = entry_info.to_file_attr(ino);
+                if attr.kind != FileType::Dir {
+                    used_space =
+                        used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+                }
+                used_inodes = used_inodes.saturating_add(1);
             }
-            used_inodes = used_inodes.saturating_add(1);
+
+            if page_len < STAT_FS_PAGE_SIZE {
+                break;
+            }
+            let Some(last_key) = last_key else {
+                break;
+            };
+            start_key = Some(Self::next_scan_key(&last_key));
         }
 
         Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
@@ -1592,12 +1592,10 @@ impl MetaStore for EtcdMetaStore {
             }
 
             // Execute transaction - all GETs in single round trip
-            let mut client_clone = self.client.clone();
-            let txn = Txn::new().and_then(get_ops);
-            let txn_response = client_clone
-                .txn(txn)
-                .await
-                .map_err(|e| MetaError::Internal(format!("Etcd batch txn error: {}", e)))?;
+            let txn_response =
+                read_txn_with_retry(&self.client, || Txn::new().and_then(get_ops.clone()))
+                    .await
+                    .map_err(|e| MetaError::Internal(format!("Etcd batch txn error: {}", e)))?;
 
             // Etcd preserves response order for each request op in the txn success list.
             let responses = txn_response.op_responses();
@@ -1746,15 +1744,12 @@ impl MetaStore for EtcdMetaStore {
             return Err(MetaError::Internal("Not a directory".to_string()));
         }
 
-        let mut client = self.client.clone();
         let child_prefix = format!("f:{}:", child_ino);
-        let child_entries = client
-            .get(
-                child_prefix,
-                Some(etcd_client::GetOptions::new().with_prefix().with_limit(1)),
-            )
-            .await
-            .map_err(|e| MetaError::Internal(format!("Failed to check directory empty: {}", e)))?;
+        let child_entries = get_with_retry(&self.client, &child_prefix, || {
+            Some(etcd_client::GetOptions::new().with_prefix().with_limit(1))
+        })
+        .await
+        .map_err(|e| MetaError::Internal(format!("Failed to check directory empty: {}", e)))?;
         if !child_entries.kvs().is_empty() {
             return Err(MetaError::DirectoryNotEmpty(child_ino));
         }
@@ -2144,6 +2139,10 @@ impl MetaStore for EtcdMetaStore {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError> {
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
+        }
+
         let old_forward_key = Self::etcd_forward_key(old_parent, old_name);
         let new_forward_key = Self::etcd_forward_key(new_parent, &new_name);
         info!(
@@ -2158,6 +2157,7 @@ impl MetaStore for EtcdMetaStore {
                 let new_forward_key = new_forward_key.clone();
                 let old_name = old_name.to_string();
                 let new_name = new_name.clone();
+                let client = self.client.clone();
 
                 Box::pin(async move {
                     let old_forward_entry: EtcdForwardEntry = tx
@@ -2165,19 +2165,112 @@ impl MetaStore for EtcdMetaStore {
                         .await?
                         .ok_or(MetaError::NotFound(old_parent))?;
 
-                    if tx.exists(&new_forward_key).await? {
-                        return Err(MetaError::AlreadyExists {
-                            parent: new_parent,
-                            name: new_name.clone(),
-                        });
-                    }
-
                     let entry_ino = old_forward_entry.inode;
                     let reverse_key = Self::etcd_reverse_key(entry_ino);
                     let mut entry_info: EtcdEntryInfo = tx
                         .get_typed_json(&reverse_key)
                         .await?
                         .ok_or(MetaError::NotFound(entry_ino))?;
+
+                    if let Some(replaced_forward) = tx
+                        .get_typed_json::<EtcdForwardEntry>(&new_forward_key)
+                        .await?
+                    {
+                        if replaced_forward.inode == entry_ino {
+                            return Ok(entry_ino);
+                        }
+
+                        let replaced_ino = replaced_forward.inode;
+                        let replaced_reverse_key = Self::etcd_reverse_key(replaced_ino);
+                        let mut replaced_info: EtcdEntryInfo = tx
+                            .get_typed_json(&replaced_reverse_key)
+                            .await?
+                            .ok_or(MetaError::NotFound(replaced_ino))?;
+
+                        match (entry_info.is_file, replaced_info.is_file) {
+                            (false, false) => {
+                                let child_prefix = format!("f:{}:", replaced_ino);
+                                let children = get_with_retry(&client, &child_prefix, || {
+                                    Some(
+                                        etcd_client::GetOptions::new()
+                                            .with_prefix()
+                                            .with_limit(1),
+                                    )
+                                })
+                                    .await
+                                    .map_err(|error| {
+                                        MetaError::Internal(format!(
+                                            "Failed to check rename destination directory: {error}"
+                                        ))
+                                    })?;
+                                if !children.kvs().is_empty() {
+                                    return Err(MetaError::DirectoryNotEmpty(replaced_ino));
+                                }
+                                tx.delete(replaced_reverse_key);
+                            }
+                            (false, true) => {
+                                return Err(MetaError::Io(std::io::Error::from(
+                                    std::io::ErrorKind::NotADirectory,
+                                )));
+                            }
+                            (true, false) => {
+                                return Err(MetaError::Io(std::io::Error::from(
+                                    std::io::ErrorKind::IsADirectory,
+                                )));
+                            }
+                            (true, true) => {
+                                let now = chrono::Utc::now()
+                                    .timestamp_nanos_opt()
+                                    .unwrap_or(0);
+                                if replaced_info.nlink > 1 {
+                                    let link_parent_key =
+                                        Self::etcd_link_parent_key(replaced_ino);
+                                    let mut link_parents: Vec<EtcdLinkParent> = tx
+                                        .get_typed_json(&link_parent_key)
+                                        .await?
+                                        .ok_or_else(|| {
+                                            MetaError::Internal(format!(
+                                                "LinkParent key {link_parent_key} not found for replaced inode {replaced_ino}"
+                                            ))
+                                        })?;
+                                    let original_len = link_parents.len();
+                                    link_parents.retain(|link| {
+                                        link.parent_inode != new_parent
+                                            || link.entry_name != new_name
+                                    });
+                                    if link_parents.len() == original_len {
+                                        return Err(MetaError::Internal(format!(
+                                            "No destination LinkParent for inode {replaced_ino}"
+                                        )));
+                                    }
+
+                                    if replaced_info.nlink == 2 {
+                                        let remaining = link_parents.first().ok_or_else(|| {
+                                            MetaError::Internal(format!(
+                                                "No remaining LinkParent for inode {replaced_ino}"
+                                            ))
+                                        })?;
+                                        replaced_info.parent_inode = remaining.parent_inode;
+                                        replaced_info.entry_name = remaining.entry_name.clone();
+                                        replaced_info.nlink = 1;
+                                        replaced_info.deleted = false;
+                                        tx.delete(link_parent_key);
+                                    } else {
+                                        replaced_info.nlink -= 1;
+                                        replaced_info.deleted = false;
+                                        tx.set_typed_json(link_parent_key, &link_parents)?;
+                                    }
+                                } else {
+                                    replaced_info.deleted = true;
+                                    replaced_info.nlink = 0;
+                                    replaced_info.parent_inode = 0;
+                                    replaced_info.entry_name.clear();
+                                }
+                                replaced_info.modify_time = now;
+                                tx.set_typed_json(replaced_reverse_key, &replaced_info)?;
+                            }
+                        }
+                    }
 
                     if !entry_info.is_file || entry_info.nlink <= 1 {
                         entry_info.parent_inode = new_parent;
@@ -2342,8 +2435,10 @@ impl MetaStore for EtcdMetaStore {
                         ));
                     }
 
+                    let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
                     entry_info.size = Some(size as i64);
-                    entry_info.modify_time = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+                    entry_info.modify_time = now;
+                    entry_info.create_time = now;
                     tx.set_typed_json(reverse_key, &entry_info)?;
 
                     Ok(())
@@ -2375,9 +2470,10 @@ impl MetaStore for EtcdMetaStore {
 
                     let current = entry_info.size.unwrap_or(0) as u64;
                     if size > current {
+                        let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
                         entry_info.size = Some(size as i64);
-                        entry_info.modify_time =
-                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+                        entry_info.modify_time = now;
+                        entry_info.create_time = now;
                         tx.set_typed_json(reverse_key, &entry_info)?;
                     }
 
@@ -2409,8 +2505,10 @@ impl MetaStore for EtcdMetaStore {
                     }
 
                     let prev = entry_info.size.unwrap_or(0) as u64;
+                    let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
                     entry_info.size = Some(size as i64);
-                    entry_info.modify_time = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+                    entry_info.modify_time = now;
+                    entry_info.create_time = now;
                     tx.set_typed_json(reverse_key, &entry_info)?;
                     Self::prune_slices_for_truncate(tx, ino, size, prev, chunk_size).await
                 })
@@ -2489,16 +2587,12 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
-        let mut client = self.client.clone();
-
         // Get all keys with reverse index prefix "r:"
-        let resp = client
-            .get(
-                "r:".to_string(),
-                Some(etcd_client::GetOptions::new().with_prefix()),
-            )
-            .await
-            .map_err(|e| MetaError::Internal(format!("Failed to scan for deleted files: {}", e)))?;
+        let resp = get_with_retry(&self.client, "r:", || {
+            Some(etcd_client::GetOptions::new().with_prefix())
+        })
+        .await
+        .map_err(|e| MetaError::Internal(format!("Failed to scan for deleted files: {}", e)))?;
 
         let mut deleted_files = Vec::new();
 

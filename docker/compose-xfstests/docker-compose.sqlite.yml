@@ -61,6 +61,7 @@ services:
         condition: service_completed_successfully
     environment:
       BREWFS_META_BACKEND: sqlite
+      BREWFS_META_URL: ""
       BREWFS_SQLITE_PATH: /var/lib/brewfs/metadata.db
       BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
       BREWFS_DATA_DIR: /var/lib/brewfs/data
@@ -75,10 +76,12 @@ services:
       BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
       BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
       BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      RUST_LOG: ${RUST_LOG:-brewfs=info,asyncfuse=warn}
       BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
       BREWFS_ARTIFACT_ROOT: /artifacts
       XFSTESTS_CASES: ${XFSTESTS_CASES:-}
       XFSTESTS_CHECK_ARGS: ${XFSTESTS_CHECK_ARGS:-}
+      XFSTESTS_TRACE_FS_PERMS: ${XFSTESTS_TRACE_FS_PERMS:-0}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}

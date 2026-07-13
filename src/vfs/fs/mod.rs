@@ -23,8 +23,10 @@ use tokio::sync::{Mutex, Notify};
 pub use crate::meta::store::{DirEntry, FileAttr, FileType};
 
 const SPARSE_ZERO_MAX_SCAN_BYTES: usize = 128 * 1024;
-const FUSE_STATFS_CACHE_TTL: Duration = Duration::from_secs(1);
-const FALLOCATE_STATFS_CACHE_TTL: Duration = Duration::from_millis(100);
+// Remote metadata backends can require a paged scan for statfs. A short shared
+// window keeps process-heavy workloads from repeating that scan for every call.
+const FUSE_STATFS_CACHE_TTL: Duration = Duration::from_secs(5);
+const FALLOCATE_STATFS_CACHE_TTL: Duration = Duration::from_secs(5);
 const FALLOCATE_ALLOCATION_UNIT: u64 = 4096;
 const FUSE_SPLIT_WRITE_ALIGNMENT: u64 = 4096;
 const FUSE_SPLIT_WRITE_BARRIER_TTL: Duration = Duration::from_millis(10);
@@ -1216,6 +1218,15 @@ where
 
     fn notify_kernel_invalidate_inode_all(&self, ino: i64) {
         self.notify_kernel_invalidate_inode(ino, 0, FUSE_KERNEL_INVALIDATE_ALL_LEN);
+    }
+
+    async fn notify_kernel_invalidate_inode_all_and_wait(&self, ino: i64) {
+        let Some(notify) = self.fuse_notify() else {
+            return;
+        };
+        notify
+            .invalid_inode(ino as u64, 0, FUSE_KERNEL_INVALIDATE_ALL_LEN)
+            .await;
     }
 
     fn notify_kernel_invalidate_inode_range(&self, ino: i64, offset: u64, len: u64) {
@@ -2661,6 +2672,25 @@ where
     /// adapter so callers get a clear error instead of falling back to slow
     /// userspace emulation.
     pub async fn fallocate_ino(&self, ino: i64, offset: u64, length: u64) -> Result<(), VfsError> {
+        self.fallocate_ino_inner(ino, offset, length, true).await
+    }
+
+    pub(crate) async fn fallocate_ino_from_fuse(
+        &self,
+        ino: i64,
+        offset: u64,
+        length: u64,
+    ) -> Result<(), VfsError> {
+        self.fallocate_ino_inner(ino, offset, length, false).await
+    }
+
+    async fn fallocate_ino_inner(
+        &self,
+        ino: i64,
+        offset: u64,
+        length: u64,
+        notify_kernel: bool,
+    ) -> Result<(), VfsError> {
         let attr = self.meta_stat_required(ino, PathHint::none()).await?;
         if matches!(attr.kind, FileType::Dir) {
             return Err(VfsError::IsADirectory {
@@ -2681,7 +2711,8 @@ where
             self.ensure_fallocate_space_available(current_size, end)
                 .await?;
         }
-        self.apply_fallocate_metadata(ino, offset, length).await?;
+        self.apply_fallocate_metadata(ino, offset, length, notify_kernel)
+            .await?;
         Ok(())
     }
 
@@ -2691,6 +2722,29 @@ where
         ino: i64,
         offset: u64,
         length: u64,
+    ) -> Result<(), VfsError> {
+        self.fallocate_handle_inner(fh, ino, offset, length, true)
+            .await
+    }
+
+    pub(crate) async fn fallocate_handle_from_fuse(
+        &self,
+        fh: u64,
+        ino: i64,
+        offset: u64,
+        length: u64,
+    ) -> Result<(), VfsError> {
+        self.fallocate_handle_inner(fh, ino, offset, length, false)
+            .await
+    }
+
+    async fn fallocate_handle_inner(
+        &self,
+        fh: u64,
+        ino: i64,
+        offset: u64,
+        length: u64,
+        notify_kernel: bool,
     ) -> Result<(), VfsError> {
         let handle = self.file_handle_required(fh)?;
         if handle.ino != ino {
@@ -2735,7 +2789,8 @@ where
                 .await
                 .map_err(VfsError::from)?;
         }
-        self.apply_fallocate_metadata(ino, offset, length).await?;
+        self.apply_fallocate_metadata(ino, offset, length, notify_kernel)
+            .await?;
         Ok(())
     }
 
@@ -2789,6 +2844,7 @@ where
         ino: i64,
         offset: u64,
         length: u64,
+        notify_kernel: bool,
     ) -> Result<FileAttr, VfsError> {
         let mut attr = self
             .meta_fallocate_file(ino, offset, length, FALLOCATE_ALLOCATION_UNIT)
@@ -2807,7 +2863,9 @@ where
             inode.set_exact_allocated_bytes(attr.blocks.saturating_mul(512));
         }
         self.state.handles.update_attr_for_inode(ino, &attr);
-        self.notify_kernel_invalidate_inode_range(ino, offset, length);
+        if notify_kernel {
+            self.notify_kernel_invalidate_inode_range(ino, offset, length);
+        }
         Ok(attr)
     }
 
@@ -2817,6 +2875,30 @@ where
         ino: i64,
         req: &SetAttrRequest,
         flags: SetAttrFlags,
+    ) -> Result<FileAttr, VfsError> {
+        self.set_attr_inner(ino, req, flags, true).await
+    }
+
+    /// Apply an attribute change originating from the mounted FUSE connection.
+    ///
+    /// The SETATTR reply already makes the kernel update or truncate its page
+    /// cache. Sending an invalidation before that reply can race the pending
+    /// truncate and leave the caller waiting in `request_wait_answer`.
+    pub(crate) async fn set_attr_from_fuse(
+        &self,
+        ino: i64,
+        req: &SetAttrRequest,
+        flags: SetAttrFlags,
+    ) -> Result<FileAttr, VfsError> {
+        self.set_attr_inner(ino, req, flags, false).await
+    }
+
+    async fn set_attr_inner(
+        &self,
+        ino: i64,
+        req: &SetAttrRequest,
+        flags: SetAttrFlags,
+        notify_kernel: bool,
     ) -> Result<FileAttr, VfsError> {
         if Self::deleted_inode_timestamp_only_setattr(req, &flags) {
             let remove_after = self.state.handles.has_no_handle(ino);
@@ -2937,7 +3019,7 @@ where
         }
 
         self.state.handles.update_attr_for_inode(ino, &attr);
-        if req.size.is_some() {
+        if req.size.is_some() && notify_kernel {
             self.notify_kernel_invalidate_inode_all(ino);
         }
 
@@ -4065,7 +4147,10 @@ where
         value: &[u8],
         flags: u32,
     ) -> Result<(), VfsError> {
-        self.meta_set_xattr(inode, name, value, flags).await
+        self.meta_set_xattr(inode, name, value, flags).await?;
+        self.notify_kernel_invalidate_inode_all_and_wait(inode)
+            .await;
+        Ok(())
     }
 
     /// Get xattr for a given inode.
@@ -4080,7 +4165,10 @@ where
 
     /// Remove xattr for a given inode.
     pub async fn remove_xattr_ino(&self, inode: i64, name: &str) -> Result<(), VfsError> {
-        self.meta_remove_xattr(inode, name).await
+        self.meta_remove_xattr(inode, name).await?;
+        self.notify_kernel_invalidate_inode_all_and_wait(inode)
+            .await;
+        Ok(())
     }
 
     /// Set ACL rule for a given inode.

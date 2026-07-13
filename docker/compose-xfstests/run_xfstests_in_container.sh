@@ -316,6 +316,13 @@ deadline=$((SECONDS + wait_secs))
 while (( SECONDS < deadline )); do
     if is_brewfs_mounted; then
         sleep "${BREWFS_MOUNT_READY_DELAY_SECS:-1}"
+        {
+            date -Iseconds
+            findmnt -rn --target "$target" --output TARGET,FSTYPE,SOURCE,OPTIONS || true
+            stat -c 'root mode=%a uid=%u gid=%g type=%F' "$target" || true
+            setpriv --reuid=99 --regid=99 --clear-groups \
+                stat -c 'uid99 root mode=%a uid=%u gid=%g type=%F' "$target" || true
+        } >"$(dirname "$log_file")/mount-diagnostics.txt" 2>&1
         exit 0
     fi
     if ! kill -0 "$brewfs_pid" 2>/dev/null; then
@@ -490,6 +497,22 @@ run_xfstests() {
     )
 }
 
+enable_fs_perms_trace() {
+    local normalized="${XFSTESTS_TRACE_FS_PERMS:-0}"
+    normalized="${normalized,,}"
+    [[ "$normalized" =~ ^(1|true|yes|on)$ ]] || return 0
+
+    cat >/tmp/fs_perms_trace <<EOF
+#!/usr/bin/env bash
+trace_name="\$(printf '%s_' "\$@" | tr -c '[:alnum:]_-' '_')"
+exec strace -f -a 80 -o "$artifact_dir/diagnostics/fs_perms-\${trace_name}.strace" \
+    "$xfstests_dir/src/fs_perms" "\$@"
+EOF
+    chmod +x /tmp/fs_perms_trace
+    sed -i 's|^QA_FS_PERMS=.*|QA_FS_PERMS=/tmp/fs_perms_trace|' \
+        "$xfstests_dir/tests/generic/087" "$xfstests_dir/tests/generic/126"
+}
+
 main() {
     local normalized_fuse_op_log
 
@@ -526,6 +549,7 @@ main() {
     prepare_results_dir
 
     info "运行 xfstests (FUSE): dir=$xfstests_dir mount=$mount_dir"
+    enable_fs_perms_trace
     redis_diag_before_xfstests
     set +e
     run_xfstests

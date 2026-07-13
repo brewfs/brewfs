@@ -884,6 +884,7 @@ mod io_tests {
     use crate::cadapter::localfs::LocalFsBackend;
     use crate::chunk::cache::ChunksCacheConfig;
     use crate::chunk::store::{BlockKey, BlockStoreConfig, ObjectBlockStore};
+    use crate::meta::store::{SetAttrFlags, SetAttrRequest};
     use async_trait::async_trait;
     use rand::rngs::StdRng;
     use rand::{Rng, RngCore, SeedableRng};
@@ -2079,6 +2080,80 @@ mod io_tests {
 
         let after = fs.read(fh, offset, probe_len).await.unwrap();
         assert_eq!(after, vec![0u8; probe_len]);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_shrink_then_far_rewrite_keeps_gap_zeroed() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = VFS::new(layout, store, meta_handle.store()).await.unwrap();
+
+        fs.create_file("/truncate-gap.bin").await.unwrap();
+        let attr = fs.stat("/truncate-gap.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        let original = vec![0xa5; 0x40000];
+        fs.write_cached_ino(attr.ino, 0, &original, 1)
+            .await
+            .unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let req = SetAttrRequest {
+            size: Some(0x5a34),
+            ..SetAttrRequest::default()
+        };
+        fs.set_attr_from_fuse(attr.ino, &req, SetAttrFlags::empty())
+            .await
+            .unwrap();
+
+        let tail = vec![0x3c; 0x7dde];
+        fs.write_cached_ino(attr.ino, 0x38222, &tail, 2)
+            .await
+            .unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let gap = fs.read(fh, 0x294ad, 0x464).await.unwrap();
+        assert_eq!(gap, vec![0; 0x464]);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_shrink_then_fallocate_extend_keeps_old_tail_zeroed() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = VFS::new(layout, store, meta_handle.store()).await.unwrap();
+
+        fs.create_file("/fallocate-truncate-gap.bin").await.unwrap();
+        let attr = fs.stat("/fallocate-truncate-gap.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.write(fh, 0x3c053, &vec![0x13; 0x956]).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+        fs.truncate_inode(attr.ino, 0x2d40).await.unwrap();
+        fs.fallocate_handle_from_fuse(fh, attr.ino, 0x326e2, 0xd91e)
+            .await
+            .unwrap();
+        fs.truncate_inode(attr.ino, 0x3c05d).await.unwrap();
+
+        let tail = fs.read(fh, 0x3928e, 0x2dcf).await.unwrap();
+        assert_eq!(tail, vec![0; 0x2dcf]);
 
         fs.close(fh).await.unwrap();
     }

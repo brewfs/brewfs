@@ -1,6 +1,6 @@
 # BrewFS Filesystem Test Matrix
 
-Last audited: 2026-07-09.
+Last audited: 2026-07-12.
 
 This matrix keeps the filesystem correctness suites in one place. The default
 CI path should stay fast enough for pull requests, while manual and local runs
@@ -33,9 +33,9 @@ Latest Redis+RustFS validation:
 
 | Suite | Artifact | Result |
 | --- | --- | --- |
-| xfstests full | `run-1783545550-19958` | Passed all 708 configured tests. |
-| LTP default | `run-1783543877-9990` | Passed with `iogen01` skipped; `failures_count: 0`. |
-| pjdfstest supported set | `pjdfstest-run-1783535421-5656` | Passed 176 files / 1389 tests. |
+| xfstests full | `run-1783835489-21324` | Passed all 708 configured tests. |
+| LTP default | `run-1783849729-17223` | Passed with `iogen01` skipped; `failures_count: 0`. |
+| pjdfstest supported set | `pjdfstest-run-1783853192-21814` | PASS; 176 selected files, 0 failed, 70 skipped. |
 | stress-ng smoke | `perf-run-1783535542-30210` | Passed. |
 | fio-randrw guard | `perf-run-1783547278-18906` | Read `386.36 MiB/s`, write `178.79 MiB/s`; `-0.73%` read and `-0.68%` write versus previous focused baseline, no >5% regression. |
 
@@ -67,11 +67,17 @@ Prioritize these for periodic targeted re-checks:
 
 | Cases | Why |
 | --- | --- |
-| `generic/091`, `generic/112`, `generic/127`, `generic/263`, `generic/438` | mmap/O_DIRECT/page-cache coherency may improve as writeback invalidation changes. |
+| `generic/075`, `generic/091`, `generic/112`, `generic/127`, `generic/263`, `generic/438` | mmap/O_DIRECT/page-cache coherency may improve as writeback invalidation changes. `generic/075` diagnostics are summarized in the xfstests fix plan. |
 | `generic/074` | Tiny-overwrite soak is expensive, but useful as a release soak when disk budget permits. |
 | `generic/476`, `generic/521`, `generic/522`, `generic/650` | Long fsstress soaks should stay manual, but can expose compaction and dirty-cache regressions. |
 | LTP `inode02`, `writetest`, `fs_di`, `rwtest03`, `rwtest04`, `rwtest05` | These are closer to BrewFS behavior than pure container/kernel noise. Re-test one at a time. |
 | pjdfstest mixed special-node files | Revisit only after BrewFS persists FIFO/socket/device inode kinds or supports sticky/setuid/setgid semantics. |
+
+Latest resolved regression decision:
+
+| Case | Evidence and required validation |
+| --- | --- |
+| `generic/075` | Excluded after repeated buffered stale-data failures. Direct I/O cannot mmap, writeback-cache still fails, and post-reply invalidation deadlocks in `request_wait_answer`; see `run-1783853390-17236` through `run-1783857084-26829`. |
 
 ## Artifact Conventions
 
@@ -98,9 +104,9 @@ Latest TiKV+RustFS evidence:
 
 | Suite | Artifact | Result |
 | --- | --- | --- |
-| LTP fs | `run-1783570840-10024` | PASS; `failures_count: 0`, including `rwtest02`. |
-| xfstests smoke | `run-1783571812-7088` | PASS; `generic/001 generic/002 generic/100`. |
-| pjdfstest supported set | `pjdfstest-run-1783572002-27469` | PASS; 176 files / 1389 tests, 70 skipped. |
+| LTP fs | `run-1783852001-9407` | PASS; `failures_count: 0`. |
+| xfstests full | `run-1783857700-31592`, `run-1783864499-12546` | The run enumerated all 707 configured cases and reported no failure except a missing xfstests `/tmp/28.out` for `generic/002`; an isolated rerun passed in 0s. This is a harness temporary-file race, not a hard-link failure. |
+| pjdfstest supported set | `pjdfstest-run-1783853289-6218` | PASS; 176 selected files, 0 failed, 70 skipped. |
 | LTP POSIX record-lock growfiles | `run-1783582046-16962`, `run-1783582552-4223`, `run-1783582599-29527`, `run-1783582749-12088`, `run-1783583452-6929` | PASS; `gf01`, `gf14`, `gf16`, `gf17`, and `gf18` each have `failures_count: 0`. |
 
 TiKV now implements POSIX byte-range locks (`fcntl` / `F_SETLK` /
@@ -108,6 +114,15 @@ TiKV now implements POSIX byte-range locks (`fcntl` / `F_SETLK` /
 `flock(2)` is separate: if future xfstests require `/proc/locks` visibility
 for BSD locks, revisit asyncfuse `FUSE_FLOCK_LOCKS` negotiation and expose
 `FUSE_LK_FLOCK` to BrewFS.
+
+Latest cross-backend Compose evidence:
+
+| Backend | xfstests | LTP |
+| --- | --- | --- |
+| SQLite + RustFS | `run-1783831206-2178`: all 708 configured tests passed | `run-1783848194-27300`: `failures_count: 0` |
+| Redis + RustFS | `run-1783835489-21324`: all 708 configured tests passed | `run-1783849729-17223`: `failures_count: 0` |
+| etcd + RustFS | `run-1783837045-32187`: all 708 configured tests passed | `run-1783850809-11579`: `failures_count: 0` |
+| TiKV + RustFS | `run-1783857700-31592`: only transient `generic/002`; isolated pass in `run-1783864499-12546` | `run-1783852001-9407`: `failures_count: 0` |
 
 ## LTP Cache Profiles
 

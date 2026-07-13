@@ -192,3 +192,29 @@ df -h /mnt/slayerfs /mnt/slayerfs/brewfs
 du -sh target docker/compose-xfstests/artifacts 2>/dev/null || true
 docker system df
 ```
+
+## Known POSIX And FUSE Limitations
+
+- Keep `generic/075` excluded from default xfstests. Buffered FUSE mmap after
+  truncate/extend can expose stale pre-truncate page-cache data. Direct I/O
+  cannot run the mmap shape (`ENODEV`), writeback cache still reproduces it,
+  and ordered post-reply `FUSE_NOTIFY_INVAL_INODE` experiments can leave fsx
+  permanently blocked in `request_wait_answer`. Re-enable only after repeated
+  `generic/075 generic/014` passes without a D-state task or >5% performance
+  regression. See `doc/testing/xfstests-redis-rustfs-fix-plan.md`.
+- Keep LTP `iogen01` in the default skip list. Its tiny-overlap direct-I/O
+  diagnostic passes, but the normal buffered FUSE profile still has a
+  split-write/page-cache coherency race. Full direct I/O is not a substitute:
+  mmap workloads return `ENODEV`.
+- BrewFS does not currently persist FIFO, socket, or device inode kinds. Keep
+  the commented special-node pjdfstest/LTP exclusions until that support is
+  implemented; do not hide failures for regular files or directories behind
+  those exclusions.
+- If xfstests `generic/002` reports a missing driver file such as
+  `/tmp/<check-pid>.out` without an `.out.bad`, rerun the case before changing
+  hard-link code. `run-1783857700-31592` showed this harness-only failure and
+  isolated TiKV rerun `run-1783864499-12546` passed immediately.
+- A FUSE test process stuck in `request_wait_answer` cannot be killed or its
+  container removed until the kernel request returns; a host reboot can be
+  required. Preserve diagnostics first, and never add post-reply invalidation
+  ordering without checking teardown and D-state tasks.

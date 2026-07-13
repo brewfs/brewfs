@@ -125,6 +125,10 @@ fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
     flags
 }
 
+fn is_posix_acl_xattr(name: &str) -> bool {
+    matches!(name, "system.posix_acl_access" | "system.posix_acl_default")
+}
+
 /// Virtual inode for the `.stats` file exposed at the mount root.
 /// Uses a high inode number unlikely to collide with real inodes.
 const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
@@ -424,7 +428,10 @@ where
         if attr_request_is_empty(&req) {
             return self.stat_ino(ino).await;
         }
-        match self.set_attr(ino, &req, SetAttrFlags::empty()).await {
+        match self
+            .set_attr_from_fuse(ino, &req, SetAttrFlags::empty())
+            .await
+        {
             Ok(attr) => Some(attr),
             Err(_err) => self.stat_ino(ino).await,
         }
@@ -487,7 +494,7 @@ where
             return Ok(());
         }
 
-        self.set_attr(ino, &SetAttrRequest::default(), flags)
+        self.set_attr_from_fuse(ino, &SetAttrRequest::default(), flags)
             .await
             .map(|_| ())
     }
@@ -635,7 +642,7 @@ where
             if !write {
                 return Err(libc::EINVAL.into());
             }
-            self.set_attr(
+            self.set_attr_from_fuse(
                 ino as i64,
                 &SetAttrRequest {
                     size: Some(0),
@@ -671,10 +678,13 @@ where
             .await?;
 
         // Create directory handle for efficient readdir operations
-        let fh = self
-            .opendir(ino as i64)
-            .await
-            .map_err(Into::<Errno>::into)?;
+        let fh = match self.opendir(ino as i64).await {
+            Ok(fh) => fh,
+            Err(err) => {
+                warn!(ino, error = %err, "fuse.opendir failed");
+                return Err(Errno::from(err));
+            }
+        };
 
         Ok(ReplyOpen { fh, flags: 0 })
     }
@@ -996,12 +1006,18 @@ where
         }
 
         // Apply the attribute changes
-        let vattr = match self.set_attr(ino as i64, &meta_req, meta_flags).await {
+        let vattr = match self
+            .set_attr_from_fuse(ino as i64, &meta_req, meta_flags)
+            .await
+        {
             Ok(vattr) => {
                 debug!(
                     unique = req.unique,
                     ino,
                     size = ?meta_req.size,
+                    mode = vattr.mode,
+                    uid = vattr.uid,
+                    gid = vattr.gid,
                     elapsed_ms = setattr_start.elapsed().as_millis() as u64,
                     "fuse.setattr complete"
                 );
@@ -1047,7 +1063,9 @@ where
         // Replace the cached handle with a fresh snapshot from the meta
         // layer so that entries created after opendir(3) are visible.
         if fh != 0 && offset == 0 {
-            let _ = self.refresh_dir_handle(fh).await;
+            if let Err(err) = self.refresh_dir_handle(fh).await {
+                warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
+            }
         }
 
         // Try to use handle first. FUSE directory offsets identify the next
@@ -1504,7 +1522,7 @@ where
             return Err(libc::ENOENT.into());
         };
         let vattr = if !create_result.created && (flags & libc::O_TRUNC as u32) != 0 {
-            self.set_attr(
+            self.set_attr_from_fuse(
                 create_result.ino,
                 &SetAttrRequest {
                     size: Some(0),
@@ -1867,11 +1885,13 @@ where
                 .await;
         }
         if fh != 0 {
-            self.fallocate_handle(fh, inode as i64, offset, length)
+            // The FALLOCATE reply already updates the initiating kernel's
+            // inode state. A concurrent invalidation can race buffered writes.
+            self.fallocate_handle_from_fuse(fh, inode as i64, offset, length)
                 .await
                 .map_err(Errno::from)
         } else {
-            self.fallocate_ino(inode as i64, offset, length)
+            self.fallocate_ino_from_fuse(inode as i64, offset, length)
                 .await
                 .map_err(Errno::from)
         }
@@ -2012,6 +2032,12 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        // BrewFS ACL capability is the control-plane system.brewfs.acl format.
+        // Linux POSIX ACL mode synchronization and default inheritance are not
+        // implemented, so reject those xattrs instead of advertising partial ACLs.
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         self.set_xattr_ino(inode as i64, &name, value, flags)
             .await
             .map_err(|e| match e {
@@ -2033,6 +2059,9 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         let value = self
             .get_xattr_ino(inode as i64, &name)
             .await
@@ -2060,7 +2089,10 @@ where
             .map_err(|e| match e {
                 VfsError::Unsupported => Errno::from(libc::ENOSYS),
                 _ => Errno::from(libc::EIO),
-            })?;
+            })?
+            .into_iter()
+            .filter(|name| !is_posix_acl_xattr(name))
+            .collect::<Vec<_>>();
         let total_len: usize = names.iter().map(|n| n.len() + 1).sum();
         if size == 0 {
             return Ok(ReplyXAttr::Size(total_len as u32));
@@ -2081,6 +2113,9 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         self.remove_xattr_ino(inode as i64, &name)
             .await
             .map_err(|e| match e {
@@ -4149,6 +4184,14 @@ mod fuse_init_tests {
         assert_eq!(fuse_open_reply_flags(true, false), 0);
         assert_eq!(fuse_open_reply_flags(true, true), 0);
         assert_eq!(fuse_open_reply_flags(false, true), 0);
+    }
+
+    #[test]
+    fn distinguishes_linux_posix_acl_xattrs_from_brewfs_acl_metadata() {
+        assert!(is_posix_acl_xattr("system.posix_acl_access"));
+        assert!(is_posix_acl_xattr("system.posix_acl_default"));
+        assert!(!is_posix_acl_xattr(CONTROL_ACL_XATTR_NAME));
+        assert!(!is_posix_acl_xattr("user.test"));
     }
 
     #[test]

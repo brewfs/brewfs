@@ -56,6 +56,12 @@ generic/066 # xattr fsync+remount replay: FUSE cannot remount (no block device)
 generic/127 # fsx mmap: MAPWRITE+MAPREAD coherence gap with FUSE writeback cache
 # Redis+RustFS focused run excludes.
 generic/074 # fstest tiny 512-byte random overwrite soak creates millions of RustFS objects/inodes
+# Buffered mmap truncate/extend coherence: generic/075 repeatedly exposes bytes
+# from before a shrink after mmap, copy_file_range, or fallocate extends the
+# file again. Direct I/O cannot run MAPWRITE (ENODEV); writeback-cache still
+# reproduces stale data; ordered FUSE_NOTIFY_INVAL_INODE can deadlock a page
+# fault in request_wait_answer. Keep this tracked with the mmap cases below.
+generic/075 # fsx mmap shrink/extend can re-expose pre-truncate kernel page-cache data
 generic/112 # AIO fsx mmap stale data under FUSE page-cache/writeback ordering
 generic/263 # fsx mmap+truncate stale page cache; needs FUSE notify invalidation or deeper mmap strategy
 # FUSE mmap + byte-granular fallocate limitation:

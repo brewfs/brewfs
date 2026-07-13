@@ -247,6 +247,110 @@ async fn test_directory_same_parent_rename_updates_lookup() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn test_rename_overwrites_existing_file() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let source = store
+        .create_file(root, "rename-source".to_string())
+        .await
+        .unwrap();
+    let replaced = store
+        .create_file(root, "rename-destination".to_string())
+        .await
+        .unwrap();
+
+    store
+        .rename(
+            root,
+            "rename-source",
+            root,
+            "rename-destination".to_string(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(store.lookup(root, "rename-source").await.unwrap(), None);
+    assert_eq!(
+        store.lookup(root, "rename-destination").await.unwrap(),
+        Some(source)
+    );
+    assert_eq!(store.stat(replaced).await.unwrap().unwrap().nlink, 0);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_rename_replaces_empty_directory() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let source = store
+        .mkdir(root, "rename-source-dir".to_string())
+        .await
+        .unwrap();
+    let replaced = store
+        .mkdir(root, "rename-destination-dir".to_string())
+        .await
+        .unwrap();
+
+    store
+        .rename(
+            root,
+            "rename-source-dir",
+            root,
+            "rename-destination-dir".to_string(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(store.lookup(root, "rename-source-dir").await.unwrap(), None);
+    assert_eq!(
+        store.lookup(root, "rename-destination-dir").await.unwrap(),
+        Some(source)
+    );
+    assert!(store.stat(replaced).await.unwrap().is_none());
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_scans_multiple_pages() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    for index in 0..300 {
+        store
+            .create_file(root, format!("statfs-page-{index:03}"))
+            .await
+            .unwrap();
+    }
+
+    let snapshot = store.stat_fs().await.unwrap();
+    assert_eq!(snapshot.used_inodes, 301);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_truncate_updates_mtime_and_ctime() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "truncate-timestamps".to_string())
+        .await
+        .unwrap();
+    let before = store.stat(ino).await.unwrap().unwrap();
+
+    time::sleep(time::Duration::from_millis(2)).await;
+    store.truncate(ino, 123, 64 * 1024 * 1024).await.unwrap();
+    let after = store.stat(ino).await.unwrap().unwrap();
+
+    assert_eq!(after.size, 123);
+    assert!(after.mtime > before.mtime);
+    assert!(after.ctime > before.ctime);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_basic_read_lock() {
     let store = new_test_store().await;
     let session_id = Uuid::now_v7();
@@ -418,6 +522,42 @@ async fn test_write_lock_conflict() {
         }
         _ => panic!("Expected LockConflict error"),
     }
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_same_session_different_owner_lock_conflict() {
+    let store = new_test_store_with_session(Uuid::now_v7()).await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "same-session-lock-conflict".to_string())
+        .await
+        .unwrap();
+
+    store
+        .set_plock(
+            ino,
+            1001,
+            false,
+            FileLockType::Write,
+            FileLockRange { start: 20, end: 40 },
+            1234,
+        )
+        .await
+        .unwrap();
+
+    let result = store
+        .set_plock(
+            ino,
+            1002,
+            false,
+            FileLockType::Read,
+            FileLockRange { start: 30, end: 35 },
+            5678,
+        )
+        .await;
+    assert!(matches!(result, Err(MetaError::LockConflict { .. })));
 }
 
 #[serial]

@@ -32,16 +32,17 @@ use sea_orm::ActiveValue::{self, Set, Unchanged};
 use sea_orm::prelude::Uuid;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, ConnectOptions, ConnectionTrait, Database,
-    DatabaseConnection, EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Schema, TransactionTrait, sea_query,
+    DatabaseConnection, DatabaseTransaction, EntityTrait, IntoActiveModel, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, Schema, TransactionTrait, sea_query,
 };
 use sea_query::Index;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::select;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, warn};
 
@@ -56,11 +57,31 @@ struct PlockHashMapKey {
 /// Database-based metadata store
 pub struct DatabaseMetaStore {
     db: DatabaseConnection,
+    sqlite_txn_gate: Arc<Mutex<()>>,
     sid: OnceLock<Uuid>,
     _config: Config,
 }
 
 impl DatabaseMetaStore {
+    async fn sqlite_write_guard(&self) -> Option<OwnedMutexGuard<()>> {
+        if matches!(
+            &self._config.database.db_config,
+            DatabaseType::Sqlite { .. }
+        ) {
+            Some(Arc::clone(&self.sqlite_txn_gate).lock_owned().await)
+        } else {
+            None
+        }
+    }
+
+    async fn begin_transaction(
+        &self,
+    ) -> Result<(Option<OwnedMutexGuard<()>>, DatabaseTransaction), MetaError> {
+        let guard = self.sqlite_write_guard().await;
+        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        Ok((guard, txn))
+    }
+
     async fn from_config_inner(config: Config) -> Result<Self, MetaError> {
         info!("Initializing DatabaseMetaStore from config");
         info!("Database type: {}", config.database.db_type_str());
@@ -70,6 +91,7 @@ impl DatabaseMetaStore {
 
         let store = Self {
             db,
+            sqlite_txn_gate: Arc::new(Mutex::new(())),
             sid: OnceLock::new(),
             _config: config,
         };
@@ -189,8 +211,33 @@ impl DatabaseMetaStore {
     }
 
     async fn alloc_counter_id(&self, key: &str) -> Result<i64, MetaError> {
-        const MAX_RETRIES: usize = 64;
+        if matches!(
+            &self._config.database.db_config,
+            DatabaseType::Sqlite { .. }
+        ) {
+            let _sqlite_txn_guard = Arc::clone(&self.sqlite_txn_gate).lock_owned().await;
+            let next = sea_orm::sqlx::query_scalar::<_, i64>(
+                "UPDATE counter_meta \
+                 SET value = value + 1 \
+                 WHERE name = ? AND value < ? \
+                 RETURNING value",
+            )
+            .bind(key)
+            .bind(i64::MAX)
+            .fetch_optional(self.db.get_sqlite_connection_pool())
+            .await
+            .map_err(|err| {
+                MetaError::Database(sea_orm::DbErr::Exec(sea_orm::RuntimeErr::SqlxError(err)))
+            })?
+            .ok_or_else(|| {
+                MetaError::Internal(format!("counter missing or overflowed for key {key}"))
+            })?;
+            return next
+                .checked_sub(1)
+                .ok_or_else(|| MetaError::Internal(format!("counter underflow for key {key}")));
+        }
 
+        const MAX_RETRIES: usize = 64;
         for _ in 0..MAX_RETRIES {
             let Some(row) = CounterMeta::find_by_id(key.to_string())
                 .one(&self.db)
@@ -200,12 +247,10 @@ impl DatabaseMetaStore {
                 Self::set_counter_floor(&self.db, key, 1).await?;
                 continue;
             };
-
             let next = row
                 .value
                 .checked_add(1)
                 .ok_or_else(|| MetaError::Internal(format!("counter overflow for key {key}")))?;
-
             let updated = CounterMeta::update_many()
                 .col_expr(counter_meta::Column::Value, sea_query::Expr::value(next))
                 .filter(counter_meta::Column::Name.eq(key))
@@ -213,7 +258,6 @@ impl DatabaseMetaStore {
                 .exec(&self.db)
                 .await
                 .map_err(MetaError::Database)?;
-
             if updated.rows_affected == 1 {
                 return Ok(row.value);
             }
@@ -230,17 +274,13 @@ impl DatabaseMetaStore {
             DatabaseType::Sqlite { url } => {
                 info!("Connecting to SQLite: {}", url);
                 let mut opts = ConnectOptions::new(url.clone());
-                // SQLite named shared memory (sqlite:file::memory:) needs single connection
-                // SQLite anonymous in-memory (sqlite::memory:) can use multiple connections
-                // Check for file::memory: first (more specific) before ::memory: (more general)
                 if url.contains("file::memory:") {
-                    // Named shared memory databases require exactly 1 connection
                     opts.max_connections(1).min_connections(1);
                 } else if url.contains("::memory:") {
-                    // Anonymous in-memory databases can use multiple connections for tests
                     opts.max_connections(5).min_connections(1);
                 } else {
-                    // File-based databases can use more connections
+                    // Reads and standalone writes may use the pool concurrently. Deferred
+                    // write transactions are serialized separately by sqlite_txn_gate.
                     opts.max_connections(10).min_connections(1);
                 }
                 opts.map_sqlx_sqlite_opts(|sqlite_opts| {
@@ -447,7 +487,7 @@ impl DatabaseMetaStore {
         let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
 
         // Start transaction
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let parent_meta = AccessMeta::find_by_id(parent_inode)
             .one(&txn)
@@ -540,7 +580,7 @@ impl DatabaseMetaStore {
         let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
 
         // Start transaction
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let parent_meta = AccessMeta::find_by_id(parent_inode)
             .one(&txn)
@@ -634,6 +674,33 @@ impl DatabaseMetaStore {
 
     fn now_nanos() -> i64 {
         Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    }
+
+    async fn touch_ctime<C>(conn: &C, ino: i64, now: i64) -> Result<(), MetaError>
+    where
+        C: ConnectionTrait,
+    {
+        let file = FileMeta::update_many()
+            .col_expr(file_meta::Column::CreateTime, sea_query::Expr::value(now))
+            .filter(file_meta::Column::Inode.eq(ino))
+            .exec(conn)
+            .await
+            .map_err(MetaError::Database)?;
+        if file.rows_affected == 1 {
+            return Ok(());
+        }
+
+        let dir = AccessMeta::update_many()
+            .col_expr(access_meta::Column::CreateTime, sea_query::Expr::value(now))
+            .filter(access_meta::Column::Inode.eq(ino))
+            .exec(conn)
+            .await
+            .map_err(MetaError::Database)?;
+        if dir.rows_affected == 1 {
+            Ok(())
+        } else {
+            Err(MetaError::NotFound(ino))
+        }
     }
 
     async fn prune_slices_for_truncate<C>(
@@ -761,7 +828,7 @@ impl DatabaseMetaStore {
     }
 
     async fn get_lock_internal(&self, lock_name: LockName, ttl_secs: u64) -> anyhow::Result<bool> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let lock_name_str = lock_name.to_string();
         let lock_ = LocksMeta::find()
             .filter(locks_meta::Column::LockName.eq(lock_name_str.clone()))
@@ -823,6 +890,7 @@ impl DatabaseMetaStore {
     }
 
     async fn release_lock_internal(&self, lock_name: LockName) -> anyhow::Result<bool> {
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
         let lock_name_str = lock_name.to_string();
         let result = LocksMeta::delete_many()
             .filter(locks_meta::Column::LockName.eq(lock_name_str))
@@ -860,7 +928,7 @@ impl DatabaseMetaStore {
         lock_type: FileLockType,
         range: FileLockRange,
     ) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         // check file is existing using the same transaction
         let exists = FileMeta::find_by_id(inode)
@@ -1023,7 +1091,15 @@ impl DatabaseMetaStore {
             .ok_or_else(|| MetaError::Internal("sid has not been set".to_string()))
     }
 
-    async fn refresh_session(session_id: Uuid, conn: &DatabaseConnection) -> Result<(), MetaError> {
+    async fn refresh_session(
+        session_id: Uuid,
+        conn: &DatabaseConnection,
+        txn_gate: &Option<Arc<Mutex<()>>>,
+    ) -> Result<(), MetaError> {
+        let _sqlite_txn_guard = match txn_gate {
+            Some(gate) => Some(Arc::clone(gate).lock_owned().await),
+            None => None,
+        };
         let txn = conn.begin().await.map_err(MetaError::Database)?;
         let expire = (Utc::now() + ChronoDuration::minutes(5)).timestamp_millis();
         let session = SessionMeta::find()
@@ -1040,13 +1116,18 @@ impl DatabaseMetaStore {
         Ok(())
     }
 
-    async fn life_cycle(token: CancellationToken, session_id: Uuid, conn: DatabaseConnection) {
+    async fn life_cycle(
+        token: CancellationToken,
+        session_id: Uuid,
+        conn: DatabaseConnection,
+        txn_gate: Option<Arc<Mutex<()>>>,
+    ) {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             select! {
                 _ = interval.tick() => {
                     // refresh session
-                    match Self::refresh_session(session_id, &conn).await {
+                    match Self::refresh_session(session_id, &conn, &txn_gate).await {
                         Ok(_) => {}
                         Err(err) => {
                             error!("Failed to refresh session: {}", err);
@@ -1092,7 +1173,7 @@ impl DatabaseMetaStore {
         }
 
         let mut ready_for_block_deletion = Vec::new();
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         for delayed in &delayed_slices {
             if delayed.status == "meta_deleted" {
@@ -1173,6 +1254,7 @@ impl DatabaseMetaStore {
         if delayed_ids.is_empty() {
             return Ok(());
         }
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
 
         // Permanently delete the delayed_slice records
         DelayedSlice::delete_many()
@@ -1365,7 +1447,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let dir_entry = ContentMeta::find()
             .filter(content_meta::Column::ParentInode.eq(parent))
@@ -1452,7 +1534,7 @@ impl MetaStore for DatabaseMetaStore {
         }
 
         let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let parent_meta = AccessMeta::find_by_id(parent)
             .one(&txn)
@@ -1520,7 +1602,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let file_entry = ContentMeta::find()
             .filter(content_meta::Column::ParentInode.eq(parent))
@@ -1627,7 +1709,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         if ino == 1 {
             txn.rollback().await.map_err(MetaError::Database)?;
@@ -1802,7 +1884,7 @@ impl MetaStore for DatabaseMetaStore {
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
         let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let parent_dir = AccessMeta::find_by_id(parent)
             .one(&txn)
@@ -1897,7 +1979,7 @@ impl MetaStore for DatabaseMetaStore {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         // Verify new parent exists and is a directory.
         let new_parent_meta = AccessMeta::find_by_id(new_parent)
@@ -2168,7 +2250,7 @@ impl MetaStore for DatabaseMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         // Find both entries to exchange
         let old_entry = ContentMeta::find()
@@ -2346,6 +2428,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
         let mut file_meta: file_meta::ActiveModel = FileMeta::find_by_id(ino)
             .one(&self.db)
             .await
@@ -2363,7 +2446,9 @@ impl MetaStore for DatabaseMetaStore {
 
         // Only update mtime when size changes (not on every call)
         if old_size != size {
-            file_meta.modify_time = Set(Self::now_nanos());
+            let now = Self::now_nanos();
+            file_meta.modify_time = Set(now);
+            file_meta.create_time = Set(now);
         }
 
         file_meta
@@ -2376,6 +2461,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
         let now = Self::now_nanos();
         let result = file_meta::Entity::update_many()
             .col_expr(
@@ -2384,6 +2470,10 @@ impl MetaStore for DatabaseMetaStore {
             )
             .col_expr(
                 file_meta::Column::ModifyTime,
+                sea_query::Expr::val(now).into(),
+            )
+            .col_expr(
+                file_meta::Column::CreateTime,
                 sea_query::Expr::val(now).into(),
             )
             .filter(file_meta::Column::Inode.eq(ino))
@@ -2407,7 +2497,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size, chunk_size))]
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let mut file_meta: file_meta::ActiveModel = FileMeta::find_by_id(ino)
             .one(&txn)
@@ -2423,7 +2513,9 @@ impl MetaStore for DatabaseMetaStore {
 
         file_meta.size = Set(size as i64);
         if old_size != size {
-            file_meta.modify_time = Set(Self::now_nanos());
+            let now = Self::now_nanos();
+            file_meta.modify_time = Set(now);
+            file_meta.create_time = Set(now);
         }
 
         file_meta.update(&txn).await.map_err(MetaError::Database)?;
@@ -2445,7 +2537,7 @@ impl MetaStore for DatabaseMetaStore {
         req: &SetAttrRequest,
         flags: SetAttrFlags,
     ) -> Result<FileAttr, MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         if let Some(file) = FileMeta::find_by_id(ino)
             .one(&txn)
@@ -2521,9 +2613,10 @@ impl MetaStore for DatabaseMetaStore {
             let kind = if file.symlink_target.is_some() {
                 FileType::Symlink
             } else {
-                FileType::File
+                FileType::from_mode(permission.mode)
             };
             let nlink = file.nlink;
+            let rdev = file.rdev.max(0) as u32;
             let symlink_len = file.symlink_target.as_ref().map(|t| t.len() as u64);
 
             let mut active: file_meta::ActiveModel = file.into();
@@ -2541,7 +2634,7 @@ impl MetaStore for DatabaseMetaStore {
                 blocks: symlink_len.unwrap_or(size as u64).div_ceil(512),
                 kind,
                 mode: permission.mode,
-                rdev: 0,
+                rdev,
                 uid: permission.uid,
                 gid: permission.gid,
                 atime: access_time,
@@ -2667,7 +2760,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, flags = ?flags))]
     async fn open(&self, ino: i64, flags: OpenFlags) -> Result<FileAttr, MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         if let Some(mut file) = FileMeta::find_by_id(ino)
             .one(&txn)
@@ -2826,7 +2919,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let file_meta = FileMeta::find_by_id(ino)
             .one(&txn)
@@ -2866,7 +2959,7 @@ impl MetaStore for DatabaseMetaStore {
         parent: i64,
         name: String,
     ) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         AccessMeta::find_by_id(parent)
             .one(&txn)
@@ -2977,7 +3070,7 @@ impl MetaStore for DatabaseMetaStore {
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]
     async fn append_slice(&self, chunk_id: u64, slice: SliceDesc) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let model = slice_meta::ActiveModel {
             chunk_id: Set(chunk_id as i64),
             slice_id: Set(slice.slice_id as i64),
@@ -3012,7 +3105,7 @@ impl MetaStore for DatabaseMetaStore {
             return Err(MetaError::ContinueRetry(RetryReason::VersionConflict));
         }
 
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let model = slice_meta::ActiveModel {
             chunk_id: Set(chunk_id as i64),
@@ -3093,7 +3186,7 @@ impl MetaStore for DatabaseMetaStore {
         session_info: SessionInfo,
         token: CancellationToken,
     ) -> Result<Session, MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let session_id = Uuid::now_v7();
         let expire = (Utc::now() + ChronoDuration::minutes(5)).timestamp_millis();
         let payload = serde_json::to_vec(&session_info)
@@ -3103,14 +3196,24 @@ impl MetaStore for DatabaseMetaStore {
             session_info: Set(payload),
             expire: Set(expire),
         };
-        if let Err(e) = session.insert(&self.db).await {
+        if let Err(e) = session.insert(&txn).await {
             let _ = txn.rollback().await;
             return Err(MetaError::Database(e));
         }
         self.set_sid(session_id)?;
         txn.commit().await.map_err(MetaError::Database)?;
 
-        tokio::spawn(Self::life_cycle(token.clone(), session_id, self.db.clone()));
+        let txn_gate = matches!(
+            &self._config.database.db_config,
+            DatabaseType::Sqlite { .. }
+        )
+        .then(|| Arc::clone(&self.sqlite_txn_gate));
+        tokio::spawn(Self::life_cycle(
+            token.clone(),
+            session_id,
+            self.db.clone(),
+            txn_gate,
+        ));
 
         Ok(Session {
             session_id,
@@ -3121,7 +3224,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn shutdown_session(&self) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let session_id = self.get_sid()?;
         self.shutdown_session_by_id(*session_id, &txn).await?;
         txn.commit().await.map_err(MetaError::Database)?;
@@ -3130,7 +3233,7 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn cleanup_sessions(&self) -> Result<(), MetaError> {
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let sessions = SessionMeta::find()
             .filter(session_meta::Column::Expire.lt(Utc::now().timestamp_millis()))
             .all(&txn)
@@ -3247,7 +3350,7 @@ impl MetaStore for DatabaseMetaStore {
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let existing = XattrMeta::find_by_id((inode, name.to_string()))
             .one(&txn)
             .await
@@ -3282,6 +3385,7 @@ impl MetaStore for DatabaseMetaStore {
             }
         }
 
+        Self::touch_ctime(&txn, inode, Self::now_nanos()).await?;
         txn.commit().await.map_err(MetaError::Database)?;
         Ok(())
     }
@@ -3313,13 +3417,16 @@ impl MetaStore for DatabaseMetaStore {
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let result = XattrMeta::delete_by_id((inode, name.to_string()))
-            .exec(&self.db)
+            .exec(&txn)
             .await
             .map_err(MetaError::Database)?;
         if result.rows_affected == 0 {
             return Err(MetaError::NotFound(inode));
         }
+        Self::touch_ctime(&txn, inode, Self::now_nanos()).await?;
+        txn.commit().await.map_err(MetaError::Database)?;
         Ok(())
     }
 
@@ -3386,7 +3493,7 @@ impl MetaStore for DatabaseMetaStore {
             ));
         }
 
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let delayed_slices = SliceDesc::decode_delayed_data(old_slices_to_delay)
             .ok_or_else(|| MetaError::Internal("Invalid delayed data length".to_string()))?;
@@ -3460,7 +3567,7 @@ impl MetaStore for DatabaseMetaStore {
             ));
         }
 
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let delayed_slices = SliceDesc::decode_delayed_data(old_slices_to_delay)
             .ok_or_else(|| MetaError::Internal("Invalid delayed data length".to_string()))?;
@@ -3584,6 +3691,7 @@ impl MetaStore for DatabaseMetaStore {
         size: u64,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
         let now = Utc::now().timestamp();
 
         let model = uncommitted_slice::ActiveModel {
@@ -3602,6 +3710,7 @@ impl MetaStore for DatabaseMetaStore {
 
     // Mark an uncommitted slice as committed by removing its tracking record.
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
         UncommittedSlice::delete_many()
             .filter(uncommitted_slice::Column::SliceId.eq(slice_id as i64))
             .exec(&self.db)
@@ -3638,7 +3747,7 @@ impl MetaStore for DatabaseMetaStore {
         }
 
         let mut cleaned = Vec::new();
-        let txn = self.db.begin().await.map_err(MetaError::Database)?;
+        let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         for pending in &pending_slices {
             let exists_in_meta = SliceMeta::find()
@@ -3682,6 +3791,7 @@ impl MetaStore for DatabaseMetaStore {
         if slice_ids.is_empty() {
             return Ok(());
         }
+        let _sqlite_write_guard = self.sqlite_write_guard().await;
 
         let slice_id_values: Vec<i64> = slice_ids.iter().map(|&id| id as i64).collect();
 

@@ -4,20 +4,24 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
 
 ## Current Status
 
-- Full Redis+RustFS xfstests passed after restoring `generic/736`:
-  `docker/compose-xfstests/artifacts/run-1783545550-19958`
-  - Result: `Passed all 708 tests` for the configured set with
-    `tests/scripts/xfstests_slayer.exclude`.
-- Full LTP default profile passed with `iogen01` skipped:
-  `docker/compose-xfstests/artifacts/run-1783543877-9990`
-  - Result: `failures_count: 0`, `ltp-pan` reported all tests PASS.
-  - Environment-only `TCONF` entries remain for unsupported image/module
-    formats such as isofs, binfmt, and squashfs.
+- Full xfstests passed on SQLite, Redis, and etcd with 708 configured cases:
+  `run-1783831206-2178`, `run-1783835489-21324`, and
+  `run-1783837045-32187`.
+- TiKV enumerated all 707 configured cases in `run-1783857700-31592`. The only
+  reported failure, `generic/002`, lost the xfstests driver's `/tmp/28.out`;
+  isolated rerun `run-1783864499-12546` passed in 0s. Treat this as a harness temporary-file
+  race, not a BrewFS hard-link defect.
+- Full LTP passed with `failures_count: 0` on SQLite, Redis, etcd, and TiKV:
+  `run-1783848194-27300`, `run-1783849729-17223`,
+  `run-1783850809-11579`, and `run-1783852001-9407`.
+  Environment-only `TCONF` entries remain for unavailable container kernel
+  modules and image tools.
 - LTP `iogen01` remains known failing in the normal buffered FUSE profile and
   must stay in `docker/compose-xfstests/ltp_skip_tests.txt`.
-- pjdfstest supported set passed:
-  `docker/compose-xfstests/artifacts/pjdfstest-run-1783535421-5656`
-  - Result: `Files=176, Tests=1389`, `Result: PASS`.
+- pjdfstest supported sets passed on Redis and TiKV:
+  `pjdfstest-run-1783853192-21814` and
+  `pjdfstest-run-1783853289-6218`; each selected 176 files with 0 failures and
+  70 explicit skips.
 - stress-ng smoke passed:
   `docker/compose-xfstests/artifacts/perf-run-1783535542-30210`
   - Result: `stress-ng` completed successfully.
@@ -49,7 +53,25 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
   - Full-suite pass:
     `docker/compose-xfstests/artifacts/run-1783545550-19958`
 
-## Remaining Failing Case
+## Remaining Excluded Cases
+
+### xfstests `generic/075`
+
+TiKV+RustFS full run `run-1783841429-4658` and focused runs
+`run-1783853390-17236`, `run-1783854319-13752`, and
+`run-1783856733-20048` expose pre-truncate bytes after shrink followed by mmap,
+copy, or fallocate extension. VFS-only shrink/rewrite and shrink/fallocate
+regressions pass, isolating the remaining issue to buffered FUSE mmap cache
+coherence.
+
+- Direct I/O run `run-1783856978-31310` cannot execute MAPWRITE (`ENODEV`).
+- Writeback-cache run `run-1783857084-26829` still returns stale bytes.
+- Post-reply inode invalidation in `run-1783855018-22012` deadlocked fsx in
+  `request_wait_answer`; the test container cannot be reaped without reboot.
+- Default suites exclude `generic/075` next to `generic/112`, `generic/127`,
+  `generic/263`, and `generic/438`. Re-enable it only with a kernel/async-fuse
+  mmap invalidation strategy that passes `generic/075 generic/014` without a
+  D-state task or a material throughput regression.
 
 ### LTP `iogen01`
 
@@ -72,7 +94,7 @@ writeback-cache shape is fixed.
   - Failed experiments: extending the split-write barrier to 1s only delayed
     the second split write until after the read returned; `notify.store` was
     not a sufficient ordering barrier; write-only direct I/O stalled doio.
-  - Likely area: FUSE writeback page-cache invalidation or a targeted
+- Likely area: FUSE buffered page-cache invalidation or a targeted
     direct-I/O policy in `src/vfs/fs/mod.rs` and `src/fuse/mod.rs`.
 
 Useful diagnostic command:

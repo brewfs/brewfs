@@ -813,6 +813,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     }
 
     async fn remember_trash_entry(&self, ino: i64, original_path: String) {
+        if !self.store.capabilities().xattr {
+            return;
+        }
+
         let metadata = ControlTrashMetadata {
             original_path,
             deleted_at: Utc::now().to_rfc3339(),
@@ -2971,9 +2975,11 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let inode = self.check_root(ino);
         let timestamp_only = Self::timestamp_only_setattr(req, &flags);
         let attr = self.store.set_attr(inode, req, flags).await?;
-        self.inode_cache
-            .insert_node(inode, attr.clone(), None)
-            .await;
+        if !self.inode_cache.refresh_attr(inode, attr.clone()).await {
+            self.inode_cache
+                .insert_node(inode, attr.clone(), None)
+                .await;
+        }
         if timestamp_only {
             if let Some(cache) = &self.open_file_cache {
                 cache.update_attr_if_present(inode, attr.clone()).await;
@@ -3185,7 +3191,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         flags: u32,
     ) -> Result<(), MetaError> {
         self.ensure_writable()?;
-        self.store.set_xattr(inode, name, value, flags).await
+        self.store.set_xattr(inode, name, value, flags).await?;
+        self.inode_cache.invalidate_inode(inode).await;
+        Ok(())
     }
 
     async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
@@ -3198,7 +3206,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
         self.ensure_writable()?;
-        self.store.remove_xattr(inode, name).await
+        self.store.remove_xattr(inode, name).await?;
+        self.inode_cache.invalidate_inode(inode).await;
+        Ok(())
     }
 
     async fn set_acl(&self, inode: i64, rule: AclRule) -> Result<(), MetaError> {
@@ -3321,6 +3331,25 @@ mod tests {
 
         let after = client.stat(1).await.unwrap().unwrap();
         assert_ne!(after.mtime, before.mtime);
+    }
+
+    #[tokio::test]
+    async fn setattr_preserves_cached_parent_relationship() {
+        let client = create_test_client().await;
+        let dir = client.mkdir(1, "parent-dir".to_string()).await.unwrap();
+        let file = client
+            .create_file(dir, "owned-file".to_string())
+            .await
+            .unwrap();
+
+        client.chmod(file, 0o600).await.unwrap();
+
+        let node = client.inode_cache.get_node(file).await.unwrap();
+        assert_eq!(*node.parent.read().await, Some(dir));
+        assert_eq!(
+            client.lookup_path("/parent-dir/owned-file").await.unwrap(),
+            Some((file, FileType::File))
+        );
     }
 
     #[tokio::test]

@@ -176,6 +176,149 @@ async fn sqlite_file_store_waits_for_transient_write_locks() {
     assert!(ino > root);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_file_store_serializes_concurrent_writes() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = temp_dir.path().join("concurrent-writes.db");
+    let store = Arc::new(
+        DatabaseMetaStore::from_config(file_db_config(&db_path))
+            .await
+            .expect("create store"),
+    );
+    let root = store.root_ino();
+
+    let mut tasks = Vec::new();
+    for worker in 0..8 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            for index in 0..50 {
+                let name = format!("worker-{worker}-{index}");
+                store
+                    .create_file(root, name.clone())
+                    .await
+                    .expect("concurrent create must not return SQLITE_BUSY");
+                store
+                    .unlink(root, &name)
+                    .await
+                    .expect("concurrent unlink must not return SQLITE_BUSY");
+            }
+        }));
+    }
+
+    for task in tasks {
+        task.await.expect("writer task joins");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_file_store_serializes_size_updates_with_truncate() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = temp_dir.path().join("concurrent-size-writes.db");
+    let store = Arc::new(
+        DatabaseMetaStore::from_config(file_db_config(&db_path))
+            .await
+            .expect("create store"),
+    );
+    let ino = store
+        .create_file(store.root_ino(), "size-race".to_string())
+        .await
+        .expect("create file");
+
+    let mut tasks = Vec::new();
+    for worker in 0..8 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            for index in 0..100 {
+                let size = ((worker + 1) * (index + 1) * 4096) as u64;
+                if worker % 2 == 0 {
+                    store
+                        .truncate(ino, size, 64 * 1024 * 1024)
+                        .await
+                        .expect("truncate must not return SQLITE_BUSY");
+                } else {
+                    store
+                        .set_file_size(ino, size)
+                        .await
+                        .expect("size update must not return SQLITE_BUSY");
+                }
+            }
+        }));
+    }
+
+    for task in tasks {
+        task.await.expect("size writer task joins");
+    }
+}
+
+#[tokio::test]
+async fn truncate_updates_file_ctime() {
+    let store = new_test_store().await;
+    let ino = store
+        .create_file(store.root_ino(), "truncate-ctime".to_string())
+        .await
+        .unwrap();
+    let before = store.stat(ino).await.unwrap().unwrap();
+
+    time::sleep(Duration::from_millis(1)).await;
+    store.truncate(ino, 4096, 64 * 1024 * 1024).await.unwrap();
+    let after = store.stat(ino).await.unwrap().unwrap();
+
+    assert!(after.ctime > before.ctime);
+    assert!(after.mtime > before.mtime);
+}
+
+#[tokio::test]
+async fn xattr_mutations_update_ctime() {
+    let store = new_test_store().await;
+    let ino = store
+        .create_file(store.root_ino(), "xattr-ctime".to_string())
+        .await
+        .unwrap();
+    let created = store.stat(ino).await.unwrap().unwrap();
+
+    time::sleep(Duration::from_millis(1)).await;
+    store
+        .set_xattr(ino, "user.test", b"value", 0)
+        .await
+        .unwrap();
+    let set = store.stat(ino).await.unwrap().unwrap();
+    assert!(set.ctime > created.ctime);
+
+    time::sleep(Duration::from_millis(1)).await;
+    store.remove_xattr(ino, "user.test").await.unwrap();
+    let removed = store.stat(ino).await.unwrap().unwrap();
+    assert!(removed.ctime > set.ctime);
+}
+
+#[tokio::test]
+async fn chmod_preserves_special_node_type_and_rdev() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let rdev = libc::makedev(1, 3) as u32;
+    let ino = store
+        .create_node(
+            root,
+            "null-device".to_string(),
+            FileType::CharDevice,
+            0o600,
+            0,
+            0,
+            rdev,
+        )
+        .await
+        .unwrap();
+
+    let attr = store.chmod(ino, 0o644).await.unwrap();
+    assert_eq!(attr.kind, FileType::CharDevice);
+    assert_eq!(attr.mode & 0o170000, FileType::CharDevice.mode_type_bits());
+    assert_eq!(attr.mode & 0o7777, 0o644);
+    assert_eq!(attr.rdev, rdev);
+
+    let persisted = store.stat(ino).await.unwrap().unwrap();
+    assert_eq!(persisted.kind, FileType::CharDevice);
+    assert_eq!(persisted.rdev, rdev);
+}
+
 /// Helper struct to manage multiple test sessions
 struct TestSessionManager {
     stores: Vec<DatabaseMetaStore>,
