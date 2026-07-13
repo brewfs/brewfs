@@ -174,7 +174,7 @@ mod tests {
     fn assembler_emits_full_block_after_page_writes() {
         let mut a = CachedBlockAssembler::new(4096, 1024);
         for i in 0..4 {
-            a.write(i * 1024, vec![i as u8; 1024], i as u64 + 1);
+            a.write(i * 1024, vec![i as u8; 1024], i + 1);
         }
 
         let ready = a.drain_ready_full_blocks();

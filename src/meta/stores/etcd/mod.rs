@@ -772,6 +772,8 @@ impl EtcdMetaStore {
             parent_inode: 1, // Root's parent is itself
             entry_name: "/".to_string(),
             deleted: false,
+            entry_type: Some(EntryType::Directory),
+            rdev: 0,
             symlink_target: None,
         };
         let reverse_json =
@@ -957,6 +959,8 @@ impl EtcdMetaStore {
             parent_inode,
             entry_name: name.clone(),
             deleted: false,
+            entry_type: Some(EntryType::Directory),
+            rdev: 0,
             symlink_target: None,
         };
 
@@ -996,11 +1000,17 @@ impl EtcdMetaStore {
         Ok(inode)
     }
 
-    /// Create a new file
-    async fn create_file_internal(
+    /// Create a regular file or special non-directory node.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_node_internal(
         &self,
         parent_inode: i64,
         name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
     ) -> Result<i64, MetaError> {
         // Step 1: Verify parent exists and get its metadata
         let parent_meta = self.get_access_meta(parent_inode).await?;
@@ -1030,10 +1040,23 @@ impl EtcdMetaStore {
         let gid = if parent_has_setgid {
             parent_perm.gid
         } else {
-            0
+            gid
         };
 
-        let file_permission = Permission::new(0o100644, 0, gid);
+        let file_permission = Permission::new(kind.mode_type_bits() | (mode & 0o7777), uid, gid);
+        let entry_type = match kind {
+            FileType::File => EntryType::File,
+            FileType::Fifo => EntryType::Fifo,
+            FileType::Socket => EntryType::Socket,
+            FileType::CharDevice => EntryType::CharDevice,
+            FileType::BlockDevice => EntryType::BlockDevice,
+            FileType::Dir | FileType::Symlink => {
+                return Err(MetaError::NotSupported(format!(
+                    "create_node does not create {:?}",
+                    kind
+                )));
+            }
+        };
         let entry_info = EtcdEntryInfo {
             is_file: true,
             size: Some(0),
@@ -1046,6 +1069,8 @@ impl EtcdMetaStore {
             parent_inode,
             entry_name: name.clone(),
             deleted: false,
+            entry_type: Some(entry_type.clone()),
+            rdev,
             symlink_target: None,
         };
 
@@ -1055,7 +1080,7 @@ impl EtcdMetaStore {
             name: name.clone(),
             inode,
             is_file: true,
-            entry_type: Some(EntryType::File),
+            entry_type: Some(entry_type),
         };
         let forward_json = serde_json::to_string(&forward_entry)
             .map_err(|e| MetaError::Internal(e.to_string()))?;
@@ -1788,7 +1813,29 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
-        self.create_file_internal(parent, name).await
+        self.create_node_internal(parent, name, FileType::File, 0o644, 0, 0, 0)
+            .await
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        if !kind.is_special_node() {
+            return Err(MetaError::NotSupported(format!(
+                "create_node does not create {:?}",
+                kind
+            )));
+        }
+        self.create_node_internal(parent, name, kind, mode, uid, gid, rdev)
+            .await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
@@ -1917,7 +1964,7 @@ impl MetaStore for EtcdMetaStore {
                         name: name.clone(),
                         inode: ino,
                         is_file: true,
-                        entry_type: Some(EntryType::File),
+                        entry_type: entry_info.entry_type.clone().or(Some(EntryType::File)),
                     };
 
                     tx.set_typed_json(&forward_key, &forward_entry)?;
@@ -1971,6 +2018,8 @@ impl MetaStore for EtcdMetaStore {
             parent_inode: parent,
             entry_name: name.to_string(),
             deleted: false,
+            entry_type: Some(EntryType::Symlink),
+            rdev: 0,
             symlink_target: Some(target.to_string()),
         };
 
@@ -3023,37 +3072,7 @@ impl MetaStore for EtcdMetaStore {
                     }
 
                     tx.set_typed_json(reverse_key, &entry_info)?;
-
-                    let kind = if entry_info.symlink_target.is_some() {
-                        FileType::Symlink
-                    } else if entry_info.is_file {
-                        FileType::File
-                    } else {
-                        FileType::Dir
-                    };
-
-                    let size = if let Some(target) = &entry_info.symlink_target {
-                        target.len() as u64
-                    } else if entry_info.is_file {
-                        entry_info.size.unwrap_or(0).max(0) as u64
-                    } else {
-                        4096
-                    };
-
-                    Ok(FileAttr {
-                        ino,
-                        size,
-                        blocks: size.div_ceil(512),
-                        kind,
-                        mode: entry_info.permission.mode,
-                        rdev: 0,
-                        uid: entry_info.permission.uid,
-                        gid: entry_info.permission.gid,
-                        atime: entry_info.access_time,
-                        mtime: entry_info.modify_time,
-                        ctime: entry_info.create_time,
-                        nlink: entry_info.nlink,
-                    })
+                    Ok(entry_info.to_file_attr(ino))
                 })
             })
             .await

@@ -366,6 +366,7 @@ impl TiKvMetaStore {
             size: ROOT_SIZE,
             blocks: ROOT_SIZE.div_ceil(512),
             mode: 0o40755,
+            rdev: 0,
             uid: 0,
             gid: 0,
             atime: now,
@@ -921,6 +922,21 @@ impl TiKvMetaStore {
         symlink_target: Option<String>,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        self.txn_create_node_with_attrs(txn, parent, name, kind, symlink_target, None, operation)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn txn_create_node_with_attrs(
+        &self,
+        txn: &mut Transaction,
+        parent: i64,
+        name: String,
+        kind: StoredNodeKind,
+        symlink_target: Option<String>,
+        attrs: Option<(u32, u32, u32, u32)>,
+        operation: &str,
+    ) -> Result<i64, MetaError> {
         let mut parent_node = self.txn_require_dir(txn, parent, true, operation).await?;
         if self
             .txn_get_dentry(txn, parent, &name, true, operation)
@@ -940,7 +956,14 @@ impl TiKvMetaStore {
                 let size = target_len.unwrap_or(0);
                 (size, size.div_ceil(512), 0o120777, 1)
             }
+            StoredNodeKind::Fifo => (0, 0, FileType::Fifo.mode_type_bits() | 0o644, 1),
+            StoredNodeKind::Socket => (0, 0, FileType::Socket.mode_type_bits() | 0o644, 1),
+            StoredNodeKind::CharDevice => (0, 0, FileType::CharDevice.mode_type_bits() | 0o644, 1),
+            StoredNodeKind::BlockDevice => {
+                (0, 0, FileType::BlockDevice.mode_type_bits() | 0o644, 1)
+            }
         };
+        let (mode, uid, gid, rdev) = attrs.unwrap_or((mode, 0, 0, 0));
         let node = StoredNode {
             ino,
             parent,
@@ -949,8 +972,9 @@ impl TiKvMetaStore {
             size,
             blocks,
             mode,
-            uid: 0,
-            gid: 0,
+            rdev,
+            uid,
+            gid,
             atime: now,
             mtime: now,
             ctime: now,
@@ -1097,6 +1121,24 @@ enum StoredNodeKind {
     File,
     Dir,
     Symlink,
+    Fifo,
+    Socket,
+    CharDevice,
+    BlockDevice,
+}
+
+impl From<FileType> for StoredNodeKind {
+    fn from(kind: FileType) -> Self {
+        match kind {
+            FileType::File => StoredNodeKind::File,
+            FileType::Dir => StoredNodeKind::Dir,
+            FileType::Symlink => StoredNodeKind::Symlink,
+            FileType::Fifo => StoredNodeKind::Fifo,
+            FileType::Socket => StoredNodeKind::Socket,
+            FileType::CharDevice => StoredNodeKind::CharDevice,
+            FileType::BlockDevice => StoredNodeKind::BlockDevice,
+        }
+    }
 }
 
 impl From<StoredNodeKind> for FileType {
@@ -1105,6 +1147,10 @@ impl From<StoredNodeKind> for FileType {
             StoredNodeKind::File => FileType::File,
             StoredNodeKind::Dir => FileType::Dir,
             StoredNodeKind::Symlink => FileType::Symlink,
+            StoredNodeKind::Fifo => FileType::Fifo,
+            StoredNodeKind::Socket => FileType::Socket,
+            StoredNodeKind::CharDevice => FileType::CharDevice,
+            StoredNodeKind::BlockDevice => FileType::BlockDevice,
         }
     }
 }
@@ -1160,6 +1206,8 @@ struct StoredNode {
     size: u64,
     blocks: u64,
     mode: u32,
+    #[serde(default)]
+    rdev: u32,
     uid: u32,
     gid: u32,
     atime: i64,
@@ -1190,7 +1238,7 @@ impl StoredNode {
             blocks,
             kind: self.kind.into(),
             mode: self.mode,
-            rdev: 0,
+            rdev: self.rdev,
             uid: self.uid,
             gid: self.gid,
             atime: self.atime,
@@ -1417,6 +1465,44 @@ impl MetaStore for TiKvMetaStore {
         .await
     }
 
+    #[tracing::instrument(level = "trace", skip(self), fields(parent, name, kind = ?kind, mode, rdev))]
+    async fn create_node(
+        &self,
+        parent: i64,
+        name: String,
+        kind: FileType,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u32,
+    ) -> Result<i64, MetaError> {
+        if !kind.is_special_node() {
+            return Err(MetaError::NotSupported(format!(
+                "create_node does not create {:?}",
+                kind
+            )));
+        }
+
+        let operation = "create_node";
+        self.write_txn(operation, |store, txn| {
+            let name = name.clone();
+            Box::pin(async move {
+                store
+                    .txn_create_node_with_attrs(
+                        txn,
+                        parent,
+                        name,
+                        kind.into(),
+                        None,
+                        Some((kind.mode_type_bits() | (mode & 0o7777), uid, gid, rdev)),
+                        operation,
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
         if ino == ROOT_INODE {
             return Err(MetaError::NotSupported(
@@ -1496,7 +1582,7 @@ impl MetaStore for TiKvMetaStore {
                         &name,
                         &StoredDentry {
                             ino,
-                            kind: StoredNodeKind::File,
+                            kind: node.kind,
                         },
                         operation,
                     )

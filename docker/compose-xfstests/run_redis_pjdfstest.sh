@@ -23,6 +23,7 @@ description:
   - artifacts output to: $ARTIFACTS_DIR
 
 options:
+  --no-default-skip              run without the repository default skip file
   --skip-patterns "<regex...>"   extra relative test-path regexes to skip
   --extra-args "<args...>"       extra arguments passed to prove
   --keep                         do not run compose down after exit (for debugging)
@@ -41,11 +42,16 @@ require_value() {
 }
 
 KEEP=false
+NO_DEFAULT_SKIP=false
 PJDFSTEST_SKIP_PATTERNS_VALUE=""
 PJDFSTEST_EXTRA_ARGS_VALUE=""
 
 while [[ $# -gt 0 ]]; do
     case "${1:-}" in
+        --no-default-skip)
+            NO_DEFAULT_SKIP=true
+            shift
+            ;;
         --skip-patterns)
             require_value "$1" "${2:-}"
             PJDFSTEST_SKIP_PATTERNS_VALUE="${2:-}"
@@ -92,6 +98,11 @@ info "build pjdfstest runner image"
 docker compose "${COMPOSE_ARGS[@]}" build pjdfstest
 
 export BREWFS_ARTIFACT_DIR="/artifacts/pjdfstest-run-${ts}"
+if [[ "$NO_DEFAULT_SKIP" == true ]]; then
+    export PJDFSTEST_DEFAULT_SKIP_FILE="/dev/null"
+else
+    unset PJDFSTEST_DEFAULT_SKIP_FILE || true
+fi
 export PJDFSTEST_SKIP_PATTERNS="${PJDFSTEST_SKIP_PATTERNS_VALUE:-}"
 export PJDFSTEST_EXTRA_ARGS="${PJDFSTEST_EXTRA_ARGS_VALUE:-}"
 

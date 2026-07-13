@@ -437,6 +437,24 @@ where
         }
     }
 
+    fn creation_attrs_for_parent(
+        parent_attr: &VfsFileAttr,
+        requested_gid: u32,
+        requested_mode: u32,
+        is_dir: bool,
+    ) -> (u32, u32) {
+        let mut mode = sanitize_special_mode_bits(requested_mode);
+        let gid = if parent_attr.mode & 0o2000 != 0 {
+            if is_dir {
+                mode |= 0o2000;
+            }
+            parent_attr.gid
+        } else {
+            requested_gid
+        };
+        (gid, mode)
+    }
+
     async fn attr_for_create_result(
         &self,
         result: &CreateFileAtResult,
@@ -1062,10 +1080,11 @@ where
         // Rewinddir: offset ≤ 0 means restart from the beginning.
         // Replace the cached handle with a fresh snapshot from the meta
         // layer so that entries created after opendir(3) are visible.
-        if fh != 0 && offset == 0 {
-            if let Err(err) = self.refresh_dir_handle(fh).await {
-                warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
-            }
+        if fh != 0
+            && offset == 0
+            && let Err(err) = self.refresh_dir_handle(fh).await
+        {
+            warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
         }
 
         // Try to use handle first. FUSE directory offsets identify the next
@@ -1318,8 +1337,8 @@ where
         })
     }
 
-    // Create a special file node (regular file, FIFO, etc.)
-    // Note: Special files beyond regular/dir are not supported in this implementation
+    // Create a regular or special file node while preserving its kind and rdev.
+    #[allow(clippy::unnecessary_cast)] // mode_t is narrower on some supported platforms.
     async fn mknod(
         &self,
         req: Request,
@@ -1345,24 +1364,38 @@ where
         const S_IFCHR: u32 = libc::S_IFCHR as u32;
         const S_IFBLK: u32 = libc::S_IFBLK as u32;
         let file_type = mode & S_IFMT;
+        if !matches!(
+            file_type,
+            0 | S_IFREG | S_IFDIR | S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK
+        ) {
+            return Err(libc::EINVAL.into());
+        }
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+            .await?;
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, mode, file_type == S_IFDIR);
 
         let (ino, created_attr) = match file_type {
             // Linux accepts mknod(path, 0, 0) as a regular file with mode 000.
             0 | S_IFREG => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let result = self
-                    .create_file_at_with_attrs(parent as i64, &name, true, mode, req.uid, req.gid)
+                    .create_file_at_with_attrs(
+                        parent as i64,
+                        &name,
+                        true,
+                        creation_mode,
+                        req.uid,
+                        creation_gid,
+                    )
                     .await
                     .map_err(Errno::from)?;
                 let attr = self
-                    .attr_for_create_result(&result, req.uid, req.gid, Some(mode))
+                    .attr_for_create_result(&result, req.uid, creation_gid, Some(creation_mode))
                     .await;
                 (result.ino, attr)
             }
             S_IFDIR => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let ino = self
                     .mkdir_at_new(parent as i64, &name)
                     .await
@@ -1370,8 +1403,6 @@ where
                 (ino, None)
             }
             S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let kind = match file_type {
                     S_IFIFO => VfsFileType::Fifo,
                     S_IFSOCK => VfsFileType::Socket,
@@ -1384,9 +1415,9 @@ where
                         parent as i64,
                         &name,
                         kind,
-                        mode,
+                        creation_mode,
                         req.uid,
-                        req.gid,
+                        creation_gid,
                         rdev,
                     )
                     .await
@@ -1402,7 +1433,7 @@ where
         let vattr = if let Some(attr) = created_attr {
             attr
         } else if let Some(attr) = self
-            .apply_new_entry_attrs(ino, req.uid, req.gid, Some(mode))
+            .apply_new_entry_attrs(ino, req.uid, creation_gid, Some(creation_mode))
             .await
         {
             attr
@@ -1437,16 +1468,19 @@ where
         );
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        // Preserve setuid/setgid/sticky, then apply the caller's umask to rwx bits.
+        let masked_mode = apply_creation_umask(mode, umask);
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, masked_mode, true);
         let _ino = self
             .mkdir_at_new(parent as i64, &name)
             .await
             .map_err(Errno::from)?;
-        // Preserve setuid/setgid/sticky, then apply the caller's umask to rwx bits.
-        let masked_mode = apply_creation_umask(mode, umask);
         let Some(vattr) = self
-            .apply_new_entry_attrs(_ino, req.uid, req.gid, Some(masked_mode))
+            .apply_new_entry_attrs(_ino, req.uid, creation_gid, Some(creation_mode))
             .await
         else {
             return Err(libc::ENOENT.into());
@@ -1479,10 +1513,20 @@ where
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
         let create_new = (flags & libc::O_EXCL as u32) != 0;
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, mode, false);
         let create_result = match self
-            .create_file_at_with_attrs(parent as i64, &name, create_new, mode, req.uid, req.gid)
+            .create_file_at_with_attrs(
+                parent as i64,
+                &name,
+                create_new,
+                creation_mode,
+                req.uid,
+                creation_gid,
+            )
             .await
         {
             Ok(result) => {
@@ -1516,7 +1560,7 @@ where
             }
         };
         let Some(vattr) = self
-            .attr_for_create_result(&create_result, req.uid, req.gid, Some(mode))
+            .attr_for_create_result(&create_result, req.uid, creation_gid, Some(creation_mode))
             .await
         else {
             return Err(libc::ENOENT.into());
@@ -1639,8 +1683,11 @@ where
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
 
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        let (creation_gid, _) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, 0o777, false);
 
         if self.child_of(parent as i64, name.as_ref()).await.is_some() {
             return Err(libc::EEXIST.into());
@@ -1654,7 +1701,7 @@ where
             .map_err(Errno::from)?;
 
         let attr = self
-            .apply_new_entry_attrs(ino, req.uid, req.gid, None)
+            .apply_new_entry_attrs(ino, req.uid, creation_gid, None)
             .await
             .unwrap_or(vattr);
 
@@ -2539,7 +2586,7 @@ where
         parent: u64,
         uid: u32,
         gid: u32,
-    ) -> FuseResult<()> {
+    ) -> FuseResult<VfsFileAttr> {
         let Some(attr) = self.stat_ino(parent as i64).await else {
             return Err(libc::ENOENT.into());
         };
@@ -2552,9 +2599,11 @@ where
             gid,
             parent_namespace_mutation_access_mask(),
         )
-        .await
+        .await?;
+        Ok(attr)
     }
 
+    #[allow(clippy::unnecessary_cast)] // mode_t is narrower on some supported platforms.
     async fn ensure_sticky_parent_allows_child_mutation(
         &self,
         parent: u64,
@@ -2850,6 +2899,7 @@ fn apply_creation_umask(mode: u32, umask: u32) -> u32 {
     sanitize_special_mode_bits(mode) & !(umask & 0o777)
 }
 
+#[allow(clippy::useless_conversion)] // SetAttr mode follows platform mode_t width.
 fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     let mut req = SetAttrRequest::default();
     let flags = SetAttrFlags::empty();
@@ -3666,6 +3716,41 @@ mod fuse_init_tests {
         assert_eq!(second.attr.ino, first.attr.ino);
         let attr = fs.stat("/scratch/existing.txt").await.unwrap();
         assert_eq!(attr.mode & 0o7777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn creation_in_setgid_directory_inherits_group_and_directory_setgid() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/shared").await.unwrap();
+        let shared = fs.stat("/shared").await.unwrap();
+        fs.chown(shared.ino, Some(0), Some(2000)).await.unwrap();
+        fs.chmod(shared.ino, 0o2777).await.unwrap();
+
+        let dir = Filesystem::mkdir(
+            &fs,
+            user_request(),
+            shared.ino as u64,
+            OsStr::new("child"),
+            0o755,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dir.attr.gid, 2000);
+        assert_eq!(dir.attr.perm, 0o2755);
+
+        let file = Filesystem::create(
+            &fs,
+            user_request(),
+            shared.ino as u64,
+            OsStr::new("file"),
+            0o640,
+            (libc::O_CREAT | libc::O_EXCL | libc::O_RDWR) as u32,
+        )
+        .await
+        .unwrap();
+        assert_eq!(file.attr.gid, 2000);
+        assert_eq!(file.attr.perm, 0o640);
     }
 
     #[tokio::test]

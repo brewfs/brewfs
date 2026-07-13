@@ -497,6 +497,86 @@ run_xfstests() {
     )
 }
 
+collect_harness_temp_output_failures() {
+    local check_log="$1"
+
+    awk '
+        /^[[:alnum:]_-]+\/[0-9]+[[:space:]]+/ &&
+        /sed: can.t read \/tmp\/[0-9]+\.out: No such file or directory/ {
+            print $1
+        }
+    ' "$check_log" | sort -u
+}
+
+collect_reported_failures() {
+    local check_log="$1"
+
+    awk '
+        /^Failures:[[:space:]]*/ {
+            delete failures
+            count = 0
+            for (i = 2; i <= NF; i++) {
+                failures[++count] = $i
+            }
+        }
+        END {
+            for (i = 1; i <= count; i++) {
+                print failures[i]
+            }
+        }
+    ' "$check_log" | sort -u
+}
+
+retry_harness_temp_output_failures() {
+    local check_log="$artifact_dir/check.console.log"
+    local retry_log="$artifact_dir/harness-retry.log"
+    local case_name
+    local retry_status
+    local -a harness_cases=()
+    local -a reported_cases=()
+
+    [[ -f "$check_log" ]] || return 1
+    mapfile -t harness_cases < <(collect_harness_temp_output_failures "$check_log")
+    mapfile -t reported_cases < <(collect_reported_failures "$check_log")
+
+    if (( ${#harness_cases[@]} == 0 )) \
+        || [[ "${harness_cases[*]}" != "${reported_cases[*]}" ]]; then
+        return 1
+    fi
+
+    for case_name in "${harness_cases[@]}"; do
+        if [[ -f "$xfstests_dir/results/${case_name}.out.bad" ]]; then
+            return 1
+        fi
+    done
+
+    info "xfstests harness lost a temporary output file; retrying only: ${harness_cases[*]}"
+    set +e
+    (
+        cd "$xfstests_dir"
+        export PATH="$xfstests_dir:$PATH"
+        ./check -fuse -E xfstests_slayer.exclude --exact-order "${harness_cases[@]}" \
+            2>&1 | tee "$retry_log"
+        exit "${PIPESTATUS[0]}"
+    )
+    retry_status=$?
+    set -e
+
+    {
+        echo
+        echo "# Harness temporary-output retry"
+        cat "$retry_log"
+    } >>"$check_log"
+
+    if (( retry_status == 0 )); then
+        ok "xfstests harness-only retry passed: ${harness_cases[*]}"
+        return 0
+    fi
+
+    err "xfstests harness-only retry failed (exit=$retry_status): ${harness_cases[*]}"
+    return 1
+}
+
 enable_fs_perms_trace() {
     local normalized="${XFSTESTS_TRACE_FS_PERMS:-0}"
     normalized="${normalized,,}"
@@ -555,6 +635,9 @@ main() {
     run_xfstests
     status=$?
     set -e
+    if (( status != 0 )) && retry_harness_temp_output_failures; then
+        status=0
+    fi
     stats_snapshot_after_xfstests
     redis_diag_after_xfstests
 
@@ -578,4 +661,6 @@ main() {
     exit "$status"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

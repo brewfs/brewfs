@@ -4,32 +4,31 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
 
 ## Current Status
 
-- Full xfstests passed on SQLite, Redis, and etcd with 708 configured cases:
-  `run-1783831206-2178`, `run-1783835489-21324`, and
-  `run-1783837045-32187`.
-- TiKV enumerated all 707 configured cases in `run-1783857700-31592`. The only
-  reported failure, `generic/002`, lost the xfstests driver's `/tmp/28.out`;
-  isolated rerun `run-1783864499-12546` passed in 0s. Treat this as a harness temporary-file
-  race, not a BrewFS hard-link defect.
+- Full xfstests passed all 708 configured cases on SQLite, Redis, etcd, and
+  TiKV: `run-1783958148-29779`, `run-1783956574-9468`,
+  `run-1783965696-23764`, and `run-1783958147-10169`.
+- The runner now retries only failures where the reported failure set exactly
+  matches missing xfstests `/tmp/<pid>.out` files and no `.out.bad` exists.
+  Real filesystem failures remain fatal.
 - Full LTP passed with `failures_count: 0` on SQLite, Redis, etcd, and TiKV:
-  `run-1783848194-27300`, `run-1783849729-17223`,
-  `run-1783850809-11579`, and `run-1783852001-9407`.
+  `run-1783973125-31675`, `run-1783972047-5725`,
+  `run-1783974271-14804`, and `run-1783975421-24234`.
   Environment-only `TCONF` entries remain for unavailable container kernel
   modules and image tools.
 - LTP `iogen01` remains known failing in the normal buffered FUSE profile and
   must stay in `docker/compose-xfstests/ltp_skip_tests.txt`.
-- pjdfstest supported sets passed on Redis and TiKV:
-  `pjdfstest-run-1783853192-21814` and
-  `pjdfstest-run-1783853289-6218`; each selected 176 files with 0 failures and
-  70 explicit skips.
+- Full pjdfstest passed without default exclusions on Redis and TiKV:
+  `pjdfstest-run-1783976619-22517` and
+  `pjdfstest-run-1783976847-8934`; each selected all 246 files and passed
+  9,134 assertions with 0 failures.
 - stress-ng smoke passed:
-  `docker/compose-xfstests/artifacts/perf-run-1783535542-30210`
+  `docker/compose-xfstests/artifacts/perf-run-1783981107-15941`
   - Result: `stress-ng` completed successfully.
-- Focused `fio-randrw` performance guard passed:
-  `docker/compose-xfstests/artifacts/perf-run-1783547278-18906`
-  - Read: `386.36 MiB/s`, write: `178.79 MiB/s`
-  - Compared with previous focused baseline `389.21 MiB/s` read and
-    `180.02 MiB/s` write: read `-0.73%`, write `-0.68%`.
+- Focused `fio-randrw` performance guard passed on the final release binary:
+  `docker/compose-xfstests/artifacts/perf-run-1783980882-18667`
+  - Read: `377.13 MiB/s`, write: `174.18 MiB/s`.
+  - Compared with the accepted `386.36/178.79 MiB/s` baseline: read `-2.39%`,
+    write `-2.58%`, both below the 5% limit.
 
 ## Fixed This Round
 
@@ -52,6 +51,14 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
     `docker/compose-xfstests/artifacts/run-1783532356-26779`
   - Full-suite pass:
     `docker/compose-xfstests/artifacts/run-1783545550-19958`
+- Added FIFO, socket, character-device, and block-device kind plus `rdev`
+  persistence to TiKV and etcd. Redis and SQLite already supported these node
+  types. The full pjdfstest corpus now runs without default exclusions.
+- Restored xfstests `generic/633`. The shared FUSE create paths now inherit the
+  parent GID under a setgid directory and propagate setgid to new child
+  directories without an extra parent-attribute lookup. Final-release targeted
+  passes cover SQLite `run-1783980166-29700`, Redis `run-1783980181-16080`,
+  etcd `run-1783980192-26585`, and TiKV `run-1783980222-31648`.
 
 ## Remaining Excluded Cases
 
@@ -133,7 +140,7 @@ BREWFS_FUSE_OP_LOG=1 \
 The direct-I/O diagnostic now passes. The normal buffered diagnostic still
 fails, most recently at `docker/compose-xfstests/artifacts/run-1783543020-21424`.
 The latest focused `fio-randrw` guard passed at
-`docker/compose-xfstests/artifacts/perf-run-1783547278-18906` with no
+`docker/compose-xfstests/artifacts/perf-run-1783980882-18667` with no
 regression over the 5% threshold.
 
 ## If New Failures Appear

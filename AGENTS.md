@@ -206,14 +206,14 @@ docker system df
   diagnostic passes, but the normal buffered FUSE profile still has a
   split-write/page-cache coherency race. Full direct I/O is not a substitute:
   mmap workloads return `ENODEV`.
-- BrewFS does not currently persist FIFO, socket, or device inode kinds. Keep
-  the commented special-node pjdfstest/LTP exclusions until that support is
-  implemented; do not hide failures for regular files or directories behind
-  those exclusions.
+- FIFO, socket, character-device, and block-device inode kinds and `rdev` are
+  persisted by every metadata backend. Keep the full pjdfstest corpus enabled;
+  Redis and TiKV each pass all 246 files and 9,134 assertions in
+  `pjdfstest-run-1783976619-22517` and `pjdfstest-run-1783976847-8934`.
 - If xfstests `generic/002` reports a missing driver file such as
-  `/tmp/<check-pid>.out` without an `.out.bad`, rerun the case before changing
-  hard-link code. `run-1783857700-31592` showed this harness-only failure and
-  isolated TiKV rerun `run-1783864499-12546` passed immediately.
+  `/tmp/<check-pid>.out` without an `.out.bad`, treat it as a harness race only
+  when the missing-output cases exactly equal the reported failure set. The
+  compose runner retries only that strict shape; all other failures stay fatal.
 - A FUSE test process stuck in `request_wait_answer` cannot be killed or its
   container removed until the kernel request returns; a host reboot can be
   required. Preserve diagnostics first, and never add post-reply invalidation
