@@ -106,8 +106,11 @@ assert_manifest_keys "$juicefs_container" \
     "${common_keys[@]}" \
     JFS_COMPRESS \
     JFS_WRITEBACK \
+    JFS_CACHE_LARGE_WRITE \
     JFS_MAX_UPLOADS \
     JFS_MAX_DOWNLOADS_EFFECTIVE \
+    JFS_MAX_READAHEAD_MIB \
+    JFS_PREFETCH \
     JFS_OPEN_CACHE \
     JFS_OPEN_CACHE_LIMIT
 
@@ -123,6 +126,15 @@ assert_file_contains "$juicefs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-jui
 assert_file_contains "$juicefs_runner" "PERF_FIO_DIRECT_MATRIX=\"0 1\""
 assert_file_contains "$juicefs_runner" "PERF_FIO_SEQREAD_DIRECT_MATRIX"
 assert_file_contains "$juicefs_runner" "PERF_FIO_BIGWRITE_DIRECT_MATRIX"
+assert_file_contains "$juicefs_runner" "--cached-read-throughput-profile"
+assert_file_contains "$juicefs_runner" "--metadata-throughput-profile"
+assert_file_contains "$juicefs_runner" 'JFS_CACHE_LARGE_WRITE="${JFS_CACHE_LARGE_WRITE:-true}"'
+assert_file_contains "$juicefs_runner" 'JFS_MAX_READAHEAD_MIB="${JFS_MAX_READAHEAD_MIB:-1024}"'
+assert_file_contains "$juicefs_runner" 'JFS_PREFETCH="${JFS_PREFETCH:-4}"'
+assert_file_contains "$juicefs_runner" 'JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"'
 assert_file_contains "$juicefs_container" 'run_fio_profile "${tool}-direct${direct_value}"'
+assert_file_contains "$juicefs_container" 'mount_args+=(--cache-large-write)'
+assert_file_contains "$juicefs_container" 'mount_args+=(--max-readahead="$jfs_max_readahead_mib")'
+assert_file_contains "$juicefs_container" 'mount_args+=(--prefetch="$jfs_prefetch")'
 
 echo "perf profile harness checks passed"
