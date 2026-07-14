@@ -19,6 +19,14 @@
 
 BrewFS is an independent distributed filesystem for container, AI, and object-storage-heavy workloads. It combines a POSIX-like FUSE interface with pluggable transactional metadata and S3-compatible data storage.
 
+RustFS is one of the S3-compatible object storage backends supported by BrewFS and is used in the repository's reproducible benchmark and filesystem test profiles.
+
+<p align="center">
+  <a href="https://github.com/rustfs/rustfs">
+    <img src="doc/assets/rustfs.png" alt="RustFS, a supported S3-compatible backend" width="220" height="60" />
+  </a>
+</p>
+
 Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/juicefs)) in the current Redis + RustFS benchmark, BrewFS delivers **2.45x random-read throughput**, **2.62x file-create throughput**, and about **12x mixed random-I/O throughput**. The full results, including workloads where the two systems are at parity or JuiceFS leads, are below.
 
 | **2.45x** | **2.62x** | **12.09x** | **1.17x** |
