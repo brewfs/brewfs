@@ -25,6 +25,9 @@ RustFS is one of the S3-compatible object storage backends supported by BrewFS a
   <a href="https://github.com/rustfs/rustfs">
     <img src="doc/assets/rustfs.png" alt="RustFS, a supported S3-compatible backend" width="220" height="60" />
   </a>
+  <a href="https://github.com/rustfs/rustfs">
+    <img src="https://img.shields.io/github/stars/rustfs/rustfs?style=flat-square" alt="RustFS GitHub stars" />
+  </a>
 </p>
 
 Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/juicefs)) in the current Redis + RustFS benchmark, BrewFS delivers **2.45x random-read throughput**, **2.62x file-create throughput**, and about **12x mixed random-I/O throughput**. The full results, including workloads where the two systems are at parity or JuiceFS leads, are below.
