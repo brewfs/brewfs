@@ -30,7 +30,7 @@ BREWFS_BASE_URL="${BREWFS_BASE_URL:-https://download.brewfs.ai/brewfs/releases}"
 BREWFS_VERSION="${BREWFS_VERSION:-}"
 BREWFS_REQUIRE_CHECKSUM="${BREWFS_REQUIRE_CHECKSUM:-0}"
 BREWFS_ALLOW_FALLBACK="${BREWFS_ALLOW_FALLBACK:-0}"
-DEFAULT_BREWFS_VERSION="${DEFAULT_BREWFS_VERSION:-v0.0.1}"
+DEFAULT_BREWFS_VERSION="${DEFAULT_BREWFS_VERSION:-v0.1.1}"
 BREWFS_DOWNLOAD_URL="${BREWFS_DOWNLOAD_URL:-}"
 BREWFS_INSTALL_PACKAGES="${BREWFS_INSTALL_PACKAGES:-1}"
 
@@ -132,14 +132,15 @@ Options:
   -h, --help                   Show this help message.
 
 Environment overrides:
-  BREWFS_VERSION=""            BrewFS release version. Defaults to latest GitHub release.
+  BREWFS_VERSION=""            BrewFS release version. Defaults to the newest tag
+                               with a downloadable release artifact.
   BREWFS_BASE_URL=""           Release mirror base URL.
   BREWFS_RELEASE_REPO=brewfs/brewfs
                                GitHub repo used for release/tag detection.
   BREWFS_REQUIRE_CHECKSUM=0    Set to 1 to fail if <binary>.sha256 is missing.
   BREWFS_ALLOW_FALLBACK=0      Set to 1 to use DEFAULT_BREWFS_VERSION if latest
                                release detection is unreachable.
-  DEFAULT_BREWFS_VERSION=v0.0.1
+  DEFAULT_BREWFS_VERSION=v0.1.1
                                Opt-in fallback version.
   BREWFS_DOWNLOAD_URL=""       Explicit BrewFS binary archive or executable URL.
   BREWFS_INSTALL_PACKAGES=1    Install missing OS packages with apt-get when possible.
@@ -194,7 +195,7 @@ Notes:
     release/tag that has a published brewfs-${OS}-${ARCH} artifact at:
       ${BREWFS_BASE_URL}/${BREWFS_VERSION}/brewfs-${OS}-${ARCH}
     For example:
-      https://download.brewfs.ai/brewfs/releases/v0.0.1/brewfs-linux-amd64
+      https://download.brewfs.ai/brewfs/releases/v0.1.1/brewfs-linux-amd64
   - If RUSTFS_DOWNLOAD_URL is empty, this script uses the RustFS official
     installer source ($RUSTFS_INSTALLER_URL) as the reference and downloads the
     matching latest Linux archive from $RUSTFS_DIST_BASE_URL.
