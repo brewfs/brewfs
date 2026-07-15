@@ -280,7 +280,7 @@ where
     }
 
     async fn unlock_handle_locks(&self, ino: u64, fh: u64) {
-        if fh == 0 {
+        if fh == 0 || !self.has_fuse_lock_owners() {
             return;
         }
 

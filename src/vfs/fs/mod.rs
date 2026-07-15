@@ -3237,6 +3237,9 @@ where
 
         tracing::trace!(fh, ino = handle.ino, offset, len = data.len(), "vfs.write");
 
+        let inode = self.ensure_inode_registered(handle.ino).await?;
+        handle.ensure_writer_with(|| self.state.writer.ensure_file(inode));
+
         let mutation_lock = self.state.append_lock(handle.ino);
         let _mutation_guard = mutation_lock.lock_owned().await;
 
@@ -3532,6 +3535,8 @@ where
         // copy_file_range semantics close to a memmove-style copy.
         let data = src_guard.read(off_in, len).await?;
         let dst_handle = self.file_handle_required(dst_guard.fh())?;
+        let dst_inode = self.ensure_inode_registered(dst.ino).await?;
+        dst_handle.ensure_writer_with(|| self.state.writer.ensure_file(dst_inode));
         let written = self
             .write_with_inode_lock_held(dst_handle, off_out, &data)
             .await?;
@@ -3673,16 +3678,11 @@ where
             latest_attr.size = guard.file_size();
         }
 
-        let inode = guard.clone();
         let record_attr = record_open.then(|| latest_attr.clone());
         let handle =
             self.state
                 .handles
                 .allocate(ino, latest_attr, HandleFlags::new(read, write, append));
-        if write {
-            let writer = self.state.writer.ensure_file(inode.clone());
-            handle.writer(writer);
-        }
         if let Some(attr) = record_attr {
             self.meta_record_open(ino, attr, read, write, append)
                 .await?;
@@ -3761,10 +3761,12 @@ where
             }
         };
 
-        self.state
-            .reader
-            .close_for_handle(handle.ino as u64, fh)
-            .await;
+        if handle.has_reader() {
+            self.state
+                .reader
+                .close_for_handle(handle.ino as u64, fh)
+                .await;
+        }
 
         if discard_unlinked {
             self.discard_closed_unlinked_inode_state(handle.ino).await;
@@ -4123,6 +4125,10 @@ where
             }
         }
         owners
+    }
+
+    pub(crate) fn has_fuse_lock_owners(&self) -> bool {
+        !self.state.fuse_lock_owners_by_handle.is_empty()
     }
 
     pub(crate) fn take_posix_lock_owner(&self, inode: i64, owner: i64) -> bool {

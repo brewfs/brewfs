@@ -578,6 +578,7 @@ mod basic_tests {
                 open_file_cache: OpenFileCacheConfig {
                     ttl: Duration::from_secs(60),
                     capacity: 128,
+                    allow_write: false,
                 },
                 ..Default::default()
             },
@@ -629,6 +630,7 @@ mod basic_tests {
                 open_file_cache: OpenFileCacheConfig {
                     ttl: Duration::from_secs(60),
                     capacity: 128,
+                    allow_write: false,
                 },
                 ..Default::default()
             },
@@ -1884,6 +1886,73 @@ mod io_tests {
         })
         .await
         .expect("released writer should be cleaned up after upload and overlay drain");
+    }
+
+    #[tokio::test]
+    async fn test_last_idle_write_handle_releases_writer_created_by_another_handle() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/multi-handle-close.bin").await.unwrap();
+        let attr = fs.stat("/multi-handle-close.bin").await.unwrap();
+        let writer_fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        let idle_fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.write(writer_fh, 0, b"writer").await.unwrap();
+        fs.close(writer_fh).await.unwrap();
+        assert!(fs.state.writer.has_file(attr.ino as u64));
+
+        fs.close(idle_fh).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while fs.state.writer.has_file(attr.ino as u64) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the final write-capable handle must release shared writer state");
+    }
+
+    #[tokio::test]
+    async fn test_write_handle_initializes_writer_on_first_write() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/lazy-writer.bin").await.unwrap();
+        let attr = fs.stat("/lazy-writer.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        assert!(
+            !fs.state.writer.has_file(attr.ino as u64),
+            "open without a write must not allocate per-file writer state"
+        );
+
+        fs.write(fh, 0, b"lazy").await.unwrap();
+        assert!(
+            fs.state.writer.has_file(attr.ino as u64),
+            "the first write must initialize per-file writer state"
+        );
+        fs.close(fh).await.unwrap();
     }
 
     #[tokio::test]
@@ -3235,6 +3304,26 @@ mod truncate_flush_tests {
         assert!(out[prefix_offset as usize..].iter().all(|b| *b == b'O'));
 
         op_timeout("close", fs.close(fh)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fuse_lock_owner_fast_path_tracks_handle_owners() {
+        let fs = new_vfs().await;
+        let ino = 42;
+        let fh = 7;
+
+        assert!(!fs.has_fuse_lock_owners());
+
+        fs.remember_fuse_lock_owner(ino, fh, 11, FileLockType::Write);
+        fs.remember_fuse_lock_owner(ino, fh, 11, FileLockType::Write);
+        assert!(fs.has_fuse_lock_owners());
+        assert_eq!(fs.take_fuse_lock_owners_for_handle(ino, fh), vec![11]);
+        assert!(!fs.has_fuse_lock_owners());
+
+        fs.remember_fuse_lock_owner(ino, fh, 12, FileLockType::Read);
+        fs.remember_fuse_lock_owner(ino, fh + 1, 12, FileLockType::Read);
+        fs.forget_fuse_lock_owner(ino, 12);
+        assert!(!fs.has_fuse_lock_owners());
     }
 
     /// Write a large amount of data, then immediately truncate to zero

@@ -6,6 +6,9 @@ This matrix keeps the filesystem correctness suites in one place. The default
 CI path should stay fast enough for pull requests, while manual and local runs
 cover the heavier open-source filesystem suites.
 
+For command options, script relationships, artifact paths, and legacy/KVM
+entry points, see [test-script-reference.md](test-script-reference.md).
+
 ## Required PR Coverage
 
 | Suite | Scope | Runner | Notes |

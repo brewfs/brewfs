@@ -266,9 +266,18 @@ where
         }
     }
 
-    pub(crate) fn writer(&self, writer: Arc<FileWriter<B, M>>) {
+    pub(crate) fn ensure_writer_with<F>(&self, make_writer: F)
+    where
+        F: FnOnce() -> Arc<FileWriter<B, M>>,
+    {
         let mut guard = self.state.lock().unwrap();
-        guard.writer = Some(writer);
+        if guard.writer.is_none() {
+            guard.writer = Some(make_writer());
+        }
+    }
+
+    pub(crate) fn has_reader(&self) -> bool {
+        self.state.lock().unwrap().reader.is_some()
     }
 
     /// Return the cached attr regardless of TTL (used for handle-level access).

@@ -93,6 +93,7 @@ assert_manifest_keys "$brewfs_container" \
     BREWFS_RANGE_BACKGROUND_PREFETCH \
     BREWFS_METADATA_OPEN_CACHE_TTL_MS \
     BREWFS_METADATA_OPEN_CACHE_CAPACITY \
+    BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE \
     BREWFS_READ_SSD_BYTES \
     BREWFS_WRITE_SSD_BYTES \
     BREWFS_VERIFY_CACHE_CHECKSUM \
@@ -123,6 +124,8 @@ assert_file_contains "$brewfs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-perf
 assert_file_contains "$brewfs_compose" 'BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM'
 assert_file_contains "$juicefs_compose" '${REDIS_PERF_DATA_MOUNT:-redis-data-juicefs-perf}'
 
+assert_file_contains "$redis_runner" "--metadata-throughput-profile"
+assert_file_contains "$redis_runner" 'BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE="${BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE:-true}"'
 assert_file_contains "$juicefs_runner" "PERF_FIO_DIRECT_MATRIX=\"0 1\""
 assert_file_contains "$juicefs_runner" "PERF_FIO_SEQREAD_DIRECT_MATRIX"
 assert_file_contains "$juicefs_runner" "PERF_FIO_BIGWRITE_DIRECT_MATRIX"
