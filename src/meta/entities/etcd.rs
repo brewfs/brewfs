@@ -22,6 +22,10 @@ pub struct EtcdEntryInfo {
     pub entry_name: String,
     pub deleted: bool,
     #[serde(default)]
+    pub entry_type: Option<EntryType>,
+    #[serde(default)]
+    pub rdev: u32,
+    #[serde(default)]
     pub symlink_target: Option<String>,
 }
 
@@ -75,20 +79,26 @@ impl EtcdEntryInfo {
     ///
     /// FileAttr suitable for direct cache insertion
     pub fn to_file_attr(&self, ino: i64) -> FileAttr {
-        let (kind, size) = if self.is_file {
-            let file_type = if self.symlink_target.is_some() {
+        let legacy_kind = if self.is_file {
+            if self.symlink_target.is_some() {
                 FileType::Symlink
             } else {
                 FileType::File
-            };
-            let file_size = if let Some(target) = &self.symlink_target {
-                target.len() as u64
-            } else {
-                self.size.unwrap_or(0).max(0) as u64
-            };
-            (file_type, file_size)
+            }
         } else {
-            (FileType::Dir, 4096)
+            FileType::Dir
+        };
+        let kind = self
+            .entry_type
+            .clone()
+            .map(FileType::from)
+            .unwrap_or(legacy_kind);
+        let size = if let Some(target) = &self.symlink_target {
+            target.len() as u64
+        } else if kind == FileType::Dir {
+            4096
+        } else {
+            self.size.unwrap_or(0).max(0) as u64
         };
 
         FileAttr {
@@ -97,7 +107,7 @@ impl EtcdEntryInfo {
             blocks: size.div_ceil(512),
             kind,
             mode: self.permission.mode,
-            rdev: 0,
+            rdev: self.rdev,
             uid: self.permission.uid,
             gid: self.permission.gid,
             atime: self.access_time,
@@ -105,6 +115,51 @@ impl EtcdEntryInfo {
             ctime: self.create_time,
             nlink: self.nlink,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn special_node_json_round_trip_preserves_kind_and_rdev() {
+        let entry = EtcdEntryInfo {
+            is_file: true,
+            size: Some(0),
+            version: Some(0),
+            access_time: 1,
+            modify_time: 2,
+            create_time: 3,
+            permission: Permission::new(FileType::CharDevice.mode_type_bits() | 0o600, 1, 2),
+            nlink: 1,
+            parent_inode: 1,
+            entry_name: "null".to_string(),
+            deleted: false,
+            entry_type: Some(EntryType::CharDevice),
+            rdev: libc::makedev(1, 3) as u32,
+            symlink_target: None,
+        };
+
+        let encoded = serde_json::to_vec(&entry).unwrap();
+        let decoded: EtcdEntryInfo = serde_json::from_slice(&encoded).unwrap();
+        let attr = decoded.to_file_attr(42);
+
+        assert_eq!(attr.kind, FileType::CharDevice);
+        assert_eq!(attr.mode, entry.permission.mode);
+        assert_eq!(attr.rdev, entry.rdev);
+    }
+
+    #[test]
+    fn legacy_file_json_defaults_to_regular_file_without_rdev() {
+        let decoded: EtcdEntryInfo = serde_json::from_str(
+            r#"{"is_file":true,"size":0,"version":0,"access_time":1,"modify_time":2,"create_time":3,"permission":{"mode":33188,"uid":0,"gid":0},"nlink":1,"parent_inode":1,"entry_name":"file","deleted":false}"#,
+        )
+        .unwrap();
+        let attr = decoded.to_file_attr(43);
+
+        assert_eq!(attr.kind, FileType::File);
+        assert_eq!(attr.rdev, 0);
     }
 }
 

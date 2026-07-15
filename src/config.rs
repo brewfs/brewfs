@@ -327,6 +327,7 @@ pub struct MetaFileConfig {
     pub tikv: Option<TiKvMetaFileConfig>,
     pub open_file_cache_ttl_ms: Option<u64>,
     pub open_file_cache_capacity: Option<u64>,
+    pub allow_write_open_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -412,6 +413,7 @@ pub struct MountConfig {
     pub meta_tikv_namespace: String,
     pub meta_open_file_cache_ttl_ms: Option<u64>,
     pub meta_open_file_cache_capacity: Option<u64>,
+    pub meta_allow_write_open_cache: bool,
     pub chunk_size: u64,
     pub block_size: u32,
     pub fuse_workers: usize,
@@ -513,6 +515,7 @@ impl MountConfig {
                 .unwrap_or_else(crate::meta::config::default_tikv_namespace),
             meta_open_file_cache_ttl_ms: meta_cfg.open_file_cache_ttl_ms,
             meta_open_file_cache_capacity: meta_cfg.open_file_cache_capacity,
+            meta_allow_write_open_cache: meta_cfg.allow_write_open_cache.unwrap_or(false),
             chunk_size: args
                 .chunk_size
                 .or(layout_cfg.chunk_size)
@@ -898,6 +901,33 @@ meta:
             vec!["127.0.0.1:2379", "127.0.0.1:2380"]
         );
         assert_eq!(config.meta_tikv_namespace, "tenant-a");
+    }
+
+    #[test]
+    fn mount_config_parses_write_open_cache_opt_in() {
+        let path = std::env::temp_dir().join(format!(
+            "brewfs-write-open-cache-config-{}-{}.yaml",
+            std::process::id(),
+            "parse"
+        ));
+        std::fs::write(
+            &path,
+            r#"
+mount_point: /mnt/slayer
+meta:
+  open_file_cache_ttl_ms: 1000
+  open_file_cache_capacity: 65536
+  allow_write_open_cache: true
+"#,
+        )
+        .unwrap();
+
+        let config = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None)).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.meta_open_file_cache_ttl_ms, Some(1000));
+        assert_eq!(config.meta_open_file_cache_capacity, Some(65536));
+        assert!(config.meta_allow_write_open_cache);
     }
 
     #[test]

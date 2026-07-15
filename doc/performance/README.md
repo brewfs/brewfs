@@ -16,6 +16,10 @@ notes, and focused review outputs from previous tuning passes.
   analysis (7 subsystems, with `file:line` root causes), and a P0/P1/P2
   improvement plan. Headline: BrewFS write throughput is a flat ~210 MiB/s that
   does not scale with concurrency (6.6–23.6× behind JuiceFS).
+- [brewfs-performance-advantages-over-juicefs.md](brewfs-performance-advantages-over-juicefs.md):
+  attribution of the current Redis + RustFS benchmark wins to architecture,
+  workload profiles, caching, and Rust runtime properties, including the
+  `O_RDWR` open-cache gap.
 - [bench-2026-06-21/](bench-2026-06-21/): raw measured data (`summary.tsv`,
   `comparison.md`) and the reproducible host-native benchmark harness
   (`run_bench.sh`, `metabench.c`, `parse_fio.py`, `combine_results.py`) backing

@@ -22,8 +22,11 @@ jfs_compress="${JFS_COMPRESS:-none}"
 jfs_writeback="${JFS_WRITEBACK:-false}"
 jfs_buffer_size_mib="${JFS_BUFFER_SIZE_MIB:-}"
 jfs_cache_size_mib="${JFS_CACHE_SIZE_MIB:-}"
+jfs_cache_large_write="${JFS_CACHE_LARGE_WRITE:-false}"
 jfs_max_uploads="${JFS_MAX_UPLOADS:-}"
 jfs_max_downloads="${JFS_MAX_DOWNLOADS:-}"
+jfs_max_readahead_mib="${JFS_MAX_READAHEAD_MIB:-}"
+jfs_prefetch="${JFS_PREFETCH:-}"
 jfs_open_cache="${JFS_OPEN_CACHE:-}"
 jfs_open_cache_limit="${JFS_OPEN_CACHE_LIMIT:-}"
 jfs_backup_meta="${JFS_BACKUP_META:-}"
@@ -86,9 +89,12 @@ JFS_COMPRESS=${jfs_compress}
 JFS_WRITEBACK=${jfs_writeback}
 JFS_BUFFER_SIZE_MIB=${jfs_buffer_size_mib}
 JFS_CACHE_SIZE_MIB=${jfs_cache_size_mib}
+JFS_CACHE_LARGE_WRITE=${jfs_cache_large_write}
 JFS_MAX_UPLOADS=${jfs_max_uploads}
 JFS_MAX_DOWNLOADS=${jfs_max_downloads}
 JFS_MAX_DOWNLOADS_EFFECTIVE=${max_downloads_effective}
+JFS_MAX_READAHEAD_MIB=${jfs_max_readahead_mib}
+JFS_PREFETCH=${jfs_prefetch}
 JFS_OPEN_CACHE=${jfs_open_cache}
 JFS_OPEN_CACHE_LIMIT=${jfs_open_cache_limit}
 JFS_BACKUP_META=${jfs_backup_meta}
@@ -113,9 +119,12 @@ JFS_COMPRESS=${jfs_compress}
 JFS_WRITEBACK=${jfs_writeback}
 JFS_BUFFER_SIZE_MIB=${jfs_buffer_size_mib}
 JFS_CACHE_SIZE_MIB=${jfs_cache_size_mib}
+JFS_CACHE_LARGE_WRITE=${jfs_cache_large_write}
 JFS_MAX_UPLOADS=${jfs_max_uploads}
 JFS_MAX_DOWNLOADS=${jfs_max_downloads}
 JFS_MAX_DOWNLOADS_EFFECTIVE=${max_downloads_effective}
+JFS_MAX_READAHEAD_MIB=${jfs_max_readahead_mib}
+JFS_PREFETCH=${jfs_prefetch}
 JFS_OPEN_CACHE=${jfs_open_cache}
 JFS_OPEN_CACHE_LIMIT=${jfs_open_cache_limit}
 JFS_BACKUP_META=${jfs_backup_meta}
@@ -286,6 +295,9 @@ mount_juicefs() {
     fi
     [[ -n "$jfs_buffer_size_mib" ]] && mount_args+=(--buffer-size="$jfs_buffer_size_mib")
     [[ -n "$jfs_cache_size_mib" ]] && mount_args+=(--cache-size="$jfs_cache_size_mib")
+    if truthy "$jfs_cache_large_write"; then
+        mount_args+=(--cache-large-write)
+    fi
     [[ -n "$jfs_max_uploads" ]] && mount_args+=(--max-uploads="$jfs_max_uploads")
     if [[ -n "$jfs_max_downloads" ]]; then
         if juicefs_mount_supports "--max-downloads"; then
@@ -294,6 +306,8 @@ mount_juicefs() {
             err "当前 JuiceFS 不支持 --max-downloads，跳过 JFS_MAX_DOWNLOADS=${jfs_max_downloads}"
         fi
     fi
+    [[ -n "$jfs_max_readahead_mib" ]] && mount_args+=(--max-readahead="$jfs_max_readahead_mib")
+    [[ -n "$jfs_prefetch" ]] && mount_args+=(--prefetch="$jfs_prefetch")
     [[ -n "$jfs_open_cache" ]] && mount_args+=(--open-cache="$jfs_open_cache")
     [[ -n "$jfs_open_cache_limit" ]] && mount_args+=(--open-cache-limit="$jfs_open_cache_limit")
     [[ -n "$jfs_backup_meta" ]] && mount_args+=(--backup-meta="$jfs_backup_meta")

@@ -17,11 +17,13 @@
   </p>
 </div>
 
-BrewFS is an independent distributed filesystem for container, AI, and object-storage-heavy workloads. It combines a POSIX-like FUSE interface with pluggable transactional metadata and S3-compatible data storage. BrewFS is developed together with the [RustFS community](https://github.com/rustfs/rustfs), which helps keep the stack compatible with object-store-backed distributed workloads.
+BrewFS is an independent distributed filesystem for container, AI, and object-storage-heavy workloads. It combines a POSIX-like FUSE interface with pluggable transactional metadata and S3-compatible data storage.
+
+RustFS is one of the S3-compatible object storage backends supported by BrewFS and is used in the repository's reproducible benchmark and filesystem test profiles.
 
 <p align="center">
   <a href="https://github.com/rustfs/rustfs">
-    <img src="doc/assets/rustfs.png" alt="RustFS" width="220" height="60" />
+    <img src="doc/assets/rustfs.png" alt="RustFS, a supported S3-compatible backend" width="220" height="60" />
   </a>
   <a href="https://github.com/rustfs/rustfs">
     <img src="https://img.shields.io/github/stars/rustfs/rustfs?style=flat-square" alt="RustFS GitHub stars" />
@@ -184,3 +186,15 @@ The [testing guide](doc/testing/docker-compose-test-guide.md) covers Redis, TiKV
 ## Contributing
 
 Issues and pull requests are welcome. Please keep behavior changes, tests, and documentation together whenever possible.
+
+## POSIX Correctness
+
+BrewFS treats filesystem correctness as a release requirement, not a best-effort compatibility claim. Its FUSE and metadata paths are continuously exercised with xfstests, pjdfstest, the Linux Test Project (LTP), and stress-ng across SQLite, Redis, etcd, and TiKV metadata backends.
+
+The current validation baseline completes all 708 configured xfstests cases on every supported metadata backend. Redis and TiKV also pass the complete pjdfstest corpus: 246 test files and 9,134 assertions with no default exclusions. The configured LTP filesystem profiles pass on all four backends. Kernel and FUSE limitations that cannot yet be implemented reliably are narrowly excluded, documented with reproducible evidence, and kept visible for future revalidation.
+
+This breadth of testing gives BrewFS a strong POSIX correctness foundation for builds, containers, AI pipelines, and other workloads that depend on predictable filesystem behavior. See the [filesystem test suite matrix](doc/testing/fs-test-suite-matrix.md) for current artifacts, coverage, and known limitations.
+
+## Contact
+
+Questions, deployment discussions, and collaboration inquiries are welcome at [genedna@gmail.com](mailto:genedna@gmail.com).

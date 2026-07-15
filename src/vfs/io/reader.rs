@@ -1267,7 +1267,7 @@ mod tests {
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
         let meta = meta_handle.layer();
         let backend = Arc::new(Backend::new(block_store, meta));
-        let inode = Inode::new(77, layout.chunk_size as u64 * 8);
+        let inode = Inode::new(77, layout.chunk_size * 8);
         let reader = DataReader::new(
             Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
             backend,
@@ -1300,7 +1300,7 @@ mod tests {
         let capture = Arc::new(CapturePrefetcher::default());
         let ino = 78;
         let fh = 2;
-        let inode = Inode::new(ino, layout.chunk_size as u64 * 8);
+        let inode = Inode::new(ino, layout.chunk_size * 8);
         let reader = DataReader::new(
             Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
             backend,

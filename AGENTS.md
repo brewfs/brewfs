@@ -192,3 +192,29 @@ df -h /mnt/slayerfs /mnt/slayerfs/brewfs
 du -sh target docker/compose-xfstests/artifacts 2>/dev/null || true
 docker system df
 ```
+
+## Known POSIX And FUSE Limitations
+
+- Keep `generic/075` excluded from default xfstests. Buffered FUSE mmap after
+  truncate/extend can expose stale pre-truncate page-cache data. Direct I/O
+  cannot run the mmap shape (`ENODEV`), writeback cache still reproduces it,
+  and ordered post-reply `FUSE_NOTIFY_INVAL_INODE` experiments can leave fsx
+  permanently blocked in `request_wait_answer`. Re-enable only after repeated
+  `generic/075 generic/014` passes without a D-state task or >5% performance
+  regression. See `doc/testing/xfstests-redis-rustfs-fix-plan.md`.
+- Keep LTP `iogen01` in the default skip list. Its tiny-overlap direct-I/O
+  diagnostic passes, but the normal buffered FUSE profile still has a
+  split-write/page-cache coherency race. Full direct I/O is not a substitute:
+  mmap workloads return `ENODEV`.
+- FIFO, socket, character-device, and block-device inode kinds and `rdev` are
+  persisted by every metadata backend. Keep the full pjdfstest corpus enabled;
+  Redis and TiKV each pass all 246 files and 9,134 assertions in
+  `pjdfstest-run-1783976619-22517` and `pjdfstest-run-1783976847-8934`.
+- If xfstests `generic/002` reports a missing driver file such as
+  `/tmp/<check-pid>.out` without an `.out.bad`, treat it as a harness race only
+  when the missing-output cases exactly equal the reported failure set. The
+  compose runner retries only that strict shape; all other failures stay fatal.
+- A FUSE test process stuck in `request_wait_answer` cannot be killed or its
+  container removed until the kernel request returns; a host reboot can be
+  required. Preserve diagnostics first, and never add post-reply invalidation
+  ordering without checking teardown and D-state tasks.

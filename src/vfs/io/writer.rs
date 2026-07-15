@@ -5988,7 +5988,6 @@ where
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn has_file(&self, ino: u64) -> bool {
         self.files.contains_key(&ino)
     }

@@ -24,6 +24,7 @@ description:
   - set BREWFS_REUSE_HOST_BINARY=1 to reuse target/docker/brewfs during local reruns
 
 options:
+  --no-default-skip              run without the repository default skip file
   --skip-patterns "<regex...>"   extra relative test-path regexes to skip
   --extra-args "<args...>"       extra arguments passed to prove
   --namespace <NAME>             TiKV metadata key namespace, default: brewfs
@@ -43,12 +44,17 @@ require_value() {
 }
 
 KEEP=false
+NO_DEFAULT_SKIP=false
 PJDFSTEST_SKIP_PATTERNS_VALUE=""
 PJDFSTEST_EXTRA_ARGS_VALUE=""
 TIKV_NAMESPACE_VALUE="${BREWFS_META_TIKV_NAMESPACE:-brewfs}"
 
 while [[ $# -gt 0 ]]; do
     case "${1:-}" in
+        --no-default-skip)
+            NO_DEFAULT_SKIP=true
+            shift
+            ;;
         --skip-patterns)
             require_value "$1" "${2:-}"
             PJDFSTEST_SKIP_PATTERNS_VALUE="${2:-}"
@@ -109,6 +115,11 @@ docker compose "${COMPOSE_ARGS[@]}" build pjdfstest
 
 export BREWFS_ARTIFACT_DIR="/artifacts/pjdfstest-run-${ts}"
 export BREWFS_META_TIKV_NAMESPACE="$TIKV_NAMESPACE_VALUE"
+if [[ "$NO_DEFAULT_SKIP" == true ]]; then
+    export PJDFSTEST_DEFAULT_SKIP_FILE="/dev/null"
+else
+    unset PJDFSTEST_DEFAULT_SKIP_FILE || true
+fi
 export PJDFSTEST_SKIP_PATTERNS="${PJDFSTEST_SKIP_PATTERNS_VALUE:-}"
 export PJDFSTEST_EXTRA_ARGS="${PJDFSTEST_EXTRA_ARGS_VALUE:-}"
 

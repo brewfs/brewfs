@@ -6,6 +6,9 @@ under `../superpowers/plans/`.
 
 - [docker-compose-test-guide.md](docker-compose-test-guide.md): Docker compose
   test entry points and CI-oriented workflows.
+- [test-script-reference.md](test-script-reference.md): complete script-level
+  reference for Rust, Compose, performance, KVM, distributed, and legacy test
+  entry points.
 - [fs-test-suite-matrix.md](fs-test-suite-matrix.md): filesystem correctness
   suite matrix, manual extended runs, and exclude review policy.
 - [bench.md](bench.md): benchmark scenarios and expectations.

@@ -30,6 +30,7 @@ RUN apt-get update && \
         redis-tools \
         sed \
         stress-ng \
+        strace \
         sudo \
         uuid-runtime \
         xfsdump \

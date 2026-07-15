@@ -125,6 +125,10 @@ fn fuse_open_reply_flags(read: bool, write: bool) -> u32 {
     flags
 }
 
+fn is_posix_acl_xattr(name: &str) -> bool {
+    matches!(name, "system.posix_acl_access" | "system.posix_acl_default")
+}
+
 /// Virtual inode for the `.stats` file exposed at the mount root.
 /// Uses a high inode number unlikely to collide with real inodes.
 const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
@@ -276,7 +280,7 @@ where
     }
 
     async fn unlock_handle_locks(&self, ino: u64, fh: u64) {
-        if fh == 0 {
+        if fh == 0 || !self.has_fuse_lock_owners() {
             return;
         }
 
@@ -424,10 +428,31 @@ where
         if attr_request_is_empty(&req) {
             return self.stat_ino(ino).await;
         }
-        match self.set_attr(ino, &req, SetAttrFlags::empty()).await {
+        match self
+            .set_attr_from_fuse(ino, &req, SetAttrFlags::empty())
+            .await
+        {
             Ok(attr) => Some(attr),
             Err(_err) => self.stat_ino(ino).await,
         }
+    }
+
+    fn creation_attrs_for_parent(
+        parent_attr: &VfsFileAttr,
+        requested_gid: u32,
+        requested_mode: u32,
+        is_dir: bool,
+    ) -> (u32, u32) {
+        let mut mode = sanitize_special_mode_bits(requested_mode);
+        let gid = if parent_attr.mode & 0o2000 != 0 {
+            if is_dir {
+                mode |= 0o2000;
+            }
+            parent_attr.gid
+        } else {
+            requested_gid
+        };
+        (gid, mode)
     }
 
     async fn attr_for_create_result(
@@ -487,7 +512,7 @@ where
             return Ok(());
         }
 
-        self.set_attr(ino, &SetAttrRequest::default(), flags)
+        self.set_attr_from_fuse(ino, &SetAttrRequest::default(), flags)
             .await
             .map(|_| ())
     }
@@ -635,7 +660,7 @@ where
             if !write {
                 return Err(libc::EINVAL.into());
             }
-            self.set_attr(
+            self.set_attr_from_fuse(
                 ino as i64,
                 &SetAttrRequest {
                     size: Some(0),
@@ -671,10 +696,13 @@ where
             .await?;
 
         // Create directory handle for efficient readdir operations
-        let fh = self
-            .opendir(ino as i64)
-            .await
-            .map_err(Into::<Errno>::into)?;
+        let fh = match self.opendir(ino as i64).await {
+            Ok(fh) => fh,
+            Err(err) => {
+                warn!(ino, error = %err, "fuse.opendir failed");
+                return Err(Errno::from(err));
+            }
+        };
 
         Ok(ReplyOpen { fh, flags: 0 })
     }
@@ -996,12 +1024,18 @@ where
         }
 
         // Apply the attribute changes
-        let vattr = match self.set_attr(ino as i64, &meta_req, meta_flags).await {
+        let vattr = match self
+            .set_attr_from_fuse(ino as i64, &meta_req, meta_flags)
+            .await
+        {
             Ok(vattr) => {
                 debug!(
                     unique = req.unique,
                     ino,
                     size = ?meta_req.size,
+                    mode = vattr.mode,
+                    uid = vattr.uid,
+                    gid = vattr.gid,
                     elapsed_ms = setattr_start.elapsed().as_millis() as u64,
                     "fuse.setattr complete"
                 );
@@ -1046,8 +1080,11 @@ where
         // Rewinddir: offset ≤ 0 means restart from the beginning.
         // Replace the cached handle with a fresh snapshot from the meta
         // layer so that entries created after opendir(3) are visible.
-        if fh != 0 && offset == 0 {
-            let _ = self.refresh_dir_handle(fh).await;
+        if fh != 0
+            && offset == 0
+            && let Err(err) = self.refresh_dir_handle(fh).await
+        {
+            warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
         }
 
         // Try to use handle first. FUSE directory offsets identify the next
@@ -1300,8 +1337,8 @@ where
         })
     }
 
-    // Create a special file node (regular file, FIFO, etc.)
-    // Note: Special files beyond regular/dir are not supported in this implementation
+    // Create a regular or special file node while preserving its kind and rdev.
+    #[allow(clippy::unnecessary_cast)] // mode_t is narrower on some supported platforms.
     async fn mknod(
         &self,
         req: Request,
@@ -1327,24 +1364,38 @@ where
         const S_IFCHR: u32 = libc::S_IFCHR as u32;
         const S_IFBLK: u32 = libc::S_IFBLK as u32;
         let file_type = mode & S_IFMT;
+        if !matches!(
+            file_type,
+            0 | S_IFREG | S_IFDIR | S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK
+        ) {
+            return Err(libc::EINVAL.into());
+        }
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+            .await?;
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, mode, file_type == S_IFDIR);
 
         let (ino, created_attr) = match file_type {
             // Linux accepts mknod(path, 0, 0) as a regular file with mode 000.
             0 | S_IFREG => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let result = self
-                    .create_file_at_with_attrs(parent as i64, &name, true, mode, req.uid, req.gid)
+                    .create_file_at_with_attrs(
+                        parent as i64,
+                        &name,
+                        true,
+                        creation_mode,
+                        req.uid,
+                        creation_gid,
+                    )
                     .await
                     .map_err(Errno::from)?;
                 let attr = self
-                    .attr_for_create_result(&result, req.uid, req.gid, Some(mode))
+                    .attr_for_create_result(&result, req.uid, creation_gid, Some(creation_mode))
                     .await;
                 (result.ino, attr)
             }
             S_IFDIR => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let ino = self
                     .mkdir_at_new(parent as i64, &name)
                     .await
@@ -1352,8 +1403,6 @@ where
                 (ino, None)
             }
             S_IFIFO | S_IFSOCK | S_IFCHR | S_IFBLK => {
-                self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
-                    .await?;
                 let kind = match file_type {
                     S_IFIFO => VfsFileType::Fifo,
                     S_IFSOCK => VfsFileType::Socket,
@@ -1366,9 +1415,9 @@ where
                         parent as i64,
                         &name,
                         kind,
-                        mode,
+                        creation_mode,
                         req.uid,
-                        req.gid,
+                        creation_gid,
                         rdev,
                     )
                     .await
@@ -1384,7 +1433,7 @@ where
         let vattr = if let Some(attr) = created_attr {
             attr
         } else if let Some(attr) = self
-            .apply_new_entry_attrs(ino, req.uid, req.gid, Some(mode))
+            .apply_new_entry_attrs(ino, req.uid, creation_gid, Some(creation_mode))
             .await
         {
             attr
@@ -1419,16 +1468,19 @@ where
         );
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        // Preserve setuid/setgid/sticky, then apply the caller's umask to rwx bits.
+        let masked_mode = apply_creation_umask(mode, umask);
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, masked_mode, true);
         let _ino = self
             .mkdir_at_new(parent as i64, &name)
             .await
             .map_err(Errno::from)?;
-        // Preserve setuid/setgid/sticky, then apply the caller's umask to rwx bits.
-        let masked_mode = apply_creation_umask(mode, umask);
         let Some(vattr) = self
-            .apply_new_entry_attrs(_ino, req.uid, req.gid, Some(masked_mode))
+            .apply_new_entry_attrs(_ino, req.uid, creation_gid, Some(creation_mode))
             .await
         else {
             return Err(libc::ENOENT.into());
@@ -1461,10 +1513,20 @@ where
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
         let create_new = (flags & libc::O_EXCL as u32) != 0;
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        let (creation_gid, creation_mode) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, mode, false);
         let create_result = match self
-            .create_file_at_with_attrs(parent as i64, &name, create_new, mode, req.uid, req.gid)
+            .create_file_at_with_attrs(
+                parent as i64,
+                &name,
+                create_new,
+                creation_mode,
+                req.uid,
+                creation_gid,
+            )
             .await
         {
             Ok(result) => {
@@ -1498,13 +1560,13 @@ where
             }
         };
         let Some(vattr) = self
-            .attr_for_create_result(&create_result, req.uid, req.gid, Some(mode))
+            .attr_for_create_result(&create_result, req.uid, creation_gid, Some(creation_mode))
             .await
         else {
             return Err(libc::ENOENT.into());
         };
         let vattr = if !create_result.created && (flags & libc::O_TRUNC as u32) != 0 {
-            self.set_attr(
+            self.set_attr_from_fuse(
                 create_result.ino,
                 &SetAttrRequest {
                     size: Some(0),
@@ -1621,8 +1683,11 @@ where
         let name = name.to_string_lossy();
         validate_fuse_name(name.as_ref())?;
 
-        self.ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
+        let parent_attr = self
+            .ensure_directory_parent_namespace_mutation_allowed(parent, req.uid, req.gid)
             .await?;
+        let (creation_gid, _) =
+            Self::creation_attrs_for_parent(&parent_attr, req.gid, 0o777, false);
 
         if self.child_of(parent as i64, name.as_ref()).await.is_some() {
             return Err(libc::EEXIST.into());
@@ -1636,7 +1701,7 @@ where
             .map_err(Errno::from)?;
 
         let attr = self
-            .apply_new_entry_attrs(ino, req.uid, req.gid, None)
+            .apply_new_entry_attrs(ino, req.uid, creation_gid, None)
             .await
             .unwrap_or(vattr);
 
@@ -1867,11 +1932,13 @@ where
                 .await;
         }
         if fh != 0 {
-            self.fallocate_handle(fh, inode as i64, offset, length)
+            // The FALLOCATE reply already updates the initiating kernel's
+            // inode state. A concurrent invalidation can race buffered writes.
+            self.fallocate_handle_from_fuse(fh, inode as i64, offset, length)
                 .await
                 .map_err(Errno::from)
         } else {
-            self.fallocate_ino(inode as i64, offset, length)
+            self.fallocate_ino_from_fuse(inode as i64, offset, length)
                 .await
                 .map_err(Errno::from)
         }
@@ -2012,6 +2079,12 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        // BrewFS ACL capability is the control-plane system.brewfs.acl format.
+        // Linux POSIX ACL mode synchronization and default inheritance are not
+        // implemented, so reject those xattrs instead of advertising partial ACLs.
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         self.set_xattr_ino(inode as i64, &name, value, flags)
             .await
             .map_err(|e| match e {
@@ -2033,6 +2106,9 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         let value = self
             .get_xattr_ino(inode as i64, &name)
             .await
@@ -2060,7 +2136,10 @@ where
             .map_err(|e| match e {
                 VfsError::Unsupported => Errno::from(libc::ENOSYS),
                 _ => Errno::from(libc::EIO),
-            })?;
+            })?
+            .into_iter()
+            .filter(|name| !is_posix_acl_xattr(name))
+            .collect::<Vec<_>>();
         let total_len: usize = names.iter().map(|n| n.len() + 1).sum();
         if size == 0 {
             return Ok(ReplyXAttr::Size(total_len as u32));
@@ -2081,6 +2160,9 @@ where
             return Err(libc::ENOENT.into());
         }
         let name = name.to_string_lossy();
+        if is_posix_acl_xattr(&name) {
+            return Err(libc::EOPNOTSUPP.into());
+        }
         self.remove_xattr_ino(inode as i64, &name)
             .await
             .map_err(|e| match e {
@@ -2504,7 +2586,7 @@ where
         parent: u64,
         uid: u32,
         gid: u32,
-    ) -> FuseResult<()> {
+    ) -> FuseResult<VfsFileAttr> {
         let Some(attr) = self.stat_ino(parent as i64).await else {
             return Err(libc::ENOENT.into());
         };
@@ -2517,9 +2599,11 @@ where
             gid,
             parent_namespace_mutation_access_mask(),
         )
-        .await
+        .await?;
+        Ok(attr)
     }
 
+    #[allow(clippy::unnecessary_cast)] // mode_t is narrower on some supported platforms.
     async fn ensure_sticky_parent_allows_child_mutation(
         &self,
         parent: u64,
@@ -2815,6 +2899,7 @@ fn apply_creation_umask(mode: u32, umask: u32) -> u32 {
     sanitize_special_mode_bits(mode) & !(umask & 0o777)
 }
 
+#[allow(clippy::useless_conversion)] // SetAttr mode follows platform mode_t width.
 fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     let mut req = SetAttrRequest::default();
     let flags = SetAttrFlags::empty();
@@ -3634,6 +3719,41 @@ mod fuse_init_tests {
     }
 
     #[tokio::test]
+    async fn creation_in_setgid_directory_inherits_group_and_directory_setgid() {
+        let fs = new_fuse_test_vfs().await;
+        fs.mkdir_p("/shared").await.unwrap();
+        let shared = fs.stat("/shared").await.unwrap();
+        fs.chown(shared.ino, Some(0), Some(2000)).await.unwrap();
+        fs.chmod(shared.ino, 0o2777).await.unwrap();
+
+        let dir = Filesystem::mkdir(
+            &fs,
+            user_request(),
+            shared.ino as u64,
+            OsStr::new("child"),
+            0o755,
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dir.attr.gid, 2000);
+        assert_eq!(dir.attr.perm, 0o2755);
+
+        let file = Filesystem::create(
+            &fs,
+            user_request(),
+            shared.ino as u64,
+            OsStr::new("file"),
+            0o640,
+            (libc::O_CREAT | libc::O_EXCL | libc::O_RDWR) as u32,
+        )
+        .await
+        .unwrap();
+        assert_eq!(file.attr.gid, 2000);
+        assert_eq!(file.attr.perm, 0o640);
+    }
+
+    #[tokio::test]
     async fn mknod_creates_fifo_metadata() {
         let fs = new_fuse_test_vfs().await;
         let reply = Filesystem::mknod(
@@ -4149,6 +4269,14 @@ mod fuse_init_tests {
         assert_eq!(fuse_open_reply_flags(true, false), 0);
         assert_eq!(fuse_open_reply_flags(true, true), 0);
         assert_eq!(fuse_open_reply_flags(false, true), 0);
+    }
+
+    #[test]
+    fn distinguishes_linux_posix_acl_xattrs_from_brewfs_acl_metadata() {
+        assert!(is_posix_acl_xattr("system.posix_acl_access"));
+        assert!(is_posix_acl_xattr("system.posix_acl_default"));
+        assert!(!is_posix_acl_xattr(CONTROL_ACL_XATTR_NAME));
+        assert!(!is_posix_acl_xattr("user.test"));
     }
 
     #[test]

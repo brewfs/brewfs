@@ -30,6 +30,8 @@ usage() {
   --local-fs                 改为使用本地目录作为对象存储
   --s3-writeback             启用 S3 commit-before-upload 写回语义（等价于 BREWFS_WRITEBACK_MODE=commit_before_upload）
   --read-throughput-profile  启用读吞吐 profile：只读句柄返回 FOPEN_DIRECT_IO，减少 buffered FUSE 大读拆分（会禁用这些只读 fd 的 mmap）
+  --metadata-throughput-profile
+                             启用 single-client metadata profile：允许 non-append 写句柄复用 1s open attr cache（会弱化跨客户端 close-to-open freshness）
   --bigwrite-throughput-profile
                              启用 fio-bigwrite/大 buffered write 吞吐 profile；这是 --writeback-throughput-profile 的明确别名，会启用 commit-before-upload 写回语义
   --writeback-throughput-profile
@@ -68,7 +70,7 @@ usage() {
   BREWFS_CACHED_BLOCK_ASSEMBLER BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS BREWFS_CACHED_SUB_BLOCK_TOO_MANY_MIN_AGE_MS
   BREWFS_VERIFY_CACHE_CHECKSUM
   BREWFS_UPLOAD_LIMIT_MIBPS BREWFS_DOWNLOAD_LIMIT_MIBPS
-  BREWFS_METADATA_OPEN_CACHE_TTL_MS BREWFS_METADATA_OPEN_CACHE_CAPACITY
+  BREWFS_METADATA_OPEN_CACHE_TTL_MS BREWFS_METADATA_OPEN_CACHE_CAPACITY BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE
   BREWFS_COMPACT_INTERVAL_SECS BREWFS_COMPACT_MIN_SLICE_COUNT BREWFS_COMPACT_ASYNC_THRESHOLD BREWFS_COMPACT_SYNC_THRESHOLD BREWFS_COMPACT_MAX_CHUNKS_PER_RUN
   BREWFS_WRITEBACK_MODE=commit_before_upload 可启用 S3 写回语义
   REDIS_PERF_DATA_MOUNT 可把 Redis AOF/RDB 数据挂到大容量目录或命名卷（例如 /data/slayer/brewfs-perf-redis）
@@ -95,6 +97,7 @@ KEEP=false
 STORAGE_BACKEND="rustfs"  # rustfs | minio | local-fs
 RUN_BREWFS_BENCH=false
 READ_THROUGHPUT_PROFILE=false
+METADATA_THROUGHPUT_PROFILE=false
 WRITEBACK_THROUGHPUT_PROFILE=false
 PERF_TOOLS_VALUE="fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
 BENCH_ARGS_VALUE=""
@@ -120,6 +123,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --read-throughput-profile)
             READ_THROUGHPUT_PROFILE=true
+            shift
+            ;;
+        --metadata-throughput-profile)
+            METADATA_THROUGHPUT_PROFILE=true
             shift
             ;;
         --bigwrite-throughput-profile)
@@ -172,6 +179,12 @@ if [[ "$READ_THROUGHPUT_PROFILE" == true ]]; then
     # Keep the default mount mmap-friendly. The throughput profile is explicit
     # because FOPEN_DIRECT_IO disables mmap on the affected read-only handles.
     export BREWFS_FUSE_READ_DIRECT_IO="${BREWFS_FUSE_READ_DIRECT_IO:-1}"
+fi
+
+if [[ "$METADATA_THROUGHPUT_PROFILE" == true ]]; then
+    export BREWFS_METADATA_OPEN_CACHE_TTL_MS="${BREWFS_METADATA_OPEN_CACHE_TTL_MS:-1000}"
+    export BREWFS_METADATA_OPEN_CACHE_CAPACITY="${BREWFS_METADATA_OPEN_CACHE_CAPACITY:-65536}"
+    export BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE="${BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE:-true}"
 fi
 
 enable_writeback_throughput_profile() {
@@ -537,6 +550,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e BREWFS_DOWNLOAD_LIMIT_MIBPS \
     -e BREWFS_METADATA_OPEN_CACHE_TTL_MS \
     -e BREWFS_METADATA_OPEN_CACHE_CAPACITY \
+    -e BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE \
     -e BREWFS_COMPACT_INTERVAL_SECS \
     -e BREWFS_COMPACT_MIN_SLICE_COUNT \
     -e BREWFS_COMPACT_MIN_FRAGMENT_RATIO \

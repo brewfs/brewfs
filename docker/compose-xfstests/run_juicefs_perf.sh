@@ -22,6 +22,10 @@ usage() {
   - 测试产物输出到: $ARTIFACTS_DIR/perf-run-*
 
 选项:
+  --cached-read-throughput-profile
+                             启用 JuiceFS 热缓存并发/随机读 profile（同步上传, buffer=4096MiB, cache=8192MiB, cache-large-write, readahead=1024MiB, prefetch=4, open-cache=1s/65536）；顺序流式读应使用默认 profile
+  --metadata-throughput-profile
+                             启用 JuiceFS metadata profile（open-cache=1s/65536, backup-meta=0, no-usage-report）
   --writeback-throughput-profile
                              启用 JuiceFS 对齐吞吐 profile（writeback, buffer=8192MiB, cache=4096MiB, upload/download concurrency=4/16, open-cache=1s/65536, compression=none, backup-meta=0, fio prefill staging drain+remount, write fio post-drain）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
@@ -40,7 +44,8 @@ usage() {
   PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS PERF_FIO_PREFILL_DRAIN_PENDING_BYTES
   PERF_FIO_POST_WRITE_DRAIN PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES
   PERF_FIO_DROP_CACHES PERF_FIO_COLD_READ_DROP_CACHES PERF_FIO_COLD_READ_CLEAR_CACHE
-  JFS_COMPRESS JFS_WRITEBACK JFS_BUFFER_SIZE_MIB JFS_CACHE_SIZE_MIB JFS_MAX_UPLOADS JFS_MAX_DOWNLOADS
+  JFS_COMPRESS JFS_WRITEBACK JFS_BUFFER_SIZE_MIB JFS_CACHE_SIZE_MIB JFS_CACHE_LARGE_WRITE
+  JFS_MAX_UPLOADS JFS_MAX_DOWNLOADS JFS_MAX_READAHEAD_MIB JFS_PREFETCH
   JFS_OPEN_CACHE JFS_OPEN_CACHE_LIMIT JFS_BACKUP_META JFS_NO_USAGE_REPORT JFS_CACHE_DIR
   REDIS_PERF_DATA_MOUNT 可把 Redis AOF/RDB 数据挂到大容量目录或命名卷（例如 /data/slayer/juicefs-perf-redis）
   PERF_LOG_TO_CONSOLE=true 可恢复压测工具日志输出到终端（默认关闭）
@@ -58,11 +63,21 @@ require_value() {
 }
 
 KEEP=false
+CACHED_READ_THROUGHPUT_PROFILE=false
+METADATA_THROUGHPUT_PROFILE=false
 WRITEBACK_THROUGHPUT_PROFILE=false
 PERF_TOOLS_VALUE="fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
 
 while [[ $# -gt 0 ]]; do
     case "${1:-}" in
+        --cached-read-throughput-profile)
+            CACHED_READ_THROUGHPUT_PROFILE=true
+            shift
+            ;;
+        --metadata-throughput-profile)
+            METADATA_THROUGHPUT_PROFILE=true
+            shift
+            ;;
         --writeback-throughput-profile)
             WRITEBACK_THROUGHPUT_PROFILE=true
             shift
@@ -85,6 +100,29 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$METADATA_THROUGHPUT_PROFILE" == true ]]; then
+    export JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"
+    export JFS_OPEN_CACHE_LIMIT="${JFS_OPEN_CACHE_LIMIT:-65536}"
+    export JFS_BACKUP_META="${JFS_BACKUP_META:-0}"
+    export JFS_NO_USAGE_REPORT="${JFS_NO_USAGE_REPORT:-true}"
+fi
+
+if [[ "$CACHED_READ_THROUGHPUT_PROFILE" == true ]]; then
+    export JFS_COMPRESS="${JFS_COMPRESS:-none}"
+    export JFS_WRITEBACK="${JFS_WRITEBACK:-false}"
+    export JFS_BUFFER_SIZE_MIB="${JFS_BUFFER_SIZE_MIB:-4096}"
+    export JFS_CACHE_SIZE_MIB="${JFS_CACHE_SIZE_MIB:-8192}"
+    export JFS_CACHE_LARGE_WRITE="${JFS_CACHE_LARGE_WRITE:-true}"
+    export JFS_MAX_UPLOADS="${JFS_MAX_UPLOADS:-20}"
+    export JFS_MAX_READAHEAD_MIB="${JFS_MAX_READAHEAD_MIB:-1024}"
+    export JFS_PREFETCH="${JFS_PREFETCH:-4}"
+    export JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"
+    export JFS_OPEN_CACHE_LIMIT="${JFS_OPEN_CACHE_LIMIT:-65536}"
+    export JFS_BACKUP_META="${JFS_BACKUP_META:-0}"
+    export JFS_NO_USAGE_REPORT="${JFS_NO_USAGE_REPORT:-true}"
+    export JFS_CACHE_DIR="${JFS_CACHE_DIR:-/var/lib/juicefs/cache}"
+fi
 
 if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_COMPRESS="${JFS_COMPRESS:-none}"
@@ -303,8 +341,11 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e JFS_WRITEBACK \
     -e JFS_BUFFER_SIZE_MIB \
     -e JFS_CACHE_SIZE_MIB \
+    -e JFS_CACHE_LARGE_WRITE \
     -e JFS_MAX_UPLOADS \
     -e JFS_MAX_DOWNLOADS \
+    -e JFS_MAX_READAHEAD_MIB \
+    -e JFS_PREFETCH \
     -e JFS_OPEN_CACHE \
     -e JFS_OPEN_CACHE_LIMIT \
     -e JFS_BACKUP_META \

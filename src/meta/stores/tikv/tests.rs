@@ -6,6 +6,36 @@ use crate::meta::config::{
 use crate::meta::factory::MetaStoreFactory;
 use crate::meta::store::{FileType, MetaStore};
 
+#[test]
+fn special_node_round_trip_preserves_kind_mode_and_rdev() {
+    let node = StoredNode {
+        ino: 42,
+        parent: ROOT_INODE,
+        name: "null".to_string(),
+        kind: StoredNodeKind::CharDevice,
+        size: 0,
+        blocks: 0,
+        mode: FileType::CharDevice.mode_type_bits() | 0o600,
+        rdev: libc::makedev(1, 3) as u32,
+        uid: 1000,
+        gid: 1000,
+        atime: 1,
+        mtime: 2,
+        ctime: 3,
+        nlink: 1,
+        symlink_target: None,
+        deleted: false,
+    };
+
+    let encoded = TiKvMetaStore::encode(&node).unwrap();
+    let decoded = TiKvMetaStore::decode_node(&encoded).unwrap();
+    let attr = decoded.to_attr();
+
+    assert_eq!(attr.kind, FileType::CharDevice);
+    assert_eq!(attr.mode, node.mode);
+    assert_eq!(attr.rdev, node.rdev);
+}
+
 fn test_config(namespace: &str) -> Config {
     Config {
         database: DatabaseConfig {

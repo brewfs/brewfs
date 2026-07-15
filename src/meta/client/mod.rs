@@ -59,6 +59,9 @@ pub struct OpenFileCacheConfig {
     pub ttl: Duration,
     /// Maximum number of recently opened inodes retained by the cache.
     pub capacity: u64,
+    /// Allow write-capable, non-append opens to reuse cached attributes.
+    /// This weakens cross-client close-to-open freshness without invalidation.
+    pub allow_write: bool,
 }
 
 impl OpenFileCacheConfig {
@@ -72,6 +75,7 @@ impl Default for OpenFileCacheConfig {
         Self {
             ttl: Duration::from_secs(1),
             capacity: 8192,
+            allow_write: false,
         }
     }
 }
@@ -813,6 +817,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     }
 
     async fn remember_trash_entry(&self, ino: i64, original_path: String) {
+        if !self.store.capabilities().xattr {
+            return;
+        }
+
         let metadata = ControlTrashMetadata {
             original_path,
             deleted_at: Utc::now().to_rfc3339(),
@@ -930,8 +938,8 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         self.umounting.load(Ordering::SeqCst)
     }
 
-    fn open_file_cache_eligible(read: bool, write: bool, append: bool) -> bool {
-        read && !write && !append
+    fn open_file_cache_eligible(&self, read: bool, write: bool, append: bool) -> bool {
+        !append && (read || write) && (!write || self.options.open_file_cache.allow_write)
     }
 
     fn open_file_cache_refresh_on_close(read: bool, write: bool, append: bool) -> bool {
@@ -2149,7 +2157,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         append: bool,
     ) -> Result<Option<FileAttr>, MetaError> {
         let inode = self.check_root(ino);
-        let eligible = Self::open_file_cache_eligible(read, write, append);
+        let eligible = self.open_file_cache_eligible(read, write, append);
 
         if eligible && let Some(cache) = &self.open_file_cache {
             if let Some(attr) = cache.attr(inode).await {
@@ -2176,7 +2184,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             return Ok(());
         };
 
-        if Self::open_file_cache_eligible(read, write, append) {
+        if self.open_file_cache_eligible(read, write, append) {
             cache.open(inode, attr).await;
         } else {
             cache.invalidate_inode(inode).await;
@@ -2206,9 +2214,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let inode = self.check_root(ino);
         if let Some(cache) = &self.open_file_cache {
             if Self::open_file_cache_refresh_on_close(read, write, append) {
-                cache.refresh_idle_attr(inode, attr).await;
+                cache.close_with_attr(inode, attr).await;
+            } else {
+                cache.close(inode).await;
             }
-            cache.close(inode).await;
         }
         Ok(())
     }
@@ -2971,9 +2980,11 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let inode = self.check_root(ino);
         let timestamp_only = Self::timestamp_only_setattr(req, &flags);
         let attr = self.store.set_attr(inode, req, flags).await?;
-        self.inode_cache
-            .insert_node(inode, attr.clone(), None)
-            .await;
+        if !self.inode_cache.refresh_attr(inode, attr.clone()).await {
+            self.inode_cache
+                .insert_node(inode, attr.clone(), None)
+                .await;
+        }
         if timestamp_only {
             if let Some(cache) = &self.open_file_cache {
                 cache.update_attr_if_present(inode, attr.clone()).await;
@@ -3185,7 +3196,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         flags: u32,
     ) -> Result<(), MetaError> {
         self.ensure_writable()?;
-        self.store.set_xattr(inode, name, value, flags).await
+        self.store.set_xattr(inode, name, value, flags).await?;
+        self.inode_cache.invalidate_inode(inode).await;
+        Ok(())
     }
 
     async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
@@ -3198,7 +3211,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
         self.ensure_writable()?;
-        self.store.remove_xattr(inode, name).await
+        self.store.remove_xattr(inode, name).await?;
+        self.inode_cache.invalidate_inode(inode).await;
+        Ok(())
     }
 
     async fn set_acl(&self, inode: i64, rule: AclRule) -> Result<(), MetaError> {
@@ -3321,6 +3336,25 @@ mod tests {
 
         let after = client.stat(1).await.unwrap().unwrap();
         assert_ne!(after.mtime, before.mtime);
+    }
+
+    #[tokio::test]
+    async fn setattr_preserves_cached_parent_relationship() {
+        let client = create_test_client().await;
+        let dir = client.mkdir(1, "parent-dir".to_string()).await.unwrap();
+        let file = client
+            .create_file(dir, "owned-file".to_string())
+            .await
+            .unwrap();
+
+        client.chmod(file, 0o600).await.unwrap();
+
+        let node = client.inode_cache.get_node(file).await.unwrap();
+        assert_eq!(*node.parent.read().await, Some(dir));
+        assert_eq!(
+            client.lookup_path("/parent-dir/owned-file").await.unwrap(),
+            Some((file, FileType::File))
+        );
     }
 
     #[tokio::test]
@@ -3640,6 +3674,7 @@ mod tests {
             open_file_cache: OpenFileCacheConfig {
                 ttl: Duration::ZERO,
                 capacity: 128,
+                allow_write: false,
             },
             ..Default::default()
         };
@@ -3683,6 +3718,7 @@ mod tests {
             open_file_cache: OpenFileCacheConfig {
                 ttl: Duration::from_secs(60),
                 capacity: 128,
+                allow_write: false,
             },
             ..Default::default()
         };
@@ -3772,6 +3808,58 @@ mod tests {
         assert_eq!(metrics.open_fresh_stat, 4);
         assert_eq!(metrics.open_file_cache_hit, 1);
         assert_eq!(metrics.open_file_cache_miss, 3);
+    }
+
+    #[tokio::test]
+    async fn test_open_file_cache_can_opt_in_write_capable_opens() {
+        let options = MetaClientOptions {
+            open_file_cache: OpenFileCacheConfig {
+                ttl: Duration::from_secs(60),
+                capacity: 128,
+                allow_write: true,
+            },
+            ..Default::default()
+        };
+        let client = create_test_client_with_options(options).await;
+        let ino = client
+            .create_file(1, "write-open-cache-enabled.txt".to_string())
+            .await
+            .unwrap();
+
+        let first = client
+            .stat_for_open(ino, true, true, false)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .record_open(ino, first.clone(), true, true, false)
+            .await
+            .unwrap();
+        client
+            .record_close_with_attr(ino, first, true, true, false)
+            .await
+            .unwrap();
+
+        let cached = client
+            .stat_for_open(ino, true, true, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.ino, ino);
+
+        let metrics = client.metrics().snapshot();
+        assert_eq!(metrics.open_fresh_stat, 1);
+        assert_eq!(metrics.open_file_cache_miss, 1);
+        assert_eq!(metrics.open_file_cache_hit, 1);
+
+        let _append = client
+            .stat_for_open(ino, true, true, true)
+            .await
+            .unwrap()
+            .unwrap();
+        let metrics = client.metrics().snapshot();
+        assert_eq!(metrics.open_fresh_stat, 2);
+        assert_eq!(metrics.open_file_cache_hit, 1);
     }
 
     #[tokio::test]

@@ -61,6 +61,7 @@ services:
         condition: service_completed_successfully
     environment:
       BREWFS_META_BACKEND: sqlite
+      BREWFS_META_URL: ""
       BREWFS_SQLITE_PATH: /var/lib/brewfs/metadata.db
       BREWFS_DATA_BACKEND: s3
       BREWFS_DATA_DIR: /var/lib/brewfs/data

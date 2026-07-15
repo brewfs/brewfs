@@ -1512,7 +1512,7 @@ mod tests {
         assert!(
             !default_store
                 .block_cache
-                .is_disk_cached(&"chunks/122/0".to_string())
+                .is_disk_cached("chunks/122/0")
                 .await,
             "default upload-time read cache population should not persist blocks to disk"
         );

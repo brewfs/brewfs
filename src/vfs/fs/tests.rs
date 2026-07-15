@@ -578,6 +578,7 @@ mod basic_tests {
                 open_file_cache: OpenFileCacheConfig {
                     ttl: Duration::from_secs(60),
                     capacity: 128,
+                    allow_write: false,
                 },
                 ..Default::default()
             },
@@ -629,6 +630,7 @@ mod basic_tests {
                 open_file_cache: OpenFileCacheConfig {
                     ttl: Duration::from_secs(60),
                     capacity: 128,
+                    allow_write: false,
                 },
                 ..Default::default()
             },
@@ -884,6 +886,7 @@ mod io_tests {
     use crate::cadapter::localfs::LocalFsBackend;
     use crate::chunk::cache::ChunksCacheConfig;
     use crate::chunk::store::{BlockKey, BlockStoreConfig, ObjectBlockStore};
+    use crate::meta::store::{SetAttrFlags, SetAttrRequest};
     use async_trait::async_trait;
     use rand::rngs::StdRng;
     use rand::{Rng, RngCore, SeedableRng};
@@ -1886,6 +1889,73 @@ mod io_tests {
     }
 
     #[tokio::test]
+    async fn test_last_idle_write_handle_releases_writer_created_by_another_handle() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/multi-handle-close.bin").await.unwrap();
+        let attr = fs.stat("/multi-handle-close.bin").await.unwrap();
+        let writer_fh = fs
+            .open(attr.ino, attr.clone(), false, true, false)
+            .await
+            .unwrap();
+        let idle_fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.write(writer_fh, 0, b"writer").await.unwrap();
+        fs.close(writer_fh).await.unwrap();
+        assert!(fs.state.writer.has_file(attr.ino as u64));
+
+        fs.close(idle_fh).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while fs.state.writer.has_file(attr.ino as u64) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the final write-capable handle must release shared writer state");
+    }
+
+    #[tokio::test]
+    async fn test_write_handle_initializes_writer_on_first_write() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/lazy-writer.bin").await.unwrap();
+        let attr = fs.stat("/lazy-writer.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        assert!(
+            !fs.state.writer.has_file(attr.ino as u64),
+            "open without a write must not allocate per-file writer state"
+        );
+
+        fs.write(fh, 0, b"lazy").await.unwrap();
+        assert!(
+            fs.state.writer.has_file(attr.ino as u64),
+            "the first write must initialize per-file writer state"
+        );
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_fs_unlink_without_handles_discards_writer_and_inode() {
         let layout = ChunkLayout {
             chunk_size: 8 * 1024,
@@ -2079,6 +2149,80 @@ mod io_tests {
 
         let after = fs.read(fh, offset, probe_len).await.unwrap();
         assert_eq!(after, vec![0u8; probe_len]);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_shrink_then_far_rewrite_keeps_gap_zeroed() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = VFS::new(layout, store, meta_handle.store()).await.unwrap();
+
+        fs.create_file("/truncate-gap.bin").await.unwrap();
+        let attr = fs.stat("/truncate-gap.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        let original = vec![0xa5; 0x40000];
+        fs.write_cached_ino(attr.ino, 0, &original, 1)
+            .await
+            .unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let req = SetAttrRequest {
+            size: Some(0x5a34),
+            ..SetAttrRequest::default()
+        };
+        fs.set_attr_from_fuse(attr.ino, &req, SetAttrFlags::empty())
+            .await
+            .unwrap();
+
+        let tail = vec![0x3c; 0x7dde];
+        fs.write_cached_ino(attr.ino, 0x38222, &tail, 2)
+            .await
+            .unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+
+        let gap = fs.read(fh, 0x294ad, 0x464).await.unwrap();
+        assert_eq!(gap, vec![0; 0x464]);
+
+        fs.close(fh).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fs_shrink_then_fallocate_extend_keeps_old_tail_zeroed() {
+        let layout = ChunkLayout {
+            chunk_size: 8 * 1024 * 1024,
+            block_size: 4 * 1024 * 1024,
+        };
+        let store = InMemoryBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = VFS::new(layout, store, meta_handle.store()).await.unwrap();
+
+        fs.create_file("/fallocate-truncate-gap.bin").await.unwrap();
+        let attr = fs.stat("/fallocate-truncate-gap.bin").await.unwrap();
+        let fh = fs
+            .open(attr.ino, attr.clone(), true, true, false)
+            .await
+            .unwrap();
+
+        fs.write(fh, 0x3c053, &vec![0x13; 0x956]).await.unwrap();
+        fs.flush_inode(attr.ino as u64).await;
+        fs.truncate_inode(attr.ino, 0x2d40).await.unwrap();
+        fs.fallocate_handle_from_fuse(fh, attr.ino, 0x326e2, 0xd91e)
+            .await
+            .unwrap();
+        fs.truncate_inode(attr.ino, 0x3c05d).await.unwrap();
+
+        let tail = fs.read(fh, 0x3928e, 0x2dcf).await.unwrap();
+        assert_eq!(tail, vec![0; 0x2dcf]);
 
         fs.close(fh).await.unwrap();
     }
@@ -3160,6 +3304,26 @@ mod truncate_flush_tests {
         assert!(out[prefix_offset as usize..].iter().all(|b| *b == b'O'));
 
         op_timeout("close", fs.close(fh)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_fuse_lock_owner_fast_path_tracks_handle_owners() {
+        let fs = new_vfs().await;
+        let ino = 42;
+        let fh = 7;
+
+        assert!(!fs.has_fuse_lock_owners());
+
+        fs.remember_fuse_lock_owner(ino, fh, 11, FileLockType::Write);
+        fs.remember_fuse_lock_owner(ino, fh, 11, FileLockType::Write);
+        assert!(fs.has_fuse_lock_owners());
+        assert_eq!(fs.take_fuse_lock_owners_for_handle(ino, fh), vec![11]);
+        assert!(!fs.has_fuse_lock_owners());
+
+        fs.remember_fuse_lock_owner(ino, fh, 12, FileLockType::Read);
+        fs.remember_fuse_lock_owner(ino, fh + 1, 12, FileLockType::Read);
+        fs.forget_fuse_lock_owner(ino, 12);
+        assert!(!fs.has_fuse_lock_owners());
     }
 
     /// Write a large amount of data, then immediately truncate to zero

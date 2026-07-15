@@ -635,6 +635,7 @@ where
     if let Some(capacity) = args.meta_open_file_cache_capacity {
         meta_config.options.open_file_cache.capacity = capacity;
     }
+    meta_config.options.open_file_cache.allow_write = args.meta_allow_write_open_cache;
     meta_config.compact = args.compact.clone();
 
     tracing::info!("mount startup meta client create begin");

@@ -1,5 +1,8 @@
 use crate::meta::store::MetaError;
-use etcd_client::{Client as EtcdClient, Compare, CompareOp, PutOptions, Txn, TxnOp};
+use etcd_client::{
+    Client as EtcdClient, Compare, CompareOp, GetOptions, GetResponse, PutOptions, Txn, TxnOp,
+    TxnResponse,
+};
 use rand::{RngCore, rng};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -9,8 +12,73 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 
 const ETCD_TXN_LOCK_STRIPES: usize = 1024;
+const ETCD_READ_MAX_ATTEMPTS: u64 = 4;
 
 static ETCD_TXN_LOCKS: OnceLock<Vec<tokio::sync::Mutex<()>>> = OnceLock::new();
+
+/// Retry an idempotent etcd range request after transient transport failures.
+///
+/// A write transaction is deliberately not retried here: if its response is lost,
+/// the caller cannot know whether etcd committed it. Reads are safe to replay and
+/// need this protection because an HTTP/2 GOAWAY otherwise leaks out as FUSE EIO.
+pub(crate) async fn get_with_retry<F>(
+    client: &EtcdClient,
+    key: &str,
+    mut options: F,
+) -> Result<GetResponse, etcd_client::Error>
+where
+    F: FnMut() -> Option<GetOptions>,
+{
+    for attempt in 1..=ETCD_READ_MAX_ATTEMPTS {
+        let mut client = client.clone();
+        match client.get(key, options()).await {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < ETCD_READ_MAX_ATTEMPTS => {
+                let delay_ms = 10_u64 << (attempt - 1);
+                tracing::warn!(
+                    key,
+                    attempt,
+                    delay_ms,
+                    error = %error,
+                    "retrying etcd read after request failure"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("etcd read retry loop always returns")
+}
+
+/// Retry a transaction containing only read operations.
+pub(crate) async fn read_txn_with_retry<F>(
+    client: &EtcdClient,
+    mut build: F,
+) -> Result<TxnResponse, etcd_client::Error>
+where
+    F: FnMut() -> Txn,
+{
+    for attempt in 1..=ETCD_READ_MAX_ATTEMPTS {
+        let mut client = client.clone();
+        match client.txn(build()).await {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < ETCD_READ_MAX_ATTEMPTS => {
+                let delay_ms = 10_u64 << (attempt - 1);
+                tracing::warn!(
+                    attempt,
+                    delay_ms,
+                    error = %error,
+                    "retrying read-only etcd transaction after request failure"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("etcd read transaction retry loop always returns")
+}
 
 enum EtcdTxnWriteOp {
     Put {
@@ -61,9 +129,7 @@ impl<'a> EtcdTxnCtx<'a> {
     }
 
     async fn fetch_slot(&self, key: &str) -> Result<EtcdTxnReadSlot, MetaError> {
-        let mut client = self.client.clone();
-        let resp = client
-            .get(key, None)
+        let resp = get_with_retry(self.client, key, || None)
             .await
             .map_err(|e| MetaError::Internal(format!("Failed to get key {key}: {e}")))?;
 
@@ -231,6 +297,28 @@ impl<'a> EtcdTxnCtx<'a> {
         Ok(())
     }
 
+    async fn writes_match_etcd(&self) -> Result<bool, MetaError> {
+        for (key, op) in &self.writes {
+            let response = get_with_retry(self.client, key, || None)
+                .await
+                .map_err(|error| {
+                    MetaError::Internal(format!(
+                        "Failed to verify indeterminate transaction key {key}: {error}"
+                    ))
+                })?;
+            let actual = response.kvs().first().map(|kv| kv.value());
+            let matches = match op {
+                EtcdTxnWriteOp::Put { value, .. } => actual == Some(value.as_slice()),
+                EtcdTxnWriteOp::Delete => actual.is_none(),
+            };
+            if !matches {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Builds a single etcd transaction from the recorded read set and write set.
     ///
     /// Returns `Ok(true)` when the CAS succeeds, `Ok(false)` when another writer won
@@ -267,14 +355,42 @@ impl<'a> EtcdTxnCtx<'a> {
             }
         }
 
-        let txn = Txn::new().when(compares).and_then(ops);
-        let mut client = self.client.clone();
-        let resp = client
-            .txn(txn)
-            .await
-            .map_err(|e| MetaError::Internal(format!("Failed to execute transaction: {e}")))?;
+        let mut request_failed = false;
+        for attempt in 1..=ETCD_READ_MAX_ATTEMPTS {
+            let txn = Txn::new().when(compares.clone()).and_then(ops.clone());
+            let mut client = self.client.clone();
+            match client.txn(txn).await {
+                Ok(response) if response.succeeded() => return Ok(true),
+                Ok(_) if request_failed => {
+                    let applied = self.writes_match_etcd().await?;
+                    tracing::warn!(
+                        attempt,
+                        applied,
+                        "etcd transaction CAS changed after retry; verified the staged write set"
+                    );
+                    return Ok(applied);
+                }
+                Ok(_) => return Ok(false),
+                Err(error) if attempt < ETCD_READ_MAX_ATTEMPTS => {
+                    request_failed = true;
+                    let delay_ms = 10_u64 << (attempt - 1);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms,
+                        error = %error,
+                        "retrying etcd transaction after request failure"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                Err(error) => {
+                    return Err(MetaError::Internal(format!(
+                        "Failed to execute transaction: {error}"
+                    )));
+                }
+            }
+        }
 
-        Ok(resp.succeeded())
+        unreachable!("etcd transaction retry loop always returns")
     }
 }
 
