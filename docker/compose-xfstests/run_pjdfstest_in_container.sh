@@ -431,7 +431,9 @@ run_pjdfstest() {
     status="${PIPESTATUS[0]}"
     set -e
 
-    grep -E '^[^[:space:]].*\.t .*Failed|Result: FAIL|Failed [0-9]+/[0-9]+ subtests' "$artifact_dir/pjdfstest.console.log" \
+    # Ignore prove's successful summary rows such as "Failed: 0".  They can
+    # accompany TODO-passed diagnostics and are not failed pjdfstest cases.
+    grep -E '^[^[:space:]].*\.t .*Failed: [1-9][0-9]*|Result: FAIL|Failed [1-9][0-9]*/[0-9]+ subtests' "$artifact_dir/pjdfstest.console.log" \
         >"$artifact_dir/failed-tests.txt" 2>/dev/null || true
     failed_count="$(wc -l <"$artifact_dir/failed-tests.txt" | tr -d '[:space:]')"
 
