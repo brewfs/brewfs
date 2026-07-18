@@ -30,6 +30,14 @@ ltp_skip_tests_file="${LTP_SKIP_TESTS_FILE:-}"
 ltp_default_skip_tests_file="${LTP_DEFAULT_SKIP_TESTS_FILE:-/usr/local/share/brewfs/ltp_skip_tests.txt}"
 ltp_tmp_dir=""
 
+# LTP's growfiles cases run a long sequence of large, random I/O patterns.
+# Keep this correctness runner independent of otherwise idle host RAM: these
+# limits are ample for the suite but avoid a cache-only OOM killing the FUSE
+# daemon and turning every later case into a misleading ENOTCONN failure.
+: "${BREWFS_READ_MEMORY_BYTES:=1073741824}"
+: "${BREWFS_WRITE_MEMORY_BYTES:=268435456}"
+: "${BREWFS_MEMORY_BUDGET_BYTES:=1073741824}"
+
 write_config() {
     mkdir -p "$(dirname "$config_path")" "$mount_dir"
     if [[ "$data_backend" == "local-fs" ]]; then

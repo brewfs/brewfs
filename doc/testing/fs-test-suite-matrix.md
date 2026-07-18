@@ -135,6 +135,13 @@ The full LTP runner uses BrewFS' normal kernel page-cache behavior and skips
 `iogen01` by default. Keep it skipped until the buffered writeback-cache
 failure is fixed:
 
+To keep the long growfiles sequence from depending on otherwise idle host RAM,
+the LTP runner writes explicit cache defaults of 1 GiB read memory, 256 MiB
+write memory, and a 1 GiB VFS memory budget. Each can be overridden with its
+corresponding `BREWFS_*_MEMORY_BYTES` variable. This keeps an OOM-killed FUSE
+daemon from turning later cases into misleading `ENOTCONN` failures; the full
+Redis+RustFS run `run-1784362121-30367` passed with `failures_count: 0`.
+
 - Direct-I/O tiny-overlap shape is fixed in
   `docker/compose-xfstests/artifacts/run-1783536533-27423`.
 - Buffered split-write/page-cache race remains in

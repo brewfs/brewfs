@@ -15,6 +15,11 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
   `run-1783974271-14804`, and `run-1783975421-24234`.
   Environment-only `TCONF` entries remain for unavailable container kernel
   modules and image tools.
+- Redis+RustFS LTP also passed after the runner began applying bounded cache
+  defaults: `run-1784362121-30367`, `failures_count: 0`. The preceding
+  `run-1784128661-5712` failure was one FUSE daemon disconnect during `gf17`;
+  all 23 later failures were consequential `ENOTCONN` results, not independent
+  filesystem failures.
 - LTP `iogen01` remains known failing in the normal buffered FUSE profile and
   must stay in `docker/compose-xfstests/ltp_skip_tests.txt`.
 - Full pjdfstest passed without default exclusions on Redis and TiKV:
@@ -32,6 +37,12 @@ Short handoff for the Redis metadata + RustFS object-store correctness run.
 
 ## Fixed This Round
 
+- Bound the LTP runner's default cache profile to 1 GiB read memory, 256 MiB
+  write memory, and a 1 GiB VFS budget. The values remain overridable through
+  `BREWFS_READ_MEMORY_BYTES`, `BREWFS_WRITE_MEMORY_BYTES`, and
+  `BREWFS_MEMORY_BUDGET_BYTES`. This keeps the full correctness suite from
+  relying on idle host RAM; `run-1784362121-30367` passed at an observed
+  BrewFS RSS peak of about 4.76 GiB, with no new exclusions.
 - Fixed `--no-default-skip` in
   `docker/compose-xfstests/run_ltp_in_container.sh`.
   - Prior bug: using `/dev/null` as the skip file made `awk` consume the LTP
