@@ -30,13 +30,9 @@ RustFS is one of the S3-compatible object storage backends supported by BrewFS a
   </a>
 </p>
 
-Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/juicefs)) in the current Redis + RustFS benchmark, BrewFS delivers **2.45x random-read throughput**, **2.62x file-create throughput**, and about **12x mixed random-I/O throughput**. The full results, including workloads where the two systems are at parity or JuiceFS leads, are below.
+Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/juicefs)), BrewFS delivered a **1.74x data-plane geometric mean** and a **1.38x geometric mean across all 12 reported data and metadata operations** in the matched, fully drained snapshot below. Highlights include **3.18x fully drained large-write throughput**, **3.10x random-read throughput**, **3.75x fully drained mixed-I/O throughput**, and **1.96x readdir throughput**. The complete table also retains the workloads where JuiceFS is faster.
 
-| **2.45x** | **2.62x** | **12.09x** | **1.17x** |
-| :---: | :---: | :---: | :---: |
-| random read | file create | mixed random read | tuned large write |
-
-![Selected BrewFS benchmark wins relative to JuiceFS](doc/assets/performance-vs-juicefs.svg)
+![BrewFS performance relative to JuiceFS across 12 matched workloads](doc/assets/performance-vs-juicefs.svg)
 
 ## Why BrewFS
 
@@ -47,72 +43,94 @@ Against [JuiceFS](https://juicefs.com/) ([GitHub](https://github.com/juicedata/j
 
 ## Performance vs JuiceFS
 
-This local snapshot was collected on the same host with Redis metadata, RustFS S3-compatible storage, compression disabled, and matching fio workload shapes. fio used buffered I/O (`direct=0`); BrewFS used direct-I/O FUSE handles for read-heavy profiles.
+This local snapshot was collected on the same host with Redis metadata, RustFS S3-compatible storage, compression disabled, and the runners' `--writeback-throughput-profile` on both filesystems. fio used buffered I/O (`direct=0`) with `io_uring`, 4 MiB blocks, and `iodepth=1`; large read/write used eight 128 MiB jobs (1 GiB total). Read tests used prefill-and-drain, a remount, and cleared filesystem caches; write tests included a post-write drain. BrewFS keeps direct-I/O FUSE handles for reads in this profile; that implementation choice is recorded rather than hidden.
 
 ### Benchmark Environment (local machine)
 
 - **CPU:** Intel Xeon Platinum (x86_64, 1 socket / 8 vCPU, 2 threads per core)
-- **Memory:** 16 GiB total
+- **Memory:** 14 GiB available to the benchmark host
 - **Kernel:** Linux 6.8.0-117-generic
 - **OS:** Ubuntu-based kernel image (GNU/Linux)
-- **Storage:** 150GB aliyun ESSD AutoPL (8300 IOPS)
+- **Storage:** 130 GiB virtual block device
 
-Environment file and full logs for each run are stored in `docker/compose-xfstests/artifacts/<run>/` (contains raw profile env and generated reports).
+The complete-run artifacts are `perf-run-1784459867-21061` (BrewFS data plane), `perf-run-1784461564-23252` (BrewFS metadata), and `juicefs-perf-run-1784386826-2853` (JuiceFS). The optimized large-read row is the mean of focused reruns `perf-run-1784469566-30242` and `perf-run-1784469601-26934`; the large-write rows use `perf-run-1784473152-32564` and `perf-run-1784473176-9768`. Each artifact contains the raw profile environment, fio JSON or tool logs, diagnostics, warnings, and generated report under `docker/compose-xfstests/artifacts/<run>/`.
+
+The effective profile parameters were:
+
+| System | Effective settings |
+| --- | --- |
+| BrewFS | `commit_before_upload`; 4 GiB each of memory/SSD read and write cache; 12 GiB memory budget; 6 writeback upload workers; S3 concurrency 16; upload concurrency 32; 1 s / 65,536-entry metadata open cache with write-capable reuse disabled; 16 FUSE workers; `max_background=512`; async-fuse request buffer pool enabled |
+| JuiceFS 1.3.1 | `writeback=true`; 8 GiB buffer; 4 GiB local cache; 4 upload workers; 1 s / 65,536-entry open cache; metadata backup disabled; usage reporting disabled. The requested `max-downloads=16` is unsupported by this JuiceFS version and was not passed to the mount. |
+
+For a single-client build or metadata workload that repeatedly opens files with `O_RDWR`, add `--metadata-throughput-profile` to the BrewFS command. It enables `BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE=true` alongside the 1 s open cache; the latest matching `metaperf` run raised open throughput from 4,989.0 to 5,589.9 ops/s (+12%). This deliberately weakens cross-client close-to-open freshness, so it is not part of the comparison profile above.
 
 ### Data throughput
 
+The foreground table reports fio bandwidth while the workload is issuing I/O. It measures application-visible acceptance speed, which can include data still buffered by either filesystem when fio stops.
+
 | Workload | BrewFS | JuiceFS | BrewFS / JuiceFS |
 | --- | ---: | ---: | ---: |
-| Large write | **820.5 MiB/s** | 702.8 MiB/s | **1.17x** |
-| Large read | **2.36 GiB/s** | 1.03 GiB/s | **2.29x** |
-| Sequential read | **1.77 GiB/s** | 1.12 GiB/s | **1.57x** |
-| Sequential write | 198.5 MiB/s | **204.7 MiB/s** | 0.97x |
-| Random read | **2.81 GiB/s** | 1.15 GiB/s | **2.45x** |
-| Random write | 200.9 MiB/s | **205.2 MiB/s** | 0.98x |
-| Mixed random read | **392.4 MiB/s** | 32.5 MiB/s | **12.09x** |
-| Mixed random write | **174.5 MiB/s** | 14.7 MiB/s | **11.86x** |
+| Large write | 912.3 MiB/s | **1.07 GiB/s** | 0.83x |
+| Large read | 743.7 MiB/s | **936.9 MiB/s** | 0.79x |
+| Sequential read | **1.57 GiB/s** | 1.04 GiB/s | **1.52x** |
+| Sequential write | 146.5 MiB/s | **280.6 MiB/s** | 0.52x |
+| Random read | **3.75 GiB/s** | 1.21 GiB/s | **3.10x** |
+| Random write | 127.9 MiB/s | **312.9 MiB/s** | 0.41x |
+| Mixed random read | **237.7 MiB/s** | 119.3 MiB/s | **1.99x** |
+| Mixed random write | **108.1 MiB/s** | 55.7 MiB/s | **1.94x** |
+
+For write workloads, the end-to-end comparison uses actual fio bytes divided by `active_io_runtime + post_write_drain`. This includes the time needed to empty each filesystem's writeback queue instead of rewarding a larger unflushed backlog.
+
+| Fully drained workload | BrewFS | JuiceFS | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| Large write | **327.9 MiB/s** | 103.1 MiB/s | **3.18x** |
+| Sequential write | **103.4 MiB/s** | 99.7 MiB/s | **1.04x** |
+| Random write | **104.4 MiB/s** | 97.8 MiB/s | **1.07x** |
+| Mixed random I/O total | **278.0 MiB/s** | 74.2 MiB/s | **3.75x** |
+
+Across large read/write, sequential read/write, random read/write, and mixed random I/O, BrewFS has a **1.74x unweighted geometric mean**. Adding the five metadata operations below gives a **1.38x unweighted geometric mean across all 12 operations**. Mixed I/O is counted once by total bytes in these summaries.
 
 ### Metadata throughput
 
 | Operation | BrewFS | JuiceFS | BrewFS / JuiceFS |
 | --- | ---: | ---: | ---: |
-| Create | **992.7 ops/s** | 378.8 ops/s | **2.62x** |
-| Open | 5,185.2 ops/s | **6,025.0 ops/s** | 0.86x |
-| Stat | **684,626.9 ops/s** | 683,779.5 ops/s | 1.00x |
-| Readdir | **34,624.8 ops/s** | 21,420.4 ops/s | **1.62x** |
-| Rename | 1,014.9 ops/s | **1,341.6 ops/s** | 0.76x |
+| Create | **1,054.5 ops/s** | 651.5 ops/s | **1.62x** |
+| Open | 5,018.6 ops/s | **12,027.2 ops/s** | 0.42x |
+| Stat | **686,751.8 ops/s** | 683,792.0 ops/s | 1.00x |
+| Readdir | **34,480.7 ops/s** | 17,580.2 ops/s | **1.96x** |
+| Rename | 965.7 ops/s | **1,306.8 ops/s** | 0.74x |
 
 <details>
 <summary><strong>Latency, runtime, and benchmark details</strong></summary>
 
 | Workload | BrewFS wall / active | JuiceFS wall / active | BrewFS p99 | JuiceFS p99 |
 | --- | ---: | ---: | ---: | ---: |
-| Large write | 2s / 1.248s | 3s / 1.457s | W 67.6ms | W 65.3ms |
-| Large read | 1s / 0.424s | 2s / 0.973s | R 0.0ms | R 97.0ms |
-| Sequential read | 60s / 60.001s | 61s / 60.001s | R 0.0ms | R 4.4ms |
-| Sequential write | 63s / 60.002s | 62s / 60.051s | W 42.2ms | W 120.1ms |
-| Random read | 60s / 60.004s | 60s / 60.008s | R 0.0ms | R 51.6ms |
-| Random write | 65s / 60.016s | 62s / 60.091s | W 254.8ms | W 215.0ms |
-| Mixed random I/O | 65s / 60.034s | 64s / 61.734s | R 107.5ms / W 219.2ms | R 3170.9ms / W 346.0ms |
+| Large write | 2s / 1.123s | 2s / 0.935s | W 65.1ms | W 46.9ms |
+| Large read | 2s / 1.377s | 1s / 1.093s | R 0.1ms | R 137.4ms |
+| Sequential read | 61s / 60.001s | 61s / 60.001s | R 0.0ms | R 4.8ms |
+| Sequential write | 62s / 60.019s | 96s / 60.067s | W 124.3ms | W 90.7ms |
+| Random read | 60s / 60.003s | 60s / 60.009s | R 0.0ms | R 21.6ms |
+| Random write | 64s / 62.210s | 103s / 60.011s | W 5335.2ms | W 248.5ms |
+| Mixed random I/O | 68s / 65.707s | 61s / 60.304s | R 89.7ms / W 3238.0ms | R 1249.9ms / W 34.3ms |
 
 | Metadata operation | BrewFS latency | JuiceFS latency |
 | --- | ---: | ---: |
-| Create | **1,007.4 us/op** | 2,639.9 us/op |
-| Open | 192.9 us/op | **166.0 us/op** |
-| Stat | **1.5 us/op** | **1.5 us/op** |
-| Readdir | **28.9 us/op** | 46.7 us/op |
-| Rename | 985.3 us/op | **745.4 us/op** |
+| Create | **948 us/op** | 1,535 us/op |
+| Open | 199 us/op | **83 us/op** |
+| Stat | **1 us/op** | **1 us/op** |
+| Readdir | **29 us/op** | 57 us/op |
+| Rename | 1,036 us/op | **765 us/op** |
 
 | Tool | BrewFS wall | JuiceFS wall | Result |
 | --- | ---: | ---: | --- |
 | `dirstress` | **1s** | 3s | pass / pass |
 | `dirperf` | 16s | **14s** | pass / pass |
-| `metaperf` | 205s | **193s** | pass / pass |
-| `looptest` | 2s | **1s** | pass / pass |
+| `metaperf` | 207s | **194s** | pass / pass |
+| `looptest` | **1s** | **1s** | pass / pass |
 
-The large-write BrewFS result uses the opt-in `--bigwrite-throughput-profile`, which enables `commit_before_upload`; the normal safer default is `upload_before_commit`. JuiceFS used `JFS_WRITEBACK=false`. The JuiceFS mixed random-I/O result was rerun twice and remained within the same range.
+All eleven tools passed on both filesystems in the complete runs. The two optimized large-read and large-write rows were then repeated independently with the same profile. This is a throughput-oriented profile, not a durability-equivalence claim. JuiceFS emitted local-cache `flushPage` slow-operation warnings during its complete run, and its post-write drains were 9/109/132/82 seconds for large, sequential, random, and mixed writes, respectively; BrewFS took 2/25/14/16 seconds in its complete run and 2 seconds in both optimized large-write reruns. The raw logs retain those warnings and all drain diagnostics, while each generated report writes the derived values to `fully-drained-throughput.tsv`.
 
-This is a local engineering snapshot from July 9-10, 2026, not a claim about every deployment. Each runner writes its fio JSON, profile environment, logs, and generated report to the gitignored `docker/compose-xfstests/artifacts/` directory for local audit.
+This is a local engineering snapshot from July 19, 2026, not a claim about every deployment. Each runner writes its fio JSON, profile environment, logs, and generated report to the gitignored `docker/compose-xfstests/artifacts/` directory for local audit.
 
 </details>
 
@@ -120,11 +138,9 @@ Reproduce the comparison with the Docker runners:
 
 ```bash
 BREWFS_COMPRESSION=none \
-  bash docker/compose-xfstests/run_redis_perf.sh --s3 --read-throughput-profile
-bash docker/compose-xfstests/run_redis_perf.sh --s3 \
-  --bigwrite-throughput-profile --tools fio-bigwrite
-JFS_COMPRESS=none JFS_WRITEBACK=false \
-  bash docker/compose-xfstests/run_juicefs_perf.sh
+  bash docker/compose-xfstests/run_redis_perf.sh --s3 --writeback-throughput-profile
+JFS_COMPRESS=none \
+  bash docker/compose-xfstests/run_juicefs_perf.sh --writeback-throughput-profile
 ```
 
 ## Quick Start

@@ -31,7 +31,7 @@ rks = { path = "rks" }
 dagrs-derive = { path = "dagrs-derive", version = "0.5.0" }
 quote = "1.0"
 proc-macro2 = "1.0"
-asyncfuse = { version = "0.0.10", default-features = false }
+asyncfuse = { version = "0.1.12", default-features = false }
 brewfs = { path = "." }
 libcgroups = { version = "0.5.7", default-features = false }
 libcontainer = "0.5.7"
@@ -277,7 +277,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 log = { workspace = true }
-asyncfuse = { workspace = true, features = ["file-lock", "unprivileged"] }
+asyncfuse = { workspace = true, features = ["buffer-pool", "file-lock", "unprivileged"] }
 etcd-client = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 auto_impl = { workspace = true }

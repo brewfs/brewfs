@@ -54,6 +54,8 @@ assert_file_contains "$redis_runner" "compression=none"
 assert_file_contains "$redis_runner" 'BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-none}"'
 assert_file_contains "$redis_runner" "--bigwrite-throughput-profile"
 assert_file_contains "$redis_runner" "enable_writeback_throughput_profile"
+assert_file_contains "$redis_runner" 'BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-16}"'
+assert_file_not_contains "$redis_runner" 'BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-6}"'
 assert_file_not_contains "$redis_runner" "compression=lz4"
 assert_file_not_contains "$redis_runner" 'BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-lz4}"'
 

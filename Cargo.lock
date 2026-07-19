@@ -290,9 +290,9 @@ dependencies = [
 
 [[package]]
 name = "asyncfuse"
-version = "0.0.10"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616eeb8d05f8872bdd34a17a2b762885b42c563709bbb5e8326899bc144b1416"
+checksum = "73944bd789372ebf1f10a25ee59296bbb437b31dbe234dcd959e98a1f3238fac"
 dependencies = [
  "aligned_box",
  "async-notify",
