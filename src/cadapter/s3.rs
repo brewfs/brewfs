@@ -589,8 +589,12 @@ impl ObjectBackend for S3Backend {
         match resp {
             Ok(o) => {
                 use tokio::io::AsyncReadExt;
+                let capacity = o
+                    .content_length()
+                    .and_then(|len| usize::try_from(len).ok())
+                    .unwrap_or_default();
                 let mut body = o.body.into_async_read();
-                let mut buf = Vec::new();
+                let mut buf = Vec::with_capacity(capacity);
                 body.read_to_end(&mut buf).await?;
                 Ok(Some(buf))
             }

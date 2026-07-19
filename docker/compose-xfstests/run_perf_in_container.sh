@@ -1569,6 +1569,7 @@ for row in rows:
     )
 
 post_write_drain_path = artifact_dir / "post-write-drain.tsv"
+drain_rows = []
 if post_write_drain_path.exists():
     with post_write_drain_path.open(newline="") as f:
         drain_rows = [
@@ -1590,6 +1591,11 @@ if post_write_drain_path.exists():
                 f"{row.get('pending_bytes', '')} | {row.get('dirty_bytes', '')} | "
                 f"{row.get('buffer_dirty_bytes', '')} |"
             )
+drain_by_tool = {
+    row.get("tool", ""): value
+    for row in drain_rows
+    if (value := row.get("post_write_drain_s") or row.get("post_fio_drain_s", ""))
+}
 
 if fio_json_paths:
     try:
@@ -1708,6 +1714,7 @@ if fio_json_paths:
         ])
 
         runtime_rows = []
+        fully_drained_rows = []
         for fio_json_path in fio_json_paths:
             data = json.loads(fio_json_path.read_text())
             jobs = data.get("jobs", [])
@@ -1717,7 +1724,23 @@ if fio_json_paths:
             read = op_totals("read")
             write = op_totals("write")
             tool_name = fio_json_path.stem
-            runtime_rows.append((tool_name, options, fio_runtime_accounting(data, tool_name, read, write)))
+            runtime = fio_runtime_accounting(data, tool_name, read, write)
+            runtime_rows.append((tool_name, options, runtime))
+            drain_seconds = num(drain_by_tool.get(tool_name))
+            active_seconds = runtime["active_runtime_ms"] / 1000.0
+            if write["io_bytes"] > 0 and active_seconds > 0 and tool_name in drain_by_tool:
+                complete_seconds = active_seconds + drain_seconds
+                fully_drained_rows.append({
+                    "tool": tool_name,
+                    "active_seconds": active_seconds,
+                    "drain_seconds": drain_seconds,
+                    "complete_seconds": complete_seconds,
+                    "read_bytes": read["io_bytes"],
+                    "write_bytes": write["io_bytes"],
+                    "read_mib_s": read["io_bytes"] / complete_seconds / (1024 * 1024),
+                    "write_mib_s": write["io_bytes"] / complete_seconds / (1024 * 1024),
+                    "total_mib_s": (read["io_bytes"] + write["io_bytes"]) / complete_seconds / (1024 * 1024),
+                })
             lines.append(
                 f"| {tool_name} | {options.get('rw', 'unknown')} | {options.get('direct', 'unknown')} | "
                 f"{options.get('bs', 'unknown')} | "
@@ -1744,6 +1767,44 @@ if fio_json_paths:
                     f"{fmt_delta_ms(runtime['wall_vs_job_ms'])} | {fmt_ratio(runtime['wall_job_ratio'])} | "
                     f"{fmt_seconds_from_ms(runtime['active_runtime_ms'])} | {fmt_delta_ms(runtime['wall_vs_active_ms'])} | "
                     f"{fmt_ratio(runtime['wall_active_ratio'])} | {runtime['tail']} |"
+                )
+
+        if fully_drained_rows:
+            complete_path = artifact_dir / "fully-drained-throughput.tsv"
+            with complete_path.open("w", newline="") as f:
+                fieldnames = [
+                    "tool", "active_seconds", "drain_seconds", "complete_seconds",
+                    "read_bytes", "write_bytes", "read_mib_s", "write_mib_s", "total_mib_s",
+                ]
+                writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+                writer.writeheader()
+                for row in fully_drained_rows:
+                    writer.writerow({
+                        **row,
+                        "active_seconds": f"{row['active_seconds']:.6f}",
+                        "drain_seconds": f"{row['drain_seconds']:.6f}",
+                        "complete_seconds": f"{row['complete_seconds']:.6f}",
+                        "read_bytes": f"{row['read_bytes']:.0f}",
+                        "write_bytes": f"{row['write_bytes']:.0f}",
+                        "read_mib_s": f"{row['read_mib_s']:.6f}",
+                        "write_mib_s": f"{row['write_mib_s']:.6f}",
+                        "total_mib_s": f"{row['total_mib_s']:.6f}",
+                    })
+            lines.extend([
+                "",
+                "## Fully Drained Write Throughput",
+                "",
+                "Actual fio bytes divided by `active_io_runtime + post_write_drain`; unlike foreground bandwidth, this includes the time required to empty the filesystem writeback queue.",
+                "",
+                "| Tool | Active I/O | Drain | Complete | Read | Write | Total | Raw |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ])
+            for row in fully_drained_rows:
+                lines.append(
+                    f"| {row['tool']} | {row['active_seconds']:.3f} s | "
+                    f"{row['drain_seconds']:.3f} s | {row['complete_seconds']:.3f} s | "
+                    f"{row['read_mib_s']:.2f} MiB/s | {row['write_mib_s']:.2f} MiB/s | "
+                    f"{row['total_mib_s']:.2f} MiB/s | fully-drained-throughput.tsv |"
                 )
     except Exception as exc:
         lines.extend(["", "## Fio", "", f"Failed to parse fio JSON: {exc}"])

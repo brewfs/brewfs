@@ -16,6 +16,28 @@ tool	status	seconds	log
 fio-test	pass	1	/artifacts/perf-run/tools/fio-test.log
 EOF
 
+cat >"$artifact_dir/post-write-drain.tsv" <<'EOF'
+tool	post_write_drain_s	pending_bytes	dirty_bytes	buffer_dirty_bytes
+fio-test	1	0	0	0
+EOF
+
+cat >"$artifact_dir/results/fio-test.json" <<'EOF'
+{
+  "jobs": [{
+    "job options": {"rw": "write", "direct": "0", "bs": "1m", "numjobs": "1"},
+    "job_runtime": 1000,
+    "read": {"io_bytes": 0, "bw_bytes": 0, "iops": 0, "runtime": 0},
+    "write": {
+      "io_bytes": 104857600,
+      "bw_bytes": 104857600,
+      "iops": 100,
+      "runtime": 1000,
+      "clat_ns": {"mean": 1000000, "N": 100, "percentile": {"99.000000": 1000000}}
+    }
+  }]
+}
+EOF
+
 cat >"$artifact_dir/diagnostics/stats-fio-test-before.txt" <<'EOF'
 2026-06-14T00:00:00+00:00
 
@@ -99,3 +121,26 @@ grep -Fq 'GET=5, PUT=8' "$report"
 grep -Fq 'stage=10 ops/100.0 MiB/200.0 ms' "$report"
 grep -Fq 'flush_wait=3 ops/0.60s/6 slices' "$report"
 grep -Fq 'upload_batch=10 avg=10.0 MiB blocks=2.00/batch partial_tail=0.30' "$report"
+grep -Fq '| fio-test | 1.000 s | 1.000 s | 2.000 s | 0.00 MiB/s | 50.00 MiB/s | 50.00 MiB/s |' "$report"
+grep -Fq $'fio-test\t1.000000\t1.000000\t2.000000\t0\t104857600\t0.000000\t50.000000\t50.000000' \
+    "$artifact_dir/fully-drained-throughput.tsv"
+
+juicefs_artifact_dir="$tmpdir/juicefs-artifact"
+mkdir -p "$juicefs_artifact_dir/results"
+cp "$artifact_dir/perf-summary.tsv" "$juicefs_artifact_dir/perf-summary.tsv"
+cp "$artifact_dir/results/fio-test.json" "$juicefs_artifact_dir/results/fio-test.json"
+cat >"$juicefs_artifact_dir/post-write-drain.tsv" <<'EOF'
+tool	post_write_drain_s	stage_blocks	stage_bytes	uploading	put_bytes	get_bytes
+fio-test	1	0	0	0	0	0
+EOF
+
+(
+    source <(sed '$d' "$REPO_DIR/docker/compose-xfstests/run_juicefs_perf_in_container.sh")
+    artifact_dir="$juicefs_artifact_dir"
+    generate_perf_report
+)
+
+grep -Fq '| fio-test | 1.000 s | 1.000 s | 2.000 s | 0.00 MiB/s | 50.00 MiB/s | 50.00 MiB/s |' \
+    "$juicefs_artifact_dir/report.md"
+grep -Fq $'fio-test\t1.000000\t1.000000\t2.000000\t0\t104857600\t0.000000\t50.000000\t50.000000' \
+    "$juicefs_artifact_dir/fully-drained-throughput.tsv"
