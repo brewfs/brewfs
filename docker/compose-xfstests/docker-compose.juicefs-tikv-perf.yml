@@ -1,7 +1,7 @@
 services:
   pd:
     image: pingcap/pd:v8.5.0
-    container_name: pd-brewfs-perf-tikv
+    container_name: pd-juicefs-perf-tikv
     command:
       - --name=pd
       - --data-dir=/data/pd
@@ -12,15 +12,15 @@ services:
       - --initial-cluster=pd=http://pd:2380
       - --log-level=warn
     ports:
-      - "${TIKV_PD_HOST_BIND:-127.0.0.1}:${TIKV_PD_HOST_PORT:-12379}:2379"
+      - "${JUICEFS_TIKV_PD_HOST_BIND:-127.0.0.1}:${JUICEFS_TIKV_PD_HOST_PORT:-22379}:2379"
     volumes:
-      - pd-data-perf-tikv:/data/pd
+      - pd-data-juicefs-perf-tikv:/data/pd
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
 
   tikv:
     image: pingcap/tikv:v8.5.0
-    container_name: tikv-brewfs-perf
+    container_name: tikv-juicefs-perf
     depends_on:
       pd:
         condition: service_started
@@ -32,11 +32,11 @@ services:
       - --data-dir=/data/tikv
       - --log-level=warn
     ports:
-      - "${TIKV_HOST_BIND:-127.0.0.1}:${TIKV_STATUS_HOST_PORT:-20180}:20180"
+      - "${JUICEFS_TIKV_HOST_BIND:-127.0.0.1}:${JUICEFS_TIKV_STATUS_HOST_PORT:-30180}:20180"
     volumes:
-      - tikv-data-perf:/data/tikv
+      - tikv-data-juicefs-perf:/data/tikv
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
     ulimits:
       nofile:
         soft: 1048576
@@ -56,7 +56,7 @@ services:
           ready_count=0
           while true; do
             body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
-            if echo "$$body" | grep -Eq "\"state_name\"[[:space:]]*:[[:space:]]*\"Up\""; then
+            if echo "$$body" | grep -Eq "\\\"state_name\\\"[[:space:]]*:[[:space:]]*\\\"Up\\\""; then
               ready_count=$$((ready_count + 1))
               [ "$$ready_count" -ge 3 ] && exit 0
             else
@@ -66,11 +66,11 @@ services:
           done
         '
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
 
   rustfs:
     image: rustfs/rustfs:latest
-    container_name: rustfs-brewfs-perf-tikv
+    container_name: rustfs-juicefs-perf-tikv
     expose:
       - "9000"
       - "9001"
@@ -94,9 +94,9 @@ services:
       - ${RUSTFS_SECRET_KEY:-rustfsadmin}
       - /data
     volumes:
-      - rustfs-data-perf-tikv:/data
+      - rustfs-data-juicefs-perf-tikv:/data
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
 
   rustfs-init:
     image: amazon/aws-cli:latest
@@ -121,34 +121,21 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
 
   perf:
-    image: brewfs-xfstests-perf:local
+    image: juicefs-xfstests-perf:local
     build:
       context: ../..
-      dockerfile: docker/compose-xfstests/Dockerfile
+      dockerfile: docker/compose-xfstests/Dockerfile.juicefs-perf
     depends_on:
       tikv-ready:
         condition: service_completed_successfully
     environment:
-      BREWFS_META_BACKEND: tikv
-      BREWFS_META_TIKV_PD_ENDPOINTS: pd:2379
-      BREWFS_META_TIKV_NAMESPACE: ${BREWFS_META_TIKV_NAMESPACE:-brewfs}
-      BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
-      BREWFS_DATA_DIR: /var/lib/brewfs/data
-      BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
-      BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
-      BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
-      BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
-      BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
-      BREWFS_LOG_FILE: /artifacts/brewfs.log
-      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
-      BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
-      BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
-      BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
-      BREWFS_NOFILE_LIMIT: ${BREWFS_NOFILE_LIMIT:-1048576}
-      BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      JFS_META_URL: tikv://pd:2379/juicefs
+      JFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      JFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      JFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
       BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
       BREWFS_ARTIFACT_ROOT: /artifacts
       XFSTESTS_DIR: /opt/xfstests-dev
@@ -157,7 +144,6 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
       RUST_LOG: ${RUST_LOG:-error}
-    entrypoint: ["/usr/bin/tini", "--", "bash", "/usr/local/bin/run_perf_in_container.sh"]
     privileged: true
     devices:
       - /dev/fuse:/dev/fuse
@@ -165,23 +151,18 @@ services:
       - SYS_ADMIN
     security_opt:
       - apparmor=unconfined
-    ulimits:
-      nofile:
-        soft: 1048576
-        hard: 1048576
     volumes:
       - ./artifacts:/artifacts
-      - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
-      - brewfs-state-perf-tikv:/var/lib/brewfs
+      - ${JUICEFS_TIKV_PERF_STATE_MOUNT:-juicefs-state-perf-tikv}:/var/lib/juicefs
     networks:
-      - brewfs-xfstests
+      - juicefs-tikv-xfstests
 
 networks:
-  brewfs-xfstests:
+  juicefs-tikv-xfstests:
     driver: bridge
 
 volumes:
-  brewfs-state-perf-tikv:
-  pd-data-perf-tikv:
-  tikv-data-perf:
-  rustfs-data-perf-tikv:
+  pd-data-juicefs-perf-tikv:
+  tikv-data-juicefs-perf:
+  rustfs-data-juicefs-perf-tikv:
+  juicefs-state-perf-tikv:

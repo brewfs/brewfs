@@ -4,7 +4,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.juicefs-perf.yml"
+JUICEFS_META_BACKEND_VALUE="${JUICEFS_META_BACKEND:-redis}"
+case "$JUICEFS_META_BACKEND_VALUE" in
+    redis)
+        COMPOSE_FILE="$SCRIPT_DIR/docker-compose.juicefs-perf.yml"
+        ;;
+    tikv)
+        COMPOSE_FILE="$SCRIPT_DIR/docker-compose.juicefs-tikv-perf.yml"
+        ;;
+    *)
+        echo "[ERROR] JUICEFS_META_BACKEND must be redis or tikv, got: $JUICEFS_META_BACKEND_VALUE" >&2
+        exit 1
+        ;;
+esac
 ARTIFACTS_DIR="$SCRIPT_DIR/artifacts"
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -18,7 +30,7 @@ usage() {
 
 说明:
   - 使用 docker compose 在容器内运行 JuiceFS + xfstests 压力工具
-  - 元数据库为 redis，对象存储为 rustfs
+  - 元数据库由 JUICEFS_META_BACKEND 选择（redis，或 tikv），对象存储为 rustfs
   - 测试产物输出到: $ARTIFACTS_DIR/perf-run-*
 
 选项:
@@ -150,7 +162,12 @@ fi
 mkdir -p "$ARTIFACTS_DIR"
 
 preclean_ports() {
-    local -a ports=(16379 19000 19001)
+    local -a ports
+    if [[ "$JUICEFS_META_BACKEND_VALUE" == "tikv" ]]; then
+        ports=("${JUICEFS_TIKV_PD_HOST_PORT:-22379}" "${JUICEFS_TIKV_STATUS_HOST_PORT:-30180}" 19000 19001)
+    else
+        ports=(16379 19000 19001)
+    fi
     for port in "${ports[@]}"; do
         local pid
         pid=$(ss -tlnp 2>/dev/null | awk -v p=":${port}\$" '$0 ~ p {sub(/.*pid=/, ""); sub(/,.*/, ""); print $0}') || true
@@ -214,9 +231,17 @@ runner_warning_summary="$host_artifact_dir/runner-warning-summary.tsv"
 export BREWFS_ARTIFACT_DIR="/artifacts/juicefs-perf-run-${ts}"
 export BREWFS_S3_BUCKET="${BREWFS_S3_BUCKET:-brewfs-data}"
 
-services=(redis rustfs)
+if [[ "$JUICEFS_META_BACKEND_VALUE" == "tikv" ]]; then
+    services=(pd tikv tikv-ready rustfs)
+else
+    services=(redis rustfs)
+fi
 info "启动依赖服务: ${services[*]}"
 docker compose -f "$COMPOSE_FILE" up -d "${services[@]}"
+if [[ "$JUICEFS_META_BACKEND_VALUE" == "tikv" ]]; then
+    info "等待 TiKV 集群完成引导"
+    docker compose -f "$COMPOSE_FILE" wait tikv-ready
+fi
 
 info "初始化 rustfs bucket（一次性容器）"
 docker compose -f "$COMPOSE_FILE" run --rm rustfs-init

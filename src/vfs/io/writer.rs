@@ -200,7 +200,7 @@ fn looks_retryable_backend_error(err: &impl Display) -> bool {
 
 fn should_retry_meta_write(err: &MetaError) -> bool {
     match err {
-        MetaError::ContinueRetry(_) => true,
+        MetaError::ContinueRetry(_) | MetaError::MaxRetriesExceeded => true,
         MetaError::Database(err) => looks_retryable_backend_error(err),
         MetaError::Io(err) => matches!(
             err.kind(),
@@ -6552,6 +6552,7 @@ mod tests {
         assert!(should_retry_meta_write(&MetaError::ContinueRetry(
             RetryReason::LockContention
         )));
+        assert!(should_retry_meta_write(&MetaError::MaxRetriesExceeded));
 
         // Non-retryable errors.
         assert!(!should_retry_meta_write(&MetaError::NotFound(1)));
