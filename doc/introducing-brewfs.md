@@ -13,6 +13,32 @@ backend, and stores file data in S3-compatible object storage or on local
 storage. The result is a practical bridge between ordinary filesystem tools
 and modern storage infrastructure.
 
+## BrewFS compared with JuiceFS
+
+Before looking at the architecture, here is the current performance snapshot.
+In a matched local comparison using Redis metadata, RustFS S3-compatible
+storage, disabled compression, and explicit writeback drain accounting, BrewFS
+recorded a 1.74x data-plane geometric mean and a 1.38x geometric mean across all
+twelve reported data and metadata operations compared with JuiceFS.
+
+![BrewFS performance relative to JuiceFS](assets/performance-vs-juicefs.svg)
+
+| Workload | BrewFS | JuiceFS | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| Fully drained large write | **327.9 MiB/s** | 103.1 MiB/s | **3.18x** |
+| Random read | **3.75 GiB/s** | 1.21 GiB/s | **3.10x** |
+| Fully drained mixed I/O | **278.0 MiB/s** | 74.2 MiB/s | **3.75x** |
+| Readdir | **34,480.7 ops/s** | 17,580.2 ops/s | **1.96x** |
+| Open | 5,018.6 ops/s | **12,027.2 ops/s** | 0.42x |
+
+The table deliberately includes `open`, where JuiceFS is faster. Write results
+use actual bytes divided by active runtime plus post-write drain, so queued
+uploads are not presented as completed throughput. This is a reproducible local
+engineering snapshot rather than a claim about every machine or deployment;
+the complete environment, all twelve operations, latency data, artifacts, and
+commands are documented in the
+[BrewFS performance report](https://github.com/brewfs/brewfs#performance-vs-juicefs).
+
 BrewFS is independent rather than a fork of an existing filesystem. Its stack,
 from the FUSE request path and VFS to metadata transactions, caching, and object
 adapters, is implemented in Rust.
