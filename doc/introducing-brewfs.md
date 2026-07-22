@@ -23,20 +23,50 @@ twelve reported data and metadata operations compared with JuiceFS.
 
 ![BrewFS performance relative to JuiceFS](assets/performance-vs-juicefs.svg)
 
+### Application-visible throughput
+
+This first table reports fio bandwidth while each workload is actively issuing
+I/O. Mixed I/O reports its read and write components separately.
+
 | Workload | BrewFS | JuiceFS | BrewFS / JuiceFS |
 | --- | ---: | ---: | ---: |
-| Fully drained large write | **327.9 MiB/s** | 103.1 MiB/s | **3.18x** |
+| Large write | 912.3 MiB/s | **1.07 GiB/s** | 0.83x |
+| Large read | 743.7 MiB/s | **936.9 MiB/s** | 0.79x |
+| Sequential read | **1.57 GiB/s** | 1.04 GiB/s | **1.52x** |
+| Sequential write | 146.5 MiB/s | **280.6 MiB/s** | 0.52x |
 | Random read | **3.75 GiB/s** | 1.21 GiB/s | **3.10x** |
-| Fully drained mixed I/O | **278.0 MiB/s** | 74.2 MiB/s | **3.75x** |
-| Readdir | **34,480.7 ops/s** | 17,580.2 ops/s | **1.96x** |
-| Open | 5,018.6 ops/s | **12,027.2 ops/s** | 0.42x |
+| Random write | 127.9 MiB/s | **312.9 MiB/s** | 0.41x |
+| Mixed random read | **237.7 MiB/s** | 119.3 MiB/s | **1.99x** |
+| Mixed random write | **108.1 MiB/s** | 55.7 MiB/s | **1.94x** |
 
-The table deliberately includes `open`, where JuiceFS is faster. Write results
-use actual bytes divided by active runtime plus post-write drain, so queued
-uploads are not presented as completed throughput. This is a reproducible local
-engineering snapshot rather than a claim about every machine or deployment;
-the complete environment, all twelve operations, latency data, artifacts, and
-commands are documented in the
+### Fully drained write throughput
+
+Foreground bandwidth alone can reward a filesystem for leaving more work in
+its writeback queue. These results divide the actual bytes written by active
+runtime plus post-write drain time. Mixed I/O is counted once using total read
+and write bytes.
+
+| Workload | BrewFS | JuiceFS | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| Large write | **327.9 MiB/s** | 103.1 MiB/s | **3.18x** |
+| Sequential write | **103.4 MiB/s** | 99.7 MiB/s | **1.04x** |
+| Random write | **104.4 MiB/s** | 97.8 MiB/s | **1.07x** |
+| Mixed random I/O total | **278.0 MiB/s** | 74.2 MiB/s | **3.75x** |
+
+### Metadata throughput
+
+| Operation | BrewFS | JuiceFS | BrewFS / JuiceFS |
+| --- | ---: | ---: | ---: |
+| Create | **1,054.5 ops/s** | 651.5 ops/s | **1.62x** |
+| Open | 5,018.6 ops/s | **12,027.2 ops/s** | 0.42x |
+| Stat | **686,751.8 ops/s** | 683,792.0 ops/s | 1.00x |
+| Readdir | **34,480.7 ops/s** | 17,580.2 ops/s | **1.96x** |
+| Rename | 965.7 ops/s | **1,306.8 ops/s** | 0.74x |
+
+The tables deliberately retain every measured operation, including the cases
+where JuiceFS is faster. This is a reproducible local engineering snapshot
+rather than a claim about every machine or deployment; the complete
+environment, latency data, artifacts, and commands are documented in the
 [BrewFS performance report](https://github.com/brewfs/brewfs#performance-vs-juicefs).
 
 BrewFS is independent rather than a fork of an existing filesystem. Its stack,
