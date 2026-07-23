@@ -35,7 +35,7 @@ usage() {
 
 选项:
   --cached-read-throughput-profile
-                             启用 JuiceFS 热缓存并发/随机读 profile（同步上传, buffer=4096MiB, cache=8192MiB, cache-large-write, readahead=1024MiB, prefetch=4, open-cache=1s/65536）；顺序流式读应使用默认 profile
+                             启用 JuiceFS 稳定缓存读 profile（同步上传, buffer=4096MiB, disk cache=8192MiB, cache-large-write, uploads=4, readahead=1024MiB, prefetch=4, prefill drain+remount, open-cache=1s/65536）；memory cache 仅用于 focused 热读诊断
   --metadata-throughput-profile
                              启用 JuiceFS metadata profile（open-cache=1s/65536, backup-meta=0, no-usage-report）
   --writeback-throughput-profile
@@ -126,7 +126,7 @@ if [[ "$CACHED_READ_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_BUFFER_SIZE_MIB="${JFS_BUFFER_SIZE_MIB:-4096}"
     export JFS_CACHE_SIZE_MIB="${JFS_CACHE_SIZE_MIB:-8192}"
     export JFS_CACHE_LARGE_WRITE="${JFS_CACHE_LARGE_WRITE:-true}"
-    export JFS_MAX_UPLOADS="${JFS_MAX_UPLOADS:-20}"
+    export JFS_MAX_UPLOADS="${JFS_MAX_UPLOADS:-4}"
     export JFS_MAX_READAHEAD_MIB="${JFS_MAX_READAHEAD_MIB:-1024}"
     export JFS_PREFETCH="${JFS_PREFETCH:-4}"
     export JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"
@@ -134,6 +134,8 @@ if [[ "$CACHED_READ_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_BACKUP_META="${JFS_BACKUP_META:-0}"
     export JFS_NO_USAGE_REPORT="${JFS_NO_USAGE_REPORT:-true}"
     export JFS_CACHE_DIR="${JFS_CACHE_DIR:-/var/lib/juicefs/cache}"
+    export PERF_FIO_PREFILL_DRAIN="${PERF_FIO_PREFILL_DRAIN:-true}"
+    export PERF_FIO_PREFILL_REMOUNT="${PERF_FIO_PREFILL_REMOUNT:-true}"
 fi
 
 if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
