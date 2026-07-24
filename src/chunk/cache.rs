@@ -577,36 +577,9 @@ impl DiskStorage {
         self.write_sem.clone()
     }
 
-    fn touch_atime(filepath: &Path) {
-        // Touch atime so LRU eviction keeps hot data longer.
-        // Uses futimens with UTIME_NOW on atime only (mtime unchanged).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let _ = std::fs::metadata(filepath).map(|m| {
-                let mtime = libc::timespec {
-                    tv_sec: m.mtime(),
-                    tv_nsec: m.mtime_nsec(),
-                };
-                let times = [
-                    libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: libc::UTIME_NOW,
-                    },
-                    mtime,
-                ];
-                let c_path = std::ffi::CString::new(filepath.as_os_str().as_encoded_bytes()).ok();
-                if let Some(p) = c_path {
-                    unsafe {
-                        // SAFETY: valid null-terminated path and timespec array.
-                        libc::utimensat(libc::AT_FDCWD, p.as_ptr(), times.as_ptr(), 0);
-                    }
-                }
-            });
-        }
-    }
-
-    /// Evict oldest files (by access time) to free at least `needed_bytes`
+    /// Evict oldest files (by the host filesystem's relatime) to free at least
+    /// `needed_bytes`. Cache reads intentionally do not force an atime update:
+    /// doing so adds metadata and utimensat syscalls to every block hit.
     async fn evict_lru(&self, needed_bytes: u64) {
         let target = self.max_bytes.saturating_sub(needed_bytes);
         let current = self.bytes_used.load(Ordering::Relaxed);
@@ -678,10 +651,7 @@ impl DiskStorage {
 
         // Decode with CRC32C verification (handles legacy unencoded files too)
         match super::cache_integrity::decode_bytes(raw) {
-            Some(data) => {
-                Self::touch_atime(&filepath);
-                Ok(data)
-            }
+            Some(data) => Ok(data),
             None => {
                 // Corrupted — delete the file and return error
                 let _ = tokio::fs::remove_file(&filepath).await;
@@ -740,6 +710,7 @@ impl DiskStorage {
             }
             Err(e) => return Err(e.into()),
         };
+
         let file_len = file.metadata().await?.len();
 
         let mut header = [0u8; super::cache_integrity::HEADER_LEN];
@@ -748,7 +719,6 @@ impl DiskStorage {
             || header[..4] != super::cache_integrity::MAGIC
         {
             let read_len = Self::read_legacy_range(&mut file, file_len, offset, buf).await?;
-            Self::touch_atime(&filepath);
             return Ok(read_len);
         }
 
@@ -766,14 +736,12 @@ impl DiskStorage {
         }
 
         if offset >= data_len as u64 {
-            Self::touch_atime(&filepath);
             return Ok(0);
         }
 
         let offset = offset as usize;
         let copy_len = buf.len().min(data_len - offset);
         if copy_len == 0 {
-            Self::touch_atime(&filepath);
             return Ok(0);
         }
 
@@ -821,7 +789,6 @@ impl DiskStorage {
 
         let local_offset = offset - aligned_start;
         buf[..copy_len].copy_from_slice(&aligned[local_offset..local_offset + copy_len]);
-        Self::touch_atime(&filepath);
         Ok(copy_len)
     }
 
@@ -1852,6 +1819,8 @@ pub struct ChunksCache {
 
     /// Keys currently being persisted to disk by opportunistic inserts.
     disk_insert_inflight: Arc<DashSet<String>>,
+    /// Keys currently being promoted from ranged disk hits into the hot tier.
+    range_promotion_inflight: Arc<DashSet<String>>,
 
     /// Intelligent promotion policy engine with adaptive thresholding
     policy: Policy,
@@ -1942,6 +1911,7 @@ impl ChunksCache {
             write_hot_cache: RecentWriteHotCache::new(max_write_hot_bytes),
             cold_cache: cold_cache_builder.build(),
             disk_insert_inflight: Arc::new(DashSet::new()),
+            range_promotion_inflight: Arc::new(DashSet::new()),
             policy,
             config,
             cache_hits: Arc::new(AtomicU64::new(0)),
@@ -2091,6 +2061,18 @@ impl ChunksCache {
         );
         self.policy.record_access(key.clone()).await;
         self.cold_cache.insert(key.clone(), ()).await;
+        if self.policy.should_promote(key.clone()).await
+            && self.range_promotion_inflight.insert(key.clone())
+        {
+            if self.hot_cache.get(key).await.is_none()
+                && let Ok(Some(value)) = self.disk_storage.load_with_health(key).await
+                && !value.is_empty()
+            {
+                debug!("Promoting repeatedly ranged disk key to hot cache: {}", key);
+                self.insert_hot(key, value).await;
+            }
+            self.range_promotion_inflight.remove(key);
+        }
         self.update_utilization_metrics();
         Some(read_len)
     }
@@ -2165,7 +2147,15 @@ impl ChunksCache {
         // Insert into hot memory cache (fast path for subsequent reads).
         // Bytes::clone() is an Arc bump — zero-copy.
         self.insert_hot(&key, data.clone()).await;
+        self.persist_opportunistic(key, data).await;
+    }
 
+    pub async fn insert_recent_write_opportunistic(&self, key: String, data: bytes::Bytes) {
+        self.insert_recent_write_hot(&key, data.clone()).await;
+        self.persist_opportunistic(key, data).await;
+    }
+
+    async fn persist_opportunistic(&self, key: String, data: bytes::Bytes) {
         // Persist to disk so future cold starts / hot cache evictions avoid
         // S3, but keep this genuinely opportunistic. If local cache I/O is
         // saturated, skip the disk write instead of queuing more background
@@ -2798,6 +2788,40 @@ mod tests {
             cache.hot_cache.get(&key).await.is_some(),
             "disk cache hits should warm the hot cache while memory budget is available"
         );
+    }
+
+    #[tokio::test]
+    async fn repeated_disk_range_hits_promote_to_hot_cache() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            4 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "repeated-disk-range-promotion-key".to_string();
+        let data = vec![42u8; 128 * 1024];
+        cache.disk_storage.store(&key, &data).await.unwrap();
+
+        let mut out = vec![0u8; 32 * 1024];
+        for _ in 0..64 {
+            assert_eq!(
+                cache.get_range_into(&key, 0, &mut out).await,
+                Some(out.len())
+            );
+            if cache.hot_cache.get(&key).await.is_some() {
+                break;
+            }
+        }
+
+        cache.hot_cache.run_pending_tasks().await;
+        assert!(
+            cache.hot_cache.get(&key).await.is_some(),
+            "repeated disk range hits should warm the full block into the hot tier"
+        );
+        assert_eq!(out, data[..out.len()]);
     }
 
     #[tokio::test]

@@ -29,6 +29,10 @@ usage() {
 选项:
   --s3                       使用 rustfs 作为对象存储（默认）
   --local-fs                 改为使用本地目录作为对象存储
+  --metadata-throughput-profile
+                             启用 single-client metadata profile（允许 non-append 写句柄复用 1s open attr cache）
+  --writeback-throughput-profile
+                             启用 S3 writeback 吞吐 profile（显式缓存预算、上传/FUSE 并发、open cache 和严格 drain）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --namespace <NAME>         TiKV metadata key namespace，默认: brewfs
   --brewfs-bench           额外运行一次宿主机 cargo bench --bench brewfs_bench
@@ -42,6 +46,7 @@ usage() {
 可通过环境变量覆盖各工具参数:
   PERF_DIRSTRESS_ARGS PERF_DIRPERF_ARGS PERF_METAPERF_ARGS PERF_LOOPTEST_ARGS
   PERF_FIO_ARGS PERF_FIO_RUNTIME PERF_FIO_SIZE PERF_FIO_BS PERF_FIO_NUMJOBS
+  PERF_FIO_BIGREAD_REPEATS=1|3|5 PERF_FIO_BIGREAD_COOLDOWN_SECS=10 PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES=true
   PERF_FIO_SEQREAD_ARGS PERF_FIO_SEQWRITE_ARGS PERF_FIO_RANDREAD_ARGS PERF_FIO_RANDWRITE_ARGS PERF_FIO_RANDRW_ARGS
   PERF_LOG_TO_CONSOLE=true 可恢复压测工具日志输出到终端（默认关闭）
 EOF
@@ -60,6 +65,8 @@ require_value() {
 KEEP=false
 USE_S3=true
 RUN_BREWFS_BENCH=false
+METADATA_THROUGHPUT_PROFILE=false
+WRITEBACK_THROUGHPUT_PROFILE=false
 PERF_TOOLS_VALUE="fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
 BENCH_ARGS_VALUE=""
 TIKV_NAMESPACE_VALUE="${BREWFS_META_TIKV_NAMESPACE:-brewfs}"
@@ -72,6 +79,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --local-fs)
             USE_S3=false
+            shift
+            ;;
+        --metadata-throughput-profile)
+            METADATA_THROUGHPUT_PROFILE=true
+            shift
+            ;;
+        --writeback-throughput-profile)
+            WRITEBACK_THROUGHPUT_PROFILE=true
             shift
             ;;
         --tools)
@@ -106,6 +121,52 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$METADATA_THROUGHPUT_PROFILE" == true ]]; then
+    export BREWFS_METADATA_OPEN_CACHE_TTL_MS="${BREWFS_METADATA_OPEN_CACHE_TTL_MS:-1000}"
+    export BREWFS_METADATA_OPEN_CACHE_CAPACITY="${BREWFS_METADATA_OPEN_CACHE_CAPACITY:-65536}"
+    export BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE="${BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE:-true}"
+fi
+
+if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
+    export BREWFS_WRITEBACK_MODE="${BREWFS_WRITEBACK_MODE:-commit_before_upload}"
+    export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
+    # Leave enough host memory for TiKV, PD, and RustFS. The Redis profile can
+    # use a larger in-process cache, but that budget causes multi-minute FUSE
+    # close tails when the TiKV stack competes for memory and local I/O.
+    export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-2147483648}"
+    export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-2147483648}"
+    # Keep the 4GiB fio prefill in the persistent SSD cache across remount.
+    export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-8589934592}"
+    export BREWFS_WRITE_SSD_BYTES="${BREWFS_WRITE_SSD_BYTES:-4294967296}"
+    export BREWFS_MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-6442450944}"
+    export BREWFS_S3_MAX_CONCURRENCY="${BREWFS_S3_MAX_CONCURRENCY:-8}"
+    export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY="${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-4}"
+    export BREWFS_UPLOAD_CONCURRENCY="${BREWFS_UPLOAD_CONCURRENCY:-16}"
+    export BREWFS_DIRTY_SLICE_TARGET_SIZE="${BREWFS_DIRTY_SLICE_TARGET_SIZE:-67108864}"
+    export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES:-1073741824}"
+    export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES="${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-2147483648}"
+    export BREWFS_WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
+    export BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT="${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-false}"
+    export BREWFS_CACHED_BLOCK_ASSEMBLER="${BREWFS_CACHED_BLOCK_ASSEMBLER:-true}"
+    export BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-true}"
+    export BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-true}"
+    export BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-none}"
+    export BREWFS_VERIFY_CACHE_CHECKSUM="${BREWFS_VERIFY_CACHE_CHECKSUM:-full}"
+    export BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-8}"
+    export BREWFS_FUSE_MAX_BACKGROUND="${BREWFS_FUSE_MAX_BACKGROUND:-256}"
+    # Match the Redis read-throughput profile. This bypasses the kernel page
+    # cache for read-only handles while preserving mmap support on other mounts.
+    export BREWFS_FUSE_READ_DIRECT_IO="${BREWFS_FUSE_READ_DIRECT_IO:-1}"
+    export BREWFS_METADATA_OPEN_CACHE_TTL_MS="${BREWFS_METADATA_OPEN_CACHE_TTL_MS:-1000}"
+    export BREWFS_METADATA_OPEN_CACHE_CAPACITY="${BREWFS_METADATA_OPEN_CACHE_CAPACITY:-65536}"
+    export PERF_FIO_PREFILL_DRAIN="${PERF_FIO_PREFILL_DRAIN:-true}"
+    export PERF_FIO_PREFILL_REMOUNT="${PERF_FIO_PREFILL_REMOUNT:-true}"
+    # Preserve BrewFS's persistent disk block cache across the prefill remount.
+    export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"
+    export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
+    export PERF_METADATA_POST_TOOL_DRAIN="${PERF_METADATA_POST_TOOL_DRAIN:-true}"
+fi
 
 mkdir -p "$ARTIFACTS_DIR"
 
@@ -209,6 +270,8 @@ if [[ "$USE_S3" == true ]]; then
 fi
 info "启动依赖服务: ${services[*]}"
 docker compose -f "$COMPOSE_FILE" up -d "${services[@]}"
+info "等待 TiKV 集群完成引导"
+docker compose -f "$COMPOSE_FILE" wait tikv-ready
 
 if [[ "$USE_S3" == true ]]; then
     info "初始化 rustfs bucket（一次性容器）"
@@ -248,14 +311,61 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_IODEPTH \
     -e PERF_FIO_DIRECT \
     -e PERF_FIO_RUNTIME \
+    -e PERF_FIO_BIGREAD_REPEATS \
+    -e PERF_FIO_BIGREAD_WARMUP_PASSES \
+    -e PERF_FIO_BIGREAD_COOLDOWN_SECS \
+    -e PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES \
+    -e PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS \
+    -e PERF_FIO_PREFILL_DRAIN \
+    -e PERF_FIO_PREFILL_REMOUNT \
+    -e PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS \
+    -e PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS \
+    -e PERF_FIO_PREFILL_DRAIN_PENDING_BYTES \
+    -e PERF_FIO_POST_WRITE_DRAIN \
+    -e PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS \
+    -e PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS \
+    -e PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES \
+    -e PERF_FIO_COLD_READ_CLEAR_CACHE \
+    -e PERF_FIO_DROP_CACHES \
+    -e PERF_METADATA_POST_TOOL_DRAIN \
+    -e PERF_METADATA_POST_TOOL_DRAIN_TIMEOUT_SECS \
+    -e PERF_METADATA_POST_TOOL_DRAIN_INTERVAL_SECS \
+    -e PERF_METADATA_POST_TOOL_DRAIN_PENDING_BYTES \
     -e PERF_FUSE_OPS_LOG \
     -e BREWFS_FUSE_OP_LOG \
     -e BREWFS_FUSE_WORKERS \
     -e BREWFS_FUSE_MAX_BACKGROUND \
+    -e BREWFS_FUSE_READ_DIRECT_IO \
     -e BREWFS_NOFILE_LIMIT \
+    -e BREWFS_WRITEBACK_MODE \
     -e BREWFS_S3_PART_SIZE \
     -e BREWFS_S3_MAX_CONCURRENCY \
     -e BREWFS_COMPRESSION \
+    -e BREWFS_CACHE_ROOT \
+    -e BREWFS_READ_MEMORY_BYTES \
+    -e BREWFS_READ_SSD_BYTES \
+    -e BREWFS_WRITE_MEMORY_BYTES \
+    -e BREWFS_WRITE_SSD_BYTES \
+    -e BREWFS_MEMORY_BUDGET_BYTES \
+    -e BREWFS_DIRTY_SLICE_TARGET_SIZE \
+    -e BREWFS_DIRTY_SLICE_MAX_AGE_MS \
+    -e BREWFS_UPLOAD_CONCURRENCY \
+    -e BREWFS_WRITEBACK_UPLOAD_CONCURRENCY \
+    -e BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES \
+    -e BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES \
+    -e BREWFS_WRITEBACK_PERSIST_SYNC \
+    -e BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT \
+    -e BREWFS_CACHED_BLOCK_ASSEMBLER \
+    -e BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD \
+    -e BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD \
+    -e BREWFS_VERIFY_CACHE_CHECKSUM \
+    -e BREWFS_PREFETCH_ENABLED \
+    -e BREWFS_PREFETCH_MAX_BYTES \
+    -e BREWFS_PREFETCH_CONCURRENCY \
+    -e BREWFS_RANGE_BACKGROUND_PREFETCH \
+    -e BREWFS_METADATA_OPEN_CACHE_TTL_MS \
+    -e BREWFS_METADATA_OPEN_CACHE_CAPACITY \
+    -e BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE \
     -e BREWFS_VFS_TIMING \
     -e PERF_LOG_TO_CONSOLE \
     perf

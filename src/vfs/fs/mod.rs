@@ -469,12 +469,19 @@ where
         ) {
             let cache_root = config.cache.cache_root.join("writeback");
             let _ = std::fs::create_dir_all(&cache_root);
-            let wb = Arc::new(
+            let wb = Arc::new(if config.cache.persist_write_cache_after_upload {
+                crate::vfs::cache::write_back::FsWriteBackCache::new_with_sync_and_read_cache(
+                    cache_root,
+                    config.cache.writeback_persist_sync,
+                    config.cache.cache_root.join("chunks"),
+                    u64::from(config.write.layout.block_size),
+                )
+            } else {
                 crate::vfs::cache::write_back::FsWriteBackCache::new_with_sync(
                     cache_root,
                     config.cache.writeback_persist_sync,
-                ),
-            );
+                )
+            });
 
             // Crash recovery is only needed when metadata can be committed
             // before object upload completes.

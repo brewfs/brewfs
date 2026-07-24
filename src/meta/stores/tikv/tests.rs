@@ -169,6 +169,25 @@ fn stored_node_decodes_legacy_json_defaults() {
 }
 
 #[test]
+fn relatime_updates_after_metadata_change_or_one_day() {
+    let mut node = TiKvMetaStore::root_node();
+    node.atime = 30;
+    node.mtime = 20;
+    node.ctime = 20;
+
+    assert!(!TiKvMetaStore::atime_needs_update(&node, 40));
+
+    node.mtime = 30;
+    assert!(TiKvMetaStore::atime_needs_update(&node, 40));
+
+    node.mtime = 20;
+    assert!(TiKvMetaStore::atime_needs_update(
+        &node,
+        node.atime + RELATIME_MAX_AGE_NANOS
+    ));
+}
+
+#[test]
 fn link_parent_values_round_trip() {
     let parents = vec![
         StoredLinkParent {
@@ -468,6 +487,60 @@ async fn tikv_transactional_file_data_schema() {
 
     store.set_file_size(file, 64).await.unwrap();
     assert_eq!(store.stat(file).await.unwrap().unwrap().size, 64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
+async fn tikv_serializes_hot_inode_and_parent_transactions() {
+    let store = Arc::new(
+        TiKvMetaStore::from_config(integration_config("hot-inode"))
+            .await
+            .expect("tikv store should connect"),
+    );
+    store.initialize().await.unwrap();
+    let root = store.root_ino();
+    let file = store
+        .create_file(root, "hot-file".to_string())
+        .await
+        .unwrap();
+
+    let mut writes = Vec::new();
+    for index in 0..64_u64 {
+        let store = Arc::clone(&store);
+        writes.push(tokio::spawn(async move {
+            let chunk_id = 10_000 + index;
+            let size = (index + 1) * 4096;
+            store
+                .write(
+                    file,
+                    chunk_id,
+                    SliceDesc {
+                        slice_id: 20_000 + index,
+                        chunk_id,
+                        offset: 0,
+                        length: 4096,
+                    },
+                    size,
+                )
+                .await
+        }));
+    }
+    for write in writes {
+        write.await.expect("write task should not panic").unwrap();
+    }
+    assert_eq!(store.stat(file).await.unwrap().unwrap().size, 64 * 4096);
+
+    let mut creates = Vec::new();
+    for index in 0..64_u64 {
+        let store = Arc::clone(&store);
+        creates.push(tokio::spawn(async move {
+            store.create_file(root, format!("entry-{index}")).await
+        }));
+    }
+    for create in creates {
+        create.await.expect("create task should not panic").unwrap();
+    }
+    assert_eq!(store.readdir(root).await.unwrap().len(), 65);
 }
 
 #[tokio::test]

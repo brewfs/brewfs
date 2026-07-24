@@ -24,6 +24,7 @@ jfs_buffer_size_mib="${JFS_BUFFER_SIZE_MIB:-}"
 jfs_cache_size_mib="${JFS_CACHE_SIZE_MIB:-}"
 jfs_cache_large_write="${JFS_CACHE_LARGE_WRITE:-false}"
 jfs_max_uploads="${JFS_MAX_UPLOADS:-}"
+jfs_max_stage_write="${JFS_MAX_STAGE_WRITE:-}"
 jfs_max_downloads="${JFS_MAX_DOWNLOADS:-}"
 jfs_max_readahead_mib="${JFS_MAX_READAHEAD_MIB:-}"
 jfs_prefetch="${JFS_PREFETCH:-}"
@@ -85,12 +86,18 @@ PERF_FIO_DROP_CACHES=${PERF_FIO_DROP_CACHES:-false}
 PERF_FIO_COLD_READ=${PERF_FIO_COLD_READ:-false}
 PERF_FIO_COLD_READ_DROP_CACHES=${PERF_FIO_COLD_READ_DROP_CACHES:-false}
 PERF_FIO_DIRECT_MATRIX=${PERF_FIO_DIRECT_MATRIX:-}
+PERF_FIO_BIGREAD_REPEATS=${PERF_FIO_BIGREAD_REPEATS:-1}
+PERF_FIO_BIGREAD_COOLDOWN_SECS=${PERF_FIO_BIGREAD_COOLDOWN_SECS:-10}
+PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES=${PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES:-true}
+PERF_FIO_BIGREAD_WARMUP_PASSES=${PERF_FIO_BIGREAD_WARMUP_PASSES:-0}
+PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS=${PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS:-true}
 JFS_COMPRESS=${jfs_compress}
 JFS_WRITEBACK=${jfs_writeback}
 JFS_BUFFER_SIZE_MIB=${jfs_buffer_size_mib}
 JFS_CACHE_SIZE_MIB=${jfs_cache_size_mib}
 JFS_CACHE_LARGE_WRITE=${jfs_cache_large_write}
 JFS_MAX_UPLOADS=${jfs_max_uploads}
+JFS_MAX_STAGE_WRITE=${jfs_max_stage_write}
 JFS_MAX_DOWNLOADS=${jfs_max_downloads}
 JFS_MAX_DOWNLOADS_EFFECTIVE=${max_downloads_effective}
 JFS_MAX_READAHEAD_MIB=${jfs_max_readahead_mib}
@@ -121,6 +128,7 @@ JFS_BUFFER_SIZE_MIB=${jfs_buffer_size_mib}
 JFS_CACHE_SIZE_MIB=${jfs_cache_size_mib}
 JFS_CACHE_LARGE_WRITE=${jfs_cache_large_write}
 JFS_MAX_UPLOADS=${jfs_max_uploads}
+JFS_MAX_STAGE_WRITE=${jfs_max_stage_write}
 JFS_MAX_DOWNLOADS=${jfs_max_downloads}
 JFS_MAX_DOWNLOADS_EFFECTIVE=${max_downloads_effective}
 JFS_MAX_READAHEAD_MIB=${jfs_max_readahead_mib}
@@ -299,6 +307,7 @@ mount_juicefs() {
         mount_args+=(--cache-large-write)
     fi
     [[ -n "$jfs_max_uploads" ]] && mount_args+=(--max-uploads="$jfs_max_uploads")
+    [[ -n "$jfs_max_stage_write" ]] && mount_args+=(--max-stage-write="$jfs_max_stage_write")
     if [[ -n "$jfs_max_downloads" ]]; then
         if juicefs_mount_supports "--max-downloads"; then
             mount_args+=(--max-downloads="$jfs_max_downloads")
@@ -792,6 +801,155 @@ run_fio_custom() {
     append_fio_log_summary "$json_path" "$artifact_dir/tools/fio.log" "fio"
 }
 
+evict_juicefs_local_cache_pages() {
+    local root="${jfs_cache_dir:-/var/lib/juicefs/cache}"
+    if [[ "$root" != /* || "$root" == "/" || ! -d "$root" ]]; then
+        err "无法定向驱逐 JuiceFS cache page cache，路径无效: $root"
+        return 1
+    fi
+
+    sync
+    python3 - "$root" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+files = 0
+bytes_advised = 0
+for directory, _, names in os.walk(root):
+    for name in names:
+        path = pathlib.Path(directory) / name
+        try:
+            metadata = path.stat()
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+            files += 1
+            bytes_advised += metadata.st_size
+        except FileNotFoundError:
+            continue
+print(
+    f"evicted local cache pages: root={root} files={files} "
+    f"bytes={bytes_advised}"
+)
+PY
+}
+
+run_repeated_bigread() {
+    local tool="$1"
+    local canonical_path="$2"
+    local warmup_count="$3"
+    local repeats="$4"
+    local cooldown_secs="$5"
+    shift 5
+    local -a fio_args=("$@")
+    local repeat_dir="$artifact_dir/results/${tool}-repeats"
+    local summary_path="$artifact_dir/${tool}-repeat-summary.json"
+    local -a repeat_paths=()
+    local i repeat_path lat_prefix
+
+    mkdir -p "$repeat_dir"
+    for ((i = 1; i <= warmup_count; i++)); do
+        info "热身 Large read: $tool 第 ${i}/${warmup_count} 轮（不计入结果）"
+        fio "${fio_args[@]}" \
+            --output-format=json \
+            --output="$repeat_dir/warmup-${i}.json" \
+            --write_lat_log="$repeat_dir/warmup-${i}_lat" \
+            --log_avg_msec=1000 || return $?
+    done
+
+    for ((i = 1; i <= repeats; i++)); do
+        repeat_path="$repeat_dir/run-${i}.json"
+        lat_prefix="$repeat_dir/run-${i}_lat"
+        repeat_paths+=("$repeat_path")
+        if truthy "${PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES:-true}"; then
+            evict_juicefs_local_cache_pages || return $?
+        fi
+        info "运行稳定 Large read: $tool 第 ${i}/${repeats} 轮"
+        fio "${fio_args[@]}" \
+            --output-format=json \
+            --output="$repeat_path" \
+            --write_lat_log="$lat_prefix" \
+            --log_avg_msec=1000 || return $?
+
+        if ((i < repeats)); then
+            info "Large read 轮间冷却 ${cooldown_secs}s"
+            sleep "$cooldown_secs"
+            if truthy "${PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS:-true}"; then
+                info "重挂载以清空进程内热缓存"
+                remount_juicefs_for_fio_profile "${tool}-repeat-$((i + 1))" || return $?
+            else
+                info "保持挂载，保留热本地缓存供下一轮测量"
+            fi
+        fi
+    done
+
+    python3 - "$canonical_path" "$summary_path" "$warmup_count" "${repeat_paths[@]}" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+
+canonical = pathlib.Path(sys.argv[1])
+summary_path = pathlib.Path(sys.argv[2])
+warmup_count = int(sys.argv[3])
+paths = [pathlib.Path(raw) for raw in sys.argv[4:]]
+runs = []
+for index, path in enumerate(paths, 1):
+    data = json.loads(path.read_text())
+    jobs = data.get("jobs", [])
+    if not jobs:
+        raise SystemExit(f"missing fio jobs in {path}")
+    read_bw = sum(float(job.get("read", {}).get("bw_bytes", 0)) for job in jobs)
+    write_bw = sum(float(job.get("write", {}).get("bw_bytes", 0)) for job in jobs)
+    runs.append({
+        "run": index,
+        "path": str(path),
+        "read_bw_bytes_per_sec": read_bw,
+        "write_bw_bytes_per_sec": write_bw,
+        "total_bw_bytes_per_sec": read_bw + write_bw,
+        "total_bw_mib_per_sec": (read_bw + write_bw) / (1024 * 1024),
+    })
+
+ordered = sorted(runs, key=lambda item: (item["total_bw_bytes_per_sec"], item["run"]))
+median = ordered[len(ordered) // 2]
+shutil.copyfile(median["path"], canonical)
+median_bw = median["total_bw_bytes_per_sec"]
+spread_pct = (
+    (ordered[-1]["total_bw_bytes_per_sec"] - ordered[0]["total_bw_bytes_per_sec"])
+    / median_bw
+    * 100
+    if median_bw
+    else 0
+)
+summary = {
+    "schema_version": 1,
+    "warmup_count": warmup_count,
+    "repeat_count": len(runs),
+    "selection": "median_total_bw_bytes_per_sec",
+    "median_run": median["run"],
+    "median_bw_mib_per_sec": median["total_bw_mib_per_sec"],
+    "min_bw_mib_per_sec": ordered[0]["total_bw_mib_per_sec"],
+    "max_bw_mib_per_sec": ordered[-1]["total_bw_mib_per_sec"],
+    "spread_percent_of_median": spread_pct,
+    "canonical_result": str(canonical),
+    "runs": runs,
+}
+summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+print(
+    f"stable bigread median: run={median['run']} "
+    f"bw={median['total_bw_mib_per_sec']:.2f} MiB/s "
+    f"spread={spread_pct:.2f}%"
+)
+PY
+}
+
 run_fio_profile() {
     local tool="$1"
     local mode="$2"
@@ -818,6 +976,9 @@ run_fio_profile() {
     local use_time_based=true
     local use_end_fsync=false
     local use_refill_buffers=false
+    local repeat_count=1
+    local repeat_cooldown_secs=10
+    local warmup_count=0
     local -a args=()
 
     if [[ -n "$profile_key_override" ]]; then
@@ -994,10 +1155,33 @@ run_fio_profile() {
         fi
     fi
 
+    if [[ "$mode" == "bigread" ]]; then
+        repeat_count="${PERF_FIO_BIGREAD_REPEATS:-1}"
+        repeat_cooldown_secs="${PERF_FIO_BIGREAD_COOLDOWN_SECS:-10}"
+        warmup_count="${PERF_FIO_BIGREAD_WARMUP_PASSES:-0}"
+        if [[ ! "$repeat_count" =~ ^(1|3|5)$ ]]; then
+            err "PERF_FIO_BIGREAD_REPEATS 只支持 1、3 或 5，当前值: $repeat_count"
+            return 1
+        fi
+        if [[ ! "$repeat_cooldown_secs" =~ ^[0-9]+$ ]] || ((repeat_cooldown_secs > 300)); then
+            err "PERF_FIO_BIGREAD_COOLDOWN_SECS 必须是 0..300 的整数，当前值: $repeat_cooldown_secs"
+            return 1
+        fi
+        if [[ ! "$warmup_count" =~ ^[0-9]+$ ]] || ((warmup_count > 10)); then
+            err "PERF_FIO_BIGREAD_WARMUP_PASSES 必须是 0..10 的整数，当前值: $warmup_count"
+            return 1
+        fi
+    fi
+
     local lat_log_prefix="$artifact_dir/results/${tool}_lat"
-    args+=(--output-format=json --output="$json_path")
-    args+=(--write_lat_log="$lat_log_prefix" --log_avg_msec=1000)
-    run_logged_tool "$tool" fio "${args[@]}"
+    if ((repeat_count > 1)); then
+        run_logged_tool "$tool" run_repeated_bigread \
+            "$tool" "$json_path" "$warmup_count" "$repeat_count" "$repeat_cooldown_secs" "${args[@]}"
+    else
+        args+=(--output-format=json --output="$json_path")
+        args+=(--write_lat_log="$lat_log_prefix" --log_avg_msec=1000)
+        run_logged_tool "$tool" fio "${args[@]}"
+    fi
     append_fio_log_summary "$json_path" "$artifact_dir/tools/${tool}.log" "$tool"
     wait_for_fio_post_write_drain "$tool"
 }

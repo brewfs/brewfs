@@ -35,7 +35,7 @@ usage() {
   --bigwrite-throughput-profile
                              启用 fio-bigwrite/大 buffered write 吞吐 profile；这是 --writeback-throughput-profile 的明确别名，会启用 commit-before-upload 写回语义
   --writeback-throughput-profile
-                             启用 S3 writeback 全场景吞吐 profile（cache root=/var/lib/brewfs/cache, 4GiB read/write memory+SSD cache, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=6, pending soft/hard=2GiB/3GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=16, fuse max_background=512, read-throughput profile, fio prefill/post-write drain+remount）
+                             启用 S3 writeback 全场景吞吐 profile（cache root=/var/lib/brewfs/cache, 4GiB memory + 8GiB read-SSD/4GiB write-SSD cache, 上传后持久块缓存并在 prefill remount 后保留, 12GiB memory budget, S3 max concurrency=16, writeback upload concurrency=6, pending soft/hard=2GiB/3GiB, writeback persist fsync=false, compression=none, full cache checksum, fuse workers=16, fuse max_background=512, read-throughput profile, fio prefill/post-write drain+remount）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --brewfs-bench           额外运行一次宿主机 cargo bench --bench brewfs_bench
   --bench-args "<args...>"   透传给 cargo bench 之后的 Criterion 参数
@@ -50,6 +50,7 @@ usage() {
   PERF_STRESS_NG_ARGS 可完全覆盖默认 stress-ng 参数；如需 link/symlink stressor 请用该变量显式指定
   PERF_METADATA_POST_TOOL_DRAIN PERF_METADATA_POST_TOOL_DRAIN_TIMEOUT_SECS PERF_METADATA_POST_TOOL_DRAIN_PENDING_BYTES
   PERF_FIO_ARGS PERF_FIO_RUNTIME PERF_FIO_SIZE PERF_FIO_BS PERF_FIO_NUMJOBS PERF_FIO_DIRECT
+  PERF_FIO_BIGREAD_REPEATS=1|3|5 PERF_FIO_BIGREAD_WARMUP_PASSES=0|1 PERF_FIO_BIGREAD_COOLDOWN_SECS=10 PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES=true PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS=true
   PERF_FIO_DIRECT_MATRIX="0 1" 可对 fio profile 显式跑 buffered/direct 矩阵（默认不启用）
   PERF_FIO_{SEQREAD,SEQWRITE,RANDREAD,RANDWRITE,RANDRW,BIGREAD,BIGWRITE}_{ARGS,BS,SIZE,NUMJOBS,IOENGINE,IODEPTH,DIRECT,DIRECT_MATRIX,RUNTIME}
   PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS PERF_FIO_PREFILL_DRAIN_PENDING_BYTES
@@ -193,7 +194,8 @@ enable_writeback_throughput_profile() {
     export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/var/lib/brewfs/cache}"
     export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-4294967296}"
     export BREWFS_WRITE_MEMORY_BYTES="${BREWFS_WRITE_MEMORY_BYTES:-4294967296}"
-    export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-4294967296}"
+    # Allow a 4GiB fio prefill plus integrity framing to survive remount intact.
+    export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-8589934592}"
     export BREWFS_WRITE_SSD_BYTES="${BREWFS_WRITE_SSD_BYTES:-4294967296}"
     export BREWFS_MEMORY_BUDGET_BYTES="${BREWFS_MEMORY_BUDGET_BYTES:-12884901888}"
     export BREWFS_S3_MAX_CONCURRENCY="${BREWFS_S3_MAX_CONCURRENCY:-16}"
@@ -205,6 +207,8 @@ enable_writeback_throughput_profile() {
     export BREWFS_WRITEBACK_PERSIST_SYNC="${BREWFS_WRITEBACK_PERSIST_SYNC:-false}"
     export BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT="${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-false}"
     export BREWFS_CACHED_BLOCK_ASSEMBLER="${BREWFS_CACHED_BLOCK_ASSEMBLER:-true}"
+    export BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD:-true}"
+    export BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-true}"
     export BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-none}"
     export BREWFS_VERIFY_CACHE_CHECKSUM="${BREWFS_VERIFY_CACHE_CHECKSUM:-full}"
     # Eight fio jobs need enough request consumers to overlap object GET latency.
@@ -215,7 +219,8 @@ enable_writeback_throughput_profile() {
     export BREWFS_METADATA_OPEN_CACHE_CAPACITY="${BREWFS_METADATA_OPEN_CACHE_CAPACITY:-65536}"
     export PERF_FIO_PREFILL_DRAIN="${PERF_FIO_PREFILL_DRAIN:-true}"
     export PERF_FIO_PREFILL_REMOUNT="${PERF_FIO_PREFILL_REMOUNT:-true}"
-    export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-true}"
+    # Preserve BrewFS's persistent disk block cache across the prefill remount.
+    export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"
     export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
     export PERF_METADATA_POST_TOOL_DRAIN="${PERF_METADATA_POST_TOOL_DRAIN:-true}"
 }
@@ -486,6 +491,11 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_DIRECT \
     -e PERF_FIO_DIRECT_MATRIX \
     -e PERF_FIO_RUNTIME \
+    -e PERF_FIO_BIGREAD_REPEATS \
+    -e PERF_FIO_BIGREAD_WARMUP_PASSES \
+    -e PERF_FIO_BIGREAD_COOLDOWN_SECS \
+    -e PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES \
+    -e PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS \
     -e PERF_FIO_COLD_READ \
     -e PERF_FIO_PREFILL_DRAIN \
     -e PERF_FIO_PREFILL_REMOUNT \

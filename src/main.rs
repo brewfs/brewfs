@@ -372,6 +372,11 @@ async fn create_object_store<B>(
 where
     B: ObjectBackend + Send + Sync + 'static,
 {
+    let reuse_writeback_stage = cache.persist_write_cache_after_upload
+        && matches!(
+            cache.writeback_mode,
+            crate::vfs::cache::config::WriteBackMode::CommitBeforeUpload
+        );
     let chunks_cache_config = ChunksCacheConfig::with_budgets(
         cache.read_memory_bytes,
         cache.read_ssd_bytes,
@@ -383,7 +388,9 @@ where
         compression: cache.compression,
         range_background_prefetch: cache.range_background_prefetch,
         populate_write_cache_after_upload: cache.populate_write_cache_after_upload,
-        persist_write_cache_after_upload: cache.persist_write_cache_after_upload,
+        persist_write_cache_after_upload: cache.persist_write_cache_after_upload
+            && !reuse_writeback_stage,
+        persistent_slice_cache_dir: reuse_writeback_stage.then(|| cache.cache_root.join("chunks")),
         ..BlockStoreConfig::default()
     };
     let bandwidth = BandwidthLimiter::new(&cache.bandwidth);

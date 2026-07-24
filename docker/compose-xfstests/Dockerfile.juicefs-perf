@@ -1,9 +1,12 @@
-FROM golang:1.25-bookworm AS builder
-WORKDIR /build
-ARG JUICEFS_REPO=https://github.com/juicedata/juicefs.git
-ARG JUICEFS_REF=v1.3.1
-RUN git clone --depth 1 --branch "$JUICEFS_REF" "$JUICEFS_REPO" ./
-RUN make juicefs && cp juicefs /usr/local/bin/juicefs
+FROM debian:trixie-slim AS juicefs
+ARG JUICEFS_VERSION=1.3.1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl tar && \
+    curl --fail --location --retry 5 --retry-all-errors \
+        "https://github.com/juicedata/juicefs/releases/download/v${JUICEFS_VERSION}/juicefs-${JUICEFS_VERSION}-linux-amd64.tar.gz" \
+        --output /tmp/juicefs.tar.gz && \
+    tar -xzf /tmp/juicefs.tar.gz -C /tmp && \
+    install -m 0755 /tmp/juicefs /usr/local/bin/juicefs
 
 FROM debian:trixie-slim
 RUN apt-get update && \
@@ -16,7 +19,7 @@ RUN apt-get update && \
         procps && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/bin/juicefs /usr/local/bin/juicefs
+COPY --from=juicefs /usr/local/bin/juicefs /usr/local/bin/juicefs
 COPY tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /opt/xfstests-prebuilt.tar.gz
 COPY docker/compose-xfstests/run_juicefs_perf_in_container.sh /usr/local/bin/run_juicefs_perf_in_container.sh
 COPY docker/compose-xfstests/perf_metadata_fallback.py /usr/local/bin/perf_metadata_fallback.py
