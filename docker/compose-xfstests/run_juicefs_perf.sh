@@ -39,7 +39,7 @@ usage() {
   --metadata-throughput-profile
                              启用 JuiceFS metadata profile（open-cache=1s/65536, backup-meta=0, no-usage-report）
   --writeback-throughput-profile
-                             启用 JuiceFS 对齐吞吐 profile（writeback, buffer=8192MiB, cache=4096MiB, upload/download concurrency=4/16, open-cache=1s/65536, compression=none, backup-meta=0, fio prefill staging drain+remount, write fio post-drain）
+                             启用 JuiceFS 对齐吞吐 profile（writeback, buffer=4096MiB, persistent disk cache=8192MiB, cache-large-write, upload/download concurrency=4/8, open-cache=1s/65536, compression=none, backup-meta=0, fio prefill drain+remount while preserving cache, write fio post-drain）
   --tools "<tool...>"        指定压力工具列表，默认: "fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest"
   --keep                     结束后不执行 compose down（便于调试）
   -h, --help                 显示帮助
@@ -51,13 +51,14 @@ usage() {
   PERF_DIRSTRESS_ARGS PERF_DIRPERF_ARGS PERF_METAPERF_ARGS PERF_LOOPTEST_ARGS
   PERF_STRESS_NG_ARGS 可完全覆盖默认 stress-ng 参数；如需 link/symlink stressor 请用该变量显式指定
   PERF_FIO_ARGS PERF_FIO_RUNTIME PERF_FIO_SIZE PERF_FIO_BS PERF_FIO_NUMJOBS PERF_FIO_DIRECT
+  PERF_FIO_BIGREAD_REPEATS=1|3|5 PERF_FIO_BIGREAD_WARMUP_PASSES=0|1 PERF_FIO_BIGREAD_COOLDOWN_SECS=10 PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES=true PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS=true
   PERF_FIO_DIRECT_MATRIX="0 1" 可对 fio profile 显式跑 buffered/direct 矩阵（默认不启用）
   PERF_FIO_{SEQREAD,SEQWRITE,RANDREAD,RANDWRITE,RANDRW,BIGREAD,BIGWRITE}_{ARGS,BS,SIZE,NUMJOBS,IOENGINE,IODEPTH,DIRECT,DIRECT_MATRIX,RUNTIME}
   PERF_FIO_COLD_READ PERF_FIO_PREFILL_DRAIN PERF_FIO_PREFILL_REMOUNT PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS PERF_FIO_PREFILL_DRAIN_PENDING_BYTES
   PERF_FIO_POST_WRITE_DRAIN PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES
   PERF_FIO_DROP_CACHES PERF_FIO_COLD_READ_DROP_CACHES PERF_FIO_COLD_READ_CLEAR_CACHE
   JFS_COMPRESS JFS_WRITEBACK JFS_BUFFER_SIZE_MIB JFS_CACHE_SIZE_MIB JFS_CACHE_LARGE_WRITE
-  JFS_MAX_UPLOADS JFS_MAX_DOWNLOADS JFS_MAX_READAHEAD_MIB JFS_PREFETCH
+  JFS_MAX_UPLOADS JFS_MAX_STAGE_WRITE JFS_MAX_DOWNLOADS JFS_MAX_READAHEAD_MIB JFS_PREFETCH
   JFS_OPEN_CACHE JFS_OPEN_CACHE_LIMIT JFS_BACKUP_META JFS_NO_USAGE_REPORT JFS_CACHE_DIR
   REDIS_PERF_DATA_MOUNT 可把 Redis AOF/RDB 数据挂到大容量目录或命名卷（例如 /data/slayer/juicefs-perf-redis）
   PERF_LOG_TO_CONSOLE=true 可恢复压测工具日志输出到终端（默认关闭）
@@ -127,6 +128,7 @@ if [[ "$CACHED_READ_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_CACHE_SIZE_MIB="${JFS_CACHE_SIZE_MIB:-8192}"
     export JFS_CACHE_LARGE_WRITE="${JFS_CACHE_LARGE_WRITE:-true}"
     export JFS_MAX_UPLOADS="${JFS_MAX_UPLOADS:-4}"
+    export JFS_MAX_STAGE_WRITE="${JFS_MAX_STAGE_WRITE:-4}"
     export JFS_MAX_READAHEAD_MIB="${JFS_MAX_READAHEAD_MIB:-1024}"
     export JFS_PREFETCH="${JFS_PREFETCH:-4}"
     export JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"
@@ -141,10 +143,12 @@ fi
 if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_COMPRESS="${JFS_COMPRESS:-none}"
     export JFS_WRITEBACK="${JFS_WRITEBACK:-true}"
-    export JFS_BUFFER_SIZE_MIB="${JFS_BUFFER_SIZE_MIB:-8192}"
-    export JFS_CACHE_SIZE_MIB="${JFS_CACHE_SIZE_MIB:-4096}"
+    export JFS_BUFFER_SIZE_MIB="${JFS_BUFFER_SIZE_MIB:-4096}"
+    export JFS_CACHE_SIZE_MIB="${JFS_CACHE_SIZE_MIB:-8192}"
+    export JFS_CACHE_LARGE_WRITE="${JFS_CACHE_LARGE_WRITE:-true}"
     export JFS_MAX_UPLOADS="${JFS_MAX_UPLOADS:-4}"
-    export JFS_MAX_DOWNLOADS="${JFS_MAX_DOWNLOADS:-16}"
+    export JFS_MAX_STAGE_WRITE="${JFS_MAX_STAGE_WRITE:-4}"
+    export JFS_MAX_DOWNLOADS="${JFS_MAX_DOWNLOADS:-8}"
     export JFS_OPEN_CACHE="${JFS_OPEN_CACHE:-1s}"
     export JFS_OPEN_CACHE_LIMIT="${JFS_OPEN_CACHE_LIMIT:-65536}"
     export JFS_BACKUP_META="${JFS_BACKUP_META:-0}"
@@ -152,7 +156,8 @@ if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     export JFS_CACHE_DIR="${JFS_CACHE_DIR:-/var/lib/juicefs/cache}"
     export PERF_FIO_PREFILL_DRAIN="${PERF_FIO_PREFILL_DRAIN:-true}"
     export PERF_FIO_PREFILL_REMOUNT="${PERF_FIO_PREFILL_REMOUNT:-true}"
-    export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-true}"
+    # Retain the disk cache across the prefill remount, matching BrewFS.
+    export PERF_FIO_COLD_READ_CLEAR_CACHE="${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"
     export PERF_FIO_POST_WRITE_DRAIN="${PERF_FIO_POST_WRITE_DRAIN:-true}"
 fi
 
@@ -351,6 +356,11 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_DIRECT \
     -e PERF_FIO_DIRECT_MATRIX \
     -e PERF_FIO_RUNTIME \
+    -e PERF_FIO_BIGREAD_REPEATS \
+    -e PERF_FIO_BIGREAD_WARMUP_PASSES \
+    -e PERF_FIO_BIGREAD_COOLDOWN_SECS \
+    -e PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES \
+    -e PERF_FIO_BIGREAD_REMOUNT_BETWEEN_REPEATS \
     -e PERF_FIO_COLD_READ \
     -e PERF_FIO_PREFILL_DRAIN \
     -e PERF_FIO_PREFILL_REMOUNT \
@@ -370,6 +380,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e JFS_CACHE_SIZE_MIB \
     -e JFS_CACHE_LARGE_WRITE \
     -e JFS_MAX_UPLOADS \
+    -e JFS_MAX_STAGE_WRITE \
     -e JFS_MAX_DOWNLOADS \
     -e JFS_MAX_READAHEAD_MIB \
     -e JFS_PREFETCH \

@@ -21,7 +21,7 @@ use std::{
     collections::HashMap,
     fs,
     io::SeekFrom,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, LazyLock},
     time::{Duration, Instant},
@@ -331,6 +331,11 @@ pub struct BlockStoreConfig {
     pub populate_write_cache_after_upload: bool,
     /// Whether uploaded write blocks should also be persisted into the disk read cache.
     pub persist_write_cache_after_upload: bool,
+    /// Directory containing zero-copy promoted writeback slices.
+    ///
+    /// When configured, a block-cache miss can be served from the immutable
+    /// slice staged by commit-before-upload writeback.
+    pub persistent_slice_cache_dir: Option<PathBuf>,
 }
 
 impl Default for BlockStoreConfig {
@@ -344,8 +349,13 @@ impl Default for BlockStoreConfig {
             compression: Compression::Lz4,
             populate_write_cache_after_upload: true,
             persist_write_cache_after_upload: false,
+            persistent_slice_cache_dir: None,
         }
     }
+}
+
+pub(crate) fn persistent_slice_cache_path(root: &Path, slice_id: u64) -> PathBuf {
+    root.join(format!(".writeback-slice-{slice_id}"))
 }
 
 impl BlockStoreConfig {
@@ -493,15 +503,41 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             return;
         }
 
-        // Persist to disk if a write permit is available. Skipping under
-        // extreme I/O pressure avoids queuing hundreds of background tasks
-        // that compete with foreground uploads.
-        let cache = self.block_cache.clone();
-        if let Some(permit) = cache.try_disk_store_permit(&key) {
-            tokio::spawn(async move {
-                let _ = cache.store_to_disk_with_permit(&key, data, permit).await;
-            });
+        // This opt-in mode promises that data uploaded before a clean drain is
+        // available from the disk cache after remount. Await the atomic cache
+        // publication instead of spawning a best-effort task: teardown can
+        // otherwise terminate that task before it publishes its rename, and a
+        // saturated disk semaphore would silently skip the entry altogether.
+        // Cache failures must not fail an already-successful object upload;
+        // they only fall back to the object store on the next read.
+        if let Err(err) = self.block_cache.store_to_disk(&key, data).await {
+            tracing::warn!(key = %key, error = %err, "uploaded block was not persisted to disk read cache");
         }
+    }
+
+    async fn read_persistent_slice_cache(
+        &self,
+        key: BlockKey,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        let root = self.config.persistent_slice_cache_dir.as_ref()?;
+        let path = persistent_slice_cache_path(root, key.0);
+        let mut file = tokio::fs::File::open(path).await.ok()?;
+        let file_offset = (key.1 as u64)
+            .checked_mul(self.config.block_size as u64)?
+            .checked_add(offset)?;
+        file.seek(SeekFrom::Start(file_offset)).await.ok()?;
+
+        let mut read_len = 0;
+        while read_len < buf.len() {
+            match file.read(&mut buf[read_len..]).await {
+                Ok(0) => break,
+                Ok(n) => read_len += n,
+                Err(_) => return None,
+            }
+        }
+        (read_len > 0).then_some(read_len)
     }
 
     async fn try_promote_page_cache_to_block_cache(&self, key: BlockKey) -> bool {
@@ -624,40 +660,27 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         }
         parts.extend(chunks);
 
-        let cache_block = if matches!(self.config.compression, Compression::None) {
-            let full_block = Self::concat_bytes(&parts);
-            let upload_len = full_block.len();
-            self.bandwidth.acquire_upload(upload_len).await;
-            self.object_metrics
-                .record_put_prepare(prepare_started.elapsed());
-            let started = Instant::now();
-            self.client
-                .put_object_vectored(&key_str, vec![full_block.clone()])
-                .await
-                .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
-            self.object_metrics
-                .record_put(upload_len as u64, started.elapsed());
-            full_block
+        let cache_block = Self::concat_bytes(&parts);
+        let upload_bytes = if matches!(self.config.compression, Compression::None) {
+            cache_block.clone()
         } else {
-            let full_block = Self::concat_bytes(&parts);
-            let compressed = compress(&full_block, self.config.compression);
-            let upload_bytes = match compressed {
-                std::borrow::Cow::Borrowed(_) => full_block.clone(),
+            match compress(&cache_block, self.config.compression) {
+                std::borrow::Cow::Borrowed(_) => cache_block.clone(),
                 std::borrow::Cow::Owned(v) => Bytes::from(v),
-            };
-            self.bandwidth.acquire_upload(upload_bytes.len()).await;
-            let upload_len = upload_bytes.len() as u64;
-            self.object_metrics
-                .record_put_prepare(prepare_started.elapsed());
-            let started = Instant::now();
-            self.client
-                .put_object_vectored(&key_str, vec![upload_bytes])
-                .await
-                .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
-            self.object_metrics
-                .record_put(upload_len, started.elapsed());
-            full_block
+            }
         };
+        let upload_len = upload_bytes.len();
+        self.bandwidth.acquire_upload(upload_len).await;
+        self.object_metrics
+            .record_put_prepare(prepare_started.elapsed());
+
+        let started = Instant::now();
+        self.client
+            .put_object_vectored(&key_str, vec![upload_bytes])
+            .await
+            .map_err(|e| anyhow::anyhow!("object store put failed: {key_str}, {e:?}"))?;
+        self.object_metrics
+            .record_put(upload_len as u64, started.elapsed());
 
         if self.config.populate_write_cache_after_upload
             && cache_block.len() <= self.config.block_size
@@ -740,6 +763,22 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 let copy_len = end - offset_usize;
                 buf[..copy_len].copy_from_slice(&cached[offset_usize..end]);
                 tracing::Span::current().record("read_len", copy_len);
+            }
+            return Ok(());
+        }
+
+        if let Some(read_len) = self.read_persistent_slice_cache(key, offset, buf).await {
+            tracing::trace!(key = %key_str, len = read_len, "persistent writeback slice HIT");
+            tracing::Span::current().record("strategy", "writeback_slice_hit");
+            tracing::Span::current().record("read_len", read_len);
+            self.object_metrics.record_read_block_cache_hit();
+            if full_block_read {
+                self.block_cache
+                    .insert_recent_write_opportunistic(
+                        key_str.clone(),
+                        Bytes::copy_from_slice(&buf[..read_len]),
+                    )
+                    .await;
             }
             return Ok(());
         }
@@ -1441,6 +1480,7 @@ mod tests {
         #[derive(Clone, Default)]
         struct MockBackend {
             data: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+            get_object_calls: Arc<Mutex<u64>>,
         }
 
         #[async_trait]
@@ -1454,6 +1494,7 @@ mod tests {
             }
 
             async fn get_object(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+                *self.get_object_calls.lock().unwrap() += 1;
                 Ok(self.data.lock().unwrap().get(key).cloned())
             }
 
@@ -1564,9 +1605,10 @@ mod tests {
             "write_fresh_range should skip upload-time read cache population when disabled"
         );
 
+        let backend = MockBackend::default();
         let cache_dir = tempfile::tempdir()?;
         let store = ObjectBlockStore::new_with_configs_async(
-            ObjectClient::new(MockBackend::default()),
+            ObjectClient::new(backend.clone()),
             ChunksCacheConfig::with_budgets(
                 16 * 1024 * 1024,
                 16 * 1024 * 1024,
@@ -1577,6 +1619,7 @@ mod tests {
                 compression: Compression::None,
                 populate_write_cache_after_upload: true,
                 persist_write_cache_after_upload: true,
+                persistent_slice_cache_dir: Some(cache_dir.path().to_path_buf()),
                 ..Default::default()
             },
         )
@@ -1591,16 +1634,66 @@ mod tests {
         );
         assert_eq!(
             store.block_cache.get(&"chunks/123/0".to_string()).await,
-            Some(large_data.into())
+            Some(large_data.clone().into())
         );
-        let disk_key = "chunks/123/0".to_string();
-        for _ in 0..20 {
-            if store.block_cache.is_disk_cached(&disk_key).await {
-                return Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        Err("explicit disk persistence should populate the local disk read cache".into())
+        assert!(
+            store.block_cache.is_disk_cached("chunks/123/0").await,
+            "explicit disk persistence must complete before the upload path returns"
+        );
+
+        let remounted_store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(backend.clone()),
+            ChunksCacheConfig::with_budgets(
+                16 * 1024 * 1024,
+                16 * 1024 * 1024,
+                cache_dir.path().to_path_buf(),
+            ),
+            BlockStoreConfig {
+                block_size,
+                compression: Compression::None,
+                populate_write_cache_after_upload: true,
+                persist_write_cache_after_upload: true,
+                persistent_slice_cache_dir: Some(cache_dir.path().to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let mut remounted_out = vec![0u8; large_data.len()];
+        remounted_store
+            .read_range((123, 0), 0, &mut remounted_out)
+            .await?;
+        assert_eq!(remounted_out, large_data);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "a remounted store must serve persisted uploaded blocks without an object GET"
+        );
+
+        let promoted_slice = persistent_slice_cache_path(cache_dir.path(), 124);
+        tokio::fs::write(&promoted_slice, &large_data).await?;
+        let mut promoted_out = vec![0u8; large_data.len()];
+        remounted_store
+            .read_range((124, 0), 0, &mut promoted_out)
+            .await?;
+        assert_eq!(promoted_out, large_data);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "a remounted store must serve a promoted writeback slice without an object GET"
+        );
+
+        tokio::fs::remove_file(&promoted_slice).await?;
+        promoted_out.fill(0);
+        remounted_store
+            .read_range((124, 0), 0, &mut promoted_out)
+            .await?;
+        assert_eq!(promoted_out, large_data);
+        assert_eq!(
+            *backend.get_object_calls.lock().unwrap(),
+            0,
+            "a promoted slice block must remain in memory after its first disk hit"
+        );
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]

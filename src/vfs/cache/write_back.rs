@@ -6,6 +6,8 @@ use dashmap::DashSet;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+use crate::chunk::store::persistent_slice_cache_path;
+
 use super::keys::{DirtySliceKey, DirtySliceState};
 
 /// Record describing a dirty slice persisted to local SSD.
@@ -59,6 +61,14 @@ pub trait WriteBackCache: Send + Sync {
 
     /// Remove a committed or obsolete slice from local storage.
     async fn remove(&self, key: &DirtySliceKey) -> anyhow::Result<()>;
+
+    /// Publish a staged immutable slice into the persistent read cache without
+    /// copying its bytes. Returns false when stage reuse is not configured.
+    async fn promote_to_read_cache(
+        &self,
+        key: &DirtySliceKey,
+        slice_id: u64,
+    ) -> anyhow::Result<bool>;
 }
 
 /// Filesystem-backed write-back cache implementation.
@@ -72,7 +82,10 @@ pub struct FsWriteBackCache {
     root: PathBuf,
     seq: AtomicU64,
     sync_on_persist: bool,
+    read_cache_root: Option<PathBuf>,
+    allocation_unit: u64,
     created_dirs: DashSet<PathBuf>,
+    recoverable_keys: DashSet<DirtySliceKey>,
 }
 
 impl FsWriteBackCache {
@@ -85,7 +98,27 @@ impl FsWriteBackCache {
             root,
             seq: AtomicU64::new(0),
             sync_on_persist,
+            read_cache_root: None,
+            allocation_unit: 0,
             created_dirs: DashSet::new(),
+            recoverable_keys: DashSet::new(),
+        }
+    }
+
+    pub fn new_with_sync_and_read_cache(
+        root: PathBuf,
+        sync_on_persist: bool,
+        read_cache_root: PathBuf,
+        allocation_unit: u64,
+    ) -> Self {
+        Self {
+            root,
+            seq: AtomicU64::new(0),
+            sync_on_persist,
+            read_cache_root: Some(read_cache_root),
+            allocation_unit,
+            created_dirs: DashSet::new(),
+            recoverable_keys: DashSet::new(),
         }
     }
 
@@ -418,6 +451,39 @@ impl WriteBackCache for FsWriteBackCache {
 
         let slice_path = key.slice_path(&self.root);
 
+        if self.allocation_unit > 0 {
+            let data_len = data.iter().map(Bytes::len).sum::<usize>() as u64;
+            let allocation_start = slice_offset / self.allocation_unit * self.allocation_unit;
+            let data_end = slice_offset.saturating_add(data_len);
+            let allocation_end = data_end.saturating_add(self.allocation_unit - 1)
+                / self.allocation_unit
+                * self.allocation_unit;
+            let allocation_len = allocation_end.saturating_sub(allocation_start);
+            let allocation_path = slice_path.clone();
+            tokio::task::spawn_blocking(move || {
+                use std::os::fd::AsRawFd;
+
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(allocation_path)?;
+                let result = unsafe {
+                    libc::fallocate(
+                        file.as_raw_fd(),
+                        libc::FALLOC_FL_KEEP_SIZE,
+                        allocation_start as libc::off_t,
+                        allocation_len as libc::off_t,
+                    )
+                };
+                if result == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok::<(), std::io::Error>(())
+            })
+            .await??;
+        }
+
         let mut file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -466,6 +532,7 @@ impl WriteBackCache for FsWriteBackCache {
             self.seal_by_rename(key, chunk_offset, length, slice_path)
                 .await?;
         }
+        self.recoverable_keys.insert(key);
         Ok(())
     }
 
@@ -501,6 +568,12 @@ impl WriteBackCache for FsWriteBackCache {
             )
         {
             self.remove_sealed_paths(key).await?;
+        }
+        if matches!(
+            state,
+            DirtySliceState::Committed | DirtySliceState::Obsolete
+        ) {
+            self.recoverable_keys.remove(key);
         }
         Ok(())
     }
@@ -542,6 +615,9 @@ impl WriteBackCache for FsWriteBackCache {
                 }
             }
         }
+        for record in &records {
+            self.recoverable_keys.insert(record.key);
+        }
         Ok(records)
     }
 
@@ -555,7 +631,40 @@ impl WriteBackCache for FsWriteBackCache {
             let _ = fs::remove_file(&path).await;
         }
         self.remove_sealed_paths(key).await?;
+        self.recoverable_keys.remove(key);
         Ok(())
+    }
+
+    async fn promote_to_read_cache(
+        &self,
+        key: &DirtySliceKey,
+        slice_id: u64,
+    ) -> anyhow::Result<bool> {
+        let Some(read_cache_root) = &self.read_cache_root else {
+            return Ok(false);
+        };
+        fs::create_dir_all(read_cache_root).await?;
+
+        let source = if key.slice_path(&self.root).exists() {
+            key.slice_path(&self.root)
+        } else {
+            self.sealed_path_for_key(key)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("sealed writeback slice not found for {key:?}"))?
+        };
+        let target = persistent_slice_cache_path(read_cache_root, slice_id);
+        if target.exists() {
+            return Ok(true);
+        }
+
+        let temporary = target.with_extension(format!("link-{}", std::process::id()));
+        let _ = fs::remove_file(&temporary).await;
+        fs::hard_link(&source, &temporary).await?;
+        if let Err(err) = fs::rename(&temporary, &target).await {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(err.into());
+        }
+        Ok(true)
     }
 }
 
@@ -571,6 +680,10 @@ impl FsWriteBackCache {
         chunk_offset: u64,
         buf: &mut [u8],
     ) -> anyhow::Result<()> {
+        if self.recoverable_keys.is_empty() {
+            return Ok(());
+        }
+
         let chunk_dir = self
             .root
             .join("dirty")
@@ -607,6 +720,9 @@ impl FsWriteBackCache {
     ) -> anyhow::Result<Option<Vec<u8>>> {
         if len == 0 {
             return Ok(Some(Vec::new()));
+        }
+        if self.recoverable_keys.is_empty() {
+            return Ok(None);
         }
 
         let dirty_root = self.root.join("dirty");
@@ -718,6 +834,39 @@ mod tests {
         let records = cache.recover().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, path);
+    }
+
+    #[tokio::test]
+    async fn promoted_slice_survives_dirty_record_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let read_cache_root = temp.path().join("chunks");
+        let cache = FsWriteBackCache::new_with_sync_and_read_cache(
+            temp.path().join("writeback"),
+            false,
+            read_cache_root.clone(),
+            4 * 1024 * 1024,
+        );
+        let key = DirtySliceKey {
+            ino: 7,
+            chunk_id: 11,
+            local_seq: 13,
+            epoch: 0,
+        };
+
+        cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"persistent")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(key, 0, 10).await.unwrap();
+        assert!(cache.promote_to_read_cache(&key, 13).await.unwrap());
+        cache.remove(&key).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read(persistent_slice_cache_path(&read_cache_root, 13))
+                .await
+                .unwrap(),
+            b"persistent"
+        );
     }
 
     #[tokio::test]
@@ -860,6 +1009,33 @@ mod tests {
                 .is_none(),
             "a trailing gap must not be treated as covered"
         );
+    }
+
+    #[tokio::test]
+    async fn recoverable_key_index_tracks_seal_recovery_and_remove() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = DirtySliceKey {
+            ino: 10,
+            chunk_id: 22,
+            local_seq: 3,
+            epoch: 0,
+        };
+
+        let cache = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        cache
+            .persist_slice_data(key, vec![Bytes::from_static(b"payload")], 0)
+            .await
+            .unwrap();
+        cache.seal_slice_record(key, 0, 7).await.unwrap();
+        assert!(!cache.recoverable_keys.is_empty());
+
+        let recovered = FsWriteBackCache::new_with_sync(temp.path().to_path_buf(), false);
+        assert!(recovered.recoverable_keys.is_empty());
+        assert_eq!(recovered.recover().await.unwrap().len(), 1);
+        assert!(!recovered.recoverable_keys.is_empty());
+
+        recovered.remove(&key).await.unwrap();
+        assert!(recovered.recoverable_keys.is_empty());
     }
 
     #[tokio::test]

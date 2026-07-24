@@ -4159,6 +4159,13 @@ where
         };
 
         if let Some(wb) = &shared.write_back {
+            if let Err(err) = wb.promote_to_read_cache(&key, key.local_seq).await {
+                warn!(
+                    slice_id = key.local_seq,
+                    error = ?err,
+                    "failed to promote writeback stage into persistent read cache"
+                );
+            }
             let _ = wb.remove(&key).await;
         }
     }
