@@ -1,18 +1,47 @@
-# BrewFS: A Rust Filesystem for Transactional Metadata and Object Storage
+# BrewFS: POSIX Files, Transactional Metadata, Object-Storage Scale
 
-Modern applications still want ordinary files, directories, renames, links,
-and byte-range I/O. Modern infrastructure increasingly wants transactional
-metadata and S3-compatible object storage. BrewFS connects those two worlds
-without asking applications to adopt an object API.
+> **In a matched 24-row comparison with JuiceFS, BrewFS leads 15 rows: 10 of
+> 14 data-path results and 5 of 10 metadata results. It reaches 2,395.32 MiB/s
+> on a repeatable hot-cache Large read, while separate cold-page tests prove
+> that its local SSD cache survives a remount.**
 
-[BrewFS](https://github.com/brewfs/brewfs) is an open-source distributed
-filesystem implemented in Rust. It presents a Linux FUSE mount, stores
-namespace and inode state in a selectable transactional metadata backend, and
-stores file data in S3-compatible object storage or local storage.
+Applications want files, directories, atomic renames, links, and byte-range
+I/O. Infrastructure teams want transactional metadata and inexpensive,
+S3-compatible capacity. [BrewFS](https://github.com/brewfs/brewfs) connects
+those worlds through an open-source distributed filesystem written in Rust,
+without forcing applications to adopt an object-storage API.
 
-Its goal is not to win every microbenchmark. The goal is a testable storage
-stack whose performance, cache lifetime, writeback debt, and POSIX limitations
-are visible enough to reason about.
+Mount BrewFS through Linux FUSE, choose Redis, TiKV, etcd, PostgreSQL, or
+SQLite for metadata, and place file data in S3-compatible or local storage.
+Memory and SSD caches keep remote storage away from the critical path, while
+bounded writeback and explicit drain accounting make deferred work visible.
+
+## The headline results
+
+The strongest Redis results are not small benchmark noise. Under the matched
+July 24, 2026 profile, BrewFS delivers **37% more random-read throughput**,
+**51% more foreground mixed-I/O throughput**, and **90% more foreground Large
+write throughput** than JuiceFS. When background writeback is included,
+BrewFS still delivers **92% more mixed-I/O throughput**.
+
+| Representative Redis result | BrewFS | JuiceFS | BrewFS advantage |
+| --- | ---: | ---: | ---: |
+| Random read | **1,726.10 MiB/s** | 1,256.80 MiB/s | **37% faster** |
+| Foreground mixed random I/O | **495.54 MiB/s** | 328.76 MiB/s | **51% faster** |
+| Foreground Large write | **195.05 MiB/s** | 102.40 MiB/s | **90% faster** |
+| Fully drained mixed random I/O | **218.60 MiB/s** | 113.86 MiB/s | **92% faster** |
+| Hot local-cache Large read | **2,395.32 MiB/s** | 2,356.73 MiB/s | **2% faster** |
+| Metadata create | **1,004.61 ops/s** | 549.01 ops/s | **83% faster** |
+
+Performance is only useful with filesystem correctness. The same codebase
+passes **708 configured xfstests cases per supported metadata backend**. Redis
+and TiKV each pass the full pjdfstest corpus: **246 test files and 9,134
+assertions**. The workspace gate adds **1,166 passing Rust tests**.
+
+The honest boundary matters: BrewFS does not lead every workload. JuiceFS is
+still faster in sequential read, strictly drained pure writes, and TiKV
+create/open/rename. The complete tables below include those losses alongside
+the wins, with cache state, writeback drain, units, and run artifacts exposed.
 
 ## Where BrewFS fits
 
@@ -32,10 +61,10 @@ It is less compelling for workloads that only need raw object access, require
 kernel-filesystem latency, or cannot tolerate the operational trade-offs of
 FUSE and distributed metadata.
 
-## Evidence before claims: BrewFS compared with JuiceFS
+## A fair comparison with JuiceFS
 
-The corrected July 24, 2026 snapshot compares BrewFS with JuiceFS 1.3.1 on the
-same host, using Redis and TiKV metadata and RustFS object storage. All four
+The July 24, 2026 snapshot compares BrewFS with JuiceFS 1.3.1 on the same host,
+using Redis and TiKV metadata and RustFS object storage. All four
 complete runs used buffered `io_uring`, 4 MiB I/O, a 512 MiB per-job fio size,
 disabled compression, durable read prefill, cache-preserving remounts, and
 strict post-write drain. Every one of the ten tools passed, and every write
@@ -67,7 +96,7 @@ workers reduced mixed I/O by about 23% during fio and 12% after drain. An
 8 GiB combined read/write memory allocation alongside TiKV caused multi-minute
 close tails. Both candidates were rejected.
 
-### Application-visible throughput
+### Data-path throughput seen by applications
 
 Actual bytes divided by complete fio process wall time, including close and
 fsync. Mixed random I/O is read plus write throughput.
@@ -88,7 +117,7 @@ remount/read rounds with targeted `POSIX_FADV_DONTNEED` eviction of each
 filesystem's local cache files; the reported value is the median. All four
 stable Large read artifacts recorded zero object GET bytes during measurement.
 
-### Hot local-cache Large read (Redis)
+### A repeatable 2.4 GiB/s hot-cache read path
 
 The persistent-cache table deliberately evicts local cache pages between its
 remount/read rounds. We also measured the different, fully hot local
@@ -107,7 +136,7 @@ claim, and is therefore presented separately from the main matrix. BrewFS's
 promoted-slice cache is validated by zero S3 GETs; its generic block-cache hit
 counter does not include that path.
 
-### Strictly drained write throughput
+### Write throughput after every queued byte is drained
 
 This finish line includes the time required to empty the writeback queue.
 
@@ -123,7 +152,7 @@ pure writes finish sooner and mixed I/O remains strong through drain. Remote
 completion of pure writes is still slower, especially for large batches,
 because upload and metadata commit costs remain after foreground completion.
 
-### Metadata throughput
+### Metadata throughput: strong reads, clear transaction targets
 
 | Operation | BrewFS Redis | JuiceFS Redis | BrewFS TiKV | JuiceFS TiKV |
 | --- | ---: | ---: | ---: | ---: |
@@ -136,7 +165,7 @@ because upload and metadata commit costs remain after foreground completion.
 BrewFS leads stat and readdir plus Redis create. Open, rename, and TiKV create
 remain clear round-trip and transaction-reduction targets.
 
-### Reproducible evidence
+### Every published result has an artifact
 
 Complete-matrix artifacts are `perf-run-1784876227-9934` (BrewFS Redis),
 `juicefs-perf-run-1784879992-17249` (JuiceFS Redis),
@@ -158,7 +187,7 @@ test phases with zero failures before these results were accepted. This remains
 a single-host engineering result with local RustFS, not a claim that one
 filesystem wins every workload or deployment.
 
-## One filesystem, interchangeable storage components
+## Choose metadata and object storage independently
 
 BrewFS separates the filesystem interface, metadata, and data paths:
 
@@ -201,7 +230,7 @@ coalescing writes, and applying backpressure at the right boundaries. What Rust
 provides is a strong base for implementing those optimizations without giving
 up memory safety.
 
-## A data path designed for real I/O
+## Keep object storage off the critical path
 
 BrewFS combines several techniques to keep remote storage away from the
 application's critical path whenever semantics allow:
@@ -223,7 +252,7 @@ configurable because the best freshness and throughput trade-off for a
 single-client build workspace is not necessarily correct for a multi-client
 shared filesystem.
 
-## Why the benchmark counts the finish line
+## A benchmark must count the finish line
 
 Filesystem benchmarks can be misleading when they stop timing as soon as an
 application finishes issuing writes. A fast foreground result may simply mean
@@ -257,7 +286,7 @@ PERF_FIO_SIZE=512m PERF_FIO_RUNTIME=20 \
   --writeback-throughput-profile
 ```
 
-## Correctness is part of performance
+## Correctness is a performance requirement
 
 A distributed filesystem is not useful if a faster data path weakens filesystem
 behavior. BrewFS treats correctness tests as release gates rather than optional
@@ -280,7 +309,7 @@ debt. A longer metadata cache can accelerate `open` while weakening
 cross-client freshness. BrewFS makes these trade-offs visible and keeps
 throughput-oriented behavior in explicit profiles.
 
-## Try BrewFS
+## Try BrewFS in minutes
 
 A local build requires Rust 1.85 or newer and FUSE 3. The smallest setup uses
 SQLite metadata and local data storage:
@@ -304,18 +333,20 @@ curl -fsSL https://raw.githubusercontent.com/brewfs/brewfs/main/scripts/install_
   | sudo bash -s -- install
 ```
 
-## Help build the next layer
+## Build the next storage layer with us
 
-BrewFS is still evolving. Current work includes reducing metadata round trips,
-improving multi-client cache invalidation, lowering write amplification, and
-expanding operational tooling around compaction, recovery, and observability.
+BrewFS is still evolving, and the next gains are concrete: fewer metadata
+round trips, stronger multi-client cache invalidation, lower write
+amplification, and better operational tooling for compaction, recovery, and
+observability.
 
 Contributions do not need to start in the deepest part of the write path. The
 project benefits from new backend adapters, workload reports, documentation,
 portability fixes, test coverage, and production feedback just as much as from
 core filesystem changes.
 
-If building a distributed filesystem in Rust sounds interesting, explore the
+If you are building AI pipelines, CI infrastructure, or shared data platforms,
+bring a real workload and challenge these results. Explore the
 [BrewFS repository](https://github.com/brewfs/brewfs), read the
 [architecture guide](https://github.com/brewfs/brewfs/blob/main/doc/architecture/arch.md),
 or reproduce the
