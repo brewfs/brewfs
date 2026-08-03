@@ -1,0 +1,25 @@
+[package]
+name = "brewfs-tray"
+version = "0.1.0"
+edition = "2024"
+description = "Windows system-tray manager for BrewFS (Slint 1.17 UI)"
+license = "MIT"
+publish = false
+
+[dependencies]
+slint = "1.17"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+dirs = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+slint-build = "1.17"
+

@@ -48,7 +48,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler pkg-config libfontconfig1-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -122,6 +122,12 @@ jobs:
 
       - name: Clippy WinFsp feature
         run: cargo clippy -p brewfs --no-default-features --features fuse-winfsp --lib --bins
+
+      - name: Check desktop tray app
+        run: cargo check -p brewfs-tray --all-targets
+
+      - name: Test desktop tray app
+        run: cargo test -p brewfs-tray
 
   docker-pjdfstest:
     name: Docker pjdfstest smoke
