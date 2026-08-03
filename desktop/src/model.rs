@@ -20,14 +20,19 @@ pub const DEFAULT_BLOCK_SIZE: u32 = 4 * 1024 * 1024;
 #[serde(default)]
 pub struct Profile {
     pub name: String,
+    /// "brewfs" = metadata-backed BrewFS mount; "oss" = metadata-less OSS
+    /// direct mount (multi-machine cloud drive, weak consistency).
+    pub mode: String,
     pub drive: String,
-    pub backend: String, // "local-fs" | "s3"
+    pub backend: String, // "local-fs" | "s3" (brewfs mode only)
     pub data_dir: String,
     pub s3_bucket: String,
     pub s3_endpoint: String,
     pub s3_region: String,
     pub s3_force_path_style: bool,
     pub s3_disable_payload_checksum: bool,
+    /// Optional object-key namespace for OSS direct mode (e.g. "myns/").
+    pub prefix: String,
     pub access_key: String,
     pub secret_key: String,
     pub meta_backend: String, // "sqlx" | "redis" | "etcd" | "tikv"
@@ -38,6 +43,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             name: "新建配置".to_string(),
+            mode: "brewfs".to_string(),
             drive: String::new(),
             backend: "local-fs".to_string(),
             data_dir: String::from("E:\\brewfs-data"),
@@ -46,6 +52,7 @@ impl Default for Profile {
             s3_region: String::new(),
             s3_force_path_style: false,
             s3_disable_payload_checksum: true,
+            prefix: String::new(),
             access_key: String::new(),
             secret_key: String::new(),
             meta_backend: "sqlx".to_string(),
@@ -70,36 +77,52 @@ impl Profile {
                 "盘符格式不正确：{drive}（应为单个字母加冒号，例如 Z:）"
             ));
         }
-        match self.backend.as_str() {
-            "local-fs" => {
-                if self.data_dir.trim().is_empty() {
-                    return Err("本地文件系统需要填写数据目录".into());
-                }
-            }
-            "s3" => {
+        match self.mode.as_str() {
+            "oss" => {
                 if self.s3_bucket.trim().is_empty() {
-                    return Err("S3 后端需要填写 Bucket".into());
+                    return Err("OSS 直挂需要填写 Bucket".into());
                 }
                 if self.s3_endpoint.trim().is_empty() {
-                    return Err("S3 后端需要填写 Endpoint".into());
+                    return Err("OSS 直挂需要填写 Endpoint".into());
                 }
                 if self.access_key.trim().is_empty() || self.secret_key.trim().is_empty() {
-                    return Err("S3 后端需要填写 AccessKey / SecretKey".into());
+                    return Err("OSS 直挂需要填写 AccessKey / SecretKey".into());
                 }
+                Ok(())
             }
-            other => return Err(format!("未知的数据后端：{other}")),
+            _ => {
+                match self.backend.as_str() {
+                    "local-fs" => {
+                        if self.data_dir.trim().is_empty() {
+                            return Err("本地文件系统需要填写数据目录".into());
+                        }
+                    }
+                    "s3" => {
+                        if self.s3_bucket.trim().is_empty() {
+                            return Err("S3 后端需要填写 Bucket".into());
+                        }
+                        if self.s3_endpoint.trim().is_empty() {
+                            return Err("S3 后端需要填写 Endpoint".into());
+                        }
+                        if self.access_key.trim().is_empty() || self.secret_key.trim().is_empty() {
+                            return Err("S3 后端需要填写 AccessKey / SecretKey".into());
+                        }
+                    }
+                    other => return Err(format!("未知的数据后端：{other}")),
+                }
+                match self.meta_backend.as_str() {
+                    "sqlx" | "redis" | "etcd" | "tikv" => {}
+                    other => return Err(format!("未知的元数据后端：{other}")),
+                }
+                if self.meta_url.trim().is_empty()
+                    && self.meta_backend != "etcd"
+                    && self.meta_backend != "tikv"
+                {
+                    return Err("请填写元数据 URL".into());
+                }
+                Ok(())
+            }
         }
-        match self.meta_backend.as_str() {
-            "sqlx" | "redis" | "etcd" | "tikv" => {}
-            other => return Err(format!("未知的元数据后端：{other}")),
-        }
-        if self.meta_url.trim().is_empty()
-            && self.meta_backend != "etcd"
-            && self.meta_backend != "tikv"
-        {
-            return Err("请填写元数据 URL".into());
-        }
-        Ok(())
     }
 
     /// Render the YAML accepted by `brewfs mount --config`.
@@ -311,6 +334,12 @@ pub fn runtime_records_dir() -> PathBuf {
         .join("brewfs")
 }
 
+/// Directory where `ossmount` records its instances (kept separate from the
+/// BrewFS control-plane registry).
+pub fn oss_records_dir() -> PathBuf {
+    std::env::temp_dir().join("brewfs-oss")
+}
+
 fn read_records_raw(dir: &Path) -> Vec<InstanceRecord> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
@@ -338,6 +367,9 @@ pub struct MountStatus {
     pub detail: String,
     pub pid: u32,
     pub alive: bool,
+    /// True when this is a metadata-less `ossmount` instance (not a BrewFS
+    /// control-plane mount); unmount = terminate the process.
+    pub is_oss: bool,
 }
 
 /// Read the runtime registry and produce mount status rows.
@@ -346,29 +378,39 @@ pub struct MountStatus {
 /// UI can show them, but they are not counted as live mounts.
 pub fn read_mounts(profiles: &[Profile]) -> Vec<MountStatus> {
     let mut out: Vec<MountStatus> = Vec::new();
-    let dir = runtime_records_dir();
-    for record in read_records_raw(&dir) {
-        let drive = normalize_mount_point(&record.mount_point);
-        let profile = profiles
-            .iter()
-            .find(|p| normalize_mount_point(&p.drive) == drive);
-        let backend = profile
-            .map(|p| p.backend.as_str())
-            .unwrap_or("local-fs")
-            .to_string();
-        let detail = profile
-            .map(|p| match p.backend.as_str() {
-                "s3" => format!("{} / {}", p.s3_bucket, p.s3_region),
-                _ => p.data_dir.clone(),
-            })
-            .unwrap_or_else(|| "（无匹配配置）".to_string());
-        out.push(MountStatus {
-            drive,
-            backend,
-            detail,
-            pid: record.pid,
-            alive: crate::winutil::pid_alive(record.pid),
-        });
+    for (dir, is_oss) in [(runtime_records_dir(), false), (oss_records_dir(), true)] {
+        for record in read_records_raw(&dir) {
+            let drive = normalize_mount_point(&record.mount_point);
+            let profile = profiles
+                .iter()
+                .find(|p| normalize_mount_point(&p.drive) == drive);
+            let (backend, detail) = if is_oss {
+                let detail = profile
+                    .map(|p| format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/')))
+                    .unwrap_or_else(|| "OSS 直挂（无元数据）".to_string());
+                ("oss".to_string(), detail)
+            } else {
+                let backend = profile
+                    .map(|p| p.backend.as_str())
+                    .unwrap_or("local-fs")
+                    .to_string();
+                let detail = profile
+                    .map(|p| match p.backend.as_str() {
+                        "s3" => format!("{} / {}", p.s3_bucket, p.s3_region),
+                        _ => p.data_dir.clone(),
+                    })
+                    .unwrap_or_else(|| "（无匹配配置）".to_string());
+                (backend, detail)
+            };
+            out.push(MountStatus {
+                drive,
+                backend,
+                detail,
+                pid: record.pid,
+                alive: crate::winutil::pid_alive(record.pid),
+                is_oss,
+            });
+        }
     }
     out.sort_by_key(|m| std::cmp::Reverse(m.alive));
     out
@@ -388,8 +430,13 @@ pub fn normalize_mount_point(s: &str) -> String {
 /// Best-effort cleanup of stale runtime records whose owning process is gone.
 /// This keeps `brewfs info` and the tray status accurate.
 pub fn prune_stale_records() {
-    let dir = runtime_records_dir();
-    let Ok(entries) = fs::read_dir(&dir) else {
+    for dir in [runtime_records_dir(), oss_records_dir()] {
+        prune_records_in(&dir);
+    }
+}
+
+fn prune_records_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -443,6 +490,36 @@ pub fn find_brewfs() -> Option<PathBuf> {
     None
 }
 
+/// Locate the `ossmount` binary: same directory as the tray executable, then
+/// `OSSMOUNT_EXE`, then PATH.
+pub fn find_ossmount() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("OSSMOUNT_EXE") {
+        let p = PathBuf::from(explicit);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for sibling in ["ossmount.exe", "ossmount"] {
+            let p = exe.parent()?.join(sibling);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for candidate in ["ossmount.exe", "ossmount"] {
+                let p = dir.join(candidate);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Spawn `brewfs mount --config <yaml>` and return (child pid, log path).
 pub fn spawn_mount(brewfs: &Path, profile: &Profile) -> std::io::Result<(u32, PathBuf)> {
     let app_dir = dirs::data_local_dir()
@@ -475,6 +552,59 @@ pub fn spawn_mount(brewfs: &Path, profile: &Profile) -> std::io::Result<(u32, Pa
             .env("AWS_SECRET_ACCESS_KEY", &profile.secret_key);
     }
     let log_file = fs::File::create(&log_path)?;
+    cmd.stdout(log_file.try_clone()?).stderr(log_file);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 /* CREATE_NO_WINDOW */);
+    }
+    let child = cmd.spawn()?;
+    Ok((child.id(), log_path))
+}
+
+/// Spawn `ossmount mount --bucket ... <drive>` (metadata-less OSS direct
+/// mount) and return (child pid, log path).
+pub fn spawn_oss_mount(ossmount: &Path, profile: &Profile) -> std::io::Result<(u32, PathBuf)> {
+    let app_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("brewfs-tray");
+    let log_dir = app_dir.join("logs");
+    fs::create_dir_all(&log_dir)?;
+
+    let safe_name: String = profile
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let log_path = log_dir.join(format!("{safe_name}-oss.log"));
+    let log_file = fs::File::create(&log_path)?;
+
+    let mut cmd = Command::new(ossmount);
+    cmd.arg("mount")
+        .arg("--bucket")
+        .arg(profile.s3_bucket.trim())
+        .arg("--endpoint")
+        .arg(profile.s3_endpoint.trim());
+    if !profile.s3_region.trim().is_empty() {
+        cmd.arg("--region").arg(profile.s3_region.trim());
+    }
+    if !profile.prefix.trim().is_empty() {
+        cmd.arg("--prefix").arg(profile.prefix.trim());
+    }
+    if profile.s3_force_path_style {
+        cmd.arg("--force-path-style");
+    }
+    cmd.arg(profile.drive.trim());
+    if !profile.access_key.is_empty() {
+        cmd.env("AWS_ACCESS_KEY_ID", &profile.access_key)
+            .env("AWS_SECRET_ACCESS_KEY", &profile.secret_key);
+    }
     cmd.stdout(log_file.try_clone()?).stderr(log_file);
     #[cfg(windows)]
     {
@@ -648,6 +778,68 @@ mod tests {
         assert_eq!(records[0].pid, 101);
         assert_eq!(records[0].mount_point, "Z:");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_oss_mode_requires_s3_fields() {
+        let mut p = Profile {
+            mode: "oss".into(),
+            drive: "F:".into(),
+            s3_bucket: String::new(),
+            s3_endpoint: String::new(),
+            ..Profile::default()
+        };
+        assert!(p.validate().is_err()); // no bucket
+        p.s3_bucket = "b".into();
+        assert!(p.validate().is_err()); // no endpoint
+        p.s3_endpoint = "https://s3.example.com".into();
+        assert!(p.validate().is_err()); // no keys
+        p.access_key = "ak".into();
+        p.secret_key = "sk".into();
+        assert!(p.validate().is_ok());
+        // prefix is optional in OSS mode
+        p.prefix = "myns/".into();
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn profile_json_roundtrip_preserves_mode_and_prefix() {
+        let p = Profile {
+            mode: "oss".into(),
+            prefix: "myns/".into(),
+            drive: "F:".into(),
+            backend: "s3".into(),
+            s3_bucket: "b".into(),
+            s3_endpoint: "https://s3.example.com".into(),
+            access_key: "ak".into(),
+            secret_key: "sk".into(),
+            ..Profile::default()
+        };
+        let data = serde_json::to_vec(&p).unwrap();
+        let back: Profile = serde_json::from_slice(&data).unwrap();
+        assert_eq!(back.mode, "oss");
+        assert_eq!(back.prefix, "myns/");
+    }
+
+    #[test]
+    fn read_mounts_scans_oss_records_dir() {
+        let oss_dir = oss_records_dir();
+        let _ = fs::create_dir_all(&oss_dir);
+        let fake_pid = 4_200_000 + std::process::id() % 100_000;
+        let path = oss_dir.join(format!("{fake_pid}.json"));
+        let record = serde_json::json!({
+            "pid": fake_pid,
+            "mount_point": "H:",
+            "socket_path": "",
+            "started_at": "2026-01-01T00:00:00Z",
+        });
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let mounts = read_mounts(&[]);
+        let _ = fs::remove_file(&path);
+        let m = mounts.iter().find(|m| m.pid == fake_pid);
+        assert!(m.is_some(), "ossmount record should be picked up");
+        assert_eq!(m.unwrap().is_oss, true);
+        assert_eq!(m.unwrap().backend, "oss");
     }
 
     #[test]

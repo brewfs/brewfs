@@ -28,6 +28,24 @@ Windows 上运行托盘应用会直接以无控制台窗口方式启动（`windo
 "windows"`）。托盘图标在事件循环运行后出现；关闭主窗口只是隐藏到托盘，点托盘
 “退出 BrewFS” 才结束进程。
 
+## OSS 直挂模式（多机网盘，无本地元数据）
+配置文件档案的"挂载模式"选 **OSS 直挂（多机）** 后，托盘应用不再走 BrewFS 元数据
+（sqlite/redis/...），而是调用 `ossmount`（本仓库自带）把 **S3/OSS bucket 直接挂载成
+盘符**：
+
+- 文件路径直接编码为对象 key，bucket 是唯一数据源 → **任意多台机器挂同一
+  bucket+prefix 都能看到同一棵树**，不需要共享元数据库
+- 表单里填 Bucket / Endpoint / Region / AK / SK / Prefix（可选命名空间，多机要一致）
+- 挂载命令：`ossmount mount --bucket B --endpoint E --region R [--prefix P] <盘符>`
+- 卸载 = 结束进程（数据在关闭文件时已整文件上传，无需优雅卸载）
+- 弱一致（无锁、无原子改名）——适合网盘/上传下载，不适合并发改同一文件
+
+需要先构建 ossmount 二进制：
+```powershell
+cargo build -p brewfs --bin ossmount --no-default-features --features fuse-winfsp
+# 产物 target\debug\ossmount.exe，托盘应用会自动在旁边找到它（或用 OSSMOUNT_EXE 指定）
+```
+
 ## 使用
 
 - 首次运行在 `%APPDATA%\brewfs-tray\profiles.json` 生成/读取配置档案。

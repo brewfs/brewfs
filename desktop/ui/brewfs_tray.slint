@@ -21,11 +21,13 @@ export component MainWindow inherits Window {
     in property <string> status-text;
     in property <string> free-drives-text;
     in property <string> brewfs-path;
+    in property <string> ossmount-path;
     in property <[string]> profile-names;
     in property <[MountInfo]> mounts;
 
     in-out property <int> cfg-profile-index;
     in-out property <string> cfg-name;
+    in-out property <int> cfg-mode-index;
     in-out property <string> cfg-drive;
     in-out property <int> cfg-backend-index;
     in-out property <string> cfg-data-dir;
@@ -35,9 +37,11 @@ export component MainWindow inherits Window {
     in-out property <string> cfg-s3-access-key;
     in-out property <string> cfg-s3-secret-key;
     in-out property <bool> cfg-s3-force-path-style;
+    in-out property <string> cfg-prefix;
     in-out property <int> cfg-meta-index;
     in-out property <string> cfg-meta-url;
 
+    property <string> cfg-mode: cfg-mode-index == 1 ? "oss" : "brewfs";
     property <string> cfg-backend: cfg-backend-index == 1 ? "s3" : "local-fs";
     property <string> cfg-meta-backend: cfg-meta-index == 1 ? "redis" : (cfg-meta-index == 2 ? "etcd" : (cfg-meta-index == 3 ? "tikv" : "sqlx"));
 
@@ -129,6 +133,18 @@ export component MainWindow inherits Window {
                     }
                 }
                 Row {
+                    Text { text: "挂载模式"; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["BrewFS（元数据）", "OSS 直挂（多机）"];
+                        current-index: root.cfg-mode-index;
+                        selected(v) => {
+                            root.cfg-mode-index = v == "OSS 直挂（多机）" ? 1 : 0;
+                        }
+                    }
+                    Text { text: ""; }
+                    HorizontalBox { }
+                }
+                if root.cfg-mode == "brewfs": Row {
                     Text { text: "数据后端"; vertical-alignment: center; }
                     ComboBox {
                         model: ["local-fs", "s3"];
@@ -146,7 +162,7 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.cfg-backend == "local-fs": Row {
+                if root.cfg-mode == "brewfs" && root.cfg-backend == "local-fs": Row {
                     Text { text: "数据目录"; vertical-alignment: center; }
                     LineEdit {
                         text: root.cfg-data-dir;
@@ -155,13 +171,13 @@ export component MainWindow inherits Window {
                     HorizontalBox { }
                     HorizontalBox { }
                 }
-                if root.cfg-backend == "s3": Row {
+                if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
                     Text { text: "Bucket"; vertical-alignment: center; }
                     LineEdit { text: root.cfg-s3-bucket; placeholder-text: "OSS bucket 名称"; }
                     Text { text: "Region"; vertical-alignment: center; }
                     LineEdit { text: root.cfg-s3-region; placeholder-text: "例如 cn-shanghai"; }
                 }
-                if root.cfg-backend == "s3": Row {
+                if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
                     Text { text: "Endpoint"; vertical-alignment: center; }
                     LineEdit {
                         text: root.cfg-s3-endpoint;
@@ -170,7 +186,7 @@ export component MainWindow inherits Window {
                     HorizontalBox { }
                     HorizontalBox { }
                 }
-                if root.cfg-backend == "s3": Row {
+                if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
                     Text { text: "AccessKey"; vertical-alignment: center; }
                     LineEdit {
                         text: root.cfg-s3-access-key;
@@ -183,7 +199,7 @@ export component MainWindow inherits Window {
                         input-type: password;
                     }
                 }
-                if root.cfg-backend == "s3": Row {
+                if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
                     CheckBox {
                         text: "force_path_style（MinIO/自建 S3 需要）";
                         checked: root.cfg-s3-force-path-style;
@@ -192,7 +208,16 @@ export component MainWindow inherits Window {
                     HorizontalBox { }
                     HorizontalBox { }
                 }
-                Row {
+                if root.cfg-mode == "oss": Row {
+                    Text { text: "Prefix"; vertical-alignment: center; }
+                    LineEdit {
+                        text: root.cfg-prefix;
+                        placeholder-text: "对象 key 命名空间（可选），例如 myns/；多机共享时保持一致";
+                    }
+                    Text { text: ""; }
+                    HorizontalBox { }
+                }
+                if root.cfg-mode == "brewfs": Row {
                     Text { text: "元数据 URL"; vertical-alignment: center; }
                     LineEdit {
                         text: root.cfg-meta-url;
@@ -243,6 +268,11 @@ export component MainWindow inherits Window {
                 }
                 Text {
                     text: "brewfs: " + root.brewfs-path;
+                    color: #888;
+                    font-size: 12px;
+                }
+                Text {
+                    text: "ossmount: " + root.ossmount-path;
                     color: #888;
                     font-size: 12px;
                 }

@@ -163,6 +163,7 @@ pub async fn mount_oss_winfsp(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::
 
     info!(mount_point = %mount_point.display(), "brewfs-oss mounted via WinFsp");
     println!("mounted at {}", mount_point.display());
+    write_runtime_record(mount_point);
 
     tokio::select! {
         signal = tokio::signal::ctrl_c() => {
@@ -173,6 +174,7 @@ pub async fn mount_oss_winfsp(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::
 
     host.stop();
     host.unmount();
+    remove_runtime_record();
     Ok(())
 }
 
@@ -666,6 +668,37 @@ fn file_index(path: &str) -> u64 {
 
 fn log_path(path: &str) -> &str {
     path
+}
+
+/// Runtime record the desktop tray app uses to list and stop `ossmount`
+/// instances. Kept in `%TEMP%\brewfs-oss` so it never mixes with the BrewFS
+/// control-plane registry (`%TEMP%\brewfs`).
+fn runtime_record_path(pid: u32) -> PathBuf {
+    std::env::temp_dir()
+        .join("brewfs-oss")
+        .join(format!("{pid}.json"))
+}
+
+fn write_runtime_record(mount_point: &Path) {
+    let dir = std::env::temp_dir().join("brewfs-oss");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!(error = ?e, "ossfs failed to create runtime record dir");
+        return;
+    }
+    let record = serde_json::json!({
+        "pid": std::process::id(),
+        "mount_point": mount_point.display().to_string(),
+        "socket_path": "",
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let data = serde_json::to_vec_pretty(&record).unwrap_or_default();
+    if let Err(e) = std::fs::write(runtime_record_path(std::process::id()), data) {
+        warn!(error = ?e, "ossfs failed to write runtime record");
+    }
+}
+
+fn remove_runtime_record() {
+    let _ = std::fs::remove_file(runtime_record_path(std::process::id()));
 }
 
 unsafe extern "system" {
