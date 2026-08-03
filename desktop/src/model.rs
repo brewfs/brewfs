@@ -485,6 +485,19 @@ pub fn spawn_mount(brewfs: &Path, profile: &Profile) -> std::io::Result<(u32, Pa
     Ok((child.id(), log_path))
 }
 
+/// Gracefully unmount a mounted instance by asking its control plane to
+/// shut down (`brewfs unmount <drive>`). This lets brewfs flush and tear
+/// down the WinFsp volume cleanly, avoiding Explorer hangs that a force-kill
+/// can cause.
+///
+/// Returns `Ok(true)` when the instance accepted the request, `Ok(false)`
+/// when the command ran but the instance did not accept (e.g. an old brewfs
+/// without the `unmount` subcommand), and `Err` on spawn failure.
+pub fn graceful_unmount(brewfs: &Path, drive: &str) -> std::io::Result<bool> {
+    let output = Command::new(brewfs).args(["unmount", drive]).output()?;
+    Ok(output.status.success())
+}
+
 /// Read the tail of a mount log file for error reporting.
 pub fn read_log_tail(path: &Path, max_bytes: usize) -> String {
     let Ok(meta) = fs::metadata(path) else {

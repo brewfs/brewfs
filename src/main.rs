@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Gc(args) => gc_cmd(args).await,
         Command::Info(args) => info_cmd(args).await,
+        Command::Unmount(args) => unmount_cmd(args).await,
         Command::Console(args) => console::serve_cmd(args).await,
         Command::ObjectPutBench(args) => object_put_bench_cmd(args).await,
     };
@@ -735,6 +736,9 @@ where
         .await
         .map_err(anyhow::Error::from)?;
     tracing::info!("mount startup control plane complete");
+    // A control-plane `brewfs unmount` raises this so the mount loop exits
+    // gracefully (same path as Ctrl+C) and flushes/tears down cleanly.
+    let shutdown = meta_client.subscribe_shutdown();
 
     tracing::info!("mount startup vfs create begin");
     let fs = VFS::with_meta_layer_with_cache_config(
@@ -754,7 +758,7 @@ where
             mount_point = %mount_point.display(),
             "mount startup winfsp mount begin"
         );
-        crate::winfsp::mount_vfs_winfsp(fs, mount_point).await?;
+        crate::winfsp::mount_vfs_winfsp(fs, mount_point, shutdown).await?;
     }
 
     #[cfg(not(all(windows, feature = "fuse-winfsp")))]
@@ -775,12 +779,18 @@ where
             mount_vfs_unprivileged(fs, mount_point, concurrency).await?
         };
 
+        let mut shutdown = shutdown;
         println!("mounted at {}", mount_point.display());
         let mut handle = handle;
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal?;
                 println!("unmounting...");
+                handle.unmount().await?;
+            }
+            changed = shutdown.changed() => {
+                changed?;
+                println!("unmounting via control plane...");
                 handle.unmount().await?;
             }
             result = &mut handle => {
@@ -890,6 +900,25 @@ async fn info_cmd(args: InfoArgs) -> anyhow::Result<()> {
         }
         ControlResponse::Error { code, message } => {
             anyhow::bail!("info failed: {code}: {message}");
+        }
+        other => anyhow::bail!("unexpected response: {other:?}"),
+    }
+}
+
+async fn unmount_cmd(args: UnmountArgs) -> anyhow::Result<()> {
+    let registry = RuntimeRegistry::new(RuntimeRegistry::default_root());
+    let mount_point = args.mount_point.as_ref().map(|path| path.to_string_lossy());
+    let record = registry.select_instance(mount_point.as_deref()).await?;
+
+    let response = send_request(&record.socket_path, &ControlRequest::Shutdown).await?;
+
+    match response {
+        ControlResponse::ShutdownAccepted => {
+            println!("unmount request accepted for {}", record.mount_point);
+            Ok(())
+        }
+        ControlResponse::Error { code, message } => {
+            anyhow::bail!("unmount failed: {code}: {message}");
         }
         other => anyhow::bail!("unexpected response: {other:?}"),
     }

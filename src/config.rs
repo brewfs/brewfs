@@ -61,6 +61,9 @@ pub enum Command {
     /// Talk to a mounted BrewFS instance and print mount information.
     Info(InfoArgs),
 
+    /// Gracefully unmount a mounted BrewFS instance via its control plane.
+    Unmount(UnmountArgs),
+
     /// Run the BrewFS web console.
     Console(ConsoleArgs),
 
@@ -172,6 +175,13 @@ pub struct GcArgs {
 #[derive(Args, Debug, Clone)]
 pub struct InfoArgs {
     /// Optional mount point used to locate the target instance.
+    #[arg(value_name = "MOUNT_POINT")]
+    pub mount_point: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UnmountArgs {
+    /// Optional mount point (drive letter) used to locate the target instance.
     #[arg(value_name = "MOUNT_POINT")]
     pub mount_point: Option<PathBuf>,
 }

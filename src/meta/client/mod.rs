@@ -322,6 +322,10 @@ pub struct MetaClient<T: MetaStore + ?Sized> {
     job_manager: Arc<JobManager>,
     control_plane: Mutex<Option<ControlPlaneState>>,
 
+    /// Fired by `ControlRequest::Shutdown` to make the mount loop unmount
+    /// gracefully (the same path Ctrl+C takes).
+    shutdown: tokio::sync::watch::Sender<bool>,
+
     /// Watch Worker for etcd cache invalidation (for now only used for etcd).
     /// TODO: Now that we use the watch worker to invalidate cache in real-time,
     /// may want to consider a more detailed data caching approach.
@@ -430,6 +434,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             session_manager: Arc::new(SessionManager::new(store.clone())),
             job_manager: Arc::new(JobManager::default()),
             control_plane: Mutex::new(None),
+            shutdown: tokio::sync::watch::channel(false).0,
             watch_worker: watch_worker.as_ref().map(|(w, _)| w.clone()),
         });
         debug!("MetaClient::with_options cache structures complete");
@@ -1002,6 +1007,20 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         self.mark_umounting();
         self.shutdown_control_plane().await;
         self.session_manager.shutdown().await;
+    }
+
+    /// Subscribe to the graceful-shutdown signal raised by
+    /// `ControlRequest::Shutdown`. The mount loop selects on this receiver
+    /// alongside Ctrl+C so a control-plane unmount flushes and tears down the
+    /// filesystem exactly like a terminal Ctrl+C would.
+    pub fn subscribe_shutdown(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shutdown.subscribe()
+    }
+
+    /// Request a graceful shutdown of the mount loop (used by the
+    /// `ControlRequest::Shutdown` handler).
+    pub fn request_shutdown(&self) {
+        let _ = self.shutdown.send(true);
     }
 
     pub async fn start_control_plane(self: &Arc<Self>) -> Result<(), MetaError> {
@@ -2019,6 +2038,10 @@ impl<T: MetaStore + ?Sized + 'static> ControlHandler for Arc<MetaClient<T>> {
     async fn handle(&self, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
+            ControlRequest::Shutdown => {
+                self.request_shutdown();
+                ControlResponse::ShutdownAccepted
+            }
             ControlRequest::GetInfo => {
                 let control_plane = self.control_plane.lock().await;
 

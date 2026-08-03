@@ -211,10 +211,11 @@ fn wire_callbacks(
     ui.on_unmount_current({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
+        let brewfs = brewfs.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
-            unmount_drive(&ui, &state, &drive);
+            unmount_drive(&ui, &state, &brewfs, &drive);
         }
     });
 
@@ -256,9 +257,10 @@ fn wire_callbacks(
     {
         let ui_weak = ui_weak.clone();
         let state = state.clone();
+        let brewfs = brewfs.clone();
         ui.on_unmount_mount(move |index| {
             if let Some(ui) = ui_weak.upgrade() {
-                unmount_at(&ui, &state, index);
+                unmount_at(&ui, &state, &brewfs, index);
             }
         });
     }
@@ -270,16 +272,17 @@ fn wire_callbacks(
         let state = state.clone();
         let recent = recent.clone();
         let window_visible = window_visible.clone();
+        let brewfs = brewfs.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mounts = model::read_mounts(&state.borrow().profiles);
-            let live: Vec<u32> = mounts.iter().filter(|m| m.alive).map(|m| m.pid).collect();
+            let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
             if live.is_empty() {
                 ui.set_status_text("当前没有活动挂载".into());
                 return;
             }
-            for pid in &live {
-                let _ = winutil::terminate_process(*pid);
+            for m in &live {
+                graceful_or_kill(&ui, brewfs.as_ref(), m);
             }
             ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
             if let Some(tray) = tray_weak.upgrade() {
@@ -472,7 +475,12 @@ fn open_mount_at(ui: &MainWindow, state: &Rc<RefCell<model::ProfilesFile>>, inde
     open_in_explorer(&m.drive);
 }
 
-fn unmount_at(ui: &MainWindow, state: &Rc<RefCell<model::ProfilesFile>>, index: i32) {
+fn unmount_at(
+    ui: &MainWindow,
+    state: &Rc<RefCell<model::ProfilesFile>>,
+    brewfs: &Option<PathBuf>,
+    index: i32,
+) {
     let mounts = model::read_mounts(&state.borrow().profiles);
     let Some(m) = mounts.get(index as usize) else {
         ui.set_status_text("挂载列表已变化，请刷新".into());
@@ -482,21 +490,44 @@ fn unmount_at(ui: &MainWindow, state: &Rc<RefCell<model::ProfilesFile>>, index: 
         ui.set_status_text(format!("{} 已不在运行", m.drive).into());
         return;
     }
-    match winutil::terminate_process(m.pid) {
-        Ok(()) => ui.set_status_text(format!("已请求卸载 {}", m.drive).into()),
-        Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),
-    }
+    graceful_or_kill(ui, brewfs, m);
 }
 
-fn unmount_drive(ui: &MainWindow, state: &Rc<RefCell<model::ProfilesFile>>, drive: &str) {
+fn unmount_drive(
+    ui: &MainWindow,
+    state: &Rc<RefCell<model::ProfilesFile>>,
+    brewfs: &Option<PathBuf>,
+    drive: &str,
+) {
     let mounts = model::read_mounts(&state.borrow().profiles);
     let Some(m) = mounts.iter().find(|m| m.drive == drive && m.alive) else {
         ui.set_status_text(format!("{drive} 没有活动挂载").into());
         return;
     };
+    graceful_or_kill(ui, brewfs, m);
+}
+
+/// Prefer a graceful control-plane unmount (`brewfs unmount <drive>`); only
+/// fall back to force-killing the process when brewfs is missing or does not
+/// accept the request (e.g. an older binary without the `unmount` subcommand).
+fn graceful_or_kill(ui: &MainWindow, brewfs: &Option<PathBuf>, m: &model::MountStatus) {
+    if let Some(brewfs) = brewfs {
+        match model::graceful_unmount(brewfs, &m.drive) {
+            Ok(true) => {
+                ui.set_status_text(format!("已请求优雅卸载 {}", m.drive).into());
+                return;
+            }
+            Ok(false) => {
+                ui.set_status_text(format!("{} 未接受优雅卸载请求，改用强制结束", m.drive).into());
+            }
+            Err(e) => {
+                ui.set_status_text(format!("优雅卸载 {} 失败：{e}，改用强制结束", m.drive).into());
+            }
+        }
+    }
     match winutil::terminate_process(m.pid) {
-        Ok(()) => ui.set_status_text(format!("已请求卸载 {drive}").into()),
-        Err(e) => ui.set_status_text(format!("卸载 {drive} 失败：{e}").into()),
+        Ok(()) => ui.set_status_text(format!("已强制结束 {}", m.drive).into()),
+        Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),
     }
 }
 

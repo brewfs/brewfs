@@ -788,8 +788,13 @@ unsafe extern "system" {
 // ---------------------------------------------------------------------------
 
 /// Mount a BrewFS `VFS` through WinFsp at `mount_point` (a drive letter such
-/// as `Z:` or an empty folder). Blocks until Ctrl+C, then unmounts.
-pub async fn mount_vfs_winfsp<S, M>(fs: VFS<S, M>, mount_point: &Path) -> anyhow::Result<()>
+/// as `Z:` or an empty folder). Blocks until Ctrl+C or a control-plane
+/// shutdown signal, then unmounts.
+pub async fn mount_vfs_winfsp<S, M>(
+    fs: VFS<S, M>,
+    mount_point: &Path,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()>
 where
     S: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
@@ -823,6 +828,10 @@ where
         signal = tokio::signal::ctrl_c() => {
             signal?;
             println!("unmounting...");
+        }
+        changed = shutdown.changed() => {
+            changed?;
+            println!("unmounting via control plane...");
         }
     }
 

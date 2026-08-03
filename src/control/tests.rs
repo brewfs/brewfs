@@ -193,6 +193,21 @@ fn protocol_roundtrip_preserves_trash_requests_and_responses() {
     assert_eq!(decoded, deleted);
 }
 
+#[test]
+fn protocol_roundtrip_preserves_shutdown_request_and_response() {
+    let req = ControlRequest::Shutdown;
+    let raw = serde_json::to_vec(&req).expect("serialize shutdown request");
+    let decoded: ControlRequest =
+        serde_json::from_slice(&raw).expect("deserialize shutdown request");
+    assert_eq!(decoded, req);
+
+    let response = ControlResponse::ShutdownAccepted;
+    let raw = serde_json::to_vec(&response).expect("serialize shutdown response");
+    let decoded: ControlResponse =
+        serde_json::from_slice(&raw).expect("deserialize shutdown response");
+    assert_eq!(decoded, response);
+}
+
 #[tokio::test]
 async fn runtime_registry_auto_selects_single_live_instance() {
     let dir = tempdir().expect("tempdir");
@@ -264,6 +279,7 @@ impl ControlHandler for FakeHandler {
     async fn handle(&self, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
+            ControlRequest::Shutdown => ControlResponse::ShutdownAccepted,
             _ => ControlResponse::Error {
                 code: "unsupported".to_string(),
                 message: "unsupported".to_string(),
@@ -286,6 +302,22 @@ async fn uds_server_handles_single_request_response() {
         .expect("send request");
 
     assert_eq!(response, ControlResponse::Pong);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn uds_server_handles_shutdown_request() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("control.sock");
+    let _server = ControlServer::bind(socket_path.clone(), FakeHandler)
+        .await
+        .expect("bind server");
+
+    let response = super::client::send_request(&socket_path, &ControlRequest::Shutdown)
+        .await
+        .expect("send shutdown request");
+
+    assert_eq!(response, ControlResponse::ShutdownAccepted);
 }
 
 #[tokio::test]
@@ -321,6 +353,7 @@ async fn named_pipe_roundtrip_serves_control_requests() {
                 ControlRequest::RunGc { dry_run } => ControlResponse::Accepted {
                     job_id: format!("dry-run={dry_run}"),
                 },
+                ControlRequest::Shutdown => ControlResponse::ShutdownAccepted,
                 other => ControlResponse::Error {
                     code: "unexpected".to_string(),
                     message: format!("{other:?}"),
@@ -352,4 +385,9 @@ async fn named_pipe_roundtrip_serves_control_requests() {
         .await
         .expect("send second ping");
     assert_eq!(pong2, ControlResponse::Pong);
+
+    let shutdown = super::client::send_request(&pipe, &ControlRequest::Shutdown)
+        .await
+        .expect("send shutdown request");
+    assert_eq!(shutdown, ControlResponse::ShutdownAccepted);
 }

@@ -40,10 +40,16 @@ Windows 上运行托盘应用会直接以无控制台窗口方式启动（`windo
 
 ## 卸载说明
 
-当前版本通过结束 brewfs 挂载进程完成卸载（WinFsp 内核驱动会在进程退出时拆除
-卷）。BrewFS 默认写回模式为 `UploadBeforeCommit`（先上传对象存储再提交元数据），
-强杀进程最坏情况是最近未提交的文件不进入目录树，可随后用 `brewfs gc` 清理孤儿
-对象，不会破坏已提交数据。
+托盘应用优先走**优雅卸载**：向 brewfs 控制面发送 `Shutdown` 请求（即
+`brewfs unmount <盘符>`），让挂载进程像收到 Ctrl+C 一样 flush 并干净拆卷
+（`host.stop()` + `host.unmount()`），避免强杀进程导致 Explorer 枚举盘符时
+短暂卡死/黑屏。仅当 brewfs 缺失、不认识 `unmount` 子命令或请求失败时才回退到
+`taskkill /T /F` 强杀。
+
+注意：`brewfs unmount` 需要 brewfs 二进制包含本仓库的 control-plane Shutdown
+支持（重新构建 WinFsp 版即可）。BrewFS 默认写回模式为 `UploadBeforeCommit`
+（先上传对象存储再提交元数据），即便强杀，最坏情况也只是最近未提交的文件不进入
+目录树，可随后用 `brewfs gc` 清理孤儿对象。
 
 ## 开发
 

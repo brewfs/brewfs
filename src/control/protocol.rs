@@ -7,6 +7,9 @@ pub const CONTROL_ACL_XATTR_NAME: &str = "system.brewfs.acl";
 pub enum ControlRequest {
     Ping,
     GetInfo,
+    /// Ask the mounted instance to unmount gracefully (flushes and tears down
+    /// the filesystem the same way Ctrl+C does).
+    Shutdown,
     RunGc {
         dry_run: bool,
     },
@@ -44,6 +47,8 @@ pub enum ControlRequest {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ControlResponse {
     Pong,
+    /// The instance accepted the graceful unmount request.
+    ShutdownAccepted,
     Info {
         pid: u32,
         mount_point: String,
