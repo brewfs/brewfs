@@ -3963,6 +3963,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_registers_and_serves_gc_jobs() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4013,6 +4014,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_lists_directory_metadata() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4105,6 +4107,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_stats_paths_and_reads_symlinks() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4171,6 +4174,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_acl_requests_persist_entries() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4314,6 +4318,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_acl_rejects_invalid_entries() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4395,6 +4400,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_list_trash_returns_unlinked_files() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4480,6 +4486,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_delete_trash_permanently_removes_entry() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4547,6 +4554,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_trash_actions_reject_live_inodes_with_trash_metadata() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4606,6 +4614,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_restore_trash_preserves_entry_on_name_conflict() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4678,6 +4687,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_get_info_returns_mount_metadata() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {
@@ -4723,6 +4733,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_control_plane_shutdown_cleans_runtime_record() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let options = MetaClientOptions {

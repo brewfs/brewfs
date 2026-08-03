@@ -267,7 +267,7 @@ export AWS_EC2_METADATA_DISABLED=true
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
 | `meta.backend` | `sqlx` | `sqlx`、`redis`、`etcd` 或 `tikv`。 |
-| `meta.sqlx.url` | `sqlite::memory:` | SQLite 或 PostgreSQL URL。 |
+| `meta.sqlx.url` | `sqlite://./data/brewfs-meta.db?mode=rwc` | SQLite 或 PostgreSQL URL。默认文件版 SQLite（挂载进程工作目录下 `data/` 自动创建）；不要用 `sqlite::memory:`（SQLite 内存库在连接池下每连接互相隔离，会报“表不存在”）。 |
 | `meta.redis.url` | 无 | Redis URL；`backend=redis` 时必须显式配置。 |
 | `meta.etcd.urls` | `[]` | Etcd endpoint 列表。 |
 | `meta.tikv.pd_endpoints` | `[]` | TiKV PD endpoint 列表。 |

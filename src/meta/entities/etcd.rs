@@ -137,7 +137,7 @@ mod tests {
             entry_name: "null".to_string(),
             deleted: false,
             entry_type: Some(EntryType::CharDevice),
-            rdev: libc::makedev(1, 3) as u32,
+            rdev: crate::utils::makedev(1, 3) as u32,
             symlink_target: None,
         };
 

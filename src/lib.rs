@@ -7,7 +7,10 @@ pub mod chunk;
 pub(crate) mod control;
 pub mod daemon;
 pub(crate) mod fs;
+#[cfg(feature = "fuse")]
 pub mod fuse;
+#[cfg(all(windows, feature = "fuse-winfsp"))]
+pub mod winfsp;
 // Expose meta for E2E testing - tests should rely on design contracts, not impl details
 pub mod meta;
 pub(crate) mod posix;

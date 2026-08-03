@@ -759,6 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn instance_detail_calls_control_plane_get_info() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -818,6 +819,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn instance_detail_rejects_control_plane_pid_mismatch() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -857,6 +859,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn instance_gc_job_returns_accepted_job_id() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -896,6 +899,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn instance_job_status_calls_control_plane_get_job() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -935,6 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn instance_job_status_rejects_control_plane_job_id_mismatch() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1074,6 +1079,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn trash_api_reports_unsupported_when_volume_is_mounted() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1145,6 +1151,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn trash_api_uses_default_control_plane_adapter_when_volume_is_mounted() {
         let dir = tempdir().unwrap();
         let (app, _server) = build_mounted_app_with_handler(dir.path(), ReadyFeatureHandler).await;
@@ -1209,6 +1216,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn acl_api_reports_backend_without_acl_capability() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1247,6 +1255,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn acl_api_uses_default_control_plane_adapter_when_capability_is_enabled() {
         let dir = tempdir().unwrap();
         let (app, _server) = build_mounted_app_with_handler(dir.path(), ReadyFeatureHandler).await;
@@ -1419,6 +1428,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn files_api_lists_entries_from_live_control_plane() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1489,6 +1499,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn files_api_rejects_control_plane_path_mismatch() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1553,6 +1564,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn file_stat_api_returns_metadata_from_live_control_plane() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();
@@ -1598,6 +1610,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn file_readlink_api_returns_target_from_live_control_plane() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<div id=\"root\"></div>").unwrap();

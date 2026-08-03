@@ -19,6 +19,16 @@ use std::time::Instant;
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::field;
 
+#[cfg(unix)]
+fn pread(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.read_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn pread(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_read(buf, offset)
+}
+
 fn can_block_in_place() -> bool {
     tokio::runtime::Handle::try_current()
         .map(|handle| {
@@ -204,7 +214,7 @@ impl ObjectBackend for LocalFsBackend {
                     Err(e) => return Err(e.into()),
                 };
                 let mut local = vec![0u8; len];
-                let n = file.read_at(&mut local, offset)?;
+                let n = pread(&file, &mut local, offset)?;
                 local.truncate(n);
                 Ok(Some(local))
             })
@@ -229,7 +239,7 @@ impl ObjectBackend for LocalFsBackend {
 
             let mut read = 0usize;
             while read < len {
-                let n = file.read_at(&mut buf[read..], offset + read as u64)?;
+                let n = pread(&file, &mut buf[read..], offset + read as u64)?;
                 if n == 0 {
                     break;
                 }

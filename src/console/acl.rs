@@ -233,6 +233,7 @@ impl From<ControlAclEntry> for AclEntry {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::control::protocol::{ControlAclEntry, ControlRequest, ControlResponse};

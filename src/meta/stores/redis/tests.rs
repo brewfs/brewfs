@@ -2690,6 +2690,7 @@ async fn test_vfs_flush_without_write_skips_timestamp_metadata_update() {
     fs.close(fh).await.unwrap();
 }
 
+#[cfg(feature = "fuse")]
 #[serial]
 #[tokio::test]
 #[ignore]
@@ -2742,6 +2743,7 @@ async fn test_fuse_flush_without_posix_locks_skips_unlock_metadata() {
     fs.close(fh).await.unwrap();
 }
 
+#[cfg(feature = "fuse")]
 #[serial]
 #[tokio::test]
 #[ignore]

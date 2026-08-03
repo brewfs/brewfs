@@ -273,6 +273,7 @@ impl ControlHandler for FakeHandler {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn uds_server_handles_single_request_response() {
     let dir = tempdir().expect("tempdir");
     let socket_path = dir.path().join("control.sock");
@@ -288,6 +289,7 @@ async fn uds_server_handles_single_request_response() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn uds_server_creates_parent_directory() {
     let dir = tempdir().expect("tempdir");
     let socket_path = dir.path().join("nested").join("control.sock");
@@ -296,4 +298,58 @@ async fn uds_server_creates_parent_directory() {
         .expect("bind server");
 
     assert!(socket_path.exists());
+}
+
+/// Windows-only roundtrip over the named-pipe transport. Exercises
+/// `ControlServer::bind` + `client::send_request` with the length-prefixed
+/// framing (a real mount process uses this path for `brewfs gc`/`info`).
+#[cfg(windows)]
+#[tokio::test]
+async fn named_pipe_roundtrip_serves_control_requests() {
+    use super::protocol::{ControlRequest, ControlResponse};
+    use super::runtime::RuntimeRegistry;
+    use super::server::{ControlHandler, ControlServer};
+    use async_trait::async_trait;
+
+    struct PingHandler;
+
+    #[async_trait]
+    impl ControlHandler for PingHandler {
+        async fn handle(&self, request: ControlRequest) -> ControlResponse {
+            match request {
+                ControlRequest::Ping => ControlResponse::Pong,
+                ControlRequest::RunGc { dry_run } => ControlResponse::Accepted {
+                    job_id: format!("dry-run={dry_run}"),
+                },
+                other => ControlResponse::Error {
+                    code: "unexpected".to_string(),
+                    message: format!("{other:?}"),
+                },
+            }
+        }
+    }
+
+    let dir = tempdir().expect("tempdir");
+    let registry = RuntimeRegistry::new(dir.path().to_path_buf());
+    let pipe = registry.socket_path(4242);
+
+    let _server = ControlServer::bind(pipe.clone(), PingHandler)
+        .await
+        .expect("bind named pipe");
+
+    let pong = super::client::send_request(&pipe, &ControlRequest::Ping)
+        .await
+        .expect("send ping");
+    assert_eq!(pong, ControlResponse::Pong);
+
+    let accepted = super::client::send_request(&pipe, &ControlRequest::RunGc { dry_run: true })
+        .await
+        .expect("send gc request");
+    assert!(matches!(accepted, ControlResponse::Accepted { .. }));
+
+    // A second connection on the same pipe instance must also succeed.
+    let pong2 = super::client::send_request(&pipe, &ControlRequest::Ping)
+        .await
+        .expect("send second ping");
+    assert_eq!(pong2, ControlResponse::Pong);
 }

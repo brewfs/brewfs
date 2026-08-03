@@ -7,9 +7,12 @@ BrewFS now exposes a local control plane so CLI commands can talk to a mounted i
 The current control plane is:
 
 - local-only
-- based on Unix Domain Socket
 - instance-scoped
 - managed by `MetaClient`
+- transport: Unix Domain Socket on Linux/macOS; **named pipe**
+  (`\\.\pipe\brewfs-<pid>`) on Windows (see `src/control/pipe.rs`). Both use
+  the same JSON wire protocol; the record's `socket_path` holds the transport
+  address for the current platform.
 
 Today it supports:
 

@@ -2,7 +2,7 @@ use std::env;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn main() {
+fn brewfs_git_env() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
     emit_git_rerun_hints(&manifest_dir);
@@ -95,4 +95,18 @@ impl EmptyFallback for String {
             self
         }
     }
+}
+
+// Windows-only: emit DELAYLOAD linker flags for the WinFsp user-mode library.
+// winfsp-sys ships a built-in import library, so no WinFsp SDK is required to
+// compile; only the final binary needs WinFsp installed at runtime.
+#[cfg(windows)]
+fn winfsp_delayload() {
+    winfsp::build::winfsp_link_delayload();
+}
+
+fn main() {
+    brewfs_git_env();
+    #[cfg(windows)]
+    winfsp_delayload();
 }

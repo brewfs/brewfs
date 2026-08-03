@@ -5,12 +5,17 @@ mod control;
 mod daemon;
 #[allow(dead_code)]
 mod fs;
+#[cfg(feature = "fuse")]
 mod fuse;
 mod meta;
 mod posix;
 mod utils;
 #[allow(dead_code)]
 mod vfs;
+#[cfg(all(windows, feature = "fuse-winfsp"))]
+mod winfsp;
+
+use std::path::Path;
 
 #[cfg(all(feature = "jemalloc", target_os = "linux"))]
 use tikv_jemallocator::Jemalloc;
@@ -39,27 +44,42 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::cadapter::client::{ObjectBackend, ObjectClient};
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
+use crate::cadapter::client::ObjectBackend;
+use crate::cadapter::client::ObjectClient;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::cadapter::localfs::LocalFsBackend;
 use crate::cadapter::s3::{S3Backend, S3Config};
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::chunk::bandwidth::BandwidthLimiter;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::chunk::cache::ChunksCacheConfig;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::chunk::layout::ChunkLayout;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::chunk::store::{BlockStore, BlockStoreConfig, ObjectBlockStore};
 use crate::control::client::send_request;
 use crate::control::job::JobOutcome;
 use crate::control::protocol::{ControlRequest, ControlResponse};
 use crate::control::runtime::RuntimeRegistry;
+#[cfg(feature = "fuse")]
 use crate::fuse::mount::{FuseConcurrencyConfig, mount_vfs_privileged, mount_vfs_unprivileged};
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::MetaStore;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::client::MetaClient;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::config::{
     CacheConfig as MetaCacheConfig, ClientOptions, Config, DatabaseConfig, DatabaseType,
     MetaClientConfig,
 };
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::factory::MetaStoreFactory;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::layer::MetaLayer;
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::meta::stores::{DatabaseMetaStore, EtcdMetaStore, RedisMetaStore, TiKvMetaStore};
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 use crate::vfs::fs::VFS;
 
 #[tokio::main]
@@ -69,7 +89,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let result = match cli.cmd {
+        #[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
         Command::Mount(args) => mount_cmd(MountConfig::from_sources(*args)?).await,
+        #[cfg(not(any(feature = "fuse", feature = "fuse-winfsp")))]
+        Command::Mount(_args) => {
+            anyhow::bail!("brewfs mount requires the FUSE backend; this build does not enable it")
+        }
         Command::Gc(args) => gc_cmd(args).await,
         Command::Info(args) => info_cmd(args).await,
         Command::Console(args) => console::serve_cmd(args).await,
@@ -322,13 +347,54 @@ fn init_tracing() {
     }
 }
 
+/// Validate (and, on non-WinFsp builds, prepare) the mount point.
+///
+/// - Linux/macOS FUSE: create the mount directory if it does not exist and
+///   require it to be a directory.
+/// - Windows WinFsp: accept a bare drive letter (`Z:`); a folder mount point
+///   must NOT already exist because WinFsp creates the directory itself and
+///   fails with `STATUS_OBJECT_NAME_COLLISION` when it does (WinFsp's
+///   `FspMountSet_Directory` uses `FILE_CREATE` disposition). Only the parent
+///   directory is validated here.
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
+fn validate_mount_point(mount_point: &Path) -> anyhow::Result<()> {
+    #[cfg(all(windows, feature = "fuse-winfsp"))]
+    {
+        if is_bare_drive_letter(mount_point) {
+            return Ok(());
+        }
+        let parent = mount_point.parent().unwrap_or_else(|| Path::new("."));
+        if !parent.is_dir() {
+            anyhow::bail!(
+                "mount point parent directory does not exist: {}",
+                parent.display()
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(all(windows, feature = "fuse-winfsp")))]
+    {
+        if !mount_point.exists() {
+            std::fs::create_dir_all(mount_point)?;
+        }
+        if !mount_point.is_dir() {
+            anyhow::bail!("mount point must be a directory");
+        }
+        Ok(())
+    }
+}
+
+/// Whether `path` is a bare Windows drive letter such as `Z:`.
+#[cfg(all(windows, feature = "fuse-winfsp"))]
+fn is_bare_drive_letter(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    let b = s.as_bytes();
+    b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 async fn mount_cmd(args: MountConfig) -> anyhow::Result<()> {
-    if !args.mount_point.exists() {
-        std::fs::create_dir_all(&args.mount_point)?;
-    }
-    if !args.mount_point.is_dir() {
-        anyhow::bail!("mount point must be a directory");
-    }
+    validate_mount_point(&args.mount_point)?;
 
     if args.chunk_size < args.block_size as u64 {
         anyhow::bail!("chunk_size must be >= block_size");
@@ -364,6 +430,7 @@ async fn mount_cmd(args: MountConfig) -> anyhow::Result<()> {
     }
 }
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 async fn create_object_store<B>(
     client: ObjectClient<B>,
     layout: ChunkLayout,
@@ -402,6 +469,7 @@ where
     )
 }
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 fn create_localfs_client(args: &MountConfig) -> anyhow::Result<ObjectClient<LocalFsBackend>> {
     if !args.data_dir.exists() {
         std::fs::create_dir_all(&args.data_dir)?;
@@ -412,6 +480,7 @@ fn create_localfs_client(args: &MountConfig) -> anyhow::Result<ObjectClient<Loca
     Ok(ObjectClient::new(LocalFsBackend::new(&args.data_dir)))
 }
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 async fn create_s3_client(args: &MountConfig) -> anyhow::Result<ObjectClient<S3Backend>> {
     let bucket = args
         .s3_bucket
@@ -623,6 +692,7 @@ fn percentile_ms(sorted_latencies_us: &[u64], percentile: f64) -> f64 {
     sorted_latencies_us[index] as f64 / 1000.0
 }
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 async fn mount_with_store<S>(
     layout: ChunkLayout,
     store: S,
@@ -676,32 +746,46 @@ where
     )
     .map_err(anyhow::Error::from)?;
     tracing::info!("mount startup vfs create complete");
-    let concurrency = FuseConcurrencyConfig {
-        worker_count: args.fuse_workers,
-        max_background: args.fuse_max_background,
-    };
-    tracing::info!(
-        privileged = args.privileged,
-        worker_count = args.fuse_workers,
-        max_background = args.fuse_max_background,
-        "mount startup fuse mount begin"
-    );
-    let handle = if args.privileged {
-        mount_vfs_privileged(fs, mount_point, concurrency).await?
-    } else {
-        mount_vfs_unprivileged(fs, mount_point, concurrency).await?
-    };
+    // Windows + fuse-winfsp: mount through WinFsp. Everything else keeps the
+    // asyncfuse (Linux FUSE) path untouched.
+    #[cfg(all(windows, feature = "fuse-winfsp"))]
+    {
+        tracing::info!(
+            mount_point = %mount_point.display(),
+            "mount startup winfsp mount begin"
+        );
+        crate::winfsp::mount_vfs_winfsp(fs, mount_point).await?;
+    }
 
-    println!("mounted at {}", mount_point.display());
-    let mut handle = handle;
-    tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            println!("unmounting...");
-            handle.unmount().await?;
-        }
-        result = &mut handle => {
-            result?;
+    #[cfg(not(all(windows, feature = "fuse-winfsp")))]
+    {
+        let concurrency = FuseConcurrencyConfig {
+            worker_count: args.fuse_workers,
+            max_background: args.fuse_max_background,
+        };
+        tracing::info!(
+            privileged = args.privileged,
+            worker_count = args.fuse_workers,
+            max_background = args.fuse_max_background,
+            "mount startup fuse mount begin"
+        );
+        let handle = if args.privileged {
+            mount_vfs_privileged(fs, mount_point, concurrency).await?
+        } else {
+            mount_vfs_unprivileged(fs, mount_point, concurrency).await?
+        };
+
+        println!("mounted at {}", mount_point.display());
+        let mut handle = handle;
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                println!("unmounting...");
+                handle.unmount().await?;
+            }
+            result = &mut handle => {
+                result?;
+            }
         }
     }
     meta_client.shutdown_runtime().await;
@@ -855,6 +939,7 @@ fn shutdown_chrome() {
 #[cfg(not(feature = "profiling"))]
 fn shutdown_chrome() {}
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaStore>> {
     match args.meta_backend {
         MetaBackendKind::Sqlx => {
@@ -935,6 +1020,7 @@ async fn create_meta_store(args: &MountConfig) -> anyhow::Result<Arc<dyn MetaSto
     }
 }
 
+#[cfg(any(feature = "fuse", feature = "fuse-winfsp"))]
 fn database_type_from_url(url: &str) -> DatabaseType {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {

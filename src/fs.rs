@@ -20,7 +20,29 @@ use crate::meta::store::{
     DirEntry, FileAttr, FileType, MetaError, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::vfs::fs::VFS;
+#[cfg(unix)]
 use libc::{getegid, geteuid, getgroups};
+
+/// Group ID type for the platform (POSIX gid_t; Windows u32 fallback).
+#[cfg(unix)]
+type Gid = libc::gid_t;
+#[cfg(windows)]
+type Gid = u32;
+
+#[cfg(windows)]
+unsafe fn geteuid() -> u32 {
+    0
+}
+
+#[cfg(windows)]
+unsafe fn getegid() -> u32 {
+    0
+}
+
+#[cfg(windows)]
+unsafe fn getgroups(_size: i32, _list: *mut Gid) -> i32 {
+    0
+}
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -309,7 +331,7 @@ fn current_groups(primary_gid: u32) -> Vec<u32> {
     unsafe {
         let count = getgroups(0, std::ptr::null_mut());
         if count > 0 {
-            let mut buf = vec![0 as libc::gid_t; count as usize];
+            let mut buf = vec![0 as Gid; count as usize];
             let res = getgroups(count, buf.as_mut_ptr());
             if res >= 0 {
                 groups.extend(buf.into_iter().take(res as usize));

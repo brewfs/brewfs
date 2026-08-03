@@ -26,3 +26,6 @@ web/console/dist/
 # Editor and OS noise
 .DS_Store
 *.swp
+
+# Local-only credentials and config (never commit)
+.local/

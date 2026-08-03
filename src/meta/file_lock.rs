@@ -5,12 +5,19 @@ use sea_orm::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
+/// POSIX fcntl lock type values (F_RDLCK=0, F_WRLCK=1, F_UNLCK=2). libc does
+/// not export these on Windows; explicit values keep the enum portable while
+/// preserving the wire format used by the Redis Lua lock scripts.
+const F_RDLCK: u32 = 0;
+const F_WRLCK: u32 = 1;
+const F_UNLCK: u32 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum FileLockType {
-    Read = libc::F_RDLCK as u32,
-    Write = libc::F_WRLCK as u32,
-    UnLock = libc::F_UNLCK as u32,
+    Read = F_RDLCK,
+    Write = F_WRLCK,
+    UnLock = F_UNLCK,
 }
 
 /// Serialize as integer (0=Read, 1=Write, 2=UnLock) to match the

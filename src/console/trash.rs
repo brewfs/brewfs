@@ -184,6 +184,7 @@ impl From<ControlTrashEntry> for TrashEntry {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::control::protocol::{ControlRequest, ControlResponse, ControlTrashEntry};

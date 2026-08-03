@@ -451,6 +451,7 @@ impl WriteBackCache for FsWriteBackCache {
 
         let slice_path = key.slice_path(&self.root);
 
+        #[cfg(unix)]
         if self.allocation_unit > 0 {
             let data_len = data.iter().map(Bytes::len).sum::<usize>() as u64;
             let allocation_start = slice_offset / self.allocation_unit * self.allocation_unit;
@@ -500,8 +501,10 @@ impl WriteBackCache for FsWriteBackCache {
         }
         drop(file);
 
+        #[cfg(unix)]
         if self.sync_on_persist {
             // fsync parent directory to ensure a newly-created slice path is durable.
+            // Windows does not support opening/syncing a directory handle (access denied).
             let dir_fd = fs::File::open(&dir).await?;
             dir_fd.sync_all().await?;
         }

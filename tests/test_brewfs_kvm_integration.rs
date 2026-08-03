@@ -1,3 +1,5 @@
+#![cfg(unix)]
+//! Unix-only: uses qlean QEMU VM orchestration (vsock) which is not available on Windows.
 use std::path::{Path, PathBuf};
 
 use std::sync::Once;

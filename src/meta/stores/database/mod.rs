@@ -273,6 +273,19 @@ impl DatabaseMetaStore {
         match &config.database.db_config {
             DatabaseType::Sqlite { url } => {
                 info!("Connecting to SQLite: {}", url);
+                // Ensure the parent directory of a file-backed SQLite database
+                // exists before connecting (e.g. the default ./data/brewfs-meta.db).
+                if let Some(db_path) = url.split("sqlite://").nth(1) {
+                    let path = db_path.split('?').next().unwrap_or(db_path);
+                    if !path.is_empty() && path != ":memory:" && !path.contains("::memory:") {
+                        if let Some(parent) = std::path::Path::new(path).parent() {
+                            if !parent.as_os_str().is_empty() {
+                                std::fs::create_dir_all(parent)
+                                    .map_err(|e| MetaError::Config(e.to_string()))?;
+                            }
+                        }
+                    }
+                }
                 let mut opts = ConnectOptions::new(url.clone());
                 if url.contains("file::memory:") {
                     opts.max_connections(1).min_connections(1);
@@ -3355,8 +3368,12 @@ impl MetaStore for DatabaseMetaStore {
             .one(&txn)
             .await
             .map_err(MetaError::Database)?;
-        let create_only = flags & (libc::XATTR_CREATE as u32) != 0;
-        let replace_only = flags & (libc::XATTR_REPLACE as u32) != 0;
+        // POSIX xattr flag values (XATTR_CREATE=1, XATTR_REPLACE=2); libc does
+        // not export these on Windows.
+        const XATTR_CREATE: u32 = 1;
+        const XATTR_REPLACE: u32 = 2;
+        let create_only = flags & XATTR_CREATE != 0;
+        let replace_only = flags & XATTR_REPLACE != 0;
 
         match existing {
             Some(entry) => {

@@ -93,6 +93,36 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace
 
+  windows:
+    name: Windows (WinFsp)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      # WinFsp is NOT required to build: winfsp-sys ships a built-in import
+      # library and the binary delay-loads winfsp-x64.dll at runtime.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check WinFsp feature
+        run: cargo check -p brewfs --no-default-features --features fuse-winfsp
+
+      - name: Test WinFsp feature
+        run: cargo test -p brewfs --no-default-features --features fuse-winfsp --lib --bins
+
+      - name: Clippy WinFsp feature
+        run: cargo clippy -p brewfs --no-default-features --features fuse-winfsp --lib --bins
+
   docker-pjdfstest:
     name: Docker pjdfstest smoke
     runs-on: ubuntu-latest

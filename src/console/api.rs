@@ -1312,6 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn get_acl_uses_state_adapter_after_capability_check() {
         let (_dir, _server, state, volume_id) = acl_ready_state().await;
 
@@ -1330,6 +1331,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn put_acl_uses_state_adapter_after_capability_check() {
         let (_dir, _server, state, volume_id) = acl_ready_state().await;
         let request = AclResponse {
@@ -1376,6 +1378,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn delete_acl_uses_state_adapter_after_capability_check() {
         let (_dir, _server, state, volume_id) = acl_ready_state().await;
 

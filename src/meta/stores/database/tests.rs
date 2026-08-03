@@ -294,7 +294,7 @@ async fn xattr_mutations_update_ctime() {
 async fn chmod_preserves_special_node_type_and_rdev() {
     let store = new_test_store().await;
     let root = store.root_ino();
-    let rdev = libc::makedev(1, 3) as u32;
+    let rdev = crate::utils::makedev(1, 3) as u32;
     let ino = store
         .create_node(
             root,

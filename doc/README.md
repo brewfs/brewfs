@@ -52,6 +52,7 @@ plans under `doc/` unless a tool explicitly requires another location.
 | Configuration | [operations/configuration.md](operations/configuration.md) |
 | Binary deployment | [operations/binary-deployment.md](operations/binary-deployment.md) |
 | Control plane | [operations/control-plane.md](operations/control-plane.md) |
+| Windows (WinFsp) mount | [operations/windows-winfsp.md](operations/windows-winfsp.md) |
 | Observability | [operations/observability.md](operations/observability.md) |
 | Profiling | [operations/profiling.md](operations/profiling.md) |
 | Stats tool | [operations/stats-tool.md](operations/stats-tool.md) |

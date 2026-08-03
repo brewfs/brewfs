@@ -44,7 +44,18 @@ impl RuntimeRegistry {
     }
 
     pub fn socket_path(&self, pid: u32) -> PathBuf {
-        self.root.join(format!("{pid}.sock"))
+        // Unix: a Unix domain socket file under the runtime dir.
+        // Windows: a named pipe (no file on disk); the record file still lives
+        // under `root`, only the transport address differs.
+        #[cfg(unix)]
+        {
+            return self.root.join(format!("{pid}.sock"));
+        }
+        #[cfg(windows)]
+        {
+            let _ = &self.root;
+            return PathBuf::from(format!(r"\\.\pipe\brewfs-{pid}"));
+        }
     }
 
     pub fn record_path(&self, pid: u32) -> PathBuf {
@@ -61,14 +72,18 @@ impl RuntimeRegistry {
     #[allow(dead_code)]
     pub async fn remove_record(&self, pid: u32) -> Result<()> {
         let record_path = self.record_path(pid);
-        let socket_path = self.socket_path(pid);
-
         if record_path.exists() {
             tokio::fs::remove_file(&record_path).await?;
         }
 
-        if socket_path.exists() {
-            tokio::fs::remove_file(&socket_path).await?;
+        // Named pipes are kernel objects and vanish with the owning process,
+        // so only Unix socket files need explicit removal.
+        #[cfg(unix)]
+        {
+            let socket_path = self.socket_path(pid);
+            if socket_path.exists() {
+                tokio::fs::remove_file(&socket_path).await?;
+            }
         }
 
         Ok(())

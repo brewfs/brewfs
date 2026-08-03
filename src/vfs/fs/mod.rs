@@ -11,7 +11,20 @@ use crate::meta::store::{
     AclRule, MetaError, MetaStore, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::posix::NAME_MAX;
-use asyncfuse::notify::Notify as FuseNotify;
+#[cfg(feature = "fuse")]
+pub(crate) use asyncfuse::notify::Notify as FuseNotify;
+
+/// Stub used when the FUSE feature is disabled (e.g. native Windows builds).
+/// Kernel invalidation notifications are no-ops because there is no FUSE
+/// kernel session to notify.
+#[cfg(not(feature = "fuse"))]
+#[derive(Clone, Debug)]
+pub(crate) struct FuseNotify;
+
+#[cfg(not(feature = "fuse"))]
+impl FuseNotify {
+    pub(crate) async fn invalid_inode(&self, _ino: u64, _offset: i64, _len: i64) {}
+}
 use dashmap::{DashMap, Entry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1207,6 +1220,7 @@ where
             .await;
     }
 
+    #[cfg(feature = "fuse")]
     pub(crate) fn set_fuse_notify(&self, notify: FuseNotify) {
         *self
             .state

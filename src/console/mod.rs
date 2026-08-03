@@ -150,7 +150,11 @@ fn read_token_auth(token_file: Option<&PathBuf>) -> anyhow::Result<AuthConfig> {
 }
 
 fn default_state_dir() -> PathBuf {
-    if unsafe { libc::geteuid() } == 0 {
+    #[cfg(unix)]
+    let is_root = unsafe { libc::geteuid() } == 0;
+    #[cfg(windows)]
+    let is_root = false;
+    if is_root {
         return PathBuf::from("/var/lib/brewfs/console");
     }
     dirs::state_dir()

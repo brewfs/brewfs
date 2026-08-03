@@ -221,6 +221,7 @@ vm-memory = "0.16.1"
 vmm-sys-util = "0.12.1"
 walkdir = "2.5.0"
 webpki-roots = "0.26.3"
+winfsp = { version = "0.12.2", default-features = false }
 which = "4.4.2"
 x509-parser = "0.18.0"
 lru = "0.16"
@@ -277,7 +278,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 log = { workspace = true }
-asyncfuse = { workspace = true, features = ["buffer-pool", "file-lock", "unprivileged"] }
+asyncfuse = { workspace = true, optional = true, features = ["buffer-pool", "file-lock", "unprivileged"] }
 etcd-client = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 auto_impl = { workspace = true }
@@ -304,8 +305,10 @@ governor = { workspace = true }
 
 [features]
 default = ["fuse-io-uring-runtime"]
-fuse-io-uring-runtime = ["asyncfuse/io-uring-runtime"]
-fuse-tokio-runtime = ["asyncfuse/tokio-runtime"]
+fuse = ["dep:asyncfuse"]
+fuse-io-uring-runtime = ["fuse", "asyncfuse/io-uring-runtime"]
+fuse-tokio-runtime = ["fuse", "asyncfuse/tokio-runtime"]
+fuse-winfsp = []
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]
 jemalloc = ["dep:tikv-jemallocator"]
 jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling"]
@@ -314,11 +317,13 @@ rkyv-serialization = ["dep:rkyv"]
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
-pprof = { workspace = true }
 serial_test = { workspace = true }
-qlean = { workspace = true }
 tracing-chrome = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+qlean = { workspace = true }
+pprof = { workspace = true }
 
 [[bench]]
 name = "brewfs_bench"
@@ -327,3 +332,9 @@ harness = false
 [profile.release]
 debug = true
 strip = false
+
+[target.'cfg(windows)'.dependencies]
+winfsp = { workspace = true, features = ["delayload", "async-io"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winfsp = { workspace = true, features = ["delayload"] }

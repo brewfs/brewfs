@@ -10,7 +10,7 @@ use crate::meta::config::CompactConfig;
 use crate::vfs::cache::config::{CacheConfig as VfsCacheConfig, WriteBackMode};
 
 pub const DEFAULT_DATA_DIR: &str = "./data";
-pub const DEFAULT_META_URL: &str = "sqlite::memory:";
+pub const DEFAULT_META_URL: &str = "sqlite://./data/brewfs-meta.db?mode=rwc";
 pub const DEFAULT_S3_PART_SIZE: usize = 16 * 1024 * 1024;
 pub const DEFAULT_S3_MAX_CONCURRENCY: usize = 32;
 pub const DEFAULT_FUSE_MAX_BACKGROUND: usize = 512;

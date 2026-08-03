@@ -16,7 +16,7 @@ fn special_node_round_trip_preserves_kind_mode_and_rdev() {
         size: 0,
         blocks: 0,
         mode: FileType::CharDevice.mode_type_bits() | 0o600,
-        rdev: libc::makedev(1, 3) as u32,
+        rdev: crate::utils::makedev(1, 3) as u32,
         uid: 1000,
         gid: 1000,
         atime: 1,
