@@ -144,6 +144,58 @@ async fn test_child_attr_of_rejects_name_longer_than_name_max() {
     ));
 }
 
+#[tokio::test]
+async fn test_remove_dir_all_recursively_deletes_tree() {
+    let layout = ChunkLayout::default();
+    let store = InMemoryBlockStore::new();
+    let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+    let meta_store = meta_handle.store();
+    let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+    fs.mkdir_err("/tree").await.unwrap();
+    fs.mkdir_err("/tree/sub").await.unwrap();
+    fs.mkdir_err("/tree/sub/deep").await.unwrap();
+    fs.create_file("/tree/a.txt").await.unwrap();
+    fs.create_file("/tree/sub/b.txt").await.unwrap();
+    fs.create_file("/tree/sub/deep/c.txt").await.unwrap();
+
+    assert!(fs.exists("/tree/a.txt").await);
+    assert!(fs.exists("/tree/sub/deep/c.txt").await);
+
+    fs.remove_dir_all("/tree").await.expect("remove tree");
+
+    assert!(!fs.exists("/tree").await);
+    assert!(!fs.exists("/tree/sub/deep/c.txt").await);
+
+    // The root directory must no longer list the removed subtree.
+    let root = fs.root_ino();
+    let fh = fs.opendir(root).await.unwrap();
+    let entries = fs.readdir(fh, 0).unwrap_or_default();
+    fs.closedir(fh).unwrap();
+    assert!(!entries.iter().any(|e| e.name == "tree"));
+}
+
+#[tokio::test]
+async fn test_remove_dir_all_rejects_root_and_plain_files() {
+    let layout = ChunkLayout::default();
+    let store = InMemoryBlockStore::new();
+    let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+    let meta_store = meta_handle.store();
+    let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+    assert!(matches!(
+        fs.remove_dir_all("/").await,
+        Err(crate::vfs::error::VfsError::PermissionDenied { .. })
+    ));
+
+    fs.create_file("/plain.txt").await.unwrap();
+    assert!(matches!(
+        fs.remove_dir_all("/plain.txt").await,
+        Err(crate::vfs::error::VfsError::NotADirectory { .. })
+    ));
+    assert!(fs.exists("/plain.txt").await);
+}
+
 #[cfg(test)]
 mod fsstress_013_native_tests {
     use super::*;

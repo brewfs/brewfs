@@ -418,7 +418,11 @@ where
         let rt = &self.rt;
         let result = block_on(rt, async move {
             if is_dir {
-                vfs.rmdir(&path).await
+                // Windows shells delegate deleting a directory tree to the
+                // file system (delete-on-close on the directory handle). A
+                // plain rmdir would fail with DirectoryNotEmpty and the shell
+                // would report a delete that never happened; recurse instead.
+                vfs.remove_dir_all(&path).await
             } else {
                 vfs.unlink(&path).await
             }
@@ -781,6 +785,14 @@ fn ensure_winfsp_dll_discoverable() {
 unsafe extern "system" {
     #[link(name = "kernel32")]
     fn SetDllDirectoryW(lp_path_name: *const u16) -> i32;
+
+    #[link(name = "shell32")]
+    fn SHChangeNotify(
+        w_event_id: i32,
+        u_flags: u32,
+        dw_item1: *const std::ffi::c_void,
+        dw_item2: *const std::ffi::c_void,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +849,44 @@ where
 
     host.stop();
     host.unmount();
+    notify_drive_removed(mount_point);
     Ok(())
+}
+
+/// Tell the Windows shell that `mount_point` was just removed so Explorer
+/// drops the stale drive entry immediately instead of showing a ghost drive
+/// until the user refreshes.
+#[cfg(windows)]
+fn notify_drive_removed(mount_point: &Path) {
+    const SHCNE_DRIVEREMOVED: i32 = 0x0000_0080;
+    const SHCNF_PATHW: u32 = 0x0005;
+    const SHCNF_FLUSH: u32 = 0x1000;
+
+    let Some(wide) = to_wide(mount_point) else {
+        return;
+    };
+    // SAFETY: SHChangeNotify is a shell32 broadcast; the wide string is a
+    // valid NUL-terminated buffer kept alive for the duration of the call.
+    unsafe {
+        SHChangeNotify(
+            SHCNE_DRIVEREMOVED,
+            SHCNF_PATHW | SHCNF_FLUSH,
+            wide.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+        );
+    }
+}
+
+/// Encode a mount point as a NUL-terminated UTF-16 string suitable for
+/// shell32 APIs (drive letters like `Z:` are passed as-is).
+fn to_wide(path: &Path) -> Option<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.is_empty() {
+        return None;
+    }
+    wide.push(0);
+    Some(wide)
 }
 
 /// Build the WinFsp volume parameters for BrewFS.

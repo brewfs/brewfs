@@ -2394,6 +2394,61 @@ where
         self.rmdir_at(parent_ino, &name).await
     }
 
+    /// Recursively remove a directory and all of its contents.
+    ///
+    /// Windows shells delegate deleting a directory tree to the file system
+    /// (delete-on-close on the directory handle), so the WinFsp adapter uses
+    /// this instead of a plain `rmdir` (which would fail with
+    /// `DirectoryNotEmpty` and make the shell report a delete that never
+    /// happened).
+    #[tracing::instrument(level = "trace", skip(self), fields(path))]
+    pub async fn remove_dir_all(&self, path: &str) -> Result<(), VfsError> {
+        let path = Self::norm_path(path);
+        if path == "/" {
+            return Err(VfsError::PermissionDenied {
+                path: PathHint::some(path),
+            });
+        }
+
+        let (ino, kind) = self.meta_lookup_path_required(&path).await?;
+        if kind != FileType::Dir {
+            return Err(VfsError::NotADirectory {
+                path: PathHint::some(path.clone()),
+            });
+        }
+
+        let fh = self.opendir(ino).await?;
+        let result = self.remove_dir_children(&path, fh).await;
+        let _ = self.closedir(fh);
+        result?;
+
+        self.rmdir(&path).await
+    }
+
+    /// Delete every child of `dir_path` (files/symlinks via `unlink`,
+    /// directories recursively), reading through the already-open handle.
+    async fn remove_dir_children(&self, dir_path: &str, fh: u64) -> Result<(), VfsError> {
+        let mut offset = 0u64;
+        loop {
+            let entries = self.readdir(fh, offset).unwrap_or_default();
+            if entries.is_empty() {
+                break;
+            }
+            offset += entries.len() as u64;
+            for entry in entries {
+                if entry.name == "." || entry.name == ".." {
+                    continue;
+                }
+                let child = format!("{}/{}", dir_path.trim_end_matches('/'), entry.name);
+                match entry.kind {
+                    FileType::Dir => Box::pin(self.remove_dir_all(&child)).await?,
+                    _ => self.unlink(&child).await?,
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Step 1: Resolve parent directory inode from path
     async fn resolve_parent_inode(&self, dir_path: &str) -> Result<i64, VfsError> {
         if dir_path == "/" {
