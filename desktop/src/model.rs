@@ -68,14 +68,18 @@ impl Profile {
         }
         let drive = self.drive.trim();
         if drive.is_empty() {
-            return Err("请填写盘符（例如 Z:）".into());
+            return Err("请填写挂载点（例如 Z: 或 /Volumes/brewfs）".into());
         }
-        let bytes = drive.as_bytes();
-        let ok = bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-        if !ok {
-            return Err(format!(
-                "盘符格式不正确：{drive}（应为单个字母加冒号，例如 Z:）"
-            ));
+        // Windows uses drive letters (`Z:`); macOS/Linux use a directory path
+        // (e.g. `/Volumes/brewfs`).
+        if !drive.starts_with('/') {
+            let bytes = drive.as_bytes();
+            let ok = bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+            if !ok {
+                return Err(format!(
+                    "挂载点格式不正确：{drive}（Windows 用盘符如 Z:，macOS/Linux 用目录如 /Volumes/brewfs）"
+                ));
+            }
         }
         match self.mode.as_str() {
             "oss" => {

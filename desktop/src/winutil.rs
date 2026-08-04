@@ -68,14 +68,19 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    // Linux /proc check; other unixes fall back to true (best effort).
+    // Linux has /proc; macOS/BSD do not, so use `kill -0` (checks existence
+    // without sending a signal).
     #[cfg(target_os = "linux")]
     {
         return std::path::Path::new(&format!("/proc/{pid}")).exists();
     }
     #[cfg(not(target_os = "linux"))]
     {
-        true
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 

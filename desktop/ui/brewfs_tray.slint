@@ -31,6 +31,7 @@ export component MainWindow inherits Window {
 
     in property <string> status-text;
     in property <string> free-drives-text;
+    in property <bool> show-free-drives;
     in property <[ProfileRecord]> records;
 
     in-out property <string> cfg-name;
@@ -76,30 +77,32 @@ export component MainWindow inherits Window {
                     VerticalBox {
                         spacing: 4px;
                         for r[i] in root.records: HorizontalBox {
-                            spacing: 8px;
+                            spacing: 6px;
                             TouchArea {
                                 horizontal-stretch: 1.0;
                                 clicked => { root.select-record(i); }
                                 HorizontalBox {
-                                    spacing: 8px;
+                                    spacing: 6px;
                                     Rectangle {
-                                        width: 44px;
-                                        height: 26px;
+                                        width: 36px;
+                                        height: 20px;
                                         background: r.mounted ? #1b7a3d : #8a8a8a;
-                                        border-radius: 4px;
+                                        border-radius: 3px;
                                         Text {
                                             text: r.drive;
                                             color: white;
                                             font-weight: 700;
+                                            font-size: 11px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
                                     }
-                                    VerticalBox {
+                                    Text {
                                         min-width: 0px;
-                                        spacing: 0px;
-                                        Text { text: r.name; font-weight: 600; overflow: elide; }
-                                        Text { text: r.backend + " · " + r.detail; color: #666; font-size: 12px; overflow: elide; }
+                                        text: r.name + "  ·  " + r.backend + "  " + r.detail;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                        font-size: 12px;
                                     }
                                 }
                             }
@@ -108,6 +111,7 @@ export component MainWindow inherits Window {
                                 text: r.mounted ? ("已挂载 PID " + r.pid) : "未挂载";
                                 color: r.mounted ? #1b7a3d : #999;
                                 vertical-alignment: center;
+                                font-size: 12px;
                             }
                             // 操作按钮固定在行尾，永远可见。
                             HorizontalBox {
@@ -115,14 +119,17 @@ export component MainWindow inherits Window {
                                 Button {
                                     text: "打开";
                                     enabled: r.mounted;
+                                    height: 22px;
                                     clicked => { root.open-record(i); }
                                 }
                                 Button {
                                     text: r.mounted ? "卸载" : "挂载";
+                                    height: 22px;
                                     clicked => { root.toggle-record(i); }
                                 }
                                 Button {
                                     text: "删除";
+                                    height: 22px;
                                     clicked => { root.delete-record(i); }
                                 }
                             }
@@ -147,10 +154,10 @@ export component MainWindow inherits Window {
                             text: root.cfg-name;
                             placeholder-text: "例如：阿里云 OSS";
                         }
-                        Text { text: "盘符"; vertical-alignment: center; }
+                        Text { text: "挂载点"; vertical-alignment: center; }
                         LineEdit {
                             text: root.cfg-drive;
-                            placeholder-text: "例如：Z:";
+                            placeholder-text: "Windows 盘符 Z: 或 macOS/Linux 目录 /Volumes/brewfs";
                             input-type: text;
                         }
                     }
@@ -163,8 +170,8 @@ export component MainWindow inherits Window {
                                 root.cfg-mode-index = v == "OSS 直挂（多机）" ? 1 : 0;
                             }
                         }
-                        Text { text: "可用盘符"; vertical-alignment: center; }
-                        Text {
+                        if root.show-free-drives: Text { text: "可用盘符"; vertical-alignment: center; }
+                        if root.show-free-drives: Text {
                             text: root.free-drives-text;
                             color: #555;
                             vertical-alignment: center;

@@ -69,6 +69,18 @@ cargo build -p brewfs --bin ossmount --no-default-features --features fuse-winfs
 （先上传对象存储再提交元数据），即便强杀，最坏情况也只是最近未提交的文件不进入
 目录树，可随后用 `brewfs gc` 清理孤儿对象。
 
+## macOS 支持
+
+- 托盘应用（Slint）跨平台：macOS 上系统托盘走 NSStatusItem，窗口原生渲染。
+- 挂载点：macOS/Linux 用**目录路径**（如 `/Volumes/brewfs`），不再是盘符；
+  表单字段已改为"挂载点"，校验同时接受 `Z:`（Windows）与 `/Volumes/...`（macOS）。
+- **OSS 直挂（多机）模式需要 Windows + WinFsp**（`ossmount` 基于 WinFsp）；
+  macOS 请用 **BrewFS（元数据）模式**（需要先构建 brewfs 的 FUSE 版）。
+- 打开挂载点在 macOS 用 `open <路径>`；卸载走 `brewfs unmount` 优雅路径，
+  兜底用 `kill`。
+- 已通过 `cargo check --target x86_64-apple-darwin` 交叉编译验证；运行时行为需在
+  真机 Mac 上确认。
+
 ## 开发
 
 ```powershell

@@ -53,6 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let brewfs = Rc::new(model::find_brewfs());
     let ossmount = Rc::new(model::find_ossmount());
 
+    // Drive letters are a Windows concept; macOS/Linux use mount directories.
+    ui.set_show_free_drives(cfg!(windows));
+
     // Drop stale runtime records from earlier crashed/force-killed mounts so
     // both the tray status and `brewfs info` stay accurate.
     model::prune_stale_records();
@@ -391,7 +394,7 @@ fn mount_profile(
     let drive = model::normalize_mount_point(&p.drive);
     let spawned = if p.mode == "oss" {
         let Some(ossmount) = ossmount.as_ref() else {
-            ui.set_status_text("未找到 ossmount.exe（可用环境变量 OSSMOUNT_EXE 指定）".into());
+            ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp；macOS 请用 BrewFS 元数据模式）".into());
             return;
         };
         model::spawn_oss_mount(ossmount, p)
@@ -639,7 +642,11 @@ fn open_in_explorer(target: &str) {
             .creation_flags(0x08000000 /* CREATE_NO_WINDOW */)
             .spawn();
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(target).spawn();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = target;
     }
