@@ -116,7 +116,13 @@ cp dist/macos/Info.plist "$APP/Contents/Info.plist"
 cp target/release/brewfs-tray "$APP/Contents/MacOS/"
 cp target/release/brewfs "$APP/Contents/MacOS/"
 cp target/release/ossmount "$APP/Contents/MacOS/"
-if [[ ! -f "$APP/Contents/Resources/brewfs.icns" ]]; then
+# Prefer the repo's brewfs.icns (same source as the Windows .ico) so the
+# macOS app icon always matches the Windows version; fall back to generating
+# one from brewfs.png if it is missing.
+if [[ -f desktop/assets/brewfs.icns ]]; then
+  echo "==> Using desktop/assets/brewfs.icns"
+  cp desktop/assets/brewfs.icns "$APP/Contents/Resources/brewfs.icns"
+elif [[ ! -f "$APP/Contents/Resources/brewfs.icns" ]]; then
   echo "==> Generating icns"
   ICONSET="dist/macos/iconset.iconset"
   rm -rf "$ICONSET"
