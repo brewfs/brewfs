@@ -1,14 +1,13 @@
 //! BrewFS desktop tray manager (Slint 1.17), Windows + macOS.
 //!
-//! A system-tray app that keeps a list of saved BrewFS mount
-//! profiles (config records), shows their live mount state, and lets the user
-//! open / mount|unmount / delete each record from one list, edit the selected
+//! A system-tray app that keeps a list of saved OSS mount profiles (config
+//! records), shows their live mount state, and lets the user open /
+//! mount|unmount / delete each record from one list, edit the selected
 //! profile in the form, and add new configs.
 //!
-//! Requires a brewfs build with the `fuse-winfsp` feature on Windows
-//! (`ossmount` for the metadata-less OSS direct-mount mode; macOS uses
-//! the FUSE-based `ossmount` with macFUSE). Binaries are located next
-//! to this executable, via `BREWFS_EXE` / `OSSMOUNT_EXE`, or on PATH.
+//! OSS-only: every profile is a metadata-less S3/OSS direct mount spawned via
+//! `ossmount` (WinFsp on Windows, FUSE/macFUSE on macOS/Linux). Binaries are
+//! located next to this executable, via `OSSMOUNT_EXE`, or on PATH.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -25,8 +24,8 @@ use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
 
-/// A `brewfs mount` process we started that has not yet produced a runtime
-/// registry record (control plane still initializing) or failed to do so.
+/// An `ossmount` process we started that has not yet produced a runtime
+/// registry record (still initializing) or failed to do so.
 struct RecentSpawn {
     drive: String,
     pid: u32,
@@ -76,7 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Rc::new(RefCell::new(model::load_profiles()));
     let recent = Rc::new(RefCell::new(Vec::<RecentSpawn>::new()));
-    let brewfs = Rc::new(model::find_brewfs());
     let ossmount = Rc::new(model::find_ossmount());
 
     // Drive letters are a Windows concept; macOS/Linux use mount directories.
@@ -99,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Drop stale runtime records from earlier crashed/force-killed mounts so
-    // both the tray status and `brewfs info` stay accurate.
+    // the tray status stays accurate.
     model::prune_stale_records();
 
     refresh(&ui, &tray, &state, &recent);
@@ -109,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_to_form(&ui, &state.borrow().profiles[0]);
     }
 
-    wire_callbacks(&ui, &tray, &state, &recent, &brewfs, &ossmount);
+    wire_callbacks(&ui, &tray, &state, &recent, &ossmount);
 
     // Periodic status refresh (2s) driven from the UI thread.
     let timer = Timer::default();
@@ -140,14 +138,12 @@ fn wire_callbacks(
     tray: &Tray,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
-    brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
 ) {
     let ui_weak = ui.as_weak();
     let tray_weak = tray.as_weak();
     let state = Rc::clone(state);
     let recent = Rc::clone(recent);
-    let brewfs = Rc::clone(brewfs);
     let ossmount = Rc::clone(ossmount);
 
     // --- save the form back into a profile ---
@@ -229,7 +225,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let brewfs = brewfs.clone();
         let ossmount = ossmount.clone();
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
@@ -244,7 +239,7 @@ fn wire_callbacks(
                 // mounted -> confirm then unmount
                 if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {drive} 吗？"))
                 {
-                    graceful_or_kill(&ui, brewfs.as_ref(), m);
+                    graceful_or_kill(&ui, m);
                 } else {
                     ui.set_status_text(format!("已取消卸载 {drive}").into());
                 }
@@ -253,7 +248,7 @@ fn wire_callbacks(
                 if let Err(e) = p.validate() {
                     ui.set_status_text(format!("挂载失败：{e}").into());
                 } else {
-                    mount_profile(&ui, &tray_weak, &state, &recent, &brewfs, &ossmount, &p);
+                    mount_profile(&ui, &tray_weak, &state, &recent, &ossmount, &p);
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
@@ -333,7 +328,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let brewfs = brewfs.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mounts = model::read_mounts(&state.borrow().profiles);
@@ -350,7 +344,7 @@ fn wire_callbacks(
                 return;
             }
             for m in &live {
-                graceful_or_kill(&ui, brewfs.as_ref(), m);
+                graceful_or_kill(&ui, m);
             }
             ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
             if let Some(tray) = tray_weak.upgrade() {
@@ -385,37 +379,27 @@ fn wire_callbacks(
     tray.on_quit_app(quit_app);
 }
 
-/// Spawn the right backend for `p` (brewfs vs ossmount), remember the profile,
-/// and report progress. Used by the per-record mount action.
-#[allow(clippy::too_many_arguments)]
+/// Spawn `ossmount` for `p`, remember the profile, and report progress. Used
+/// by the per-record mount action.
 fn mount_profile(
     ui: &MainWindow,
     tray_weak: &slint::Weak<Tray>,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
-    brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
     p: &model::Profile,
 ) {
     let drive = model::normalize_mount_point(&p.drive);
-    let spawned = if p.mode == "oss" {
-        let Some(ossmount) = ossmount.as_ref() else {
-            #[cfg(windows)]
-            ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp）".into());
-            #[cfg(not(windows))]
-            ui.set_status_text(
-                "未找到 ossmount（OSS 直挂需要 macOS + macFUSE，请先安装 macFUSE）".into(),
-            );
-            return;
-        };
-        model::spawn_oss_mount(ossmount, p)
-    } else {
-        let Some(brewfs) = brewfs.as_ref() else {
-            ui.set_status_text("未找到 brewfs.exe（可用环境变量 BREWFS_EXE 指定）".into());
-            return;
-        };
-        model::spawn_mount(brewfs, p)
+    let Some(ossmount) = ossmount.as_ref() else {
+        #[cfg(windows)]
+        ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp）".into());
+        #[cfg(not(windows))]
+        ui.set_status_text(
+            "未找到 ossmount（OSS 直挂需要 macOS + macFUSE，请先安装 macFUSE）".into(),
+        );
+        return;
     };
+    let spawned = model::spawn_oss_mount(ossmount, p);
     match spawned {
         Ok((pid, log)) => {
             {
@@ -492,23 +476,11 @@ fn refresh(
         .map(|p| {
             let drive = model::normalize_mount_point(&p.drive);
             let m = mounts.iter().find(|m| m.drive == drive);
-            let (backend, detail) = if p.mode == "oss" {
-                (
-                    "oss".to_string(),
-                    format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/')),
-                )
-            } else {
-                let detail = if p.backend == "s3" {
-                    format!("{} / {}", p.s3_bucket, p.s3_region)
-                } else {
-                    p.data_dir.clone()
-                };
-                (p.backend.clone(), detail)
-            };
+            let detail = format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/'));
             ProfileRecord {
                 name: p.name.clone().into(),
                 drive: drive.into(),
-                backend: backend.into(),
+                backend: "oss".into(),
                 detail: detail.into(),
                 mounted: m.map(|m| m.alive).unwrap_or(false),
                 pid: m.map(|m| m.pid as i32).unwrap_or(0),
@@ -553,10 +525,7 @@ fn refresh(
 
 fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
     ui.set_cfg_name(p.name.clone().into());
-    ui.set_cfg_mode_index(if p.mode == "oss" { 1 } else { 0 });
     ui.set_cfg_drive(p.drive.clone().into());
-    ui.set_cfg_backend_index(if p.backend == "s3" { 1 } else { 0 });
-    ui.set_cfg_data_dir(p.data_dir.clone().into());
     ui.set_cfg_s3_bucket(p.s3_bucket.clone().into());
     ui.set_cfg_s3_endpoint(p.s3_endpoint.clone().into());
     ui.set_cfg_s3_region(p.s3_region.clone().into());
@@ -564,38 +533,13 @@ fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
     ui.set_cfg_s3_secret_key(p.secret_key.clone().into());
     ui.set_cfg_s3_force_path_style(p.s3_force_path_style);
     ui.set_cfg_prefix(p.prefix.clone().into());
-    ui.set_cfg_meta_index(match p.meta_backend.as_str() {
-        "redis" => 1,
-        "etcd" => 2,
-        "tikv" => 3,
-        _ => 0,
-    });
-    ui.set_cfg_meta_url(p.meta_url.clone().into());
 }
 
 fn form_to_profile(ui: &MainWindow) -> model::Profile {
-    let mode = if ui.get_cfg_mode_index() == 1 {
-        "oss"
-    } else {
-        "brewfs"
-    };
-    let backend = if ui.get_cfg_backend_index() == 1 {
-        "s3"
-    } else {
-        "local-fs"
-    };
-    let meta_backend = match ui.get_cfg_meta_index() {
-        1 => "redis",
-        2 => "etcd",
-        3 => "tikv",
-        _ => "sqlx",
-    };
     model::Profile {
         name: ui.get_cfg_name().to_string(),
-        mode: mode.to_string(),
+        mode: "oss".to_string(),
         drive: ui.get_cfg_drive().to_string(),
-        backend: backend.to_string(),
-        data_dir: ui.get_cfg_data_dir().to_string(),
         s3_bucket: ui.get_cfg_s3_bucket().to_string(),
         s3_endpoint: ui.get_cfg_s3_endpoint().to_string(),
         s3_region: ui.get_cfg_s3_region().to_string(),
@@ -604,40 +548,16 @@ fn form_to_profile(ui: &MainWindow) -> model::Profile {
         prefix: ui.get_cfg_prefix().to_string(),
         access_key: ui.get_cfg_s3_access_key().to_string(),
         secret_key: ui.get_cfg_s3_secret_key().to_string(),
-        meta_backend: meta_backend.to_string(),
-        meta_url: ui.get_cfg_meta_url().to_string(),
     }
 }
 
-/// Prefer a graceful control-plane unmount (`brewfs unmount <drive>`); only
-/// fall back to force-killing the process when brewfs is missing or does not
-/// accept the request (e.g. an older binary without the `unmount` subcommand).
-fn graceful_or_kill(ui: &MainWindow, brewfs: &Option<PathBuf>, m: &model::MountStatus) {
-    // Metadata-less ossmount instances have no control plane to shut down
-    // gracefully; data is flushed on close, so terminating is safe.
-    if m.is_oss {
-        match winutil::terminate_process(m.pid) {
-            Ok(()) => ui.set_status_text(format!("已卸载 {}", m.drive).into()),
-            Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),
-        }
-        return;
-    }
-    if let Some(brewfs) = brewfs {
-        match model::graceful_unmount(brewfs, &m.drive) {
-            Ok(true) => {
-                ui.set_status_text(format!("已请求优雅卸载 {}", m.drive).into());
-                return;
-            }
-            Ok(false) => {
-                ui.set_status_text(format!("{} 未接受优雅卸载请求，改用强制结束", m.drive).into());
-            }
-            Err(e) => {
-                ui.set_status_text(format!("优雅卸载 {} 失败：{e}，改用强制结束", m.drive).into());
-            }
-        }
-    }
+/// Unmount a live mount. All mounts are metadata-less `ossmount` instances:
+/// data is flushed to the object store on close, so terminating the process
+/// tears the volume down safely (WinFsp detaches the volume when the owner
+/// exits; on macOS/Linux the FUSE process's SIGTERM handler umounts).
+fn graceful_or_kill(ui: &MainWindow, m: &model::MountStatus) {
     match winutil::terminate_process(m.pid) {
-        Ok(()) => ui.set_status_text(format!("已强制结束 {}", m.drive).into()),
+        Ok(()) => ui.set_status_text(format!("已卸载 {}", m.drive).into()),
         Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),
     }
 }

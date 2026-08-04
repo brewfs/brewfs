@@ -25,18 +25,21 @@ use brewfs::ossfs::{ObjectFs, OssConfig};
 fn usage() -> ! {
     eprintln!(
         "usage: ossmount --bucket BUCKET [--endpoint URL] [--region REGION]\n\
-                 [--prefix PREFIX] [--force-path-style] MOUNT_POINT\n\
+                 [--prefix PREFIX] [--force-path-style] [--refresh-secs N] MOUNT_POINT\n\
+         --refresh-secs N:  periodic directory refresh interval in seconds\n\
+                           (FUSE; 0 disables. Windows WinFsp fixed at 10s)\n\
          env:  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"
     );
     std::process::exit(2);
 }
 
-fn parse_args() -> (OssConfig, PathBuf) {
+fn parse_args() -> (OssConfig, PathBuf, u64) {
     let mut bucket = String::new();
     let mut endpoint: Option<String> = None;
     let mut region = "us-east-1".to_string();
     let mut prefix = String::new();
     let mut force_path_style = false;
+    let mut refresh_secs: u64 = 10;
     let mut mount_point: Option<PathBuf> = None;
 
     let mut args = env::args().skip(1);
@@ -47,6 +50,12 @@ fn parse_args() -> (OssConfig, PathBuf) {
             "--region" => region = args.next().unwrap_or_else(|| usage()),
             "--prefix" => prefix = args.next().unwrap_or_else(|| usage()),
             "--force-path-style" => force_path_style = true,
+            "--refresh-secs" => {
+                refresh_secs = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage());
+            }
             other if other.starts_with("--") => usage(),
             other => mount_point = Some(PathBuf::from(other)),
         }
@@ -64,20 +73,23 @@ fn parse_args() -> (OssConfig, PathBuf) {
             prefix,
         },
         mount_point,
+        refresh_secs,
     )
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (cfg, mount_point) = parse_args();
+    let (cfg, mount_point, refresh_secs) = parse_args();
     let fs = Arc::new(ObjectFs::connect(cfg).await?);
 
     #[cfg(windows)]
     {
+        // WinFsp uses a fixed 10s notify interval (see REFRESH_INTERVAL_MS).
+        let _ = refresh_secs;
         brewfs::ossfs::winfsp::mount_oss_winfsp(fs, &mount_point).await
     }
     #[cfg(not(windows))]
     {
-        brewfs::ossfs::fuse::mount_oss_fuse(fs, &mount_point).await
+        brewfs::ossfs::fuse::mount_oss_fuse(fs, &mount_point, refresh_secs).await
     }
 }

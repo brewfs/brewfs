@@ -9,7 +9,7 @@
 //! libfuse). Windows uses the WinFsp adapter in [`super::winfsp`].
 #![cfg(not(windows))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +32,9 @@ use super::{DirEntry, ObjectFs};
 const TTL: Duration = Duration::from_secs(1);
 /// Root directory inode (stable).
 const ROOT_INODE: u64 = 1;
+/// Upper bound on the number of directories tracked for periodic kernel-cache
+/// invalidation. Browsing a huge tree cannot grow this set without limit.
+const MAX_TRACKED_DIRS: usize = 8192;
 /// Maximum supported path component length (POSIX NAME_MAX).
 const NAME_MAX: u32 = 255;
 
@@ -102,6 +105,9 @@ pub struct OssFs {
     rt: Handle,
     /// inode -> POSIX path (root is always `ROOT_INODE`).
     inodes: Mutex<HashMap<u64, String>>,
+    /// inodes of directories that have been listed; the periodic refresh task
+    /// invalidates their kernel caches so remote changes show up.
+    dirs: Arc<Mutex<HashSet<u64>>>,
     /// fh -> open file state.
     files: Mutex<HashMap<u64, OpenFile>>,
     next_fh: AtomicU64,
@@ -111,13 +117,15 @@ pub struct OssFs {
 }
 
 impl OssFs {
-    pub fn new(fs: Arc<ObjectFs>, rt: Handle) -> Self {
+    pub fn new(fs: Arc<ObjectFs>, rt: Handle, dirs: Arc<Mutex<HashSet<u64>>>) -> Self {
         let mut inodes = HashMap::new();
         inodes.insert(ROOT_INODE, "/".to_string());
+        dirs.lock().unwrap().insert(ROOT_INODE);
         Self {
             fs,
             rt,
             inodes: Mutex::new(inodes),
+            dirs,
             files: Mutex::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
             uid: unsafe { libc::getuid() },
@@ -756,6 +764,18 @@ impl Filesystem for OssFs {
                 return;
             }
         };
+        // Remember this directory so the periodic refresh can invalidate it.
+        // Bounded: when the tracked set exceeds MAX_TRACKED_DIRS we reset to
+        // just the root so a pathological tree cannot grow memory or the
+        // per-tick invalidation loop without limit.
+        {
+            let mut dirs = self.dirs.lock().unwrap();
+            dirs.insert(ino.0);
+            if dirs.len() > MAX_TRACKED_DIRS {
+                dirs.clear();
+                dirs.insert(ROOT_INODE);
+            }
+        }
         // "." and ".." first (Finder expects them), then children sorted by
         // name for a stable readdir cursor.
         let mut items: Vec<(String, u64, FileType)> = Vec::with_capacity(entries.len() + 2);
@@ -875,7 +895,11 @@ fn build_config() -> Config {
 /// Mount an [`ObjectFs`] at `mount_point` via FUSE (macFUSE on macOS, libfuse
 /// on Linux). Runs until Ctrl+C / SIGTERM / external unmount, then tears down
 /// gracefully.
-pub async fn mount_oss_fuse(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::Result<()> {
+pub async fn mount_oss_fuse(
+    fs: Arc<ObjectFs>,
+    mount_point: &Path,
+    refresh_secs: u64,
+) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
         if !Path::new("/Library/Filesystems/macfuse.fs").exists() {
@@ -894,13 +918,39 @@ pub async fn mount_oss_fuse(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::Re
     }
 
     let handle = Handle::current();
-    let oss_fs = OssFs::new(fs, handle);
+    let dirs = Arc::new(Mutex::new(HashSet::new()));
+    let oss_fs = OssFs::new(fs, handle, Arc::clone(&dirs));
     let session = fuser::spawn_mount2(oss_fs, mount_point, &build_config())
         .map_err(|e| anyhow::anyhow!("failed to mount at {}: {e}", mount_point.display()))?;
 
     info!(mount_point = %mount_point.display(), "brewfs-oss mounted via FUSE");
     println!("mounted at {}", mount_point.display());
     write_runtime_record(mount_point);
+
+    // Periodic directory refresh: invalidate the kernel caches of every
+    // directory that has been listed so changes made by other machines show
+    // up without a manual refresh. The kernel re-lists lazily on the next
+    // access, so this costs an S3 list only when the user actually browses.
+    // macFUSE does not support kernel notifications; the errors are ignored
+    // there (the 1s TTL still keeps attribute reads fresh).
+    if refresh_secs > 0 {
+        let notifier = session.notifier();
+        let dirs = Arc::clone(&dirs);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(refresh_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The first tick fires immediately; consume it so the first
+            // refresh waits one full interval.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let inodes: Vec<u64> = dirs.lock().unwrap().iter().copied().collect();
+                for ino in inodes {
+                    let _ = notifier.inval_inode(INodeNo(ino), 0, 0);
+                }
+            }
+        });
+    }
 
     #[cfg(unix)]
     let mut sigterm =

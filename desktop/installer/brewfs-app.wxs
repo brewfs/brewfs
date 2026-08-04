@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BrewFS application MSI (WiX v4/v5/v7).
+  Installs the tray app and the ossmount binary side-by-side so the tray can
+  find ossmount next to it. WinFsp itself is chained by brewfs-bundle.wxs.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="BrewFS"
+      Manufacturer="BrewFS"
+      Version="$(var.Version)"
+      UpgradeCode="6d2a7f0e-4c8e-4f3b-9a1b-8b2f3c4d5e6f"
+      Scope="perMachine">
+    <SummaryInformation
+        Keywords="BrewFS;OSS;S3;WinFsp;挂载"
+        Description="BrewFS 桌面托盘：把 S3/OSS bucket 直挂成本地盘符。"/>
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 BrewFS，请先卸载旧版本。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- App binaries: tray + ossmount in the same folder. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="BrewFS">
+        <Component Id="C_TrayExe" Directory="INSTALLFOLDER">
+          <File Id="F_TrayExe" Source="$(var.TrayPath)" KeyPath="yes" />
+        </Component>
+        <Component Id="C_OssmountExe" Directory="INSTALLFOLDER">
+          <File Id="F_OssmountExe" Source="$(var.OssmountPath)" KeyPath="yes" />
+        </Component>
+        <Component Id="C_Readme" Directory="INSTALLFOLDER">
+          <File Id="F_Readme" Source="$(var.ReadmePath)" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start menu shortcut -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="BrewFSMenuFolder" Name="BrewFS">
+        <Component Id="C_StartMenuShortcut" Directory="BrewFSMenuFolder">
+          <Shortcut Id="S_Tray"
+                    Name="BrewFS 托盘"
+                    Description="BrewFS 系统托盘：OSS/S3 直挂为本地磁盘"
+                    Target="[INSTALLFOLDER]brewfs-tray.exe"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="R_RemoveBrewFSMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\BrewFS" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="BrewFS" Level="1">
+      <ComponentRef Id="C_TrayExe" />
+      <ComponentRef Id="C_OssmountExe" />
+      <ComponentRef Id="C_Readme" />
+      <ComponentRef Id="C_StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

@@ -24,6 +24,17 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$BIN" "$MACOS/brewfs-tray"
+
+# The tray app locates ossmount next to itself; bundle it inside the .app so
+# OSS direct mounts work from a double-clicked app.
+OSSMNT="$ROOT/target/release/ossmount"
+if [ ! -x "$OSSMNT" ]; then
+  echo "ossmount binary not found; run first:"
+  echo "  cargo build --release -p brewfs --bin ossmount"
+  exit 1
+fi
+cp "$OSSMNT" "$MACOS/ossmount"
+chmod +x "$MACOS/ossmount"
 cp "$ROOT/desktop/assets/brewfs.icns" "$RESOURCES/brewfs.icns"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'

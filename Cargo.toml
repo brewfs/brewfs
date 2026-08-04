@@ -335,7 +335,7 @@ debug = true
 strip = false
 
 [target.'cfg(windows)'.dependencies]
-winfsp = { workspace = true, features = ["delayload", "async-io"] }
+winfsp = { workspace = true, features = ["delayload", "async-io", "notify"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winfsp = { workspace = true, features = ["delayload"] }

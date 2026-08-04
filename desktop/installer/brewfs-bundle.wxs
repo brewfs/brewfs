@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BrewFS installer bundle (WiX Burn).
+  Chains:
+    1. WinFsp 2.1 (only when the WinFsp kernel service is not already
+       installed; it is a shared system component, kept on uninstall).
+    2. The BrewFS application MSI.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle Name="BrewFS 安装程序"
+          Version="$(var.Version)"
+          Manufacturer="BrewFS"
+          UpgradeCode="8e4b1c3a-5f2d-4a9e-9c7b-1d2e3f4a5b6c"
+          IconSourceFile="$(var.IconPath)"
+          AboutUrl="https://github.com/brewfs/brewfs">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          LicenseUrl=""
+          SuppressOptionsUI="yes"
+          Theme="hyperlinkLicense" />
+    </BootstrapperApplication>
+
+    <!-- Detect any installed WinFsp via its kernel service key. -->
+    <util:RegistrySearch Id="WinFspServiceSearch"
+                    Root="HKLM"
+                    Key="SYSTEM\CurrentControlSet\Services\WinFsp"
+                    Variable="WinFspService" />
+
+    <Chain>
+      <MsiPackage SourceFile="$(var.WinFspMsi)"
+                  Vital="yes"
+                  Permanent="yes"
+                  InstallCondition="NOT WinFspService">
+      </MsiPackage>
+      <MsiPackage SourceFile="$(var.AppMsi)"
+                  Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

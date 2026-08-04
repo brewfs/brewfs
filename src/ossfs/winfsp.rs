@@ -4,6 +4,7 @@
 //! buffered in memory and flushed as a whole-object `PutObject` on
 //! close/flush — the same "cloud drive" semantics as ossfs/s3fs.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::future::Future;
 use std::io::Error as IoError;
@@ -18,7 +19,8 @@ use winfsp::filesystem::{
     AsyncFileSystemContext, DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity,
     FileSystemContext, OpenFileInfo, VolumeInfo, WideNameInfo,
 };
-use winfsp::host::{FileSystemHost, VolumeParams};
+use winfsp::host::{FileSystemHost, FileSystemParams, VolumeParams};
+use winfsp::notify::{Notifier, NotifyInfo, NotifyingFileSystemContext};
 use winfsp::{FspError, U16CStr};
 
 use super::{DirEntry, ObjectFs};
@@ -33,6 +35,21 @@ const WIN32_FILE_NOT_FOUND: i32 = 2;
 const WIN32_ACCESS_DENIED: i32 = 5;
 const WIN32_NOT_SUPPORTED: i32 = 50;
 const WIN32_INVALID_PARAMETER: i32 = 87;
+
+// Periodic directory refresh: when the OS has an active directory watch
+// (Explorer window open), WinFsp calls our notifier every REFRESH_INTERVAL_MS
+// so changes made by other machines appear without a manual F5. When nothing
+// is watching, FspFileSystemNotifyBegin fails and no S3 listing happens.
+const REFRESH_INTERVAL_MS: u32 = 10_000;
+
+// Win32 change-notification constants (fileapi.h).
+const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0000_0001;
+const FILE_NOTIFY_CHANGE_DIR_NAME: u32 = 0x0000_0002;
+const FILE_NOTIFY_CHANGE_SIZE: u32 = 0x0000_0008;
+const FILE_NOTIFY_CHANGE_LAST_WRITE: u32 = 0x0000_0010;
+const FILE_ACTION_ADDED: u32 = 1;
+const FILE_ACTION_REMOVED: u32 = 2;
+const FILE_ACTION_MODIFIED: u32 = 3;
 
 const UNIX_TO_FILETIME_EPOCH_SECS: i64 = 11_644_473_600;
 
@@ -127,6 +144,9 @@ pub struct OssMountContext {
     fs: Arc<ObjectFs>,
     rt: Handle,
     mount_point: PathBuf,
+    /// Last-seen root listing (name -> (is_dir, size, mtime)) used by the
+    /// periodic change-notification diff.
+    snapshot: Mutex<HashMap<String, (bool, u64, i64)>>,
 }
 
 impl OssMountContext {
@@ -135,6 +155,88 @@ impl OssMountContext {
         F: Future,
     {
         self.rt.block_on(fut)
+    }
+}
+
+/// Emit a single WinFsp change notification for a root-level entry.
+fn notify_change(notifier: &Notifier, name: &str, action: u32, filter: u32) {
+    let mut info = NotifyInfo::<255>::default();
+    info.filter = filter;
+    info.action = action;
+    if info.set_name(name).is_ok() {
+        notifier.notify(&info);
+    }
+}
+
+/// Periodic root change detection: every REFRESH_INTERVAL_MS (only when the OS
+/// holds an active watch) list the bucket root, diff against the last snapshot
+/// and publish ADDED/REMOVED/MODIFIED events so open Explorer windows refresh.
+///
+/// Note: notifications carry a root-relative name, so only root-level watches
+/// are updated by WinFsp; subdirectory watches still rely on the 1s
+/// dir_info_timeout. This covers the common "another machine dropped a file
+/// into the shared root" case at zero cost when no window is watching.
+impl NotifyingFileSystemContext<()> for OssMountContext {
+    fn should_notify(&self) -> Option<()> {
+        debug!("[notify] should_notify called");
+        Some(())
+    }
+
+    fn notify(&self, _context: (), notifier: &Notifier) {
+        let current = match self.block_on(self.fs.list("/")) {
+            Ok(entries) => entries,
+            Err(e) => {
+                debug!("[notify] list failed: {e:?}");
+                return;
+            }
+        };
+        debug!("[notify] list got {} entries", current.len());
+        let mut snap = self.snapshot.lock().unwrap();
+        let mut seen = HashSet::with_capacity(current.len());
+        for entry in &current {
+            seen.insert(entry.name.clone());
+            let sig = (entry.is_dir, entry.size, entry.mtime_secs);
+            match snap.get(&entry.name) {
+                Some(prev) if *prev != sig => {
+                    debug!("[notify] MODIFIED {}", entry.name);
+                    let filter = if entry.is_dir {
+                        FILE_NOTIFY_CHANGE_DIR_NAME
+                    } else {
+                        FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE
+                    };
+                    notify_change(notifier, &entry.name, FILE_ACTION_MODIFIED, filter);
+                }
+                None => {
+                    debug!("[notify] ADDED {}", entry.name);
+                    let filter = if entry.is_dir {
+                        FILE_NOTIFY_CHANGE_DIR_NAME
+                    } else {
+                        FILE_NOTIFY_CHANGE_FILE_NAME
+                    };
+                    notify_change(notifier, &entry.name, FILE_ACTION_ADDED, filter);
+                }
+                _ => {}
+            }
+        }
+        let removed: Vec<(String, bool)> = snap
+            .iter()
+            .filter(|(k, _)| !seen.contains(*k))
+            .map(|(k, v)| (k.clone(), v.0))
+            .collect();
+        for (name, was_dir) in removed {
+            debug!("[notify] REMOVED {name}");
+            let filter = if was_dir {
+                FILE_NOTIFY_CHANGE_DIR_NAME
+            } else {
+                FILE_NOTIFY_CHANGE_FILE_NAME
+            };
+            notify_change(notifier, &name, FILE_ACTION_REMOVED, filter);
+            snap.remove(&name);
+        }
+        *snap = current
+            .into_iter()
+            .map(|e| (e.name, (e.is_dir, e.size, e.mtime_secs)))
+            .collect();
     }
 }
 
@@ -164,8 +266,10 @@ pub async fn mount_oss_winfsp(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::
         fs,
         rt,
         mount_point: mount_point.to_path_buf(),
+        snapshot: Mutex::new(HashMap::new()),
     };
-    let mut host = FileSystemHost::new_async(build_volume_params(), context)
+    let params = FileSystemParams::default_params(build_volume_params());
+    let mut host = FileSystemHost::new_with_timer_async::<(), REFRESH_INTERVAL_MS>(params, context)
         .map_err(|e| anyhow::anyhow!("failed to create WinFsp filesystem host: {e}"))?;
 
     host.mount(mount_point)
