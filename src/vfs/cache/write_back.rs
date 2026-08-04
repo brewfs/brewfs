@@ -451,7 +451,11 @@ impl WriteBackCache for FsWriteBackCache {
 
         let slice_path = key.slice_path(&self.root);
 
-        #[cfg(unix)]
+        // Preallocate slice backing space before writing so a large dirty
+        // slice cannot hit ENOSPC mid-write. `libc::fallocate` (and
+        // `FALLOC_FL_KEEP_SIZE`) is Linux-only; macOS has no equivalent in
+        // libc, so keep the plain write path there (sparse files work fine).
+        #[cfg(target_os = "linux")]
         if self.allocation_unit > 0 {
             let data_len = data.iter().map(Bytes::len).sum::<usize>() as u64;
             let allocation_start = slice_offset / self.allocation_unit * self.allocation_unit;
