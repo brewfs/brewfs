@@ -23,3 +23,6 @@ windows-sys = { version = "0.59", features = [
 
 [build-dependencies]
 slint-build = "1.17"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "2"

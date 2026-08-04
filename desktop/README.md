@@ -28,6 +28,20 @@ Windows 上运行托盘应用会直接以无控制台窗口方式启动（`windo
 "windows"`）。托盘图标在事件循环运行后出现；关闭主窗口只是隐藏到托盘，点托盘
 “退出 BrewFS” 才结束进程。
 
+## 应用图标
+
+图标统一以矢量源 `assets/brewfs-icon.svg` 为准（蓝色圆角方块 + 白色云朵向下箭头，
+寓意"云端网盘挂载到本地"），构建时按平台生成不同格式：
+
+- `assets/brewfs.png`（256×256）：Slint 窗口图标 + 系统托盘图标（`MainWindow.icon`
+  与 `SystemTrayIcon.icon`）
+- `assets/brewfs.ico`（16/24/32/48/64 经典 DIB 条目）：Windows 通过 `build.rs` 的
+  `embed-resource` + `app.rc` 嵌入 exe，Explorer / 任务栏 / Alt-Tab 都能显示
+- `assets/brewfs.icns`：macOS 应用包图标
+
+macOS 打包成 .app 时，把 `brewfs.icns` 放进 `Contents/Resources/`，并在
+`Contents/Info.plist` 里加 `CFBundleIconFile`（值为 `brewfs`）即可。
+
 ## OSS 直挂模式（多机网盘，无本地元数据）
 配置文件档案的"挂载模式"选 **OSS 直挂（多机）** 后，托盘应用不再走 BrewFS 元数据
 （sqlite/redis/...），而是调用 `ossmount`（本仓库自带）把 **S3/OSS bucket 直接挂载成

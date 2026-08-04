@@ -1,0 +1,4 @@
+// BrewFS tray application resources.
+// The ICON statement embeds assets/brewfs.ico as the exe application icon
+// (RT_GROUP_ICON / RT_ICON), shown by Explorer, the taskbar and Alt-Tab.
+IDI_ICON1 ICON "assets/brewfs.ico"
