@@ -29,3 +29,6 @@ web/console/dist/
 
 # Local-only credentials and config (never commit)
 .local/
+
+# macOS release artifacts (regenerable via scripts/package_macos.sh)
+dist/
