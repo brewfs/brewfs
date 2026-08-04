@@ -1,11 +1,13 @@
 //! BrewFS desktop tray manager (Slint 1.17).
 //!
-//! A small Windows system-tray app that edits BrewFS mount profiles, shows
-//! the current drive-letter mappings (read from the brewfs runtime registry),
-//! and starts/stops `brewfs mount` processes.
+//! A small Windows system-tray app that keeps a list of saved BrewFS mount
+//! profiles (config records), shows their live mount state, and lets the user
+//! open / mount|unmount / delete each record from one list, edit the selected
+//! profile in the form, and add new configs.
 //!
-//! Requires a brewfs build with the `fuse-winfsp` feature. The binary is
-//! located next to this executable, via `BREWFS_EXE`, or on PATH.
+//! Requires a brewfs build with the `fuse-winfsp` feature (and `ossmount` for
+//! the metadata-less OSS direct-mount mode). Both binaries are located next
+//! to this executable, via `BREWFS_EXE` / `OSSMOUNT_EXE`, or on PATH.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -71,7 +73,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Preload the first saved profile into the form.
     if !state.borrow().profiles.is_empty() {
-        ui.set_cfg_profile_index(0);
         profile_to_form(&ui, &state.borrow().profiles[0]);
     }
 
@@ -129,24 +130,8 @@ fn wire_callbacks(
     let brewfs = Rc::clone(brewfs);
     let ossmount = Rc::clone(ossmount);
 
-    // --- profile selection ---
-    ui.on_profile_selected({
-        let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let idx = ui.get_cfg_profile_index();
-            let profiles = state.borrow();
-            if idx >= 0 && (idx as usize) < profiles.profiles.len() {
-                let p = profiles.profiles[idx as usize].clone();
-                drop(profiles);
-                profile_to_form(&ui, &p);
-            }
-        }
-    });
-
-    // --- save ---
-    ui.on_save_config({
+    // --- save the form back into a profile ---
+    ui.on_save_form({
         let ui_weak = ui_weak.clone();
         let tray_weak = tray_weak.clone();
         let state = state.clone();
@@ -159,20 +144,14 @@ fn wire_callbacks(
                 ui.set_status_text(format!("保存失败：{e}").into());
                 return;
             }
-            let idx = {
+            {
                 let mut file = state.borrow_mut();
-                let pos = file.profiles.iter().position(|x| x.name == p.name);
-                match pos {
-                    Some(i) => file.profiles[i] = p.clone(),
-                    None => file.profiles.push(p.clone()),
-                }
+                upsert_profile(&mut file, &p);
                 if let Err(e) = model::save_profiles(&file) {
                     ui.set_status_text(format!("保存失败：{e}").into());
                     return;
                 }
-                file.profiles.iter().position(|x| x.name == p.name).unwrap() as i32
-            };
-            ui.set_cfg_profile_index(idx);
+            }
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent, &window_visible);
             }
@@ -180,8 +159,54 @@ fn wire_callbacks(
         }
     });
 
-    // --- mount / unmount (single toggle button) ---
-    ui.on_toggle_mount({
+    // --- add a new blank config ---
+    ui.on_add_config({
+        let ui_weak = ui_weak.clone();
+        let tray_weak = tray_weak.clone();
+        let state = state.clone();
+        let recent = recent.clone();
+        let window_visible = window_visible.clone();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let name = {
+                let mut file = state.borrow_mut();
+                let name = format!("新建配置 {}", file.profiles.len() + 1);
+                let p = model::Profile {
+                    name: name.clone(),
+                    ..model::Profile::default()
+                };
+                file.profiles.push(p.clone());
+                if let Err(e) = model::save_profiles(&file) {
+                    ui.set_status_text(format!("添加失败：{e}").into());
+                    return;
+                }
+                profile_to_form(&ui, &p);
+                name
+            };
+            if let Some(tray) = tray_weak.upgrade() {
+                refresh(&ui, &tray, &state, &recent, &window_visible);
+            }
+            ui.set_status_text(format!("已添加配置「{name}」，填写后点保存").into());
+        }
+    });
+
+    // --- open a record's drive in Explorer ---
+    ui.on_open_record({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let profiles = state.borrow().profiles.clone();
+            let Some(p) = profiles.get(index as usize) else {
+                ui.set_status_text("记录不存在".into());
+                return;
+            };
+            open_in_explorer(&model::normalize_mount_point(&p.drive));
+        }
+    });
+
+    // --- per-record mount / unmount toggle ---
+    ui.on_toggle_record({
         let ui_weak = ui_weak.clone();
         let tray_weak = tray_weak.clone();
         let state = state.clone();
@@ -189,78 +214,39 @@ fn wire_callbacks(
         let window_visible = window_visible.clone();
         let brewfs = brewfs.clone();
         let ossmount = ossmount.clone();
-        move || {
+        move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
-
-            // When the current drive is already mounted the button reads
-            // "卸载": confirm first, then unmount.
-            let drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
-            let mounts = model::read_mounts(&state.borrow().profiles);
+            let profiles = state.borrow().profiles.clone();
+            let Some(p) = profiles.get(index as usize).cloned() else {
+                ui.set_status_text("记录不存在".into());
+                return;
+            };
+            let drive = model::normalize_mount_point(&p.drive);
+            let mounts = model::read_mounts(&profiles);
             if let Some(m) = mounts.iter().find(|m| m.drive == drive && m.alive) {
+                // mounted -> confirm then unmount
                 if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {drive} 吗？"))
                 {
                     graceful_or_kill(&ui, brewfs.as_ref(), m);
                 } else {
                     ui.set_status_text(format!("已取消卸载 {drive}").into());
                 }
-                if let Some(tray) = tray_weak.upgrade() {
-                    refresh(&ui, &tray, &state, &recent, &window_visible);
-                }
-                return;
-            }
-
-            let p = form_to_profile(&ui);
-            if let Err(e) = p.validate() {
-                ui.set_status_text(format!("挂载失败：{e}").into());
-                return;
-            }
-            let drive = model::normalize_mount_point(&p.drive);
-            let mounts = model::read_mounts(&state.borrow().profiles);
-            if mounts.iter().any(|m| m.drive == drive && m.alive) {
-                ui.set_status_text(format!("{drive} 已被挂载，请先卸载").into());
-                return;
-            }
-
-            // OSS direct mount (metadata-less, multi-machine) -> ossmount;
-            // otherwise -> brewfs mount --config.
-            let spawned = if p.mode == "oss" {
-                let Some(ossmount) = ossmount.as_ref() else {
-                    ui.set_status_text(
-                        "未找到 ossmount.exe（可用环境变量 OSSMOUNT_EXE 指定）".into(),
-                    );
-                    return;
-                };
-                model::spawn_oss_mount(ossmount, &p)
             } else {
-                let Some(brewfs) = brewfs.as_ref() else {
-                    ui.set_status_text("未找到 brewfs.exe（可用环境变量 BREWFS_EXE 指定）".into());
-                    return;
-                };
-                model::spawn_mount(brewfs, &p)
-            };
-
-            match spawned {
-                Ok((pid, log)) => {
-                    // Remember the profile so the drive-letter mapping shows up
-                    // with its backend / data details.
-                    {
-                        let mut file = state.borrow_mut();
-                        let pos = file.profiles.iter().position(|x| x.name == p.name);
-                        match pos {
-                            Some(i) => file.profiles[i] = p.clone(),
-                            None => file.profiles.push(p.clone()),
-                        }
-                        let _ = model::save_profiles(&file);
-                    }
-                    recent.borrow_mut().push(RecentSpawn {
-                        drive: drive.clone(),
-                        pid,
-                        log,
-                        at: Instant::now(),
-                    });
-                    ui.set_status_text(format!("正在挂载 {drive}（PID {pid}），等待就绪…").into());
+                // not mounted -> mount
+                if let Err(e) = p.validate() {
+                    ui.set_status_text(format!("挂载失败：{e}").into());
+                } else {
+                    mount_profile(
+                        &ui,
+                        &tray_weak,
+                        &state,
+                        &recent,
+                        &window_visible,
+                        &brewfs,
+                        &ossmount,
+                        &p,
+                    );
                 }
-                Err(e) => ui.set_status_text(format!("挂载启动失败：{e}").into()),
             }
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent, &window_visible);
@@ -268,53 +254,73 @@ fn wire_callbacks(
         }
     });
 
-    // --- open current in explorer ---
-    ui.on_open_current({
+    // --- delete a config record ---
+    ui.on_delete_record({
         let ui_weak = ui_weak.clone();
-        move || {
+        let tray_weak = tray_weak.clone();
+        let state = state.clone();
+        let recent = recent.clone();
+        let window_visible = window_visible.clone();
+        move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
-            if drive.is_empty() {
-                ui.set_status_text("请先填写盘符".into());
-            } else {
-                open_in_explorer(&drive);
+            let name = {
+                let profiles = state.borrow();
+                let Some(p) = profiles.profiles.get(index as usize) else {
+                    ui.set_status_text("记录不存在".into());
+                    return;
+                };
+                p.name.clone()
+            };
+            if !winutil::confirm_yes_no("BrewFS 删除确认", &format!("确定要删除配置「{name}」吗？"))
+            {
+                ui.set_status_text("已取消删除".into());
+                return;
             }
+            {
+                let mut file = state.borrow_mut();
+                if index >= 0 && (index as usize) < file.profiles.len() {
+                    file.profiles.remove(index as usize);
+                }
+                if let Err(e) = model::save_profiles(&file) {
+                    ui.set_status_text(format!("删除失败：{e}").into());
+                    return;
+                }
+            }
+            if let Some(tray) = tray_weak.upgrade() {
+                refresh(&ui, &tray, &state, &recent, &window_visible);
+            }
+            ui.set_status_text(format!("已删除配置「{name}」").into());
         }
     });
 
-    // --- open mount from list ---
-    {
+    // --- select a record -> load into the form ---
+    ui.on_select_record({
         let ui_weak = ui_weak.clone();
         let state = state.clone();
-        ui.on_open_mount(move |index| {
-            if let Some(ui) = ui_weak.upgrade() {
-                open_mount_at(&ui, &state, index);
-            }
-        });
-    }
+        move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let profiles = state.borrow();
+            let Some(p) = profiles.profiles.get(index as usize) else {
+                return;
+            };
+            let p = p.clone();
+            drop(profiles);
+            profile_to_form(&ui, &p);
+        }
+    });
+
+    // --- tray: open a mounted drive ---
     {
-        let ui_weak = ui_weak.clone();
         let state = state.clone();
         tray.on_open_mount(move |index| {
-            if let Some(ui) = ui_weak.upgrade() {
-                open_mount_at(&ui, &state, index);
+            let mounts = model::read_mounts(&state.borrow().profiles);
+            if let Some(m) = mounts.get(index as usize) {
+                open_in_explorer(&m.drive);
             }
         });
     }
 
-    // --- unmount from list ---
-    {
-        let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        let brewfs = brewfs.clone();
-        ui.on_unmount_mount(move |index| {
-            if let Some(ui) = ui_weak.upgrade() {
-                unmount_at(&ui, &state, &brewfs, index);
-            }
-        });
-    }
-
-    // --- unmount all (tray) ---
+    // --- tray: unmount all (with confirmation) ---
     tray.on_unmount_all({
         let ui_weak = ui_weak.clone();
         let tray_weak = tray_weak.clone();
@@ -379,19 +385,63 @@ fn wire_callbacks(
     });
     ui.on_quit_app(quit_app);
     tray.on_quit_app(quit_app);
+}
 
-    // --- refresh button ---
-    {
-        let ui_weak = ui_weak.clone();
-        let tray_weak = tray_weak.clone();
-        let state = state.clone();
-        let recent = recent.clone();
-        let window_visible = window_visible.clone();
-        ui.on_refresh(move || {
-            if let (Some(ui), Some(tray)) = (ui_weak.upgrade(), tray_weak.upgrade()) {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+/// Spawn the right backend for `p` (brewfs vs ossmount), remember the profile,
+/// and report progress. Used by the per-record mount action.
+#[allow(clippy::too_many_arguments)]
+fn mount_profile(
+    ui: &MainWindow,
+    tray_weak: &slint::Weak<Tray>,
+    state: &Rc<RefCell<model::ProfilesFile>>,
+    recent: &Rc<RefCell<Vec<RecentSpawn>>>,
+    window_visible: &Rc<Cell<bool>>,
+    brewfs: &Rc<Option<PathBuf>>,
+    ossmount: &Rc<Option<PathBuf>>,
+    p: &model::Profile,
+) {
+    let drive = model::normalize_mount_point(&p.drive);
+    let spawned = if p.mode == "oss" {
+        let Some(ossmount) = ossmount.as_ref() else {
+            ui.set_status_text("未找到 ossmount.exe（可用环境变量 OSSMOUNT_EXE 指定）".into());
+            return;
+        };
+        model::spawn_oss_mount(ossmount, p)
+    } else {
+        let Some(brewfs) = brewfs.as_ref() else {
+            ui.set_status_text("未找到 brewfs.exe（可用环境变量 BREWFS_EXE 指定）".into());
+            return;
+        };
+        model::spawn_mount(brewfs, p)
+    };
+    match spawned {
+        Ok((pid, log)) => {
+            {
+                let mut file = state.borrow_mut();
+                upsert_profile(&mut file, p);
+                let _ = model::save_profiles(&file);
             }
-        });
+            recent.borrow_mut().push(RecentSpawn {
+                drive: drive.clone(),
+                pid,
+                log,
+                at: Instant::now(),
+            });
+            ui.set_status_text(format!("正在挂载 {drive}（PID {pid}），等待就绪…").into());
+        }
+        Err(e) => ui.set_status_text(format!("挂载启动失败：{e}").into()),
+    }
+    if let Some(tray) = tray_weak.upgrade() {
+        refresh(ui, &tray, state, recent, window_visible);
+    }
+}
+
+/// Insert or update `p` in the profile list (keyed by name).
+fn upsert_profile(file: &mut model::ProfilesFile, p: &model::Profile) {
+    let pos = file.profiles.iter().position(|x| x.name == p.name);
+    match pos {
+        Some(i) => file.profiles[i] = p.clone(),
+        None => file.profiles.push(p.clone()),
     }
 }
 
@@ -435,8 +485,41 @@ fn refresh(
         });
     }
 
-    let rows: Vec<MountInfo> = mounts
+    // Main list: every saved profile, tagged with its mount state.
+    let records: Vec<ProfileRecord> = profiles
         .iter()
+        .map(|p| {
+            let drive = model::normalize_mount_point(&p.drive);
+            let m = mounts.iter().find(|m| m.drive == drive);
+            let (backend, detail) = if p.mode == "oss" {
+                (
+                    "oss".to_string(),
+                    format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/')),
+                )
+            } else {
+                let detail = if p.backend == "s3" {
+                    format!("{} / {}", p.s3_bucket, p.s3_region)
+                } else {
+                    p.data_dir.clone()
+                };
+                (p.backend.clone(), detail)
+            };
+            ProfileRecord {
+                name: p.name.clone().into(),
+                drive: drive.into(),
+                backend: backend.into(),
+                detail: detail.into(),
+                mounted: m.map(|m| m.alive).unwrap_or(false),
+                pid: m.map(|m| m.pid as i32).unwrap_or(0),
+            }
+        })
+        .collect();
+    ui.set_records(ModelRc::new(Rc::new(VecModel::from(records))));
+
+    // Tray menu: only live mounts.
+    let tray_rows: Vec<MountInfo> = mounts
+        .iter()
+        .filter(|m| m.alive)
         .map(|m| MountInfo {
             drive: m.drive.clone().into(),
             backend: m.backend.clone().into(),
@@ -445,19 +528,9 @@ fn refresh(
             alive: m.alive,
         })
         .collect();
-    let model_rc: ModelRc<MountInfo> = ModelRc::new(Rc::new(VecModel::from(rows)));
-    ui.set_mounts(model_rc.clone());
-    tray.set_mounts(model_rc);
-
-    let names: Vec<SharedString> = profiles.iter().map(|p| p.name.clone().into()).collect();
-    ui.set_profile_names(ModelRc::new(Rc::new(VecModel::from(names))));
+    tray.set_mounts(ModelRc::new(Rc::new(VecModel::from(tray_rows))));
 
     ui.set_free_drives_text(SharedString::from(winutil::free_drives().join(" ")));
-
-    // Drive the single mount/unmount toggle button.
-    let cfg_drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
-    let cfg_drive_mounted = mounts.iter().any(|m| m.drive == cfg_drive && m.alive);
-    ui.set_cfg_drive_mounted(cfg_drive_mounted);
 
     let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
     let status = if live.is_empty() {
@@ -533,38 +606,6 @@ fn form_to_profile(ui: &MainWindow) -> model::Profile {
         secret_key: ui.get_cfg_s3_secret_key().to_string(),
         meta_backend: meta_backend.to_string(),
         meta_url: ui.get_cfg_meta_url().to_string(),
-    }
-}
-
-fn open_mount_at(ui: &MainWindow, state: &Rc<RefCell<model::ProfilesFile>>, index: i32) {
-    let mounts = model::read_mounts(&state.borrow().profiles);
-    let Some(m) = mounts.get(index as usize) else {
-        ui.set_status_text("挂载列表已变化，请刷新".into());
-        return;
-    };
-    open_in_explorer(&m.drive);
-}
-
-fn unmount_at(
-    ui: &MainWindow,
-    state: &Rc<RefCell<model::ProfilesFile>>,
-    brewfs: &Option<PathBuf>,
-    index: i32,
-) {
-    let mounts = model::read_mounts(&state.borrow().profiles);
-    let Some(m) = mounts.get(index as usize) else {
-        ui.set_status_text("挂载列表已变化，请刷新".into());
-        return;
-    };
-    if !m.alive {
-        ui.set_status_text(format!("{} 已不在运行", m.drive).into());
-        return;
-    }
-    if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {} 吗？", m.drive))
-    {
-        graceful_or_kill(ui, brewfs, m);
-    } else {
-        ui.set_status_text(format!("已取消卸载 {}", m.drive).into());
     }
 }
 
