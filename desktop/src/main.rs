@@ -53,18 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let brewfs = Rc::new(model::find_brewfs());
     let ossmount = Rc::new(model::find_ossmount());
 
-    let brewfs_display = match brewfs.as_ref() {
-        Some(p) => p.display().to_string(),
-        None => "未找到 brewfs.exe（可用环境变量 BREWFS_EXE 指定）".to_string(),
-    };
-    ui.set_brewfs_path(SharedString::from(brewfs_display));
-
-    let ossmount_display = match ossmount.as_ref() {
-        Some(p) => p.display().to_string(),
-        None => "未找到 ossmount.exe（可用环境变量 OSSMOUNT_EXE 指定）".to_string(),
-    };
-    ui.set_ossmount_path(SharedString::from(ossmount_display));
-
     // Drop stale runtime records from earlier crashed/force-killed mounts so
     // both the tray status and `brewfs info` stay accurate.
     model::prune_stale_records();

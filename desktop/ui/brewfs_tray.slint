@@ -27,12 +27,10 @@ export component MainWindow inherits Window {
     title: "BrewFS 托盘管理";
     icon: @image-url("../assets/brewfs.png");
     preferred-width: 880px;
-    preferred-height: 760px;
+    preferred-height: 720px;
 
     in property <string> status-text;
     in property <string> free-drives-text;
-    in property <string> brewfs-path;
-    in property <string> ossmount-path;
     in property <[ProfileRecord]> records;
 
     in-out property <string> cfg-name;
@@ -72,13 +70,15 @@ export component MainWindow inherits Window {
             VerticalBox {
                 spacing: 4px;
                 ScrollView {
+                    // 禁止横向滚动：行内信息区收缩省略，操作按钮固定可见。
                     min-height: 140px;
-                    max-height: 260px;
+                    max-height: 300px;
                     VerticalBox {
                         spacing: 4px;
                         for r[i] in root.records: HorizontalBox {
                             spacing: 8px;
                             TouchArea {
+                                horizontal-stretch: 1.0;
                                 clicked => { root.select-record(i); }
                                 HorizontalBox {
                                     spacing: 8px;
@@ -96,17 +96,20 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     VerticalBox {
+                                        min-width: 0px;
                                         spacing: 0px;
-                                        Text { text: r.name; font-weight: 600; }
-                                        Text { text: r.backend + " · " + r.detail; color: #666; font-size: 12px; }
+                                        Text { text: r.name; font-weight: 600; overflow: elide; }
+                                        Text { text: r.backend + " · " + r.detail; color: #666; font-size: 12px; overflow: elide; }
                                     }
                                 }
                             }
                             Text {
+                                min-width: 0px;
                                 text: r.mounted ? ("已挂载 PID " + r.pid) : "未挂载";
                                 color: r.mounted ? #1b7a3d : #999;
                                 vertical-alignment: center;
                             }
+                            // 操作按钮固定在行尾，永远可见。
                             HorizontalBox {
                                 alignment: end;
                                 Button {
@@ -127,7 +130,7 @@ export component MainWindow inherits Window {
                         if root.records.length == 0: Text { text: "（还没有配置，点下方「添加配置」）"; color: #888; }
                     }
                 }
-                Text { text: "点击记录可载入表单编辑；挂载后同盘符显示「卸载」"; color: #888; font-size: 12px; }
+                Text { text: "点击记录可载入表单编辑；挂载后同盘符按钮显示「卸载」"; color: #888; font-size: 12px; }
             }
         }
 
@@ -251,49 +254,30 @@ export component MainWindow inherits Window {
                         HorizontalBox { }
                     }
                 }
-                HorizontalBox {
-                    alignment: end;
-                    Button {
-                        text: "保存配置";
-                        primary: true;
-                        clicked => { root.save-form(); }
-                    }
-                }
             }
         }
 
-        // --- 底部：只留一个「添加配置」 ---
+        // --- 底部：保存 + 添加 放一起，右对齐 ---
         HorizontalBox {
             spacing: 8px;
-            alignment: start;
+            alignment: end;
+            Button {
+                text: "保存配置";
+                clicked => { root.save-form(); }
+            }
             Button {
                 text: "添加配置";
                 primary: true;
                 clicked => { root.add-config(); }
             }
-            HorizontalBox { }
         }
 
-        // --- 状态 ---
-        GroupBox {
-            title: "状态";
-            VerticalBox {
-                spacing: 2px;
-                Text {
-                    text: root.status-text;
-                    wrap: word-wrap;
-                }
-                Text {
-                    text: "brewfs: " + root.brewfs-path;
-                    color: #888;
-                    font-size: 12px;
-                }
-                Text {
-                    text: "ossmount: " + root.ossmount-path;
-                    color: #888;
-                    font-size: 12px;
-                }
-            }
+        // --- 反馈（单行，非状态栏） ---
+        Text {
+            text: root.status-text;
+            color: #888;
+            font-size: 12px;
+            wrap: word-wrap;
         }
     }
 }
