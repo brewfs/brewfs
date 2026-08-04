@@ -86,6 +86,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // for the native traffic-light buttons in the top-left corner.
     ui.set_traffic_light_padding(cfg!(target_os = "macos"));
 
+    // Clicking the Dock icon should re-show the tray window (macOS).
+    #[cfg(target_os = "macos")]
+    {
+        let ui_weak = ui.as_weak();
+        mac_dock_reopen::install(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let _ = ui.show();
+                raise_window_to_front();
+            }
+        });
+    }
+
     // Drop stale runtime records from earlier crashed/force-killed mounts so
     // both the tray status and `brewfs info` stay accurate.
     model::prune_stale_records();
@@ -666,4 +678,78 @@ fn raise_window_to_front() {
 
 fn quit_app() {
     let _ = slint::quit_event_loop();
+}
+
+/// macOS: clicking the Dock icon must re-show the tray window.
+///
+/// winit installs its own `NSApplicationDelegate` and does not implement
+/// `applicationShouldHandleReopen:hasVisibleWindows:`, so the default Cocoa
+/// behaviour (activate, but leave a hidden window hidden) wins. Instead of
+/// replacing winit's delegate (which would break its event handling), we add
+/// that single method to the *existing* delegate class at runtime via
+/// `class_addMethod`. The IMP calls a leaked callback that shows and raises
+/// the Slint window, and returns YES so macOS proceeds with reactivation.
+#[cfg(target_os = "macos")]
+mod mac_dock_reopen {
+    use std::ffi::CString;
+    use std::sync::OnceLock;
+
+    use objc2::ffi;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+    use objc2::{MainThreadMarker, sel};
+    use objc2_app_kit::NSApplication;
+
+    type Callback = Box<dyn Fn()>;
+    /// Raw pointer holder: the callback is only ever dereferenced on the main
+    /// thread (from the Cocoa delegate method), so Send/Sync are safe.
+    struct CallbackPtr(*mut Callback);
+    unsafe impl Send for CallbackPtr {}
+    unsafe impl Sync for CallbackPtr {}
+    static CALLBACK: OnceLock<CallbackPtr> = OnceLock::new();
+
+    unsafe extern "C-unwind" fn reopen_imp(
+        _this: &AnyObject,
+        _cmd: Sel,
+        _sender: *mut AnyObject,
+        _has_visible_windows: Bool,
+    ) -> Bool {
+        if let Some(CallbackPtr(ptr)) = CALLBACK.get() {
+            // The callback is leaked for the app lifetime, so this is valid.
+            let callback = unsafe { &**ptr };
+            callback();
+        }
+        Bool::new(true)
+    }
+
+    pub fn install(callback: impl Fn() + 'static) {
+        // Keep the callback alive for the whole app lifetime.
+        let _ = CALLBACK.set(CallbackPtr(Box::into_raw(Box::new(Box::new(callback) as Callback))));
+
+        let mtm = MainThreadMarker::new().expect("Dock reopen hook must run on the main thread");
+        let app = NSApplication::sharedApplication(mtm);
+        let Some(delegate) = app.delegate() else {
+            eprintln!("BrewFS: no NSApplication delegate yet; Dock reopen hook not installed");
+            return;
+        };
+        let class_ptr = unsafe {
+            ffi::object_getClass(objc2::rc::Retained::as_ptr(&delegate) as *const _ as *mut AnyObject)
+        };
+        let class = unsafe { &*class_ptr };
+
+        // - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender
+        //                              hasVisibleWindows:(BOOL)flag
+        let sel = sel!(applicationShouldHandleReopen:hasVisibleWindows:);
+        let types = CString::new("c32@0:8@16c24").expect("valid type encoding");
+        let imp: Imp = unsafe {
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, Bool) -> Bool,
+                Imp,
+            >(reopen_imp as unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, Bool) -> Bool)
+        };
+
+        let added = unsafe { ffi::class_addMethod(class as *const AnyClass as *mut AnyClass, sel, imp, types.as_ptr()) };
+        if !added.as_bool() {
+            eprintln!("BrewFS: class_addMethod failed; Dock reopen may not show the window");
+        }
+    }
 }
