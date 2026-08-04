@@ -16,7 +16,7 @@
 mod model;
 mod winutil;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -34,7 +34,33 @@ struct RecentSpawn {
     at: Instant,
 }
 
+/// Configure the Slint backend before any window is created.
+///
+/// On macOS the window is created with a transparent, hidden titlebar while
+/// keeping the native traffic-light buttons (close/minimize/zoom). This uses
+/// winit's window-attributes hook (slint feature `unstable-winit-030`): a plain
+/// `titlebar_hidden` would drop the `Closable` style mask and remove the buttons,
+/// so we combine `titlebar_transparent` + `fullsize_content_view` + `title_hidden`
+/// instead, which is the standard "hidden titlebar, buttons still visible" recipe.
+fn configure_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let selector = slint::BackendSelector::new();
+    #[cfg(target_os = "macos")]
+    let selector = selector.with_winit_window_attributes_hook(|attributes| {
+        use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
+        attributes
+            .with_titlebar_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_title_hidden(true)
+    });
+    selector.select()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Configure the winit backend (macOS: hidden titlebar, keep traffic lights)
+    // before creating any Slint component.
+    configure_backend()?;
+
     // Single-instance protection via a Windows named mutex (kernel object):
     // a second launch is shown a message box and exits immediately.
     let _single_instance = match winutil::single_instance_guard("BrewFS-Tray") {
@@ -50,33 +76,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Rc::new(RefCell::new(model::load_profiles()));
     let recent = Rc::new(RefCell::new(Vec::<RecentSpawn>::new()));
-    let window_visible = Rc::new(Cell::new(false));
     let brewfs = Rc::new(model::find_brewfs());
     let ossmount = Rc::new(model::find_ossmount());
 
     // Drive letters are a Windows concept; macOS/Linux use mount directories.
     ui.set_show_free_drives(cfg!(windows));
 
+    // On macOS the content extends under the (hidden) titlebar, so leave room
+    // for the native traffic-light buttons in the top-left corner.
+    ui.set_traffic_light_padding(cfg!(target_os = "macos"));
+
     // Drop stale runtime records from earlier crashed/force-killed mounts so
     // both the tray status and `brewfs info` stay accurate.
     model::prune_stale_records();
 
-    refresh(&ui, &tray, &state, &recent, &window_visible);
+    refresh(&ui, &tray, &state, &recent);
 
     // Preload the first saved profile into the form.
     if !state.borrow().profiles.is_empty() {
         profile_to_form(&ui, &state.borrow().profiles[0]);
     }
 
-    wire_callbacks(
-        &ui,
-        &tray,
-        &state,
-        &recent,
-        &window_visible,
-        &brewfs,
-        &ossmount,
-    );
+    wire_callbacks(&ui, &tray, &state, &recent, &brewfs, &ossmount);
 
     // Periodic status refresh (2s) driven from the UI thread.
     let timer = Timer::default();
@@ -85,20 +106,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tray_weak = tray.as_weak();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         timer.start(TimerMode::Repeated, Duration::from_secs(2), move || {
             if let (Some(ui), Some(tray)) = (ui_weak.upgrade(), tray_weak.upgrade()) {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
         });
     }
 
     tray.show()?;
     ui.show()?;
-    window_visible.set(true);
-    tray.set_window_visible(true);
     ui.set_status_text(SharedString::from("BrewFS 托盘已就绪"));
-    refresh(&ui, &tray, &state, &recent, &window_visible);
+    refresh(&ui, &tray, &state, &recent);
 
     slint::run_event_loop()?;
     Ok(())
@@ -110,7 +128,6 @@ fn wire_callbacks(
     tray: &Tray,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
-    window_visible: &Rc<Cell<bool>>,
     brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
 ) {
@@ -118,7 +135,6 @@ fn wire_callbacks(
     let tray_weak = tray.as_weak();
     let state = Rc::clone(state);
     let recent = Rc::clone(recent);
-    let window_visible = Rc::clone(window_visible);
     let brewfs = Rc::clone(brewfs);
     let ossmount = Rc::clone(ossmount);
 
@@ -128,7 +144,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let p = form_to_profile(&ui);
@@ -145,7 +160,7 @@ fn wire_callbacks(
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
             ui.set_status_text(format!("配置「{}」已保存", p.name).into());
         }
@@ -157,7 +172,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let name = {
@@ -176,7 +190,7 @@ fn wire_callbacks(
                 name
             };
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
             ui.set_status_text(format!("已添加配置「{name}」，填写后点保存").into());
         }
@@ -203,7 +217,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         let brewfs = brewfs.clone();
         let ossmount = ossmount.clone();
         move |index| {
@@ -228,20 +241,11 @@ fn wire_callbacks(
                 if let Err(e) = p.validate() {
                     ui.set_status_text(format!("挂载失败：{e}").into());
                 } else {
-                    mount_profile(
-                        &ui,
-                        &tray_weak,
-                        &state,
-                        &recent,
-                        &window_visible,
-                        &brewfs,
-                        &ossmount,
-                        &p,
-                    );
+                    mount_profile(&ui, &tray_weak, &state, &recent, &brewfs, &ossmount, &p);
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
         }
     });
@@ -252,7 +256,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let name = {
@@ -279,7 +282,7 @@ fn wire_callbacks(
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
             ui.set_status_text(format!("已删除配置「{name}」").into());
         }
@@ -318,7 +321,6 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
-        let window_visible = window_visible.clone();
         let brewfs = brewfs.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
@@ -340,7 +342,7 @@ fn wire_callbacks(
             }
             ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent, &window_visible);
+                refresh(&ui, &tray, &state, &recent);
             }
         }
     });
@@ -348,30 +350,22 @@ fn wire_callbacks(
     // --- window close -> hide to tray ---
     ui.window().on_close_requested({
         let ui_weak = ui_weak.clone();
-        let tray_weak = tray_weak.clone();
-        let window_visible = window_visible.clone();
         move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let _ = ui.hide();
-            }
-            window_visible.set(false);
-            if let Some(tray) = tray_weak.upgrade() {
-                tray.set_window_visible(false);
             }
             slint::CloseRequestResponse::HideWindow
         }
     });
     tray.on_show_window({
         let ui_weak = ui_weak.clone();
-        let tray_weak = tray_weak.clone();
-        let window_visible = window_visible.clone();
         move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let _ = ui.show();
-            }
-            window_visible.set(true);
-            if let Some(tray) = tray_weak.upgrade() {
-                tray.set_window_visible(true);
+                // Slint has no public bring-to-front API; activate the app so
+                // the window is shown and raised on top of other windows.
+                #[cfg(target_os = "macos")]
+                raise_window_to_front();
             }
         }
     });
@@ -387,7 +381,6 @@ fn mount_profile(
     tray_weak: &slint::Weak<Tray>,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
-    window_visible: &Rc<Cell<bool>>,
     brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
     p: &model::Profile,
@@ -429,7 +422,7 @@ fn mount_profile(
         Err(e) => ui.set_status_text(format!("挂载启动失败：{e}").into()),
     }
     if let Some(tray) = tray_weak.upgrade() {
-        refresh(ui, &tray, state, recent, window_visible);
+        refresh(ui, &tray, state, recent);
     }
 }
 
@@ -447,7 +440,6 @@ fn refresh(
     tray: &Tray,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
-    window_visible: &Rc<Cell<bool>>,
 ) {
     let profiles = state.borrow().profiles.clone();
     let mounts = model::read_mounts(&profiles);
@@ -545,7 +537,6 @@ fn refresh(
         format!("BrewFS：已挂载 {}", drives.join(", "))
     };
     tray.set_tray_tooltip(tooltip.into());
-    tray.set_window_visible(window_visible.get());
 }
 
 fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
@@ -655,6 +646,21 @@ fn open_in_explorer(target: &str) {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = target;
+    }
+}
+
+/// Brings the app to the foreground on macOS (used by "显示窗口").
+///
+/// Slint 1.17 does not expose a window-activation API, so we activate the
+/// Cocoa application natively; this raises all of its windows above other
+/// apps and gives the window keyboard focus.
+#[cfg(target_os = "macos")]
+fn raise_window_to_front() {
+    use objc::{class, msg_send, sel, sel_impl};
+    #[allow(unexpected_cfgs)] // objc 0.2 macros emit cargo-clippy cfg noise
+    unsafe {
+        let app: *mut objc::runtime::Object = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, activateIgnoringOtherApps: true];
     }
 }
 

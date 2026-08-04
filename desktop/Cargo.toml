@@ -7,7 +7,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-slint = "1.17"
+slint = { version = "1.17", features = ["unstable-winit-030"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -20,6 +20,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
 
 [build-dependencies]
 slint-build = "1.17"

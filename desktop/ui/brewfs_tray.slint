@@ -32,6 +32,9 @@ export component MainWindow inherits Window {
     in property <string> status-text;
     in property <string> free-drives-text;
     in property <bool> show-free-drives;
+    // macOS: content extends under the hidden titlebar; keep room for the
+    // native traffic-light buttons in the top-left corner.
+    in property <bool> traffic-light-padding;
     in property <[ProfileRecord]> records;
 
     in-out property <string> cfg-name;
@@ -64,6 +67,12 @@ export component MainWindow inherits Window {
     VerticalBox {
         spacing: 8px;
         padding: 12px;
+        // macOS: the titlebar is hidden and content extends under it; keep a
+        // blank row at the top so the native traffic-light buttons don't
+        // overlap the real content. Left/right margins stay symmetric.
+        if root.traffic-light-padding: Rectangle {
+            height: 24px;
+        }
 
         // --- 配置记录（挂载盘符） ---
         GroupBox {
@@ -294,7 +303,6 @@ export component Tray inherits SystemTrayIcon {
     tooltip: root.tray-tooltip;
     in property <string> tray-tooltip;
     in property <[MountInfo]> mounts;
-    in property <bool> window-visible;
 
     callback show-window();
     callback open-mount(int);
@@ -307,7 +315,7 @@ export component Tray inherits SystemTrayIcon {
 
     Menu {
         MenuItem {
-            title: root.window-visible ? "隐藏窗口" : "显示窗口";
+            title: "显示窗口";
             activated => { root.show-window(); }
         }
         Menu {
