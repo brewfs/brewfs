@@ -200,6 +200,40 @@ pub fn single_instance_guard(_name: &str) -> Option<SingleInstanceGuard> {
 #[cfg(not(windows))]
 pub fn alert_single_instance() {}
 
+/// Ask a yes/no confirmation via a modal Windows message box. Returns `true`
+/// only when the user clicks "Yes". Non-Windows builds return `true` (no-op).
+#[cfg(windows)]
+pub fn confirm_yes_no(title: &str, message: &str) -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut core::ffi::c_void,
+            text: *const u16,
+            caption: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    const MB_YESNO: u32 = 0x0000_0004;
+    const MB_ICONWARNING: u32 = 0x0000_0030;
+    const IDYES: i32 = 6;
+    // SAFETY: MessageBoxW is passed valid NUL-terminated wide strings.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_YESNO | MB_ICONWARNING,
+        ) == IDYES
+    }
+}
+
+#[cfg(not(windows))]
+pub fn confirm_yes_no(_title: &str, _message: &str) -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]

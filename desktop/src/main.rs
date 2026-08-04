@@ -180,8 +180,8 @@ fn wire_callbacks(
         }
     });
 
-    // --- mount ---
-    ui.on_mount_current({
+    // --- mount / unmount (single toggle button) ---
+    ui.on_toggle_mount({
         let ui_weak = ui_weak.clone();
         let tray_weak = tray_weak.clone();
         let state = state.clone();
@@ -191,6 +191,24 @@ fn wire_callbacks(
         let ossmount = ossmount.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+
+            // When the current drive is already mounted the button reads
+            // "卸载": confirm first, then unmount.
+            let drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
+            let mounts = model::read_mounts(&state.borrow().profiles);
+            if let Some(m) = mounts.iter().find(|m| m.drive == drive && m.alive) {
+                if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {drive} 吗？"))
+                {
+                    graceful_or_kill(&ui, brewfs.as_ref(), m);
+                } else {
+                    ui.set_status_text(format!("已取消卸载 {drive}").into());
+                }
+                if let Some(tray) = tray_weak.upgrade() {
+                    refresh(&ui, &tray, &state, &recent, &window_visible);
+                }
+                return;
+            }
+
             let p = form_to_profile(&ui);
             if let Err(e) = p.validate() {
                 ui.set_status_text(format!("挂载失败：{e}").into());
@@ -247,18 +265,6 @@ fn wire_callbacks(
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent, &window_visible);
             }
-        }
-    });
-
-    // --- unmount current ---
-    ui.on_unmount_current({
-        let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        let brewfs = brewfs.clone();
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
-            unmount_drive(&ui, &state, &brewfs, &drive);
         }
     });
 
@@ -322,6 +328,13 @@ fn wire_callbacks(
             let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
             if live.is_empty() {
                 ui.set_status_text("当前没有活动挂载".into());
+                return;
+            }
+            if !winutil::confirm_yes_no(
+                "BrewFS 卸载确认",
+                &format!("确定要卸载全部 {} 个挂载吗？", live.len()),
+            ) {
+                ui.set_status_text("已取消卸载".into());
                 return;
             }
             for m in &live {
@@ -441,6 +454,11 @@ fn refresh(
 
     ui.set_free_drives_text(SharedString::from(winutil::free_drives().join(" ")));
 
+    // Drive the single mount/unmount toggle button.
+    let cfg_drive = model::normalize_mount_point(ui.get_cfg_drive().as_str());
+    let cfg_drive_mounted = mounts.iter().any(|m| m.drive == cfg_drive && m.alive);
+    ui.set_cfg_drive_mounted(cfg_drive_mounted);
+
     let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
     let status = if live.is_empty() {
         "当前没有活动挂载。".to_string()
@@ -542,21 +560,12 @@ fn unmount_at(
         ui.set_status_text(format!("{} 已不在运行", m.drive).into());
         return;
     }
-    graceful_or_kill(ui, brewfs, m);
-}
-
-fn unmount_drive(
-    ui: &MainWindow,
-    state: &Rc<RefCell<model::ProfilesFile>>,
-    brewfs: &Option<PathBuf>,
-    drive: &str,
-) {
-    let mounts = model::read_mounts(&state.borrow().profiles);
-    let Some(m) = mounts.iter().find(|m| m.drive == drive && m.alive) else {
-        ui.set_status_text(format!("{drive} 没有活动挂载").into());
-        return;
-    };
-    graceful_or_kill(ui, brewfs, m);
+    if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {} 吗？", m.drive))
+    {
+        graceful_or_kill(ui, brewfs, m);
+    } else {
+        ui.set_status_text(format!("已取消卸载 {}", m.drive).into());
+    }
 }
 
 /// Prefer a graceful control-plane unmount (`brewfs unmount <drive>`); only

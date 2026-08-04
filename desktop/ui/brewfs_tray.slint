@@ -29,6 +29,7 @@ export component MainWindow inherits Window {
     in-out property <string> cfg-name;
     in-out property <int> cfg-mode-index;
     in-out property <string> cfg-drive;
+    in property <bool> cfg-drive-mounted;
     in-out property <int> cfg-backend-index;
     in-out property <string> cfg-data-dir;
     in-out property <string> cfg-s3-bucket;
@@ -46,8 +47,7 @@ export component MainWindow inherits Window {
     property <string> cfg-meta-backend: cfg-meta-index == 1 ? "redis" : (cfg-meta-index == 2 ? "etcd" : (cfg-meta-index == 3 ? "tikv" : "sqlx"));
 
     callback save-config();
-    callback mount-current();
-    callback unmount-current();
+    callback toggle-mount();
     callback open-current();
     callback refresh();
     callback profile-selected();
@@ -246,11 +246,10 @@ export component MainWindow inherits Window {
             alignment: start;
             Button { text: "保存配置"; clicked => { root.save-config(); } }
             Button {
-                text: "挂载";
+                text: root.cfg-drive-mounted ? "卸载" : "挂载";
                 primary: true;
-                clicked => { root.mount-current(); }
+                clicked => { root.toggle-mount(); }
             }
-            Button { text: "卸载当前盘符"; clicked => { root.unmount-current(); } }
             Button { text: "打开当前盘符"; clicked => { root.open-current(); } }
             Button { text: "刷新"; clicked => { root.refresh(); } }
             HorizontalBox { }
