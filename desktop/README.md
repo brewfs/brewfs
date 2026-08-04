@@ -99,6 +99,14 @@ cargo build -p brewfs --bin ossmount --no-default-features --features fuse-winfs
   走 `brewfs unmount` 优雅路径，兜底用 `kill`。
 - 构建 macOS 版需要在 Mac 上执行 `cargo build --release -p brewfs --bin ossmount`
   与 `cargo build --release -p brewfs-tray`（macFUSE 依赖需在 Mac 上链接）。
+- 直接运行裸二进制时，macOS Dock 会显示系统默认的米黄色「Unix 可执行文件」
+  图标（看起来偏橙）。要让 Dock/启动台显示 BrewFS 蓝色图标，先构建再打包成 .app：
+
+  ```bash
+  cargo build --release -p brewfs-tray
+  bash desktop/scripts/make-macos-app.sh
+  open target/release/BrewFS.app
+  ```
   当前仓库在 Windows 上仅能交叉 `cargo check --target x86_64-apple-darwin` 验证
   编译；挂载/读写等运行时行为需在真机 Mac 上验证。
 
