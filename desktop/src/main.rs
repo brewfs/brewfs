@@ -32,6 +32,16 @@ struct RecentSpawn {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Single-instance protection via a Windows named mutex (kernel object):
+    // a second launch is shown a message box and exits immediately.
+    let _single_instance = match winutil::single_instance_guard("BrewFS-Tray") {
+        Some(guard) => guard,
+        None => {
+            winutil::alert_single_instance();
+            return Ok(());
+        }
+    };
+
     let ui = MainWindow::new()?;
     let tray = Tray::new()?;
 

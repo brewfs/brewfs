@@ -838,7 +838,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let m = mounts.iter().find(|m| m.pid == fake_pid);
         assert!(m.is_some(), "ossmount record should be picked up");
-        assert_eq!(m.unwrap().is_oss, true);
+        assert!(m.unwrap().is_oss);
         assert_eq!(m.unwrap().backend, "oss");
     }
 

@@ -113,3 +113,105 @@ pub fn terminate_process(pid: u32) -> std::io::Result<()> {
         Err(std::io::Error::other("kill failed"))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Single-instance protection (Windows named mutex, a kernel object)
+// ---------------------------------------------------------------------------
+
+/// Handle that keeps the single-instance named mutex alive for the whole
+/// process lifetime. Dropping it (or process exit) releases the mutex.
+#[cfg(windows)]
+pub struct SingleInstanceGuard {
+    _handle: std::os::windows::io::OwnedHandle,
+}
+
+/// Try to acquire the single-instance named mutex `name`. Returns `Some`
+/// when this process is the only instance, `None` when another instance
+/// already holds it.
+///
+/// Uses a per-session `Local\` mutex: tray apps run in the interactive user
+/// session, and `Local\` avoids cross-session privilege issues that
+/// `Global\` can hit.
+#[cfg(windows)]
+pub fn single_instance_guard(name: &str) -> Option<SingleInstanceGuard> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let mutex_name = format!("Local\\{name}");
+    let wide: Vec<u16> = mutex_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: CreateMutexW is called with a valid NUL-terminated name and no
+    // initial-owner flag; the returned handle is owned by us and released via
+    // CloseHandle / OwnedHandle drop.
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 0, wide.as_ptr());
+        if handle.is_null() {
+            return None;
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            return None;
+        }
+        Some(SingleInstanceGuard {
+            _handle: std::os::windows::io::OwnedHandle::from_raw_handle(handle as _),
+        })
+    }
+}
+
+/// Show a message box when a second instance is started.
+#[cfg(windows)]
+pub fn alert_single_instance() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut core::ffi::c_void,
+            text: *const u16,
+            caption: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    let text: Vec<u16> = "BrewFS 已经在运行，请勿重复启动。"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let caption: Vec<u16> = "BrewFS".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: MessageBoxW is passed valid NUL-terminated wide strings.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x0000_0010, /* MB_ICONINFORMATION */
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub struct SingleInstanceGuard;
+
+#[cfg(not(windows))]
+pub fn single_instance_guard(_name: &str) -> Option<SingleInstanceGuard> {
+    Some(SingleInstanceGuard)
+}
+
+#[cfg(not(windows))]
+pub fn alert_single_instance() {}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn single_instance_mutex_blocks_second_acquirer() {
+        let name = format!("BrewFS-Tray-Test-{}", std::process::id());
+        let first = super::single_instance_guard(&name);
+        assert!(first.is_some(), "first acquire must succeed");
+        let second = super::single_instance_guard(&name);
+        assert!(second.is_none(), "second acquire must be blocked");
+        drop(first);
+        let third = super::single_instance_guard(&name);
+        assert!(third.is_some(), "after drop, acquire must succeed again");
+    }
+}
