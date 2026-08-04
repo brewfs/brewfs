@@ -9,7 +9,12 @@
 //! Credentials come from the environment (`AWS_ACCESS_KEY_ID`,
 //! `AWS_SECRET_ACCESS_KEY`), matching how the BrewFS tray app spawns mounts.
 //!
-//! Windows requires WinFsp 2.x. Linux/macOS builds only print a message.
+//! Platform mount adapters:
+//! - Windows: WinFsp 2.x (`mount_oss_winfsp`)
+//! - macOS: FUSE via macFUSE (`mount_oss_fuse`); Linux: FUSE via libfuse
+//!
+//! The `MOUNT_POINT` is a drive letter (`Z:`) on Windows and a directory
+//! (e.g. `/Volumes/brewfs`) on macOS/Linux.
 
 use std::env;
 use std::path::PathBuf;
@@ -64,15 +69,15 @@ fn parse_args() -> (OssConfig, PathBuf) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let (cfg, mount_point) = parse_args();
+    let fs = Arc::new(ObjectFs::connect(cfg).await?);
+
     #[cfg(windows)]
     {
-        let (cfg, mount_point) = parse_args();
-        let fs = Arc::new(ObjectFs::connect(cfg).await?);
         brewfs::ossfs::winfsp::mount_oss_winfsp(fs, &mount_point).await
     }
     #[cfg(not(windows))]
     {
-        eprintln!("ossmount requires Windows + WinFsp (this build is not Windows)");
-        std::process::exit(2)
+        brewfs::ossfs::fuse::mount_oss_fuse(fs, &mount_point).await
     }
 }

@@ -339,3 +339,6 @@ winfsp = { workspace = true, features = ["delayload", "async-io"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winfsp = { workspace = true, features = ["delayload"] }
+
+[target.'cfg(not(windows))'.dependencies]
+fuser = "0.17"

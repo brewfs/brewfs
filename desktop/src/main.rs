@@ -1,12 +1,13 @@
-//! BrewFS desktop tray manager (Slint 1.17).
+//! BrewFS desktop tray manager (Slint 1.17), Windows + macOS.
 //!
-//! A small Windows system-tray app that keeps a list of saved BrewFS mount
+//! A system-tray app that keeps a list of saved BrewFS mount
 //! profiles (config records), shows their live mount state, and lets the user
 //! open / mount|unmount / delete each record from one list, edit the selected
 //! profile in the form, and add new configs.
 //!
-//! Requires a brewfs build with the `fuse-winfsp` feature (and `ossmount` for
-//! the metadata-less OSS direct-mount mode). Both binaries are located next
+//! Requires a brewfs build with the `fuse-winfsp` feature on Windows
+//! (`ossmount` for the metadata-less OSS direct-mount mode; macOS uses
+//! the FUSE-based `ossmount` with macFUSE). Binaries are located next
 //! to this executable, via `BREWFS_EXE` / `OSSMOUNT_EXE`, or on PATH.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -394,7 +395,12 @@ fn mount_profile(
     let drive = model::normalize_mount_point(&p.drive);
     let spawned = if p.mode == "oss" {
         let Some(ossmount) = ossmount.as_ref() else {
-            ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp；macOS 请用 BrewFS 元数据模式）".into());
+            #[cfg(windows)]
+            ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp）".into());
+            #[cfg(not(windows))]
+            ui.set_status_text(
+                "未找到 ossmount（OSS 直挂需要 macOS + macFUSE，请先安装 macFUSE）".into(),
+            );
             return;
         };
         model::spawn_oss_mount(ossmount, p)

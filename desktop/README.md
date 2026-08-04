@@ -31,13 +31,13 @@ Windows 上运行托盘应用会直接以无控制台窗口方式启动（`windo
 ## OSS 直挂模式（多机网盘，无本地元数据）
 配置文件档案的"挂载模式"选 **OSS 直挂（多机）** 后，托盘应用不再走 BrewFS 元数据
 （sqlite/redis/...），而是调用 `ossmount`（本仓库自带）把 **S3/OSS bucket 直接挂载成
-盘符**：
+盘符/挂载目录**：
 
 - 文件路径直接编码为对象 key，bucket 是唯一数据源 → **任意多台机器挂同一
   bucket+prefix 都能看到同一棵树**，不需要共享元数据库
 - 表单里填 Bucket / Endpoint / Region / AK / SK / Prefix（可选命名空间，多机要一致）
-- 挂载命令：`ossmount mount --bucket B --endpoint E --region R [--prefix P] <盘符>`
-- 卸载 = 结束进程（数据在关闭文件时已整文件上传，无需优雅卸载）
+- 挂载命令：`ossmount --bucket B --endpoint E --region R [--prefix P] <挂载点>`（Windows 盘符 `Z:`，macOS/Linux 目录 `/Volumes/brewfs`）
+- 卸载 = 结束进程（数据在关闭/刷盘时已整文件上传；macOS 上进程退出会触发 macFUSE 自动卸载）
 - 弱一致（无锁、无原子改名）——适合网盘/上传下载，不适合并发改同一文件
 
 需要先构建 ossmount 二进制：
@@ -74,12 +74,19 @@ cargo build -p brewfs --bin ossmount --no-default-features --features fuse-winfs
 - 托盘应用（Slint）跨平台：macOS 上系统托盘走 NSStatusItem，窗口原生渲染。
 - 挂载点：macOS/Linux 用**目录路径**（如 `/Volumes/brewfs`），不再是盘符；
   表单字段已改为"挂载点"，校验同时接受 `Z:`（Windows）与 `/Volumes/...`（macOS）。
-- **OSS 直挂（多机）模式需要 Windows + WinFsp**（`ossmount` 基于 WinFsp）；
-  macOS 请用 **BrewFS（元数据）模式**（需要先构建 brewfs 的 FUSE 版）。
-- 打开挂载点在 macOS 用 `open <路径>`；卸载走 `brewfs unmount` 优雅路径，
-  兜底用 `kill`。
-- 已通过 `cargo check --target x86_64-apple-darwin` 交叉编译验证；运行时行为需在
-  真机 Mac 上确认。
+- **OSS 直挂（多机）模式 macOS/Linux 同样支持**：`ossmount` 在非 Windows 平台走
+  FUSE（macOS 用 macFUSE 4.x，Linux 用 libfuse），挂载到目录而不是盘符，
+  多机共享语义与 Windows 完全一致（bucket 是唯一数据源）。
+- macOS 使用前提：先安装 macFUSE（`brew install --cask macfuse` 或
+  https://macfuse.github.io/）；`ossmount` 启动时会检查
+  `/Library/Filesystems/macfuse.fs` 并给出友好提示。
+- 打开挂载点在 macOS 用 `open <路径>`；OSS 直挂卸载 = 向 `ossmount` 进程发送
+  SIGTERM（`kill <pid>`），进程会优雅 umount 并清理运行时记录；BrewFS 元数据模式
+  走 `brewfs unmount` 优雅路径，兜底用 `kill`。
+- 构建 macOS 版需要在 Mac 上执行 `cargo build --release -p brewfs --bin ossmount`
+  与 `cargo build --release -p brewfs-tray`（macFUSE 依赖需在 Mac 上链接）。
+  当前仓库在 Windows 上仅能交叉 `cargo check --target x86_64-apple-darwin` 验证
+  编译；挂载/读写等运行时行为需在真机 Mac 上验证。
 
 ## 开发
 

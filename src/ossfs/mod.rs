@@ -13,9 +13,11 @@
 //! - directory `/docs` -> implicit via prefix, plus a zero-byte marker
 //!   object `docs/` so empty directories survive listing.
 //!
-//! This module is cross-platform; the WinFsp mount adapter lives in
-//! [`crate::ossfs::winfsp`] (Windows only).
+//! This module is cross-platform; the platform mount adapters live in
+//! [`crate::ossfs::winfsp`] (Windows only) and [`crate::ossfs::fuse`] (macOS/Linux).
 
+#[cfg(not(windows))]
+pub mod fuse;
 #[cfg(windows)]
 pub mod winfsp;
 
