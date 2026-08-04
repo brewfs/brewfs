@@ -145,6 +145,20 @@ pub async fn mount_oss_winfsp(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::
     winfsp::winfsp_init()
         .map_err(|e| anyhow::anyhow!("WinFsp is not installed or could not be loaded: {e}"))?;
 
+    // Verify the bucket is reachable and the prefix lists cleanly BEFORE
+    // mounting. Without this, a misconfigured endpoint (e.g. an Aliyun OSS
+    // access-point URL that the SDK cannot address) mounts a volume whose
+    // every operation fails with a generic I/O error.
+    match fs.list("/").await {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "ossmount: S3 连通性检查失败，拒绝挂载。请检查 endpoint/bucket/密钥配置：{e:?}"
+            );
+            anyhow::bail!("S3 connectivity check failed: {e:?}");
+        }
+    }
+
     let rt = Handle::current();
     let context = OssMountContext {
         fs,
@@ -604,11 +618,10 @@ impl AsyncFileSystemContext for OssMountContext {
         marker: DirMarker<'_>,
         buffer: &mut [u8],
     ) -> winfsp::Result<u32> {
-        let entries = self
-            .fs
-            .list(&context.path)
-            .await
-            .map_err(|e| FspError::from(IoError::other(e.to_string())))?;
+        let entries = self.fs.list(&context.path).await.map_err(|e| {
+            eprintln!("ossmount: 列目录失败 {}: {e:?}", context.path);
+            FspError::from(IoError::other(e.to_string()))
+        })?;
 
         let is_root = context.path == "/";
         let mut listing: Vec<(String, DirEntry)> = Vec::with_capacity(entries.len() + 2);
