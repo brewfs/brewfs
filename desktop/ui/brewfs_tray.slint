@@ -274,8 +274,12 @@ export component MainWindow inherits Window {
         }
 
         // --- 底部：保存 + 添加 放一起，右对齐 ---
+        // HorizontalBox defaults to 8px padding, which would push the buttons
+        // 8pt further from the right edge than the left-side content; reset it
+        // so outer left/right margins match (12px from the root VerticalBox).
         HorizontalBox {
             spacing: 8px;
+            padding: 0px;
             alignment: end;
             Button {
                 text: "保存配置";
