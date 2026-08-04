@@ -30,8 +30,8 @@ Windows 上运行托盘应用会直接以无控制台窗口方式启动（`windo
 
 ## 应用图标
 
-图标统一以矢量源 `assets/brewfs-icon.svg` 为准（蓝色圆角方块 + 白色云朵向下箭头，
-寓意"云端网盘挂载到本地"），构建时按平台生成不同格式：
+图标统一以矢量源 `assets/brewfs-icon.svg` 为准（蓝色圆角方块 + 白色云朵内嵌向下箭头，
+寓意"云端网盘挂载到本地"；箭头为云朵镂空，16px 托盘与 256px 应用图标渲染一致），构建时按平台生成不同格式：
 
 - `assets/brewfs.png`（256×256）：Slint 窗口图标 + 系统托盘图标（`MainWindow.icon`
   与 `SystemTrayIcon.icon`）

@@ -10,22 +10,19 @@
     </linearGradient>
   </defs>
 
-  <!-- rounded-square app background -->
-  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
-  <!-- subtle top gloss -->
-  <path d="M 272 64 H 752 A 208 208 0 0 1 960 272 V 300 A 150 150 0 0 0 810 150 H 214 A 150 150 0 0 0 64 300 V 272 A 208 208 0 0 1 272 64 Z" fill="#FFFFFF" opacity="0.10"/>
+  <rect x="64" y="64" width="896" height="896" rx="216" fill="url(#bg)"/>
 
-  <!-- cloud (three bumps + flat base) -->
+  <!-- cloud-download glyph: white cloud filling the square -->
   <g fill="url(#cloud)">
-    <circle cx="404" cy="452" r="132"/>
-    <circle cx="556" cy="412" r="168"/>
-    <circle cx="676" cy="466" r="110"/>
-    <rect x="352" y="452" width="390" height="150" rx="75"/>
+    <circle cx="396" cy="472" r="158"/>
+    <circle cx="566" cy="402" r="198"/>
+    <circle cx="716" cy="484" r="140"/>
+    <rect x="360" y="472" width="392" height="160" rx="80"/>
   </g>
 
-  <!-- downward arrow: stem + chevron (cloud -> local mount) -->
-  <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
-    <line x1="512" y1="596" x2="512" y2="742" stroke-width="72"/>
-    <path d="M 512 800 L 402 664 M 512 800 L 622 664" stroke-width="72"/>
+  <!-- downward arrow cut out of the cloud center (background blue) -->
+  <g stroke="#0E8BEF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="512" y1="430" x2="512" y2="576" stroke-width="88"/>
+    <path d="M 512 644 L 424 556 M 512 644 L 600 556" stroke-width="88"/>
   </g>
 </svg>
