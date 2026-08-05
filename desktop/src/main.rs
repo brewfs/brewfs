@@ -643,7 +643,9 @@ mod mac_dock_reopen {
 
     pub fn install(callback: impl Fn() + 'static) {
         // Keep the callback alive for the whole app lifetime.
-        let _ = CALLBACK.set(CallbackPtr(Box::into_raw(Box::new(Box::new(callback) as Callback))));
+        let _ = CALLBACK.set(CallbackPtr(Box::into_raw(Box::new(
+            Box::new(callback) as Callback
+        ))));
 
         let mtm = MainThreadMarker::new().expect("Dock reopen hook must run on the main thread");
         let app = NSApplication::sharedApplication(mtm);
@@ -652,7 +654,9 @@ mod mac_dock_reopen {
             return;
         };
         let class_ptr = unsafe {
-            ffi::object_getClass(objc2::rc::Retained::as_ptr(&delegate) as *const _ as *mut AnyObject)
+            ffi::object_getClass(
+                objc2::rc::Retained::as_ptr(&delegate) as *const _ as *mut AnyObject
+            )
         };
         let class = unsafe { &*class_ptr };
 
@@ -664,10 +668,20 @@ mod mac_dock_reopen {
             std::mem::transmute::<
                 unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, Bool) -> Bool,
                 Imp,
-            >(reopen_imp as unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, Bool) -> Bool)
+            >(
+                reopen_imp
+                    as unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject, Bool) -> Bool,
+            )
         };
 
-        let added = unsafe { ffi::class_addMethod(class as *const AnyClass as *mut AnyClass, sel, imp, types.as_ptr()) };
+        let added = unsafe {
+            ffi::class_addMethod(
+                class as *const AnyClass as *mut AnyClass,
+                sel,
+                imp,
+                types.as_ptr(),
+            )
+        };
         if !added.as_bool() {
             eprintln!("BrewFS: class_addMethod failed; Dock reopen may not show the window");
         }
