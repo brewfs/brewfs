@@ -22,15 +22,15 @@ export struct ProfileRecord {
 component DriveBadge inherits Rectangle {
     in property <string> drive;
     in property <bool> mounted;
-    width: 50px;
-    height: 32px;
+    width: 40px;
+    height: 26px;
     background: root.mounted ? @linear-gradient(135deg, #1b7a3d 0%, #2ea35a 100%) : #cdd3dc;
-    border-radius: 8px;
+    border-radius: 7px;
     Text {
         text: root.drive;
         color: white;
         font-weight: 700;
-        font-size: 14px;
+        font-size: 12px;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -39,8 +39,12 @@ component DriveBadge inherits Rectangle {
 export component MainWindow inherits Window {
     title: "BrewFS";
     icon: @image-url("../assets/brewfs.png");
-    preferred-width: 700px;
+    preferred-width: 320px;
     preferred-height: 540px;
+    min-width: 320px;
+    max-width: 320px;
+    min-height: 540px;
+    max-height: 540px;
 
     in property <string> status-text;
     in property <[ProfileRecord]> records;
@@ -49,35 +53,6 @@ export component MainWindow inherits Window {
     // 确认覆盖层
     in property <bool> dlg-visible;
     in property <string> dlg-message;
-    // 编辑覆盖层（独立编辑窗口的效果，无第二个任务栏图标）
-    in property <bool> edit-visible;
-    in property <string> edit-title;
-
-    // 表单（编辑覆盖层内）
-    in-out property <string> cfg-name;
-    in-out property <int> cfg-mode-index;
-    in-out property <int> cfg-drive-index;
-    in-out property <string> cfg-drive;
-    in-out property <bool> show-free-drives;
-    in property <[string]> drive-options;
-    in-out property <int> cfg-backend-index;
-    in-out property <string> cfg-data-dir;
-    in-out property <string> cfg-s3-bucket;
-    in-out property <string> cfg-s3-endpoint;
-    in-out property <string> cfg-s3-region;
-    in-out property <string> cfg-s3-access-key;
-    in-out property <string> cfg-s3-secret-key;
-    in-out property <bool> cfg-s3-force-path-style;
-    in-out property <string> cfg-prefix;
-    in-out property <int> cfg-meta-index;
-    in-out property <string> cfg-meta-url;
-
-    property <string> cfg-mode: cfg-mode-index == 0 ? "oss" : "brewfs";
-    property <string> cfg-backend: cfg-backend-index == 1 ? "s3" : "local-fs";
-    property <string> cfg-meta-backend: cfg-meta-index == 1 ? "redis" : (cfg-meta-index == 2 ? "etcd" : (cfg-meta-index == 3 ? "tikv" : "sqlx"));
-
-    callback save-form();
-    callback cancel-edit();
     callback add-config();
     callback edit-record(int);
     callback open-record(int);
@@ -99,32 +74,33 @@ export component MainWindow inherits Window {
                 background: #ffffff;
                 HorizontalBox {
                     alignment: center;
-                    padding-left: 20px;
-                    padding-right: 20px;
-                    padding-top: 13px;
-                    padding-bottom: 13px;
-                    spacing: 12px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
                     Rectangle {
-                        width: 40px;
-                        height: 40px;
-                        border-radius: 10px;
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 8px;
                         background: @linear-gradient(135deg, #1a6dd4 0%, #0e4ea8 100%);
                         Image {
                             source: @image-url("../assets/icons/cloud.svg");
-                            width: 24px;
-                            height: 24px;
-                            x: (parent.width - 24px) / 2;
-                            y: (parent.height - 24px) / 2;
+                            width: 20px;
+                            height: 20px;
+                            x: (parent.width - 20px) / 2;
+                            y: (parent.height - 20px) / 2;
                         }
                     }
                     VerticalBox {
+                        min-width: 0px;
+                        horizontal-stretch: 1.0;
                         spacing: 1px;
-                        Text { text: "BrewFS"; font-size: 18px; font-weight: 700; color: #151a21; }
-                        Text { text: "OSS / S3 挂载到本地磁盘"; font-size: 12px; color: #7c8591; }
+                        Text { text: "BrewFS"; font-size: 15px; font-weight: 700; color: #151a21; }
+                        Text { text: "OSS / S3 挂载"; font-size: 11px; color: #7c8591; overflow: elide; }
                     }
-                    Rectangle { horizontal-stretch: 1.0; }
                     CheckBox {
-                        text: "开机自启";
+                        text: "自启";
                         checked: root.autostart;
                         toggled => {
                             root.autostart = self.checked;
@@ -137,48 +113,48 @@ export component MainWindow inherits Window {
 
             // ===== 配置列表 =====
             VerticalBox {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-top: 16px;
-                padding-bottom: 16px;
-                spacing: 10px;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 8px;
                 vertical-stretch: 1.0;
 
-                Text { text: "我的配置"; font-size: 13px; font-weight: 600; color: #5a6472; }
+                Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; }
 
                 if root.records.length > 0: ScrollView {
                     vertical-stretch: 1.0;
                     VerticalBox {
-                        spacing: 10px;
+                        spacing: 8px;
                         for r[i] in root.records: Rectangle {
                             background: r.mounted ? #f0f7f3 : #ffffff;
-                            border-radius: 12px;
+                            border-radius: 10px;
                             border-width: 1px;
                             border-color: r.mounted ? #bfe0cc : #e2e7ef;
-                            height: 66px;
+                            height: 62px;
                             TouchArea {
                                 width: parent.width;
                                 height: parent.height;
                                 clicked => { root.edit-record(i); }
                                 HorizontalBox {
-                                    padding: 10px;
-                                    spacing: 12px;
+                                    padding: 8px;
+                                    spacing: 8px;
                                     DriveBadge { drive: r.drive; mounted: r.mounted; }
                                     VerticalBox {
                                         min-width: 0px;
                                         horizontal-stretch: 1.0;
-                                        spacing: 3px;
+                                        spacing: 2px;
                                         Text {
                                             text: r.name;
                                             color: #1b2129;
                                             font-weight: 600;
-                                            font-size: 14px;
+                                            font-size: 13px;
                                             overflow: elide;
                                         }
                                         Text {
                                             text: r.detail;
                                             color: #7c8591;
-                                            font-size: 12px;
+                                            font-size: 11px;
                                             overflow: elide;
                                         }
                                     }
@@ -187,16 +163,16 @@ export component MainWindow inherits Window {
                             HorizontalBox {
                                 y: 0px;
                                 height: parent.height;
-                                x: parent.width - 196px;
-                                width: 196px;
-                                alignment: end;
-                                spacing: 6px;
-                                padding-right: 8px;
+                                x: parent.width - 124px;
+                                width: 124px;
+                                alignment: center;
+                                spacing: 4px;
+                                padding-right: 4px;
                                 Button {
                                     icon: @image-url("../assets/icons/open.svg");
                                     text: "";
-                                    width: 34px;
-                                    height: 32px;
+                                    width: 26px;
+                                    height: 26px;
                                     enabled: r.mounted;
                                     Tooltip { text: @markdown("打开"); }
                                     clicked => { root.open-record(i); }
@@ -204,32 +180,32 @@ export component MainWindow inherits Window {
                                 if r.mounted: Button {
                                     icon: @image-url("../assets/icons/unmount.svg");
                                     text: "";
-                                    width: 34px;
-                                    height: 32px;
+                                    width: 26px;
+                                    height: 26px;
                                     Tooltip { text: @markdown("卸载"); }
                                     clicked => { root.toggle-record(i); }
                                 }
                                 if !r.mounted: Button {
                                     icon: @image-url("../assets/icons/mount.svg");
                                     text: "";
-                                    width: 34px;
-                                    height: 32px;
+                                    width: 26px;
+                                    height: 26px;
                                     Tooltip { text: @markdown("挂载"); }
                                     clicked => { root.toggle-record(i); }
                                 }
                                 Button {
                                     icon: @image-url("../assets/icons/edit.svg");
                                     text: "";
-                                    width: 34px;
-                                    height: 32px;
+                                    width: 26px;
+                                    height: 26px;
                                     Tooltip { text: @markdown("编辑"); }
                                     clicked => { root.edit-record(i); }
                                 }
                                 Button {
                                     icon: @image-url("../assets/icons/delete.svg");
                                     text: "";
-                                    width: 34px;
-                                    height: 32px;
+                                    width: 26px;
+                                    height: 26px;
                                     Tooltip { text: @markdown("删除"); }
                                     clicked => { root.delete-record(i); }
                                 }
@@ -240,19 +216,19 @@ export component MainWindow inherits Window {
                 if root.records.length == 0: Rectangle {
                     vertical-stretch: 1.0;
                     background: #ffffff;
-                    border-radius: 12px;
+                    border-radius: 10px;
                     border-width: 1px;
                     border-color: #e2e7ef;
                     VerticalBox {
                         alignment: center;
-                        spacing: 8px;
+                        spacing: 6px;
                         Image {
                             source: @image-url("../assets/icons/empty.svg");
-                            width: 52px;
-                            height: 52px;
+                            width: 40px;
+                            height: 40px;
                         }
-                        Text { text: "还没有配置"; color: #8a939e; font-size: 14px; font-weight: 600; }
-                        Text { text: "点右下角「添加配置」开始使用"; color: #aeb6c1; font-size: 12px; }
+                        Text { text: "还没有配置"; color: #8a939e; font-size: 13px; font-weight: 600; }
+                        Text { text: "点下方「添加配置」"; color: #aeb6c1; font-size: 11px; }
                     }
                 }
             }
@@ -262,15 +238,15 @@ export component MainWindow inherits Window {
             Rectangle {
                 background: #ffffff;
                 HorizontalBox {
-                    padding-left: 20px;
-                    padding-right: 20px;
-                    padding-top: 11px;
-                    padding-bottom: 11px;
-                    spacing: 12px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
                     Text {
                         text: root.status-text;
                         color: #7c8591;
-                        font-size: 12px;
+                        font-size: 11px;
                         horizontal-stretch: 1.0;
                         overflow: elide;
                     }
@@ -279,179 +255,6 @@ export component MainWindow inherits Window {
                         icon: @image-url("../assets/icons/plus.svg");
                         primary: true;
                         clicked => { root.add-config(); }
-                    }
-                }
-            }
-        }
-
-        // --- 编辑覆盖层（独立编辑窗口） ---
-        if root.edit-visible: Rectangle {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: parent.height;
-            background: #66000000;
-            TouchArea {
-                clicked => { /* 吞掉遮罩点击 */ }
-            }
-            HorizontalBox {
-                alignment: center;
-                VerticalBox {
-                    alignment: center;
-                    Rectangle {
-                        min-width: 560px;
-                        max-width: 660px;
-                        background: #ffffff;
-                        border-radius: 12px;
-                        VerticalBox {
-                            padding: 20px;
-                            spacing: 14px;
-                            Text {
-                                text: root.edit-title;
-                                font-size: 16px;
-                                font-weight: 700;
-                                color: #15181c;
-                            }
-                            ScrollView {
-                                max-height: 430px;
-                                GridBox {
-                                    spacing: 10px;
-                                    Row {
-                                        Text { text: "配置名称"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-name;
-                                            placeholder-text: "例如：阿里云 OSS";
-                                        }
-                                    }
-                                    Row {
-                                        Text { text: "挂载点"; vertical-alignment: center; }
-                                        if root.show-free-drives: ComboBox {
-                                            model: root.drive-options;
-                                            current-index: root.cfg-drive-index;
-                                            selected(v) => {
-                                                root.cfg-drive = v;
-                                            }
-                                        }
-                                        if !root.show-free-drives: LineEdit {
-                                            text: root.cfg-drive;
-                                            placeholder-text: "macOS/Linux 挂载目录，例如 /Volumes/brewfs";
-                                            input-type: text;
-                                        }
-                                    }
-                                    Row {
-                                        Text { text: "挂载模式"; vertical-alignment: center; }
-                                        ComboBox {
-                                            model: ["OSS 直挂（多机，推荐）", "BrewFS（元数据）"];
-                                            current-index: root.cfg-mode-index;
-                                            selected(v) => {
-                                                root.cfg-mode-index = v == "BrewFS（元数据）" ? 1 : 0;
-                                            }
-                                        }
-                                    }
-                                    if root.cfg-mode == "brewfs": Rectangle {
-                                        background: #fff4e0;
-                                        border-radius: 6px;
-                                        border-width: 1px;
-                                        border-color: #e0a030;
-                                        HorizontalBox {
-                                            padding: 8px;
-                                            Text {
-                                                text: "⚠️ 元数据模式需要自建/共享元数据库（Redis/TiKV/etcd）；多机必须连同一个元数据库否则数据不一致；数据库故障则盘不可用。普通网盘推荐 OSS 直挂。";
-                                                color: #7a4d00;
-                                                wrap: word-wrap;
-                                                font-size: 12px;
-                                            }
-                                        }
-                                    }
-                                    if root.cfg-mode == "brewfs": Row {
-                                        Text { text: "数据后端"; vertical-alignment: center; }
-                                        ComboBox {
-                                            model: ["local-fs", "s3"];
-                                            current-index: root.cfg-backend-index;
-                                            selected(v) => {
-                                                root.cfg-backend-index = v == "s3" ? 1 : 0;
-                                            }
-                                        }
-                                    }
-                                    if root.cfg-mode == "brewfs": Row {
-                                        Text { text: "元数据后端"; vertical-alignment: center; }
-                                        ComboBox {
-                                            model: ["sqlx", "redis", "etcd", "tikv"];
-                                            current-index: root.cfg-meta-index;
-                                            selected(v) => {
-                                                root.cfg-meta-index = v == "redis" ? 1 : (v == "etcd" ? 2 : (v == "tikv" ? 3 : 0));
-                                            }
-                                        }
-                                    }
-                                    if root.cfg-mode == "brewfs" && root.cfg-backend == "local-fs": Row {
-                                        Text { text: "数据目录"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-data-dir;
-                                            placeholder-text: "本地对象存储目录，例如 E:\\brewfs-data";
-                                        }
-                                    }
-                                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                                        Text { text: "Bucket"; vertical-alignment: center; }
-                                        LineEdit { text: root.cfg-s3-bucket; placeholder-text: "OSS bucket 名称"; }
-                                        Text { text: "Region"; vertical-alignment: center; }
-                                        LineEdit { text: root.cfg-s3-region; placeholder-text: "例如 cn-shanghai"; }
-                                    }
-                                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                                        Text { text: "Endpoint"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-s3-endpoint;
-                                            placeholder-text: "S3 兼容接入点，例如 https://s3.oss-cn-shanghai.aliyuncs.com";
-                                        }
-                                    }
-                                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                                        Text { text: "AccessKey"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-s3-access-key;
-                                            placeholder-text: "AK";
-                                        }
-                                        Text { text: "SecretKey"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-s3-secret-key;
-                                            placeholder-text: "SK（本地保存，不写入提交）";
-                                            input-type: password;
-                                        }
-                                    }
-                                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                                        CheckBox {
-                                            text: "force_path_style（MinIO/自建 S3 需要）";
-                                            checked: root.cfg-s3-force-path-style;
-                                        }
-                                    }
-                                    if root.cfg-mode == "oss": Row {
-                                        Text { text: "Prefix"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-prefix;
-                                            placeholder-text: "对象 key 命名空间（可选），例如 myns/；多机共享时保持一致";
-                                        }
-                                    }
-                                    if root.cfg-mode == "brewfs": Row {
-                                        Text { text: "元数据 URL"; vertical-alignment: center; }
-                                        LineEdit {
-                                            text: root.cfg-meta-url;
-                                            placeholder-text: "sqlite://./data/brewfs-meta.db?mode=rwc 或 redis://... 或 etcd/tikv 地址（逗号分隔）";
-                                        }
-                                    }
-                                }
-                            }
-                            HorizontalBox {
-                                alignment: end;
-                                spacing: 10px;
-                                Button {
-                                    text: "取消";
-                                    clicked => { root.cancel-edit(); }
-                                }
-                                Button {
-                                    text: "保存";
-                                    primary: true;
-                                    clicked => { root.save-form(); }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -472,8 +275,8 @@ export component MainWindow inherits Window {
                 VerticalBox {
                     alignment: center;
                     Rectangle {
-                        min-width: 340px;
-                        max-width: 480px;
+                        min-width: 260px;
+                        max-width: 296px;
                         background: #ffffff;
                         border-radius: 10px;
                         HorizontalBox {
@@ -503,6 +306,204 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+export component EditDialog inherits Window {
+    title: "编辑配置";
+    icon: @image-url("../assets/brewfs.png");
+    preferred-width: 620px;
+    preferred-height: 560px;
+    min-width: 620px;
+    max-width: 620px;
+    min-height: 560px;
+    max-height: 560px;
+
+    in property <string> edit-title;
+
+    // 表单
+    in-out property <string> cfg-name;
+    in-out property <int> cfg-mode-index;
+    in-out property <int> cfg-drive-index;
+    in-out property <string> cfg-drive;
+    in-out property <bool> show-free-drives;
+    in property <[string]> drive-options;
+    in-out property <int> cfg-backend-index;
+    in-out property <string> cfg-data-dir;
+    in-out property <string> cfg-s3-bucket;
+    in-out property <string> cfg-s3-endpoint;
+    in-out property <string> cfg-s3-region;
+    in-out property <string> cfg-s3-access-key;
+    in-out property <string> cfg-s3-secret-key;
+    in-out property <bool> cfg-s3-force-path-style;
+    in-out property <string> cfg-prefix;
+    in-out property <int> cfg-meta-index;
+    in-out property <string> cfg-meta-url;
+
+    property <string> cfg-mode: cfg-mode-index == 0 ? "oss" : "brewfs";
+    property <string> cfg-backend: cfg-backend-index == 1 ? "s3" : "local-fs";
+    property <string> cfg-meta-backend: cfg-meta-index == 1 ? "redis" : (cfg-meta-index == 2 ? "etcd" : (cfg-meta-index == 3 ? "tikv" : "sqlx"));
+
+    callback save-form();
+    callback cancel-edit();
+
+    Rectangle {
+        width: 620px;
+        height: 560px;
+        background: #f4f6f9;
+
+        VerticalBox {
+            padding: 18px;
+            spacing: 14px;
+
+            Text {
+                text: root.edit-title;
+                font-size: 16px;
+                font-weight: 700;
+                color: #15181c;
+            }
+
+            ScrollView {
+                vertical-stretch: 1.0;
+                GridBox {
+                    spacing: 10px;
+                    Row {
+                        Text { text: "配置名称"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-name;
+                            placeholder-text: "例如：阿里云 OSS";
+                        }
+                    }
+                    Row {
+                        Text { text: "挂载点"; vertical-alignment: center; }
+                        if root.show-free-drives: ComboBox {
+                            model: root.drive-options;
+                            current-index: root.cfg-drive-index;
+                            selected(v) => {
+                                root.cfg-drive = v;
+                            }
+                        }
+                        if !root.show-free-drives: LineEdit {
+                            text: root.cfg-drive;
+                            placeholder-text: "macOS/Linux 挂载目录，例如 /Volumes/brewfs";
+                            input-type: text;
+                        }
+                    }
+                    Row {
+                        Text { text: "挂载模式"; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["OSS 直挂（多机，推荐）", "BrewFS（元数据）"];
+                            current-index: root.cfg-mode-index;
+                            selected(v) => {
+                                root.cfg-mode-index = v == "BrewFS（元数据）" ? 1 : 0;
+                            }
+                        }
+                    }
+                    if root.cfg-mode == "brewfs": Rectangle {
+                        background: #fff4e0;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #e0a030;
+                        HorizontalBox {
+                            padding: 8px;
+                            Text {
+                                text: "⚠️ 元数据模式需要自建/共享元数据库（Redis/TiKV/etcd）；多机必须连同一个元数据库否则数据不一致；数据库故障则盘不可用。普通网盘推荐 OSS 直挂。";
+                                color: #7a4d00;
+                                wrap: word-wrap;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                    if root.cfg-mode == "brewfs": Row {
+                        Text { text: "数据后端"; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["local-fs", "s3"];
+                            current-index: root.cfg-backend-index;
+                            selected(v) => {
+                                root.cfg-backend-index = v == "s3" ? 1 : 0;
+                            }
+                        }
+                    }
+                    if root.cfg-mode == "brewfs": Row {
+                        Text { text: "元数据后端"; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["sqlx", "redis", "etcd", "tikv"];
+                            current-index: root.cfg-meta-index;
+                            selected(v) => {
+                                root.cfg-meta-index = v == "redis" ? 1 : (v == "etcd" ? 2 : (v == "tikv" ? 3 : 0));
+                            }
+                        }
+                    }
+                    if root.cfg-mode == "brewfs" && root.cfg-backend == "local-fs": Row {
+                        Text { text: "数据目录"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-data-dir;
+                            placeholder-text: "本地对象存储目录，例如 E:\\brewfs-data";
+                        }
+                    }
+                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
+                        Text { text: "Bucket"; vertical-alignment: center; }
+                        LineEdit { text: root.cfg-s3-bucket; placeholder-text: "OSS bucket 名称"; }
+                        Text { text: "Region"; vertical-alignment: center; }
+                        LineEdit { text: root.cfg-s3-region; placeholder-text: "例如 cn-shanghai"; }
+                    }
+                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
+                        Text { text: "Endpoint"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-s3-endpoint;
+                            placeholder-text: "S3 兼容接入点，例如 https://s3.oss-cn-shanghai.aliyuncs.com";
+                        }
+                    }
+                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
+                        Text { text: "AccessKey"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-s3-access-key;
+                            placeholder-text: "AK";
+                        }
+                        Text { text: "SecretKey"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-s3-secret-key;
+                            placeholder-text: "SK（本地保存，不写入提交）";
+                            input-type: password;
+                        }
+                    }
+                    if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
+                        CheckBox {
+                            text: "force_path_style（MinIO/自建 S3 需要）";
+                            checked: root.cfg-s3-force-path-style;
+                        }
+                    }
+                    if root.cfg-mode == "oss": Row {
+                        Text { text: "Prefix"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-prefix;
+                            placeholder-text: "对象 key 命名空间（可选），例如 myns/；多机共享时保持一致";
+                        }
+                    }
+                    if root.cfg-mode == "brewfs": Row {
+                        Text { text: "元数据 URL"; vertical-alignment: center; }
+                        LineEdit {
+                            text: root.cfg-meta-url;
+                            placeholder-text: "sqlite://./data/brewfs-meta.db?mode=rwc 或 redis://... 或 etcd/tikv 地址（逗号分隔）";
+                        }
+                    }
+                }
+            }
+
+            HorizontalBox {
+                alignment: end;
+                spacing: 10px;
+                Button {
+                    text: "取消";
+                    clicked => { root.cancel-edit(); }
+                }
+                Button {
+                    text: "保存";
+                    primary: true;
+                    clicked => { root.save-form(); }
                 }
             }
         }

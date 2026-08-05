@@ -180,6 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let ui = MainWindow::new()?;
+    let edit = EditDialog::new()?;
     let tray = Tray::new()?;
 
     let state = Rc::new(RefCell::new(model::load_profiles()));
@@ -188,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ossmount = Rc::new(model::find_ossmount());
 
     // Drive letters are a Windows concept; macOS/Linux use mount directories.
-    ui.set_show_free_drives(cfg!(windows));
+    edit.set_show_free_drives(cfg!(windows));
 
     // Clicking the Dock icon should re-show the tray window (macOS).
     #[cfg(target_os = "macos")]
@@ -210,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Preload the first saved profile into the form.
     if !state.borrow().profiles.is_empty() {
-        profile_to_form(&ui, &state.borrow().profiles[0]);
+        profile_to_form(&edit, &state.borrow().profiles[0]);
     }
 
     // 模态确认：主窗口内的覆盖层（无第二个窗口、无第二个任务栏图标）。
@@ -237,7 +238,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     ui.set_autostart(winutil::autostart_enabled());
 
-    wire_callbacks(&ui, &tray, &state, &recent, &brewfs, &ossmount, &pending);
+    wire_callbacks(
+        &ui, &edit, &tray, &state, &recent, &brewfs, &ossmount, &pending,
+    );
 
     // Periodic status refresh (2s) driven from the UI thread.
     let timer = Timer::default();
@@ -268,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[allow(clippy::too_many_arguments)]
 fn wire_callbacks(
     ui: &MainWindow,
+    edit: &EditDialog,
     tray: &Tray,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
@@ -276,6 +280,7 @@ fn wire_callbacks(
     pending: &Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
 ) {
     let ui_weak = ui.as_weak();
+    let edit_weak = edit.as_weak();
     let tray_weak = tray.as_weak();
     let state = Rc::clone(state);
     let recent = Rc::clone(recent);
@@ -284,14 +289,18 @@ fn wire_callbacks(
     let pending = Rc::clone(pending);
 
     // --- save the form back into a profile ---
-    ui.on_save_form({
+    edit.on_save_form({
         let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let p = form_to_profile(&ui);
+            let Some(edit) = edit_weak.upgrade() else {
+                return;
+            };
+            let p = form_to_profile(&edit);
             if let Err(e) = p.validate() {
                 ui.set_status_text(format!("保存失败：{e}").into());
                 return;
@@ -308,7 +317,7 @@ fn wire_callbacks(
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent);
             }
-            ui.set_edit_visible(false);
+            close_edit_dialog(&ui, &edit);
             if occupied {
                 ui.set_status_text(
                     format!("⚠️ 已保存，但盘符 {} 已被占用，挂载前请更换", p.drive).into(),
@@ -322,9 +331,13 @@ fn wire_callbacks(
     // --- add a new blank config -> open the edit window ---
     ui.on_add_config({
         let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
         let state = state.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(edit) = edit_weak.upgrade() else {
+                return;
+            };
             let mut p = model::Profile::default();
             p.name = {
                 let file = state.borrow();
@@ -348,9 +361,8 @@ fn wire_callbacks(
             if let Some(d) = winutil::free_drives().first() {
                 p.drive = d.clone();
             }
-            profile_to_form(&ui, &p);
-            ui.set_edit_title(format!("添加配置「{}」", p.name).into());
-            ui.set_edit_visible(true);
+            profile_to_form(&edit, &p);
+            open_edit_dialog(&ui, &edit, format!("添加配置「{}」", p.name));
             ui.set_status_text(format!("添加配置「{}」，填写后点保存", p.name).into());
         }
     });
@@ -358,27 +370,31 @@ fn wire_callbacks(
     // --- edit a record -> load into the edit window ---
     ui.on_edit_record({
         let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
         let state = state.clone();
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(edit) = edit_weak.upgrade() else {
+                return;
+            };
             let profiles = state.borrow();
             let Some(p) = profiles.profiles.get(index as usize) else {
                 return;
             };
             let p = p.clone();
             drop(profiles);
-            profile_to_form(&ui, &p);
-            ui.set_edit_title(format!("编辑配置「{}」", p.name).into());
-            ui.set_edit_visible(true);
+            profile_to_form(&edit, &p);
+            open_edit_dialog(&ui, &edit, format!("编辑配置「{}」", p.name));
         }
     });
 
     // --- cancel editing ---
-    ui.on_cancel_edit({
+    edit.on_cancel_edit({
         let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
         move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_edit_visible(false);
+            if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
+                close_edit_dialog(&ui, &edit);
             }
         }
     });
@@ -558,9 +574,22 @@ fn wire_callbacks(
     // --- window close -> hide to tray ---
     ui.window().on_close_requested({
         let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
         move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
+                close_edit_dialog(&ui, &edit);
                 let _ = ui.hide();
+            }
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
+    // Edit dialog X button == cancel: close modally and re-enable the owner.
+    edit.window().on_close_requested({
+        let ui_weak = ui_weak.clone();
+        let edit_weak = edit_weak.clone();
+        move || {
+            if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
+                close_edit_dialog(&ui, &edit);
             }
             slint::CloseRequestResponse::HideWindow
         }
@@ -742,16 +771,6 @@ fn refresh(
         .collect();
     tray.set_mounts(ModelRc::new(Rc::new(VecModel::from(tray_rows))));
 
-    // Drive dropdown (Windows): free drive letters only; keep the combo in
-    // sync with the value already in the form.
-    let free = winutil::free_drives();
-    let options: Vec<SharedString> = free.iter().map(|d| SharedString::from(d.clone())).collect();
-    ui.set_drive_options(ModelRc::new(Rc::new(VecModel::from(options))));
-    let current = ui.get_cfg_drive().to_string();
-    if let Some(idx) = free.iter().position(|d| d.eq_ignore_ascii_case(&current)) {
-        ui.set_cfg_drive_index(idx as i32);
-    }
-
     let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
     let status = if live.is_empty() {
         "当前没有活动挂载。".to_string()
@@ -787,13 +806,13 @@ fn drive_occupied(_drive: &str) -> bool {
 
 /// The mount point currently selected in the form: the chosen drive letter
 /// on Windows (from the dropdown), the typed directory on macOS/Linux.
-fn drive_from_form(ui: &MainWindow) -> String {
+fn drive_from_form(edit: &EditDialog) -> String {
     #[cfg(windows)]
     {
         // Prefer the typed/selected value (the dropdown's selected() keeps
         // cfg-drive in sync, and profile_to_form sets it from a saved record,
         // so a saved drive is never silently replaced by the dropdown).
-        let typed = ui.get_cfg_drive().to_string();
+        let typed = edit.get_cfg_drive().to_string();
         if !typed.is_empty() {
             return typed;
         }
@@ -802,14 +821,14 @@ fn drive_from_form(ui: &MainWindow) -> String {
     }
     #[cfg(not(windows))]
     {
-        ui.get_cfg_drive().to_string()
+        edit.get_cfg_drive().to_string()
     }
 }
 
-fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
-    ui.set_cfg_name(p.name.clone().into());
-    ui.set_cfg_mode_index(if p.mode == "oss" { 0 } else { 1 });
-    ui.set_cfg_drive(p.drive.clone().into());
+fn profile_to_form(edit: &EditDialog, p: &model::Profile) {
+    edit.set_cfg_name(p.name.clone().into());
+    edit.set_cfg_mode_index(if p.mode == "oss" { 0 } else { 1 });
+    edit.set_cfg_drive(p.drive.clone().into());
     #[cfg(windows)]
     {
         let free = winutil::free_drives();
@@ -817,59 +836,59 @@ fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
             .iter()
             .position(|d| d.eq_ignore_ascii_case(&p.drive))
             .unwrap_or(0);
-        ui.set_cfg_drive_index(idx as i32);
+        edit.set_cfg_drive_index(idx as i32);
     }
-    ui.set_cfg_backend_index(if p.backend == "s3" { 1 } else { 0 });
-    ui.set_cfg_data_dir(p.data_dir.clone().into());
-    ui.set_cfg_s3_bucket(p.s3_bucket.clone().into());
-    ui.set_cfg_s3_endpoint(p.s3_endpoint.clone().into());
-    ui.set_cfg_s3_region(p.s3_region.clone().into());
-    ui.set_cfg_s3_access_key(p.access_key.clone().into());
-    ui.set_cfg_s3_secret_key(p.secret_key.clone().into());
-    ui.set_cfg_s3_force_path_style(p.s3_force_path_style);
-    ui.set_cfg_prefix(p.prefix.clone().into());
-    ui.set_cfg_meta_index(match p.meta_backend.as_str() {
+    edit.set_cfg_backend_index(if p.backend == "s3" { 1 } else { 0 });
+    edit.set_cfg_data_dir(p.data_dir.clone().into());
+    edit.set_cfg_s3_bucket(p.s3_bucket.clone().into());
+    edit.set_cfg_s3_endpoint(p.s3_endpoint.clone().into());
+    edit.set_cfg_s3_region(p.s3_region.clone().into());
+    edit.set_cfg_s3_access_key(p.access_key.clone().into());
+    edit.set_cfg_s3_secret_key(p.secret_key.clone().into());
+    edit.set_cfg_s3_force_path_style(p.s3_force_path_style);
+    edit.set_cfg_prefix(p.prefix.clone().into());
+    edit.set_cfg_meta_index(match p.meta_backend.as_str() {
         "redis" => 1,
         "etcd" => 2,
         "tikv" => 3,
         _ => 0,
     });
-    ui.set_cfg_meta_url(p.meta_url.clone().into());
+    edit.set_cfg_meta_url(p.meta_url.clone().into());
 }
 
-fn form_to_profile(ui: &MainWindow) -> model::Profile {
-    let mode = if ui.get_cfg_mode_index() == 0 {
+fn form_to_profile(edit: &EditDialog) -> model::Profile {
+    let mode = if edit.get_cfg_mode_index() == 0 {
         "oss"
     } else {
         "brewfs"
     };
-    let backend = if ui.get_cfg_backend_index() == 1 {
+    let backend = if edit.get_cfg_backend_index() == 1 {
         "s3"
     } else {
         "local-fs"
     };
-    let meta_backend = match ui.get_cfg_meta_index() {
+    let meta_backend = match edit.get_cfg_meta_index() {
         1 => "redis",
         2 => "etcd",
         3 => "tikv",
         _ => "sqlx",
     };
     model::Profile {
-        name: ui.get_cfg_name().to_string(),
+        name: edit.get_cfg_name().to_string(),
         mode: mode.to_string(),
-        drive: drive_from_form(ui),
+        drive: drive_from_form(edit),
         backend: backend.to_string(),
-        data_dir: ui.get_cfg_data_dir().to_string(),
-        s3_bucket: ui.get_cfg_s3_bucket().to_string(),
-        s3_endpoint: ui.get_cfg_s3_endpoint().to_string(),
-        s3_region: ui.get_cfg_s3_region().to_string(),
-        s3_force_path_style: ui.get_cfg_s3_force_path_style(),
+        data_dir: edit.get_cfg_data_dir().to_string(),
+        s3_bucket: edit.get_cfg_s3_bucket().to_string(),
+        s3_endpoint: edit.get_cfg_s3_endpoint().to_string(),
+        s3_region: edit.get_cfg_s3_region().to_string(),
+        s3_force_path_style: edit.get_cfg_s3_force_path_style(),
         s3_disable_payload_checksum: true,
-        prefix: ui.get_cfg_prefix().to_string(),
-        access_key: ui.get_cfg_s3_access_key().to_string(),
-        secret_key: ui.get_cfg_s3_secret_key().to_string(),
+        prefix: edit.get_cfg_prefix().to_string(),
+        access_key: edit.get_cfg_s3_access_key().to_string(),
+        secret_key: edit.get_cfg_s3_secret_key().to_string(),
         meta_backend: meta_backend.to_string(),
-        meta_url: ui.get_cfg_meta_url().to_string(),
+        meta_url: edit.get_cfg_meta_url().to_string(),
     }
 }
 
@@ -979,8 +998,8 @@ fn raise_window_to_front() {
     };
 
     thread_local! {
-        static BEST_HWND: Cell<HWND> = Cell::new(null_mut());
-        static BEST_AREA: Cell<u64> = Cell::new(0);
+        static BEST_HWND: Cell<HWND> = const { Cell::new(null_mut()) };
+        static BEST_AREA: Cell<u64> = const { Cell::new(0) };
     }
 
     unsafe extern "system" fn enum_proc(hwnd: HWND, _: LPARAM) -> BOOL {
@@ -1057,6 +1076,124 @@ fn raise_window_to_front() {
 /// Non-Windows/non-macOS platforms: `show()` is enough.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn raise_window_to_front() {}
+
+/// Native HWND of a Slint window (Windows). Slint exposes the underlying
+/// winit window via `WinitWindowAccessor`; from there the raw window handle
+/// yields the Win32 `HWND`.
+#[cfg(windows)]
+fn get_hwnd(window: &slint::Window) -> Option<isize> {
+    use slint::winit_030::{WinitWindowAccessor, winit::raw_window_handle::HasWindowHandle};
+    window.with_winit_window(|winit_window| {
+        let raw = winit_window.window_handle().ok()?;
+        match raw.as_raw() {
+            slint::winit_030::winit::raw_window_handle::RawWindowHandle::Win32(h) => {
+                Some(h.hwnd.get())
+            }
+            _ => None,
+        }
+    })?
+}
+
+/// Refresh the drive-letter dropdown of the edit dialog before showing it.
+#[cfg(windows)]
+fn update_drive_options(edit: &EditDialog) {
+    use slint::{ModelRc, SharedString, VecModel};
+    let free = winutil::free_drives();
+    let options: Vec<SharedString> = free.iter().map(|d| SharedString::from(d.clone())).collect();
+    edit.set_drive_options(ModelRc::new(Rc::new(VecModel::from(options))));
+    let current = edit.get_cfg_drive().to_string();
+    if let Some(idx) = free.iter().position(|d| d.eq_ignore_ascii_case(&current)) {
+        edit.set_cfg_drive_index(idx as i32);
+    }
+}
+
+/// Open the add/edit dialog as a real Win32 **owned window** of the main
+/// window: no taskbar button, always above its owner, and the owner is
+/// disabled so the dialog is genuinely modal (mouse/keyboard can only reach
+/// the dialog).
+fn open_edit_dialog(ui: &MainWindow, edit: &EditDialog, title: String) {
+    edit.set_edit_title(title.into());
+    #[cfg(windows)]
+    update_drive_options(edit);
+    // Secondary Slint windows can keep a stale default OS size; force the
+    // dialog through Slint's own size API so the form renders at 620x560.
+    edit.window()
+        .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
+            620.0, 560.0,
+        )));
+    let _ = edit.show();
+    #[cfg(windows)]
+    make_modal_child(edit.window(), ui.window());
+}
+
+/// Close the edit dialog: re-enable the owner window and hide the dialog.
+fn close_edit_dialog(ui: &MainWindow, edit: &EditDialog) {
+    #[cfg(windows)]
+    restore_modal(ui.window());
+    let _ = edit.hide();
+}
+
+/// Make `dialog` an owned window of `owner` (no taskbar entry, above owner),
+/// center it over the owner, and disable the owner for modality.
+#[cfg(windows)]
+fn make_modal_child(dialog: &slint::Window, owner: &slint::Window) {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWLP_HWNDPARENT, GetWindowRect, HWND_TOP, SWP_NOSIZE, SetForegroundWindow,
+        SetWindowLongPtrW, SetWindowPos,
+    };
+    unsafe {
+        let Some(owner_hwnd) = get_hwnd(owner) else {
+            return;
+        };
+        let Some(dlg_hwnd) = get_hwnd(dialog) else {
+            return;
+        };
+        let owner_hwnd = owner_hwnd as HWND;
+        let dlg_hwnd = dlg_hwnd as HWND;
+
+        // Owned window: disappears from the taskbar, stays above the owner,
+        // minimizes/hides together with it.
+        SetWindowLongPtrW(dlg_hwnd, GWLP_HWNDPARENT, owner_hwnd as isize);
+        // Modal: the owner cannot receive input while the dialog is open.
+        EnableWindow(owner_hwnd, 0);
+
+        // Center the dialog over the owner (roughly 1/3 from the top).
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut dr = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(owner_hwnd, &mut r) != 0 && GetWindowRect(dlg_hwnd, &mut dr) != 0 {
+            let x = r.left + (r.right - r.left - (dr.right - dr.left)) / 2;
+            let y = r.top + (r.bottom - r.top - (dr.bottom - dr.top)) / 3;
+            SetWindowPos(dlg_hwnd, HWND_TOP, x, y, 0, 0, SWP_NOSIZE);
+        }
+        // Bring the dialog to the foreground so it is immediately visible and
+        // focused (an owned window only stays above its owner, not other apps).
+        SetForegroundWindow(dlg_hwnd);
+    }
+}
+
+/// Re-enable the owner window after the edit dialog closes.
+#[cfg(windows)]
+fn restore_modal(owner: &slint::Window) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    unsafe {
+        if let Some(h) = get_hwnd(owner) {
+            EnableWindow(h as HWND, 1);
+        }
+    }
+}
 
 fn quit_app() {
     let _ = slint::quit_event_loop();
