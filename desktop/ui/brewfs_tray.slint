@@ -87,7 +87,6 @@ export component MainWindow inherits Window {
 
     in property <string> status-text;
     in property <[ProfileRecord]> records;
-    in-out property <bool> autostart;
 
     // 确认覆盖层
     in property <bool> dlg-visible;
@@ -99,14 +98,13 @@ export component MainWindow inherits Window {
     callback delete-record(int);
     callback confirm-dialog();
     callback cancel-dialog();
-    callback autostart-changed(bool);
     callback quit-app();
 
     Rectangle {
         background: #eef1f6;
 
         VerticalBox {
-            padding: 0px;
+            padding: 8px;
             spacing: 0px;
 
             // ===== 顶部标题栏 =====
@@ -139,14 +137,6 @@ export component MainWindow inherits Window {
                         Text { text: "BrewFS"; font-size: 15px; font-weight: 700; color: #151a21; }
                         Text { text: "OSS / S3 挂载"; font-size: 11px; color: #7c8591; overflow: elide; }
                     }
-                    CheckBox {
-                        text: "自启";
-                        checked: root.autostart;
-                        toggled => {
-                            root.autostart = self.checked;
-                            root.autostart-changed(self.checked);
-                        }
-                    }
                 }
             }
             Rectangle { height: 1px; background: #e2e7ef; }
@@ -174,7 +164,7 @@ export component MainWindow inherits Window {
                             border-color: r.mounted ? #bfe0cc : #e2e7ef;
                             height: 48px;
                             HorizontalLayout {
-                                padding: 0px;
+                                padding: 2px;
                                 spacing: 4px;
                                 cross-axis-alignment: center;
                                 TouchArea {
@@ -560,10 +550,12 @@ export component Tray inherits SystemTrayIcon {
     tooltip: root.tray-tooltip;
     in property <string> tray-tooltip;
     in property <[MountInfo]> mounts;
+    in-out property <bool> autostart;
 
     callback show-window();
     callback open-mount(int);
     callback unmount-all();
+    callback autostart-changed(bool);
     callback quit-app();
 
     clicked => {
@@ -589,6 +581,16 @@ export component Tray inherits SystemTrayIcon {
         MenuItem {
             title: "卸载全部";
             activated => { root.unmount-all(); }
+        }
+        MenuItem {
+            title: "开机自启";
+            checkable: true;
+            checked: root.autostart;
+            activated => {
+                // 勾选类菜单项激活后 checked 已自动翻转，取新值同步。
+                root.autostart = self.checked;
+                root.autostart-changed(self.checked);
+            }
         }
         MenuSeparator { }
         MenuItem {

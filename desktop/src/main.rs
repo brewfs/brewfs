@@ -236,7 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pending_cancel.borrow_mut().take();
         });
     }
-    ui.set_autostart(winutil::autostart_enabled());
+    tray.set_autostart(winutil::autostart_enabled());
 
     wire_callbacks(
         &ui, &edit, &tray, &state, &recent, &brewfs, &ossmount, &pending,
@@ -607,7 +607,7 @@ fn wire_callbacks(
         }
     });
     // --- 开机自启 ---
-    ui.on_autostart_changed({
+    tray.on_autostart_changed({
         let ui_weak = ui_weak.clone();
         move |enabled| {
             if let Err(e) = winutil::set_autostart(enabled) {
