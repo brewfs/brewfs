@@ -1,17 +1,24 @@
 # BrewFS Desktop Tray（Windows）
 
 基于 **Slint 1.17**（用户常称为 Slint 0.17；Slint 1.17 起原生支持
-`SystemTrayIcon`，Windows 上走 `Shell_NotifyIcon`）的 BrewFS 桌面托盘应用，
-**只支持 OSS 直挂模式**（无本地元数据，多机共享网盘）：
+`SystemTrayIcon`，Windows 上走 `Shell_NotifyIcon`）的 BrewFS 桌面托盘应用：
 
-- 编辑/保存 OSS 挂载配置（Bucket / Endpoint / Region / AK / SK / Prefix / 盘符）
-- 实时展示「配置参数 ↔ 盘符映射」：读取 `ossmount` 运行时注册表
-  （Windows 上位于 `%TEMP%\brewfs-oss\*.json`）并过滤已退出的陈旧记录
+- **默认 OSS 直挂（推荐）**：无本地元数据，多机共享网盘
+  （Bucket / Endpoint / Region / AK / SK / Prefix / 盘符）
+- **可选 BrewFS 元数据模式**：自建元数据库（Redis/TiKV/etcd/sqlite），强一致，
+  选中时会显示风险提示（需要部署/共享元数据库，元数据库故障则盘不可用）
+- 实时展示「配置参数 ↔ 盘符映射」：读取 `ossmount` / `brewfs` 运行时注册表
+  （`%TEMP%\brewfs-oss\*.json`、`%TEMP%\brewfs\*.json`）并过滤已退出的陈旧记录
 - 一键挂载 / 卸载 / 打开资源管理器
 - 系统托盘图标：左键显示窗口，右键菜单列出已挂盘符、卸载全部、退出
-- 挂载失败时自动读取 `%LOCALAPPDATA%\brewfs-tray\logs\<配置名>-oss.log` 尾行并显示原因
+- 挂载失败时自动读取 `%LOCALAPPDATA%\brewfs-tray\logs\<配置名>.log` 尾行并显示原因
 
-## OSS 直挂模式（多机网盘，无本地元数据）
+> 挂载模式选择框默认 **OSS 直挂（多机，推荐）**；切到 **BrewFS（元数据）** 时表单会
+> 显示黄色风险提示框。普通网盘/多机共享场景请保持 OSS 直挂。
+
+## 两种挂载模式
+
+### OSS 直挂（默认，推荐）—— 多机网盘，无本地元数据
 
 托盘应用调用 `ossmount`（本仓库自带）把 **S3/OSS bucket 直接挂载成盘符/挂载目录**：
 

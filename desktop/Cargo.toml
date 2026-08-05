@@ -10,6 +10,7 @@ publish = false
 slint = { version = "1.17", features = ["unstable-winit-030"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 dirs = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
