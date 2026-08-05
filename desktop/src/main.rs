@@ -1140,8 +1140,8 @@ fn make_modal_child(dialog: &slint::Window, owner: &slint::Window) {
     use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWLP_HWNDPARENT, GetWindowRect, HWND_TOP, SWP_NOSIZE, SetForegroundWindow,
-        SetWindowLongPtrW, SetWindowPos,
+        GWLP_HWNDPARENT, GetSystemMetrics, GetWindowRect, HWND_TOP, SPI_GETWORKAREA, SWP_NOSIZE,
+        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW,
     };
     unsafe {
         let Some(owner_hwnd) = get_hwnd(owner) else {
@@ -1159,22 +1159,38 @@ fn make_modal_child(dialog: &slint::Window, owner: &slint::Window) {
         // Modal: the owner cannot receive input while the dialog is open.
         EnableWindow(owner_hwnd, 0);
 
-        // Center the dialog over the owner (roughly 1/3 from the top).
-        let mut r = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
+        // Center the dialog in the screen work area (excludes the taskbar),
+        // not over the owner: it is an owned child but should read as a
+        // centered modal dialog on the desktop.
         let mut dr = RECT {
             left: 0,
             top: 0,
             right: 0,
             bottom: 0,
         };
-        if GetWindowRect(owner_hwnd, &mut r) != 0 && GetWindowRect(dlg_hwnd, &mut dr) != 0 {
-            let x = r.left + (r.right - r.left - (dr.right - dr.left)) / 2;
-            let y = r.top + (r.bottom - r.top - (dr.bottom - dr.top)) / 3;
+        let mut wa = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let work_area_ok = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            &mut wa as *mut RECT as *mut std::ffi::c_void,
+            0,
+        ) != 0;
+        if GetWindowRect(dlg_hwnd, &mut dr) != 0 {
+            let (w, h) = if work_area_ok && wa.right > wa.left && wa.bottom > wa.top {
+                ((wa.right - wa.left), (wa.bottom - wa.top))
+            } else {
+                (
+                    GetSystemMetrics(0), // SM_CXSCREEN
+                    GetSystemMetrics(1), // SM_CYSCREEN
+                )
+            };
+            let x = (w - (dr.right - dr.left)) / 2;
+            let y = (h - (dr.bottom - dr.top)) / 2;
             SetWindowPos(dlg_hwnd, HWND_TOP, x, y, 0, 0, SWP_NOSIZE);
         }
         // Bring the dialog to the foreground so it is immediately visible and

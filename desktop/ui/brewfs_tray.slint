@@ -113,11 +113,11 @@ export component MainWindow inherits Window {
 
             // ===== 配置列表 =====
             VerticalBox {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 12px;
-                padding-bottom: 12px;
-                spacing: 8px;
+                padding-left: 10px;
+                padding-right: 10px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 6px;
                 vertical-stretch: 1.0;
 
                 Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; }
@@ -131,43 +131,40 @@ export component MainWindow inherits Window {
                             border-radius: 10px;
                             border-width: 1px;
                             border-color: r.mounted ? #bfe0cc : #e2e7ef;
-                            height: 62px;
-                            TouchArea {
-                                width: parent.width;
-                                height: parent.height;
-                                clicked => { root.edit-record(i); }
-                                HorizontalBox {
-                                    padding: 8px;
-                                    spacing: 8px;
-                                    DriveBadge { drive: r.drive; mounted: r.mounted; }
-                                    VerticalBox {
-                                        min-width: 0px;
-                                        horizontal-stretch: 1.0;
-                                        spacing: 2px;
-                                        Text {
-                                            text: r.name;
-                                            color: #1b2129;
-                                            font-weight: 600;
-                                            font-size: 13px;
-                                            overflow: elide;
-                                        }
-                                        Text {
-                                            text: r.detail;
-                                            color: #7c8591;
-                                            font-size: 11px;
-                                            overflow: elide;
+                            height: 54px;
+                            HorizontalBox {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                spacing: 6px;
+                                alignment: center;
+                                TouchArea {
+                                    height: 100%;
+                                    horizontal-stretch: 1.0;
+                                    clicked => { root.edit-record(i); }
+                                    HorizontalBox {
+                                        alignment: center;
+                                        spacing: 8px;
+                                        DriveBadge { drive: r.drive; mounted: r.mounted; }
+                                        VerticalBox {
+                                            min-width: 0px;
+                                            horizontal-stretch: 1.0;
+                                            spacing: 2px;
+                                            Text {
+                                                text: r.name;
+                                                color: #1b2129;
+                                                font-weight: 600;
+                                                font-size: 13px;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: r.detail;
+                                                color: #7c8591;
+                                                font-size: 11px;
+                                                overflow: elide;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            HorizontalBox {
-                                y: 0px;
-                                height: parent.height;
-                                x: parent.width - 124px;
-                                width: 124px;
-                                alignment: center;
-                                spacing: 4px;
-                                padding-right: 4px;
                                 Button {
                                     icon: @image-url("../assets/icons/open.svg");
                                     text: "";
