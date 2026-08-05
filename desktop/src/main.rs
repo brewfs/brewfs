@@ -618,8 +618,18 @@ fn wire_callbacks(
         }
     });
 
-    ui.on_quit_app(quit_app);
-    tray.on_quit_app(quit_app);
+    // 退出：先显式移除托盘图标（避免任何情况下残留），再退出事件循环。
+    // Slint 的 SystemTrayIcon 在组件 drop 时也会 NIM_DELETE，这里 double-check。
+    let tray_for_quit = tray_weak.clone();
+    let do_quit = move || {
+        if let Some(tray) = tray_for_quit.upgrade() {
+            // 先移除托盘图标（Slint 组件 drop 时也会 NIM_DELETE，双保险）。
+            let _ = tray.hide();
+        }
+        quit_app();
+    };
+    ui.on_quit_app(do_quit.clone());
+    tray.on_quit_app(do_quit);
 }
 
 /// Spawn the right backend for `p` (brewfs vs ossmount), remember the profile,
@@ -992,14 +1002,17 @@ fn raise_window_to_front() {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowRect,
+        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowTextW,
         GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, SW_RESTORE, SW_SHOW,
         SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindow,
     };
 
+    // The tray's "show window" action targets the main window only. The edit
+    // dialog is a separate hidden window and must never be raised by it, so we
+    // match the main window by its title ("BrewFS") instead of picking the
+    // largest top-level window (the edit dialog is larger than the main one).
     thread_local! {
-        static BEST_HWND: Cell<HWND> = const { Cell::new(null_mut()) };
-        static BEST_AREA: Cell<u64> = const { Cell::new(0) };
+        static MAIN_HWND: Cell<HWND> = const { Cell::new(null_mut()) };
     }
 
     unsafe extern "system" fn enum_proc(hwnd: HWND, _: LPARAM) -> BOOL {
@@ -1007,23 +1020,12 @@ fn raise_window_to_front() {
             let mut pid: u32 = 0;
             let _ = GetWindowThreadProcessId(hwnd, &mut pid);
             if pid == std::process::id() {
-                let mut rect = windows_sys::Win32::Foundation::RECT {
-                    left: 0,
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                };
-                if GetWindowRect(hwnd, &mut rect) != 0 {
-                    let w = (rect.right - rect.left).max(0) as u64;
-                    let h = (rect.bottom - rect.top).max(0) as u64;
-                    if w > 100 && h > 100 {
-                        let area = w.saturating_mul(h);
-                        BEST_HWND.with(|c| {
-                            if area > BEST_AREA.with(|a| a.get()) {
-                                c.set(hwnd);
-                                BEST_AREA.with(|a| a.set(area));
-                            }
-                        });
+                let mut title = [0u16; 128];
+                let len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+                if len > 0 {
+                    let t = String::from_utf16_lossy(&title[..len as usize]);
+                    if t == "BrewFS" {
+                        MAIN_HWND.with(|c| c.set(hwnd));
                     }
                 }
             }
@@ -1032,11 +1034,10 @@ fn raise_window_to_front() {
     }
 
     unsafe {
-        BEST_HWND.with(|c| c.set(null_mut()));
-        BEST_AREA.with(|c| c.set(0));
+        MAIN_HWND.with(|c| c.set(null_mut()));
         EnumWindows(Some(enum_proc), 0);
 
-        let hwnd = BEST_HWND.with(|c| c.get());
+        let hwnd = MAIN_HWND.with(|c| c.get());
         if hwnd.is_null() {
             return;
         }

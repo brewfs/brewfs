@@ -29,10 +29,11 @@ pub fn used_drives() -> Vec<String> {
     Vec::new()
 }
 
-/// Drive letters that are free (not in use), `A:` through `Z:`.
+/// Drive letters that are free (not in use), `C:` through `Z:` (`A:`/`B:`
+/// are reserved for floppy drives and never offered).
 pub fn free_drives() -> Vec<String> {
     let used = used_drives();
-    (0..26)
+    (2..26)
         .map(|i| format!("{}:", (b'A' + i as u8) as char))
         .filter(|d| !used.iter().any(|u| u == d))
         .collect()
