@@ -1,6 +1,16 @@
 // BrewFS desktop tray UI (Slint 1.17).
 
-import { Button, CheckBox, ComboBox, GridBox, GroupBox, LineEdit, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import {
+    Button,
+    CheckBox,
+    ComboBox,
+    GridBox,
+    GroupBox,
+    LineEdit,
+    ScrollView,
+    VerticalBox,
+    HorizontalBox,
+} from "std-widgets.slint";
 
 export struct MountInfo {
     drive: string,
@@ -55,11 +65,13 @@ component IconButton inherits Rectangle {
         y: (parent.height - 18px) / 2;
         opacity: root.enabled ? 1.0 : 0.4;
     }
+
     TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
     }
+
     if root.tip != "": Tooltip {
         Rectangle {
             background: #3b4048;
@@ -69,7 +81,11 @@ component IconButton inherits Rectangle {
                 padding-right: 8px;
                 padding-top: 5px;
                 padding-bottom: 5px;
-                Text { text: root.tip; color: #ffffff; font-size: 12px; }
+                Text {
+                    text: root.tip;
+                    color: #ffffff;
+                    font-size: 12px;
+                }
             }
         }
     }
@@ -102,6 +118,8 @@ export component MainWindow inherits Window {
 
     Rectangle {
         background: #eef1f6;
+        width: 100%;
+        height: 100%;
 
         VerticalBox {
             padding: 2px;
@@ -130,16 +148,32 @@ export component MainWindow inherits Window {
                             y: (parent.height - 20px) / 2;
                         }
                     }
+
                     VerticalBox {
                         min-width: 0px;
                         horizontal-stretch: 1.0;
                         spacing: 1px;
-                        Text { text: "BrewFS"; font-size: 15px; font-weight: 700; color: #151a21; }
-                        Text { text: "OSS / S3 挂载"; font-size: 11px; color: #7c8591; overflow: elide; }
+                        Text {
+                            text: "BrewFS";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: #151a21;
+                        }
+
+                        Text {
+                            text: "OSS / S3 挂载";
+                            font-size: 11px;
+                            color: #7c8591;
+                            overflow: elide;
+                        }
                     }
                 }
             }
-            Rectangle { height: 1px; background: #e2e7ef; }
+
+            Rectangle {
+                height: 1px;
+                background: #e2e7ef;
+            }
 
             // ===== 配置列表 =====
             VerticalBox {
@@ -149,18 +183,26 @@ export component MainWindow inherits Window {
                 padding-bottom: 8px;
                 spacing: 4px;
                 vertical-stretch: 1.0;
-
+                horizontal-stretch: 1.0;
                 HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; horizontal-stretch: 1.0; }
+                    padding-left: 2px;
+                    padding-right: 2px;
+                    Text {
+                        text: "我的配置";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: #5a6472;
+                        horizontal-stretch: 1.0;
+                    }
                 }
 
                 if root.records.length > 0: ScrollView {
                     vertical-stretch: 1.0;
+                    horizontal-stretch: 1.0;
+                    min-height: 0px;
                     VerticalBox {
-                        padding-left: 12px;
-                        padding-right: 12px;
+                        padding-left: 2px;
+                        padding-right: 2px;
                         padding-top: 0px;
                         padding-bottom: 0px;
                         spacing: 8px;
@@ -180,7 +222,11 @@ export component MainWindow inherits Window {
                                     HorizontalLayout {
                                         spacing: 6px;
                                         cross-axis-alignment: center;
-                                        DriveBadge { drive: r.drive; mounted: r.mounted; }
+                                        DriveBadge {
+                                            drive: r.drive;
+                                            mounted: r.mounted;
+                                        }
+
                                         VerticalLayout {
                                             spacing: 2px;
                                             Text {
@@ -190,6 +236,7 @@ export component MainWindow inherits Window {
                                                 font-size: 13px;
                                                 overflow: elide;
                                             }
+
                                             Text {
                                                 text: r.detail;
                                                 color: #7c8591;
@@ -199,12 +246,14 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                 }
+
                                 IconButton {
                                     icon: @image-url("../assets/icons/open.svg");
                                     enabled: r.mounted;
                                     tip: "打开";
                                     clicked => { root.open-record(i); }
                                 }
+
                                 if r.mounted: IconButton {
                                     icon: @image-url("../assets/icons/unmount.svg");
                                     tip: "卸载";
@@ -220,6 +269,7 @@ export component MainWindow inherits Window {
                                     tip: "编辑";
                                     clicked => { root.edit-record(i); }
                                 }
+
                                 IconButton {
                                     icon: @image-url("../assets/icons/delete.svg");
                                     tip: "删除";
@@ -231,11 +281,12 @@ export component MainWindow inherits Window {
                 }
                 if root.records.length == 0: HorizontalLayout {
                     vertical-stretch: 1.0;
-                    padding-left: 12px;
-                    padding-right: 12px;
+                    horizontal-stretch: 1.0;
+                    padding-left: 2px;
+                    padding-right: 2px;
                     Rectangle {
-                        horizontal-stretch: 1.0;
-                        vertical-stretch: 1.0;
+                        width: 100%;
+                        height: 100%;
                         background: #ffffff;
                         border-radius: 10px;
                         border-width: 1px;
@@ -243,20 +294,44 @@ export component MainWindow inherits Window {
                         VerticalBox {
                             alignment: center;
                             spacing: 6px;
-                            Image {
-                                source: @image-url("../assets/icons/empty.svg");
-                                width: 40px;
-                                height: 40px;
+                            HorizontalLayout {
+                                alignment: center;
+                                Image {
+                                    source: @image-url("../assets/icons/empty.svg");
+                                    width: 40px;
+                                    height: 40px;
+                                }
                             }
-                            Text { text: "还没有配置"; color: #8a939e; font-size: 13px; font-weight: 600; }
-                            Text { text: "点下方「添加配置」"; color: #aeb6c1; font-size: 11px; }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "还没有配置";
+                                    color: #8a939e;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "点下方「添加配置」";
+                                    color: #aeb6c1;
+                                    font-size: 11px;
+                                }
+                            }
                         }
                     }
                 }
             }
 
             // ===== 底部 =====
-            Rectangle { height: 1px; background: #e2e7ef; }
+            Rectangle {
+                height: 1px;
+                background: #e2e7ef;
+            }
+
             Rectangle {
                 background: #ffffff;
                 HorizontalBox {
@@ -272,6 +347,7 @@ export component MainWindow inherits Window {
                         horizontal-stretch: 1.0;
                         overflow: elide;
                     }
+
                     Button {
                         text: "添加配置";
                         icon: @image-url("../assets/icons/plus.svg");
@@ -290,8 +366,9 @@ export component MainWindow inherits Window {
             height: parent.height;
             background: #66000000;
             TouchArea {
-                clicked => { }
+                clicked => {}
             }
+
             HorizontalBox {
                 alignment: center;
                 VerticalBox {
@@ -312,6 +389,7 @@ export component MainWindow inherits Window {
                                     font-size: 14px;
                                     color: #15181c;
                                 }
+
                                 HorizontalBox {
                                     alignment: end;
                                     spacing: 10px;
@@ -319,6 +397,7 @@ export component MainWindow inherits Window {
                                         text: "取消";
                                         clicked => { root.cancel-dialog(); }
                                     }
+
                                     Button {
                                         text: "确定";
                                         primary: true;
@@ -394,15 +473,26 @@ export component EditDialog inherits Window {
                     width: 100%;
                     spacing: 10px;
                     Row {
-                        Text { text: "配置名称"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "配置名称";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-name;
                             placeholder-text: "例如：阿里云 OSS";
                             horizontal-stretch: 1.0;
                         }
                     }
+
                     Row {
-                        Text { text: "挂载点"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "挂载点";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         if root.show-free-drives: ComboBox {
                             model: root.drive-options;
                             current-index: root.cfg-drive-index;
@@ -418,8 +508,14 @@ export component EditDialog inherits Window {
                             horizontal-stretch: 1.0;
                         }
                     }
+
                     Row {
-                        Text { text: "挂载模式"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "挂载模式";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         ComboBox {
                             model: ["OSS 直挂（多机，推荐）", "BrewFS（元数据）"];
                             current-index: root.cfg-mode-index;
@@ -429,6 +525,7 @@ export component EditDialog inherits Window {
                             }
                         }
                     }
+
                     if root.cfg-mode == "brewfs": Rectangle {
                         background: #fff4e0;
                         border-radius: 6px;
@@ -445,7 +542,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "brewfs": Row {
-                        Text { text: "数据后端"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "数据后端";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         ComboBox {
                             model: ["local-fs", "s3"];
                             current-index: root.cfg-backend-index;
@@ -456,7 +558,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "brewfs": Row {
-                        Text { text: "元数据后端"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "元数据后端";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         ComboBox {
                             model: ["sqlx", "redis", "etcd", "tikv"];
                             current-index: root.cfg-meta-index;
@@ -467,7 +574,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "brewfs" && root.cfg-backend == "local-fs": Row {
-                        Text { text: "数据目录"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "数据目录";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-data-dir;
                             placeholder-text: "本地对象存储目录，例如 E:\\brewfs-data";
@@ -475,7 +587,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Text { text: "Bucket"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "Bucket";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-s3-bucket;
                             placeholder-text: "OSS bucket 名称";
@@ -483,7 +600,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Text { text: "Region"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "Region";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-s3-region;
                             placeholder-text: "例如 cn-shanghai";
@@ -491,7 +613,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Text { text: "Endpoint"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "Endpoint";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-s3-endpoint;
                             placeholder-text: "S3 兼容接入点，例如 https://s3.oss-cn-shanghai.aliyuncs.com";
@@ -499,7 +626,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Text { text: "AccessKey"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "AccessKey";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-s3-access-key;
                             placeholder-text: "AK";
@@ -507,7 +639,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Text { text: "SecretKey"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "SecretKey";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-s3-secret-key;
                             placeholder-text: "SK（本地保存，不写入提交）";
@@ -516,14 +653,22 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "oss" || (root.cfg-mode == "brewfs" && root.cfg-backend == "s3"): Row {
-                        Rectangle { width: 88px; }
+                        Rectangle {
+                            width: 88px;
+                        }
+
                         CheckBox {
                             text: "force_path_style（MinIO/自建 S3 需要）";
                             checked: root.cfg-s3-force-path-style;
                         }
                     }
                     if root.cfg-mode == "oss": Row {
-                        Text { text: "Prefix"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "Prefix";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-prefix;
                             placeholder-text: "对象 key 命名空间（可选），例如 myns/；多机共享时保持一致";
@@ -531,7 +676,12 @@ export component EditDialog inherits Window {
                         }
                     }
                     if root.cfg-mode == "brewfs": Row {
-                        Text { text: "元数据 URL"; width: 88px; vertical-alignment: center; }
+                        Text {
+                            text: "元数据 URL";
+                            width: 88px;
+                            vertical-alignment: center;
+                        }
+
                         LineEdit {
                             text: root.cfg-meta-url;
                             placeholder-text: "sqlite://./data/brewfs-meta.db?mode=rwc 或 redis://... 或 etcd/tikv 地址（逗号分隔）";
@@ -548,6 +698,7 @@ export component EditDialog inherits Window {
                     text: "取消";
                     clicked => { root.cancel-edit(); }
                 }
+
                 Button {
                     text: "保存";
                     primary: true;
@@ -580,6 +731,7 @@ export component Tray inherits SystemTrayIcon {
             title: "显示窗口";
             activated => { root.show-window(); }
         }
+
         Menu {
             title: "已挂载盘符";
             for m[i] in root.mounts: MenuItem {
@@ -591,10 +743,12 @@ export component Tray inherits SystemTrayIcon {
                 enabled: false;
             }
         }
+
         MenuItem {
             title: "卸载全部";
             activated => { root.unmount-all(); }
         }
+
         MenuItem {
             title: "开机自启";
             checkable: true;
@@ -605,7 +759,9 @@ export component Tray inherits SystemTrayIcon {
                 root.autostart-changed(self.checked);
             }
         }
+
         MenuSeparator { }
+
         MenuItem {
             title: "退出 BrewFS";
             activated => { root.quit-app(); }
