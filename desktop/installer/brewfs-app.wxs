@@ -37,9 +37,9 @@
       <Directory Id="BrewFSMenuFolder" Name="BrewFS">
         <Component Id="C_StartMenuShortcut" Directory="BrewFSMenuFolder">
           <Shortcut Id="S_Tray"
-                    Name="BrewFS 托盘"
-                    Description="BrewFS 系统托盘：OSS/S3 直挂为本地磁盘"
-                    Target="[INSTALLFOLDER]brewfs-tray.exe"
+                    Name="BrewFS"
+                    Description="BrewFS：OSS/S3 直挂为本地磁盘"
+                    Target="[#F_TrayExe]"
                     WorkingDirectory="INSTALLFOLDER" />
           <RemoveFolder Id="R_RemoveBrewFSMenuFolder" On="uninstall" />
           <RegistryValue Root="HKCU" Key="Software\BrewFS" Name="installed" Type="integer" Value="1" KeyPath="yes" />
@@ -51,9 +51,9 @@
     <StandardDirectory Id="DesktopFolder">
       <Component Id="C_DesktopShortcut" Directory="DesktopFolder">
         <Shortcut Id="S_TrayDesktop"
-                  Name="BrewFS 托盘"
-                  Description="BrewFS 系统托盘：OSS/S3 直挂为本地磁盘"
-                  Target="[INSTALLFOLDER]brewfs-tray.exe"
+                  Name="BrewFS"
+                  Description="BrewFS：OSS/S3 直挂为本地磁盘"
+                  Target="[#F_TrayExe]"
                   WorkingDirectory="INSTALLFOLDER" />
         <RegistryValue Root="HKCU" Key="Software\BrewFS" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
