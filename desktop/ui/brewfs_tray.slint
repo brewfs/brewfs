@@ -103,6 +103,9 @@ export component MainWindow inherits Window {
 
     in property <string> status-text;
     in property <[ProfileRecord]> records;
+    // macOS: content extends under the hidden titlebar; keep room for the
+    // native traffic-light buttons in the top-left corner.
+    in property <bool> traffic-light-padding;
 
     // 确认覆盖层
     in property <bool> dlg-visible;
@@ -124,6 +127,11 @@ export component MainWindow inherits Window {
         VerticalBox {
             padding: 2px;
             spacing: 0px;
+
+            // macOS: blank row so the traffic-light buttons don't overlap content.
+            if root.traffic-light-padding: Rectangle {
+                height: 28px;
+            }
 
             // ===== 顶部标题栏 =====
             Rectangle {
@@ -424,6 +432,8 @@ export component EditDialog inherits Window {
     max-height: 560px;
 
     in property <string> edit-title;
+    // macOS: keep room for the native traffic-light buttons (hidden titlebar).
+    in property <bool> traffic-light-padding;
 
     // 表单
     in-out property <string> cfg-name;
@@ -459,6 +469,11 @@ export component EditDialog inherits Window {
         VerticalBox {
             padding: 18px;
             spacing: 14px;
+
+            // macOS: blank row so the traffic-light buttons don't overlap content.
+            if root.traffic-light-padding: Rectangle {
+                height: 28px;
+            }
 
             Text {
                 text: root.edit-title;

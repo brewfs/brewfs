@@ -191,6 +191,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Drive letters are a Windows concept; macOS/Linux use mount directories.
     edit.set_show_free_drives(cfg!(windows));
 
+    // On macOS the titlebar is hidden and content extends under it; leave room
+    // for the native traffic-light buttons at the top of both windows.
+    ui.set_traffic_light_padding(cfg!(target_os = "macos"));
+    edit.set_traffic_light_padding(cfg!(target_os = "macos"));
+
     // Clicking the Dock icon should re-show the tray window (macOS).
     #[cfg(target_os = "macos")]
     {
