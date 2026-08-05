@@ -30,8 +30,10 @@ export component MainWindow inherits Window {
     preferred-height: 720px;
 
     in property <string> status-text;
-    in property <string> free-drives-text;
+    // Windows: dropdown lists available drive letters; false on macOS/Linux
+    // where the mount point is a directory path typed into cfg-drive.
     in property <bool> show-free-drives;
+    in property <[string]> drive-options;
     // macOS: content extends under the hidden titlebar; keep room for the
     // native traffic-light buttons in the top-left corner.
     in property <bool> traffic-light-padding;
@@ -39,6 +41,7 @@ export component MainWindow inherits Window {
 
     in-out property <string> cfg-name;
     in-out property <int> cfg-mode-index;
+    in-out property <int> cfg-drive-index;
     in-out property <string> cfg-drive;
     in-out property <int> cfg-backend-index;
     in-out property <string> cfg-data-dir;
@@ -164,9 +167,16 @@ export component MainWindow inherits Window {
                             placeholder-text: "例如：阿里云 OSS";
                         }
                         Text { text: "挂载点"; vertical-alignment: center; }
-                        LineEdit {
+                        if root.show-free-drives: ComboBox {
+                            model: root.drive-options;
+                            current-index: root.cfg-drive-index;
+                            selected(v) => {
+                                root.cfg-drive = v;
+                            }
+                        }
+                        if !root.show-free-drives: LineEdit {
                             text: root.cfg-drive;
-                            placeholder-text: "Windows 盘符 Z: 或 macOS/Linux 目录 /Volumes/brewfs";
+                            placeholder-text: "macOS/Linux 挂载目录，例如 /Volumes/brewfs";
                             input-type: text;
                         }
                     }
@@ -178,13 +188,6 @@ export component MainWindow inherits Window {
                             selected(v) => {
                                 root.cfg-mode-index = v == "BrewFS（元数据）" ? 1 : 0;
                             }
-                        }
-                        if root.show-free-drives: Text { text: "可用盘符"; vertical-alignment: center; }
-                        if root.show-free-drives: Text {
-                            text: root.free-drives-text;
-                            color: #555;
-                            vertical-alignment: center;
-                            wrap: word-wrap;
                         }
                     }
                     if root.cfg-mode == "brewfs": Rectangle {

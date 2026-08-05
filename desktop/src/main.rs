@@ -163,6 +163,7 @@ fn wire_callbacks(
                 ui.set_status_text(format!("保存失败：{e}").into());
                 return;
             }
+            let occupied = drive_occupied(&p.drive);
             {
                 let mut file = state.borrow_mut();
                 upsert_profile(&mut file, &p);
@@ -174,7 +175,13 @@ fn wire_callbacks(
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent);
             }
-            ui.set_status_text(format!("配置「{}」已保存", p.name).into());
+            if occupied {
+                ui.set_status_text(
+                    format!("⚠️ 已保存，但盘符 {} 已被占用，挂载前请更换", p.drive).into(),
+                );
+            } else {
+                ui.set_status_text(format!("配置「{}」已保存", p.name).into());
+            }
         }
     });
 
@@ -205,7 +212,15 @@ fn wire_callbacks(
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent);
             }
-            ui.set_status_text(format!("已添加配置「{name}」，填写后点保存").into());
+            let cfg_drive = ui.get_cfg_drive().to_string();
+            if drive_occupied(&cfg_drive) {
+                ui.set_status_text(
+                    format!("⚠️ 已添加配置「{name}」，但盘符 {cfg_drive} 已被占用，请更换后保存")
+                        .into(),
+                );
+            } else {
+                ui.set_status_text(format!("已添加配置「{name}」，填写后点保存").into());
+            }
         }
     });
 
@@ -399,6 +414,10 @@ fn mount_profile(
     p: &model::Profile,
 ) {
     let drive = model::normalize_mount_point(&p.drive);
+    if drive_occupied(&drive) {
+        ui.set_status_text(format!("盘符 {drive} 已被占用，请更换后挂载").into());
+        return;
+    }
     let spawned = if p.mode == "oss" {
         let Some(ossmount) = ossmount.as_ref() else {
             #[cfg(windows)]
@@ -532,7 +551,15 @@ fn refresh(
         .collect();
     tray.set_mounts(ModelRc::new(Rc::new(VecModel::from(tray_rows))));
 
-    ui.set_free_drives_text(SharedString::from(winutil::free_drives().join(" ")));
+    // Drive dropdown (Windows): free drive letters only; keep the combo in
+    // sync with the value already in the form.
+    let free = winutil::free_drives();
+    let options: Vec<SharedString> = free.iter().map(|d| SharedString::from(d.clone())).collect();
+    ui.set_drive_options(ModelRc::new(Rc::new(VecModel::from(options))));
+    let current = ui.get_cfg_drive().to_string();
+    if let Some(idx) = free.iter().position(|d| d.eq_ignore_ascii_case(&current)) {
+        ui.set_cfg_drive_index(idx as i32);
+    }
 
     let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
     let status = if live.is_empty() {
@@ -552,10 +579,55 @@ fn refresh(
     tray.set_tray_tooltip(tooltip.into());
 }
 
+/// Whether a Windows drive letter is currently in use (system drive or
+/// already-mounted). macOS/Linux mount points are directories, no check.
+#[cfg(windows)]
+fn drive_occupied(drive: &str) -> bool {
+    let d = model::normalize_mount_point(drive);
+    winutil::used_drives()
+        .iter()
+        .any(|u| u.eq_ignore_ascii_case(&d))
+}
+
+#[cfg(not(windows))]
+fn drive_occupied(_drive: &str) -> bool {
+    false
+}
+
+/// The mount point currently selected in the form: the chosen drive letter
+/// on Windows (from the dropdown), the typed directory on macOS/Linux.
+fn drive_from_form(ui: &MainWindow) -> String {
+    #[cfg(windows)]
+    {
+        // Prefer the typed/selected value (the dropdown's selected() keeps
+        // cfg-drive in sync, and profile_to_form sets it from a saved record,
+        // so a saved drive is never silently replaced by the dropdown).
+        let typed = ui.get_cfg_drive().to_string();
+        if !typed.is_empty() {
+            return typed;
+        }
+        // Fresh form: default to the first free drive.
+        winutil::free_drives().first().cloned().unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        ui.get_cfg_drive().to_string()
+    }
+}
+
 fn profile_to_form(ui: &MainWindow, p: &model::Profile) {
     ui.set_cfg_name(p.name.clone().into());
     ui.set_cfg_mode_index(if p.mode == "oss" { 0 } else { 1 });
     ui.set_cfg_drive(p.drive.clone().into());
+    #[cfg(windows)]
+    {
+        let free = winutil::free_drives();
+        let idx = free
+            .iter()
+            .position(|d| d.eq_ignore_ascii_case(&p.drive))
+            .unwrap_or(0);
+        ui.set_cfg_drive_index(idx as i32);
+    }
     ui.set_cfg_backend_index(if p.backend == "s3" { 1 } else { 0 });
     ui.set_cfg_data_dir(p.data_dir.clone().into());
     ui.set_cfg_s3_bucket(p.s3_bucket.clone().into());
@@ -594,7 +666,7 @@ fn form_to_profile(ui: &MainWindow) -> model::Profile {
     model::Profile {
         name: ui.get_cfg_name().to_string(),
         mode: mode.to_string(),
-        drive: ui.get_cfg_drive().to_string(),
+        drive: drive_from_form(ui),
         backend: backend.to_string(),
         data_dir: ui.get_cfg_data_dir().to_string(),
         s3_bucket: ui.get_cfg_s3_bucket().to_string(),
