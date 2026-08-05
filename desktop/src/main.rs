@@ -56,6 +56,114 @@ fn configure_backend() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Desired mounts + auto-restart bookkeeping for the mount-process guard.
+#[derive(Default)]
+struct GuardState {
+    /// Drive letters the user explicitly mounted; auto-restarted if the
+    /// process dies unexpectedly.
+    desired: std::collections::HashSet<String>,
+    /// When we last spawned each drive (backoff against restart loops).
+    last_spawn: std::collections::HashMap<String, Instant>,
+    /// Drives that fast-failed (e.g. bad config) and must be retried only by
+    /// the user manually.
+    failed: std::collections::HashSet<String>,
+}
+
+static MOUNT_GUARD: std::sync::OnceLock<std::sync::Mutex<GuardState>> = std::sync::OnceLock::new();
+
+fn guard() -> std::sync::MutexGuard<'static, GuardState> {
+    MOUNT_GUARD
+        .get_or_init(|| std::sync::Mutex::new(GuardState::default()))
+        .lock()
+        .unwrap()
+}
+
+/// Monitor desired mounts and auto-restart any whose process died without a
+/// user-initiated unmount. Backs off 30s between attempts and stops retrying
+/// after a fast failure (config error) until the user mounts manually.
+fn auto_restart(
+    ui: &MainWindow,
+    state: &Rc<RefCell<model::ProfilesFile>>,
+    recent: &Rc<RefCell<Vec<RecentSpawn>>>,
+    ossmount: &Rc<Option<PathBuf>>,
+    brewfs: &Rc<Option<PathBuf>>,
+) {
+    let profiles = state.borrow().profiles.clone();
+    let mounts = model::read_mounts(&profiles);
+    let mut g = guard();
+    for drive in g.desired.clone() {
+        if mounts.iter().any(|m| m.alive && m.drive == drive) {
+            g.failed.remove(&drive);
+            continue;
+        }
+        if g.failed.contains(&drive) {
+            continue;
+        }
+        let since = g
+            .last_spawn
+            .get(&drive)
+            .map(|t| t.elapsed())
+            .unwrap_or(Duration::from_secs(60));
+        if since < Duration::from_secs(30) {
+            continue;
+        }
+        let Some(p) = profiles
+            .iter()
+            .find(|p| model::normalize_mount_point(&p.drive) == drive)
+            .cloned()
+        else {
+            g.failed.insert(drive);
+            continue;
+        };
+        if p.validate().is_err() {
+            g.failed.insert(drive);
+            continue;
+        }
+        let spawned: Option<std::io::Result<(u32, PathBuf)>> = if p.mode == "oss" {
+            ossmount
+                .as_ref()
+                .as_deref()
+                .map(|o| model::spawn_oss_mount(o, &p))
+        } else {
+            brewfs
+                .as_ref()
+                .as_deref()
+                .map(|b| model::spawn_mount(b, &p))
+        };
+        match spawned {
+            Some(Ok((pid, log))) => {
+                g.last_spawn.insert(drive.clone(), Instant::now());
+                recent.borrow_mut().push(RecentSpawn {
+                    drive: drive.clone(),
+                    pid,
+                    log,
+                    at: Instant::now(),
+                });
+                ui.set_status_text(format!("检测到 {drive} 挂载进程退出，正在自动重启…").into());
+            }
+            Some(Err(e)) => {
+                g.failed.insert(drive.clone());
+                ui.set_status_text(format!("{drive} 自动重启失败：{e}").into());
+            }
+            None => {
+                g.failed.insert(drive);
+            }
+        }
+    }
+    // Fast-fail guard: a desired mount whose spawned process died within 15s
+    // is most likely a config/credential error; stop auto-retrying.
+    for s in recent.borrow().iter() {
+        if g.desired.contains(&s.drive)
+            && g.last_spawn.get(&s.drive).is_some()
+            && s.at.elapsed() < Duration::from_secs(15)
+            && !winutil::pid_alive(s.pid)
+            && !mounts.iter().any(|m| m.alive && m.drive == s.drive)
+        {
+            g.failed.insert(s.drive.clone());
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure the winit backend (macOS: hidden titlebar, keep traffic lights)
     // before creating any Slint component.
@@ -109,7 +217,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_to_form(&ui, &state.borrow().profiles[0]);
     }
 
-    wire_callbacks(&ui, &tray, &state, &recent, &brewfs, &ossmount);
+    // 模态确认：主窗口内的覆盖层（无第二个窗口、无第二个任务栏图标）。
+    let pending: Rc<RefCell<Option<Box<dyn FnOnce()>>>> = Rc::new(RefCell::new(None));
+    {
+        let ui_weak = ui.as_weak();
+        let pending_confirm = Rc::clone(&pending);
+        ui.on_confirm_dialog(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_dlg_visible(false);
+            }
+            if let Some(f) = pending_confirm.borrow_mut().take() {
+                f();
+            }
+        });
+        let ui_weak = ui.as_weak();
+        let pending_cancel = Rc::clone(&pending);
+        ui.on_cancel_dialog(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_dlg_visible(false);
+            }
+            pending_cancel.borrow_mut().take();
+        });
+    }
+    ui.set_autostart(winutil::autostart_enabled());
+
+    wire_callbacks(&ui, &tray, &state, &recent, &brewfs, &ossmount, &pending);
 
     // Periodic status refresh (2s) driven from the UI thread.
     let timer = Timer::default();
@@ -118,8 +250,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tray_weak = tray.as_weak();
         let state = state.clone();
         let recent = recent.clone();
+        let ossmount = ossmount.clone();
+        let brewfs = brewfs.clone();
         timer.start(TimerMode::Repeated, Duration::from_secs(2), move || {
             if let (Some(ui), Some(tray)) = (ui_weak.upgrade(), tray_weak.upgrade()) {
+                auto_restart(&ui, &state, &recent, &ossmount, &brewfs);
                 refresh(&ui, &tray, &state, &recent);
             }
         });
@@ -142,6 +277,7 @@ fn wire_callbacks(
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
     brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
+    pending: &Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
 ) {
     let ui_weak = ui.as_weak();
     let tray_weak = tray.as_weak();
@@ -149,6 +285,7 @@ fn wire_callbacks(
     let recent = Rc::clone(recent);
     let brewfs = Rc::clone(brewfs);
     let ossmount = Rc::clone(ossmount);
+    let pending = Rc::clone(pending);
 
     // --- save the form back into a profile ---
     ui.on_save_form({
@@ -247,6 +384,7 @@ fn wire_callbacks(
         let recent = recent.clone();
         let brewfs = brewfs.clone();
         let ossmount = ossmount.clone();
+        let pending = Rc::clone(&pending);
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let profiles = state.borrow().profiles.clone();
@@ -257,19 +395,35 @@ fn wire_callbacks(
             let drive = model::normalize_mount_point(&p.drive);
             let mounts = model::read_mounts(&profiles);
             if let Some(m) = mounts.iter().find(|m| m.drive == drive && m.alive) {
-                // mounted -> confirm then unmount
-                if winutil::confirm_yes_no("BrewFS 卸载确认", &format!("确定要卸载 {drive} 吗？"))
-                {
-                    graceful_or_kill(&ui, brewfs.as_ref(), m);
-                } else {
-                    ui.set_status_text(format!("已取消卸载 {drive}").into());
-                }
+                // mounted -> confirm then unmount (Slint modal dialog)
+                let m = m.clone();
+                let ui_weak2 = ui_weak.clone();
+                let brewfs2 = brewfs.clone();
+                let tray_weak2 = tray_weak.clone();
+                let state2 = state.clone();
+                let recent2 = recent.clone();
+                ask_confirm(
+                    &ui,
+                    &pending,
+                    &format!("确定要卸载 {drive} 吗？"),
+                    move || {
+                        guard().desired.remove(&m.drive);
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            graceful_or_kill(&ui, brewfs2.as_ref(), &m);
+                        }
+                        if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
+                            refresh(&ui, &tray, &state2, &recent2);
+                        }
+                    },
+                );
             } else {
                 // not mounted -> mount
                 if let Err(e) = p.validate() {
                     ui.set_status_text(format!("挂载失败：{e}").into());
                 } else {
                     mount_profile(&ui, &tray_weak, &state, &recent, &brewfs, &ossmount, &p);
+                    // Ask the guard to auto-restart this mount if it dies.
+                    guard().desired.insert(drive);
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
@@ -284,6 +438,7 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
+        let pending = Rc::clone(&pending);
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let name = {
@@ -294,25 +449,33 @@ fn wire_callbacks(
                 };
                 p.name.clone()
             };
-            if !winutil::confirm_yes_no("BrewFS 删除确认", &format!("确定要删除配置「{name}」吗？"))
-            {
-                ui.set_status_text("已取消删除".into());
-                return;
-            }
-            {
-                let mut file = state.borrow_mut();
-                if index >= 0 && (index as usize) < file.profiles.len() {
-                    file.profiles.remove(index as usize);
-                }
-                if let Err(e) = model::save_profiles(&file) {
-                    ui.set_status_text(format!("删除失败：{e}").into());
-                    return;
-                }
-            }
-            if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent);
-            }
-            ui.set_status_text(format!("已删除配置「{name}」").into());
+            let state2 = state.clone();
+            let recent2 = recent.clone();
+            let tray_weak2 = tray_weak.clone();
+            let ui_weak2 = ui_weak.clone();
+            ask_confirm(
+                &ui,
+                &pending,
+                &format!("确定要删除配置「{name}」吗？"),
+                move || {
+                    {
+                        let mut file = state2.borrow_mut();
+                        if index >= 0 && (index as usize) < file.profiles.len() {
+                            file.profiles.remove(index as usize);
+                        }
+                        if let Err(e) = model::save_profiles(&file) {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.set_status_text(format!("删除失败：{e}").into());
+                            }
+                            return;
+                        }
+                    }
+                    if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
+                        refresh(&ui, &tray, &state2, &recent2);
+                        ui.set_status_text(format!("已删除配置「{name}」").into());
+                    }
+                },
+            );
         }
     });
 
@@ -350,28 +513,38 @@ fn wire_callbacks(
         let state = state.clone();
         let recent = recent.clone();
         let brewfs = brewfs.clone();
+        let pending = Rc::clone(&pending);
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mounts = model::read_mounts(&state.borrow().profiles);
-            let live: Vec<&model::MountStatus> = mounts.iter().filter(|m| m.alive).collect();
+            let live: Vec<model::MountStatus> =
+                mounts.iter().filter(|m| m.alive).cloned().collect();
             if live.is_empty() {
                 ui.set_status_text("当前没有活动挂载".into());
                 return;
             }
-            if !winutil::confirm_yes_no(
-                "BrewFS 卸载确认",
+            let ui_weak2 = ui_weak.clone();
+            let tray_weak2 = tray_weak.clone();
+            let state2 = state.clone();
+            let recent2 = recent.clone();
+            let brewfs2 = brewfs.clone();
+            ask_confirm(
+                &ui,
+                &pending,
                 &format!("确定要卸载全部 {} 个挂载吗？", live.len()),
-            ) {
-                ui.set_status_text("已取消卸载".into());
-                return;
-            }
-            for m in &live {
-                graceful_or_kill(&ui, brewfs.as_ref(), m);
-            }
-            ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
-            if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent);
-            }
+                move || {
+                    for m in &live {
+                        guard().desired.remove(&m.drive);
+                        if let Some(ui) = ui_weak2.upgrade() {
+                            graceful_or_kill(&ui, brewfs2.as_ref(), m);
+                        }
+                    }
+                    if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
+                        refresh(&ui, &tray, &state2, &recent2);
+                        ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
+                    }
+                },
+            );
         }
     });
 
@@ -397,6 +570,18 @@ fn wire_callbacks(
             }
         }
     });
+    // --- 开机自启 ---
+    ui.on_autostart_changed({
+        let ui_weak = ui_weak.clone();
+        move |enabled| {
+            if let Err(e) = winutil::set_autostart(enabled) {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_status_text(format!("设置开机自启失败：{e}").into());
+                }
+            }
+        }
+    });
+
     ui.on_quit_app(quit_app);
     tray.on_quit_app(quit_app);
 }
@@ -416,6 +601,14 @@ fn mount_profile(
     let drive = model::normalize_mount_point(&p.drive);
     if drive_occupied(&drive) {
         ui.set_status_text(format!("盘符 {drive} 已被占用，请更换后挂载").into());
+        return;
+    }
+    // Another saved config already mounts this drive -> conflict.
+    if model::read_mounts(&state.borrow().profiles)
+        .iter()
+        .any(|m| m.alive && m.drive == drive)
+    {
+        ui.set_status_text(format!("盘符 {drive} 已被其他配置挂载，请更换").into());
         return;
     }
     let spawned = if p.mode == "oss" {
@@ -512,26 +705,18 @@ fn refresh(
         .map(|p| {
             let drive = model::normalize_mount_point(&p.drive);
             let m = mounts.iter().find(|m| m.drive == drive);
-            let (backend, detail) = if p.mode == "oss" {
-                (
-                    "oss".to_string(),
-                    format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/')),
-                )
+            let detail = if p.mode == "oss" {
+                format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/'))
+            } else if p.backend == "s3" {
+                format!("{} / {}", p.s3_bucket, p.s3_region)
             } else {
-                let detail = if p.backend == "s3" {
-                    format!("{} / {}", p.s3_bucket, p.s3_region)
-                } else {
-                    p.data_dir.clone()
-                };
-                (p.backend.clone(), detail)
+                p.data_dir.clone()
             };
             ProfileRecord {
                 name: p.name.clone().into(),
                 drive: drive.into(),
-                backend: backend.into(),
                 detail: detail.into(),
                 mounted: m.map(|m| m.alive).unwrap_or(false),
-                pid: m.map(|m| m.pid as i32).unwrap_or(0),
             }
         })
         .collect();
@@ -682,6 +867,20 @@ fn form_to_profile(ui: &MainWindow) -> model::Profile {
     }
 }
 
+/// Show the Slint modal confirm dialog and run `on_yes` when the user
+/// confirms. The dialog is a separate always-shown-on-top window, so it is
+/// never hidden behind other windows (unlike the old Win32 MessageBox).
+fn ask_confirm(
+    ui: &MainWindow,
+    pending: &Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
+    message: &str,
+    on_yes: impl FnOnce() + 'static,
+) {
+    ui.set_dlg_message(message.into());
+    ui.set_dlg_visible(true);
+    *pending.borrow_mut() = Some(Box::new(on_yes));
+}
+
 /// Prefer a graceful control-plane unmount (`brewfs unmount <drive>`); only
 /// fall back to force-killing the process when brewfs is missing or does not
 /// accept the request (e.g. an older binary without the `unmount` subcommand).
@@ -691,6 +890,7 @@ fn graceful_or_kill(ui: &MainWindow, brewfs: &Option<PathBuf>, m: &model::MountS
     if m.is_oss {
         match winutil::terminate_process(m.pid) {
             Ok(()) => {
+                guard().desired.remove(&m.drive);
                 // Drop the stale drive icon from "This PC" right away.
                 winutil::notify_drive_removed(&m.drive);
                 ui.set_status_text(format!("已卸载 {}", m.drive).into());

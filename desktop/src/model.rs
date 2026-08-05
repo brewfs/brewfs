@@ -408,12 +408,14 @@ pub fn read_mounts(profiles: &[Profile]) -> Vec<MountStatus> {
                     .unwrap_or_else(|| "（无匹配配置）".to_string());
                 (backend, detail)
             };
+            let alive = crate::winutil::pid_alive(record.pid)
+                && crate::winutil::pid_is_mount_process(record.pid);
             out.push(MountStatus {
                 drive,
                 backend,
                 detail,
                 pid: record.pid,
-                alive: crate::winutil::pid_alive(record.pid),
+                alive,
                 is_oss,
             });
         }
@@ -454,7 +456,9 @@ fn prune_records_in(dir: &Path) {
         let Ok(record) = serde_json::from_slice::<InstanceRecord>(&raw) else {
             continue;
         };
-        if !crate::winutil::pid_alive(record.pid) {
+        if !crate::winutil::pid_alive(record.pid)
+            || !crate::winutil::pid_is_mount_process(record.pid)
+        {
             let _ = fs::remove_file(&path);
         }
     }
