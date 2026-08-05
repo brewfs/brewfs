@@ -190,10 +190,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Drive letters are a Windows concept; macOS/Linux use mount directories.
     ui.set_show_free_drives(cfg!(windows));
 
-    // On macOS the content extends under the (hidden) titlebar, so leave room
-    // for the native traffic-light buttons in the top-left corner.
-    ui.set_traffic_light_padding(cfg!(target_os = "macos"));
-
     // Clicking the Dock icon should re-show the tray window (macOS).
     #[cfg(target_os = "macos")]
     {
@@ -312,6 +308,7 @@ fn wire_callbacks(
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent);
             }
+            ui.set_edit_visible(false);
             if occupied {
                 ui.set_status_text(
                     format!("⚠️ 已保存，但盘符 {} 已被占用，挂载前请更换", p.drive).into(),
@@ -322,41 +319,53 @@ fn wire_callbacks(
         }
     });
 
-    // --- add a new blank config ---
+    // --- add a new blank config -> open the edit window ---
     ui.on_add_config({
         let ui_weak = ui_weak.clone();
-        let tray_weak = tray_weak.clone();
         let state = state.clone();
-        let recent = recent.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let name = {
-                let mut file = state.borrow_mut();
-                let name = format!("新建配置 {}", file.profiles.len() + 1);
-                // Base the new config on the current form so edits (e.g. a
-                // mount point just changed) carry over instead of the form
-                // being wiped to empty.
-                let mut p = form_to_profile(&ui);
-                p.name = name.clone();
-                file.profiles.push(p.clone());
-                if let Err(e) = model::save_profiles(&file) {
-                    ui.set_status_text(format!("添加失败：{e}").into());
-                    return;
-                }
-                profile_to_form(&ui, &p);
-                name
+            let mut p = model::Profile::default();
+            p.name = {
+                let file = state.borrow();
+                format!("新建配置 {}", file.profiles.len() + 1)
             };
-            if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent);
+            // 新配置默认 OSS 直挂 + 第一个空闲盘符。
+            #[cfg(windows)]
+            if let Some(d) = winutil::free_drives().first() {
+                p.drive = d.clone();
             }
-            let cfg_drive = ui.get_cfg_drive().to_string();
-            if drive_occupied(&cfg_drive) {
-                ui.set_status_text(
-                    format!("⚠️ 已添加配置「{name}」，但盘符 {cfg_drive} 已被占用，请更换后保存")
-                        .into(),
-                );
-            } else {
-                ui.set_status_text(format!("已添加配置「{name}」，填写后点保存").into());
+            profile_to_form(&ui, &p);
+            ui.set_edit_title(format!("添加配置「{}」", p.name).into());
+            ui.set_edit_visible(true);
+            ui.set_status_text(format!("添加配置「{}」，填写后点保存", p.name).into());
+        }
+    });
+
+    // --- edit a record -> load into the edit window ---
+    ui.on_edit_record({
+        let ui_weak = ui_weak.clone();
+        let state = state.clone();
+        move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let profiles = state.borrow();
+            let Some(p) = profiles.profiles.get(index as usize) else {
+                return;
+            };
+            let p = p.clone();
+            drop(profiles);
+            profile_to_form(&ui, &p);
+            ui.set_edit_title(format!("编辑配置「{}」", p.name).into());
+            ui.set_edit_visible(true);
+        }
+    });
+
+    // --- cancel editing ---
+    ui.on_cancel_edit({
+        let ui_weak = ui_weak.clone();
+        move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_edit_visible(false);
             }
         }
     });
@@ -480,21 +489,6 @@ fn wire_callbacks(
     });
 
     // --- select a record -> load into the form ---
-    ui.on_select_record({
-        let ui_weak = ui_weak.clone();
-        let state = state.clone();
-        move |index| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let profiles = state.borrow();
-            let Some(p) = profiles.profiles.get(index as usize) else {
-                return;
-            };
-            let p = p.clone();
-            drop(profiles);
-            profile_to_form(&ui, &p);
-        }
-    });
-
     // --- tray: open a mounted drive ---
     {
         let state = state.clone();
