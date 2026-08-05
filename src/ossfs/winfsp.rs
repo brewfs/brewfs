@@ -712,22 +712,33 @@ impl FileSystemContext for OssMountContext {
         _last_change_time: u64,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
-        // Object storage has no settable timestamps; nothing to do.
-        let entry = self
-            .block_on(self.fs.stat(&context.path))
-            .map_err(|e| FspError::from(IoError::other(e.to_string())))?
-            .unwrap_or(DirEntry {
+        // Object storage has no settable timestamps; nothing to do. Prefer
+        // the in-memory size for a loaded write handle (matches get_file_info
+        // and the FUSE adapter's effective_attr).
+        let buf_size = {
+            let guard = context.write_buf.lock().unwrap();
+            match guard.as_ref() {
+                Some(buf) if context.loaded.load(Ordering::Acquire) => Some(buf.len() as u64),
+                _ => None,
+            }
+        };
+        let entry = if let Some(size) = buf_size {
+            DirEntry {
                 name: context.path.clone(),
                 is_dir: context.is_dir,
-                size: context
-                    .write_buf
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .map(|b| b.len() as u64)
-                    .unwrap_or(0),
+                size,
                 mtime_secs: 0,
-            });
+            }
+        } else {
+            self.block_on(self.fs.stat(&context.path))
+                .map_err(|e| FspError::from(IoError::other(e.to_string())))?
+                .unwrap_or(DirEntry {
+                    name: context.path.clone(),
+                    is_dir: context.is_dir,
+                    size: 0,
+                    mtime_secs: 0,
+                })
+        };
         *file_info = file_info_from(&entry, context.index());
         Ok(())
     }

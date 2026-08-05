@@ -219,10 +219,7 @@ impl OssFs {
     /// Truncate/expand a file with no open write handle via a
     /// read-modify-write against the object store.
     fn truncate_unopened(&self, path: &str, new_size: u64) -> anyhow::Result<()> {
-        let data = self
-            .block_on(self.fs.read_range(path, 0, usize::MAX))
-            .unwrap_or_default();
-        let mut data = data;
+        let mut data = self.block_on(self.fs.read_range(path, 0, usize::MAX))?;
         data.resize(new_size as usize, 0);
         self.block_on(self.fs.write(path, &data))
     }
@@ -312,9 +309,14 @@ impl Filesystem for OssFs {
                         .unwrap_or(false)
                 };
                 if needs_load {
-                    let data = self
-                        .block_on(self.fs.read_range(&path, 0, usize::MAX))
-                        .unwrap_or_default();
+                    let data = match self.block_on(self.fs.read_range(&path, 0, usize::MAX)) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            warn!(path = %path, error = ?e, "ossfs setattr lazy-load failed");
+                            reply.error(Errno::EIO);
+                            return;
+                        }
+                    };
                     let mut guard = self.files.lock().unwrap();
                     if let Some(open) = guard.get_mut(&fh.0) {
                         if !open.loaded
@@ -720,9 +722,14 @@ impl Filesystem for OssFs {
             }
         };
         if needs_load {
-            let data = self
-                .block_on(self.fs.read_range(&path, 0, usize::MAX))
-                .unwrap_or_default();
+            let data = match self.block_on(self.fs.read_range(&path, 0, usize::MAX)) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(path = %path, error = ?e, "ossfs write lazy-load failed");
+                    reply.error(Errno::EIO);
+                    return;
+                }
+            };
             let mut guard = self.files.lock().unwrap();
             if let Some(o) = guard.get_mut(&fh.0) {
                 // Only seed if nobody loaded meanwhile (e.g. a concurrent
