@@ -41,6 +41,9 @@ const WIN32_INVALID_PARAMETER: i32 = 87;
 // so changes made by other machines appear without a manual F5. When nothing
 // is watching, FspFileSystemNotifyBegin fails and no S3 listing happens.
 const REFRESH_INTERVAL_MS: u32 = 10_000;
+/// Upper bound on the number of directories the periodic change-notification
+/// pass refreshes (root always included; oldest non-root evicted on overflow).
+const MAX_TRACKED_DIRS: usize = 64;
 
 // Win32 change-notification constants (fileapi.h).
 const FILE_NOTIFY_CHANGE_FILE_NAME: u32 = 0x0000_0001;
@@ -140,13 +143,57 @@ impl OssFileContext {
     }
 }
 
+/// Per-directory last-seen listing plus the recently-browsed directories the
+/// periodic change-notification pass refreshes. Root is always tracked.
+struct RefreshState {
+    /// POSIX dir path -> (name -> (is_dir, size, mtime)) last seen by the
+    /// change-notification diff.
+    snapshots: HashMap<String, HashMap<String, (bool, u64, i64)>>,
+    /// Directories whose baseline snapshot has been seeded at least once.
+    /// Separate from the snapshot itself: an empty snapshot can be a valid
+    /// baseline (empty directory), which must not be mistaken for "never
+    /// listed".
+    seeded: HashSet<String>,
+    /// Recently-browsed directories to refresh, most recent last. Root is
+    /// always present and never evicted; bounded by MAX_TRACKED_DIRS.
+    dirs: Vec<String>,
+}
+
+impl RefreshState {
+    fn new() -> Self {
+        Self {
+            snapshots: HashMap::new(),
+            seeded: HashSet::new(),
+            dirs: vec!["/".to_string()],
+        }
+    }
+
+    /// Mark `dir` as recently browsed (move to the most-recent position,
+    /// evicting the oldest non-root entry when over the bound).
+    fn record_browsed(&mut self, dir: &str) {
+        if let Some(pos) = self.dirs.iter().position(|d| d == dir) {
+            if pos + 1 != self.dirs.len() {
+                let d = self.dirs.remove(pos);
+                self.dirs.push(d);
+            }
+        } else if self.dirs.len() < MAX_TRACKED_DIRS {
+            self.dirs.push(dir.to_string());
+        } else if let Some(oldest) = self.dirs.get(1).cloned() {
+            self.dirs.remove(1);
+            self.snapshots.remove(&oldest);
+            self.seeded.remove(&oldest);
+            self.dirs.push(dir.to_string());
+        }
+    }
+}
+
 pub struct OssMountContext {
     fs: Arc<ObjectFs>,
     rt: Handle,
     mount_point: PathBuf,
-    /// Last-seen root listing (name -> (is_dir, size, mtime)) used by the
+    /// Per-directory last-seen listings + recently-browsed dirs used by the
     /// periodic change-notification diff.
-    snapshot: Mutex<HashMap<String, (bool, u64, i64)>>,
+    refresh: Mutex<RefreshState>,
 }
 
 impl OssMountContext {
@@ -156,26 +203,67 @@ impl OssMountContext {
     {
         self.rt.block_on(fut)
     }
+
+    /// Remember that the user browsed `dir` and seed its baseline snapshot
+    /// with the listing just returned, so the periodic diff only reports
+    /// changes made after this point.
+    fn record_browsed(&self, dir: &str, entries: &[DirEntry]) {
+        let mut state = self.refresh.lock().unwrap();
+        state.record_browsed(dir);
+        let snap: HashMap<String, (bool, u64, i64)> = entries
+            .iter()
+            .map(|e| (e.name.clone(), (e.is_dir, e.size, e.mtime_secs)))
+            .collect();
+        state.snapshots.insert(dir.to_string(), snap);
+        state.seeded.insert(dir.to_string());
+    }
 }
 
-/// Emit a single WinFsp change notification for a root-level entry.
-fn notify_change(notifier: &Notifier, name: &str, action: u32, filter: u32) {
-    let mut info = NotifyInfo::<255>::default();
+/// Emit a single WinFsp change notification.
+///
+/// WinFsp requires the name to be **root-absolute** (`\dir\file`): names
+/// without a leading backslash are treated as relative to a previous absolute
+/// name in the same notify buffer and are silently dropped when none exists
+/// (see FspVolumeNotifyWork in winfsp/src/sys/volume.c). `posix` is a POSIX
+/// path relative to the filesystem root; it is converted to the Windows form.
+fn notify_change(notifier: &Notifier, posix: &str, action: u32, filter: u32) {
+    let mut info = NotifyInfo::<1024>::default();
     info.filter = filter;
     info.action = action;
-    if info.set_name(name).is_ok() {
+    let win = format!("\\{}", posix.trim_start_matches('/').replace('/', "\\"));
+    if info.set_name(win.as_str()).is_ok() {
+        // `set_name` counts the trailing NUL in `Size`, but the WinFsp FSD
+        // rejects names containing a NUL (FspFileNameIsValid), silently
+        // dropping the notification. Shrink `Size` to the NUL-free name
+        // length, exactly like the .NET `NotifyInfoInternal.SetFileNameBuf`.
+        let chars = win.encode_utf16().count() as u16;
+        let header = std::mem::size_of::<NotifyInfo<0>>() as u16;
+        unsafe {
+            // SAFETY: NotifyInfo is #[repr(C)] with `size: u16` at offset 0.
+            let size_ptr = (&mut info as *mut NotifyInfo<1024>).cast::<u16>();
+            std::ptr::write_volatile(size_ptr, header + chars * 2);
+        }
         notifier.notify(&info);
     }
 }
 
-/// Periodic root change detection: every REFRESH_INTERVAL_MS (only when the OS
-/// holds an active watch) list the bucket root, diff against the last snapshot
-/// and publish ADDED/REMOVED/MODIFIED events so open Explorer windows refresh.
-///
-/// Note: notifications carry a root-relative name, so only root-level watches
-/// are updated by WinFsp; subdirectory watches still rely on the 1s
-/// dir_info_timeout. This covers the common "another machine dropped a file
-/// into the shared root" case at zero cost when no window is watching.
+/// Join a POSIX directory path and entry name into a normalized POSIX path.
+fn join_posix(dir: &str, name: &str) -> String {
+    if dir == "/" {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Periodic change detection: every REFRESH_INTERVAL_MS (only when the OS
+/// holds an active directory watch) list the bucket root and every
+/// recently-browsed directory, diff each against its last-seen snapshot and
+/// publish ADDED/REMOVED/MODIFIED events with root-absolute names. The FSD
+/// routes each event to the matching watch (a subdirectory watch receives the
+/// notification for changes under it), so open Explorer windows refresh
+/// without a manual F5. When no window is watching, FspFileSystemNotifyBegin
+/// fails and no S3 listing happens.
 impl NotifyingFileSystemContext<()> for OssMountContext {
     fn should_notify(&self) -> Option<()> {
         debug!("[notify] should_notify called");
@@ -183,37 +271,66 @@ impl NotifyingFileSystemContext<()> for OssMountContext {
     }
 
     fn notify(&self, _context: (), notifier: &Notifier) {
-        let current = match self.block_on(self.fs.list("/")) {
+        let dirs: Vec<String> = {
+            let state = self.refresh.lock().unwrap();
+            state.dirs.clone()
+        };
+        for dir in dirs {
+            self.refresh_dir(notifier, &dir);
+        }
+    }
+}
+
+impl OssMountContext {
+    fn refresh_dir(&self, notifier: &Notifier, dir: &str) {
+        let current = match self.block_on(self.fs.list(dir)) {
             Ok(entries) => entries,
             Err(e) => {
-                debug!("[notify] list failed: {e:?}");
+                debug!(dir, error = ?e, "[notify] list failed");
                 return;
             }
         };
-        debug!("[notify] list got {} entries", current.len());
-        let mut snap = self.snapshot.lock().unwrap();
+        let mut state = self.refresh.lock().unwrap();
+        // No baseline yet (the directory was never listed) -> just seed it.
+        // A watch can exist on a directory that has not been enumerated yet;
+        // reporting everything as ADDED would be wrong. Note: an *empty*
+        // snapshot is a valid baseline (empty directory), not a missing one.
+        if !state.seeded.contains(dir) {
+            debug!(dir, count = current.len(), "[notify] seeding baseline");
+            let snap = state.snapshots.entry(dir.to_string()).or_default();
+            *snap = current
+                .into_iter()
+                .map(|e| (e.name, (e.is_dir, e.size, e.mtime_secs)))
+                .collect();
+            state.seeded.insert(dir.to_string());
+            return;
+        }
+        let snap = state.snapshots.entry(dir.to_string()).or_default();
+        debug!(dir, count = current.len(), "[notify] diff");
         let mut seen = HashSet::with_capacity(current.len());
         for entry in &current {
             seen.insert(entry.name.clone());
             let sig = (entry.is_dir, entry.size, entry.mtime_secs);
             match snap.get(&entry.name) {
                 Some(prev) if *prev != sig => {
-                    debug!("[notify] MODIFIED {}", entry.name);
+                    let path = join_posix(dir, &entry.name);
+                    debug!("[notify] MODIFIED {path}");
                     let filter = if entry.is_dir {
                         FILE_NOTIFY_CHANGE_DIR_NAME
                     } else {
                         FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE
                     };
-                    notify_change(notifier, &entry.name, FILE_ACTION_MODIFIED, filter);
+                    notify_change(notifier, &path, FILE_ACTION_MODIFIED, filter);
                 }
                 None => {
-                    debug!("[notify] ADDED {}", entry.name);
+                    let path = join_posix(dir, &entry.name);
+                    debug!("[notify] ADDED {path}");
                     let filter = if entry.is_dir {
                         FILE_NOTIFY_CHANGE_DIR_NAME
                     } else {
                         FILE_NOTIFY_CHANGE_FILE_NAME
                     };
-                    notify_change(notifier, &entry.name, FILE_ACTION_ADDED, filter);
+                    notify_change(notifier, &path, FILE_ACTION_ADDED, filter);
                 }
                 _ => {}
             }
@@ -224,13 +341,14 @@ impl NotifyingFileSystemContext<()> for OssMountContext {
             .map(|(k, v)| (k.clone(), v.0))
             .collect();
         for (name, was_dir) in removed {
-            debug!("[notify] REMOVED {name}");
+            let path = join_posix(dir, &name);
+            debug!("[notify] REMOVED {path}");
             let filter = if was_dir {
                 FILE_NOTIFY_CHANGE_DIR_NAME
             } else {
                 FILE_NOTIFY_CHANGE_FILE_NAME
             };
-            notify_change(notifier, &name, FILE_ACTION_REMOVED, filter);
+            notify_change(notifier, &path, FILE_ACTION_REMOVED, filter);
             snap.remove(&name);
         }
         *snap = current
@@ -266,7 +384,7 @@ pub async fn mount_oss_winfsp(fs: Arc<ObjectFs>, mount_point: &Path) -> anyhow::
         fs,
         rt,
         mount_point: mount_point.to_path_buf(),
-        snapshot: Mutex::new(HashMap::new()),
+        refresh: Mutex::new(RefreshState::new()),
     };
     let params = FileSystemParams::default_params(build_volume_params());
     let mut host = FileSystemHost::new_with_timer_async::<(), REFRESH_INTERVAL_MS>(params, context)
@@ -726,6 +844,10 @@ impl AsyncFileSystemContext for OssMountContext {
             eprintln!("ossmount: 列目录失败 {}: {e:?}", context.path);
             FspError::from(IoError::other(e.to_string()))
         })?;
+
+        // Remember this directory and its listing so the periodic
+        // change-notification pass can diff it and refresh open views.
+        self.record_browsed(&context.path, &entries);
 
         let is_root = context.path == "/";
         let mut listing: Vec<(String, DirEntry)> = Vec::with_capacity(entries.len() + 2);
