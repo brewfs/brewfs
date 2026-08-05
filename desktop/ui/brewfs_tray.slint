@@ -765,13 +765,11 @@ export component Tray inherits SystemTrayIcon {
         }
 
         MenuItem {
-            title: "开机自启";
-            checkable: true;
-            checked: root.autostart;
+            // Windows 原生菜单对 checkable 的勾渲染不可靠，直接在标题前加 ✓ 标记状态。
+            title: (root.autostart ? "✓ " : "　") + "开机自启";
             activated => {
-                // 勾选类菜单项激活后 checked 已自动翻转，取新值同步。
-                root.autostart = self.checked;
-                root.autostart-changed(self.checked);
+                root.autostart = !root.autostart;
+                root.autostart-changed(root.autostart);
             }
         }
 
