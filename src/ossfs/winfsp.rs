@@ -128,7 +128,13 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
 pub struct OssFileContext {
     path: String,
     is_dir: bool,
+    /// Whole-file write buffer; `Some` when the handle was opened for write.
+    /// Content is loaded **lazily**: `loaded` stays false until the first
+    /// operation that needs the original bytes (first write / truncate),
+    /// so simply opening a file for write (e.g. preview/thumbnail handlers)
+    /// no longer downloads the whole object.
     write_buf: Mutex<Option<Vec<u8>>>,
+    loaded: AtomicBool,
     dirty: AtomicBool,
     delete_on_close: AtomicBool,
     dir_buffer: DirBuffer,
@@ -216,6 +222,30 @@ impl OssMountContext {
             .collect();
         state.snapshots.insert(dir.to_string(), snap);
         state.seeded.insert(dir.to_string());
+    }
+
+    /// Lazily fetch the object's current content into the write buffer on
+    /// first use. No-op once loaded; returns `Ok(false)` for non-write
+    /// handles (caller should fail with ACCESS_DENIED).
+    fn load_write_buf(&self, context: &OssFileContext) -> winfsp::Result<bool> {
+        if context.loaded.load(Ordering::Acquire) {
+            return Ok(context.write_buf.lock().unwrap().is_some());
+        }
+        let data = self
+            .block_on(self.fs.read_range(&context.path, 0, usize::MAX))
+            .map_err(|e| FspError::from(IoError::other(e.to_string())))?;
+        let mut guard = context.write_buf.lock().unwrap();
+        let Some(buf) = guard.as_mut() else {
+            return Ok(false);
+        };
+        // Another operation (e.g. overwrite/truncate) may have loaded or
+        // cleared the buffer while we were fetching; theirs wins.
+        if context.loaded.load(Ordering::Acquire) {
+            return Ok(true);
+        }
+        *buf = data;
+        context.loaded.store(true, Ordering::Release);
+        Ok(true)
     }
 }
 
@@ -484,11 +514,10 @@ impl FileSystemContext for OssMountContext {
         let write_buf = if is_dir {
             None
         } else if write {
-            // Load existing content so the caller can modify in place.
-            Some(
-                self.block_on(self.fs.read_range(&posix, 0, usize::MAX))
-                    .unwrap_or_default(),
-            )
+            // Lazy: the existing content is fetched on the first write or
+            // truncate that needs it (see load_write_buf), so opening a file
+            // for write never downloads the whole object.
+            Some(Vec::new())
         } else {
             None
         };
@@ -497,6 +526,7 @@ impl FileSystemContext for OssMountContext {
             path: posix,
             is_dir,
             write_buf: Mutex::new(write_buf),
+            loaded: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             delete_on_close: AtomicBool::new(false),
             dir_buffer: DirBuffer::new(),
@@ -533,6 +563,7 @@ impl FileSystemContext for OssMountContext {
             path: posix,
             is_dir,
             write_buf: Mutex::new(write_buf),
+            loaded: AtomicBool::new(true),
             dirty: AtomicBool::new(false),
             delete_on_close: AtomicBool::new(false),
             dir_buffer: DirBuffer::new(),
@@ -605,7 +636,9 @@ impl FileSystemContext for OssMountContext {
         context: &Self::FileContext,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
-        if let Some(buf) = context.write_buf.lock().unwrap().as_ref() {
+        if let Some(buf) = context.write_buf.lock().unwrap().as_ref()
+            && context.loaded.load(Ordering::Acquire)
+        {
             *file_info = file_info_from(
                 &DirEntry {
                     name: context.path.clone(),
@@ -640,6 +673,8 @@ impl FileSystemContext for OssMountContext {
         if let Some(buf) = context.write_buf.lock().unwrap().as_mut() {
             buf.clear();
         }
+        // The (now empty) buffer is the authoritative content; no S3 fetch.
+        context.loaded.store(true, Ordering::Release);
         context.dirty.store(true, Ordering::Release);
         let entry = DirEntry {
             name: context.path.clone(),
@@ -719,9 +754,14 @@ impl FileSystemContext for OssMountContext {
         if context.is_dir {
             return Err(FspError::NTSTATUS(0xC000_00BAu32 as i32));
         }
+        if !self.load_write_buf(context)? {
+            // No write handle: truncation would require a read-modify-write.
+            return Err(FspError::from(IoError::from_raw_os_error(
+                WIN32_NOT_SUPPORTED,
+            )));
+        }
         let mut guard = context.write_buf.lock().unwrap();
         let Some(buf) = guard.as_mut() else {
-            // No write handle: truncation would require a read-modify-write.
             return Err(FspError::from(IoError::from_raw_os_error(
                 WIN32_NOT_SUPPORTED,
             )));
@@ -763,10 +803,15 @@ impl AsyncFileSystemContext for OssMountContext {
         {
             let guard = context.write_buf.lock().unwrap();
             if let Some(buf) = guard.as_ref() {
-                let start = offset.min(buf.len() as u64) as usize;
-                let n = (buf.len() - start).min(buffer.len());
-                buffer[..n].copy_from_slice(&buf[start..start + n]);
-                return Ok(n as u32);
+                // Only serve from the buffer once the original content has
+                // been loaded; before that the object is unmodified, so read
+                // straight from S3.
+                if context.loaded.load(Ordering::Acquire) {
+                    let start = offset.min(buf.len() as u64) as usize;
+                    let n = (buf.len() - start).min(buffer.len());
+                    buffer[..n].copy_from_slice(&buf[start..start + n]);
+                    return Ok(n as u32);
+                }
             }
         }
         match self
@@ -802,6 +847,25 @@ impl AsyncFileSystemContext for OssMountContext {
     ) -> winfsp::Result<u32> {
         if buffer.is_empty() {
             return Ok(0);
+        }
+        // Lazy load the original content (await: write_async runs on a tokio
+        // worker, so block_on would panic).
+        if !context.loaded.load(Ordering::Acquire) {
+            let data = self
+                .fs
+                .read_range(&context.path, 0, usize::MAX)
+                .await
+                .map_err(|e| FspError::from(IoError::other(e.to_string())))?;
+            let mut guard = context.write_buf.lock().unwrap();
+            let Some(buf) = guard.as_mut() else {
+                return Err(FspError::from(IoError::from_raw_os_error(
+                    WIN32_ACCESS_DENIED,
+                )));
+            };
+            if !context.loaded.load(Ordering::Acquire) {
+                *buf = data;
+                context.loaded.store(true, Ordering::Release);
+            }
         }
         let new_size = {
             let mut guard = context.write_buf.lock().unwrap();

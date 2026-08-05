@@ -87,6 +87,10 @@ struct OpenFile {
     /// `Some(buffer)` when the handle was opened for writing (or created);
     /// `None` for read-only handles. Reads prefer the buffer when present.
     write_buf: Option<Vec<u8>>,
+    /// Whether `write_buf` holds the object's current content. Opened write
+    /// handles start unloaded and fetch on the first write/truncate, so
+    /// opening a file for write never downloads the whole object.
+    loaded: bool,
     dirty: bool,
 }
 
@@ -193,7 +197,7 @@ impl OssFs {
             .lock()
             .unwrap()
             .values()
-            .find(|o| o.path == path)
+            .find(|o| o.path == path && o.loaded)
             .and_then(|o| o.write_buf.as_ref())
             .map(|b| b.len() as u64);
         if let Some(len) = buf_len {
@@ -294,6 +298,29 @@ impl Filesystem for OssFs {
             // read-modify-write so truncate() on an unopened file works.
             let mut handled = false;
             if let Some(fh) = fh {
+                // Lazily load original content before truncating an open
+                // write handle.
+                let needs_load = {
+                    let guard = self.files.lock().unwrap();
+                    guard
+                        .get(&fh.0)
+                        .map(|o| o.path == path && o.write_buf.is_some() && !o.loaded)
+                        .unwrap_or(false)
+                };
+                if needs_load {
+                    let data = self
+                        .block_on(self.fs.read_range(&path, 0, usize::MAX))
+                        .unwrap_or_default();
+                    let mut guard = self.files.lock().unwrap();
+                    if let Some(open) = guard.get_mut(&fh.0) {
+                        if !open.loaded
+                            && let Some(buf) = open.write_buf.as_mut()
+                        {
+                            *buf = data;
+                            open.loaded = true;
+                        }
+                    }
+                }
                 let mut guard = self.files.lock().unwrap();
                 if let Some(open) = guard.get_mut(&fh.0)
                     && open.path == path
@@ -521,11 +548,9 @@ impl Filesystem for OssFs {
             OpenAccMode::O_WRONLY | OpenAccMode::O_RDWR
         );
         let write_buf = if !entry.is_dir && write {
-            // Load existing content so the caller can modify in place.
-            Some(
-                self.block_on(self.fs.read_range(&path, 0, usize::MAX))
-                    .unwrap_or_default(),
-            )
+            // Lazy: existing content is fetched on the first write/truncate
+            // that needs it, so opening for write never downloads the object.
+            Some(Vec::new())
         } else {
             None
         };
@@ -536,6 +561,7 @@ impl Filesystem for OssFs {
                 path: path.clone(),
                 is_dir: entry.is_dir,
                 write_buf,
+                loaded: false,
                 dirty: false,
             },
         );
@@ -576,19 +602,20 @@ impl Filesystem for OssFs {
             reply.error(Errno::EISDIR);
             return;
         }
-        let write_buf = if existing.is_some() && !truncate {
-            // O_CREAT on an existing file without O_TRUNC: keep content.
-            self.block_on(self.fs.read_range(&path, 0, usize::MAX))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let needs_existing = existing.is_some() && !truncate;
+        let write_buf = Some(Vec::new());
         let attr = self.attr_of(
             &path,
             &DirEntry {
                 name: name.to_string(),
                 is_dir: false,
-                size: write_buf.len() as u64,
+                // Existing content is kept but loaded lazily; report the real
+                // size so the kernel's initial attr is not 0.
+                size: if needs_existing {
+                    existing.as_ref().map(|e| e.size).unwrap_or(0)
+                } else {
+                    0
+                },
                 mtime_secs: 0,
             },
         );
@@ -598,7 +625,11 @@ impl Filesystem for OssFs {
             OpenFile {
                 path: path.clone(),
                 is_dir: false,
-                write_buf: Some(write_buf),
+                write_buf,
+                // New/truncated: empty buffer is authoritative. O_CREAT on an
+                // existing file without O_TRUNC: original content is fetched
+                // lazily on first write.
+                loaded: !needs_existing,
                 dirty: false,
             },
         );
@@ -627,7 +658,9 @@ impl Filesystem for OssFs {
             reply.error(Errno::EBADF);
             return;
         };
-        if let Some(buf) = open.write_buf {
+        if let Some(buf) = open.write_buf
+            && open.loaded
+        {
             let start = offset.min(buf.len() as u64) as usize;
             let n = (buf.len() - start).min(size as usize);
             reply.data(&buf[start..start + n]);
@@ -654,6 +687,35 @@ impl Filesystem for OssFs {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        // Lazily fetch the original content on the first write, without
+        // holding the files lock across the S3 round trip.
+        let (needs_load, path) = {
+            let guard = self.files.lock().unwrap();
+            match guard.get(&fh.0) {
+                Some(o) => (o.write_buf.is_some() && !o.loaded, o.path.clone()),
+                None => {
+                    drop(guard);
+                    reply.error(Errno::EBADF);
+                    return;
+                }
+            }
+        };
+        if needs_load {
+            let data = self
+                .block_on(self.fs.read_range(&path, 0, usize::MAX))
+                .unwrap_or_default();
+            let mut guard = self.files.lock().unwrap();
+            if let Some(o) = guard.get_mut(&fh.0) {
+                // Only seed if nobody loaded meanwhile (e.g. a concurrent
+                // truncate); their content wins.
+                if !o.loaded
+                    && let Some(buf) = o.write_buf.as_mut()
+                {
+                    *buf = data;
+                    o.loaded = true;
+                }
+            }
+        }
         let mut guard = self.files.lock().unwrap();
         let Some(open) = guard.get_mut(&fh.0) else {
             drop(guard);

@@ -185,10 +185,11 @@ fn wire_callbacks(
             let name = {
                 let mut file = state.borrow_mut();
                 let name = format!("新建配置 {}", file.profiles.len() + 1);
-                let p = model::Profile {
-                    name: name.clone(),
-                    ..model::Profile::default()
-                };
+                // Base the new config on the current form so edits (e.g. a
+                // mount point just changed) carry over instead of the form
+                // being wiped to empty.
+                let mut p = form_to_profile(&ui);
+                p.name = name.clone();
                 file.profiles.push(p.clone());
                 if let Err(e) = model::save_profiles(&file) {
                     ui.set_status_text(format!("添加失败：{e}").into());
@@ -557,7 +558,12 @@ fn form_to_profile(ui: &MainWindow) -> model::Profile {
 /// exits; on macOS/Linux the FUSE process's SIGTERM handler umounts).
 fn graceful_or_kill(ui: &MainWindow, m: &model::MountStatus) {
     match winutil::terminate_process(m.pid) {
-        Ok(()) => ui.set_status_text(format!("已卸载 {}", m.drive).into()),
+        Ok(()) => {
+            // Drop the stale drive icon from "This PC" right away instead of
+            // leaving a broken drive that errors when clicked.
+            winutil::notify_drive_removed(&m.drive);
+            ui.set_status_text(format!("已卸载 {}", m.drive).into());
+        }
         Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),
     }
 }

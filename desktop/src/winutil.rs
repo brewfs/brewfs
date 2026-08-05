@@ -205,6 +205,41 @@ pub fn single_instance_guard(_name: &str) -> Option<SingleInstanceGuard> {
 #[cfg(not(windows))]
 pub fn alert_single_instance() {}
 
+/// Notify the Windows shell that `drive` (e.g. "T:") was removed, so
+/// Explorer drops the stale icon from "This PC" immediately instead of
+/// leaving a broken drive that errors when clicked.
+#[cfg(windows)]
+pub fn notify_drive_removed(drive: &str) {
+    const SHCNE_DRIVEREMOVED: i32 = 0x0000_0080;
+    const SHCNF_PATHW: u32 = 0x0005;
+    const SHCNF_FLUSH: u32 = 0x1000;
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHChangeNotify(
+            w_event_id: i32,
+            u_flags: u32,
+            dw_item1: *const core::ffi::c_void,
+            dw_item2: *const core::ffi::c_void,
+        );
+    }
+    // SHCNE_DRIVEREMOVED expects the drive root path ("T:\").
+    let path = format!("{drive}\\");
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: SHChangeNotify is a shell32 broadcast; the wide string is a
+    // valid NUL-terminated buffer kept alive for the duration of the call.
+    unsafe {
+        SHChangeNotify(
+            SHCNE_DRIVEREMOVED,
+            SHCNF_PATHW | SHCNF_FLUSH,
+            wide.as_ptr() as *const core::ffi::c_void,
+            std::ptr::null(),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn notify_drive_removed(_drive: &str) {}
+
 /// Ask a yes/no confirmation via a modal Windows message box. Returns `true`
 /// only when the user clicks "Yes". Non-Windows builds return `true` (no-op).
 #[cfg(windows)]
