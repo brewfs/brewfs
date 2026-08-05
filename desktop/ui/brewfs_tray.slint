@@ -104,7 +104,7 @@ export component MainWindow inherits Window {
         background: #eef1f6;
 
         VerticalBox {
-            padding: 8px;
+            padding: 2px;
             spacing: 0px;
 
             // ===== 顶部标题栏 =====
@@ -143,19 +143,26 @@ export component MainWindow inherits Window {
 
             // ===== 配置列表 =====
             VerticalBox {
-                padding-left: 12px;
-                padding-right: 12px;
+                padding-left: 0px;
+                padding-right: 0px;
                 padding-top: 8px;
                 padding-bottom: 8px;
                 spacing: 4px;
                 vertical-stretch: 1.0;
 
-                Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; horizontal-stretch: 1.0; }
+                }
 
                 if root.records.length > 0: ScrollView {
                     vertical-stretch: 1.0;
                     VerticalBox {
-                        padding: 0px;
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 0px;
+                        padding-bottom: 0px;
                         spacing: 8px;
                         for r[i] in root.records: Rectangle {
                             background: r.mounted ? #f0f7f3 : #ffffff;
@@ -164,8 +171,7 @@ export component MainWindow inherits Window {
                             border-color: r.mounted ? #bfe0cc : #e2e7ef;
                             height: 48px;
                             HorizontalLayout {
-                                padding-top: 2px;
-                                padding-bottom: 2px;
+                                padding: 2px;
                                 spacing: 4px;
                                 cross-axis-alignment: center;
                                 TouchArea {
@@ -223,22 +229,28 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.records.length == 0: Rectangle {
+                if root.records.length == 0: HorizontalLayout {
                     vertical-stretch: 1.0;
-                    background: #ffffff;
-                    border-radius: 10px;
-                    border-width: 1px;
-                    border-color: #e2e7ef;
-                    VerticalBox {
-                        alignment: center;
-                        spacing: 6px;
-                        Image {
-                            source: @image-url("../assets/icons/empty.svg");
-                            width: 40px;
-                            height: 40px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    Rectangle {
+                        horizontal-stretch: 1.0;
+                        vertical-stretch: 1.0;
+                        background: #ffffff;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: #e2e7ef;
+                        VerticalBox {
+                            alignment: center;
+                            spacing: 6px;
+                            Image {
+                                source: @image-url("../assets/icons/empty.svg");
+                                width: 40px;
+                                height: 40px;
+                            }
+                            Text { text: "还没有配置"; color: #8a939e; font-size: 13px; font-weight: 600; }
+                            Text { text: "点下方「添加配置」"; color: #aeb6c1; font-size: 11px; }
                         }
-                        Text { text: "还没有配置"; color: #8a939e; font-size: 13px; font-weight: 600; }
-                        Text { text: "点下方「添加配置」"; color: #aeb6c1; font-size: 11px; }
                     }
                 }
             }
@@ -248,7 +260,7 @@ export component MainWindow inherits Window {
             Rectangle {
                 background: #ffffff;
                 HorizontalBox {
-                    padding-left: 10px;
+                    padding-left: 12px;
                     padding-right: 12px;
                     padding-top: 10px;
                     padding-bottom: 10px;
