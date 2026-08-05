@@ -73,7 +73,7 @@ export component MainWindow inherits Window {
             Rectangle {
                 background: #ffffff;
                 HorizontalBox {
-                    alignment: center;
+                    cross-axis-alignment: center;
                     padding-left: 12px;
                     padding-right: 12px;
                     padding-top: 10px;
@@ -113,11 +113,11 @@ export component MainWindow inherits Window {
 
             // ===== 配置列表 =====
             VerticalBox {
-                padding-left: 10px;
-                padding-right: 10px;
-                padding-top: 10px;
-                padding-bottom: 10px;
-                spacing: 6px;
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 4px;
                 vertical-stretch: 1.0;
 
                 Text { text: "我的配置"; font-size: 12px; font-weight: 600; color: #5a6472; }
@@ -131,19 +131,19 @@ export component MainWindow inherits Window {
                             border-radius: 10px;
                             border-width: 1px;
                             border-color: r.mounted ? #bfe0cc : #e2e7ef;
-                            height: 54px;
+                            height: 48px;
                             HorizontalBox {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                spacing: 6px;
-                                alignment: center;
+                                padding-left: 4px;
+                                padding-right: 4px;
+                                spacing: 4px;
+                                cross-axis-alignment: center;
                                 TouchArea {
                                     height: 100%;
                                     horizontal-stretch: 1.0;
                                     clicked => { root.edit-record(i); }
                                     HorizontalBox {
-                                        alignment: center;
-                                        spacing: 8px;
+                                        cross-axis-alignment: center;
+                                        spacing: 6px;
                                         DriveBadge { drive: r.drive; mounted: r.mounted; }
                                         VerticalBox {
                                             min-width: 0px;
