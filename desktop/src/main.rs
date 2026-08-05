@@ -571,16 +571,15 @@ fn wire_callbacks(
         }
     });
 
-    // --- window close -> hide to tray ---
+    // --- window close: keep the window open (不隐藏到托盘) ---
     ui.window().on_close_requested({
         let ui_weak = ui_weak.clone();
         let edit_weak = edit_weak.clone();
         move || {
             if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
                 close_edit_dialog(&ui, &edit);
-                let _ = ui.hide();
             }
-            slint::CloseRequestResponse::HideWindow
+            slint::CloseRequestResponse::KeepWindowShown
         }
     });
     // Edit dialog X button == cancel: close modally and re-enable the owner.
