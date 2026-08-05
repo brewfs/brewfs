@@ -1,6 +1,4 @@
 // BrewFS desktop tray UI (Slint 1.17).
-// The SystemTrayIcon component is native in Slint 1.17: on Windows it uses
-// Shell_NotifyIcon, on Linux/BSD ksni, on macOS NSStatusItem.
 
 import { Button, CheckBox, ComboBox, GridBox, GroupBox, LineEdit, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
@@ -24,10 +22,10 @@ export struct ProfileRecord {
 component DriveBadge inherits Rectangle {
     in property <string> drive;
     in property <bool> mounted;
-    width: 48px;
-    height: 30px;
-    background: root.mounted ? #1b7a3d : #cfd3da;
-    border-radius: 7px;
+    width: 50px;
+    height: 32px;
+    background: root.mounted ? @linear-gradient(135deg, #1b7a3d 0%, #2ea35a 100%) : #cdd3dc;
+    border-radius: 8px;
     Text {
         text: root.drive;
         color: white;
@@ -41,8 +39,8 @@ component DriveBadge inherits Rectangle {
 export component MainWindow inherits Window {
     title: "BrewFS";
     icon: @image-url("../assets/brewfs.png");
-    preferred-width: 720px;
-    preferred-height: 560px;
+    preferred-width: 700px;
+    preferred-height: 540px;
 
     in property <string> status-text;
     in property <[ProfileRecord]> records;
@@ -91,159 +89,198 @@ export component MainWindow inherits Window {
     callback quit-app();
 
     Rectangle {
-        background: #f4f6f9;
+        background: #eef1f6;
 
         VerticalBox {
-            padding: 16px;
-            spacing: 12px;
+            spacing: 0px;
 
-            // --- 顶部标题 ---
-            HorizontalBox {
-                spacing: 12px;
-                Rectangle {
-                    width: 38px;
-                    height: 38px;
-                    border-radius: 9px;
-                    background: #1a6dd4;
-                    Text {
-                        text: "☁";
-                        color: white;
-                        font-size: 22px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+            // ===== 顶部标题栏 =====
+            Rectangle {
+                background: #ffffff;
+                HorizontalBox {
+                    alignment: center;
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    padding-top: 13px;
+                    padding-bottom: 13px;
+                    spacing: 12px;
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 10px;
+                        background: @linear-gradient(135deg, #1a6dd4 0%, #0e4ea8 100%);
+                        Image {
+                            source: @image-url("../assets/icons/cloud.svg");
+                            width: 24px;
+                            height: 24px;
+                            x: (parent.width - 24px) / 2;
+                            y: (parent.height - 24px) / 2;
+                        }
+                    }
+                    VerticalBox {
+                        spacing: 1px;
+                        Text { text: "BrewFS"; font-size: 18px; font-weight: 700; color: #151a21; }
+                        Text { text: "OSS / S3 挂载到本地磁盘"; font-size: 12px; color: #7c8591; }
+                    }
+                    Rectangle { horizontal-stretch: 1.0; }
+                    CheckBox {
+                        text: "开机自启";
+                        checked: root.autostart;
+                        toggled => {
+                            root.autostart = self.checked;
+                            root.autostart-changed(self.checked);
+                        }
                     }
                 }
-                VerticalBox {
-                    spacing: 2px;
-                    Text { text: "BrewFS"; font-size: 19px; font-weight: 700; color: #15181c; }
-                    Text { text: "OSS / S3 挂载到本地磁盘"; font-size: 12px; color: #8a919c; }
-                }
             }
+            Rectangle { height: 1px; background: #e2e7ef; }
 
-            // --- 配置列表（主界面只有列表） ---
-            GroupBox {
-                title: "我的配置";
+            // ===== 配置列表 =====
+            VerticalBox {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 16px;
+                padding-bottom: 16px;
+                spacing: 10px;
                 vertical-stretch: 1.0;
-                VerticalBox {
-                    spacing: 8px;
-                    ScrollView {
-                        vertical-stretch: 1.0;
-                        min-height: 260px;
-                        VerticalBox {
-                            spacing: 6px;
-                            for r[i] in root.records: Rectangle {
-                                background: r.mounted ? #eaf4ee : #ffffff;
-                                border-radius: 9px;
-                                border-width: 1px;
-                                border-color: r.mounted ? #b7d9c4 : #e3e7ed;
-                                TouchArea {
-                                    clicked => { root.edit-record(i); }
-                                    HorizontalBox {
-                                        padding: 8px;
-                                        spacing: 10px;
-                                        DriveBadge { drive: r.drive; mounted: r.mounted; }
-                                        VerticalBox {
-                                            min-width: 0px;
-                                            horizontal-stretch: 1.0;
-                                            spacing: 2px;
-                                            Text {
-                                                text: r.name;
-                                                color: #15181c;
-                                                font-weight: 600;
-                                                font-size: 13px;
-                                                overflow: elide;
-                                            }
-                                            Text {
-                                                min-width: 0px;
-                                                text: r.detail;
-                                                color: #7a828d;
-                                                font-size: 12px;
-                                                overflow: elide;
-                                            }
+
+                Text { text: "我的配置"; font-size: 13px; font-weight: 600; color: #5a6472; }
+
+                if root.records.length > 0: ScrollView {
+                    vertical-stretch: 1.0;
+                    VerticalBox {
+                        spacing: 10px;
+                        for r[i] in root.records: Rectangle {
+                            background: r.mounted ? #f0f7f3 : #ffffff;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: r.mounted ? #bfe0cc : #e2e7ef;
+                            height: 66px;
+                            TouchArea {
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => { root.edit-record(i); }
+                                HorizontalBox {
+                                    padding: 10px;
+                                    spacing: 12px;
+                                    DriveBadge { drive: r.drive; mounted: r.mounted; }
+                                    VerticalBox {
+                                        min-width: 0px;
+                                        horizontal-stretch: 1.0;
+                                        spacing: 3px;
+                                        Text {
+                                            text: r.name;
+                                            color: #1b2129;
+                                            font-weight: 600;
+                                            font-size: 14px;
+                                            overflow: elide;
                                         }
                                         Text {
-                                            text: r.mounted ? "●" : "○";
-                                            color: r.mounted ? #1b7a3d : #c3c9d1;
-                                            font-size: 14px;
+                                            text: r.detail;
+                                            color: #7c8591;
+                                            font-size: 12px;
+                                            overflow: elide;
                                         }
-                                    }
-                                }
-                                HorizontalBox {
-                                    y: 0px;
-                                    height: parent.height;
-                                    x: parent.width - 190px;
-                                    width: 190px;
-                                    alignment: end;
-                                    padding-right: 8px;
-                                    Button {
-                                        text: "📂";
-                                        Tooltip { text: @markdown("打开"); }
-                                        enabled: r.mounted;
-                                        height: 26px;
-                                        clicked => { root.open-record(i); }
-                                    }
-                                    Button {
-                                        text: r.mounted ? "⏏" : "🔗";
-                                        Tooltip {
-                                            Rectangle {
-                                                background: #3b4048;
-                                                border-radius: 4px;
-                                                VerticalLayout {
-                                                    padding-left: 10px; padding-right: 10px; padding-top: 6px; padding-bottom: 6px;
-                                                    Text { text: r.mounted ? "卸载" : "挂载"; color: #ffffff; font-size: 12px; }
-                                                }
-                                            }
-                                        }
-                                        height: 26px;
-                                        clicked => { root.toggle-record(i); }
-                                    }
-                                    Button {
-                                        text: "✏️";
-                                        Tooltip { text: @markdown("编辑"); }
-                                        height: 26px;
-                                        clicked => { root.edit-record(i); }
-                                    }
-                                    Button {
-                                        text: "🗑";
-                                        Tooltip { text: @markdown("删除"); }
-                                        height: 26px;
-                                        clicked => { root.delete-record(i); }
                                     }
                                 }
                             }
-                            if root.records.length == 0: Text { text: "（还没有配置，点下方「添加配置」）"; color: #9aa1ab; }
+                            HorizontalBox {
+                                y: 0px;
+                                height: parent.height;
+                                x: parent.width - 196px;
+                                width: 196px;
+                                alignment: end;
+                                spacing: 6px;
+                                padding-right: 8px;
+                                Button {
+                                    icon: @image-url("../assets/icons/open.svg");
+                                    text: "";
+                                    width: 34px;
+                                    height: 32px;
+                                    enabled: r.mounted;
+                                    Tooltip { text: @markdown("打开"); }
+                                    clicked => { root.open-record(i); }
+                                }
+                                if r.mounted: Button {
+                                    icon: @image-url("../assets/icons/unmount.svg");
+                                    text: "";
+                                    width: 34px;
+                                    height: 32px;
+                                    Tooltip { text: @markdown("卸载"); }
+                                    clicked => { root.toggle-record(i); }
+                                }
+                                if !r.mounted: Button {
+                                    icon: @image-url("../assets/icons/mount.svg");
+                                    text: "";
+                                    width: 34px;
+                                    height: 32px;
+                                    Tooltip { text: @markdown("挂载"); }
+                                    clicked => { root.toggle-record(i); }
+                                }
+                                Button {
+                                    icon: @image-url("../assets/icons/edit.svg");
+                                    text: "";
+                                    width: 34px;
+                                    height: 32px;
+                                    Tooltip { text: @markdown("编辑"); }
+                                    clicked => { root.edit-record(i); }
+                                }
+                                Button {
+                                    icon: @image-url("../assets/icons/delete.svg");
+                                    text: "";
+                                    width: 34px;
+                                    height: 32px;
+                                    Tooltip { text: @markdown("删除"); }
+                                    clicked => { root.delete-record(i); }
+                                }
+                            }
                         }
                     }
-                    Text { text: "📂打开  🔗挂载/⏏卸载  ✏️编辑  🗑删除（点击整行也可编辑）"; color: #9aa1ab; font-size: 12px; }
                 }
-            }
-
-            // --- 底部 ---
-            HorizontalBox {
-                spacing: 10px;
-                alignment: end;
-                CheckBox {
-                    text: "开机自启";
-                    checked: root.autostart;
-                    toggled => {
-                        root.autostart = self.checked;
-                        root.autostart-changed(self.checked);
+                if root.records.length == 0: Rectangle {
+                    vertical-stretch: 1.0;
+                    background: #ffffff;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: #e2e7ef;
+                    VerticalBox {
+                        alignment: center;
+                        spacing: 8px;
+                        Image {
+                            source: @image-url("../assets/icons/empty.svg");
+                            width: 52px;
+                            height: 52px;
+                        }
+                        Text { text: "还没有配置"; color: #8a939e; font-size: 14px; font-weight: 600; }
+                        Text { text: "点右下角「添加配置」开始使用"; color: #aeb6c1; font-size: 12px; }
                     }
                 }
-                Rectangle { horizontal-stretch: 1.0; }
-                Button {
-                    text: "➕ 添加配置";
-                    primary: true;
-                    clicked => { root.add-config(); }
-                }
             }
 
-            // --- 反馈 ---
-            Text {
-                text: root.status-text;
-                color: #8a919c;
-                font-size: 12px;
-                wrap: word-wrap;
+            // ===== 底部 =====
+            Rectangle { height: 1px; background: #e2e7ef; }
+            Rectangle {
+                background: #ffffff;
+                HorizontalBox {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    padding-top: 11px;
+                    padding-bottom: 11px;
+                    spacing: 12px;
+                    Text {
+                        text: root.status-text;
+                        color: #7c8591;
+                        font-size: 12px;
+                        horizontal-stretch: 1.0;
+                        overflow: elide;
+                    }
+                    Button {
+                        text: "添加配置";
+                        icon: @image-url("../assets/icons/plus.svg");
+                        primary: true;
+                        clicked => { root.add-config(); }
+                    }
+                }
             }
         }
 

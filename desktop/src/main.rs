@@ -328,7 +328,20 @@ fn wire_callbacks(
             let mut p = model::Profile::default();
             p.name = {
                 let file = state.borrow();
-                format!("新建配置 {}", file.profiles.len() + 1)
+                // 取第一个不冲突的默认名（避免「新建配置 2」这种依赖已有数量的叫法）。
+                let mut n = 1;
+                while file
+                    .profiles
+                    .iter()
+                    .any(|q| q.name == format!("新建配置 {n}"))
+                {
+                    n += 1;
+                }
+                if n == 1 {
+                    "新建配置".to_string()
+                } else {
+                    format!("新建配置 {n}")
+                }
             };
             // 新配置默认 OSS 直挂 + 第一个空闲盘符。
             #[cfg(windows)]
@@ -557,9 +570,9 @@ fn wire_callbacks(
         move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let _ = ui.show();
-                // Slint has no public bring-to-front API; activate the app so
-                // the window is shown and raised on top of other windows.
-                #[cfg(target_os = "macos")]
+                // Slint has no public bring-to-front API; raise + focus the
+                // window natively so it always lands on top (Windows needs
+                // Win32 activation; macOS uses Cocoa activation).
                 raise_window_to_front();
             }
         }
@@ -699,10 +712,9 @@ fn refresh(
         .map(|p| {
             let drive = model::normalize_mount_point(&p.drive);
             let m = mounts.iter().find(|m| m.drive == drive);
-            let detail = if p.mode == "oss" {
-                format!("{} / {}", p.s3_bucket, p.s3_endpoint.trim_end_matches('/'))
-            } else if p.backend == "s3" {
-                format!("{} / {}", p.s3_bucket, p.s3_region)
+            let detail = if p.mode == "oss" || p.backend == "s3" {
+                // 行内只展示“盘名”（对象存储即 bucket），其余参数在编辑表单里看。
+                p.s3_bucket.clone()
             } else {
                 p.data_dir.clone()
             };
@@ -946,6 +958,105 @@ fn raise_window_to_front() {
         let _: () = msg_send![app, activateIgnoringOtherApps: true];
     }
 }
+
+/// Windows: bring the tray's main window to the foreground.
+///
+/// `ui.show()` alone does not raise a hidden winit window, and Slint has no
+/// public bring-to-front API, so we do it natively: find the largest top-level
+/// window owned by this process, restore it if minimized, then use the
+/// standard tray-app sequence (topmost-toggle + SetForegroundWindow, with an
+/// AttachThreadInput fallback) so the window always lands on top and focused.
+#[cfg(target_os = "windows")]
+fn raise_window_to_front() {
+    use std::cell::Cell;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowRect,
+        GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, SW_RESTORE, SW_SHOW,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindow,
+    };
+
+    thread_local! {
+        static BEST_HWND: Cell<HWND> = Cell::new(null_mut());
+        static BEST_AREA: Cell<u64> = Cell::new(0);
+    }
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, _: LPARAM) -> BOOL {
+        unsafe {
+            let mut pid: u32 = 0;
+            let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == std::process::id() {
+                let mut rect = windows_sys::Win32::Foundation::RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                if GetWindowRect(hwnd, &mut rect) != 0 {
+                    let w = (rect.right - rect.left).max(0) as u64;
+                    let h = (rect.bottom - rect.top).max(0) as u64;
+                    if w > 100 && h > 100 {
+                        let area = w.saturating_mul(h);
+                        BEST_HWND.with(|c| {
+                            if area > BEST_AREA.with(|a| a.get()) {
+                                c.set(hwnd);
+                                BEST_AREA.with(|a| a.set(area));
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        1
+    }
+
+    unsafe {
+        BEST_HWND.with(|c| c.set(null_mut()));
+        BEST_AREA.with(|c| c.set(0));
+        EnumWindows(Some(enum_proc), 0);
+
+        let hwnd = BEST_HWND.with(|c| c.get());
+        if hwnd.is_null() {
+            return;
+        }
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        ShowWindow(hwnd, SW_SHOW);
+
+        // Tray-app foreground trick: temporarily mark topmost to force
+        // activation, then restore normal z-order so the flag does not stick.
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+        if SetForegroundWindow(hwnd) == 0 {
+            let foreground = GetForegroundWindow();
+            if !foreground.is_null() {
+                let fg_thread = GetWindowThreadProcessId(foreground, null_mut());
+                let cur_thread = GetCurrentThreadId();
+                if AttachThreadInput(cur_thread, fg_thread, 1) != 0 {
+                    SetForegroundWindow(hwnd);
+                    AttachThreadInput(cur_thread, fg_thread, 0);
+                }
+            }
+        }
+        BringWindowToTop(hwnd);
+    }
+}
+
+/// Non-Windows/non-macOS platforms: `show()` is enough.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn raise_window_to_front() {}
 
 fn quit_app() {
     let _ = slint::quit_event_loop();
