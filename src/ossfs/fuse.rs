@@ -299,12 +299,16 @@ impl Filesystem for OssFs {
             let mut handled = false;
             if let Some(fh) = fh {
                 // Lazily load original content before truncating an open
-                // write handle.
+                // write handle. Truncating to 0 needs no original bytes at
+                // all (the empty buffer is authoritative), so skip the fetch
+                // -- this is the open(O_WRONLY|O_TRUNC) save flow.
                 let needs_load = {
                     let guard = self.files.lock().unwrap();
                     guard
                         .get(&fh.0)
-                        .map(|o| o.path == path && o.write_buf.is_some() && !o.loaded)
+                        .map(|o| {
+                            o.path == path && o.write_buf.is_some() && !o.loaded && new_size != 0
+                        })
                         .unwrap_or(false)
                 };
                 if needs_load {
@@ -319,6 +323,21 @@ impl Filesystem for OssFs {
                             *buf = data;
                             open.loaded = true;
                         }
+                    }
+                }
+                // Truncate-to-zero on an unloaded handle: mark the empty
+                // buffer authoritative without any S3 round trip.
+                if new_size == 0 {
+                    let mut guard = self.files.lock().unwrap();
+                    if let Some(open) = guard.get_mut(&fh.0)
+                        && open.path == path
+                        && open.write_buf.is_some()
+                        && !open.loaded
+                    {
+                        if let Some(buf) = open.write_buf.as_mut() {
+                            buf.clear();
+                        }
+                        open.loaded = true;
                     }
                 }
                 let mut guard = self.files.lock().unwrap();

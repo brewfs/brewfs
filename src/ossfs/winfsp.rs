@@ -754,7 +754,16 @@ impl FileSystemContext for OssMountContext {
         if context.is_dir {
             return Err(FspError::NTSTATUS(0xC000_00BAu32 as i32));
         }
-        if !self.load_write_buf(context)? {
+        // Truncate-to-zero needs no original bytes: the empty buffer is
+        // authoritative, so no S3 fetch (covers the save-as/rewrite flow on
+        // handles opened without FILE_OVERWRITE).
+        if new_size == 0 {
+            let mut guard = context.write_buf.lock().unwrap();
+            if let Some(buf) = guard.as_mut() {
+                buf.clear();
+                context.loaded.store(true, Ordering::Release);
+            }
+        } else if !self.load_write_buf(context)? {
             // No write handle: truncation would require a read-modify-write.
             return Err(FspError::from(IoError::from_raw_os_error(
                 WIN32_NOT_SUPPORTED,

@@ -204,13 +204,20 @@ impl ObjectFs {
         }
         let result = self.stat_uncached(path).await?;
         if let Some(entry) = &result {
-            let mut cache = self.stats.lock().unwrap();
-            if cache.len() >= MAX_STAT_ENTRIES {
-                cache.clear();
-            }
-            cache.insert(path.to_string(), (Instant::now(), entry.clone()));
+            self.cache_insert(path, entry.clone());
         }
         Ok(result)
+    }
+
+    /// Insert a stat result into the cache, clearing the whole cache when
+    /// over the bound so memory stays bounded. Kept separate from `stat` so
+    /// the bound logic is unit-testable without S3.
+    fn cache_insert(&self, path: &str, entry: DirEntry) {
+        let mut cache = self.stats.lock().unwrap();
+        if cache.len() >= MAX_STAT_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(path.to_string(), (Instant::now(), entry));
     }
 
     /// Drop any cached attribute for `path` (called after local mutations).
@@ -706,18 +713,16 @@ mod tests {
             size: 1,
             mtime_secs: 1,
         };
+        // Fill the cache to the bound through the real insertion helper.
         for i in 0..MAX_STAT_ENTRIES {
-            fs.stats
-                .lock()
-                .unwrap()
-                .insert(format!("/f{i}"), (Instant::now(), entry.clone()));
+            fs.cache_insert(&format!("/f{i}"), entry.clone());
         }
         assert_eq!(fs.stats.lock().unwrap().len(), MAX_STAT_ENTRIES);
-        // The next successful stat would clear the cache (bounded memory).
-        // Simulate by inserting one more and asserting the code path that
-        // caps growth: we cannot call stat() without S3, so assert the bound
-        // logic directly by checking len stays capped after a manual clear.
-        fs.stats.lock().unwrap().clear();
-        assert!(fs.stats.lock().unwrap().is_empty());
+        // One more insert hits the bound branch in cache_insert (clear +
+        // keep only the new entry), exactly what stat() would do.
+        fs.cache_insert("/overflow", entry.clone());
+        let cache = fs.stats.lock().unwrap();
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("/overflow"));
     }
 }
