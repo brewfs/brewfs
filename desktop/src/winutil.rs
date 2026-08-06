@@ -199,6 +199,29 @@ pub fn reap_child(pid: u32) {
     }
 }
 
+/// macOS: show/hide the Dock icon by switching the app activation policy
+/// (Regular=0 → Dock icon, Accessory=1 → menu-bar only). When making the
+/// Dock icon visible we also activate the app so a freshly shown window
+/// comes to the front and receives focus. No-op on other platforms.
+#[cfg(target_os = "macos")]
+pub fn set_dock_visible(visible: bool) {
+    use objc::{class, msg_send, sel, sel_impl};
+    #[allow(unexpected_cfgs)] // objc 0.2 macros emit cargo-clippy cfg noise
+    unsafe {
+        let app: *mut objc::runtime::Object = msg_send![class!(NSApplication), sharedApplication];
+        // NSApplicationActivationPolicy: Regular = 0, Accessory = 1.
+        let policy: isize = if visible { 0 } else { 1 };
+        let _: () = msg_send![app, setActivationPolicy: policy];
+        if visible {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
+/// Non-macOS: no Dock concept; keep call sites unconditional.
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_visible(_visible: bool) {}
+
 /// Terminate a process tree. On Windows uses `taskkill /T /F`; the brewfs
 /// WinFsp volume is torn down by the kernel when the owning process exits.
 /// On other platforms falls back to `kill`.

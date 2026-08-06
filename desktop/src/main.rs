@@ -234,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         mac_dock_reopen::install(move || {
             if let Some(ui) = ui_weak.upgrade() {
+                winutil::set_dock_visible(true);
                 let _ = ui.show();
                 raise_window_to_front();
             }
@@ -299,6 +300,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tray.show()?;
     ui.show()?;
+    // macOS: 主窗口可见 → 显示 Dock 图标（纯托盘态才隐藏）。
+    winutil::set_dock_visible(true);
     // macOS: 预热编辑窗的 Metal layer（同 feishu-bridge-rs 的做法）。Slint 首次 show
     // 的预渲染帧是空的（surface 在窗口 map 前没就绪），内容要等下一帧 redraw 才补上；
     // Metal layer 会保留上一帧，所以启动时挪到屏外 show + redraw 一次（不可见、无闪烁），
@@ -613,6 +616,8 @@ fn wire_callbacks(
             if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
                 close_edit_dialog(&ui, &edit);
                 let _ = ui.hide();
+                #[cfg(target_os = "macos")]
+                sync_dock_visibility(&ui, &edit);
             }
             slint::CloseRequestResponse::HideWindow
         }
@@ -624,6 +629,8 @@ fn wire_callbacks(
         move || {
             if let (Some(ui), Some(edit)) = (ui_weak.upgrade(), edit_weak.upgrade()) {
                 close_edit_dialog(&ui, &edit);
+                #[cfg(target_os = "macos")]
+                sync_dock_visibility(&ui, &edit);
             }
             slint::CloseRequestResponse::HideWindow
         }
@@ -632,6 +639,7 @@ fn wire_callbacks(
         let ui_weak = ui_weak.clone();
         move || {
             if let Some(ui) = ui_weak.upgrade() {
+                winutil::set_dock_visible(true);
                 let _ = ui.show();
                 // Slint has no public bring-to-front API; raise + focus the
                 // window natively so it always lands on top (Windows needs
@@ -1257,6 +1265,14 @@ fn raise_window_to_front() {
     }
 }
 
+/// macOS: the Dock icon should exist only while at least one window is
+/// visible (pure tray state otherwise), mirroring feishu-bridge.
+#[cfg(target_os = "macos")]
+fn sync_dock_visibility(ui: &MainWindow, edit: &EditDialog) {
+    let any_visible = ui.window().is_visible() || edit.window().is_visible();
+    winutil::set_dock_visible(any_visible);
+}
+
 /// Windows: bring the tray's main window to the foreground.
 ///
 /// `ui.show()` alone does not raise a hidden winit window, and Slint has no
@@ -1398,6 +1414,7 @@ fn open_edit_dialog(ui: &MainWindow, edit: &EditDialog, title: String) {
     // 因此：先激活（窗口还藏着，重排不闪）→ show → 显式 request_redraw 补画一帧。
     #[cfg(target_os = "macos")]
     {
+        winutil::set_dock_visible(true);
         raise_window_to_front();
         let _ = edit.show();
         edit.window().request_redraw();
@@ -1415,6 +1432,8 @@ fn close_edit_dialog(ui: &MainWindow, edit: &EditDialog) {
     #[cfg(windows)]
     restore_modal(ui.window());
     let _ = edit.hide();
+    #[cfg(target_os = "macos")]
+    sync_dock_visibility(ui, edit);
 }
 
 /// Make `dialog` an owned window of `owner` (no taskbar entry, above owner),
