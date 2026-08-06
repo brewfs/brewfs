@@ -3585,6 +3585,8 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
     assert!(snap.used_inodes >= 6);
     let get_calls = redis_command_calls(&store, "get").await;
     let mget_calls = redis_command_calls(&store, "mget").await;
+    let scan_calls = redis_command_calls(&store, "scan").await;
+    let keys_calls = redis_command_calls(&store, "keys").await;
     assert!(
         get_calls <= 1,
         "stat_fs should batch node loads instead of issuing one GET per inode; observed {get_calls} GET calls"
@@ -3592,6 +3594,29 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
     assert_eq!(
         mget_calls, 1,
         "stat_fs should fetch all node payloads with one Redis MGET"
+    );
+    assert!(
+        scan_calls >= 1,
+        "stat_fs should page node keys with SCAN instead of KEYS"
+    );
+    assert_eq!(
+        keys_calls, 0,
+        "stat_fs must not use blocking KEYS; observed {keys_calls} KEYS calls"
+    );
+
+    // A second stat_fs within the TTL must be served from the cache without
+    // another SCAN/MGET pass.
+    let snap2 = store.stat_fs().await.unwrap();
+    assert_eq!(snap2.used_inodes, snap.used_inodes);
+    assert_eq!(
+        redis_command_calls(&store, "mget").await,
+        mget_calls,
+        "cached stat_fs should not re-fetch node payloads"
+    );
+    assert_eq!(
+        redis_command_calls(&store, "scan").await,
+        scan_calls,
+        "cached stat_fs should not re-scan the node key space"
     );
 }
 
@@ -3620,8 +3645,8 @@ async fn test_stat_fs_accounting_fallback() {
     );
     let used_space = snap.total_space - snap.available_space;
     assert_eq!(
-        used_space, 1536,
-        "should count allocated file and symlink blocks"
+        used_space, 1512,
+        "used bytes = file size fallback (1000, set_file_size does not allocate blocks) + symlink block (512)"
     );
     assert!(snap.total_space > used_space);
     assert!(snap.available_inodes > 0);

@@ -911,10 +911,11 @@ impl DiskStorage {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with(&tmp_prefix) && name.ends_with(".tmp") {
-                if let Err(e) = tokio::fs::remove_file(entry.path()).await {
-                    trace!(key, path = %entry.path().display(), error = ?e, "failed to remove leftover tmp cache file");
-                }
+            if name.starts_with(&tmp_prefix)
+                && name.ends_with(".tmp")
+                && let Err(e) = tokio::fs::remove_file(entry.path()).await
+            {
+                trace!(key, path = %entry.path().display(), error = ?e, "failed to remove leftover tmp cache file");
             }
         }
 
