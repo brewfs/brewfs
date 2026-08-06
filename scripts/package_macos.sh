@@ -159,6 +159,12 @@ cp dist/macos/Info.plist "$APP/Contents/Info.plist"
 cp target/release/brewfs-tray "$APP/Contents/MacOS/"
 cp target/release/brewfs "$APP/Contents/MacOS/"
 cp target/release/ossmount "$APP/Contents/MacOS/"
+if [[ "$FUSE_BACKEND" == "fuse-t" ]]; then
+  # The build links libfuse-t via the build prefix's rpath; the distributed
+  # app must look in FUSE-T's actual install location instead.
+  install_name_tool -change @rpath/libfuse-t.dylib /usr/local/lib/libfuse-t.dylib \
+    "$APP/Contents/MacOS/ossmount" 2>/dev/null || true
+fi
 # Prefer the repo's brewfs.icns (same source as the Windows .ico) so the
 # macOS app icon always matches the Windows version; fall back to generating
 # one from brewfs.png if it is missing.
