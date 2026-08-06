@@ -28,14 +28,22 @@ impl NumCastExt for u64 {
 
 /// Portable `makedev(major, minor)`.
 ///
-/// Uses `libc::makedev` on Unix; on Windows (where libc does not export it)
+/// Uses `libc::makedev` on Unix (with a macOS-specific cast: darwin's libc
+/// exposes it as `i32 -> i32`); on Windows (where libc does not export it)
 /// falls back to the Linux glibc encoding, which is sufficient for the
 /// special-node round-trip tests.
 #[cfg(test)]
 pub(crate) fn makedev(major: u32, minor: u32) -> u64 {
     #[cfg(unix)]
     {
-        libc::makedev(major, minor)
+        #[cfg(target_os = "macos")]
+        {
+            libc::makedev(major as i32, minor as i32) as u64
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            libc::makedev(major, minor)
+        }
     }
     #[cfg(not(unix))]
     {

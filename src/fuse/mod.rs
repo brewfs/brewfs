@@ -3761,7 +3761,7 @@ mod fuse_init_tests {
             Request::default(),
             1,
             OsStr::new("pipe"),
-            libc::S_IFIFO | 0o644,
+            (libc::S_IFIFO as u32) | 0o644,
             0,
         )
         .await
@@ -3784,7 +3784,7 @@ mod fuse_init_tests {
             Request::default(),
             1,
             OsStr::new("tty"),
-            libc::S_IFCHR | 0o600,
+            (libc::S_IFCHR as u32) | 0o600,
             0x0103,
         )
         .await
