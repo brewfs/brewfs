@@ -5,9 +5,15 @@
 # Requirements:
 #   - macOS with Xcode command line tools (codesign, hdiutil, xcrun notarytool)
 #   - Developer ID Application identity in the login keychain
-#   - macFUSE libs available for linking (pkg-config "fuse"); either installed
-#     (brew install --cask macfuse) or a local extracted copy pointed to by
-#     MACFUSE_PREFIX (default: ~/brewfs-deps/macfuse-5.3.3)
+#   - A FUSE provider for linking ossmount (pkg-config "fuse"):
+#       * FUSE-T (recommended, kext-free) — local prefix pointed to by
+#         FUSE_T_PREFIX (default: ~/brewfs-deps/fuse-t). See the comment near
+#         the FUSE_T_PREFIX config below for how to prepare it after
+#         `brew install --cask fuse-t`.
+#       * macFUSE — local extracted copy pointed to by
+#         MACFUSE_PREFIX (default: ~/brewfs-deps/macfuse-5.3.3)
+#     Set FUSE_BACKEND=fuse-t|macfuse to force one; default is auto (fuse-t
+#     wins when its prefix is present).
 #   - Notarization credentials: set APPLE_ID, APPLE_TEAM_ID, APPLE_PASSWORD or
 #     create ~/Documents/Apple Certificates/{app-specific-passwd.txt,team-id.txt}
 #
@@ -23,7 +29,44 @@ BUNDLE_ID="${BUNDLE_ID:-ai.brewfs.tray}"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 APP_NAME="BrewFS"
 MACFUSE_PREFIX="${MACFUSE_PREFIX:-$HOME/brewfs-deps/macfuse-5.3.3}"
-PKG_CONFIG_PATH="${MACFUSE_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+# FUSE-T prefix layout: $FUSE_T_PREFIX/{include/fuse,lib,lib/pkgconfig}.
+# Prepare it after `brew install --cask fuse-t` (installs to /usr/local) with:
+#   mkdir -p ~/brewfs-deps/fuse-t/lib/pkgconfig ~/brewfs-deps/fuse-t/include
+#   cp -R /usr/local/include/fuse ~/brewfs-deps/fuse-t/include/fuse
+#   cp /usr/local/lib/libfuse-t-*.dylib ~/brewfs-deps/fuse-t/lib/
+#   ln -s libfuse-t-*.dylib ~/brewfs-deps/fuse-t/lib/libfuse-t.dylib
+#   cat > ~/brewfs-deps/fuse-t/lib/pkgconfig/fuse.pc <<'EOF'
+#   prefix=$HOME/brewfs-deps/fuse-t
+#   exec_prefix=${prefix}
+#   libdir=${prefix}/lib
+#   includedir=${prefix}/include/fuse
+#   Name: fuse
+#   Description: FUSE-T libfuse2-compatible shim
+#   Version: 2.9.9
+#   Libs: -L${libdir} -Wl,-rpath,${libdir} -lfuse-t
+#   Cflags: -I${includedir}
+#   EOF
+FUSE_T_PREFIX="${FUSE_T_PREFIX:-$HOME/brewfs-deps/fuse-t}"
+FUSE_BACKEND="${FUSE_BACKEND:-auto}"
+if [[ "$FUSE_BACKEND" == "auto" && -f "$FUSE_T_PREFIX/lib/pkgconfig/fuse.pc" ]]; then
+  FUSE_BACKEND=fuse-t
+fi
+case "$FUSE_BACKEND" in
+  fuse-t)
+    if [[ ! -f "$FUSE_T_PREFIX/lib/pkgconfig/fuse.pc" ]]; then
+      echo "FUSE-T prefix not found: $FUSE_T_PREFIX (see instructions above)" >&2
+      exit 1
+    fi
+    PKG_CONFIG_PATH="${FUSE_T_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    ;;
+  macfuse)
+    PKG_CONFIG_PATH="${MACFUSE_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    ;;
+  *)
+    echo "unknown FUSE_BACKEND: $FUSE_BACKEND (use fuse-t or macfuse)" >&2
+    exit 2
+    ;;
+esac
 export PKG_CONFIG_PATH
 
 CERT_DIR="${CERT_DIR:-$HOME/Documents/Apple Certificates}"
@@ -180,7 +223,19 @@ DMG_ROOT="dist/macos/dmg-root"
 rm -rf "$DMG_ROOT"
 mkdir -p "$DMG_ROOT"
 ditto "$APP" "$DMG_ROOT/$APP_NAME.app"
-if [[ -d dist/macos/macfuse ]]; then
+if [[ "$FUSE_BACKEND" == "fuse-t" ]]; then
+  # FUSE-T is free for non-commercial use but bundling it commercially needs a
+  # license, so ship install instructions instead of the installer.
+  cat > "$DMG_ROOT/安装FUSE-T（免内核扩展）.txt" <<'EOF'
+本包使用 FUSE-T 作为 macOS 挂载后端（无需内核扩展、无需修改系统安全策略）。
+安装 FUSE-T（任选其一）：
+  1) Homebrew:  brew install --cask fuse-t
+  2) 官网下载:   https://www.fuse-t.org/  （安装 fuse-t-macos-installer-*.pkg）
+
+安装后即可挂载 OSS 直挂盘。若系统提示"Network Volumes"访问权限，
+请在 系统设置 → 隐私与安全性 → 文件与文件夹 → 网络卷宗 中允许。
+EOF
+elif [[ -d dist/macos/macfuse ]]; then
   cp dist/macos/macfuse/* "$DMG_ROOT/" 2>/dev/null || true
 fi
 echo "==> Creating DMG"

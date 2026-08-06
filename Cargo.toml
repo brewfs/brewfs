@@ -341,4 +341,10 @@ winfsp = { workspace = true, features = ["delayload", "async-io", "notify"] }
 winfsp = { workspace = true, features = ["delayload"] }
 
 [target.'cfg(not(windows))'.dependencies]
-fuser = "0.17"
+fuser = { version = "0.17", features = ["fuse-t"] }
+
+# Patch fuser: add a `fuse-t` feature so the macOS FUSE ABI layout matches
+# FUSE-T's NFS backend (standard libfuse3 attr layout) instead of macFUSE's
+# extended layout. See vendor/fuser/README-vendor.md.
+[patch.crates-io]
+fuser = { path = "vendor/fuser" }

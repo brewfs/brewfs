@@ -7,7 +7,7 @@
 //!
 //! Requires a brewfs build with the `fuse-winfsp` feature on Windows
 //! (`ossmount` for the metadata-less OSS direct-mount mode; macOS uses
-//! the FUSE-based `ossmount` with macFUSE). Binaries are located next
+//! the FUSE-based `ossmount` with FUSE-T/macFUSE). Binaries are located next
 //! to this executable, via `BREWFS_EXE` / `OSSMOUNT_EXE`, or on PATH.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -718,7 +718,7 @@ fn mount_profile(
             ui.set_status_text("未找到 ossmount.exe（OSS 直挂需要 Windows + WinFsp）".into());
             #[cfg(not(windows))]
             ui.set_status_text(
-                "未找到 ossmount（OSS 直挂需要 macOS + macFUSE，请先安装 macFUSE）".into(),
+                "未找到 ossmount（OSS 直挂需要 macOS + FUSE-T 或 macFUSE，请先安装 FUSE-T：brew install --cask fuse-t）".into(),
             );
             return;
         };

@@ -108,11 +108,12 @@ macOS 打包成 .app 时，把 `brewfs.icns` 放进 `Contents/Resources/`，并�
 - 挂载点：macOS/Linux 用**目录路径**（如 `/Volumes/brewfs`），不再是盘符；
   表单字段已改为"挂载点"，校验同时接受 `Z:`（Windows）与 `/Volumes/...`（macOS）。
 - **OSS 直挂模式 macOS/Linux 同样支持**：`ossmount` 在非 Windows 平台走
-  FUSE（macOS 用 macFUSE 4.x，Linux 用 libfuse），挂载到目录而不是盘符，
-  多机共享语义与 Windows 完全一致（bucket 是唯一数据源）。
-- macOS 使用前提：先安装 macFUSE（`brew install --cask macfuse` 或
-  https://macfuse.github.io/）；`ossmount` 启动时会检查
-  `/Library/Filesystems/macfuse.fs` 并给出友好提示。
+  FUSE（macOS 用 FUSE-T 或 macFUSE 4.x，Linux 用 libfuse），挂载到目录而
+  不是盘符，多机共享语义与 Windows 完全一致（bucket 是唯一数据源）。
+- macOS 使用前提：优先安装 **FUSE-T**（`brew install --cask fuse-t`，免内核
+  扩展、不需要降低系统安全策略，Apple Silicon 上推荐）；也可安装 macFUSE
+  （`brew install --cask macfuse` 或 https://macfuse.github.io/，需在恢复模式
+  中降低安全策略以加载内核扩展）。`ossmount` 启动时自动检测二者之一。
 - 打开挂载点在 macOS 用 `open <路径>`；OSS 直挂卸载 = 向 `ossmount` 进程发送
   SIGTERM（`kill <pid>`），进程会优雅 umount 并清理运行时记录。
 - 构建 macOS 版需要在 Mac 上执行 `cargo build --release -p brewfs --bin ossmount`

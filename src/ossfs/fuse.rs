@@ -5,7 +5,7 @@
 //! a whole-object `PutObject` on flush/release — the same "cloud drive"
 //! semantics as the WinFsp adapter and ossfs/s3fs.
 //!
-//! Only compiled on non-Windows targets (macOS with macFUSE, Linux with
+//! Only compiled on non-Windows targets (macOS with FUSE-T/macFUSE, Linux with
 //! libfuse). Windows uses the WinFsp adapter in [`super::winfsp`].
 #![cfg(not(windows))]
 
@@ -624,6 +624,16 @@ impl Filesystem for OssFs {
             return;
         }
         let needs_existing = existing.is_some() && !truncate;
+        // A brand-new file has no S3 object yet; create the empty object now
+        // so that subsequent GETATTR (e.g. the NFS/FUSE client stat after
+        // create) finds it instead of ENOENT.
+        if existing.is_none()
+            && let Err(e) = self.block_on(self.fs.write(&path, &[]))
+        {
+            warn!(path = %path, error = ?e, "ossfs create initial put failed");
+            reply.error(Errno::EIO);
+            return;
+        }
         let write_buf = Some(Vec::new());
         let attr = self.attr_of(
             &path,
@@ -969,20 +979,53 @@ fn remove_runtime_record() {
     let _ = std::fs::remove_file(runtime_record_path(std::process::id()));
 }
 
+/// Detect which user-space FUSE backend is available on macOS: macFUSE
+/// (kext-based; on Apple Silicon it requires lowering the security policy in
+/// Recovery Mode) or FUSE-T (kext-less NFS bridge, works with the default
+/// Full Security policy).
+#[cfg(target_os = "macos")]
+fn macos_fuse_backend() -> Option<&'static str> {
+    if Path::new("/Library/Filesystems/macfuse.fs").exists() {
+        Some("macfuse")
+    } else if Path::new("/Library/Application Support/fuse-t").exists()
+        || Path::new("/usr/local/lib/libfuse-t.dylib").exists()
+        || Path::new(&std::env::var("HOME").unwrap_or_default())
+            .join(".fuse-t")
+            .exists()
+        || Path::new(&std::env::var("HOME").unwrap_or_default())
+            .join("Library/Application Support/fuse-t")
+            .exists()
+    {
+        Some("fuse-t")
+    } else {
+        None
+    }
+}
+
 fn build_config() -> Config {
     let mut cfg = Config::default();
     cfg.mount_options = vec![MountOption::FSName("BrewFS-OSS".to_string())];
     #[cfg(target_os = "macos")]
-    cfg.mount_options
-        .push(MountOption::Subtype("macfuse".to_string()));
+    {
+        let subtype = match macos_fuse_backend() {
+            Some("fuse-t") => "fuse-t",
+            _ => "macfuse",
+        };
+        cfg.mount_options
+            .push(MountOption::Subtype(subtype.to_string()));
+    }
     cfg.acl = SessionACL::Owner;
-    cfg.n_threads = Some(4);
+    // fuser's multi-threaded event loop is Linux-only; macOS (macFUSE /
+    // FUSE-T) must run with a single reader thread (Config default is 1).
+    if !cfg!(target_os = "macos") {
+        cfg.n_threads = Some(4);
+    }
     cfg
 }
 
-/// Mount an [`ObjectFs`] at `mount_point` via FUSE (macFUSE on macOS, libfuse
-/// on Linux). Runs until Ctrl+C / SIGTERM / external unmount, then tears down
-/// gracefully.
+/// Mount an [`ObjectFs`] at `mount_point` via FUSE (macFUSE or FUSE-T on
+/// macOS, libfuse on Linux). Runs until Ctrl+C / SIGTERM / external unmount,
+/// then tears down gracefully.
 pub async fn mount_oss_fuse(
     fs: Arc<ObjectFs>,
     mount_point: &Path,
@@ -990,9 +1033,9 @@ pub async fn mount_oss_fuse(
 ) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        if !Path::new("/Library/Filesystems/macfuse.fs").exists() {
+        if macos_fuse_backend().is_none() {
             anyhow::bail!(
-                "macFUSE 未安装：请先安装 macFUSE（https://macfuse.github.io/），OSS 直挂需要它"
+                "未检测到 FUSE 后端：请安装 FUSE-T（推荐，无需修改系统安全策略：brew install --cask fuse-t，或 https://www.fuse-t.org/）或 macFUSE（https://macfuse.github.io/），OSS 直挂需要其中之一"
             );
         }
     }
@@ -1044,6 +1087,7 @@ pub async fn mount_oss_fuse(
     let mut sigterm =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
 
+    let mut session = Some(session);
     loop {
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
@@ -1059,22 +1103,46 @@ pub async fn mount_oss_fuse(
                 std::future::pending::<()>().await;
             } => { break; }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                if session.guard.is_finished() {
-                    // The session ended on its own (e.g. user ejected the
-                    // volume in Finder / ran `umount`).
-                    println!("filesystem session ended (unmounted externally)");
-                    remove_runtime_record();
-                    return Ok(());
+                if let Some(s) = session.as_ref() {
+                    if s.guard.is_finished() {
+                        // The session ended on its own (e.g. user ejected the
+                        // volume in Finder / ran `umount`, or the FUSE
+                        // backend closed the connection). Surface the real
+                        // result instead of guessing.
+                        let s = session.take().unwrap();
+                        match s.join() {
+                            Ok(()) => {
+                                println!("filesystem session ended (unmounted externally)");
+                            }
+                            Err(e) => {
+                                eprintln!("filesystem session ended with error: {e}");
+                            }
+                        }
+                        remove_runtime_record();
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
     println!("unmounting...");
-    let result = session.umount_and_join();
+    let result = match session.take() {
+        Some(s) => s.umount_and_join(),
+        None => Ok(()),
+    };
     remove_runtime_record();
-    result?;
-    Ok(())
+    if cfg!(target_os = "macos") {
+        // On macOS the FUSE-T/macFUSE server may already have detached the
+        // volume by the time we shut down, which makes the final join return
+        // EIO/ENOENT even though the mount is gone. Treat that as noise.
+        if let Err(e) = result {
+            eprintln!("unmount warning: {e}");
+        }
+        Ok(())
+    } else {
+        result.map_err(anyhow::Error::from)
+    }
 }
 
 #[cfg(test)]
