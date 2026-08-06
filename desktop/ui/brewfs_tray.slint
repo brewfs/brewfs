@@ -226,33 +226,32 @@ export component MainWindow inherits Window {
                                 padding: 2px;
                                 spacing: 4px;
                                 cross-axis-alignment: center;
-                                TouchArea {
+                                // 卡片主体不可点击：编辑只能通过右侧“编辑”按钮触发。
+                                HorizontalLayout {
                                     horizontal-stretch: 1.0;
-                                    clicked => { root.edit-record(i); }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        cross-axis-alignment: center;
-                                        DriveBadge {
-                                            drive: r.drive;
-                                            mounted: r.mounted;
+                                    spacing: 6px;
+                                    cross-axis-alignment: center;
+                                    DriveBadge {
+                                        drive: r.drive;
+                                        mounted: r.mounted;
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1.0;
+                                        spacing: 2px;
+                                        Text {
+                                            text: r.name;
+                                            color: #1b2129;
+                                            font-weight: 600;
+                                            font-size: 13px;
+                                            overflow: elide;
                                         }
 
-                                        VerticalLayout {
-                                            spacing: 2px;
-                                            Text {
-                                                text: r.name;
-                                                color: #1b2129;
-                                                font-weight: 600;
-                                                font-size: 13px;
-                                                overflow: elide;
-                                            }
-
-                                            Text {
-                                                text: r.detail;
-                                                color: #7c8591;
-                                                font-size: 11px;
-                                                overflow: elide;
-                                            }
+                                        Text {
+                                            text: r.detail;
+                                            color: #7c8591;
+                                            font-size: 11px;
+                                            overflow: elide;
                                         }
                                     }
                                 }
