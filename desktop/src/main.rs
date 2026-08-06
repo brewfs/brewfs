@@ -307,7 +307,9 @@ fn wire_callbacks(
             };
             let p = form_to_profile(&edit);
             if let Err(e) = p.validate() {
-                ui.set_status_text(format!("保存失败：{e}").into());
+                let msg = format!("保存失败：{e}");
+                edit.set_form_error(msg.clone().into());
+                ui.set_status_text(msg.into());
                 return;
             }
             let occupied = drive_occupied(&p.drive);
@@ -315,10 +317,13 @@ fn wire_callbacks(
                 let mut file = state.borrow_mut();
                 upsert_profile(&mut file, &p);
                 if let Err(e) = model::save_profiles(&file) {
-                    ui.set_status_text(format!("保存失败：{e}").into());
+                    let msg = format!("保存失败：{e}");
+                    edit.set_form_error(msg.clone().into());
+                    ui.set_status_text(msg.into());
                     return;
                 }
             }
+            edit.set_form_error(String::new().into());
             if let Some(tray) = tray_weak.upgrade() {
                 refresh(&ui, &tray, &state, &recent);
             }
@@ -1118,6 +1123,7 @@ fn update_drive_options(edit: &EditDialog) {
 /// disabled so the dialog is genuinely modal (mouse/keyboard can only reach
 /// the dialog).
 fn open_edit_dialog(ui: &MainWindow, edit: &EditDialog, title: String) {
+    edit.set_form_error(String::new().into());
     edit.set_edit_title(title.into());
     #[cfg(windows)]
     update_drive_options(edit);

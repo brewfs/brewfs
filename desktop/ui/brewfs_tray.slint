@@ -434,6 +434,8 @@ export component EditDialog inherits Window {
     in property <string> edit-title;
     // macOS: keep room for the native traffic-light buttons (hidden titlebar).
     in property <bool> traffic-light-padding;
+    // 保存失败/校验错误时显示在对话框内，避免"点了没反应"。
+    in property <string> form-error;
 
     // 表单
     in-out property <string> cfg-name;
@@ -704,6 +706,13 @@ export component EditDialog inherits Window {
                         }
                     }
                 }
+            }
+
+            if root.form-error != "": Text {
+                text: root.form-error;
+                color: #c0392b;
+                font-size: 12px;
+                wrap: word-wrap;
             }
 
             HorizontalBox {

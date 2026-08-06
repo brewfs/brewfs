@@ -39,6 +39,19 @@ pub struct Profile {
     pub meta_url: String,
 }
 
+/// Default mount point for a fresh config. Windows uses drive letters and the
+/// UI picks the first free one; macOS/Linux use a directory path.
+#[cfg(windows)]
+pub fn default_drive() -> String {
+    String::new()
+}
+
+/// Default mount point for a fresh config (see `default_drive`).
+#[cfg(not(windows))]
+pub fn default_drive() -> String {
+    "/Volumes/brewfs".to_string()
+}
+
 impl Default for Profile {
     fn default() -> Self {
         Self {
@@ -46,7 +59,7 @@ impl Default for Profile {
             // OSS-only is the default (recommended); metadata mode is an
             // advanced option the user must explicitly choose.
             mode: "oss".to_string(),
-            drive: String::new(),
+            drive: default_drive(),
             backend: "local-fs".to_string(),
             data_dir: String::from("E:\\brewfs-data"),
             s3_bucket: String::new(),
@@ -675,6 +688,17 @@ mod tests {
             meta_url: DEFAULT_META_URL.into(),
             ..Profile::default()
         }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_drive_is_volume_path() {
+        // Regression: on macOS/Linux a fresh "添加配置" must come with a
+        // mount point, otherwise saving silently fails validation while the
+        // dialog stays open.
+        let d = default_drive();
+        assert!(!d.is_empty());
+        assert!(d.starts_with('/'));
     }
 
     #[test]
