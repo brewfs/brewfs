@@ -434,6 +434,11 @@ pub fn read_mounts(profiles: &[Profile]) -> Vec<MountStatus> {
         }
     }
     out.sort_by_key(|m| std::cmp::Reverse(m.alive));
+    // A drive may have multiple runtime records (e.g. stale records from a
+    // duplicate-mount race or crashed processes); show at most one row per
+    // drive, preferring the live one (alive sorts first).
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|m| seen.insert(m.drive.clone()));
     out
 }
 

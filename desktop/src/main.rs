@@ -715,6 +715,15 @@ fn mount_profile(
         ui.set_status_text(format!("盘符 {drive} 已被其他配置挂载，请更换").into());
         return false;
     }
+    // Double-click / auto-restart race guard: if we recently spawned a mount
+    // process for this drive and it is still alive but has not yet produced a
+    // mount, don't launch a second one.
+    if recent.borrow().iter().any(|r| {
+        r.drive == drive && r.at.elapsed() < Duration::from_secs(20) && winutil::pid_alive(r.pid)
+    }) {
+        ui.set_status_text(format!("{drive} 正在挂载中，请稍候…").into());
+        return false;
+    }
     // Kernel-level guard: never stack a second mount on a directory that is
     // already a mount point (e.g. a previous ossmount that left its NFS mount
     // behind, or the same dir mounted elsewhere).

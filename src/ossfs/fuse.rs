@@ -1098,6 +1098,42 @@ pub async fn mount_oss_fuse(
             }
         }
     }
+    // Exclusive per-mountpoint lock: even if two ossmount processes are
+    // started at the same instant (double click / auto-restart race), only
+    // the first one may mount; the second bails out deterministically.
+    #[cfg(unix)]
+    let _mount_lock = {
+        use std::os::unix::io::AsRawFd;
+        let lock_dir = std::env::temp_dir().join("brewfs-oss").join(".locks");
+        std::fs::create_dir_all(&lock_dir).ok();
+        let safe: String = mount_point
+            .display()
+            .to_string()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let lock_path = lock_dir.join(format!("{safe}.lock"));
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| anyhow::anyhow!("创建挂载锁失败：{e}"))?;
+        if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            anyhow::bail!(
+                "{} 正在被另一个 ossmount 挂载/已挂载，请勿重复挂载同一目录",
+                mount_point.display()
+            );
+        }
+        lock_file
+    };
+
     #[cfg(not(windows))]
     if path_is_mount_point(mount_point) {
         anyhow::bail!(
