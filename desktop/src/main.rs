@@ -16,7 +16,7 @@
 mod model;
 mod winutil;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -32,6 +32,31 @@ struct RecentSpawn {
     pid: u32,
     log: PathBuf,
     at: Instant,
+}
+
+/// Holds a transient/error status message for a short window so the 2s
+/// refresh summary cannot overwrite it on the same tick (e.g. a mount
+/// failure message replaced by "当前没有活动挂载。" before the user sees it).
+struct StatusHold {
+    until: Cell<Option<Instant>>,
+    msg: RefCell<String>,
+}
+
+impl Default for StatusHold {
+    fn default() -> Self {
+        Self {
+            until: Cell::new(None),
+            msg: RefCell::new(String::new()),
+        }
+    }
+}
+
+/// Set a status message and keep it visible for `secs` even across refresh().
+fn hold_status(ui: &MainWindow, hold: &StatusHold, msg: String, secs: u64) {
+    *hold.msg.borrow_mut() = msg.clone();
+    hold.until
+        .set(Some(Instant::now() + Duration::from_secs(secs)));
+    ui.set_status_text(msg.into());
 }
 
 /// Configure the Slint backend before any window is created.
@@ -83,6 +108,7 @@ fn guard() -> std::sync::MutexGuard<'static, GuardState> {
 /// after a fast failure (config error) until the user mounts manually.
 fn auto_restart(
     ui: &MainWindow,
+    hold: &StatusHold,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
     ossmount: &Rc<Option<PathBuf>>,
@@ -139,11 +165,16 @@ fn auto_restart(
                     log,
                     at: Instant::now(),
                 });
-                ui.set_status_text(format!("检测到 {drive} 挂载进程退出，正在自动重启…").into());
+                hold_status(
+                    ui,
+                    hold,
+                    format!("检测到 {drive} 挂载进程退出，正在自动重启…"),
+                    4,
+                );
             }
             Some(Err(e)) => {
                 g.failed.insert(drive.clone());
-                ui.set_status_text(format!("{drive} 自动重启失败：{e}").into());
+                hold_status(ui, hold, format!("{drive} 自动重启失败：{e}"), 8);
             }
             None => {
                 g.failed.insert(drive);
@@ -185,6 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Rc::new(RefCell::new(model::load_profiles()));
     let recent = Rc::new(RefCell::new(Vec::<RecentSpawn>::new()));
+    let hold = Rc::new(StatusHold::default());
     let brewfs = Rc::new(model::find_brewfs());
     let ossmount = Rc::new(model::find_ossmount());
 
@@ -212,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // both the tray status and `brewfs info` stay accurate.
     model::prune_stale_records();
 
-    refresh(&ui, &tray, &state, &recent);
+    refresh(&ui, &tray, &state, &recent, &hold);
 
     // Preload the first saved profile into the form.
     if !state.borrow().profiles.is_empty() {
@@ -244,7 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tray.set_autostart(winutil::autostart_enabled());
 
     wire_callbacks(
-        &ui, &edit, &tray, &state, &recent, &brewfs, &ossmount, &pending,
+        &ui, &edit, &tray, &hold, &state, &recent, &brewfs, &ossmount, &pending,
     );
 
     // Periodic status refresh (2s) driven from the UI thread.
@@ -252,14 +284,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_weak = ui.as_weak();
         let tray_weak = tray.as_weak();
+        let hold = hold.clone();
         let state = state.clone();
         let recent = recent.clone();
         let ossmount = ossmount.clone();
         let brewfs = brewfs.clone();
         timer.start(TimerMode::Repeated, Duration::from_secs(2), move || {
             if let (Some(ui), Some(tray)) = (ui_weak.upgrade(), tray_weak.upgrade()) {
-                auto_restart(&ui, &state, &recent, &ossmount, &brewfs);
-                refresh(&ui, &tray, &state, &recent);
+                auto_restart(&ui, &hold, &state, &recent, &ossmount, &brewfs);
+                refresh(&ui, &tray, &state, &recent, &hold);
             }
         });
     }
@@ -267,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tray.show()?;
     ui.show()?;
     ui.set_status_text(SharedString::from("BrewFS 托盘已就绪"));
-    refresh(&ui, &tray, &state, &recent);
+    refresh(&ui, &tray, &state, &recent, &hold);
 
     slint::run_event_loop()?;
     Ok(())
@@ -278,6 +311,7 @@ fn wire_callbacks(
     ui: &MainWindow,
     edit: &EditDialog,
     tray: &Tray,
+    hold: &Rc<StatusHold>,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
     brewfs: &Rc<Option<PathBuf>>,
@@ -287,6 +321,7 @@ fn wire_callbacks(
     let ui_weak = ui.as_weak();
     let edit_weak = edit.as_weak();
     let tray_weak = tray.as_weak();
+    let hold = Rc::clone(hold);
     let state = Rc::clone(state);
     let recent = Rc::clone(recent);
     let brewfs = Rc::clone(brewfs);
@@ -300,6 +335,7 @@ fn wire_callbacks(
         let tray_weak = tray_weak.clone();
         let state = state.clone();
         let recent = recent.clone();
+        let hold = Rc::clone(&hold);
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let Some(edit) = edit_weak.upgrade() else {
@@ -325,7 +361,7 @@ fn wire_callbacks(
             }
             edit.set_form_error(String::new().into());
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent);
+                refresh(&ui, &tray, &state, &recent, &hold);
             }
             close_edit_dialog(&ui, &edit);
             if occupied {
@@ -433,6 +469,7 @@ fn wire_callbacks(
         let brewfs = brewfs.clone();
         let ossmount = ossmount.clone();
         let pending = Rc::clone(&pending);
+        let hold = Rc::clone(&hold);
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let profiles = state.borrow().profiles.clone();
@@ -450,6 +487,7 @@ fn wire_callbacks(
                 let tray_weak2 = tray_weak.clone();
                 let state2 = state.clone();
                 let recent2 = recent.clone();
+                let hold2 = Rc::clone(&hold);
                 ask_confirm(
                     &ui,
                     &pending,
@@ -460,7 +498,7 @@ fn wire_callbacks(
                             graceful_or_kill(&ui, brewfs2.as_ref(), &m);
                         }
                         if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
-                            refresh(&ui, &tray, &state2, &recent2);
+                            refresh(&ui, &tray, &state2, &recent2, &hold2);
                         }
                     },
                 );
@@ -469,13 +507,15 @@ fn wire_callbacks(
                 if let Err(e) = p.validate() {
                     ui.set_status_text(format!("挂载失败：{e}").into());
                 } else {
-                    mount_profile(&ui, &tray_weak, &state, &recent, &brewfs, &ossmount, &p);
+                    mount_profile(
+                        &ui, &tray_weak, &hold, &state, &recent, &brewfs, &ossmount, &p,
+                    );
                     // Ask the guard to auto-restart this mount if it dies.
                     guard().desired.insert(drive);
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
-                refresh(&ui, &tray, &state, &recent);
+                refresh(&ui, &tray, &state, &recent, &hold);
             }
         }
     });
@@ -487,6 +527,7 @@ fn wire_callbacks(
         let state = state.clone();
         let recent = recent.clone();
         let pending = Rc::clone(&pending);
+        let hold = Rc::clone(&hold);
         move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let name = {
@@ -501,6 +542,7 @@ fn wire_callbacks(
             let recent2 = recent.clone();
             let tray_weak2 = tray_weak.clone();
             let ui_weak2 = ui_weak.clone();
+            let hold2 = Rc::clone(&hold);
             ask_confirm(
                 &ui,
                 &pending,
@@ -519,7 +561,7 @@ fn wire_callbacks(
                         }
                     }
                     if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
-                        refresh(&ui, &tray, &state2, &recent2);
+                        refresh(&ui, &tray, &state2, &recent2, &hold2);
                         ui.set_status_text(format!("已删除配置「{name}」").into());
                     }
                 },
@@ -547,6 +589,7 @@ fn wire_callbacks(
         let recent = recent.clone();
         let brewfs = brewfs.clone();
         let pending = Rc::clone(&pending);
+        let hold = Rc::clone(&hold);
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mounts = model::read_mounts(&state.borrow().profiles);
@@ -561,6 +604,7 @@ fn wire_callbacks(
             let state2 = state.clone();
             let recent2 = recent.clone();
             let brewfs2 = brewfs.clone();
+            let hold2 = Rc::clone(&hold);
             ask_confirm(
                 &ui,
                 &pending,
@@ -573,7 +617,7 @@ fn wire_callbacks(
                         }
                     }
                     if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
-                        refresh(&ui, &tray, &state2, &recent2);
+                        refresh(&ui, &tray, &state2, &recent2, &hold2);
                         ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
                     }
                 },
@@ -648,6 +692,7 @@ fn wire_callbacks(
 fn mount_profile(
     ui: &MainWindow,
     tray_weak: &slint::Weak<Tray>,
+    hold: &Rc<StatusHold>,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
     brewfs: &Rc<Option<PathBuf>>,
@@ -698,13 +743,18 @@ fn mount_profile(
                 log,
                 at: Instant::now(),
             });
-            ui.set_status_text(format!("正在挂载 {drive}（PID {pid}），等待就绪…").into());
         }
-        Err(e) => ui.set_status_text(format!("挂载启动失败：{e}").into()),
+        Err(e) => {
+            hold_status(ui, hold, format!("挂载启动失败：{e}"), 8);
+            return;
+        }
     }
     if let Some(tray) = tray_weak.upgrade() {
-        refresh(ui, &tray, state, recent);
+        refresh(ui, &tray, state, recent, hold);
     }
+    // Set after refresh() so the summary cannot clobber it on the same tick.
+    let pid = recent.borrow().last().map(|s| s.pid).unwrap_or(0);
+    ui.set_status_text(format!("正在挂载 {drive}（PID {pid}），等待就绪…").into());
 }
 
 /// Insert or update `p` in the profile list (keyed by name).
@@ -721,6 +771,7 @@ fn refresh(
     tray: &Tray,
     state: &Rc<RefCell<model::ProfilesFile>>,
     recent: &Rc<RefCell<Vec<RecentSpawn>>>,
+    hold: &Rc<StatusHold>,
 ) {
     let profiles = state.borrow().profiles.clone();
     let mounts = model::read_mounts(&profiles);
@@ -748,7 +799,7 @@ fn refresh(
                 } else {
                     format!("挂载 {} 失败：{}", s.drive, detail)
                 };
-                ui.set_status_text(msg.into());
+                hold_status(ui, hold, msg, 8);
                 return false;
             }
             true
@@ -798,6 +849,21 @@ fn refresh(
         let drives: Vec<&str> = live.iter().map(|m| m.drive.as_str()).collect();
         format!("已挂载 {} 个盘符：{}", live.len(), drives.join(", "))
     };
+    // Keep a held error/transient message visible instead of overwriting it
+    // with the summary on the next 2s refresh tick.
+    if let Some(until) = hold.until.get() {
+        if Instant::now() < until {
+            ui.set_status_text(hold.msg.borrow().clone().into());
+            let tooltip = if live.is_empty() {
+                "BrewFS（无挂载）".to_string()
+            } else {
+                let drives: Vec<&str> = live.iter().map(|m| m.drive.as_str()).collect();
+                format!("BrewFS：已挂载 {}", drives.join(", "))
+            };
+            tray.set_tray_tooltip(tooltip.into());
+            return;
+        }
+    }
     ui.set_status_text(status.into());
 
     let tooltip = if live.is_empty() {
