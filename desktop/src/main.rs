@@ -513,6 +513,9 @@ fn wire_callbacks(
                     &format!("确定要卸载 {drive} 吗？"),
                     move || {
                         guard().desired.remove(&m.drive);
+                        // 卸载已发起：立刻从“挂载中”跟踪里摘掉这条，避免进程还在
+                        // 优雅退出期间被误判为“挂载中”而把挂载按钮一直置灰。
+                        recent2.borrow_mut().retain(|r| r.pid != m.pid);
                         if let Some(ui) = ui_weak2.upgrade() {
                             graceful_or_kill(&ui, brewfs2.as_ref(), &m);
                         }
@@ -631,6 +634,11 @@ fn wire_callbacks(
                 &pending,
                 &format!("确定要卸载全部 {} 个挂载吗？", live.len()),
                 move || {
+                    // 同单条卸载：立刻摘掉这些 pid 的“挂载中”跟踪，避免进程优雅
+                    // 退出期间挂载按钮被误置灰。
+                    recent2
+                        .borrow_mut()
+                        .retain(|r| !live.iter().any(|m| m.pid == r.pid));
                     for m in &live {
                         guard().desired.remove(&m.drive);
                         if let Some(ui) = ui_weak2.upgrade() {
