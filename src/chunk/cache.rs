@@ -866,6 +866,60 @@ impl DiskStorage {
             }
         }
     }
+
+    /// Remove the cache file for `key` if it exists, plus any leftover
+    /// temporary files for the same key. Unlike [`Self::remove`], a missing
+    /// cache file is not an error, so higher layers (e.g. `ChunksCache::remove`)
+    /// can treat removal as idempotent.
+    pub async fn remove_if_exists(&self, key: &str) -> anyhow::Result<()> {
+        let filename = Self::key_to_filename(key);
+        let filepath = self.base_dir.join(&filename);
+
+        if !filepath.exists() {
+            trace!("No disk cache file to remove for key '{}'", key);
+            return Ok(());
+        }
+
+        let file_size = tokio::fs::metadata(&filepath)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        let _permit = self.write_sem.clone().acquire_owned().await?;
+        match tokio::fs::remove_file(&filepath).await {
+            Ok(_) => {
+                self.saturating_fetch_sub_bytes(file_size);
+                debug!("Successfully removed file for key '{}'", key);
+            }
+            Err(e) => {
+                error!("Failed to remove file for key '{}': {}", key, e);
+                return Err(e.into());
+            }
+        }
+
+        // Best-effort cleanup of leftover tmp files (e.g. after a crash during
+        // store_with_permit). Failure to clean a tmp file is not correctness-
+        // relevant; it will be reclaimed by eviction or a later remove.
+        let tmp_prefix = format!(".{}.", filename);
+        let mut entries = match tokio::fs::read_dir(&self.base_dir).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                trace!(key, error = ?e, "failed to scan disk cache dir for tmp cleanup");
+                return Ok(());
+            }
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&tmp_prefix) && name.ends_with(".tmp") {
+                if let Err(e) = tokio::fs::remove_file(entry.path()).await {
+                    trace!(key, path = %entry.path().display(), error = ?e, "failed to remove leftover tmp cache file");
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Lock-free access statistics tracker with dual time window analysis.
@@ -2238,7 +2292,9 @@ impl ChunksCache {
         debug!("Cache REMOVE request for key: {}", key);
         trace!("Invalidating from hot cache: {}", key);
         self.hot_cache.invalidate(key).await;
-        // self.disk_storage.remove(key).await?;
+        if let Err(err) = self.disk_storage.remove_if_exists(key).await {
+            warn!(key, error = ?err, "failed to remove disk cache file; ignoring");
+        }
         trace!("Invalidating from cold cache: {}", key);
         self.cold_cache.invalidate(key).await;
 
@@ -2753,6 +2809,87 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.get(&key.to_string()).await, Some(data));
+    }
+
+    #[tokio::test]
+    async fn test_chunks_cache_remove_deletes_disk_file() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "remove-deletes-disk-file".to_string();
+        cache
+            .disk_storage
+            .store(&key, b"disk-resident data")
+            .await
+            .unwrap();
+        cache.cold_cache.insert(key.clone(), ()).await;
+        assert!(cache.is_disk_cached(&key).await);
+
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
+        assert!(
+            filepath.exists(),
+            "disk cache file should exist before remove"
+        );
+
+        cache.remove(&key).await.unwrap();
+
+        assert!(
+            !filepath.exists(),
+            "disk cache file should be deleted by ChunksCache::remove"
+        );
+        assert!(
+            !cache.is_disk_cached(&key).await,
+            "cold cache entry should be invalidated by ChunksCache::remove"
+        );
+        assert!(
+            cache.get(&key).await.is_none(),
+            "hot cache entry should be invalidated by ChunksCache::remove"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chunks_cache_remove_missing_disk_file_is_idempotent() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        // Key was never stored on disk: remove must not fail.
+        cache
+            .remove(&"never-on-disk-key".to_string())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_disk_storage_remove_if_exists_cleans_leftover_tmp_files() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "remove-if-exists-tmp-key";
+        storage.store(key, b"data").await.unwrap();
+
+        // Simulate a leftover tmp file from an interrupted store.
+        let filename = DiskStorage::key_to_filename(key);
+        let tmp_path = storage.base_dir.join(format!(".{}.42.tmp", filename));
+        tokio::fs::write(&tmp_path, b"partial").await.unwrap();
+
+        storage.remove_if_exists(key).await.unwrap();
+
+        let filepath = storage.base_dir.join(filename);
+        assert!(!filepath.exists(), "cache file should be removed");
+        assert!(!tmp_path.exists(), "leftover tmp file should be cleaned up");
     }
 
     #[tokio::test]
