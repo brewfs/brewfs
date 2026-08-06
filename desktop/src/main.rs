@@ -299,12 +299,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tray.show()?;
     ui.show()?;
-    // The edit dialog window is created lazily on first show(); on macOS with
-    // the transparent hidden-titlebar recipe its first frame can take a long
-    // time (window shows transparent). Warm it up once at startup so opening
-    // 编辑 later is instant.
-    let _ = edit.show();
-    let _ = edit.hide();
+    // macOS: 预热编辑窗的 Metal layer（同 feishu-bridge-rs 的做法）。Slint 首次 show
+    // 的预渲染帧是空的（surface 在窗口 map 前没就绪），内容要等下一帧 redraw 才补上；
+    // Metal layer 会保留上一帧，所以启动时挪到屏外 show + redraw 一次（不可见、无闪烁），
+    // 下一帧再 hide 并复位位置。此后用户首次点「编辑」走「非首次 show」路径，秒开不透明。
+    #[cfg(target_os = "macos")]
+    {
+        let saved = edit.window().position();
+        edit.window()
+            .set_position(slint::PhysicalPosition::new(-16_000, -16_000));
+        let _ = edit.show();
+        edit.window().request_redraw();
+        let ew = edit.as_weak();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = ew.upgrade() {
+                let _ = w.hide();
+                w.window().set_position(saved);
+            }
+        });
+    }
     ui.set_status_text(SharedString::from("BrewFS 托盘已就绪"));
     refresh(&ui, &tray, &state, &recent, &hold);
 
@@ -1411,7 +1424,20 @@ fn open_edit_dialog(ui: &MainWindow, edit: &EditDialog, title: String) {
         .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
             620.0, 560.0,
         )));
-    let _ = edit.show();
+    // macOS: 顺序很关键（同 feishu-bridge-rs 的实测结论）——Slint winit 后端在
+    // set_visible 里对「首次 show」的预渲染发生在窗口 map 之前、Metal surface 未就绪，
+    // 首帧画空且 macOS 不会自动补 redraw，导致内容区透明只剩控制按钮。
+    // 因此：先激活（窗口还藏着，重排不闪）→ show → 显式 request_redraw 补画一帧。
+    #[cfg(target_os = "macos")]
+    {
+        raise_window_to_front();
+        let _ = edit.show();
+        edit.window().request_redraw();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = edit.show();
+    }
     #[cfg(windows)]
     make_modal_child(edit.window(), ui.window());
 }
