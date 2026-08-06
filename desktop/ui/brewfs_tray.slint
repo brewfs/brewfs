@@ -424,6 +424,9 @@ export component MainWindow inherits Window {
 export component EditDialog inherits Window {
     title: "编辑配置";
     icon: @image-url("../assets/brewfs.png");
+    // Fill the window immediately so it never shows as a transparent hole
+    // while the first frame is being prepared.
+    background: #f4f6f9;
     preferred-width: 620px;
     preferred-height: 560px;
     min-width: 620px;
