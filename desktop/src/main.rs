@@ -715,6 +715,14 @@ fn mount_profile(
         ui.set_status_text(format!("盘符 {drive} 已被其他配置挂载，请更换").into());
         return false;
     }
+    // Kernel-level guard: never stack a second mount on a directory that is
+    // already a mount point (e.g. a previous ossmount that left its NFS mount
+    // behind, or the same dir mounted elsewhere).
+    #[cfg(not(windows))]
+    if winutil::path_is_mount_point(std::path::Path::new(&drive)) {
+        ui.set_status_text(format!("{drive} 已是一个挂载点，请先卸载再挂载").into());
+        return false;
+    }
     #[cfg(target_os = "macos")]
     if p.mode == "oss" && !macos_fuse_backend_ready() {
         let ui_weak = ui.as_weak();

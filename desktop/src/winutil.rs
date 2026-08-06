@@ -83,11 +83,39 @@ pub fn pid_is_mount_process(pid: u32) -> bool {
         .output();
     match out {
         Ok(o) if o.status.success() => {
+            // macOS `ps -o comm=` prints the full executable path (e.g.
+            // /Applications/BrewFS.app/Contents/MacOS/ossmount), while Linux
+            // prints the basename; match on the basename on both.
             let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            name.starts_with("ossmount") || name.starts_with("brewfs")
+            let base = name.rsplit('/').next().unwrap_or("");
+            base.starts_with("ossmount") || base.starts_with("brewfs")
         }
         _ => false,
     }
+}
+
+/// True when `path` is currently a mount point at the kernel level (checks
+/// the `mount` table and compares canonical paths, so `/tmp` == `/private/tmp`).
+/// Used to refuse stacking a second mount on the same directory.
+#[cfg(not(windows))]
+pub fn path_is_mount_point(path: &std::path::Path) -> bool {
+    let Ok(out) = std::process::Command::new("mount").output() else {
+        return false;
+    };
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let mut it = line.split_whitespace();
+        let _dev = it.next();
+        let _on = it.next();
+        match it.next() {
+            Some(mp) => {
+                let mp_c =
+                    std::fs::canonicalize(mp).unwrap_or_else(|_| std::path::PathBuf::from(mp));
+                mp_c == canon
+            }
+            None => false,
+        }
+    })
 }
 
 /// Whether a process with the given id is still running.

@@ -1023,6 +1023,31 @@ fn build_config() -> Config {
     cfg
 }
 
+/// True when `path` is already a kernel-level mount point (parses `mount`).
+/// Prevents stacking a second FUSE/NFS mount on the same directory when a
+/// previous ossmount left its mount behind (e.g. after a crash or when the
+/// tray's process registry lost track of it).
+#[cfg(not(windows))]
+fn path_is_mount_point(path: &std::path::Path) -> bool {
+    let Ok(out) = std::process::Command::new("mount").output() else {
+        return false;
+    };
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let mut it = line.split_whitespace();
+        let _dev = it.next();
+        let _on = it.next();
+        match it.next() {
+            Some(mp) => {
+                let mp_c =
+                    std::fs::canonicalize(mp).unwrap_or_else(|_| std::path::PathBuf::from(mp));
+                mp_c == canon
+            }
+            None => false,
+        }
+    })
+}
+
 /// Mount an [`ObjectFs`] at `mount_point` via FUSE (macFUSE or FUSE-T on
 /// macOS, libfuse on Linux). Runs until Ctrl+C / SIGTERM / external unmount,
 /// then tears down gracefully.
@@ -1046,6 +1071,13 @@ pub async fn mount_oss_fuse(
 
     if !mount_point.exists() {
         std::fs::create_dir_all(mount_point).ok();
+    }
+    #[cfg(not(windows))]
+    if path_is_mount_point(mount_point) {
+        anyhow::bail!(
+            "{} 已是一个挂载点，请先卸载再挂载（避免同一目录被重复挂载）",
+            mount_point.display()
+        );
     }
 
     let handle = Handle::current();
