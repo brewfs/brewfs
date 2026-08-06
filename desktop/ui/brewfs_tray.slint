@@ -497,7 +497,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-name;
+                            text <=> root.cfg-name;
                             placeholder-text: "例如：阿里云 OSS";
                             horizontal-stretch: 1.0;
                         }
@@ -519,7 +519,7 @@ export component EditDialog inherits Window {
                             }
                         }
                         if !root.show-free-drives: LineEdit {
-                            text: root.cfg-drive;
+                            text <=> root.cfg-drive;
                             placeholder-text: "macOS/Linux 挂载目录，例如 /Volumes/brewfs";
                             input-type: text;
                             horizontal-stretch: 1.0;
@@ -598,7 +598,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-data-dir;
+                            text <=> root.cfg-data-dir;
                             placeholder-text: "本地对象存储目录，例如 E:\\brewfs-data";
                             horizontal-stretch: 1.0;
                         }
@@ -611,7 +611,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-s3-bucket;
+                            text <=> root.cfg-s3-bucket;
                             placeholder-text: "OSS bucket 名称";
                             horizontal-stretch: 1.0;
                         }
@@ -624,7 +624,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-s3-region;
+                            text <=> root.cfg-s3-region;
                             placeholder-text: "例如 cn-shanghai";
                             horizontal-stretch: 1.0;
                         }
@@ -637,7 +637,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-s3-endpoint;
+                            text <=> root.cfg-s3-endpoint;
                             placeholder-text: "S3 兼容接入点，例如 https://s3.oss-cn-shanghai.aliyuncs.com";
                             horizontal-stretch: 1.0;
                         }
@@ -650,7 +650,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-s3-access-key;
+                            text <=> root.cfg-s3-access-key;
                             placeholder-text: "AK";
                             horizontal-stretch: 1.0;
                         }
@@ -663,7 +663,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-s3-secret-key;
+                            text <=> root.cfg-s3-secret-key;
                             placeholder-text: "SK（本地保存，不写入提交）";
                             input-type: password;
                             horizontal-stretch: 1.0;
@@ -676,7 +676,7 @@ export component EditDialog inherits Window {
 
                         CheckBox {
                             text: "force_path_style（MinIO/自建 S3 需要）";
-                            checked: root.cfg-s3-force-path-style;
+                            checked <=> root.cfg-s3-force-path-style;
                         }
                     }
                     if root.cfg-mode == "oss": Row {
@@ -687,7 +687,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-prefix;
+                            text <=> root.cfg-prefix;
                             placeholder-text: "对象 key 命名空间（可选），例如 myns/；多机共享时保持一致";
                             horizontal-stretch: 1.0;
                         }
@@ -700,7 +700,7 @@ export component EditDialog inherits Window {
                         }
 
                         LineEdit {
-                            text: root.cfg-meta-url;
+                            text <=> root.cfg-meta-url;
                             placeholder-text: "sqlite://./data/brewfs-meta.db?mode=rwc 或 redis://... 或 etcd/tikv 地址（逗号分隔）";
                             horizontal-stretch: 1.0;
                         }
