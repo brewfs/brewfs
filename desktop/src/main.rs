@@ -507,11 +507,13 @@ fn wire_callbacks(
                 if let Err(e) = p.validate() {
                     ui.set_status_text(format!("挂载失败：{e}").into());
                 } else {
-                    mount_profile(
-                        &ui, &tray_weak, &hold, &state, &recent, &brewfs, &ossmount, &p,
+                    let started = mount_profile(
+                        &ui, &pending, &tray_weak, &hold, &state, &recent, &brewfs, &ossmount, &p,
                     );
                     // Ask the guard to auto-restart this mount if it dies.
-                    guard().desired.insert(drive);
+                    if started {
+                        guard().desired.insert(drive);
+                    }
                 }
             }
             if let Some(tray) = tray_weak.upgrade() {
@@ -691,6 +693,7 @@ fn wire_callbacks(
 #[allow(clippy::too_many_arguments)]
 fn mount_profile(
     ui: &MainWindow,
+    pending: &Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
     tray_weak: &slint::Weak<Tray>,
     hold: &Rc<StatusHold>,
     state: &Rc<RefCell<model::ProfilesFile>>,
@@ -698,11 +701,11 @@ fn mount_profile(
     brewfs: &Rc<Option<PathBuf>>,
     ossmount: &Rc<Option<PathBuf>>,
     p: &model::Profile,
-) {
+) -> bool {
     let drive = model::normalize_mount_point(&p.drive);
     if drive_occupied(&drive) {
         ui.set_status_text(format!("盘符 {drive} 已被占用，请更换后挂载").into());
-        return;
+        return false;
     }
     // Another saved config already mounts this drive -> conflict.
     if model::read_mounts(&state.borrow().profiles)
@@ -710,8 +713,39 @@ fn mount_profile(
         .any(|m| m.alive && m.drive == drive)
     {
         ui.set_status_text(format!("盘符 {drive} 已被其他配置挂载，请更换").into());
-        return;
+        return false;
     }
+    #[cfg(target_os = "macos")]
+    if p.mode == "oss" && !macos_fuse_backend_ready() {
+        let ui_weak = ui.as_weak();
+        let hold = Rc::clone(hold);
+        ask_confirm(
+            ui,
+            pending,
+            "未检测到 FUSE 后端。\nOSS 直挂需要 FUSE-T（免内核扩展，无需修改系统安全策略）或 macFUSE。\n是否自动下载并安装 FUSE-T？会弹出系统管理员密码框。",
+            move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    hold_status(
+                        &ui,
+                        &hold,
+                        "正在安装 FUSE-T（请在弹出的系统框输入密码，约 1-2 分钟）…".into(),
+                        120,
+                    );
+                }
+                std::thread::spawn(move || {
+                    let msg = match macos_install_fuse_t() {
+                        Ok(s) => format!("{s}，请再次点击挂载"),
+                        Err(e) => format!("FUSE-T 安装失败：{e}"),
+                    };
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_status_text(msg.into());
+                    });
+                });
+            },
+        );
+        return false;
+    }
+
     let spawned = if p.mode == "oss" {
         let Some(ossmount) = ossmount.as_ref() else {
             #[cfg(windows)]
@@ -720,13 +754,13 @@ fn mount_profile(
             ui.set_status_text(
                 "未找到 ossmount（OSS 直挂需要 macOS + FUSE-T 或 macFUSE，请先安装 FUSE-T：brew install --cask fuse-t）".into(),
             );
-            return;
+            return false;
         };
         model::spawn_oss_mount(ossmount, p)
     } else {
         let Some(brewfs) = brewfs.as_ref() else {
             ui.set_status_text("未找到 brewfs.exe（可用环境变量 BREWFS_EXE 指定）".into());
-            return;
+            return false;
         };
         model::spawn_mount(brewfs, p)
     };
@@ -746,7 +780,7 @@ fn mount_profile(
         }
         Err(e) => {
             hold_status(ui, hold, format!("挂载启动失败：{e}"), 8);
-            return;
+            return false;
         }
     }
     if let Some(tray) = tray_weak.upgrade() {
@@ -755,6 +789,7 @@ fn mount_profile(
     // Set after refresh() so the summary cannot clobber it on the same tick.
     let pid = recent.borrow().last().map(|s| s.pid).unwrap_or(0);
     ui.set_status_text(format!("正在挂载 {drive}（PID {pid}），等待就绪…").into());
+    true
 }
 
 /// Insert or update `p` in the profile list (keyed by name).
@@ -1046,6 +1081,91 @@ fn open_in_explorer(target: &str) {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = target;
+    }
+}
+
+/// macOS: is a usable FUSE backend (FUSE-T or macFUSE) already installed?
+///
+/// `ossmount` needs one of them to mount. FUSE-T is preferred because it is
+/// kext-less (no Recovery Mode / security-policy change on Apple Silicon).
+#[cfg(target_os = "macos")]
+fn macos_fuse_backend_ready() -> bool {
+    std::path::Path::new("/Library/Filesystems/macfuse.fs").exists()
+        || std::path::Path::new("/Library/Application Support/fuse-t").exists()
+        || std::path::Path::new("/usr/local/lib/libfuse-t.dylib").exists()
+        || std::path::Path::new("/opt/homebrew/lib/libfuse-t.dylib").exists()
+}
+
+/// macOS: resolve the download URL of the latest FUSE-T installer pkg.
+#[cfg(target_os = "macos")]
+fn macos_latest_fuse_t_pkg_url() -> Option<String> {
+    let out = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "https://api.github.com/repos/macos-fuse-t/fuse-t/releases/latest",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let marker = "\"browser_download_url\": \"";
+    let mut rest = text.as_ref();
+    while let Some(pos) = rest.find(marker) {
+        let start = pos + marker.len();
+        let end = rest[start..].find('"')? + start;
+        let url = &rest[start..end];
+        if url.contains("fuse-t-macos-installer") && url.ends_with(".pkg") {
+            return Some(url.to_string());
+        }
+        rest = &rest[end..];
+    }
+    None
+}
+
+/// macOS: download and install FUSE-T (prompts for the administrator
+/// password via AppleScript). FUSE-T is kext-less, so no security-policy
+/// change or reboot is required.
+#[cfg(target_os = "macos")]
+fn macos_install_fuse_t() -> Result<String, String> {
+    let url = macos_latest_fuse_t_pkg_url().ok_or_else(|| {
+        "无法获取 FUSE-T 下载地址，请检查网络，或打开 https://www.fuse-t.org/ 手动安装".to_string()
+    })?;
+    let pkg = std::env::temp_dir().join("fuse-t-macos-installer.pkg");
+    let out = std::process::Command::new("curl")
+        .args(["-fL", "-o"])
+        .arg(&pkg)
+        .arg(&url)
+        .output()
+        .map_err(|e| format!("下载 FUSE-T 安装包失败：{e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "下载 FUSE-T 安装包失败：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let script = format!(
+        "do shell script \"installer -pkg {} -target /\" with administrator privileges",
+        pkg.display()
+    );
+    let out = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("启动系统安装器失败：{e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "安装 FUSE-T 失败（可能取消了密码）：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    if macos_fuse_backend_ready() {
+        Ok("FUSE-T 安装完成".to_string())
+    } else {
+        Err(
+            "FUSE-T 安装程序已执行，但未检测到安装结果；请打开 https://www.fuse-t.org/ 手动安装"
+                .to_string(),
+        )
     }
 }
 
