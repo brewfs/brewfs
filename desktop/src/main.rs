@@ -299,6 +299,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tray.show()?;
     ui.show()?;
+    // The edit dialog window is created lazily on first show(); on macOS with
+    // the transparent hidden-titlebar recipe its first frame can take a long
+    // time (window shows transparent). Warm it up once at startup so opening
+    // 编辑 later is instant.
+    let _ = edit.show();
+    let _ = edit.hide();
     ui.set_status_text(SharedString::from("BrewFS 托盘已就绪"));
     refresh(&ui, &tray, &state, &recent, &hold);
 
