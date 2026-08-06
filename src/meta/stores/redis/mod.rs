@@ -89,6 +89,74 @@ const CHUNK_CAS_LUA: &str = r#"
     return 1
 "#;
 
+// Lua script for an atomic compact replace: validates the chunk version,
+// replaces the slice list, AND creates the delayed GC records for the removed
+// slices in the same script. Without this, a crash between the CAS and the
+// delayed-record write would leak objects: old slices are gone from the chunk
+// list but never accounted for by the GC.
+// KEYS[1] = chunk list key
+// KEYS[2] = chunk version key
+// KEYS[3] = delayed counter key
+// KEYS[4] = delayed index key (zset)
+// ARGV[1] = expected version
+// ARGV[2] = new version
+// ARGV[3] = delayed hash key prefix (e.g. "ds")
+// ARGV[4] = chunk_id (string, stored on every delayed record)
+// ARGV[5] = timestamp (now)
+// ARGV[6] = delayed record count (n)
+// ARGV[7 .. 7+3n-1] = delayed triples (sid, off, sz)
+// ARGV[7+3n ..] = serialized slice data (may be empty to delete the chunk)
+const CHUNK_COMPACT_LUA: &str = r#"
+    local expected = tonumber(ARGV[1])
+    local new_ver  = tonumber(ARGV[2])
+    local prefix   = ARGV[3]
+    local cid      = ARGV[4]
+    local now      = ARGV[5]
+    local n        = tonumber(ARGV[6])
+    local data_start = 7 + 3 * n
+
+    local current = redis.call('GET', KEYS[2])
+    local current_ver = 0
+    if current then
+        current_ver = tonumber(current)
+    end
+
+    if current_ver ~= expected then
+        return 0
+    end
+
+    redis.call('DEL', KEYS[1])
+    for i = data_start, #ARGV do
+        redis.call('RPUSH', KEYS[1], ARGV[i])
+    end
+
+    if new_ver > 0 then
+        redis.call('SET', KEYS[2], new_ver)
+    else
+        redis.call('DEL', KEYS[2])
+    end
+
+    if n > 0 then
+        local last_id = redis.call('INCRBY', KEYS[3], n)
+        local first_id = last_id - n + 1
+        for i = 0, n - 1 do
+            local delayed_id = first_id + i
+            local ds_key = prefix .. delayed_id
+            local base = 7 + 3 * i
+            redis.call('HSET', ds_key,
+                'sid', ARGV[base],
+                'off', ARGV[base + 1],
+                'sz',  ARGV[base + 2],
+                'st',  'pending',
+                'ca',  now,
+                'cid', cid)
+            redis.call('ZADD', KEYS[4], now, delayed_id)
+        end
+    end
+
+    return 1
+"#;
+
 // Lua script for atomically releasing all locks held by a dead session.
 // Constructs plock keys dynamically from the locked set so the entire
 // cleanup is atomic — no TOCTOU window between reading locked_files and
@@ -3531,8 +3599,15 @@ impl MetaStore for RedisMetaStore {
 
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
-        let script = redis::Script::new(CHUNK_CAS_LUA);
+        let script = redis::Script::new(CHUNK_COMPACT_LUA);
         let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
+        let now = Utc::now().timestamp();
+        let delayed_args: Vec<String> = delayed_slices
+            .iter()
+            .flat_map(|(sid, off, sz)| {
+                [sid.to_string(), off.to_string(), u64::from(*sz).to_string()]
+            })
+            .collect();
 
         for _ in 0..COMPACT_RETRY_LIMIT {
             let mut conn = self.conn.clone();
@@ -3567,12 +3642,21 @@ impl MetaStore for RedisMetaStore {
 
             let new_version = current_version + 1;
 
-            // Atomic CAS via Lua: replace list iff version still matches.
+            // Atomic Lua: CAS the slice list AND create delayed GC records in
+            // one script. No window exists where old slices are removed from
+            // the chunk list but never accounted for by the GC.
             let ok: i32 = script
                 .key(&chunk_key)
                 .key(&version_key)
+                .key(DELAYED_COUNTER_KEY)
+                .key(DELAYED_INDEX_KEY)
                 .arg(current_version)
                 .arg(new_version)
+                .arg(DELAYED_KEY_PREFIX)
+                .arg(chunk_id.to_string())
+                .arg(now)
+                .arg(delayed_slices.len())
+                .arg(&delayed_args)
                 .arg(&final_data)
                 .invoke_async(&mut conn)
                 .await
@@ -3580,38 +3664,6 @@ impl MetaStore for RedisMetaStore {
 
             if ok == 0 {
                 continue;
-            }
-
-            // CAS succeeded — create delayed records for removed slices.
-            if !delayed_slices.is_empty() {
-                let n = delayed_slices.len() as i64;
-                let last_id: i64 = redis::cmd("INCRBY")
-                    .arg(DELAYED_COUNTER_KEY)
-                    .arg(n)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(redis_err)?;
-                let first_id = last_id - n + 1;
-                let now = Utc::now().timestamp();
-
-                let mut pipe = redis::pipe();
-                pipe.atomic();
-                for (i, (slice_id, offset, size)) in delayed_slices.iter().enumerate() {
-                    let delayed_id = first_id + i as i64;
-                    let ds_key = self.delayed_key(delayed_id);
-                    pipe.hset(&ds_key, "sid", slice_id.to_string());
-                    pipe.hset(&ds_key, "off", offset.to_string());
-                    pipe.hset(&ds_key, "sz", u64::from(*size).to_string());
-                    pipe.hset(&ds_key, "st", "pending");
-                    pipe.hset(&ds_key, "ca", now.to_string());
-                    pipe.hset(&ds_key, "cid", chunk_id.to_string());
-                    pipe.cmd("ZADD")
-                        .arg(DELAYED_INDEX_KEY)
-                        .arg(now)
-                        .arg(delayed_id)
-                        .ignore();
-                }
-                pipe.query_async::<()>(&mut conn).await.map_err(redis_err)?;
             }
 
             return Ok(());
@@ -3649,8 +3701,15 @@ impl MetaStore for RedisMetaStore {
 
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
-        let script = redis::Script::new(CHUNK_CAS_LUA);
+        let script = redis::Script::new(CHUNK_COMPACT_LUA);
         let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
+        let now = Utc::now().timestamp();
+        let delayed_args: Vec<String> = delayed_slices
+            .iter()
+            .flat_map(|(sid, off, sz)| {
+                [sid.to_string(), off.to_string(), u64::from(*sz).to_string()]
+            })
+            .collect();
 
         for _ in 0..COMPACT_RETRY_LIMIT {
             let mut conn = self.conn.clone();
@@ -3725,12 +3784,21 @@ impl MetaStore for RedisMetaStore {
                 final_data.push(crate::meta::serialization::serialize_meta(slice)?);
             }
 
-            // Atomic CAS via Lua: replace list iff version still matches.
+            // Atomic Lua: CAS the slice list AND create delayed GC records in
+            // one script. No window exists where old slices are removed from
+            // the chunk list but never accounted for by the GC.
             let ok: i32 = script
                 .key(&chunk_key)
                 .key(&version_key)
+                .key(DELAYED_COUNTER_KEY)
+                .key(DELAYED_INDEX_KEY)
                 .arg(current_version)
                 .arg(new_version)
+                .arg(DELAYED_KEY_PREFIX)
+                .arg(chunk_id.to_string())
+                .arg(now)
+                .arg(delayed_slices.len())
+                .arg(&delayed_args)
                 .arg(&final_data)
                 .invoke_async(&mut conn)
                 .await
@@ -3740,70 +3808,27 @@ impl MetaStore for RedisMetaStore {
                 continue;
             }
 
-            // CAS succeeded — create delayed records and clean up uncommitted entries.
-            if !delayed_slices.is_empty() {
-                let n = delayed_slices.len() as i64;
-                let last_id: i64 = redis::cmd("INCRBY")
-                    .arg(DELAYED_COUNTER_KEY)
-                    .arg(n)
-                    .query_async(&mut conn)
+            // Clean up uncommitted records for the new slices (best-effort; the
+            // slice list swap and delayed GC records already happened atomically
+            // inside the Lua script).
+            for slice in new_slices {
+                let uc_key = self.uncommitted_key(slice.slice_id);
+                redis::pipe()
+                    .atomic()
+                    .cmd("DEL")
+                    .arg(&uc_key)
+                    .ignore()
+                    .cmd("ZREM")
+                    .arg(UNCOMMITTED_PENDING_INDEX_KEY)
+                    .arg(slice.slice_id.to_string())
+                    .ignore()
+                    .cmd("ZREM")
+                    .arg(UNCOMMITTED_ORPHAN_INDEX_KEY)
+                    .arg(slice.slice_id.to_string())
+                    .ignore()
+                    .query_async::<()>(&mut conn)
                     .await
                     .map_err(redis_err)?;
-                let first_id = last_id - n + 1;
-                let now = Utc::now().timestamp();
-
-                let mut pipe = redis::pipe();
-                pipe.atomic();
-                for (i, (slice_id, offset, size)) in delayed_slices.iter().enumerate() {
-                    let delayed_id = first_id + i as i64;
-                    let ds_key = self.delayed_key(delayed_id);
-                    pipe.hset(&ds_key, "sid", slice_id.to_string());
-                    pipe.hset(&ds_key, "off", offset.to_string());
-                    pipe.hset(&ds_key, "sz", u64::from(*size).to_string());
-                    pipe.hset(&ds_key, "st", "pending");
-                    pipe.hset(&ds_key, "ca", now.to_string());
-                    pipe.hset(&ds_key, "cid", chunk_id.to_string());
-                    pipe.cmd("ZADD")
-                        .arg(DELAYED_INDEX_KEY)
-                        .arg(now)
-                        .arg(delayed_id)
-                        .ignore();
-                }
-                // Clean up uncommitted records for new slices
-                for slice in new_slices {
-                    let uc_key = self.uncommitted_key(slice.slice_id);
-                    pipe.cmd("DEL").arg(&uc_key).ignore();
-                    pipe.cmd("ZREM")
-                        .arg(UNCOMMITTED_PENDING_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore();
-                    pipe.cmd("ZREM")
-                        .arg(UNCOMMITTED_ORPHAN_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore();
-                }
-                pipe.query_async::<()>(&mut conn).await.map_err(redis_err)?;
-            } else {
-                // No delayed slices, still clean up uncommitted records.
-                for slice in new_slices {
-                    let uc_key = self.uncommitted_key(slice.slice_id);
-                    redis::pipe()
-                        .atomic()
-                        .cmd("DEL")
-                        .arg(&uc_key)
-                        .ignore()
-                        .cmd("ZREM")
-                        .arg(UNCOMMITTED_PENDING_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore()
-                        .cmd("ZREM")
-                        .arg(UNCOMMITTED_ORPHAN_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore()
-                        .query_async::<()>(&mut conn)
-                        .await
-                        .map_err(redis_err)?;
-                }
             }
 
             return Ok(());

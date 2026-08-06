@@ -3270,6 +3270,81 @@ async fn test_delayed_slice_workflow_consistency() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn test_replace_slices_for_compact_with_version_conflict_leaves_state_unchanged() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "compact_conflict.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 411,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    store.append_slice(chunk_id, old_slice).await.unwrap();
+
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 412,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    let delayed_data = crate::chunk::SliceDesc::encode_delayed_data(&[old_slice], &[411]);
+
+    // Mismatched expectation: must fail with a retryable conflict and leave
+    // the chunk list and delayed index untouched (no CAS, no delayed records).
+    let conflict = store
+        .replace_slices_for_compact_with_version(
+            chunk_id,
+            &[new_slice],
+            &delayed_data,
+            &[], // expected slice list intentionally wrong
+        )
+        .await;
+    assert!(
+        matches!(conflict, Err(MetaError::ContinueRetry(_))),
+        "version mismatch should surface as a retryable compact conflict; got {conflict:?}"
+    );
+
+    let slices = store.get_slices(chunk_id).await.unwrap();
+    assert_eq!(
+        slices,
+        vec![old_slice],
+        "chunk list must be unchanged on conflict"
+    );
+    let delayed = store.process_delayed_slices(10, 0).await.unwrap();
+    assert!(
+        delayed.is_empty(),
+        "no delayed records should be created on conflict"
+    );
+
+    // Correct expectation: succeeds and atomically swaps + records delayed.
+    store
+        .replace_slices_for_compact_with_version(
+            chunk_id,
+            &[new_slice],
+            &delayed_data,
+            &[old_slice],
+        )
+        .await
+        .unwrap();
+    let slices_after = store.get_slices(chunk_id).await.unwrap();
+    assert_eq!(slices_after, vec![new_slice]);
+    let delayed = store.process_delayed_slices(10, 0).await.unwrap();
+    assert_eq!(
+        delayed.len(),
+        1,
+        "delayed record should be created with the CAS"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_uncommitted_slice_workflow_consistency() {
     let store = new_test_store().await;
     let slice_id = 501u64;
