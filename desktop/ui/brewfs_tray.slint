@@ -430,11 +430,11 @@ export component EditDialog inherits Window {
     // while the first frame is being prepared.
     background: #f4f6f9;
     preferred-width: 620px;
-    preferred-height: 560px;
+    preferred-height: 700px;
     min-width: 620px;
     max-width: 620px;
-    min-height: 560px;
-    max-height: 560px;
+    min-height: 700px;
+    max-height: 700px;
 
     in property <string> edit-title;
     // macOS: keep room for the native traffic-light buttons (hidden titlebar).
@@ -470,12 +470,12 @@ export component EditDialog inherits Window {
 
     Rectangle {
         width: 620px;
-        height: 560px;
+        height: 700px;
         background: #f4f6f9;
 
         VerticalBox {
-            padding: 18px;
-            spacing: 14px;
+            padding: 14px;
+            spacing: 10px;
 
             // macOS: blank row so the traffic-light buttons don't overlap content.
             if root.traffic-light-padding: Rectangle {
@@ -493,7 +493,7 @@ export component EditDialog inherits Window {
                 vertical-stretch: 1.0;
                 GridBox {
                     width: 100%;
-                    spacing: 10px;
+                    spacing: 8px;
                     Row {
                         Text {
                             text: "配置名称";

@@ -1390,7 +1390,7 @@ fn open_edit_dialog(ui: &MainWindow, edit: &EditDialog, title: String) {
     // dialog through Slint's own size API so the form renders at 620x560.
     edit.window()
         .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
-            620.0, 560.0,
+            620.0, 700.0,
         )));
     // macOS: 顺序很关键（同 feishu-bridge-rs 的实测结论）——Slint winit 后端在
     // set_visible 里对「首次 show」的预渲染发生在窗口 map 之前、Metal surface 未就绪，
