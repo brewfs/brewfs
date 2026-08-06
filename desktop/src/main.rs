@@ -879,6 +879,8 @@ fn refresh(
                 return false;
             }
             if !winutil::pid_alive(s.pid) {
+                // Reap the zombie so the process table entry disappears.
+                winutil::reap_child(s.pid);
                 let tail = model::read_log_tail(&s.log, 2048);
                 let detail = tail.trim();
                 let msg = if detail.is_empty() {

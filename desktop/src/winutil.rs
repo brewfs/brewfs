@@ -148,19 +148,54 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    // Linux has /proc; macOS/BSD do not, so use `kill -0` (checks existence
-    // without sending a signal).
     #[cfg(target_os = "linux")]
     {
-        return std::path::Path::new(&format!("/proc/{pid}")).exists();
+        // /proc/<pid> exists for zombies too; treat a zombie as dead.
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return false;
+        }
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // field 3 of /proc/<pid>/stat is the process state.
+            if let Some(state) = stat.split_whitespace().nth(2) {
+                if state == "Z" {
+                    return false;
+                }
+            }
+        }
+        true
     }
     #[cfg(not(target_os = "linux"))]
     {
-        std::process::Command::new("kill")
+        // `kill -0` succeeds for zombies too (the entry is still in the
+        // process table until the parent reaps it), so additionally check the
+        // process state: 'Z' = zombie = effectively dead. Otherwise a just-
+        // unmounted ossmount that became a zombie would keep the tray's
+        // "mounting" flag set forever.
+        if !std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+        {
+            return false;
+        }
+        let state = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "state="])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
+        !state.trim().starts_with('Z')
+    }
+}
+
+/// Reap an exited child process (the tray spawns ossmount/brewfs and never
+/// keeps the `Child` handle, so exited children would linger as zombies).
+/// `waitpid(WNOHANG)` on a non-child is a harmless no-op (ECHILD).
+#[cfg(not(windows))]
+pub fn reap_child(pid: u32) {
+    unsafe {
+        libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
     }
 }
 
