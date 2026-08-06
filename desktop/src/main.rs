@@ -754,6 +754,14 @@ fn mount_profile(
         return false;
     }
 
+    // Make sure the mountpoint directory exists (on macOS /Volumes needs
+    // admin to create); without it the FUSE backend cannot mount.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = macos_ensure_mountpoint_dir(&drive) {
+        ui.set_status_text(e.into());
+        return false;
+    }
+
     let spawned = if p.mode == "oss" {
         let Some(ossmount) = ossmount.as_ref() else {
             #[cfg(windows)]
@@ -1174,6 +1182,36 @@ fn macos_install_fuse_t() -> Result<String, String> {
             "FUSE-T 安装程序已执行，但未检测到安装结果；请打开 https://www.fuse-t.org/ 手动安装"
                 .to_string(),
         )
+    }
+}
+
+/// macOS: make sure the mountpoint directory exists. `/Volumes` is
+/// root-owned, so when a plain `mkdir -p` fails (Permission denied), ask the
+/// user for the administrator password once (same pattern as the FUSE-T
+/// installer) and create it.
+#[cfg(target_os = "macos")]
+fn macos_ensure_mountpoint_dir(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if p.exists() {
+        return Ok(());
+    }
+    match std::fs::create_dir_all(p) {
+        Ok(()) => return Ok(()),
+        Err(_) => {}
+    }
+    let escaped = path.replace('\'', "'\\''");
+    let script = format!(
+        "do shell script \"mkdir -p '{}'\" with administrator privileges",
+        escaped
+    );
+    let out = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("创建挂载点失败：{e}"))?;
+    if out.status.success() && p.exists() {
+        Ok(())
+    } else {
+        Err(format!("无法创建挂载点 {path}（需要管理员权限，已取消）"))
     }
 }
 

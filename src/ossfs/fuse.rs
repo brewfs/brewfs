@@ -1070,7 +1070,12 @@ pub async fn mount_oss_fuse(
     fs.list("/").await?;
 
     if !mount_point.exists() {
-        std::fs::create_dir_all(mount_point).ok();
+        std::fs::create_dir_all(mount_point).map_err(|e| {
+            anyhow::anyhow!(
+                "挂载点 {} 不存在且无法创建：{e}（/Volumes 需要管理员权限，请在托盘挂载时按提示创建）",
+                mount_point.display()
+            )
+        })?;
     }
     #[cfg(not(windows))]
     if path_is_mount_point(mount_point) {
