@@ -1191,20 +1191,51 @@ fn macos_install_fuse_t() -> Result<String, String> {
 /// installer) and create it.
 #[cfg(target_os = "macos")]
 fn macos_ensure_mountpoint_dir(path: &str) -> Result<(), String> {
+    use std::process::Command;
+
     let p = std::path::Path::new(path);
+    let uid = Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let gid = Command::new("id")
+        .arg("-g")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    // Fast path: the directory exists and is owned by us. Non-root NFS/FUSE
+    // mounts require the mountpoint to belong to the mounting user; a
+    // root-owned mountpoint fails with EPERM ("Operation not permitted").
     if p.exists() {
+        let owned = Command::new("stat")
+            .args(["-f", "%u", path])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(|owner| owner == uid)
+            .unwrap_or(false);
+        if owned {
+            return Ok(());
+        }
+    } else if std::fs::create_dir_all(p).is_ok() {
         return Ok(());
     }
-    match std::fs::create_dir_all(p) {
-        Ok(()) => return Ok(()),
-        Err(_) => {}
-    }
+
+    // Missing or not owned by us: ask for the administrator password once to
+    // create it under /Volumes and chown it to the current user.
     let escaped = path.replace('\'', "'\\''");
     let script = format!(
-        "do shell script \"mkdir -p '{}'\" with administrator privileges",
-        escaped
+        "do shell script \"mkdir -p '{}' && chown {}:{} '{}'\" with administrator privileges",
+        escaped, uid, gid, escaped
     );
-    let out = std::process::Command::new("osascript")
+    let out = Command::new("osascript")
         .args(["-e", &script])
         .output()
         .map_err(|e| format!("创建挂载点失败：{e}"))?;

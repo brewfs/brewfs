@@ -1077,6 +1077,27 @@ pub async fn mount_oss_fuse(
             )
         })?;
     }
+    // Non-root FUSE/NFS mounts require the mountpoint to belong to the
+    // mounting user; a root-owned directory (e.g. created with sudo) fails
+    // with EPERM. Give a clear hint instead of a generic I/O error.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(md) = std::fs::metadata(mount_point) {
+            let my_uid = unsafe { libc::getuid() };
+            if md.uid() != my_uid {
+                anyhow::bail!(
+                    "挂载点 {} 的所有者不是当前用户（uid {} ≠ {}），非 root 挂载需要挂载点属于当前用户；请执行 sudo chown {}:{} {} 或让托盘自动创建",
+                    mount_point.display(),
+                    md.uid(),
+                    my_uid,
+                    my_uid,
+                    unsafe { libc::getgid() },
+                    mount_point.display()
+                );
+            }
+        }
+    }
     #[cfg(not(windows))]
     if path_is_mount_point(mount_point) {
         anyhow::bail!(
