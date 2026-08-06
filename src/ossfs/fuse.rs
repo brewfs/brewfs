@@ -1086,6 +1086,42 @@ pub async fn mount_oss_fuse(
     let session = fuser::spawn_mount2(oss_fs, mount_point, &build_config())
         .map_err(|e| anyhow::anyhow!("failed to mount at {}: {e}", mount_point.display()))?;
 
+    // FUSE-T performs the real NFS mount asynchronously after the FUSE
+    // session is negotiated. Poll until the mount actually shows up in the
+    // kernel mount table; if it never does (e.g. the target directory is
+    // already occupied by a stale mount, so the server's `mount` fails with
+    // EX_UNAVAILABLE), fail fast instead of reporting a phantom "mounted"
+    // state that disappears seconds later.
+    #[cfg(not(windows))]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut mounted = false;
+        while std::time::Instant::now() < deadline {
+            if path_is_mount_point(mount_point) {
+                mounted = true;
+                break;
+            }
+            if session.guard.is_finished() {
+                // The backend gave up (mount failed and it closed the
+                // connection), or the user unmounted while we were waiting.
+                let err = session
+                    .join()
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "FUSE 后端在挂载完成前退出了".to_string());
+                anyhow::bail!("挂载失败：{err}（目标目录可能已被占用）");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if !mounted {
+            let _ = session.umount_and_join();
+            anyhow::bail!(
+                "挂载失败：FUSE 后端未能在 {} 完成挂载（目录可能已被占用或 FUSE-T 服务异常）",
+                mount_point.display()
+            );
+        }
+    }
+
     info!(mount_point = %mount_point.display(), "brewfs-oss mounted via FUSE");
     println!("mounted at {}", mount_point.display());
     write_runtime_record(mount_point);
@@ -1140,9 +1176,17 @@ pub async fn mount_oss_fuse(
                         // The session ended on its own (e.g. user ejected the
                         // volume in Finder / ran `umount`, or the FUSE
                         // backend closed the connection). Surface the real
-                        // result instead of guessing.
+                        // result instead of guessing, then best-effort clean
+                        // up any mount the backend left behind.
                         let s = session.take().unwrap();
-                        match s.join() {
+                        let joined = s.join();
+                        #[cfg(not(windows))]
+                        {
+                            let _ = std::process::Command::new("umount")
+                                .arg(mount_point.as_os_str())
+                                .status();
+                        }
+                        match joined {
                             Ok(()) => {
                                 println!("filesystem session ended (unmounted externally)");
                             }
