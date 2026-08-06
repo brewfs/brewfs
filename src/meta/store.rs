@@ -810,6 +810,26 @@ pub trait MetaStore: Send + Sync {
 
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError>;
 
+    /// Fetch the slice list together with an opaque chunk version token when
+    /// the backend tracks one (Redis). The token lets the client-side slice
+    /// cache detect remote compact/truncate/rewrite. Backends without version
+    /// tracking return `(None, slices)` and the client cache remains
+    /// local-invalidation-only.
+    async fn get_slices_with_version(
+        &self,
+        chunk_id: u64,
+    ) -> Result<(Option<u64>, Vec<SliceDesc>), MetaError> {
+        let slices = self.get_slices(chunk_id).await?;
+        Ok((None, slices))
+    }
+
+    /// Return the current chunk version token, or `Ok(None)` when the backend
+    /// does not track versions.
+    async fn get_chunk_version(&self, chunk_id: u64) -> Result<Option<u64>, MetaError> {
+        let _ = chunk_id;
+        Ok(None)
+    }
+
     /// Return all distinct chunk IDs that have at least one slice.
     /// Used by the compaction scheduler to discover compaction candidates.
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {

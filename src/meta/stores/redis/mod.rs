@@ -3283,6 +3283,58 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(
         level = "trace",
+        skip(self),
+        fields(chunk_id, slice_count = tracing::field::Empty)
+    )]
+    async fn get_slices_with_version(
+        &self,
+        chunk_id: u64,
+    ) -> Result<(Option<u64>, Vec<SliceDesc>), MetaError> {
+        let chunk_key = self.chunk_key(chunk_id);
+        let version_key = self.chunk_version_key(chunk_id);
+        let mut conn = self.conn.clone();
+        // Single round-trip: GET version + LRANGE slice list.
+        let (version, raw): (Option<i64>, Vec<Vec<u8>>) = redis::pipe()
+            .cmd("GET")
+            .arg(&version_key)
+            .cmd("LRANGE")
+            .arg(&chunk_key)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut conn)
+            .instrument(tracing::trace_span!(
+                "get_slices_with_version.redis_pipeline",
+                chunk_id
+            ))
+            .await
+            .map_err(redis_err)?;
+
+        let mut slices = Vec::new();
+        for entry in raw {
+            let desc: SliceDesc = crate::meta::serialization::deserialize_meta(&entry)?;
+            slices.push(desc);
+        }
+        tracing::Span::current().record("slice_count", slices.len());
+        Ok((version.map(|v| v as u64), slices))
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(chunk_id))]
+    async fn get_chunk_version(&self, chunk_id: u64) -> Result<Option<u64>, MetaError> {
+        let mut conn = self.conn.clone();
+        let version: Option<i64> = redis::cmd("GET")
+            .arg(self.chunk_version_key(chunk_id))
+            .query_async(&mut conn)
+            .instrument(tracing::trace_span!(
+                "get_chunk_version.redis_get",
+                chunk_id
+            ))
+            .await
+            .map_err(redis_err)?;
+        Ok(version.map(|v| v as u64))
+    }
+
+    #[tracing::instrument(
+        level = "trace",
         skip(self, slice),
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]

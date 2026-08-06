@@ -52,6 +52,15 @@ use session::{SessionInfo, SessionManager};
 
 const ROOT_INODE: i64 = 1;
 
+/// How often a cached slice entry with a backend version token is re-validated
+/// against the store on the read path. A single `GET` per chunk per interval
+/// bounds staleness after remote compact/truncate/rewrite without adding a
+/// round-trip to every hot read.
+#[cfg(not(test))]
+const SLICE_VERSION_CHECK_INTERVAL: Duration = Duration::from_millis(1000);
+#[cfg(test)]
+const SLICE_VERSION_CHECK_INTERVAL: Duration = Duration::from_millis(20);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFileCacheConfig {
     /// Attribute reuse window for repeated readonly opens. `Duration::ZERO`
@@ -3089,9 +3098,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     )]
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
         let (inode, chunk_index) = extract_ino_and_chunk_index(chunk_id);
-        if let Some(slices) = self
+        if let Some(cached) = self
             .inode_cache
-            .get_slices(inode, chunk_index)
+            .get_cached_slices(inode, chunk_index)
             .instrument(tracing::trace_span!(
                 "get_slices.cache_lookup",
                 inode,
@@ -3099,21 +3108,52 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             ))
             .await
         {
-            tracing::Span::current().record("cache_hit", true);
-            tracing::Span::current().record("slice_count", slices.len());
-            self.metrics.record_get_slices_cache_hit();
-            return Ok(slices);
+            let needs_version_check = match (cached.version, cached.validated_at) {
+                (Some(_), None) => true,
+                (Some(_), Some(validated)) => validated.elapsed() >= SLICE_VERSION_CHECK_INTERVAL,
+                _ => false,
+            };
+
+            if needs_version_check {
+                // Single round-trip version probe; backends without version
+                // tracking return Ok(None) and are treated as always-fresh.
+                let store_version = self
+                    .store
+                    .get_chunk_version(chunk_id)
+                    .instrument(tracing::trace_span!("get_slices.version_check", chunk_id))
+                    .await?;
+                let version_matches = match (cached.version, store_version) {
+                    (Some(cached_version), Some(current)) => cached_version == current,
+                    _ => true,
+                };
+                if !version_matches {
+                    // Remote compact/truncate/rewrite detected: drop the stale
+                    // entry and refetch below.
+                    self.inode_cache.invalidate_slices(inode, chunk_index).await;
+                } else {
+                    self.inode_cache
+                        .touch_slices_validation(inode, chunk_index)
+                        .await;
+                }
+            }
+
+            if let Some(slices) = self.inode_cache.get_slices(inode, chunk_index).await {
+                tracing::Span::current().record("cache_hit", true);
+                tracing::Span::current().record("slice_count", slices.len());
+                self.metrics.record_get_slices_cache_hit();
+                return Ok(slices);
+            }
         }
         tracing::Span::current().record("cache_hit", false);
         self.metrics.record_get_slices_cache_miss();
-        let slices = self
+        let (version, slices) = self
             .store
-            .get_slices(chunk_id)
+            .get_slices_with_version(chunk_id)
             .instrument(tracing::trace_span!("get_slices.store", chunk_id))
             .await?;
         let cached = self
             .inode_cache
-            .cache_slices_if_absent(inode, chunk_index, &slices)
+            .cache_slices_if_absent(inode, chunk_index, version, &slices)
             .await
             .unwrap_or(slices);
         tracing::Span::current().record("slice_count", cached.len());
@@ -3951,7 +3991,7 @@ mod tests {
         }];
         client
             .inode_cache
-            .cache_slices_if_absent(ino, chunk_index, &cached_slices)
+            .cache_slices_if_absent(ino, chunk_index, None, &cached_slices)
             .await;
         assert!(
             client

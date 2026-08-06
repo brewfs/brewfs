@@ -2223,6 +2223,70 @@ async fn test_file_full_lifecycle_flow() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn test_get_slices_cache_detects_remote_compact_via_version_token() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+
+    let ino = client
+        .create_file(root, "slice_version.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+
+    // Warm the client slice cache through the normal read path.
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 201,
+        chunk_id,
+        offset: 0,
+        length: 4096,
+    };
+    client.append_slice(chunk_id, old_slice).await.unwrap();
+    assert_eq!(
+        client.get_slices(chunk_id).await.unwrap(),
+        vec![old_slice],
+        "first get_slices should populate the cache from the store"
+    );
+    assert_eq!(
+        client.get_slices(chunk_id).await.unwrap(),
+        vec![old_slice],
+        "second get_slices should hit the cache"
+    );
+
+    // Simulate a remote compaction that bypasses this client: replace the
+    // slice list at the store level (this also bumps the chunk version).
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 202,
+        chunk_id,
+        offset: 0,
+        length: 8192,
+    };
+    store
+        .replace_slices_for_compact_with_version(chunk_id, &[new_slice], &[], &[old_slice])
+        .await
+        .unwrap();
+
+    // Let the version-check interval elapse so the next read re-validates.
+    time::sleep(Duration::from_millis(50)).await;
+
+    let after = client.get_slices(chunk_id).await.unwrap();
+    assert_eq!(
+        after,
+        vec![new_slice],
+        "get_slices must observe a remote compact via the chunk version token"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_directory_full_lifecycle_flow() {
     let store = new_test_store().await;
     let root = store.root_ino();
