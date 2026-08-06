@@ -748,7 +748,6 @@ export component Tray inherits SystemTrayIcon {
 
     callback show-window();
     callback open-mount(int);
-    callback unmount-all();
     callback autostart-changed(bool);
     callback quit-app();
 
@@ -772,11 +771,6 @@ export component Tray inherits SystemTrayIcon {
                 title: "（无挂载）";
                 enabled: false;
             }
-        }
-
-        MenuItem {
-            title: "卸载全部";
-            activated => { root.unmount-all(); }
         }
 
         MenuItem {

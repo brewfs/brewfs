@@ -605,55 +605,6 @@ fn wire_callbacks(
         });
     }
 
-    // --- tray: unmount all (with confirmation) ---
-    tray.on_unmount_all({
-        let ui_weak = ui_weak.clone();
-        let tray_weak = tray_weak.clone();
-        let state = state.clone();
-        let recent = recent.clone();
-        let brewfs = brewfs.clone();
-        let pending = Rc::clone(&pending);
-        let hold = Rc::clone(&hold);
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let mounts = model::read_mounts(&state.borrow().profiles);
-            let live: Vec<model::MountStatus> =
-                mounts.iter().filter(|m| m.alive).cloned().collect();
-            if live.is_empty() {
-                ui.set_status_text("当前没有活动挂载".into());
-                return;
-            }
-            let ui_weak2 = ui_weak.clone();
-            let tray_weak2 = tray_weak.clone();
-            let state2 = state.clone();
-            let recent2 = recent.clone();
-            let brewfs2 = brewfs.clone();
-            let hold2 = Rc::clone(&hold);
-            ask_confirm(
-                &ui,
-                &pending,
-                &format!("确定要卸载全部 {} 个挂载吗？", live.len()),
-                move || {
-                    // 同单条卸载：立刻摘掉这些 pid 的“挂载中”跟踪，避免进程优雅
-                    // 退出期间挂载按钮被误置灰。
-                    recent2
-                        .borrow_mut()
-                        .retain(|r| !live.iter().any(|m| m.pid == r.pid));
-                    for m in &live {
-                        guard().desired.remove(&m.drive);
-                        if let Some(ui) = ui_weak2.upgrade() {
-                            graceful_or_kill(&ui, brewfs2.as_ref(), m);
-                        }
-                    }
-                    if let (Some(ui), Some(tray)) = (ui_weak2.upgrade(), tray_weak2.upgrade()) {
-                        refresh(&ui, &tray, &state2, &recent2, &hold2);
-                        ui.set_status_text(format!("已请求卸载 {} 个挂载", live.len()).into());
-                    }
-                },
-            );
-        }
-    });
-
     // --- window close -> hide to tray (进程保留，双击托盘图标重新打开) ---
     ui.window().on_close_requested({
         let ui_weak = ui_weak.clone();
