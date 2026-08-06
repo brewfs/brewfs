@@ -27,6 +27,8 @@ export struct ProfileRecord {
     drive: string,
     detail: string,
     mounted: bool,
+    /// 挂载进行中（进程已启动、尚未真正挂上）：挂载按钮禁用，防止重复点击。
+    mounting: bool,
 }
 
 component DriveBadge inherits Rectangle {
@@ -215,10 +217,10 @@ export component MainWindow inherits Window {
                         padding-bottom: 0px;
                         spacing: 8px;
                         for r[i] in root.records: Rectangle {
-                            background: r.mounted ? #f0f7f3 : #ffffff;
+                            background: r.mounted ? #f0f7f3 : (r.mounting ? #eef4ff : #ffffff);
                             border-radius: 10px;
                             border-width: 1px;
-                            border-color: r.mounted ? #bfe0cc : #e2e7ef;
+                            border-color: r.mounted ? #bfe0cc : (r.mounting ? #b8d0f0 : #e2e7ef);
                             height: 48px;
                             HorizontalLayout {
                                 padding: 2px;
@@ -269,7 +271,8 @@ export component MainWindow inherits Window {
                                 }
                                 if !r.mounted: IconButton {
                                     icon: @image-url("../assets/icons/mount.svg");
-                                    tip: "挂载";
+                                    enabled: !r.mounting;
+                                    tip: r.mounting ? "挂载中…" : "挂载";
                                     clicked => { root.toggle-record(i); }
                                 }
                                 IconButton {

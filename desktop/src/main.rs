@@ -899,9 +899,12 @@ fn refresh(
             };
             ProfileRecord {
                 name: p.name.clone().into(),
-                drive: drive.into(),
+                drive: drive.clone().into(),
                 detail: detail.into(),
                 mounted: m.map(|m| m.alive).unwrap_or(false),
+                // “挂载中”：有我们刚拉起的、还活着且尚未挂上的进程（recent 里
+                // 只剩这类进程，见上面的 retain）。此时禁用挂载按钮防重复点击。
+                mounting: recent.borrow().iter().any(|s| s.drive == drive),
             }
         })
         .collect();
@@ -1083,6 +1086,10 @@ fn graceful_or_kill(ui: &MainWindow, brewfs: &Option<PathBuf>, m: &model::MountS
                 guard().desired.remove(&m.drive);
                 // Drop the stale drive icon from "This PC" right away.
                 winutil::notify_drive_removed(&m.drive);
+                // Remove the runtime record so the row can't linger as a
+                // stale "not mounted" entry (idempotent: missing file is fine).
+                let _ =
+                    std::fs::remove_file(model::oss_records_dir().join(format!("{}.json", m.pid)));
                 ui.set_status_text(format!("已卸载 {}", m.drive).into());
             }
             Err(e) => ui.set_status_text(format!("卸载 {} 失败：{e}", m.drive).into()),

@@ -195,6 +195,11 @@ pub fn terminate_process(pid: u32) -> std::io::Result<()> {
         if output.status.success() {
             return Ok(());
         }
+        // Idempotency: the process already exited (e.g. stale record, mount
+        // dropped earlier) — treat that as a successful unmount, not an error.
+        if !pid_alive(pid) {
+            return Ok(());
+        }
         Err(std::io::Error::other("kill failed"))
     }
 }
