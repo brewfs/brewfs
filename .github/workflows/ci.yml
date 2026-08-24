@@ -74,6 +74,9 @@ jobs:
           bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh
           bash -n docker/compose-xfstests/run_juicefs_perf.sh
           bash -n docker/compose-xfstests/run_workspace_overlay_dual_mount_in_container.sh
+          bash -n docker/compose-xfstests/run_workspace_overlay_control_in_container.sh
+          bash -n docker/compose-xfstests/run_workspace_overlay_suite_in_container.sh
+          bash -n docker/compose-xfstests/run_workspace_overlay_compose.sh
           bash -n docker/compose-xfstests/run_workspace_overlay_suites.sh
           bash docker/compose-xfstests/test_perf_report_delta.sh
           bash docker/compose-xfstests/test_juicefs_direct_matrix.sh
@@ -110,7 +113,7 @@ jobs:
   docker-workspace-overlay:
     name: Docker workspace overlay (${{ matrix.meta-backend }})
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' &&
@@ -147,11 +150,11 @@ jobs:
           docker version
           docker compose version
 
-      - name: Run dual-workspace POSIX suites
+      - name: Run workspace overlay xfstests and LTP Compose suite
         run: >-
-          bash docker/compose-xfstests/run_workspace_overlay_suites.sh
-          --meta-backend "${{ matrix.meta-backend }}"
-          --parallel-suites
+          bash docker/compose-xfstests/run_workspace_overlay_compose.sh
+          --backend "${{ matrix.meta-backend }}"
+          --xfstests-cases "generic/001 generic/002 generic/100"
 
       - name: Upload workspace overlay artifacts
         if: always()

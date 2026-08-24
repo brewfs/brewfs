@@ -24,6 +24,8 @@ Run commands from the repository root.
 | FUSE correctness smoke | `bash docker/compose-xfstests/run_redis_xfstests.sh --cases "generic/001 generic/002 generic/100"` | 5-15 min |
 | Full Redis + RustFS xfstests | `bash docker/compose-xfstests/run_redis_xfstests.sh` | hours |
 | LTP filesystem coverage | `bash docker/compose-xfstests/run_redis_ltp.sh` | 30-90 min |
+| Workspace overlay xfstests + LTP (Redis) | `bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend redis` | workload-dependent |
+| Workspace overlay xfstests + LTP (TiKV) | `bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend tikv` | workload-dependent |
 | CI-safe stress | `bash docker/compose-xfstests/run_redis_stress_ng.sh --profile smoke` | a few min |
 | Complete performance run | `bash docker/compose-xfstests/run_redis_perf.sh --read-throughput-profile` | 10-30 min plus build |
 | Metadata performance smoke | `bash docker/compose-xfstests/run_redis_meta_perf.sh --quick` | 2-5 min plus build |
@@ -117,6 +119,36 @@ entry points. They use the same host-binary build path and artifact layout.
 | SQLite | `run_sqlite_xfstests.sh` | local by default; `--s3` selects RustFS |
 | etcd | `run_etcd_xfstests.sh` | local by default; `--s3` selects RustFS |
 | TiKV | `run_tikv_xfstests.sh` | RustFS, fixed |
+
+### Workspace overlay Compose suite
+
+The workspace overlay Compose runner exercises the feature through the same
+FUSE boundary used by agents. It starts the selected Redis or TiKV metadata
+service, seeds one base workspace, forks two workspaces, verifies shared base
+data and isolated mutations, and then runs the selected suite independently on
+both forks. Local filesystem data is used so the test focuses on overlay
+metadata and block visibility without adding an object-store dependency.
+
+Run the complete configured xfstests and LTP profiles with:
+
+```bash
+bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend redis
+bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend tikv
+```
+
+For a quick Compose smoke run, limit xfstests while retaining both workspace
+forks and the LTP profile:
+
+```bash
+bash docker/compose-xfstests/run_workspace_overlay_compose.sh \
+  --backend redis \
+  --xfstests-cases "generic/001 generic/002 generic/100"
+```
+
+Artifacts are written below `docker/compose-xfstests/artifacts/` under separate
+`workspace-a/` and `workspace-b/` directories. Use `--keep` to inspect the
+running services after a failure; otherwise the runner removes the Compose
+project and its volumes on exit.
 
 Examples:
 
