@@ -3204,6 +3204,131 @@ async fn test_delayed_slice_workflow_consistency() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn compact_delayed_record_failure_keeps_old_chunk_reachable() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "compact_atomic_failure.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 421,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 422,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    store.append_slice(chunk_id, old_slice).await.unwrap();
+
+    // Fault injection: INCRBY on a hash fails. The old implementation had
+    // already committed the chunk CAS before discovering this error.
+    let mut conn = store.conn.clone();
+    redis::cmd("HSET")
+        .arg(super::DELAYED_COUNTER_KEY)
+        .arg("invalid")
+        .arg("counter")
+        .query_async::<()>(&mut conn)
+        .await
+        .unwrap();
+    let delayed_data = crate::chunk::SliceDesc::encode_delayed_data(&[old_slice], &[421]);
+
+    assert!(
+        store
+            .replace_slices_for_compact(chunk_id, &[new_slice], &delayed_data)
+            .await
+            .is_err(),
+        "the injected delayed-record failure must surface"
+    );
+    assert_eq!(
+        store.get_slices(chunk_id).await.unwrap(),
+        vec![old_slice],
+        "a failed compact must leave the old object reachable from the chunk list"
+    );
+    assert!(
+        store
+            .process_delayed_slices(10, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn compact_version_conflict_leaves_chunk_and_delayed_index_unchanged() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "compact_conflict.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 431,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 432,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    store.append_slice(chunk_id, old_slice).await.unwrap();
+    let delayed_data = crate::chunk::SliceDesc::encode_delayed_data(&[old_slice], &[431]);
+
+    let conflict = store
+        .replace_slices_for_compact_with_version(chunk_id, &[new_slice], &delayed_data, &[])
+        .await;
+    assert!(matches!(conflict, Err(MetaError::ContinueRetry(_))));
+    assert_eq!(store.get_slices(chunk_id).await.unwrap(), vec![old_slice]);
+    assert!(
+        store
+            .process_delayed_slices(10, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    store
+        .record_uncommitted_slice(new_slice.slice_id, chunk_id, new_slice.length, "compact")
+        .await
+        .unwrap();
+    store
+        .replace_slices_for_compact_with_version(
+            chunk_id,
+            &[new_slice],
+            &delayed_data,
+            &[old_slice],
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.get_slices(chunk_id).await.unwrap(), vec![new_slice]);
+    assert_eq!(store.process_delayed_slices(10, 0).await.unwrap().len(), 1);
+
+    let mut conn = store.conn.clone();
+    let uncommitted_exists: bool = redis::cmd("EXISTS")
+        .arg(store.uncommitted_key(new_slice.slice_id))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        !uncommitted_exists,
+        "the newly referenced compacted slice must not remain eligible for orphan GC"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_uncommitted_slice_workflow_consistency() {
     let store = new_test_store().await;
     let slice_id = 501u64;
