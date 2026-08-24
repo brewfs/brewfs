@@ -1805,9 +1805,6 @@ pub struct ChunksCache {
     /// Uses Moka's high-performance concurrent cache implementation
     hot_cache: moka::future::Cache<String, bytes::Bytes>,
 
-    /// Approximate hot cache bytes (sum of Bytes lengths)
-    hot_bytes: Arc<AtomicU64>,
-
     /// Recently uploaded write data. This protects read-after-write workloads
     /// from the normal TinyLFU admission policy, where older read-hot blocks can
     /// reject newly written blocks that have not yet built read frequency.
@@ -1863,8 +1860,6 @@ impl ChunksCache {
         )
         .await?;
 
-        let hot_bytes = Arc::new(AtomicU64::new(0));
-        let hot_bytes_evict = hot_bytes.clone();
         let max_write_hot_bytes = recent_write_hot_capacity(config.max_hot_bytes);
         // Use byte-weighted capacity: moka evicts entries when total weight exceeds max_capacity.
         // The weigher returns the byte size of each entry (clamped to u32::MAX).
@@ -1875,13 +1870,7 @@ impl ChunksCache {
                 (value.len() as u64 + 64).min(u32::MAX as u64) as u32
             })
             .time_to_idle(Duration::from_secs(300))
-            .time_to_live(Duration::from_secs(3600))
-            .eviction_listener(move |_key, value: bytes::Bytes, _cause| {
-                // Saturating sub to prevent underflow from racing insert_hot/eviction
-                let _ = hot_bytes_evict.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(value.len() as u64))
-                });
-            });
+            .time_to_live(Duration::from_secs(3600));
         let cold_cache_builder = moka::future::Cache::builder()
             .max_capacity(config.cold_cache_size as u64)
             .time_to_idle(Duration::from_secs(300))
@@ -1907,7 +1896,6 @@ impl ChunksCache {
         Ok(Self {
             disk_storage,
             hot_cache: hot_cache_builder.build(),
-            hot_bytes,
             write_hot_cache: RecentWriteHotCache::new(max_write_hot_bytes),
             cold_cache: cold_cache_builder.build(),
             disk_insert_inflight: Arc::new(DashSet::new()),
@@ -2133,10 +2121,7 @@ impl ChunksCache {
     }
 
     pub async fn insert_hot(&self, key: &str, data: bytes::Bytes) {
-        let len = data.len() as u64;
         self.hot_cache.insert(key.to_owned(), data).await;
-        self.hot_cache.run_pending_tasks().await;
-        self.hot_bytes.fetch_add(len, Ordering::Relaxed);
     }
 
     pub async fn insert_recent_write_hot(&self, key: &str, data: bytes::Bytes) {
@@ -2772,7 +2757,6 @@ mod tests {
 
         cache.hot_cache.invalidate(&key).await;
         cache.hot_cache.run_pending_tasks().await;
-        cache.hot_bytes.store(0, Ordering::Relaxed);
         assert!(cache.hot_cache.get(&key).await.is_none());
 
         assert_eq!(
@@ -2838,6 +2822,7 @@ mod tests {
         cache
             .insert_hot("hot-filler", bytes::Bytes::from(vec![1u8; 3 * 1024 * 1024]))
             .await;
+        cache.hot_cache.run_pending_tasks().await;
         assert!(cache.hot_cache.weighted_size() > cache.config.max_hot_bytes * 700 / 1000);
 
         let key = "disk-hit-budget-key".to_string();
