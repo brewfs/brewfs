@@ -136,6 +136,13 @@ bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend redis
 bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend tikv
 ```
 
+The default run leaves `XFSTESTS_CASES` empty so the container driver discovers
+the full xfstests corpus and applies `tests/scripts/xfstests_slayer.exclude`.
+LTP runs its complete `fs` command-file set after merging
+`docker/compose-xfstests/ltp_skip_tests.txt`; these repository exclusions are
+the only default coverage reductions. Set `XFSTESTS_CASES` or use
+`--xfstests-cases` only for a targeted diagnostic run.
+
 For a quick Compose smoke run, limit xfstests while retaining both workspace
 forks and the LTP profile:
 

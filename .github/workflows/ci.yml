@@ -113,7 +113,7 @@ jobs:
   docker-workspace-overlay:
     name: Docker workspace overlay (${{ matrix.meta-backend }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' &&
@@ -154,7 +154,6 @@ jobs:
         run: >-
           bash docker/compose-xfstests/run_workspace_overlay_compose.sh
           --backend "${{ matrix.meta-backend }}"
-          --xfstests-cases "generic/001 generic/002 generic/100"
 
       - name: Upload workspace overlay artifacts
         if: always()
