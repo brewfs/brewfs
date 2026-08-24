@@ -1527,16 +1527,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         trace!("MetaClient: lookup MISS ({}, '{}')", parent, name);
         self.metrics.record_lookup_cache_miss();
 
-        let result = self.store.lookup(parent, name).await?;
+        let result = self.store.lookup_with_attr(parent, name).await?;
 
-        if let Some(ino) = result {
-            if let Ok(Some(attr)) = self.store.stat(ino).await {
-                self.cache_lookup_attr(parent, name, ino, attr).await;
-            } else {
-                self.inode_cache
-                    .add_child(parent, name.to_string(), ino)
-                    .await;
-            }
+        if let Some((ino, attr)) = result {
+            self.cache_lookup_attr(parent, name, ino, attr).await;
             Ok(Some(ino))
         } else if self.options.case_insensitive {
             self.resolve_case(parent, name).await
@@ -3645,7 +3639,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_meta_client_lookup_only_does_not_count_lookup_attr_fused_path() {
+    async fn test_meta_client_lookup_only_does_not_change_lookup_with_attr_api_metrics() {
         let client = create_test_client().await;
         let ino = client
             .create_file(1, "lookup-only.txt".to_string())
@@ -3664,7 +3658,7 @@ mod tests {
 
         assert_eq!(
             after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
-            "lookup-only callers should stay on the lighter inode-only path"
+            "lookup-only callers should not be counted as lookup_with_attr API calls"
         );
     }
 

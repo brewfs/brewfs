@@ -2518,6 +2518,44 @@ async fn test_lookup_with_attr_returns_inode_attr_and_warms_node_cache() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn test_meta_client_lookup_uses_fused_store_path() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "client_lookup_attr.txt".to_string())
+        .await
+        .unwrap();
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+
+    store.node_cache.invalidate(&ino).await;
+    store
+        .lookup_with_attr(root, "warm-lookup-script")
+        .await
+        .unwrap();
+    reset_redis_commandstats(&store).await;
+
+    assert_eq!(
+        client.lookup(root, "client_lookup_attr.txt").await.unwrap(),
+        Some(ino)
+    );
+
+    let script_calls = redis_script_calls(&store).await;
+    assert!(
+        (1..=2).contains(&script_calls),
+        "MetaClient::lookup should use Redis lookup_with_attr as one business Lua script; observed {script_calls} script calls including client-side script cache handling"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_meta_client_stat_fresh_uses_warm_store_node_cache() {
     let store = Arc::new(new_test_store().await);
     let root = store.root_ino();
