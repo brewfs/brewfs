@@ -295,6 +295,17 @@ impl RecentWriteHotCache {
         self.evict_locked(&mut order);
     }
 
+    fn remove(&self, key: &str) {
+        if let Some((_, removed)) = self.entries.remove(key) {
+            let removed_len = removed.data.len() as u64;
+            let _ = self
+                .bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(removed_len))
+                });
+        }
+    }
+
     fn evict_locked(&self, order: &mut VecDeque<(String, u64)>) {
         while self.bytes.load(Ordering::Relaxed) > self.max_bytes {
             let Some((key, generation)) = order.pop_front() else {
@@ -865,6 +876,67 @@ impl DiskStorage {
                 Err(e.into())
             }
         }
+    }
+
+    /// Idempotently remove a cache entry and interrupted-write temporary files.
+    ///
+    /// Taking every write permit makes removal wait for older stores to publish
+    /// before deleting their result. Stores queued after this call may publish a
+    /// new value normally.
+    pub async fn remove_if_exists(&self, key: &str) -> anyhow::Result<()> {
+        let _permits = self
+            .write_sem
+            .clone()
+            .acquire_many_owned(DISK_CACHE_WRITE_CONCURRENCY as u32)
+            .await?;
+        let filename = Self::key_to_filename(key);
+        let filepath = self.base_dir.join(&filename);
+
+        let file_size = tokio::fs::metadata(&filepath)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        match tokio::fs::remove_file(&filepath).await {
+            Ok(()) => {
+                self.saturating_fetch_sub_bytes(file_size);
+                debug!(key, "removed disk cache file");
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                trace!(key, "disk cache file was already absent");
+            }
+            Err(err) => return Err(err.into()),
+        }
+
+        let tmp_prefix = format!(".{filename}.");
+        let mut entries = match tokio::fs::read_dir(&self.base_dir).await {
+            Ok(entries) => entries,
+            Err(err) => {
+                trace!(key, error = ?err, "failed to scan disk cache directory for temporary files");
+                return Ok(());
+            }
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with(&tmp_prefix) || !name.ends_with(".tmp") {
+                continue;
+            }
+
+            let tmp_size = entry
+                .metadata()
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            match tokio::fs::remove_file(entry.path()).await {
+                Ok(()) => self.saturating_fetch_sub_bytes(tmp_size),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    trace!(key, path = %entry.path().display(), error = ?err, "failed to remove temporary disk cache file");
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -2236,9 +2308,12 @@ impl ChunksCache {
 
     pub async fn remove(&self, key: &String) -> anyhow::Result<()> {
         debug!("Cache REMOVE request for key: {}", key);
+        self.write_hot_cache.remove(key);
         trace!("Invalidating from hot cache: {}", key);
         self.hot_cache.invalidate(key).await;
-        // self.disk_storage.remove(key).await?;
+        if let Err(err) = self.disk_storage.remove_if_exists(key).await {
+            warn!(key, error = ?err, "failed to remove disk cache file; ignoring");
+        }
         trace!("Invalidating from cold cache: {}", key);
         self.cold_cache.invalidate(key).await;
 
@@ -2753,6 +2828,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.get(&key.to_string()).await, Some(data));
+    }
+
+    #[tokio::test]
+    async fn chunks_cache_remove_deletes_disk_and_memory_entries() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "remove-deletes-all-cache-tiers".to_string();
+        cache.insert(&key, &b"cached data".to_vec()).await.unwrap();
+        cache
+            .insert_recent_write_hot(&key, bytes::Bytes::from_static(b"newer cached data"))
+            .await;
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
+        assert!(filepath.exists());
+
+        cache.remove(&key).await.unwrap();
+
+        assert!(!filepath.exists(), "remove must delete the disk cache file");
+        assert!(!cache.is_disk_cached(&key).await);
+        assert!(cache.get(&key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn disk_remove_if_exists_is_idempotent_and_cleans_orphan_tmp() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "orphan-tmp-without-cache-file";
+        let filename = DiskStorage::key_to_filename(key);
+        let tmp_path = storage.base_dir.join(format!(".{filename}.42.tmp"));
+        tokio::fs::write(&tmp_path, b"partial").await.unwrap();
+
+        storage.remove_if_exists(key).await.unwrap();
+        storage.remove_if_exists(key).await.unwrap();
+
+        assert!(!tmp_path.exists(), "orphan temporary file must be removed");
     }
 
     #[tokio::test]
