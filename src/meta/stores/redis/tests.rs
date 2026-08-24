@@ -3444,6 +3444,8 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
     assert!(snap.used_inodes >= 6);
     let get_calls = redis_command_calls(&store, "get").await;
     let mget_calls = redis_command_calls(&store, "mget").await;
+    let scan_calls = redis_command_calls(&store, "scan").await;
+    let keys_calls = redis_command_calls(&store, "keys").await;
     assert!(
         get_calls <= 1,
         "stat_fs should batch node loads instead of issuing one GET per inode; observed {get_calls} GET calls"
@@ -3452,6 +3454,81 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
         mget_calls, 1,
         "stat_fs should fetch all node payloads with one Redis MGET"
     );
+    assert!(
+        scan_calls >= 1,
+        "stat_fs should page node keys with SCAN instead of KEYS"
+    );
+    assert_eq!(
+        keys_calls, 0,
+        "stat_fs must not use blocking KEYS; observed {keys_calls} KEYS calls"
+    );
+
+    let snap2 = store.stat_fs().await.unwrap();
+    assert_eq!(snap2.used_inodes, snap.used_inodes);
+    assert_eq!(
+        redis_command_calls(&store, "mget").await,
+        mget_calls,
+        "cached stat_fs should not re-fetch node payloads"
+    );
+    assert_eq!(
+        redis_command_calls(&store, "scan").await,
+        scan_calls,
+        "cached stat_fs should not re-scan the node key space"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_bounds_each_mget_batch() {
+    let store = new_test_store().await;
+    let template: Vec<u8> = redis::cmd("GET")
+        .arg(store.node_key(store.root_ino()))
+        .query_async(&mut store.conn.clone())
+        .await
+        .unwrap();
+    let mut pipeline = redis::pipe();
+    for idx in 0..super::STAT_FS_MGET_BATCH_SIZE {
+        pipeline
+            .cmd("SET")
+            .arg(store.node_key(10_000 + idx as i64))
+            .arg(&template)
+            .ignore();
+    }
+    let _: () = pipeline.query_async(&mut store.conn.clone()).await.unwrap();
+
+    reset_redis_commandstats(&store).await;
+    let snapshot = store.stat_fs().await.unwrap();
+
+    assert_eq!(
+        snapshot.used_inodes,
+        super::STAT_FS_MGET_BATCH_SIZE as u64 + 1
+    );
+    assert!(
+        redis_command_calls(&store, "mget").await >= 2,
+        "more than one MGET batch should be used after crossing the hard batch limit"
+    );
+    assert_eq!(redis_command_calls(&store, "keys").await, 0);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_cold_cache_is_single_flight() {
+    let store = new_test_store().await;
+    reset_redis_commandstats(&store).await;
+
+    let (first, second, third) = tokio::join!(store.stat_fs(), store.stat_fs(), store.stat_fs());
+    let first = first.unwrap();
+    assert_eq!(second.unwrap().used_inodes, first.used_inodes);
+    assert_eq!(third.unwrap().used_inodes, first.used_inodes);
+    assert_eq!(
+        redis_command_calls(&store, "scan").await,
+        1,
+        "concurrent cold stat_fs calls should share one Redis scan"
+    );
+    assert_eq!(redis_command_calls(&store, "mget").await, 1);
+    assert_eq!(redis_command_calls(&store, "keys").await, 0);
 }
 
 #[serial]
@@ -3479,8 +3556,8 @@ async fn test_stat_fs_accounting_fallback() {
     );
     let used_space = snap.total_space - snap.available_space;
     assert_eq!(
-        used_space, 1536,
-        "should count allocated file and symlink blocks"
+        used_space, 1512,
+        "used bytes = file size fallback (1000) + allocated symlink block (512)"
     );
     assert!(snap.total_space > used_space);
     assert!(snap.available_inodes > 0);
