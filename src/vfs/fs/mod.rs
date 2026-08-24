@@ -435,6 +435,29 @@ where
                             };
                             let backend = backend.clone();
                             tasks.push(tokio::spawn(async move {
+                                #[cfg(feature = "workspace-overlay")]
+                                if let Some(provider) = backend.workspace_read_plan() {
+                                    let Ok(plan) = provider
+                                        .read_plan(ino, span.index, span.offset, span.len)
+                                        .await
+                                    else {
+                                        return;
+                                    };
+                                    let Ok(len) = usize::try_from(span.len) else {
+                                        return;
+                                    };
+                                    let mut output = vec![0; len];
+                                    let _ = crate::chunk::read_plan::execute_into(
+                                        backend.store(),
+                                        layout,
+                                        span.offset,
+                                        &plan,
+                                        &mut output,
+                                    )
+                                    .await;
+                                    return;
+                                }
+
                                 let mut fetcher = DataFetcher::new(layout, cid, &*backend);
                                 if fetcher.prepare_slices().await.is_err() {
                                     return;
@@ -467,6 +490,12 @@ where
             config.cache.writeback_mode,
             crate::vfs::cache::config::WriteBackMode::CommitBeforeUpload
         ) {
+            #[cfg(feature = "workspace-overlay")]
+            let cache_root = config
+                .workspace_writeback_root
+                .clone()
+                .unwrap_or_else(|| config.cache.cache_root.join("writeback"));
+            #[cfg(not(feature = "workspace-overlay"))]
             let cache_root = config.cache.cache_root.join("writeback");
             let _ = std::fs::create_dir_all(&cache_root);
             let wb = Arc::new(if config.cache.persist_write_cache_after_upload {
@@ -502,6 +531,10 @@ where
 
         let mut writer_builder =
             DataWriter::new(config.write.clone(), backend, reader.clone(), write_back);
+        #[cfg(feature = "workspace-overlay")]
+        {
+            writer_builder = writer_builder.with_writeback_epoch(config.workspace_writer_epoch);
+        }
         if let Some(memory_budget) = memory_budget.clone() {
             writer_builder = writer_builder.with_memory_budget(memory_budget);
         }
@@ -579,6 +612,28 @@ where
         }
     }
 
+    async fn record_recovery_orphan(
+        backend: &Arc<Backend<S, M>>,
+        slice_id: u64,
+        slice_end: u64,
+    ) -> bool {
+        #[cfg(not(feature = "workspace-overlay"))]
+        let _ = (backend, slice_id, slice_end);
+        #[cfg(feature = "workspace-overlay")]
+        if let Some(provider) = backend.workspace_read_plan()
+            && let Err(error) = provider.record_orphan_slice(slice_id, slice_end).await
+        {
+            tracing::error!(
+                slice_id,
+                slice_end,
+                error = ?error,
+                "failed to persist recovered workspace orphan; retaining dirty record"
+            );
+            return false;
+        }
+        true
+    }
+
     async fn reupload_recovered_slice(
         wb: &crate::vfs::cache::write_back::FsWriteBackCache,
         backend: &Arc<Backend<S, M>>,
@@ -634,7 +689,9 @@ where
                     slice_id,
                     "recovery skipped: inode deleted, removing orphan dirty record"
                 );
-                let _ = wb.remove(&record.key).await;
+                if Self::record_recovery_orphan(backend, slice_id, record.length).await {
+                    let _ = wb.remove(&record.key).await;
+                }
                 return;
             }
             Err(e) => {
@@ -648,14 +705,23 @@ where
             .write(ino, record.chunk_id, desc, new_size)
             .await
         {
-            // If the inode was deleted between stat and write, clean up and move on.
-            if matches!(e, MetaError::NotFound(_)) {
+            // If the inode disappeared or this workspace generation was fenced,
+            // the uploaded object can never be attached to this mutation.
+            #[cfg(feature = "workspace-overlay")]
+            let workspace_fenced = backend.workspace_read_plan().is_some()
+                && matches!(&e, MetaError::Io(error) if error.raw_os_error() == Some(libc::ESTALE));
+            #[cfg(not(feature = "workspace-overlay"))]
+            let workspace_fenced = false;
+            if matches!(&e, MetaError::NotFound(_)) || workspace_fenced {
                 tracing::warn!(
                     ino,
                     slice_id,
-                    "recovery metadata commit: inode gone, removing orphan dirty record"
+                    workspace_fenced,
+                    "recovery metadata commit is terminal; recording uploaded orphan"
                 );
-                let _ = wb.remove(&record.key).await;
+                if Self::record_recovery_orphan(backend, slice_id, record.length).await {
+                    let _ = wb.remove(&record.key).await;
+                }
                 return;
             }
             tracing::warn!(ino, slice_id, error = ?e, "recovery metadata commit failed");
@@ -900,10 +966,39 @@ where
         meta_layer: Arc<M>,
         background_tasks: Option<VfsBackgroundTasks>,
     ) -> Result<Self, VfsError> {
+        let backend = Arc::new(Backend::new(store.clone(), meta_layer.clone()));
+        Self::from_components_with_backend(config, store, meta_layer, background_tasks, backend)
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    pub(crate) fn from_workspace_components(
+        config: VFSConfig,
+        store: Arc<S>,
+        meta_layer: Arc<M>,
+    ) -> Result<Self, VfsError>
+    where
+        M: crate::chunk::read_plan::WorkspaceReadPlanProvider,
+    {
+        let provider: Arc<dyn crate::chunk::read_plan::WorkspaceReadPlanProvider> =
+            meta_layer.clone();
+        let backend = Arc::new(Backend::new_workspace(
+            store.clone(),
+            meta_layer.clone(),
+            provider,
+        ));
+        Self::from_components_with_backend(config, store, meta_layer, None, backend)
+    }
+
+    fn from_components_with_backend(
+        config: VFSConfig,
+        store: Arc<S>,
+        meta_layer: Arc<M>,
+        background_tasks: Option<VfsBackgroundTasks>,
+        backend: Arc<Backend<S, M>>,
+    ) -> Result<Self, VfsError> {
         let layout = config.write.layout;
         let root_ino = meta_layer.root_ino();
         let meta_metrics = meta_layer.metrics();
-        let backend = Arc::new(Backend::new(store.clone(), meta_layer.clone()));
         let core = Arc::new(VfsCore::new(layout, backend.clone(), meta_layer, root_ino));
         let config = Arc::new(config);
         let state = Arc::new(VfsState::new(config, backend));
@@ -1455,6 +1550,14 @@ where
         offset: u64,
         len: usize,
     ) -> Result<bool, VfsError> {
+        #[cfg(feature = "workspace-overlay")]
+        if let Some(provider) = self.core.backend.workspace_read_plan() {
+            return provider
+                .range_has_data(ino, offset, len as u64)
+                .await
+                .map_err(|err| VfsError::from_meta(PathHint::none(), err));
+        }
+
         let layout = self.core.layout;
         for span in split_chunk_spans(layout, offset, len) {
             let chunk_id = chunk_id_for(ino, span.index).map_err(VfsError::from)?;
@@ -2745,6 +2848,78 @@ where
             .await
     }
 
+    #[cfg(feature = "workspace-overlay")]
+    pub(crate) async fn workspace_hole_fallocate_from_fuse(
+        &self,
+        fh: u64,
+        ino: i64,
+        offset: u64,
+        length: u64,
+        keep_size: bool,
+    ) -> Result<(), VfsError> {
+        let Some(provider) = self.core.backend.workspace_read_plan() else {
+            return Err(VfsError::Unsupported);
+        };
+        if fh != 0 {
+            let handle = self.file_handle_required(fh)?;
+            if handle.ino != ino {
+                return Err(VfsError::StaleNetworkFileHandle);
+            }
+            if !handle.flags.write {
+                return Err(VfsError::PermissionDenied {
+                    path: PathHint::none(),
+                });
+            }
+            if handle.attr().kind != FileType::File {
+                return Err(VfsError::InvalidInput);
+            }
+        } else if self.meta_stat_required(ino, PathHint::none()).await?.kind != FileType::File {
+            return Err(VfsError::InvalidInput);
+        }
+        if length == 0 {
+            return Ok(());
+        }
+
+        self.flush_before_truncate(ino, offset, "workspace_hole_fallocate")
+            .await?;
+        let mutation_lock = self.state.append_lock(ino);
+        let _mutation_guard = mutation_lock.lock_owned().await;
+        let handles = self.file_handles_for_inode(ino);
+        let mut guards = Vec::with_capacity(handles.len());
+        for handle in handles {
+            guards.push(handle.lock_write().await);
+        }
+        // A write may have completed between the optimistic pre-flush and lock
+        // acquisition. Drain it while all inode writers are excluded so the hole
+        // is ordered after every previously accepted write.
+        self.state.writer.flush_if_exists(ino as u64).await;
+
+        let size = provider
+            .apply_hole_range(ino, offset, length, keep_size)
+            .await
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
+        let _ = self
+            .state
+            .reader
+            .invalidate(
+                ino as u64,
+                offset,
+                usize::try_from(length).map_err(|_| VfsError::FileTooLarge)?,
+            )
+            .await;
+        let inode = self.ensure_inode_registered(ino).await?;
+        inode.set_size(size);
+        inode.set_committed_size(size);
+        inode.invalidate_allocated_blocks();
+        inode.bump_data_epoch();
+        if let Some(mut attr) = self.state.handles.attr_for_inode(ino) {
+            attr.size = size;
+            self.state.handles.update_attr_for_inode(ino, &attr);
+        }
+        drop(guards);
+        Ok(())
+    }
+
     async fn fallocate_handle_inner(
         &self,
         fh: u64,
@@ -3813,16 +3988,34 @@ where
             return Ok(());
         }
 
-        let flushed_pending = self
+        let flushed_pending = match self
             .state
             .writer
             .flush_required_snapshot(handle.ino as u64)
             .await
-            .map_err(VfsError::from)?;
+        {
+            Ok(flushed_pending) => flushed_pending,
+            Err(error) => {
+                tracing::warn!(
+                    fh,
+                    ino = handle.ino,
+                    error = %error,
+                    error_debug = ?error,
+                    "vfs.flush_dirty_snapshot_failed"
+                );
+                return Err(VfsError::from(error));
+            }
+        };
 
         if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
             && let Err(err) = self.update_mtime_ctime(handle.ino).await
         {
+            tracing::warn!(
+                fh,
+                ino = handle.ino,
+                error = %err,
+                "vfs.flush_dirty_snapshot_timestamp_failed"
+            );
             handle.mark_write_dirty();
             return Err(err);
         }
@@ -3840,12 +4033,19 @@ where
 
         tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
         let dirty_state = self.state.handles.take_write_dirty_for_inode(handle.ino);
-        let flushed_pending = self
-            .state
-            .writer
-            .flush_required(handle.ino as u64)
-            .await
-            .map_err(VfsError::from)?;
+        let flushed_pending = match self.state.writer.flush_required(handle.ino as u64).await {
+            Ok(flushed_pending) => flushed_pending,
+            Err(error) => {
+                tracing::warn!(
+                    fh,
+                    ino = handle.ino,
+                    error = %error,
+                    error_debug = ?error,
+                    "vfs.flush_handle_failed"
+                );
+                return Err(VfsError::from(error));
+            }
+        };
         tracing::trace!(fh, ino = handle.ino, "vfs.flush_handle_done");
 
         if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
@@ -3912,17 +4112,35 @@ where
 
         tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
         let dirty_state = self.state.handles.take_write_dirty_for_inode(handle.ino);
-        let flushed_pending = self
+        let flushed_pending = match self
             .state
             .writer
             .flush_required_snapshot(handle.ino as u64)
             .await
-            .map_err(VfsError::from)?;
+        {
+            Ok(flushed_pending) => flushed_pending,
+            Err(error) => {
+                tracing::warn!(
+                    fh,
+                    ino = handle.ino,
+                    error = %error,
+                    error_debug = ?error,
+                    "vfs.fsync_snapshot_failed"
+                );
+                return Err(VfsError::from(error));
+            }
+        };
         tracing::trace!(fh, ino = handle.ino, "vfs.flush_handle_done");
 
         if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
             && let Err(err) = self.update_mtime_ctime(handle.ino).await
         {
+            tracing::warn!(
+                fh,
+                ino = handle.ino,
+                error = %err,
+                "vfs.fsync_snapshot_timestamp_failed"
+            );
             if dirty_state.dirty {
                 handle.mark_write_dirty();
             }

@@ -18,6 +18,8 @@ changes runtime semantics rather than deployment or testing workflow.
 - [write-path.md](write-path.md): write flow.
 - [caching.md](caching.md): cache layers and invalidation.
 - [compaction-gc.md](compaction-gc.md): compaction and garbage collection.
+- [workspace-overlay.md](workspace-overlay.md): agent workspace layering, fencing,
+  Redis/TiKV transaction boundaries, and persisted graph.
 
 ## Semantics
 

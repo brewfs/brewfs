@@ -1,0 +1,10 @@
+ARG BASE_IMAGE=slayerfs-xfstests:local
+FROM ${BASE_IMAGE}
+
+COPY target/docker/brewfs /usr/local/bin/brewfs
+COPY docker/compose-xfstests/run_xfstests_in_container.sh /usr/local/bin/run_xfstests_in_container.sh
+
+RUN sed -i 's/\r$//' /usr/local/bin/run_xfstests_in_container.sh && \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/run_xfstests_in_container.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/run_xfstests_in_container.sh"]

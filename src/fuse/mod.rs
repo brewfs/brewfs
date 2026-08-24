@@ -433,7 +433,15 @@ where
             .await
         {
             Ok(attr) => Some(attr),
-            Err(_err) => self.stat_ino(ino).await,
+            Err(err) => {
+                warn!(
+                    ino,
+                    error = %err,
+                    error_debug = ?err,
+                    "fuse.apply_new_entry_attrs_failed"
+                );
+                self.stat_ino(ino).await
+            }
         }
     }
 
@@ -1917,7 +1925,18 @@ where
         mode: u32,
     ) -> FuseResult<()> {
         debug!(inode, fh, offset, length, mode, "fuse.fallocate");
-        if mode != 0 {
+        #[cfg(feature = "workspace-overlay")]
+        let workspace_hole_mode = {
+            let keep_size = libc::FALLOC_FL_KEEP_SIZE as u32;
+            let punch_hole = libc::FALLOC_FL_PUNCH_HOLE as u32;
+            let zero_range = libc::FALLOC_FL_ZERO_RANGE as u32;
+            mode == (keep_size | punch_hole)
+                || mode == zero_range
+                || mode == (keep_size | zero_range)
+        };
+        #[cfg(not(feature = "workspace-overlay"))]
+        let workspace_hole_mode = false;
+        if mode != 0 && !workspace_hole_mode {
             return Err(libc::EOPNOTSUPP.into());
         }
         if length > 0 {
@@ -1930,6 +1949,14 @@ where
             .await?;
             self.wait_for_prior_fuse_writes(inode as i64, req.unique)
                 .await;
+        }
+        #[cfg(feature = "workspace-overlay")]
+        if workspace_hole_mode {
+            let keep_size = mode & libc::FALLOC_FL_KEEP_SIZE as u32 != 0;
+            return self
+                .workspace_hole_fallocate_from_fuse(fh, inode as i64, offset, length, keep_size)
+                .await
+                .map_err(Errno::from);
         }
         if fh != 0 {
             // The FALLOCATE reply already updates the initiating kernel's

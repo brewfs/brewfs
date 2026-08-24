@@ -1,0 +1,42 @@
+ARG BASE_IMAGE=slayerfs-xfstests:local
+FROM ${BASE_IMAGE} AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        git \
+        libtool \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 https://github.com/pjd/pjdfstest.git . && \
+    if [ -f autogen.sh ]; then ./autogen.sh; \
+    elif [ -f configure.ac ] || [ -f configure.in ]; then autoreconf -fi; \
+    fi && \
+    if [ -x ./configure ]; then ./configure; fi && \
+    make -j"$(nproc)" && \
+    mkdir -p /opt/pjdfstest && \
+    cp -a . /opt/pjdfstest
+
+FROM ${BASE_IMAGE}
+
+COPY --from=builder /opt/pjdfstest /opt/pjdfstest
+COPY target/docker/brewfs /usr/local/bin/brewfs
+COPY docker/compose-xfstests/run_pjdfstest_in_container.sh /usr/local/bin/run_pjdfstest_in_container.sh
+COPY docker/compose-xfstests/pjdfstest_skip_tests.txt /usr/local/share/brewfs/pjdfstest_skip_tests.txt
+COPY docker/compose-xfstests/pjdfstest-brewfs /opt/pjdfstest/tests/brewfs
+
+RUN sed -i 's/\r$//' /usr/local/bin/run_pjdfstest_in_container.sh && \
+    find /opt/pjdfstest/tests/brewfs -type f -name '*.t' \
+        -exec sed -i 's/\r$//' {} + && \
+    chmod +x /usr/local/bin/brewfs /usr/local/bin/run_pjdfstest_in_container.sh \
+        /opt/pjdfstest/tests/brewfs/*.t && \
+    mkdir -p /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts \
+        /usr/local/share/brewfs
+
+ENV PJDFSTEST_DIR=/opt/pjdfstest
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/run_pjdfstest_in_container.sh"]

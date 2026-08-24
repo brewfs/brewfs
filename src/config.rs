@@ -55,6 +55,10 @@ pub enum Command {
     )]
     Mount(Box<MountArgs>),
 
+    /// Manage isolated BrewFS workspaces.
+    #[cfg(feature = "workspace-overlay")]
+    Workspace(WorkspaceArgs),
+
     /// Talk to a mounted BrewFS instance and run orphan gc.
     Gc(GcArgs),
 
@@ -74,6 +78,21 @@ pub struct MountArgs {
     /// YAML config file path.
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
+
+    /// On-disk metadata format. Existing configurations default to flat-v1.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, value_enum))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub volume_format: Option<VolumeFormat>,
+
+    /// Workspace mounted by a workspace-v1 volume.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "WORKSPACE_ID"))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub workspace: Option<uuid::Uuid>,
+
+    /// Key namespace for the workspace overlay catalog.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "NAMESPACE"))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub workspace_namespace: Option<String>,
 
     /// Directory to mount the filesystem.
     #[arg(value_name = "MOUNT_POINT")]
@@ -156,6 +175,96 @@ pub struct MountArgs {
     /// Uses /dev/fuse directly instead of fusermount3.
     #[arg(long, default_value_t = false)]
     pub privileged: bool,
+}
+
+#[derive(ValueEnum, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VolumeFormat {
+    #[default]
+    FlatV1,
+    WorkspaceV1,
+}
+
+#[cfg(feature = "workspace-overlay")]
+#[derive(Args, Debug, Clone)]
+pub struct WorkspaceArgs {
+    /// Workspace catalog backend (sqlx, redis or tikv).
+    #[arg(long, global = true, value_enum, default_value = "sqlx")]
+    pub meta_backend: WorkspaceMetaBackendKind,
+
+    /// SQLite or Redis URL containing the workspace-v1 catalog.
+    #[arg(long, global = true, default_value = DEFAULT_META_URL)]
+    pub meta_url: String,
+
+    /// TiKV PD endpoint URLs (comma-separated).
+    #[arg(long, global = true, value_name = "URLS", value_delimiter = ',')]
+    pub meta_tikv_pd_endpoints: Vec<String>,
+
+    /// Key namespace for the workspace overlay catalog.
+    #[arg(long, global = true, default_value = "brewfs")]
+    pub workspace_namespace: String,
+
+    #[command(subcommand)]
+    pub command: WorkspaceCommand,
+}
+
+#[cfg(feature = "workspace-overlay")]
+#[derive(Subcommand, Debug, Clone)]
+pub enum WorkspaceCommand {
+    /// Initialize a new workspace-v1 volume and its default workspace.
+    InitVolume {
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Create a workspace from an exact sealed revision.
+    Create {
+        #[arg(long = "from", value_name = "REVISION")]
+        revision: Option<crate::workspace_overlay::model::BaseRevision>,
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Seal a workspace and create a named snapshot root.
+    Snapshot {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Fork one or more workspaces from a workspace UUID or exact revision.
+    Fork {
+        source: String,
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// List workspaces.
+    List,
+    /// Inspect one workspace and its active lease/seal state.
+    Inspect {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+    },
+    /// Show path-level changes against the fork base or an exact revision.
+    Diff {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        #[arg(long, value_name = "REVISION")]
+        against: Option<crate::workspace_overlay::model::BaseRevision>,
+        #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+        chunk_size: u64,
+    },
+    /// Mark a workspace for lease-aware garbage collection.
+    Discard {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Seal and fast-forward a target workspace if its base is unchanged.
+    Commit {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        #[arg(long = "to")]
+        target: crate::workspace_overlay::ids::WorkspaceId,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -284,9 +393,21 @@ pub enum MetaBackendKind {
     TiKv,
 }
 
+#[cfg(feature = "workspace-overlay")]
+#[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceMetaBackendKind {
+    Sqlx,
+    Redis,
+    #[value(name = "tikv", alias = "ti-kv")]
+    TiKv,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct MountFileConfig {
     pub mount_point: Option<PathBuf>,
+    pub volume_format: Option<VolumeFormat>,
+    pub workspace: Option<uuid::Uuid>,
+    pub workspace_namespace: Option<String>,
     pub data: Option<DataFileConfig>,
     pub meta: Option<MetaFileConfig>,
     pub layout: Option<LayoutFileConfig>,
@@ -397,6 +518,9 @@ pub struct BandwidthFileConfig {
 #[derive(Debug, Clone)]
 pub struct MountConfig {
     pub mount_point: PathBuf,
+    pub volume_format: VolumeFormat,
+    pub workspace: Option<uuid::Uuid>,
+    pub workspace_namespace: String,
     pub data_backend: DataBackendKind,
     pub data_dir: PathBuf,
     pub s3_bucket: Option<String>,
@@ -445,6 +569,20 @@ impl MountConfig {
         let fuse_cfg = file_cfg.fuse.unwrap_or_default();
         let cache_cfg = file_cfg.cache.unwrap_or_default();
         let compact = file_cfg.compact.unwrap_or_default();
+        let workspace = args.workspace.or(file_cfg.workspace);
+        let volume_format = args
+            .volume_format
+            .or(file_cfg.volume_format)
+            .unwrap_or_else(|| {
+                if workspace.is_some() {
+                    VolumeFormat::WorkspaceV1
+                } else {
+                    VolumeFormat::FlatV1
+                }
+            });
+        if workspace.is_some() && volume_format == VolumeFormat::FlatV1 {
+            anyhow::bail!("workspace id cannot be used with volume_format=flat-v1");
+        }
         let cache = cache_cfg.into_cache_config()?;
         let data_backend = args
             .data_backend
@@ -475,6 +613,12 @@ impl MountConfig {
 
         Ok(Self {
             mount_point,
+            volume_format,
+            workspace,
+            workspace_namespace: args
+                .workspace_namespace
+                .or(file_cfg.workspace_namespace)
+                .unwrap_or_else(|| "brewfs".to_string()),
             data_backend,
             data_dir: args
                 .data_dir
@@ -674,6 +818,9 @@ mod tests {
     fn empty_mount_args(config: Option<PathBuf>, mount_point: Option<PathBuf>) -> MountArgs {
         MountArgs {
             config,
+            volume_format: None,
+            workspace: None,
+            workspace_namespace: None,
             mount_point,
             data_backend: None,
             data_dir: None,
@@ -812,6 +959,9 @@ mod tests {
     fn mount_config_defaults_use_low_overhead_fuse_dispatch() {
         let config = MountConfig::from_sources(MountArgs {
             config: None,
+            volume_format: None,
+            workspace: None,
+            workspace_namespace: None,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
             data_backend: None,
             data_dir: None,
@@ -837,12 +987,47 @@ mod tests {
 
         assert_eq!(config.fuse_workers, 1);
         assert_eq!(config.fuse_max_background, DEFAULT_FUSE_MAX_BACKGROUND);
+        assert_eq!(config.volume_format, VolumeFormat::FlatV1);
+        assert!(config.workspace.is_none());
+    }
+
+    #[test]
+    fn default_cli_surface_does_not_expose_workspace_commands() {
+        let help = Cli::command().render_long_help().to_string();
+
+        #[cfg(not(feature = "workspace-overlay"))]
+        assert!(!help.contains("workspace"));
+        #[cfg(feature = "workspace-overlay")]
+        assert!(help.contains("workspace"));
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn workspace_mount_flags_are_feature_gated_and_parse() {
+        let id = uuid::Uuid::from_u128(77);
+        let cli = Cli::parse_from([
+            "brewfs",
+            "mount",
+            "/mnt/workspace",
+            "--volume-format",
+            "workspace-v1",
+            "--workspace",
+            &id.to_string(),
+        ]);
+        let Command::Mount(args) = cli.cmd else {
+            panic!("expected mount command");
+        };
+        assert_eq!(args.volume_format, Some(VolumeFormat::WorkspaceV1));
+        assert_eq!(args.workspace, Some(id));
     }
 
     #[test]
     fn mount_config_defaults_raise_s3_concurrency() {
         let config = MountConfig::from_sources(MountArgs {
             config: None,
+            volume_format: None,
+            workspace: None,
+            workspace_namespace: None,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
             data_backend: None,
             data_dir: None,
@@ -868,6 +1053,43 @@ mod tests {
 
         assert_eq!(config.s3_max_concurrency, DEFAULT_S3_MAX_CONCURRENCY);
         assert_eq!(config.s3_max_concurrency, 32);
+    }
+
+    #[test]
+    fn legacy_config_defaults_flat_but_workspace_marker_is_parseable() {
+        let path = std::env::temp_dir().join(format!(
+            "brewfs-workspace-format-config-{}-{}.yaml",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::write(
+            &path,
+            "mount_point: /mnt/workspace\nvolume_format: workspace-v1\nworkspace: 00000000-0000-0000-0000-000000000077\n",
+        )
+        .unwrap();
+        let config = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None)).unwrap();
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.volume_format, VolumeFormat::WorkspaceV1);
+        assert_eq!(config.workspace, Some(uuid::Uuid::from_u128(0x77)));
+    }
+
+    #[test]
+    fn workspace_id_selects_workspace_format_and_rejects_explicit_flat_format() {
+        let workspace = uuid::Uuid::from_u128(88);
+        let mut args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
+        args.workspace = Some(workspace);
+        let config = MountConfig::from_sources(args.clone()).unwrap();
+        assert_eq!(config.volume_format, VolumeFormat::WorkspaceV1);
+        assert_eq!(config.workspace, Some(workspace));
+
+        args.volume_format = Some(VolumeFormat::FlatV1);
+        assert!(
+            MountConfig::from_sources(args)
+                .unwrap_err()
+                .to_string()
+                .contains("workspace id cannot be used")
+        );
     }
 
     #[test]
