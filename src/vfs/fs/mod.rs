@@ -846,7 +846,6 @@ where
         }
 
         let meta_store = meta_client.store();
-        let is_database_store = meta_store.name() == "database";
 
         let mut worker = CompactionWorker::with_config(
             meta_store,
@@ -856,15 +855,13 @@ where
             config.compact_config.lock_ttl.clone(),
         );
 
-        if is_database_store {
-            let client = Arc::clone(meta_client);
-            worker = worker.with_compaction_hook(Arc::new(move |chunk_id| {
-                let client = Arc::clone(&client);
-                tokio::spawn(async move {
-                    client.invalidate_chunk_slices(chunk_id).await;
-                });
-            }));
-        }
+        let client = Arc::clone(meta_client);
+        worker = worker.with_compaction_hook(Arc::new(move |chunk_id| {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client.invalidate_chunk_slices(chunk_id).await;
+            });
+        }));
         let (compaction_handle, gc_handle) = worker.start(config.compaction, config.gc);
 
         Some(VfsBackgroundTasks {

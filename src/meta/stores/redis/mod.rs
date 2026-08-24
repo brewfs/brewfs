@@ -3283,6 +3283,62 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(
         level = "trace",
+        skip(self),
+        fields(chunk_id, slice_count = tracing::field::Empty)
+    )]
+    async fn get_slices_with_version(
+        &self,
+        chunk_id: u64,
+    ) -> Result<(Option<u64>, Vec<SliceDesc>), MetaError> {
+        let chunk_key = self.chunk_key(chunk_id);
+        let version_key = self.chunk_version_key(chunk_id);
+        let mut conn = self.conn.clone();
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("GET")
+            .arg(&version_key)
+            .cmd("LRANGE")
+            .arg(&chunk_key)
+            .arg(0)
+            .arg(-1);
+        let (version, raw): (Option<u64>, Vec<Vec<u8>>) = pipe
+            .query_async(&mut conn)
+            .instrument(tracing::trace_span!(
+                "get_slices_with_version.redis_transaction",
+                chunk_id
+            ))
+            .await
+            .map_err(redis_err)?;
+
+        let mut slices = Vec::with_capacity(raw.len());
+        for entry in raw {
+            slices.push(crate::meta::serialization::deserialize_meta(&entry)?);
+        }
+        tracing::Span::current().record("slice_count", slices.len());
+
+        // Redis supports version validation even before the first mutation.
+        // Version zero keeps an empty cached list distinguishable from a
+        // backend that does not support version tokens at all.
+        Ok((Some(version.unwrap_or(0)), slices))
+    }
+
+    #[tracing::instrument(level = "trace", skip(self), fields(chunk_id))]
+    async fn get_chunk_version(&self, chunk_id: u64) -> Result<Option<u64>, MetaError> {
+        let mut conn = self.conn.clone();
+        let version: Option<u64> = redis::cmd("GET")
+            .arg(self.chunk_version_key(chunk_id))
+            .query_async(&mut conn)
+            .instrument(tracing::trace_span!(
+                "get_chunk_version.redis_get",
+                chunk_id
+            ))
+            .await
+            .map_err(redis_err)?;
+        Ok(Some(version.unwrap_or(0)))
+    }
+
+    #[tracing::instrument(
+        level = "trace",
         skip(self, slice),
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]
