@@ -141,7 +141,10 @@ the full xfstests corpus and applies `tests/scripts/xfstests_slayer.exclude`.
 LTP runs its complete `fs` command-file set after merging
 `docker/compose-xfstests/ltp_skip_tests.txt`; these repository exclusions are
 the only default coverage reductions. Set `XFSTESTS_CASES` or use
-`--xfstests-cases` only for a targeted diagnostic run.
+`--xfstests-cases` only for a targeted diagnostic run. The Compose profile uses
+`LTP_TIMEOUT_MUL=4` because the 1,000-link `linker01` case is substantially
+slower through FUSE than on a local filesystem; override it when diagnosing
+timeout behavior.
 
 For a quick Compose smoke run, limit xfstests while retaining both workspace
 forks and the LTP profile:
