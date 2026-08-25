@@ -615,8 +615,8 @@ impl WorkspaceStore for SqliteWorkspaceStore {
                 },
             ));
         }
-        let parent_depth = sea_orm::sqlx::query_scalar::<_, i64>(
-            "SELECT depth FROM ws_v1_layers WHERE layer_id = ? AND state = ?",
+        let parent = sea_orm::sqlx::query(
+            "SELECT parent_layer_id, depth FROM ws_v1_layers WHERE layer_id = ? AND state = ?",
         )
         .bind(request.base_revision.layer_id.as_bytes().as_slice())
         .bind(LayerState::Sealed.discriminant() as i64)
@@ -626,21 +626,24 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .ok_or(WorkspaceError::LayerNotFound(
             request.base_revision.layer_id,
         ))?;
-        let depth = to_u32(parent_depth, "parent layer depth")?
-            .checked_add(1)
-            .ok_or_else(|| WorkspaceError::CorruptMetadata("layer depth overflows".into()))?;
-        if depth > crate::workspace_overlay::model::LAYER_CHAIN_HARD_LIMIT {
-            return Err(WorkspaceError::LayerDepthLimit {
-                depth,
-                hard_limit: crate::workspace_overlay::model::LAYER_CHAIN_HARD_LIMIT,
-            });
+        let parent_layer_id = parent
+            .try_get::<Option<Vec<u8>>, _>("parent_layer_id")
+            .map_err(backend)?;
+        let parent_depth = to_u32(
+            parent.try_get("depth").map_err(backend)?,
+            "parent layer depth",
+        )?;
+        if parent_layer_id.is_some() || parent_depth != 1 {
+            return Err(WorkspaceError::CorruptMetadata(
+                "workspace base revision must be a flat sealed layer".into(),
+            ));
         }
         let now = now_ns()?;
         insert_writable_layer(
             &mut tx,
             request.head_layer_id,
             request.base_revision.layer_id,
-            depth,
+            2,
             request.workspace_id,
             now,
         )
@@ -2307,19 +2310,6 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let _guard = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
         let now = now_ns()?;
-        let active_lease = sea_orm::sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM ws_v1_snapshot_leases
-             WHERE workspace_id = ? AND state = ? AND expires_at_ns > ?",
-        )
-        .bind(request.workspace_id.as_bytes().as_slice())
-        .bind(LeaseState::Active.discriminant() as i64)
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(backend)?;
-        if active_lease != 0 {
-            return Err(WorkspaceError::Busy);
-        }
         let head = sea_orm::sqlx::query(
             "SELECT parent_layer_id, next_sequence FROM ws_v1_layers
              WHERE layer_id = ? AND state = ? AND owner_workspace_id = ?",
@@ -2420,6 +2410,20 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         if switched.rows_affected() != 1 {
             return Err(WorkspaceError::Fenced);
         }
+        sea_orm::sqlx::query(
+            "UPDATE ws_v1_snapshot_leases
+             SET base_layer_id = ?, base_version = ?, base_root_hash = ?, updated_at_ns = ?
+             WHERE workspace_id = ? AND state = ?",
+        )
+        .bind(request.compacted_layer_id.as_bytes().as_slice())
+        .bind(to_i64(sealed_version, "sealed version")?)
+        .bind(root.as_slice())
+        .bind(now)
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(LeaseState::Active.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
         sea_orm::sqlx::query(
             "UPDATE ws_v1_layers SET state = ?, owner_workspace_id = NULL
              WHERE layer_id = ? AND state = ?",

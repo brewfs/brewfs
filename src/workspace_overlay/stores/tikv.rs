@@ -1,5 +1,6 @@
 //! TiKV transactional substrate for the workspace catalog.
 
+use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::time::Duration;
 
@@ -69,6 +70,43 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
             log::debug!("TiKV workspace get rollback failed: {error}");
         }
         Ok(value)
+    }
+
+    async fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        Ok(self.get_many_with_time(keys).await?.0)
+    }
+
+    async fn get_many_with_time(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        if keys.is_empty() {
+            return Ok((Vec::new(), self.server_time_ns().await?));
+        }
+        let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
+        let mut transaction = self
+            .client
+            .begin_with_options(options)
+            .await
+            .map_err(backend)?;
+        let now = pd_physical_ms_to_ns(transaction.start_timestamp().physical)?;
+        let scoped = keys.iter().map(|key| self.scoped(key)).collect::<Vec<_>>();
+        let found = transaction
+            .batch_get(scoped.clone())
+            .await
+            .map_err(backend)?
+            .map(|pair| {
+                let key: Vec<u8> = pair.key().clone().into();
+                (key, pair.value().to_vec())
+            })
+            .collect::<BTreeMap<_, _>>();
+        if let Err(error) = transaction.rollback().await {
+            log::debug!("TiKV workspace batch get rollback failed: {error}");
+        }
+        Ok((
+            scoped.iter().map(|key| found.get(key).cloned()).collect(),
+            now,
+        ))
     }
 
     async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvEntry>, WorkspaceError> {

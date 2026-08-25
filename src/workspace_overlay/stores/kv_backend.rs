@@ -28,6 +28,30 @@ pub trait WorkspaceKvBackend: Send + Sync + 'static {
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError>;
 
+    /// Return exact values in the same order as `keys`.
+    ///
+    /// Remote backends override this to collapse a fixed two-layer lookup into
+    /// one network round trip. The default keeps lightweight test backends
+    /// simple without changing their semantics.
+    async fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        let mut values = Vec::with_capacity(keys.len());
+        for key in keys {
+            values.push(self.get(key).await?);
+        }
+        Ok(values)
+    }
+
+    /// Return exact values and a backend-authoritative timestamp. Remote
+    /// backends override this to share the transaction/pipeline used by the
+    /// read instead of paying a second round trip for lease validation time.
+    async fn get_many_with_time(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        let now = self.server_time_ns().await?;
+        Ok((self.get_many(keys).await?, now))
+    }
+
     /// Return logical key/value pairs whose keys start with `prefix`.
     async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvEntry>, WorkspaceError>;
 

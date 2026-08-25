@@ -53,15 +53,17 @@ flowchart TB
     FuseB --> Chunk
     Chunk --> Objects[(S3-compatible or local<br/>immutable blocks)]
 
-    Shared[Sealed base layers] --> Resolver
+    Shared[Fixed sealed base] --> Resolver
     Delta --> Resolver
     Shared -. shared by both agents .-> Objects
 ```
 
-The resolver walks a workspace's writable head followed by sealed parents.
-For a given logical identity, the newest delta wins; whiteouts stop lookup in
-older layers. Extents are clipped and combined into a read plan before the
-existing chunk reader fetches object blocks.
+Every active view contains exactly two layers: one private writable overlay and
+one flat sealed base. The base has no parent and remains fixed until an explicit
+seal publishes a replacement base. Point reads batch the two exact keys into one
+Redis `MGET` or TiKV batch-get; they never scan metadata. Whiteouts in the upper
+stop fallback to the base. Extents are clipped and combined into a read plan
+before the existing chunk reader fetches object blocks.
 
 ## Persisted graph
 
@@ -71,8 +73,6 @@ flowchart LR
     WS2[Workspace B] --> HB[Writable head B]
     HA --> Base[Sealed base revision]
     HB --> Base
-    Base --> Parent[Older sealed parent]
-
     LeaseA[Lease A] -. fences writes .-> WS1
     LeaseB[Lease B] -. fences writes .-> WS2
     Snap[Snapshot] -. GC root .-> Base
@@ -86,6 +86,9 @@ flowchart LR
 Workspace heads, snapshots, active leases, and incomplete seal journals are GC
 roots. A layer or object slice may be deleted only after it is unreachable from
 all roots and the configured lease grace period has elapsed.
+
+The active graph invariant is `writable(depth=2) -> sealed(depth=1) -> null`.
+Sealed ancestry is never exposed to the FUSE data path.
 
 ## Transaction architecture
 
@@ -102,8 +105,7 @@ sequenceDiagram
     participant K as Redis / TiKV
 
     M->>S: mutation + HeadGuard
-    S->>K: server time (Redis TIME / PD TSO)
-    S->>K: read hot/workspace, hot/layer, hot/lease
+    S->>K: batched hot records + authoritative time<br/>(Redis TIME+MGET / TiKV transaction timestamp+batch-get)
     S->>S: validate workspace, head epoch,<br/>owner, lease generation and expiry
     S->>K: atomic CAS(three expected values)<br/>put hot/layer + delta keys
     alt CAS conflict
@@ -117,6 +119,12 @@ The writable layer owns its `next_sequence`, so writers in the same workspace
 serialize correctly while sibling workspaces do not contend. Lease renewal CASes
 only `hot/lease/<lease-id>`. Each ID allocator CASes only its own
 `hot/allocator/<name>` record.
+
+Named dentry, inode, xattr, and ACL resolution uses exact batched reads. Prefix
+enumeration is reserved for `readdir`, layer materialization, and GC. Redis keeps
+a transactionally maintained lexicographic key index so those operations read
+only the requested key range; `SCAN MATCH` is used once only to migrate an older
+catalog that lacks the index marker.
 
 ### Low-frequency topology path
 
@@ -136,8 +144,8 @@ use one fixed cluster hash tag. TiKV uses pessimistic transactions and
 Lease expiry must be based on metadata-backend time, never mount-host wall time:
 
 - Redis uses `TIME`;
-- TiKV calls `TransactionClient::current_timestamp()` and converts the PD TSO
-  physical millisecond component to nanoseconds with checked arithmetic;
+- TiKV reuses the transaction start timestamp and converts its PD TSO physical
+  millisecond component to nanoseconds with checked arithmetic;
 - SQLite is a local semantic and fault-injection backend and uses its local
   transaction clock.
 
@@ -147,11 +155,13 @@ any delta or sequence update is committed.
 
 ## State transitions
 
-Writable heads follow `Writable -> Sealing -> Sealed`; abort is permitted only
-before hashing and restores the old writable view. A successful seal creates a
-new writable head, increments the workspace head epoch, and records the sealed
-revision's digest and root hash. The durable journal makes recovery idempotent
-across crashes between quiesce, data drain, hashing, and head switch.
+Writable heads follow `Writable -> Sealing`; abort is permitted only before
+hashing and restores the old writable view. A successful seal materializes the
+fixed base plus the writable delta into a new flat sealed base, creates one empty
+writable overlay, and atomically switches the workspace and active lease to that
+pair. Immutable object blocks are reused rather than copied. The durable journal
+makes recovery idempotent across crashes, and mount recovery flattens a transient
+post-switch chain before admitting a writer.
 
 Fast-forward commit is deliberately restricted: the source revision and target
 fork base must still match, the target head must be empty, and the target must
@@ -183,6 +193,8 @@ Any architecture change must preserve and test these invariants:
 6. active leases and incomplete journals prevent premature GC;
 7. default flat-volume behavior and serialized metadata remain unchanged;
 8. Redis and TiKV both pass the distributed two-store concurrency contract.
+9. every mounted workspace resolves exactly two layers;
+10. named point reads issue no prefix scans, regardless of backend key count.
 
 The feature test suite, resolver oracle tests, real Redis/TiKV backend contracts,
 dual-mount isolation tests, pjdfstest, and xfstests gates are the acceptance

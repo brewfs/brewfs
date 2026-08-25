@@ -1,4 +1,4 @@
-//! Offline, lease-aware sealed-chain compaction.
+//! Seal-time materialization of a workspace into a flat immutable base.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -12,16 +12,13 @@ use super::model::{
 };
 use super::resolver::{resolve_acl, resolve_dentry, resolve_extents, resolve_inode, resolve_xattr};
 
-pub const SOFT_LAYER_DEPTH: u32 = 8;
-
 pub struct WorkspaceCompactor<W> {
     store: Arc<W>,
-    chunk_size: u64,
 }
 
 impl<W: WorkspaceStore + 'static> WorkspaceCompactor<W> {
-    pub fn new(store: Arc<W>, chunk_size: u64) -> Self {
-        Self { store, chunk_size }
+    pub fn new(store: Arc<W>) -> Self {
+        Self { store }
     }
 
     pub async fn compact(
@@ -156,9 +153,21 @@ impl<W: WorkspaceStore + 'static> WorkspaceCompactor<W> {
             .map(|row| (row.ino, row.chunk_index))
             .collect::<BTreeSet<_>>();
         for (ino, chunk_index) in extent_keys {
-            for extent in
-                resolve_extents(chain, &input.extents, ino, chunk_index, 0..self.chunk_size)?
-            {
+            let range_end = input
+                .extents
+                .iter()
+                .filter(|row| row.ino == ino && row.chunk_index == chunk_index)
+                .try_fold(0_u64, |end, row| {
+                    row.logical_offset
+                        .checked_add(row.length)
+                        .map(|row_end| end.max(row_end))
+                        .ok_or_else(|| {
+                            WorkspaceError::CorruptMetadata(
+                                "extent range overflows during seal materialization".into(),
+                            )
+                        })
+                })?;
+            for extent in resolve_extents(chain, &input.extents, ino, chunk_index, 0..range_end)? {
                 if let ExtentKind::Data {
                     slice_id,
                     slice_offset,
@@ -302,7 +311,7 @@ mod tests {
         let expected_plan = meta.read_plan(ino, 0, 0, 8).await.unwrap();
         session.release().await.unwrap();
 
-        let result = WorkspaceCompactor::new(store.clone(), crate::chunk::DEFAULT_CHUNK_SIZE)
+        let result = WorkspaceCompactor::new(store.clone())
             .compact(workspace_id)
             .await
             .unwrap();

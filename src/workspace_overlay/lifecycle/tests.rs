@@ -45,7 +45,7 @@ async fn setup() -> (
 }
 
 #[tokio::test]
-async fn seal_switches_head_once_and_fences_the_old_view() {
+async fn seal_installs_a_flat_base_and_fences_the_old_view() {
     let (store, session) = setup().await;
     let meta = WorkspaceMetaLayer::new(store.clone(), session.view.clone());
     meta.create_file(meta.root_ino(), "before-seal".into())
@@ -72,20 +72,42 @@ async fn seal_switches_head_once_and_fences_the_old_view() {
             .state,
         LayerState::Writable
     );
+    let pair = store
+        .load_layer_chain(sealed.new_head_layer_id)
+        .await
+        .unwrap();
+    assert_eq!(pair.len(), 2);
+    assert_eq!(pair[0].state, LayerState::Writable);
+    assert_eq!(pair[0].depth, 2);
+    assert_eq!(pair[1].state, LayerState::Sealed);
+    assert_eq!(pair[1].depth, 1);
+    assert!(pair[1].parent_layer_id.is_none());
     assert!(
         meta.create_file(meta.root_ino(), "stale".into())
             .await
             .is_err()
     );
-    meta.replace_view_context(ViewContext {
+    let current_view = ViewContext {
         head_layer_id: sealed.new_head_layer_id,
         head_epoch: sealed.head_epoch,
         ..session.view.clone()
-    })
-    .await;
+    };
+    meta.replace_view_context(current_view.clone()).await;
     meta.create_file(meta.root_ino(), "after-seal".into())
         .await
         .unwrap();
+    let resealed = lifecycle
+        .seal(&current_view, &NoopDurableRemoteBarrier)
+        .await
+        .unwrap();
+    let resealed_pair = store
+        .load_layer_chain(resealed.new_head_layer_id)
+        .await
+        .unwrap();
+    assert_eq!(resealed_pair.len(), 2);
+    assert_eq!(resealed_pair[0].depth, 2);
+    assert_eq!(resealed_pair[1].depth, 1);
+    assert!(resealed_pair[1].parent_layer_id.is_none());
     session.release().await.unwrap();
 }
 

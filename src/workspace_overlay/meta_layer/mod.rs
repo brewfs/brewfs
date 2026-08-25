@@ -29,10 +29,11 @@ use super::catalog::{
     InodeQuery, NamespaceMutation, RecordOrphanSlice, WorkspaceStore, XattrMutation, XattrQuery,
 };
 use super::error::WorkspaceError;
+use super::ids::LayerId;
 use super::metrics::{WorkspaceMetrics, global_workspace_metrics};
 use super::model::{
-    AclDelta, DataExtentDelta, DentryDelta, InodeDelta, InodeState, LayerRecord, ValueOp,
-    ViewContext, XattrDelta,
+    AclDelta, DataExtentDelta, DentryDelta, InodeDelta, InodeState, LayerRecord, LayerState,
+    ValueOp, ViewContext, XattrDelta,
 };
 use super::resolver::{
     ResolvedDentry, resolve_acl, resolve_dentry, resolve_directory, resolve_extents, resolve_inode,
@@ -42,6 +43,7 @@ use super::resolver::{
 pub struct WorkspaceMetaLayer<W> {
     store: Arc<W>,
     view: Arc<RwLock<ViewContext>>,
+    layer_pair: RwLock<Option<(LayerId, u64, Vec<LayerRecord>)>>,
     root_ino: AtomicI64,
     chunk_size: u64,
     open_counts: DashMap<i64, u64>,
@@ -49,6 +51,27 @@ pub struct WorkspaceMetaLayer<W> {
     locks: Mutex<WorkspaceLocks>,
     mutation_gate: Mutex<()>,
     metrics: Arc<WorkspaceMetrics>,
+}
+
+fn validate_fixed_layer_pair(chain: &[LayerRecord]) -> Result<(), WorkspaceError> {
+    let [head, base] = chain else {
+        return Err(WorkspaceError::CorruptMetadata(format!(
+            "workspace view must contain exactly one writable layer and one sealed base; found {} layers",
+            chain.len()
+        )));
+    };
+    if head.state != LayerState::Writable
+        || head.parent_layer_id != Some(base.layer_id)
+        || head.depth != 2
+        || base.state != LayerState::Sealed
+        || base.parent_layer_id.is_some()
+        || base.depth != 1
+    {
+        return Err(WorkspaceError::CorruptMetadata(
+            "workspace view is not a fixed sealed base plus writable overlay".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -62,6 +85,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         Self {
             store,
             view: Arc::new(RwLock::new(view)),
+            layer_pair: RwLock::new(None),
             root_ino: AtomicI64::new(1),
             chunk_size: DEFAULT_CHUNK_SIZE,
             open_counts: DashMap::new(),
@@ -90,19 +114,28 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let old_workspace = self.view.read().await.workspace_id;
         self.resolver_cache.invalidate_workspace(old_workspace);
         *self.view.write().await = view;
+        *self.layer_pair.write().await = None;
     }
 
     async fn chain(&self) -> Result<Vec<LayerRecord>, MetaError> {
-        let view = self.view.read().await;
+        let view = self.view.read().await.clone();
+        if let Some((head, epoch, layers)) = self.layer_pair.read().await.as_ref()
+            && *head == view.head_layer_id
+            && *epoch == view.head_epoch
+        {
+            return Ok(layers.clone());
+        }
         let chain = self
             .store
             .load_layer_chain(view.head_layer_id)
             .await
             .map_err(workspace_to_meta)?;
+        validate_fixed_layer_pair(&chain).map_err(workspace_to_meta)?;
         self.metrics.add_resolver_steps(chain.len() as u64);
         if let Some(head) = chain.first() {
             self.metrics.set_layer_depth(u64::from(head.depth));
         }
+        *self.layer_pair.write().await = Some((view.head_layer_id, view.head_epoch, chain.clone()));
         Ok(chain)
     }
 

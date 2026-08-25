@@ -11,12 +11,13 @@ use super::catalog::{
     AbortSeal, AcquireLease, AdvanceSeal, BeginSeal, CreateSnapshot, CreateWorkspace,
     FastForwardCommit, HeadGuard, MarkDeleting, ReleaseLease, RenewLease, WorkspaceStore,
 };
+use super::compaction::WorkspaceCompactor;
 use super::error::WorkspaceError;
 use super::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
 use super::metrics::{WorkspaceMetrics, global_workspace_metrics};
 use super::model::{
-    BaseRevision, CommitResult, SealPhase, SealResult, SnapshotLease, SnapshotRecord, ViewContext,
-    WorkspaceRecord,
+    BaseRevision, CommitResult, LayerRecord, LayerState, SealPhase, SealResult, SnapshotLease,
+    SnapshotRecord, ViewContext, WorkspaceRecord,
 };
 
 pub const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(30);
@@ -119,7 +120,22 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
             })
             .await?;
         self.store.hash_seal(journal_id).await?;
-        self.store.commit_seal(journal_id).await
+        self.store.commit_seal(journal_id).await?;
+        self.flatten_sealed_workspace(view.workspace_id).await
+    }
+
+    async fn flatten_sealed_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<SealResult, WorkspaceError> {
+        let compacted = WorkspaceCompactor::new(self.store.clone())
+            .compact(workspace_id)
+            .await?;
+        Ok(SealResult {
+            revision: compacted.revision,
+            new_head_layer_id: compacted.replacement_head_layer_id,
+            head_epoch: compacted.head_epoch,
+        })
     }
 
     pub async fn fork_revision(
@@ -238,10 +254,12 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
                 }
                 SealPhase::DataDrained => {
                     self.store.hash_seal(journal.journal_id).await?;
-                    completed.push(self.store.commit_seal(journal.journal_id).await?);
+                    self.store.commit_seal(journal.journal_id).await?;
+                    completed.push(self.flatten_sealed_workspace(journal.workspace_id).await?);
                 }
                 SealPhase::Hashed | SealPhase::HeadSwitched => {
-                    completed.push(self.store.commit_seal(journal.journal_id).await?);
+                    self.store.commit_seal(journal.journal_id).await?;
+                    completed.push(self.flatten_sealed_workspace(journal.workspace_id).await?);
                 }
                 SealPhase::Completed | SealPhase::Aborted => {}
             }
@@ -289,8 +307,20 @@ impl<W: WorkspaceStore + 'static> WorkspaceMountSession<W> {
         heartbeat_interval: Duration,
     ) -> Result<Self, WorkspaceError> {
         store.capabilities().validate_for_v1_mount()?;
-        let workspace = store.load_workspace(workspace_id).await?;
-        store.load_layer_chain(workspace.head_layer_id).await?;
+        let mut workspace = store.load_workspace(workspace_id).await?;
+        let mut chain = store.load_layer_chain(workspace.head_layer_id).await?;
+        if !is_fixed_layer_pair(&chain) {
+            WorkspaceCompactor::new(store.clone())
+                .compact(workspace_id)
+                .await?;
+            workspace = store.load_workspace(workspace_id).await?;
+            chain = store.load_layer_chain(workspace.head_layer_id).await?;
+        }
+        if !is_fixed_layer_pair(&chain) {
+            return Err(WorkspaceError::CorruptMetadata(
+                "workspace mount requires one flat sealed base and one writable overlay".into(),
+            ));
+        }
         let ttl_ns = duration_ns(ttl)?;
         let lease = store
             .acquire_lease(AcquireLease {
@@ -336,6 +366,18 @@ impl<W: WorkspaceStore + 'static> WorkspaceMountSession<W> {
         }
         result
     }
+}
+
+fn is_fixed_layer_pair(chain: &[LayerRecord]) -> bool {
+    let [head, base] = chain else {
+        return false;
+    };
+    head.state == LayerState::Writable
+        && head.parent_layer_id == Some(base.layer_id)
+        && head.depth == 2
+        && base.state == LayerState::Sealed
+        && base.parent_layer_id.is_none()
+        && base.depth == 1
 }
 
 struct LeaseHeartbeat {

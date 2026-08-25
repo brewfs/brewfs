@@ -110,13 +110,15 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        timeout 180 sh -ec '
-          while true; do
-            body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
-            echo "$$body" | grep -Eq '"state_name"[[:space:]]*:[[:space:]]*"Up"' && exit 0
-            sleep 2
-          done
-        '
+        attempts=0
+        while [ "$$attempts" -lt 90 ]; do
+          body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
+          echo "$$body" | grep -Fq '"state_name": "Up"' && exit 0
+          attempts=$$((attempts + 1))
+          sleep 2
+        done
+        echo "TiKV did not register an Up store within 180 seconds" >&2
+        exit 1
     networks:
       - brewfs-workspace-overlay
 

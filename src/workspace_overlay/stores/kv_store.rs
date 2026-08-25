@@ -195,7 +195,6 @@ where
     async fn hot_mutation<R, F>(
         &self,
         guard: &HeadGuard,
-        now: i64,
         mut operation: F,
     ) -> Result<R, WorkspaceError>
     where
@@ -205,9 +204,15 @@ where
         let layer_key = hot_layer_key(guard.expected_head_layer_id);
         let lease_key = hot_lease_key(guard.lease_id);
         for _ in 0..CAS_MAX_RETRIES {
-            let (workspace_raw, workspace) = self.load_hot(workspace_key.clone()).await?;
-            let (layer_raw, layer) = self.load_hot(layer_key.clone()).await?;
-            let (lease_raw, lease) = self.load_hot(lease_key.clone()).await?;
+            let keys = [workspace_key.clone(), layer_key.clone(), lease_key.clone()];
+            let (values, now) = self.backend.get_many_with_time(&keys).await?;
+            let mut values = values.into_iter();
+            let workspace_raw = values.next().flatten();
+            let layer_raw = values.next().flatten();
+            let lease_raw = values.next().flatten();
+            let workspace = workspace_raw.as_deref().map(decode).transpose()?;
+            let layer = layer_raw.as_deref().map(decode).transpose()?;
+            let lease = lease_raw.as_deref().map(decode).transpose()?;
             let workspace =
                 workspace.ok_or(WorkspaceError::WorkspaceNotFound(guard.workspace_id))?;
             let mut layer = layer.ok_or(WorkspaceError::Fenced)?;
@@ -295,29 +300,37 @@ where
     }
 
     async fn load_volume_header(&self) -> Result<Option<VolumeHeader>, WorkspaceError> {
-        Ok(self.load_control().await?.header)
+        let state: ControlState = self
+            .backend
+            .get(CONTROL_KEY)
+            .await?
+            .as_deref()
+            .map(decode)
+            .transpose()?
+            .unwrap_or_default();
+        if state.schema_version != WORKSPACE_SCHEMA_VERSION {
+            return Err(WorkspaceError::UnsupportedSchemaVersion(
+                state.schema_version,
+            ));
+        }
+        Ok(state.header)
     }
 
     async fn load_workspace(&self, id: WorkspaceId) -> Result<WorkspaceRecord, WorkspaceError> {
-        self.load_control()
+        self.load_hot(hot_workspace_key(id))
             .await?
-            .workspaces
-            .get(&id)
-            .cloned()
+            .1
             .ok_or(WorkspaceError::WorkspaceNotFound(id))
     }
 
     async fn load_layer(&self, id: LayerId) -> Result<LayerRecord, WorkspaceError> {
-        self.load_control()
+        self.load_hot(hot_layer_key(id))
             .await?
-            .layers
-            .get(&id)
-            .cloned()
+            .1
             .ok_or(WorkspaceError::LayerNotFound(id))
     }
 
     async fn load_layer_chain(&self, head: LayerId) -> Result<Vec<LayerRecord>, WorkspaceError> {
-        let state = self.load_control().await?;
         let mut chain = Vec::new();
         let mut current = Some(head);
         while let Some(layer_id) = current {
@@ -327,11 +340,7 @@ where
                     hard_limit: LAYER_CHAIN_HARD_LIMIT,
                 });
             }
-            let layer = state
-                .layers
-                .get(&layer_id)
-                .cloned()
-                .ok_or(WorkspaceError::LayerNotFound(layer_id))?;
+            let layer = self.load_layer(layer_id).await?;
             current = layer.parent_layer_id;
             chain.push(layer);
         }
@@ -472,25 +481,22 @@ where
         request: CreateWorkspace,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
         let now = self.now_ns().await?;
-        self.update_control(|state, _| {
-            if state.workspaces.contains_key(&request.workspace_id) {
-                return Err(conflict("workspace already exists"));
-            }
-            let parent = revision_state(state, request.base_revision.layer_id)?;
-            if parent != request.base_revision {
+        let base_key = hot_layer_key(request.base_revision.layer_id);
+        let workspace_key = hot_workspace_key(request.workspace_id);
+        let head_key = hot_layer_key(request.head_layer_id);
+        for _ in 0..CAS_MAX_RETRIES {
+            let (base_raw, base) = self.load_hot::<LayerRecord>(base_key.clone()).await?;
+            let base = base.ok_or(WorkspaceError::LayerNotFound(
+                request.base_revision.layer_id,
+            ))?;
+            if revision_from_layer(&base)? != request.base_revision {
                 return Err(conflict("fork base revision changed"));
             }
-            if state.layers.contains_key(&request.head_layer_id) {
-                return Err(conflict("workspace head layer already exists"));
+            if base.parent_layer_id.is_some() || base.depth != 1 {
+                return Err(WorkspaceError::CorruptMetadata(
+                    "workspace base revision must be a flat sealed layer".into(),
+                ));
             }
-            let parent_layer = state.layers.get(&request.base_revision.layer_id).ok_or(
-                WorkspaceError::LayerNotFound(request.base_revision.layer_id),
-            )?;
-            let depth = parent_layer
-                .depth
-                .checked_add(1)
-                .ok_or_else(|| WorkspaceError::CorruptMetadata("layer depth overflows".into()))?;
-            check_depth(depth)?;
             let workspace = WorkspaceRecord {
                 workspace_id: request.workspace_id,
                 head_layer_id: request.head_layer_id,
@@ -501,22 +507,37 @@ where
                 created_at_ns: now,
                 updated_at_ns: now,
             };
-            state.layers.insert(
+            let head = writable_layer(
                 request.head_layer_id,
-                writable_layer(
-                    request.head_layer_id,
-                    request.base_revision.layer_id,
-                    depth,
-                    request.workspace_id,
-                    now,
-                ),
+                request.base_revision.layer_id,
+                2,
+                request.workspace_id,
+                now,
             );
-            state
-                .workspaces
-                .insert(request.workspace_id, workspace.clone());
-            Ok(workspace)
-        })
-        .await
+            let checks = [
+                KvCheck {
+                    key: base_key.clone(),
+                    expected: base_raw,
+                },
+                KvCheck {
+                    key: workspace_key.clone(),
+                    expected: None,
+                },
+                KvCheck {
+                    key: head_key.clone(),
+                    expected: None,
+                },
+            ];
+            let writes = [
+                put(workspace_key.clone(), &workspace)?,
+                put(head_key.clone(), &head)?,
+            ];
+            if self.backend.compare_and_swap(&checks, &writes).await? {
+                return Ok(workspace);
+            }
+            tokio::task::yield_now().await;
+        }
+        Err(WorkspaceError::Busy)
     }
 
     async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, WorkspaceError> {
@@ -744,12 +765,26 @@ where
         &self,
         request: DentryQuery,
     ) -> Result<Vec<DentryDelta>, WorkspaceError> {
+        if let Some(name) = request.name {
+            let keys = request
+                .layer_ids
+                .iter()
+                .map(|layer| dentry_identity_key(*layer, request.parent_ino, &name))
+                .collect::<Vec<_>>();
+            return self
+                .backend
+                .get_many(&keys)
+                .await?
+                .into_iter()
+                .flatten()
+                .map(|value| decode(&value))
+                .collect();
+        }
         let mut rows = Vec::new();
         for layer in request.layer_ids {
             let mut found: Vec<DentryDelta> = self
                 .scan(dentry_parent_prefix(layer, request.parent_ino))
                 .await?;
-            found.retain(|row| request.name.as_ref().is_none_or(|name| &row.name == name));
             found.sort_by(|left, right| left.name.cmp(&right.name));
             rows.extend(found);
         }
@@ -760,17 +795,18 @@ where
         &self,
         request: InodeQuery,
     ) -> Result<Vec<InodeDelta>, WorkspaceError> {
-        let mut rows = Vec::new();
-        for layer in request.layer_ids {
-            if let Some(raw) = self
-                .backend
-                .get(&inode_identity_key(layer, request.ino))
-                .await?
-            {
-                rows.push(decode(&raw)?);
-            }
-        }
-        Ok(rows)
+        let keys = request
+            .layer_ids
+            .iter()
+            .map(|layer| inode_identity_key(*layer, request.ino))
+            .collect::<Vec<_>>();
+        self.backend
+            .get_many(&keys)
+            .await?
+            .into_iter()
+            .flatten()
+            .map(|value| decode(&value))
+            .collect()
     }
 
     async fn get_extent_deltas(
@@ -807,11 +843,25 @@ where
         &self,
         request: XattrQuery,
     ) -> Result<Vec<XattrDelta>, WorkspaceError> {
+        if let Some(name) = request.name {
+            let keys = request
+                .layer_ids
+                .iter()
+                .map(|layer| xattr_identity_key(*layer, request.ino, &name))
+                .collect::<Vec<_>>();
+            return self
+                .backend
+                .get_many(&keys)
+                .await?
+                .into_iter()
+                .flatten()
+                .map(|value| decode(&value))
+                .collect();
+        }
         let mut rows = Vec::new();
         for layer in request.layer_ids {
             let mut found: Vec<XattrDelta> =
                 self.scan(xattr_inode_prefix(layer, request.ino)).await?;
-            found.retain(|row| request.name.as_ref().is_none_or(|name| &row.name == name));
             found.sort_by(|left, right| left.name.cmp(&right.name));
             rows.extend(found);
         }
@@ -824,13 +874,24 @@ where
                 "ACL type and ID filters must be provided together".into(),
             ));
         }
+        if let (Some(acl_type), Some(acl_id)) = (request.acl_type, request.acl_id) {
+            let keys = request
+                .layer_ids
+                .iter()
+                .map(|layer| acl_identity_key(*layer, request.ino, acl_type, acl_id))
+                .collect::<Vec<_>>();
+            return self
+                .backend
+                .get_many(&keys)
+                .await?
+                .into_iter()
+                .flatten()
+                .map(|value| decode(&value))
+                .collect();
+        }
         let mut rows = Vec::new();
         for layer in request.layer_ids {
             let mut found: Vec<AclDelta> = self.scan(acl_inode_prefix(layer, request.ino)).await?;
-            found.retain(|row| {
-                request.acl_type.is_none_or(|kind| row.acl_type == kind)
-                    && request.acl_id.is_none_or(|id| row.acl_id == id)
-            });
             found.sort_by_key(|row| (row.acl_type, row.acl_id));
             rows.extend(found);
         }
@@ -860,13 +921,12 @@ where
         {
             return Err(WorkspaceError::Fenced);
         }
-        let now = self.now_ns().await?;
         let count = request
             .dentries
             .len()
             .checked_add(request.inodes.len())
             .ok_or_else(|| WorkspaceError::CorruptMetadata("mutation is too large".into()))?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let range =
                 allocate_layer_sequences(layer, count)?.expect("non-empty mutation has a range");
             let mut sequence = range.0;
@@ -897,8 +957,7 @@ where
         if request.inode.layer_id != request.guard.expected_head_layer_id {
             return Err(WorkspaceError::Fenced);
         }
-        let now = self.now_ns().await?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let mut inode = request.inode.clone();
             inode.sequence = allocate_layer_sequences(layer, 1)?
                 .expect("single mutation has a sequence")
@@ -918,8 +977,7 @@ where
             request.guard.expected_head_layer_id,
             request.chunk_size,
         )?;
-        let now = self.now_ns().await?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let mut extent = request.extent.clone();
             extent.sequence = allocate_layer_sequences(layer, 1)?
                 .expect("single mutation has a sequence")
@@ -961,8 +1019,7 @@ where
             .len()
             .checked_add(1)
             .ok_or_else(|| WorkspaceError::Backend("too many data mutations".into()))?;
-        let now = self.now_ns().await?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let first = allocate_layer_sequences(layer, count)?
                 .expect("data mutation allocates a sequence")
                 .0;
@@ -1008,8 +1065,7 @@ where
         if request.xattr.layer_id != request.guard.expected_head_layer_id {
             return Err(WorkspaceError::Fenced);
         }
-        let now = self.now_ns().await?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let mut xattr = request.xattr.clone();
             xattr.sequence = allocate_layer_sequences(layer, 1)?
                 .expect("single mutation has a sequence")
@@ -1025,8 +1081,7 @@ where
         if request.acl.layer_id != request.guard.expected_head_layer_id {
             return Err(WorkspaceError::Fenced);
         }
-        let now = self.now_ns().await?;
-        self.hot_mutation(&request.guard, now, |layer, writes| {
+        self.hot_mutation(&request.guard, |layer, writes| {
             let mut acl = request.acl.clone();
             acl.sequence = allocate_layer_sequences(layer, 1)?
                 .expect("single mutation has a sequence")
@@ -1710,13 +1765,6 @@ where
             .ok_or_else(|| WorkspaceError::CorruptMetadata("sequence overflows".into()))?;
         let now = self.now_ns().await?;
         self.update_control(|state, writes| {
-            if state.leases.values().any(|lease| {
-                lease.workspace_id == request.workspace_id
-                    && lease.state == LeaseState::Active
-                    && lease.expires_at_ns > now
-            }) {
-                return Err(WorkspaceError::Busy);
-            }
             let workspace = state
                 .workspaces
                 .get(&request.workspace_id)
@@ -1793,6 +1841,16 @@ where
                 root_hash: root,
             });
             workspace.updated_at_ns = now;
+            let revision = workspace
+                .fork_base
+                .clone()
+                .expect("compaction installs a fork base");
+            for lease in state.leases.values_mut() {
+                if lease.workspace_id == request.workspace_id && lease.state == LeaseState::Active {
+                    lease.base_revision = revision.clone();
+                    lease.updated_at_ns = now;
+                }
+            }
             let old_head = state
                 .layers
                 .get_mut(&request.expected_head_layer_id)
@@ -2002,11 +2060,15 @@ fn revision_state(state: &ControlState, layer_id: LayerId) -> Result<BaseRevisio
         .layers
         .get(&layer_id)
         .ok_or(WorkspaceError::LayerNotFound(layer_id))?;
+    revision_from_layer(layer)
+}
+
+fn revision_from_layer(layer: &LayerRecord) -> Result<BaseRevision, WorkspaceError> {
     if layer.state != LayerState::Sealed {
-        return Err(WorkspaceError::LayerNotFound(layer_id));
+        return Err(WorkspaceError::LayerNotFound(layer.layer_id));
     }
     Ok(BaseRevision {
-        layer_id,
+        layer_id: layer.layer_id,
         sealed_version: layer
             .sealed_version
             .ok_or_else(|| WorkspaceError::CorruptMetadata("sealed layer has no version".into()))?,
@@ -2213,8 +2275,12 @@ fn dentry_parent_prefix(layer: LayerId, parent_ino: i64) -> Vec<u8> {
 }
 
 fn dentry_key(row: &DentryDelta) -> Vec<u8> {
-    let mut key = dentry_parent_prefix(row.layer_id, row.parent_ino);
-    key.extend_from_slice(hex::encode(&row.name).as_bytes());
+    dentry_identity_key(row.layer_id, row.parent_ino, &row.name)
+}
+
+fn dentry_identity_key(layer: LayerId, parent_ino: i64, name: &[u8]) -> Vec<u8> {
+    let mut key = dentry_parent_prefix(layer, parent_ino);
+    key.extend_from_slice(hex::encode(name).as_bytes());
     key
 }
 
@@ -2244,8 +2310,12 @@ fn xattr_inode_prefix(layer: LayerId, ino: i64) -> Vec<u8> {
 }
 
 fn xattr_key(row: &XattrDelta) -> Vec<u8> {
-    let mut key = xattr_inode_prefix(row.layer_id, row.ino);
-    key.extend_from_slice(hex::encode(&row.name).as_bytes());
+    xattr_identity_key(row.layer_id, row.ino, &row.name)
+}
+
+fn xattr_identity_key(layer: LayerId, ino: i64, name: &[u8]) -> Vec<u8> {
+    let mut key = xattr_inode_prefix(layer, ino);
+    key.extend_from_slice(hex::encode(name).as_bytes());
     key
 }
 
@@ -2258,8 +2328,12 @@ fn acl_inode_prefix(layer: LayerId, ino: i64) -> Vec<u8> {
 }
 
 fn acl_key(row: &AclDelta) -> Vec<u8> {
-    let mut key = acl_inode_prefix(row.layer_id, row.ino);
-    key.extend_from_slice(format!("{:02x}/{}", row.acl_type, ino_component(row.acl_id)).as_bytes());
+    acl_identity_key(row.layer_id, row.ino, row.acl_type, row.acl_id)
+}
+
+fn acl_identity_key(layer: LayerId, ino: i64, acl_type: u8, acl_id: i64) -> Vec<u8> {
+    let mut key = acl_inode_prefix(layer, ino);
+    key.extend_from_slice(format!("{acl_type:02x}/{}", ino_component(acl_id)).as_bytes());
     key
 }
 
@@ -2287,6 +2361,7 @@ fn extent_key(row: &DataExtentDelta) -> Vec<u8> {
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use async_trait::async_trait;
@@ -2306,6 +2381,7 @@ mod tests {
     struct MemoryBackend {
         records: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
         cas_checks: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
+        scans: Arc<AtomicU64>,
     }
 
     #[async_trait]
@@ -2319,6 +2395,7 @@ mod tests {
         }
 
         async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvEntry>, WorkspaceError> {
+            self.scans.fetch_add(1, Ordering::Relaxed);
             Ok(self
                 .records
                 .lock()
@@ -2410,6 +2487,43 @@ mod tests {
             holder_generation: lease.holder_generation,
         };
         (store, workspace, lease, guard)
+    }
+
+    #[tokio::test]
+    async fn named_lookup_and_layer_pair_loading_never_scan() {
+        let (store, workspace, _lease, guard) = initialized().await;
+        store
+            .apply_namespace_mutation(NamespaceMutation {
+                guard,
+                dentries: vec![DentryDelta::put(
+                    workspace.head_layer_id,
+                    1,
+                    b"point-lookup".to_vec(),
+                    2,
+                    0,
+                    0,
+                )],
+                inodes: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        store.backend.scans.store(0, Ordering::Relaxed);
+        let chain = store
+            .load_layer_chain(workspace.head_layer_id)
+            .await
+            .unwrap();
+        let rows = store
+            .get_dentry_deltas(DentryQuery {
+                layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
+                parent_ino: 1,
+                name: Some(b"point-lookup".to_vec()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(store.backend.scans.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

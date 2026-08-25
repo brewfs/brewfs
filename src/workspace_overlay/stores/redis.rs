@@ -23,6 +23,7 @@ end
 
 local write_count = tonumber(ARGV[cursor])
 cursor = cursor + 1
+local index_key = KEYS[check_count + write_count + 1]
 for index = 1, write_count do
     local operation = ARGV[cursor]
     local value = ARGV[cursor + 1]
@@ -30,12 +31,18 @@ for index = 1, write_count do
     local key = KEYS[check_count + index]
     if operation == 'put' then
         redis.call('SET', key, value)
+        redis.call('ZADD', index_key, 0, key)
     else
         redis.call('DEL', key)
+        redis.call('ZREM', index_key, key)
     end
 end
 return 1
 "#;
+
+const KEY_INDEX: &[u8] = b"__index/keys";
+const KEY_INDEX_READY: &[u8] = b"__index/ready";
+const INDEX_BATCH_SIZE: usize = 1024;
 
 #[derive(Clone)]
 pub struct RedisWorkspaceBackend {
@@ -51,7 +58,9 @@ impl RedisWorkspaceBackend {
         // The hash tag keeps every catalog key in one Redis Cluster slot, which
         // is required for the multi-key Lua transactions below.
         let prefix = format!("{{brewfs-ws-v1}}:{namespace}:ws:v1/").into_bytes();
-        Ok(Self { connection, prefix })
+        let backend = Self { connection, prefix };
+        backend.ensure_key_index().await?;
+        Ok(backend)
     }
 
     fn scoped(&self, key: &[u8]) -> Vec<u8> {
@@ -59,6 +68,57 @@ impl RedisWorkspaceBackend {
         scoped.extend_from_slice(&self.prefix);
         scoped.extend_from_slice(key);
         scoped
+    }
+
+    async fn ensure_key_index(&self) -> Result<(), WorkspaceError> {
+        let marker = self.scoped(KEY_INDEX_READY);
+        let index = self.scoped(KEY_INDEX);
+        let mut connection = self.connection.clone();
+        let ready: Option<Vec<u8>> = redis::cmd("GET")
+            .arg(&marker)
+            .query_async(&mut connection)
+            .await
+            .map_err(backend)?;
+        if ready.is_some() {
+            return Ok(());
+        }
+
+        // This is a one-time migration for catalogs created before the
+        // lexicographic index existed. Normal prefix reads never use SCAN.
+        let mut pattern = self.prefix.clone();
+        pattern.push(b'*');
+        let mut cursor = 0_u64;
+        loop {
+            let (next, mut keys): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(INDEX_BATCH_SIZE)
+                .query_async(&mut connection)
+                .await
+                .map_err(backend)?;
+            keys.retain(|key| key != &index && key != &marker);
+            if !keys.is_empty() {
+                redis::cmd("ZADD")
+                    .arg(&index)
+                    .arg(0_i64)
+                    .arg(keys)
+                    .query_async::<()>(&mut connection)
+                    .await
+                    .map_err(backend)?;
+            }
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        redis::cmd("SET")
+            .arg(marker)
+            .arg(1_u8)
+            .query_async::<()>(&mut connection)
+            .await
+            .map_err(backend)
     }
 }
 
@@ -77,47 +137,94 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
             .map_err(backend)
     }
 
+    async fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scoped = keys.iter().map(|key| self.scoped(key)).collect::<Vec<_>>();
+        let mut connection = self.connection.clone();
+        redis::cmd("MGET")
+            .arg(scoped)
+            .query_async(&mut connection)
+            .await
+            .map_err(backend)
+    }
+
+    async fn get_many_with_time(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        let scoped = keys.iter().map(|key| self.scoped(key)).collect::<Vec<_>>();
+        let mut connection = self.connection.clone();
+        let ((seconds, micros), values): ((i64, i64), Vec<Option<Vec<u8>>>) = redis::pipe()
+            .cmd("TIME")
+            .cmd("MGET")
+            .arg(scoped)
+            .query_async(&mut connection)
+            .await
+            .map_err(backend)?;
+        let now = redis_time_ns(seconds, micros)?;
+        Ok((values, now))
+    }
+
     async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvEntry>, WorkspaceError> {
         let mut connection = self.connection.clone();
-        let mut pattern = self.scoped(prefix);
-        pattern.push(b'*');
-        let mut cursor = 0_u64;
+        let scoped_prefix = self.scoped(prefix);
+        let mut minimum = Vec::with_capacity(scoped_prefix.len() + 1);
+        minimum.push(b'[');
+        minimum.extend_from_slice(&scoped_prefix);
+        let maximum = match prefix_range_end(&scoped_prefix) {
+            Some(upper) => {
+                let mut bound = Vec::with_capacity(upper.len() + 1);
+                bound.push(b'(');
+                bound.extend_from_slice(&upper);
+                bound
+            }
+            None => b"+".to_vec(),
+        };
+        let index = self.scoped(KEY_INDEX);
         let mut entries = Vec::new();
         loop {
-            let (next, keys): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("MATCH")
-                .arg(&pattern)
-                .arg("COUNT")
-                .arg(1024_u32)
+            let keys: Vec<Vec<u8>> = redis::cmd("ZRANGEBYLEX")
+                .arg(&index)
+                .arg(&minimum)
+                .arg(&maximum)
+                .arg("LIMIT")
+                .arg(0_u8)
+                .arg(INDEX_BATCH_SIZE)
                 .query_async(&mut connection)
                 .await
                 .map_err(backend)?;
-            if !keys.is_empty() {
-                let batch: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
-                    .arg(&keys)
-                    .query_async(&mut connection)
-                    .await
-                    .map_err(backend)?;
-                for (key, value) in keys.into_iter().zip(batch) {
-                    if let Some(value) = value {
-                        let logical =
-                            key.strip_prefix(self.prefix.as_slice()).ok_or_else(|| {
-                                WorkspaceError::Backend(
-                                    "Redis workspace scan returned an out-of-namespace key".into(),
-                                )
-                            })?;
-                        entries.push(KvEntry {
-                            key: logical.to_vec(),
-                            value,
-                        });
-                    }
-                }
-            }
-            if next == 0 {
+            if keys.is_empty() {
                 break;
             }
-            cursor = next;
+            let batch: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
+                .arg(&keys)
+                .query_async(&mut connection)
+                .await
+                .map_err(backend)?;
+            for (key, value) in keys.iter().zip(batch) {
+                if let Some(value) = value {
+                    let logical = key.strip_prefix(self.prefix.as_slice()).ok_or_else(|| {
+                        WorkspaceError::Backend(
+                            "Redis workspace index returned an out-of-namespace key".into(),
+                        )
+                    })?;
+                    entries.push(KvEntry {
+                        key: logical.to_vec(),
+                        value,
+                    });
+                }
+            }
+            let Some(last) = keys.last() else {
+                break;
+            };
+            minimum.clear();
+            minimum.push(b'(');
+            minimum.extend_from_slice(last);
+            if keys.len() < INDEX_BATCH_SIZE {
+                break;
+            }
         }
         Ok(entries)
     }
@@ -138,6 +245,7 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
             };
             invocation.key(self.scoped(key));
         }
+        invocation.key(self.scoped(KEY_INDEX));
         invocation.arg(checks.len());
         for check in checks {
             match &check.expected {
@@ -174,11 +282,27 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
             .query_async(&mut connection)
             .await
             .map_err(backend)?;
-        seconds
-            .checked_mul(1_000_000_000)
-            .and_then(|value| value.checked_add(micros.saturating_mul(1_000)))
-            .ok_or_else(|| WorkspaceError::Backend("Redis TIME overflows i64 nanos".into()))
+        redis_time_ns(seconds, micros)
     }
+}
+
+fn prefix_range_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    for index in (0..upper.len()).rev() {
+        if upper[index] != u8::MAX {
+            upper[index] += 1;
+            upper.truncate(index + 1);
+            return Some(upper);
+        }
+    }
+    None
+}
+
+fn redis_time_ns(seconds: i64, micros: i64) -> Result<i64, WorkspaceError> {
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(micros.saturating_mul(1_000)))
+        .ok_or_else(|| WorkspaceError::Backend("Redis TIME overflows i64 nanos".into()))
 }
 
 fn validate_namespace(namespace: &str) -> Result<(), WorkspaceError> {

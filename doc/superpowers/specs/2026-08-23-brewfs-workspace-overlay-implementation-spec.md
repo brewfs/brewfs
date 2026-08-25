@@ -253,7 +253,9 @@ pub enum LeaseState {
 }
 ```
 
-sealed layer 永不可修改；active workspace 恰好有一个 writable head。
+sealed layer 永不可修改；active workspace 恰好有一个 writable head 和一个平坦 sealed
+base。固定不变量为 `writable(depth=2) -> sealed(depth=1) -> null`，不得把 sealed ancestry
+暴露给挂载数据路径。
 
 ### 5.4 持久 enum 编码
 
@@ -685,24 +687,24 @@ canonical stream 规则：
 
 ## 9. Resolver
 
-resolver 必须是无 I/O 的纯逻辑；store 负责批量加载 chain 和 delta，resolver 只处理已加载
-records。
+resolver 必须是无 I/O 的纯逻辑；store 负责批量加载固定 layer pair 和 delta，resolver 只处理
+已加载 records。
 
-### 9.1 Layer chain
+### 9.1 Fixed layer pair
 
-`load_layer_chain(head)` 返回 newest-first：
+`load_layer_chain(head)` 为兼容 store contract 保留，但挂载只能接受：
 
 ```text
-[writable head, sealed parent, ..., sealed root]
+[writable head, flat sealed base]
 ```
 
 校验：
 
-- 不得有环；
-- depth 与实际 chain 长度一致；
-- 除第一个 head 外全部为 sealed；
-- chain 长度不得超过 hard limit 32；
-- root 的 parent 为空。
+- 长度必须为 2；
+- head 为 writable、depth=2、parent 指向 base；
+- base 为 sealed、depth=1、parent 为空；
+- point lookup 使用一次 Redis `MGET` 或 TiKV batch-get 读取两个完整 key；
+- named dentry/inode/xattr/ACL 查询不得调用 prefix scan。
 
 ### 9.2 Lookup
 
@@ -711,11 +713,11 @@ records。
 1. 命中 `Put`：返回 ino/type；
 2. 命中 `Whiteout`：返回 `None`；
 3. 未命中：继续 lower；
-4. chain 结束：返回 `None`。
+4. base 未命中：返回 `None`。
 
 ### 9.3 Readdir
 
-1. 对每层批量查询 `(layer_id, parent_ino)`；
+1. 对 upper 和 base 查询 `(layer_id, parent_ino)` 的局部索引；
 2. newest-first 插入 `BTreeMap<name, Winner>`；
 3. 已有 winner 的 name 不再被 lower 覆盖；
 4. whiteout 进入 winner map，但最终不输出；
@@ -1135,14 +1137,15 @@ Prepare -> Quiesced -> DataDrained -> Hashed -> HeadSwitched -> Completed
 5. fence 新 metadata mutation；
 6. 等待已接收 VFS mutation 完成；
 7. 执行 `DurableRemote` barrier，确认 pending upload/writeback 为零；
-8. 计算 delta/root hash 和 sealed version；
-9. 创建空 new head，parent=old head；
-10. 一个事务内把 old head 设为 Sealed、切换 workspace head、增加 epoch；
-11. journal 标记 HeadSwitched/Completed；
-12. 更新 mount ViewContext；
-13. 恢复 workspace Active 和 command admission。
+8. materialize 固定 base 与 old head，计算平坦 delta/root hash 和 sealed version；
+9. 创建 parent 为空的新 sealed base，复用所有仍可见 immutable slice；
+10. 创建空 new head，parent 指向新 sealed base；
+11. 原子切换 workspace 和 active lease 到新的固定 layer pair，并增加 epoch；
+12. journal 标记 HeadSwitched/Completed；
+13. 更新 mount ViewContext，恢复 workspace Active 和 command admission。
 
-步骤 10 是唯一可见性切换点。
+步骤 11 是唯一可见性切换点。实现允许 journal recovery 中出现短暂 sealed chain，但在重新
+mount 或恢复 command admission 前必须完成 flatten；普通 FUSE I/O 永远不可观察该状态。
 
 ### 14.4 Fork
 
@@ -1189,7 +1192,7 @@ v1 precondition：
 3. target writable head 为空，不含任何 delta；
 4. target head 的 sealed parent revision 与 source 的 `fork_base` 完整相等；
 5. source/target 属于同一 volume；
-6. source layer chain 校验通过。
+6. source 的固定层对与 revision 校验通过。
 
 一个事务内：
 
@@ -1303,29 +1306,23 @@ cycle 从所有 reachable layer 的 Data extent 标记 reachable slice ID：
 
 不得为 fork 对每个 slice 增加 eager refcount。
 
-## 19. Compaction
+## 19. Seal materialization
 
-默认：
+active workspace 不存在可增长 layer depth，也不依赖后台 depth compaction。seal 的
+materialization：
 
-```text
-soft layer depth = 8
-hard layer depth = 32
-```
-
-compaction：
-
-1. 选择不跨 active lease base 的连续 sealed layer block；
-2. 构建等价 sealed layer；
+1. 读取固定 sealed base 和已 quiesce 的 writable upper；
+2. 构建等价的平坦 sealed layer；
 3. namespace/dentry/xattr/ACL 计算 newest winner；
 4. extent 计算等价 Data/Hole plan；
 5. 可复用 immutable slice，不强制重写 object；
 6. 计算新 digest/root hash；
-7. CAS 替换允许替换的 workspace/snapshot edge；
+7. CAS 替换 workspace、active lease 和空 writable head；
 8. 旧 layer 保留到所有 lease/reference 消失；
 9. 后续 GC 回收。
 
-v1 不在 foreground mutation 中同步 compaction。达到 hard limit 时 seal/fork 返回
-`LayerDepthLimit` 并触发高优先级 compaction。
+materialization 只发生在显式 seal/snapshot/publish 控制路径，不进入 foreground FUSE
+mutation。fork 只接受 flat `BaseRevision`，因此仍为 O(1) metadata mutation。
 
 ## 20. 后台任务
 
@@ -1536,7 +1533,8 @@ before/after journal complete
 
 - 百万文件 base fork 的 metadata mutation 数为常数；
 - 修改 10 GiB 文件中 4 KiB 不复制整文件；
-- depth 1/4/8/16/32 lookup/readdir/read；
+- 固定两层 lookup/stat/create/unlink 的 Redis `SCAN` 增量必须为 0；
+- point lookup 必须保持一次 backend round trip，且耗时不随无关 key 数量增长；
 - 100 child 读同 base block 的 shared cache/singleflight；
 - randrw、small-file create、rename、git checkout/build；
 - 分开报告 active throughput、fsync/close、seal drain、fork control latency；
