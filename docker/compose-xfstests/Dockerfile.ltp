@@ -59,7 +59,8 @@ COPY docker/compose-xfstests/ltp_skip_tests.txt /usr/local/share/brewfs/ltp_skip
 COPY docker/ltp_report.sh /usr/local/bin/ltp_report.sh
 
 RUN set -e; \
-    sed -i 's/\r$//' /usr/local/bin/run_ltp_in_container.sh /usr/local/bin/run_workspace_overlay_suite_in_container.sh; \
+    sed -i 's/\r$//' /usr/local/bin/run_ltp_in_container.sh /usr/local/bin/run_workspace_overlay_suite_in_container.sh \
+        /usr/local/share/brewfs/ltp_skip_tests.txt; \
     chmod +x /usr/local/bin/brewfs /usr/local/bin/run_ltp_in_container.sh \
         /usr/local/bin/run_workspace_overlay_suite_in_container.sh /usr/local/bin/ltp_report.sh; \
     mkdir -p /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts /usr/local/share/brewfs; \
