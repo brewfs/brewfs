@@ -52,6 +52,7 @@ COPY docker/compose-xfstests/pjdfstest_skip_tests.txt /usr/local/share/brewfs/pj
 COPY docker/compose-xfstests/pjdfstest-brewfs /opt/pjdfstest/tests/brewfs
 
 RUN set -e; \
+    sed -i 's/\r$//' /usr/local/bin/run_pjdfstest_in_container.sh /opt/pjdfstest/tests/brewfs/*.t; \
     chmod +x /usr/local/bin/brewfs /usr/local/bin/run_pjdfstest_in_container.sh /opt/pjdfstest/tests/brewfs/*.t; \
     mkdir -p /mnt/brewfs /run/brewfs /var/lib/brewfs/data /artifacts /usr/local/share/brewfs; \
     grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
