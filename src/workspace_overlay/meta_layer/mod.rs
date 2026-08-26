@@ -1444,9 +1444,10 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
     ) -> Result<(), MetaError> {
         let _mutation_guard = self.mutation_gate.lock().await;
         validate_xattr_name(name)?;
-        if self.resolve_inode_delta(inode).await?.is_none() {
-            return Err(MetaError::NotFound(inode));
-        }
+        let mut inode_delta = self
+            .resolve_inode_delta(inode)
+            .await?
+            .ok_or(MetaError::NotFound(inode))?;
         let existing = self.get_xattr(inode, name).await?;
         let create_only = flags & libc::XATTR_CREATE as u32 != 0;
         let replace_only = flags & libc::XATTR_REPLACE as u32 != 0;
@@ -1465,6 +1466,9 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
             return Err(MetaError::NotFound(inode));
         }
         let guard = self.guard().await;
+        inode_delta.layer_id = guard.expected_head_layer_id;
+        inode_delta.sequence = 0;
+        inode_delta.ctime_ns = now_ns()?;
         self.store
             .apply_xattr_mutation(XattrMutation {
                 xattr: XattrDelta {
@@ -1475,6 +1479,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                     value: Some(value.to_vec()),
                     sequence: 0,
                 },
+                inode: inode_delta,
                 guard,
             })
             .await
@@ -1540,7 +1545,14 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         if self.get_xattr(inode, name).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
+        let mut inode_delta = self
+            .resolve_inode_delta(inode)
+            .await?
+            .ok_or(MetaError::NotFound(inode))?;
         let guard = self.guard().await;
+        inode_delta.layer_id = guard.expected_head_layer_id;
+        inode_delta.sequence = 0;
+        inode_delta.ctime_ns = now_ns()?;
         self.store
             .apply_xattr_mutation(XattrMutation {
                 xattr: XattrDelta {
@@ -1551,6 +1563,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                     value: None,
                     sequence: 0,
                 },
+                inode: inode_delta,
                 guard,
             })
             .await

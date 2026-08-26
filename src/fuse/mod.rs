@@ -313,6 +313,22 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    fn ioctl_fsgetxattr_reply() -> ReplyIoctl {
+        // xfs_io's `stat` probes FS_IOC_FSGETXATTR before printing the
+        // portable stat fields.  FUSE has no project-specific fsxattr state,
+        // but returning a zeroed structure is the same neutral answer that a
+        // filesystem with no flags/project quota would expose and avoids
+        // leaking an unsupported-ioctl diagnostic into xfstests output.
+        ReplyIoctl {
+            result: 0,
+            flags: 0,
+            in_iovs: 0,
+            out_iovs: 0,
+            data: vec![0; 28], // sizeof(struct fsxattr) on Linux
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn parse_clone_range(data: &[u8]) -> Option<FileCloneRange> {
         if data.len() < size_of::<FileCloneRange>() {
             return None;
@@ -2077,6 +2093,9 @@ where
         #[cfg(target_os = "linux")]
         {
             match cmd {
+                // FS_IOC_FSGETXATTR = _IOR('X', 31, struct fsxattr).
+                // xfs_io labels this probe FS_IOC_GETXATTR in diagnostics.
+                0x801c_581f => Ok(Self::ioctl_fsgetxattr_reply()),
                 x if x == libc::FICLONE as u32 => self.ioctl_ficlone(req, inode, arg).await,
                 x if x == libc::FICLONERANGE as u32 => {
                     self.ioctl_ficlonerange(req, inode, in_data).await

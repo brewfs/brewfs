@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::workspace_overlay::catalog::{
     AcquireLease, AppendDataExtent, CreateVolumeRoot, CreateWorkspace, DentryQuery, ExtentQuery,
-    HeadGuard, NamespaceMutation, RecordOrphanSlice, ReleaseLease, RenewLease, WorkspaceStore,
-    XattrMutation, XattrQuery,
+    HeadGuard, InodeQuery, NamespaceMutation, RecordOrphanSlice, ReleaseLease, RenewLease,
+    WorkspaceStore, XattrMutation, XattrQuery,
 };
 use crate::workspace_overlay::error::WorkspaceError;
 use crate::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
@@ -373,12 +373,30 @@ async fn guarded_extent_and_xattr_mutations_round_trip_with_store_sequences() {
         }
     );
 
+    let base_layer = store
+        .load_layer_chain(workspace.head_layer_id)
+        .await
+        .unwrap()[1]
+        .layer_id;
+    let mut inode = store
+        .get_inode_deltas(InodeQuery {
+            layer_ids: vec![base_layer],
+            ino: 1,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    inode.layer_id = workspace.head_layer_id;
+
     store
         .apply_xattr_mutation(XattrMutation {
             guard,
+            inode,
             xattr: XattrDelta {
                 layer_id: workspace.head_layer_id,
-                ino: 2,
+                ino: 1,
                 name: b"user.agent".to_vec(),
                 op: ValueOp::Put,
                 value: Some(b"private".to_vec()),
@@ -390,7 +408,7 @@ async fn guarded_extent_and_xattr_mutations_round_trip_with_store_sequences() {
     let xattrs = store
         .get_xattr_deltas(XattrQuery {
             layer_ids: vec![workspace.head_layer_id],
-            ino: 2,
+            ino: 1,
             name: Some(b"user.agent".to_vec()),
         })
         .await

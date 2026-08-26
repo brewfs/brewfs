@@ -1385,18 +1385,24 @@ impl WorkspaceStore for SqliteWorkspaceStore {
 
     async fn apply_xattr_mutation(&self, request: XattrMutation) -> Result<(), WorkspaceError> {
         let mut xattr = request.xattr;
+        let mut inode = request.inode;
         validate_value(xattr.op, xattr.value.as_deref(), "xattr")?;
-        if xattr.layer_id != request.guard.expected_head_layer_id {
+        if xattr.layer_id != request.guard.expected_head_layer_id
+            || inode.layer_id != request.guard.expected_head_layer_id
+            || inode.ino != xattr.ino
+        {
             return Err(WorkspaceError::Fenced);
         }
         let _guard = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
         Self::checked_guard(&mut tx, &request.guard).await?;
-        let (sequence, _) = Self::allocate_sequences(&mut tx, xattr.layer_id, 1)
+        let (first_sequence, last_sequence) = Self::allocate_sequences(&mut tx, xattr.layer_id, 2)
             .await?
-            .expect("single mutation has a sequence");
-        xattr.sequence = sequence;
+            .expect("xattr mutation has a sequence range");
+        xattr.sequence = first_sequence;
+        inode.sequence = last_sequence;
         upsert_xattr(&mut tx, &xattr).await?;
+        upsert_inode(&mut tx, &inode).await?;
         tx.commit().await.map_err(backend)?;
         Ok(())
     }

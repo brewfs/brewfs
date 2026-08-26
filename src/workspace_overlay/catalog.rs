@@ -253,6 +253,9 @@ pub struct DataMutationResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XattrMutation {
     pub guard: HeadGuard,
+    /// Full inode snapshot carrying the ctime change for this xattr operation.
+    /// Both records are committed atomically by the backend.
+    pub inode: InodeDelta,
     pub xattr: XattrDelta,
 }
 

@@ -1062,15 +1062,21 @@ where
 
     async fn apply_xattr_mutation(&self, request: XattrMutation) -> Result<(), WorkspaceError> {
         validate_value(request.xattr.op, request.xattr.value.as_deref(), "xattr")?;
-        if request.xattr.layer_id != request.guard.expected_head_layer_id {
+        if request.xattr.layer_id != request.guard.expected_head_layer_id
+            || request.inode.layer_id != request.guard.expected_head_layer_id
+            || request.inode.ino != request.xattr.ino
+        {
             return Err(WorkspaceError::Fenced);
         }
         self.hot_mutation(&request.guard, |layer, writes| {
             let mut xattr = request.xattr.clone();
-            xattr.sequence = allocate_layer_sequences(layer, 1)?
-                .expect("single mutation has a sequence")
-                .0;
+            let mut inode = request.inode.clone();
+            let range =
+                allocate_layer_sequences(layer, 2)?.expect("xattr mutation has a sequence range");
+            xattr.sequence = range.0;
+            inode.sequence = range.1;
             writes.push(put(xattr_key(&xattr), &xattr)?);
+            writes.push(put(inode_key(&inode), &inode)?);
             Ok(())
         })
         .await
