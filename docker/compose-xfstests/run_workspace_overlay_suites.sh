@@ -255,11 +255,15 @@ run_suite() {
     local image="$1"
     local workspace="$2"
     local artifacts="$3"
+    local fuse_writeback="${BREWFS_FUSE_WRITEBACK:-}"
     shift 3
     # xfstests includes mmap timestamp checks (generic/080, generic/215).
     # Enable FUSE writeback for the test mount so mmap dirty pages reach the
     # filesystem release/flush path where mtime/ctime are persisted. Keep it
     # overridable for debugging and performance comparisons.
+    if [[ "$image" == "$XFSTESTS_IMAGE" && -z "$fuse_writeback" ]]; then
+        fuse_writeback=1
+    fi
     docker run --rm \
         --network "$network" \
         --privileged \
@@ -280,7 +284,7 @@ run_suite() {
         -e BREWFS_DATA_DIR=/var/lib/brewfs/data \
         -e BREWFS_CACHE_ROOT="/var/lib/brewfs/suite-cache/$workspace" \
         -e BREWFS_ARTIFACT_ROOT=/artifacts \
-        -e BREWFS_FUSE_WRITEBACK="${BREWFS_FUSE_WRITEBACK:-1}" \
+        -e BREWFS_FUSE_WRITEBACK="$fuse_writeback" \
         -e PJDFSTEST_INCLUDE_PATTERNS="${PJDFSTEST_INCLUDE_PATTERNS:-}" \
         -e PJDFSTEST_SKIP_PATTERNS="${PJDFSTEST_SKIP_PATTERNS:-}" \
         -e PJDFSTEST_EXTRA_ARGS="${PJDFSTEST_EXTRA_ARGS:-}" \
