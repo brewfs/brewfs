@@ -14,6 +14,7 @@ RUN_PJDFSTEST=true
 BUILD_IMAGES=true
 PARALLEL_SUITES=false
 META_BACKEND="${BREWFS_WORKSPACE_META_BACKEND:-sqlite}"
+WORKSPACE_COUNT=2
 
 log() { printf '[workspace-overlay] %s\n' "$*"; }
 die() { log "ERROR: $*" >&2; exit 2; }
@@ -32,6 +33,7 @@ Options:
   --skip-pjdfstest          do not run pjdfstest
   --reuse-images            reuse existing feature-enabled images
   --parallel-suites         run workspace A and B suites concurrently
+  --single-workspace        run suites only on workspace A
   --meta-backend BACKEND    workspace catalog: sqlite, redis or tikv
   -h, --help                show this help
 EOF
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --parallel-suites)
             PARALLEL_SUITES=true
+            shift
+            ;;
+        --single-workspace)
+            WORKSPACE_COUNT=1
             shift
             ;;
         --meta-backend)
@@ -285,22 +291,33 @@ root_workspace="$(extract_workspace_id "$run_dir/init.json")"
 log "seeding shared base through a real FUSE mount"
 run_dual_harness seed "$root_workspace" "" "$run_dir/dual-mount"
 
-log "sealing the base and creating two O(1) forks"
-run_cli "${catalog_cli_args[@]}" fork "$root_workspace" --count 2 \
+log "sealing the base and creating $WORKSPACE_COUNT O(1) fork(s)"
+run_cli "${catalog_cli_args[@]}" fork "$root_workspace" --count "$WORKSPACE_COUNT" \
     --owner workspace-harness >"$run_dir/fork.json"
 mapfile -t fork_ids < <(extract_fork_ids "$run_dir/fork.json")
-[[ ${#fork_ids[@]} -eq 2 ]] || die "expected exactly two forked workspaces"
+[[ ${#fork_ids[@]} -eq "$WORKSPACE_COUNT" ]] \
+    || die "expected exactly $WORKSPACE_COUNT forked workspace(s)"
 workspace_a="${fork_ids[0]}"
-workspace_b="${fork_ids[1]}"
 printf '%s\n' "$workspace_a" >"$run_dir/workspace-a.id"
-printf '%s\n' "$workspace_b" >"$run_dir/workspace-b.id"
+if (( WORKSPACE_COUNT == 2 )); then
+    workspace_b="${fork_ids[1]}"
+    printf '%s\n' "$workspace_b" >"$run_dir/workspace-b.id"
+fi
 
-log "verifying simultaneous dual-workspace isolation"
-run_dual_harness verify "$workspace_a" "$workspace_b" "$run_dir/dual-mount"
+if (( WORKSPACE_COUNT == 2 )); then
+    log "verifying simultaneous dual-workspace isolation"
+    run_dual_harness verify "$workspace_a" "$workspace_b" "$run_dir/dual-mount"
+else
+    log "single-workspace mode: skipping dual-workspace isolation check"
+fi
 
 status=0
 if [[ "$RUN_XFSTESTS" == true ]]; then
-    if [[ "$PARALLEL_SUITES" == true ]]; then
+    if (( WORKSPACE_COUNT == 1 )); then
+        log "running xfstests on workspace A"
+        run_suite "$XFSTESTS_IMAGE" "$workspace_a" "$run_dir/xfstests-a" \
+            -e XFSTESTS_CASES="$XFSTESTS_CASES" || status=1
+    elif [[ "$PARALLEL_SUITES" == true ]]; then
         log "running xfstests concurrently on workspaces A and B"
         run_suite "$XFSTESTS_IMAGE" "$workspace_a" "$run_dir/xfstests-a" \
             -e XFSTESTS_CASES="$XFSTESTS_CASES" &
@@ -321,7 +338,10 @@ if [[ "$RUN_XFSTESTS" == true ]]; then
 fi
 
 if [[ "$RUN_PJDFSTEST" == true ]]; then
-    if [[ "$PARALLEL_SUITES" == true ]]; then
+    if (( WORKSPACE_COUNT == 1 )); then
+        log "running pjdfstest on workspace A"
+        run_suite "$PJDFSTEST_IMAGE" "$workspace_a" "$run_dir/pjdfstest-a" || status=1
+    elif [[ "$PARALLEL_SUITES" == true ]]; then
         log "running pjdfstest concurrently on workspaces A and B"
         run_suite "$PJDFSTEST_IMAGE" "$workspace_a" "$run_dir/pjdfstest-a" &
         pid_a=$!
