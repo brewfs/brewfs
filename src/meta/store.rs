@@ -810,6 +810,21 @@ pub trait MetaStore: Send + Sync {
 
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError>;
 
+    /// Fetch slices with an opaque version token when the backend supports it.
+    /// Backends returning `None` retain explicit local-invalidation semantics.
+    async fn get_slices_with_version(
+        &self,
+        chunk_id: u64,
+    ) -> Result<(Option<u64>, Vec<SliceDesc>), MetaError> {
+        Ok((None, self.get_slices(chunk_id).await?))
+    }
+
+    /// Fetch the current opaque chunk version, or `None` when unsupported.
+    async fn get_chunk_version(&self, chunk_id: u64) -> Result<Option<u64>, MetaError> {
+        let _ = chunk_id;
+        Ok(None)
+    }
+
     /// Return all distinct chunk IDs that have at least one slice.
     /// Used by the compaction scheduler to discover compaction candidates.
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {

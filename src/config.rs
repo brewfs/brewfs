@@ -328,6 +328,7 @@ pub struct MetaFileConfig {
     pub open_file_cache_ttl_ms: Option<u64>,
     pub open_file_cache_capacity: Option<u64>,
     pub allow_write_open_cache: Option<bool>,
+    pub slice_version_check_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -414,6 +415,7 @@ pub struct MountConfig {
     pub meta_open_file_cache_ttl_ms: Option<u64>,
     pub meta_open_file_cache_capacity: Option<u64>,
     pub meta_allow_write_open_cache: bool,
+    pub meta_slice_version_check_interval_ms: Option<u64>,
     pub chunk_size: u64,
     pub block_size: u32,
     pub fuse_workers: usize,
@@ -516,6 +518,7 @@ impl MountConfig {
             meta_open_file_cache_ttl_ms: meta_cfg.open_file_cache_ttl_ms,
             meta_open_file_cache_capacity: meta_cfg.open_file_cache_capacity,
             meta_allow_write_open_cache: meta_cfg.allow_write_open_cache.unwrap_or(false),
+            meta_slice_version_check_interval_ms: meta_cfg.slice_version_check_interval_ms,
             chunk_size: args
                 .chunk_size
                 .or(layout_cfg.chunk_size)
@@ -918,6 +921,7 @@ meta:
   open_file_cache_ttl_ms: 1000
   open_file_cache_capacity: 65536
   allow_write_open_cache: true
+  slice_version_check_interval_ms: 250
 "#,
         )
         .unwrap();
@@ -928,6 +932,7 @@ meta:
         assert_eq!(config.meta_open_file_cache_ttl_ms, Some(1000));
         assert_eq!(config.meta_open_file_cache_capacity, Some(65536));
         assert!(config.meta_allow_write_open_cache);
+        assert_eq!(config.meta_slice_version_check_interval_ms, Some(250));
     }
 
     #[test]
