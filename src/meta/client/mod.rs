@@ -1494,6 +1494,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     ///
     /// * `Ok(Some(i64))` - The inode number of the child entry if found
     /// * `Ok(None)` - If no entry with the given name exists in the parent
+    /// * `Err(MetaError::NotFound)` - If the store contains a dangling directory
+    ///   entry whose inode attributes no longer exist. This keeps inode-only
+    ///   lookup consistent with `lookup_with_attr` and maps to `ENOENT` at the
+    ///   FUSE boundary.
     /// * `Err(MetaError)` - On storage errors
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn cached_lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
@@ -1527,16 +1531,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         trace!("MetaClient: lookup MISS ({}, '{}')", parent, name);
         self.metrics.record_lookup_cache_miss();
 
-        let result = self.store.lookup(parent, name).await?;
+        let result = self.store.lookup_with_attr(parent, name).await?;
 
-        if let Some(ino) = result {
-            if let Ok(Some(attr)) = self.store.stat(ino).await {
-                self.cache_lookup_attr(parent, name, ino, attr).await;
-            } else {
-                self.inode_cache
-                    .add_child(parent, name.to_string(), ino)
-                    .await;
-            }
+        if let Some((ino, attr)) = result {
+            self.cache_lookup_attr(parent, name, ino, attr).await;
             Ok(Some(ino))
         } else if self.options.case_insensitive {
             self.resolve_case(parent, name).await
@@ -3645,7 +3643,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_meta_client_lookup_only_does_not_count_lookup_attr_fused_path() {
+    async fn test_meta_client_lookup_only_does_not_change_lookup_with_attr_api_metrics() {
         let client = create_test_client().await;
         let ino = client
             .create_file(1, "lookup-only.txt".to_string())
@@ -3664,7 +3662,7 @@ mod tests {
 
         assert_eq!(
             after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
-            "lookup-only callers should stay on the lighter inode-only path"
+            "lookup-only callers should not be counted as lookup_with_attr API calls"
         );
     }
 
