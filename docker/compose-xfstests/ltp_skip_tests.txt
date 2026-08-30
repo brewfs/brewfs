@@ -105,7 +105,7 @@ inode02
 # policy is fixed; see doc/testing/xfstests-redis-rustfs-fix-plan.md.
 iogen01
 # Data integrity issues (needs deeper investigation)
-writetest
+writetest01
 fs_di
 # OOM/compaction deadlock risk
 fs_racer

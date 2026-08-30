@@ -1,0 +1,176 @@
+x-workspace-environment: &workspace-environment
+  BREWFS_META_BACKEND: ${BREWFS_WORKSPACE_META_BACKEND:-redis}
+  BREWFS_META_URL: ${BREWFS_WORKSPACE_META_URL:-redis://redis:6379/0}
+  BREWFS_META_TIKV_PD_ENDPOINTS: ${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:-pd:2379}
+  BREWFS_META_TIKV_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace-overlay}
+  BREWFS_WORKSPACE_META_BACKEND: ${BREWFS_WORKSPACE_META_BACKEND:-redis}
+  BREWFS_WORKSPACE_META_URL: ${BREWFS_WORKSPACE_META_URL:-redis://redis:6379/0}
+  BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS: ${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:-pd:2379}
+  BREWFS_WORKSPACE_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace-overlay}
+  BREWFS_WORKSPACE_STATE_DIR: /var/lib/brewfs
+  BREWFS_VOLUME_FORMAT: workspace-v1
+  BREWFS_DATA_BACKEND: local-fs
+  BREWFS_DATA_DIR: /var/lib/brewfs/data
+  BREWFS_SQLITE_PATH: /var/lib/brewfs/workspace.db
+  BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
+  BREWFS_ARTIFACT_ROOT: /artifacts
+  BREWFS_LOG_FILE: /artifacts/brewfs.log
+  BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
+  BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
+  BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
+  BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+  RUST_LOG: ${RUST_LOG:-brewfs=info,asyncfuse=warn}
+
+x-fuse-test: &fuse-test
+  privileged: true
+  devices:
+    - /dev/fuse:/dev/fuse
+  cap_add:
+    - SYS_ADMIN
+  security_opt:
+    - apparmor=unconfined
+  volumes:
+    - ${BREWFS_WORKSPACE_ARTIFACT_DIR:-./artifacts}:/artifacts
+    - workspace-overlay-state:/var/lib/brewfs
+  networks:
+    - brewfs-workspace-overlay
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+
+services:
+  # Build-only base used by Dockerfile.workspace-overlay-xfstests.
+  xfstests-base:
+    image: slayerfs-xfstests:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile
+    entrypoint: ["/bin/true"]
+
+  redis:
+    profiles: ["redis"]
+    image: docker.io/library/redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    networks:
+      - brewfs-workspace-overlay
+
+  pd:
+    profiles: ["tikv"]
+    image: pingcap/pd:v8.5.0
+    command:
+      - --name=pd
+      - --data-dir=/data/pd
+      - --client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://pd:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-peer-urls=http://pd:2380
+      - --initial-cluster=pd=http://pd:2380
+      - --log-level=warn
+    volumes:
+      - workspace-overlay-pd:/data/pd
+    networks:
+      - brewfs-workspace-overlay
+
+  tikv:
+    profiles: ["tikv"]
+    image: pingcap/tikv:v8.5.0
+    depends_on:
+      pd:
+        condition: service_started
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=tikv:20160
+      - --status-addr=0.0.0.0:20180
+      - --pd=pd:2379
+      - --data-dir=/data/tikv
+      - --log-level=warn
+    volumes:
+      - workspace-overlay-tikv:/data/tikv
+    networks:
+      - brewfs-workspace-overlay
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+
+  tikv-ready:
+    profiles: ["tikv"]
+    image: curlimages/curl:8.10.1
+    depends_on:
+      pd:
+        condition: service_started
+      tikv:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        attempts=0
+        while [ "$$attempts" -lt 90 ]; do
+          body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
+          echo "$$body" | grep -Fq '"state_name": "Up"' && exit 0
+          attempts=$$((attempts + 1))
+          sleep 2
+        done
+        echo "TiKV did not register an Up store within 180 seconds" >&2
+        exit 1
+    networks:
+      - brewfs-workspace-overlay
+
+  xfstests:
+    image: brewfs-workspace-xfstests:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile.workspace-overlay-xfstests
+      args:
+        BASE_IMAGE: slayerfs-xfstests:local
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_suite_in_container.sh"]
+    environment:
+      <<: *workspace-environment
+      WORKSPACE_OVERLAY_SUITE: xfstests
+      XFSTESTS_CASES: ${XFSTESTS_CASES:-}
+      XFSTESTS_CHECK_ARGS: ${XFSTESTS_CHECK_ARGS:-}
+      XFSTESTS_SKIP_CASES: ${XFSTESTS_SKIP_CASES:-0}
+    <<: *fuse-test
+
+  workspace-control:
+    image: brewfs-workspace-xfstests:local
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_control_in_container.sh"]
+    environment:
+      <<: *workspace-environment
+      BREWFS_BIN: /usr/local/bin/brewfs
+    <<: *fuse-test
+
+  ltp:
+    image: brewfs-ltp:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile.ltp
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_suite_in_container.sh"]
+    environment:
+      <<: *workspace-environment
+      WORKSPACE_OVERLAY_SUITE: ltp
+      LTP_SCENARIOS: ${LTP_SCENARIOS:-fs}
+      LTP_EXTRA_ARGS: ${LTP_EXTRA_ARGS:-}
+      LTP_SKIP_TESTS: ${LTP_SKIP_TESTS:-}
+      LTP_SKIP_TESTS_FILE: ${LTP_SKIP_TESTS_FILE:-}
+      LTP_DEFAULT_SKIP_TESTS_FILE: ${LTP_DEFAULT_SKIP_TESTS_FILE:-/usr/local/share/brewfs/ltp_skip_tests.txt}
+      LTP_TIMEOUT_MUL: ${LTP_TIMEOUT_MUL:-4}
+      BREWFS_READ_MEMORY_BYTES: ${BREWFS_READ_MEMORY_BYTES:-1073741824}
+      BREWFS_WRITE_MEMORY_BYTES: ${BREWFS_WRITE_MEMORY_BYTES:-268435456}
+      BREWFS_MEMORY_BUDGET_BYTES: ${BREWFS_MEMORY_BUDGET_BYTES:-1073741824}
+    <<: *fuse-test
+
+networks:
+  brewfs-workspace-overlay:
+    driver: bridge
+
+volumes:
+  workspace-overlay-state:
+  workspace-overlay-pd:
+  workspace-overlay-tikv:
