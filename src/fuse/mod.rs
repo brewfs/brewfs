@@ -313,6 +313,22 @@ where
     }
 
     #[cfg(target_os = "linux")]
+    fn ioctl_fsgetxattr_reply() -> ReplyIoctl {
+        // xfs_io's `stat` probes FS_IOC_FSGETXATTR before printing the
+        // portable stat fields.  FUSE has no project-specific fsxattr state,
+        // but returning a zeroed structure is the same neutral answer that a
+        // filesystem with no flags/project quota would expose and avoids
+        // leaking an unsupported-ioctl diagnostic into xfstests output.
+        ReplyIoctl {
+            result: 0,
+            flags: 0,
+            in_iovs: 0,
+            out_iovs: 0,
+            data: vec![0; 28], // sizeof(struct fsxattr) on Linux
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn parse_clone_range(data: &[u8]) -> Option<FileCloneRange> {
         if data.len() < size_of::<FileCloneRange>() {
             return None;
@@ -433,7 +449,15 @@ where
             .await
         {
             Ok(attr) => Some(attr),
-            Err(_err) => self.stat_ino(ino).await,
+            Err(err) => {
+                warn!(
+                    ino,
+                    error = %err,
+                    error_debug = ?err,
+                    "fuse.apply_new_entry_attrs_failed"
+                );
+                self.stat_ino(ino).await
+            }
         }
     }
 
@@ -1917,7 +1941,18 @@ where
         mode: u32,
     ) -> FuseResult<()> {
         debug!(inode, fh, offset, length, mode, "fuse.fallocate");
-        if mode != 0 {
+        #[cfg(feature = "workspace-overlay")]
+        let workspace_hole_mode = {
+            let keep_size = libc::FALLOC_FL_KEEP_SIZE as u32;
+            let punch_hole = libc::FALLOC_FL_PUNCH_HOLE as u32;
+            let zero_range = libc::FALLOC_FL_ZERO_RANGE as u32;
+            mode == (keep_size | punch_hole)
+                || mode == zero_range
+                || mode == (keep_size | zero_range)
+        };
+        #[cfg(not(feature = "workspace-overlay"))]
+        let workspace_hole_mode = false;
+        if mode != 0 && !workspace_hole_mode {
             return Err(libc::EOPNOTSUPP.into());
         }
         if length > 0 {
@@ -1930,6 +1965,14 @@ where
             .await?;
             self.wait_for_prior_fuse_writes(inode as i64, req.unique)
                 .await;
+        }
+        #[cfg(feature = "workspace-overlay")]
+        if workspace_hole_mode {
+            let keep_size = mode & libc::FALLOC_FL_KEEP_SIZE as u32 != 0;
+            return self
+                .workspace_hole_fallocate_from_fuse(fh, inode as i64, offset, length, keep_size)
+                .await
+                .map_err(Errno::from);
         }
         if fh != 0 {
             // The FALLOCATE reply already updates the initiating kernel's
@@ -2050,6 +2093,9 @@ where
         #[cfg(target_os = "linux")]
         {
             match cmd {
+                // FS_IOC_FSGETXATTR = _IOR('X', 31, struct fsxattr).
+                // xfs_io labels this probe FS_IOC_GETXATTR in diagnostics.
+                0x801c_581f => Ok(Self::ioctl_fsgetxattr_reply()),
                 x if x == libc::FICLONE as u32 => self.ioctl_ficlone(req, inode, arg).await,
                 x if x == libc::FICLONERANGE as u32 => {
                     self.ioctl_ficlonerange(req, inode, in_data).await

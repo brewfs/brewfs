@@ -451,13 +451,13 @@ impl WriteBackCache for FsWriteBackCache {
 
         let slice_path = key.slice_path(&self.root);
 
-        if self.allocation_unit > 0 {
+        if let Some(allocation_unit) = std::num::NonZeroU64::new(self.allocation_unit) {
+            let allocation_unit = allocation_unit.get();
             let data_len = data.iter().map(Bytes::len).sum::<usize>() as u64;
-            let allocation_start = slice_offset / self.allocation_unit * self.allocation_unit;
+            let allocation_start = slice_offset / allocation_unit * allocation_unit;
             let data_end = slice_offset.saturating_add(data_len);
-            let allocation_end = data_end.saturating_add(self.allocation_unit - 1)
-                / self.allocation_unit
-                * self.allocation_unit;
+            let allocation_end =
+                data_end.saturating_add(allocation_unit - 1) / allocation_unit * allocation_unit;
             let allocation_len = allocation_end.saturating_sub(allocation_start);
             let allocation_path = slice_path.clone();
             tokio::task::spawn_blocking(move || {

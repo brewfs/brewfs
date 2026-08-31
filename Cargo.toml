@@ -292,6 +292,7 @@ rand = { workspace = true }
 hostname = { workspace = true }
 bitflags = { workspace = true }
 redis = { workspace = true }
+bincode = { workspace = true, optional = true }
 if-addrs = { workspace = true }
 uuid = { workspace = true, features = ["v7"] }
 parking_lot = { workspace = true }
@@ -301,11 +302,13 @@ rkyv = { workspace = true, optional = true, features = ["uuid-1"] }
 lz4_flex = { workspace = true }
 zstd = { workspace = true }
 governor = { workspace = true }
+blake3 = { workspace = true, optional = true }
 
 [features]
 default = ["fuse-io-uring-runtime"]
 fuse-io-uring-runtime = ["asyncfuse/io-uring-runtime"]
 fuse-tokio-runtime = ["asyncfuse/tokio-runtime"]
+workspace-overlay = ["dep:bincode", "dep:blake3"]
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]
 jemalloc = ["dep:tikv-jemallocator"]
 jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling"]

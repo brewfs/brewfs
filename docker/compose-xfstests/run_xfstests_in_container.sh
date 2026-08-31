@@ -7,8 +7,22 @@ info() { log "INFO  $*"; }
 ok()   { log "OK    $*"; }
 err()  { log "ERROR $*" >&2; }
 
+validate_workspace_config() {
+    if [[ "$volume_format" == "workspace-v1" && -z "$workspace_id" ]]; then
+        err "BREWFS_WORKSPACE_ID is required for BREWFS_VOLUME_FORMAT=workspace-v1"
+        exit 2
+    fi
+    if [[ -n "$workspace_id" && "$volume_format" != "workspace-v1" ]]; then
+        err "BREWFS_WORKSPACE_ID requires BREWFS_VOLUME_FORMAT=workspace-v1"
+        exit 2
+    fi
+}
+
 config_path="${BREWFS_CONFIG_PATH:-/run/brewfs/config.yaml}"
 mount_dir="${BREWFS_MOUNT_POINT:-/mnt/brewfs}"
+volume_format="${BREWFS_VOLUME_FORMAT:-}"
+workspace_id="${BREWFS_WORKSPACE_ID:-}"
+workspace_namespace="${BREWFS_WORKSPACE_NAMESPACE:-brewfs}"
 data_backend="${BREWFS_DATA_BACKEND:-local-fs}"
 data_dir="${BREWFS_DATA_DIR:-${BREWFS_HOME:-/var/lib/brewfs}/data}"
 meta_backend="${BREWFS_META_BACKEND:-redis}"
@@ -88,6 +102,13 @@ write_config() {
 
     {
         echo "mount_point: $mount_dir"
+        if [[ -n "$volume_format" ]]; then
+            echo "volume_format: $volume_format"
+        fi
+        if [[ -n "$workspace_id" ]]; then
+            echo "workspace: $workspace_id"
+            echo "workspace_namespace: $workspace_namespace"
+        fi
         echo
         case "$data_backend" in
             local-fs)
@@ -594,6 +615,7 @@ EOF
 }
 
 main() {
+    validate_workspace_config
     local normalized_fuse_op_log
 
     if [[ -z "$artifact_dir" ]]; then

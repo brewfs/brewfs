@@ -863,6 +863,22 @@ where
 
         for attempt in 0..MAX_SLICE_READ_RETRIES {
             let result = async {
+                #[cfg(feature = "workspace-overlay")]
+                if let Some(provider) = self.backend.workspace_read_plan() {
+                    let plan = provider
+                        .read_plan(self.inode.ino(), index, offset, u64::try_from(out.len())?)
+                        .await?;
+                    crate::chunk::read_plan::execute_into(
+                        self.backend.store(),
+                        self.config.layout,
+                        offset,
+                        &plan,
+                        out,
+                    )
+                    .await?;
+                    return Ok::<(), anyhow::Error>(());
+                }
+
                 let slices_arc = match self.chunk_slices.get(&chunk_id) {
                     Some(cached) => cached.clone(),
                     None => {
@@ -1030,6 +1046,84 @@ mod tests {
             chunk_size: 8 * 1024,
             block_size: 4 * 1024,
         }
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    struct StaticWorkspacePlan {
+        plan: crate::chunk::read_plan::ResolvedReadPlan,
+        calls: AtomicUsize,
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[async_trait::async_trait]
+    impl crate::chunk::read_plan::WorkspaceReadPlanProvider for StaticWorkspacePlan {
+        async fn read_plan(
+            &self,
+            _ino: i64,
+            _chunk_index: u64,
+            _offset: u64,
+            _len: u64,
+        ) -> Result<crate::chunk::read_plan::ResolvedReadPlan, crate::meta::store::MetaError>
+        {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.plan.clone())
+        }
+
+        async fn range_has_data(
+            &self,
+            _ino: i64,
+            _offset: u64,
+            _len: u64,
+        ) -> Result<bool, crate::meta::store::MetaError> {
+            Ok(true)
+        }
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn workspace_reader_executes_read_plan_without_flat_slice_metadata() {
+        use crate::chunk::read_plan::{ReadPlanSegment, ResolvedReadPlan};
+
+        let layout = ChunkLayout {
+            chunk_size: 16,
+            block_size: 8,
+        };
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        block_store
+            .write_fresh_range((99, 0), 0, b"workspace")
+            .await
+            .unwrap();
+        let meta = create_meta_store_from_url("sqlite::memory:")
+            .await
+            .unwrap()
+            .layer();
+        let provider = Arc::new(StaticWorkspacePlan {
+            plan: ResolvedReadPlan {
+                segments: vec![
+                    ReadPlanSegment::Zero {
+                        logical_offset: 0,
+                        length: 2,
+                    },
+                    ReadPlanSegment::Data {
+                        logical_offset: 2,
+                        length: 4,
+                        slice_id: 99,
+                        slice_offset: 1,
+                    },
+                    ReadPlanSegment::Zero {
+                        logical_offset: 6,
+                        length: 2,
+                    },
+                ],
+            },
+            calls: AtomicUsize::new(0),
+        });
+        let backend = Arc::new(Backend::new_workspace(block_store, meta, provider.clone()));
+        let inode = Inode::new(123, 8);
+        let reader = DataReader::new(Arc::new(ReadConfig::new(layout)), backend);
+        let output = reader.open_for_handle(inode, 1).read(0, 8).await.unwrap();
+        assert_eq!(&output, b"\0\0orks\0\0");
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     }
 
     #[derive(Default)]
