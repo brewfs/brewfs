@@ -18,12 +18,14 @@ use parking_lot::Mutex as ParkingMutex;
 use sea_orm::sea_query::WindowSelectType;
 use sha2::{Digest, Sha256, digest::KeyInit};
 use tokio::fs;
-use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{Mutex as TokioMutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::{debug, error, info, trace, warn};
 
 static DISK_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DISK_CACHE_READ_CONCURRENCY: usize = 16;
 const DISK_CACHE_WRITE_CONCURRENCY: usize = 16;
+const DISK_CACHE_KEY_SHARDS: usize = 256;
+const DISK_CACHE_STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
 const DISK_HIT_FAST_PROMOTE_MAX_UTILIZATION_PER_MILLE: u64 = 800;
 
 /// Configuration for the intelligent dual-layer cache system.
@@ -295,6 +297,17 @@ impl RecentWriteHotCache {
         self.evict_locked(&mut order);
     }
 
+    fn remove(&self, key: &str) {
+        if let Some((_, removed)) = self.entries.remove(key) {
+            let removed_len = removed.data.len() as u64;
+            let _ = self
+                .bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(removed_len))
+                });
+        }
+    }
+
     fn evict_locked(&self, order: &mut VecDeque<(String, u64)>) {
         while self.bytes.load(Ordering::Relaxed) > self.max_bytes {
             let Some((key, generation)) = order.pop_front() else {
@@ -347,7 +360,35 @@ struct DiskStorage {
     read_sem: Arc<Semaphore>,
     /// Semaphore for write/store operations
     write_sem: Arc<Semaphore>,
+    /// Bounded per-key coordination. A removal advances the shard generation,
+    /// cancelling older stores, and serializes only with keys in the same shard.
+    key_shards: Arc<[DiskCacheKeyShard; DISK_CACHE_KEY_SHARDS]>,
     integrity_mode: CacheIntegrityMode,
+}
+
+#[derive(Debug)]
+struct DiskCacheKeyShard {
+    gate: TokioMutex<()>,
+    generation: AtomicU64,
+}
+
+/// A write permit tied to the key-shard generation observed when the write was
+/// scheduled. Keeping the permit, generation, and shard together prevents a
+/// delayed or misrouted caller from publishing stale data.
+pub struct DiskStorePermit {
+    permit: OwnedSemaphorePermit,
+    generation: u64,
+    shard_index: usize,
+    cache_filename: String,
+}
+
+impl DiskCacheKeyShard {
+    fn new() -> Self {
+        Self {
+            gate: TokioMutex::new(()),
+            generation: AtomicU64::new(0),
+        }
+    }
 }
 
 impl DiskStorage {
@@ -373,6 +414,14 @@ impl DiskStorage {
             debug!("Cache directory already exists: {:?}", base_dir);
         }
 
+        // Interrupted stores leave private temporary files behind. Cleaning
+        // stale files once at startup keeps invalidation O(1) while avoiding
+        // deletion of another process's recently-created temporary file.
+        let stale_before = SystemTime::now()
+            .checked_sub(DISK_CACHE_STALE_TMP_AGE)
+            .unwrap_or(UNIX_EPOCH);
+        Self::cleanup_stale_temp_files(&base_dir, stale_before).await;
+
         // Scan existing files to calculate initial bytes_used
         let initial_bytes = Self::scan_dir_size(&base_dir).await;
         debug!(
@@ -388,8 +437,86 @@ impl DiskStorage {
             max_bytes,
             read_sem: Arc::new(Semaphore::new(DISK_CACHE_READ_CONCURRENCY)),
             write_sem: Arc::new(Semaphore::new(DISK_CACHE_WRITE_CONCURRENCY)),
+            key_shards: Arc::new(std::array::from_fn(|_| DiskCacheKeyShard::new())),
             integrity_mode,
         })
+    }
+
+    fn is_cache_file_name(name: &str) -> bool {
+        name.len() == 64
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    fn is_temp_file_name(name: &std::ffi::OsStr) -> bool {
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        let Some(body) = name
+            .strip_prefix('.')
+            .and_then(|name| name.strip_suffix(".tmp"))
+        else {
+            return false;
+        };
+        let mut parts = body.split('.');
+        let Some(cache_name) = parts.next() else {
+            return false;
+        };
+        let Some(first_id) = parts.next() else {
+            return false;
+        };
+        let second_id = parts.next();
+        if parts.next().is_some() || !Self::is_cache_file_name(cache_name) {
+            return false;
+        }
+
+        let is_decimal =
+            |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+        is_decimal(first_id) && second_id.is_none_or(is_decimal)
+    }
+
+    fn cache_file_shard_index(name: &std::ffi::OsStr) -> Option<usize> {
+        let name = name.to_str()?;
+        if !Self::is_cache_file_name(name) {
+            return None;
+        }
+        usize::from_str_radix(&name[..2], 16).ok()
+    }
+
+    async fn cleanup_stale_temp_files(dir: &Path, stale_before: SystemTime) {
+        let mut entries = match tokio::fs::read_dir(dir).await {
+            Ok(entries) => entries,
+            Err(err) => {
+                trace!(path = %dir.display(), error = ?err, "failed to scan for stale disk cache temporary files");
+                return;
+            }
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if !Self::is_temp_file_name(&entry.file_name()) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata().await else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if modified > stale_before {
+                continue;
+            }
+
+            match tokio::fs::remove_file(entry.path()).await {
+                Ok(()) => {
+                    trace!(path = %entry.path().display(), "removed stale disk cache temporary file")
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    trace!(path = %entry.path().display(), error = ?err, "failed to remove stale disk cache temporary file");
+                }
+            }
+        }
     }
 
     /// Scan directory to calculate total size of cached files
@@ -400,6 +527,12 @@ impl DiskStorage {
             Err(_) => return 0,
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name();
+            if Self::is_temp_file_name(&file_name)
+                || Self::cache_file_shard_index(&file_name).is_none()
+            {
+                continue;
+            }
             if let Ok(meta) = entry.metadata().await
                 && meta.is_file()
             {
@@ -415,6 +548,17 @@ impl DiskStorage {
         let hash_result = hasher.finalize();
 
         hex::encode(hash_result)
+    }
+
+    fn key_shard_index(key: &str) -> usize {
+        let hash = Sha256::digest(key.as_bytes());
+        hash[0] as usize
+    }
+
+    fn store_generation(&self, key: &str) -> u64 {
+        self.key_shards[Self::key_shard_index(key)]
+            .generation
+            .load(Ordering::Acquire)
     }
 
     /// Get current bytes used on disk
@@ -446,65 +590,116 @@ impl DiskStorage {
             });
     }
 
-    pub async fn store(&self, key: &str, data: impl AsRef<[u8]>) -> anyhow::Result<()> {
+    async fn acquire_store_permit(&self, key: &str) -> anyhow::Result<DiskStorePermit> {
+        // Lock order is always write semaphore, then at most one shard gate.
+        // No path may wait for a semaphore while holding a shard gate.
+        let shard_index = Self::key_shard_index(key);
+        let cache_filename = Self::key_to_filename(key);
+        let generation = self.store_generation(key);
         let permit = self.write_sem.clone().acquire_owned().await?;
-        self.store_with_permit(key, bytes::Bytes::copy_from_slice(data.as_ref()), permit)
-            .await
+        Ok(DiskStorePermit {
+            permit,
+            generation,
+            shard_index,
+            cache_filename,
+        })
+    }
+
+    pub async fn store(&self, key: &str, data: impl AsRef<[u8]>) -> anyhow::Result<bool> {
+        let token = self.acquire_store_permit(key).await?;
+        self.store_with_permit_at_generation(
+            key,
+            bytes::Bytes::copy_from_slice(data.as_ref()),
+            token.permit,
+            token.generation,
+        )
+        .await
     }
 
     pub async fn store_with_health(
         &self,
         key: &str,
         data: impl AsRef<[u8]>,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<u64>> {
+        let generation = self.store_generation(key);
+        self.store_with_health_at_generation(key, data, generation)
+            .await
+    }
+
+    async fn store_with_health_at_generation(
+        &self,
+        key: &str,
+        data: impl AsRef<[u8]>,
+        generation: u64,
+    ) -> anyhow::Result<Option<u64>> {
         if self.health.is_bypassed() {
-            return Ok(false);
+            return Ok(None);
         }
 
-        match self.store(key, data).await {
-            Ok(()) => {
-                self.health.record_success();
-                Ok(true)
-            }
-            Err(err) => {
-                self.health.record_error();
-                warn!(key, error = ?err, "disk cache store failed; treating as cache miss");
-                Ok(false)
-            }
-        }
+        let permit = self.write_sem.clone().acquire_owned().await?;
+        self.store_with_permit_health(
+            key,
+            bytes::Bytes::copy_from_slice(data.as_ref()),
+            DiskStorePermit {
+                permit,
+                generation,
+                shard_index: Self::key_shard_index(key),
+                cache_filename: Self::key_to_filename(key),
+            },
+        )
+        .await
     }
 
     async fn store_with_permit_health(
         &self,
         key: &str,
         data: bytes::Bytes,
-        permit: OwnedSemaphorePermit,
-    ) -> anyhow::Result<bool> {
+        token: DiskStorePermit,
+    ) -> anyhow::Result<Option<u64>> {
         if self.health.is_bypassed() {
-            return Ok(false);
+            return Ok(None);
+        }
+        let DiskStorePermit {
+            permit,
+            generation,
+            shard_index,
+            cache_filename,
+        } = token;
+        if cache_filename != Self::key_to_filename(key) || shard_index != Self::key_shard_index(key)
+        {
+            return Err(anyhow!("disk store permit belongs to a different key"));
         }
 
-        match self.store_with_permit(key, data, permit).await {
-            Ok(()) => {
+        match self
+            .store_with_permit_at_generation(key, data, permit, generation)
+            .await
+        {
+            Ok(true) => {
                 self.health.record_success();
-                Ok(true)
+                Ok(Some(generation))
+            }
+            Ok(false) => {
+                self.health.record_success();
+                Ok(None)
             }
             Err(err) => {
                 self.health.record_error();
                 warn!(key, error = ?err, "disk cache store failed; treating as cache miss");
-                Ok(false)
+                Ok(None)
             }
         }
     }
 
-    async fn store_with_permit(
+    async fn store_with_permit_at_generation(
         &self,
         key: &str,
         data: bytes::Bytes,
         _permit: OwnedSemaphorePermit,
-    ) -> anyhow::Result<()> {
+        generation: u64,
+    ) -> anyhow::Result<bool> {
         let filename = Self::key_to_filename(key);
         let filepath = self.base_dir.join(&filename);
+        let shard = &self.key_shards[Self::key_shard_index(key)];
 
         // Compute CRC32C framing without copying the data block when enabled.
         let (header, checksums) = match self.integrity_mode {
@@ -523,16 +718,15 @@ impl DiskStorage {
             self.saturating_fetch_add_bytes(total_len);
         }
 
-        // If the file already exists, subtract its old size (we already added total_len)
-        if let Ok(meta) = tokio::fs::metadata(&filepath).await {
-            self.saturating_fetch_sub_bytes(meta.len());
-        }
-
-        // Write to a private temp file first, then atomically publish it with
-        // rename. Readers either see the previous complete file or the new
-        // complete file, never a partially-written cache entry.
+        // Write to a private temp file first. The final generation check and
+        // atomic publish happen under the key shard gate below.
         let tmp_id = DISK_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = self.base_dir.join(format!(".{}.{}.tmp", filename, tmp_id));
+        let tmp_path = self.base_dir.join(format!(
+            ".{}.{}.{}.tmp",
+            filename,
+            std::process::id(),
+            tmp_id
+        ));
         let tmp_path_for_write = tmp_path.clone();
         let write_result = match tokio::task::spawn_blocking(move || {
             use std::io::Write;
@@ -541,8 +735,6 @@ impl DiskStorage {
             file.write_all(&header)?;
             file.write_all(&data)?;
             file.write_all(&checksums)?;
-            drop(file);
-            std::fs::rename(&tmp_path_for_write, &filepath)?;
             Ok::<(), anyhow::Error>(())
         })
         .await
@@ -558,10 +750,39 @@ impl DiskStorage {
             return Err(e);
         }
 
-        Ok(())
+        let _gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            self.saturating_fetch_sub_bytes(total_len);
+            trace!(
+                key,
+                "discarded disk cache store invalidated by a newer remove"
+            );
+            return Ok(false);
+        }
+
+        // Account for an overwritten entry only once the new file has been
+        // published. Subtracting it before the rename races with removal and
+        // can undercount concurrent cache usage.
+        let old_size = tokio::fs::metadata(&filepath)
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if let Err(err) = tokio::fs::rename(&tmp_path, &filepath).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            self.saturating_fetch_sub_bytes(total_len);
+            return Err(err.into());
+        }
+        self.saturating_fetch_sub_bytes(old_size);
+
+        Ok(true)
     }
 
-    fn try_io_permit(&self, key: &str) -> Option<OwnedSemaphorePermit> {
+    fn try_io_permit(&self, key: &str) -> Option<DiskStorePermit> {
+        self.try_io_permit_at_generation(key, self.store_generation(key))
+    }
+
+    fn try_io_permit_at_generation(&self, key: &str, generation: u64) -> Option<DiskStorePermit> {
         let Ok(permit) = self.write_sem.clone().try_acquire_owned() else {
             trace!(
                 "Skipping disk cache store for key '{}' because IO is busy",
@@ -569,12 +790,12 @@ impl DiskStorage {
             );
             return None;
         };
-        Some(permit)
-    }
-
-    /// Clone the write IO semaphore Arc for deferred disk cache writes.
-    fn io_sem_clone(&self) -> Arc<Semaphore> {
-        self.write_sem.clone()
+        Some(DiskStorePermit {
+            permit,
+            generation,
+            shard_index: Self::key_shard_index(key),
+            cache_filename: Self::key_to_filename(key),
+        })
     }
 
     /// Evict oldest files (by the host filesystem's relatime) to free at least
@@ -593,13 +814,18 @@ impl DiskStorage {
             to_free as f64 / 1048576.0
         );
 
-        // Collect files with their access times
-        let mut files: Vec<(PathBuf, u64, u64)> = Vec::new(); // (path, size, atime_secs)
+        // Collect published cache files with their access times. Size is
+        // deliberately re-read under the shard gate before deletion.
+        let mut files: Vec<(PathBuf, usize, u64)> = Vec::new(); // (path, shard, atime_secs)
         let mut entries = match tokio::fs::read_dir(&self.base_dir).await {
             Ok(e) => e,
             Err(_) => return,
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name();
+            let Some(shard_index) = Self::cache_file_shard_index(&file_name) else {
+                continue;
+            };
             if let Ok(meta) = entry.metadata().await
                 && meta.is_file()
             {
@@ -609,7 +835,7 @@ impl DiskStorage {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                files.push((entry.path(), meta.len(), atime));
+                files.push((entry.path(), shard_index, atime));
             }
         }
 
@@ -617,14 +843,23 @@ impl DiskStorage {
         files.sort_by_key(|f| f.2);
 
         let mut freed = 0u64;
-        for (path, size, _) in &files {
+        for (path, shard_index, _) in &files {
             if freed >= to_free {
                 break;
             }
+
+            // Stores, explicit removals, and eviction all linearize on the
+            // same shard gate. Re-stat after taking it so an overwrite cannot
+            // make us delete new bytes while subtracting the scanned old size.
+            let _gate = self.key_shards[*shard_index].gate.lock().await;
+            let current_size = match tokio::fs::metadata(path).await {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                _ => continue,
+            };
             if tokio::fs::remove_file(path).await.is_ok() {
-                freed += size;
-                self.saturating_fetch_sub_bytes(*size);
-                trace!("Evicted cache file: {:?} ({} bytes)", path, size);
+                freed = freed.saturating_add(current_size);
+                self.saturating_fetch_sub_bytes(current_size);
+                trace!("Evicted cache file: {:?} ({} bytes)", path, current_size);
             }
         }
         debug!(
@@ -834,37 +1069,66 @@ impl DiskStorage {
     }
 
     pub async fn remove(&self, key: &str) -> anyhow::Result<()> {
-        let filename = Self::key_to_filename(key);
-        let filepath = self.base_dir.join(filename);
+        self.remove_inner(key, false).await
+    }
 
-        trace!("Removing file for key '{}': {:?}", key, filepath);
+    /// Idempotently remove a cache entry.
+    ///
+    /// Removal takes one IO permit and one bounded key-shard gate. Advancing the
+    /// shard generation cancels older stores, without scanning the cache
+    /// directory or stopping unrelated disk writes. Crash-orphaned temporary
+    /// files are cleaned once when the disk cache starts.
+    pub async fn remove_if_exists(&self, key: &str) -> anyhow::Result<()> {
+        self.remove_inner(key, true).await
+    }
 
-        if !filepath.exists() {
-            warn!(
-                "Attempted to remove non-existent file for key '{}': {:?}",
-                key, filepath
-            );
-            return Err(anyhow!("file {} does not exist", filepath.display()));
-        }
-
-        // Get size before removing
-        let file_size = tokio::fs::metadata(&filepath)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-
+    async fn remove_inner(&self, key: &str, missing_ok: bool) -> anyhow::Result<()> {
         let _permit = self.write_sem.clone().acquire_owned().await?;
-        match tokio::fs::remove_file(&filepath).await {
-            Ok(_) => {
-                self.saturating_fetch_sub_bytes(file_size);
-                debug!("Successfully removed file for key '{}'", key);
-                Ok(())
+        let shard = &self.key_shards[Self::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+
+        // Invalidate stores that captured their generation before this remove.
+        // The gate makes the generation bump and file deletion one linearized
+        // operation with respect to publication.
+        shard.generation.fetch_add(1, Ordering::AcqRel);
+
+        self.remove_file_locked(key, missing_ok).await
+    }
+
+    /// Remove a published file while the caller holds its shard gate and a
+    /// write permit. Keeping this separate lets ChunksCache invalidate memory
+    /// tiers in the same linearization window.
+    async fn remove_file_locked(&self, key: &str, missing_ok: bool) -> anyhow::Result<()> {
+        let filename = Self::key_to_filename(key);
+        let filepath = self.base_dir.join(&filename);
+
+        let file_size = match tokio::fs::metadata(&filepath).await {
+            Ok(metadata) => metadata.len(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && missing_ok => {
+                trace!(key, "disk cache file was already absent");
+                return Ok(());
             }
-            Err(e) => {
-                error!("Failed to remove file for key '{}': {}", key, e);
-                Err(e.into())
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow!("file {} does not exist", filepath.display()));
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        match tokio::fs::remove_file(&filepath).await {
+            Ok(()) => {
+                self.saturating_fetch_sub_bytes(file_size);
+                debug!(key, "removed disk cache file");
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && missing_ok => {
+                trace!(key, "disk cache file was already absent");
+            }
+            Err(err) => {
+                error!(key, error = ?err, "failed to remove disk cache file");
+                return Err(err.into());
             }
         }
+
+        Ok(())
     }
 }
 
@@ -1919,6 +2183,40 @@ impl ChunksCache {
         })
     }
 
+    async fn insert_cold_marker_if_current(
+        disk_storage: &DiskStorage,
+        cold_cache: &moka::future::Cache<String, ()>,
+        key: &str,
+        generation: u64,
+    ) -> bool {
+        let shard = &disk_storage.key_shards[DiskStorage::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        cold_cache.insert(key.to_owned(), ()).await;
+        true
+    }
+
+    async fn commit_disk_hit(
+        &self,
+        key: &str,
+        generation: u64,
+        promote: Option<bytes::Bytes>,
+    ) -> bool {
+        let shard = &self.disk_storage.key_shards[DiskStorage::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+
+        self.cold_cache.insert(key.to_owned(), ()).await;
+        if let Some(value) = promote {
+            self.insert_hot_locked(key, value).await;
+        }
+        true
+    }
+
     pub async fn get(&self, key: &String) -> Option<bytes::Bytes> {
         if let Some(value) = self.write_hot_cache.get(key) {
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -1945,6 +2243,7 @@ impl ChunksCache {
         // Try loading from disk directly — the cold_cache index may have
         // evicted the key marker but the file can still exist on disk
         // (populated by write-through or prior reads).
+        let generation = self.disk_storage.store_generation(key);
         let value = match self.disk_storage.load_with_health(key).await {
             Ok(Some(value)) if !value.is_empty() => value,
             Ok(_) => {
@@ -1963,15 +2262,13 @@ impl ChunksCache {
         // Record access only for disk hits — drives promotion decisions.
         self.policy.record_access(key.clone()).await;
 
-        // Re-populate cold cache index so future lookups are faster
-        self.cold_cache.insert(key.clone(), ()).await;
-
-        if self.should_fast_promote_disk_hit(value.len())
-            || self.policy.should_promote(key.clone()).await
-        {
+        let should_promote = self.should_fast_promote_disk_hit(value.len())
+            || self.policy.should_promote(key.clone()).await;
+        if should_promote {
             debug!("Promoting key to hot cache: {}", key);
-            self.insert_hot(key, value.clone()).await;
         }
+        self.commit_disk_hit(key, generation, should_promote.then(|| value.clone()))
+            .await;
 
         self.update_utilization_metrics();
         Some(value)
@@ -2028,6 +2325,7 @@ impl ChunksCache {
         trace!("Hot cache range MISS: {}", key);
         self.policy.record_cache_request(false);
 
+        let generation = self.disk_storage.store_generation(key);
         let mut disk_buf = vec![0u8; buf.len()];
         let read_len = match self
             .disk_storage
@@ -2060,7 +2358,7 @@ impl ChunksCache {
             read_len, key
         );
         self.policy.record_access(key.clone()).await;
-        self.cold_cache.insert(key.clone(), ()).await;
+        let mut promote = None;
         if self.policy.should_promote(key.clone()).await
             && self.range_promotion_inflight.insert(key.clone())
         {
@@ -2069,10 +2367,11 @@ impl ChunksCache {
                 && !value.is_empty()
             {
                 debug!("Promoting repeatedly ranged disk key to hot cache: {}", key);
-                self.insert_hot(key, value).await;
+                promote = Some(value);
             }
             self.range_promotion_inflight.remove(key);
         }
+        self.commit_disk_hit(key, generation, promote).await;
         self.update_utilization_metrics();
         Some(read_len)
     }
@@ -2132,30 +2431,68 @@ impl ChunksCache {
         }
     }
 
-    pub async fn insert_hot(&self, key: &str, data: bytes::Bytes) {
+    async fn insert_hot_locked(&self, key: &str, data: bytes::Bytes) {
         let len = data.len() as u64;
         self.hot_cache.insert(key.to_owned(), data).await;
         self.hot_cache.run_pending_tasks().await;
         self.hot_bytes.fetch_add(len, Ordering::Relaxed);
     }
 
+    async fn insert_hot_at_generation(
+        &self,
+        key: &str,
+        data: bytes::Bytes,
+        generation: u64,
+    ) -> bool {
+        let shard = &self.disk_storage.key_shards[DiskStorage::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        self.insert_hot_locked(key, data).await;
+        true
+    }
+
+    pub async fn insert_hot(&self, key: &str, data: bytes::Bytes) {
+        let generation = self.disk_storage.store_generation(key);
+        self.insert_hot_at_generation(key, data, generation).await;
+    }
+
     pub async fn insert_recent_write_hot(&self, key: &str, data: bytes::Bytes) {
+        let generation = self.disk_storage.store_generation(key);
+        let shard = &self.disk_storage.key_shards[DiskStorage::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            return;
+        }
         self.write_hot_cache.insert(key.to_owned(), data);
     }
 
     pub async fn insert_opportunistic(&self, key: String, data: bytes::Bytes) {
+        let generation = self.disk_storage.store_generation(&key);
         // Insert into hot memory cache (fast path for subsequent reads).
         // Bytes::clone() is an Arc bump — zero-copy.
-        self.insert_hot(&key, data.clone()).await;
-        self.persist_opportunistic(key, data).await;
+        if self
+            .insert_hot_at_generation(&key, data.clone(), generation)
+            .await
+        {
+            self.persist_opportunistic(key, data, generation).await;
+        }
     }
 
     pub async fn insert_recent_write_opportunistic(&self, key: String, data: bytes::Bytes) {
-        self.insert_recent_write_hot(&key, data.clone()).await;
-        self.persist_opportunistic(key, data).await;
+        let generation = self.disk_storage.store_generation(&key);
+        let shard = &self.disk_storage.key_shards[DiskStorage::key_shard_index(&key)];
+        let gate = shard.gate.lock().await;
+        if shard.generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        self.write_hot_cache.insert(key.clone(), data.clone());
+        drop(gate);
+        self.persist_opportunistic(key, data, generation).await;
     }
 
-    async fn persist_opportunistic(&self, key: String, data: bytes::Bytes) {
+    async fn persist_opportunistic(&self, key: String, data: bytes::Bytes, generation: u64) {
         // Persist to disk so future cold starts / hot cache evictions avoid
         // S3, but keep this genuinely opportunistic. If local cache I/O is
         // saturated, skip the disk write instead of queuing more background
@@ -2164,7 +2501,10 @@ impl ChunksCache {
             return;
         }
 
-        let Some(permit) = self.disk_storage.try_io_permit(&key) else {
+        let Some(token) = self
+            .disk_storage
+            .try_io_permit_at_generation(&key, generation)
+        else {
             tracing::debug!(
                 key = %key,
                 "disk cache insert skipped: write_sem saturated"
@@ -2201,14 +2541,20 @@ impl ChunksCache {
             }
 
             let res = disk_storage
-                .store_with_permit_health(&cached_key, data, permit)
+                .store_with_permit_health(&cached_key, data, token)
                 .await;
 
             match res {
-                Ok(true) => {
-                    cold_cache.insert(cached_key.clone(), ()).await;
+                Ok(Some(stored_generation)) => {
+                    Self::insert_cold_marker_if_current(
+                        &disk_storage,
+                        &cold_cache,
+                        &cached_key,
+                        stored_generation,
+                    )
+                    .await;
                 }
-                Ok(false) => {
+                Ok(None) => {
                     // Bypassed by health check — no error, no cold marker
                 }
                 Err(err) => {
@@ -2227,20 +2573,38 @@ impl ChunksCache {
     }
 
     pub async fn insert(&self, key: &str, data: &Vec<u8>) -> anyhow::Result<()> {
-        self.insert_hot(key, bytes::Bytes::from(data.clone())).await;
-        if self.disk_storage.store_with_health(key, data).await? {
-            self.cold_cache.insert(key.to_owned(), ()).await;
+        let generation = self.disk_storage.store_generation(key);
+        self.insert_hot_at_generation(key, bytes::Bytes::from(data.clone()), generation)
+            .await;
+        if let Some(stored_generation) = self
+            .disk_storage
+            .store_with_health_at_generation(key, data, generation)
+            .await?
+        {
+            Self::insert_cold_marker_if_current(
+                &self.disk_storage,
+                &self.cold_cache,
+                key,
+                stored_generation,
+            )
+            .await;
         }
         Ok(())
     }
 
     pub async fn remove(&self, key: &String) -> anyhow::Result<()> {
         debug!("Cache REMOVE request for key: {}", key);
+        let _permit = self.disk_storage.write_sem.clone().acquire_owned().await?;
+        let shard = &self.disk_storage.key_shards[DiskStorage::key_shard_index(key)];
+        let _gate = shard.gate.lock().await;
+        shard.generation.fetch_add(1, Ordering::AcqRel);
+
+        self.write_hot_cache.remove(key);
         trace!("Invalidating from hot cache: {}", key);
         self.hot_cache.invalidate(key).await;
-        // self.disk_storage.remove(key).await?;
         trace!("Invalidating from cold cache: {}", key);
         self.cold_cache.invalidate(key).await;
+        self.disk_storage.remove_file_locked(key, true).await?;
 
         debug!("Successfully removed key: {}", key);
         Ok(())
@@ -2248,20 +2612,26 @@ impl ChunksCache {
 
     /// Try to acquire a disk write permit without blocking.
     /// Returns None if disk I/O is saturated (all write_sem permits taken).
-    pub fn try_disk_store_permit(&self, key: &str) -> Option<OwnedSemaphorePermit> {
+    pub fn try_disk_store_permit(&self, key: &str) -> Option<DiskStorePermit> {
         self.disk_storage.try_io_permit(key)
     }
 
     /// Store data to disk cache, awaiting a write permit if necessary.
     /// Used by background write-cache population tasks.
     pub async fn store_to_disk(&self, key: &str, data: bytes::Bytes) -> anyhow::Result<()> {
-        let permit = self.disk_storage.write_sem.clone().acquire_owned().await?;
-        if self
+        let token = self.disk_storage.acquire_store_permit(key).await?;
+        if let Some(stored_generation) = self
             .disk_storage
-            .store_with_permit_health(key, data, permit)
+            .store_with_permit_health(key, data, token)
             .await?
         {
-            self.cold_cache.insert(key.to_owned(), ()).await;
+            Self::insert_cold_marker_if_current(
+                &self.disk_storage,
+                &self.cold_cache,
+                key,
+                stored_generation,
+            )
+            .await;
         }
         Ok(())
     }
@@ -2272,14 +2642,20 @@ impl ChunksCache {
         &self,
         key: &str,
         data: bytes::Bytes,
-        permit: OwnedSemaphorePermit,
+        token: DiskStorePermit,
     ) -> anyhow::Result<()> {
-        if self
+        if let Some(stored_generation) = self
             .disk_storage
-            .store_with_permit_health(key, data, permit)
+            .store_with_permit_health(key, data, token)
             .await?
         {
-            self.cold_cache.insert(key.to_owned(), ()).await;
+            Self::insert_cold_marker_if_current(
+                &self.disk_storage,
+                &self.cold_cache,
+                key,
+                stored_generation,
+            )
+            .await;
         }
         Ok(())
     }
@@ -2753,6 +3129,379 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.get(&key.to_string()).await, Some(data));
+    }
+
+    #[tokio::test]
+    async fn chunks_cache_remove_deletes_disk_and_memory_entries() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "remove-deletes-all-cache-tiers".to_string();
+        cache.insert(&key, &b"cached data".to_vec()).await.unwrap();
+        cache
+            .insert_recent_write_hot(&key, bytes::Bytes::from_static(b"newer cached data"))
+            .await;
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
+        assert!(filepath.exists());
+
+        cache.remove(&key).await.unwrap();
+
+        assert!(!filepath.exists(), "remove must delete the disk cache file");
+        assert!(!cache.is_disk_cached(&key).await);
+        assert!(cache.get(&key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn disk_remove_if_exists_is_idempotent() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "idempotent-disk-remove";
+        storage.store(key, b"cached").await.unwrap();
+
+        storage.remove_if_exists(key).await.unwrap();
+        storage.remove_if_exists(key).await.unwrap();
+
+        assert!(storage.load(key).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_disk_cache_temporary_files_are_cleaned_outside_remove() {
+        let temp_dir = tempdir().unwrap();
+        let filename = DiskStorage::key_to_filename("orphan-tmp-without-cache-file");
+        let old_style_tmp = temp_dir.path().join(format!(".{filename}.42.tmp"));
+        let current_tmp = temp_dir.path().join(format!(".{filename}.7.43.tmp"));
+        let unrelated_tmp = temp_dir.path().join(".notes.tmp");
+        let malformed_tmp = temp_dir
+            .path()
+            .join(format!(".{filename}.not-a-counter.tmp"));
+        let regular_file = temp_dir.path().join(&filename);
+        tokio::fs::write(&old_style_tmp, b"partial").await.unwrap();
+        tokio::fs::write(&current_tmp, b"partial").await.unwrap();
+        tokio::fs::write(&unrelated_tmp, b"unrelated")
+            .await
+            .unwrap();
+        tokio::fs::write(&malformed_tmp, b"unrelated")
+            .await
+            .unwrap();
+        tokio::fs::write(&regular_file, b"complete").await.unwrap();
+
+        DiskStorage::cleanup_stale_temp_files(
+            temp_dir.path(),
+            SystemTime::now() + Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!old_style_tmp.exists(), "old cache temp must be removed");
+        assert!(!current_tmp.exists(), "current cache temp must be removed");
+        assert!(unrelated_tmp.exists(), "unrelated temp must be retained");
+        assert!(malformed_tmp.exists(), "malformed temp must be retained");
+        assert!(
+            regular_file.exists(),
+            "published cache file must be retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn disk_remove_uses_one_write_permit_instead_of_stopping_all_writes() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let mut held_permits = Vec::new();
+        for _ in 0..(DISK_CACHE_WRITE_CONCURRENCY - 1) {
+            held_permits.push(storage.write_sem.clone().acquire_owned().await.unwrap());
+        }
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            storage.remove_if_exists("remove-with-unrelated-writes-in-flight"),
+        )
+        .await
+        .expect("remove must not wait for every write permit")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_cancels_an_older_store_before_it_can_publish() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "remove-wins-over-old-disk-store";
+        let generation = storage.store_generation(key);
+        let shard_index = DiskStorage::key_shard_index(key);
+        let store_permit = storage.write_sem.clone().acquire_owned().await.unwrap();
+        let gate = storage.key_shards[shard_index].gate.lock().await;
+
+        let mut remove = Box::pin(storage.remove_if_exists(key));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut remove)
+                .await
+                .is_err(),
+            "remove should be queued behind the held key gate"
+        );
+
+        let mut store = Box::pin(storage.store_with_permit_at_generation(
+            key,
+            bytes::Bytes::from_static(b"stale"),
+            store_permit,
+            generation,
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut store)
+                .await
+                .is_err(),
+            "store should write privately and then queue behind removal"
+        );
+
+        drop(gate);
+        remove.await.unwrap();
+        assert!(!store.await.unwrap(), "invalidated store must be discarded");
+
+        let filepath = storage.base_dir.join(DiskStorage::key_to_filename(key));
+        assert!(
+            !filepath.exists(),
+            "stale store must not recreate the entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn preacquired_store_token_cannot_adopt_generation_after_remove() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        let key = "delayed-preacquired-store".to_string();
+        let token = cache
+            .try_disk_store_permit(&key)
+            .expect("write permit should be available");
+
+        cache.remove(&key).await.unwrap();
+        cache
+            .store_to_disk_with_permit(&key, bytes::Bytes::from_static(b"stale"), token)
+            .await
+            .unwrap();
+
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
+        assert!(
+            !filepath.exists(),
+            "old token must not publish after remove"
+        );
+        assert!(!cache.is_disk_cached(&key).await);
+    }
+
+    #[tokio::test]
+    async fn preacquired_store_token_rejects_a_different_key_in_the_same_shard() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        let original_key = "store-token-original-key";
+        let shard_index = DiskStorage::key_shard_index(original_key);
+        let colliding_key = (0..10_000)
+            .map(|index| format!("store-token-collision-{index}"))
+            .find(|candidate| DiskStorage::key_shard_index(candidate) == shard_index)
+            .expect("a deterministic same-shard key should be found");
+        assert_ne!(colliding_key, original_key);
+
+        let token = cache
+            .try_disk_store_permit(original_key)
+            .expect("write permit should be available");
+        let error = cache
+            .store_to_disk_with_permit(
+                &colliding_key,
+                bytes::Bytes::from_static(b"misrouted"),
+                token,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("different key"));
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&colliding_key));
+        assert!(!filepath.exists());
+        assert!(!cache.is_disk_cached(&colliding_key).await);
+    }
+
+    #[tokio::test]
+    async fn remove_rejects_cache_commit_from_an_inflight_disk_read() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        let key = "disk-read-loaded-before-remove".to_string();
+        cache.disk_storage.store(&key, b"stale").await.unwrap();
+
+        // Model the get/get_range interleaving at its deterministic boundary:
+        // disk bytes and their generation were captured before remove, while
+        // the hot/cold cache commit is delayed until after remove succeeds.
+        let generation = cache.disk_storage.store_generation(&key);
+        let loaded = cache
+            .disk_storage
+            .load_with_health(&key)
+            .await
+            .unwrap()
+            .unwrap();
+        cache.remove(&key).await.unwrap();
+
+        assert!(
+            !cache.commit_disk_hit(&key, generation, Some(loaded)).await,
+            "stale read generation must not commit cache entries"
+        );
+        assert!(cache.hot_cache.get(&key).await.is_none());
+        assert!(!cache.is_disk_cached(&key).await);
+    }
+
+    #[tokio::test]
+    async fn remove_rejects_a_late_cold_marker_after_store_publish() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        let key = "store-published-before-remove".to_string();
+        let stored_generation = cache
+            .disk_storage
+            .store_with_health(&key, b"stored")
+            .await
+            .unwrap()
+            .expect("store should publish");
+
+        cache.remove(&key).await.unwrap();
+        assert!(
+            !ChunksCache::insert_cold_marker_if_current(
+                &cache.disk_storage,
+                &cache.cold_cache,
+                &key,
+                stored_generation,
+            )
+            .await
+        );
+        assert!(!cache.is_disk_cached(&key).await);
+    }
+
+    #[tokio::test]
+    async fn eviction_restats_overwrite_under_the_shard_gate() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "eviction-racing-overwrite";
+        storage.store(key, b"old").await.unwrap();
+        let generation = storage.store_generation(key);
+        let shard_index = DiskStorage::key_shard_index(key);
+        let permit = storage.write_sem.clone().acquire_owned().await.unwrap();
+        let gate = storage.key_shards[shard_index].gate.lock().await;
+
+        let mut overwrite = Box::pin(storage.store_with_permit_at_generation(
+            key,
+            bytes::Bytes::from(vec![9u8; 4096]),
+            permit,
+            generation,
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut overwrite)
+                .await
+                .is_err(),
+            "overwrite should queue at its publish gate"
+        );
+
+        let mut eviction = Box::pin(storage.evict_lru(u64::MAX));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut eviction)
+                .await
+                .is_err(),
+            "eviction should queue behind the overwrite"
+        );
+
+        drop(gate);
+        assert!(overwrite.await.unwrap());
+        eviction.await;
+
+        let filepath = storage.base_dir.join(DiskStorage::key_to_filename(key));
+        assert!(!filepath.exists());
+        assert_eq!(storage.bytes_used(), 0, "eviction must subtract new size");
+    }
+
+    #[tokio::test]
+    async fn remove_and_inflight_eviction_do_not_double_account() {
+        let (storage, _temp_dir) = setup_test_storage().await;
+        let key = "remove-racing-eviction";
+        storage.store(key, b"cached").await.unwrap();
+        let shard_index = DiskStorage::key_shard_index(key);
+        let gate = storage.key_shards[shard_index].gate.lock().await;
+
+        let mut remove = Box::pin(storage.remove_if_exists(key));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut remove)
+                .await
+                .is_err(),
+            "remove should queue at the shard gate"
+        );
+        let mut eviction = Box::pin(storage.evict_lru(u64::MAX));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut eviction)
+                .await
+                .is_err(),
+            "eviction should queue behind remove"
+        );
+
+        drop(gate);
+        remove.await.unwrap();
+        eviction.await;
+        assert_eq!(storage.bytes_used(), 0);
+    }
+
+    #[tokio::test]
+    async fn chunks_cache_remove_propagates_disk_deletion_errors() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            16 * 1024 * 1024,
+            16 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+        let key = "disk-remove-error-is-not-success".to_string();
+        cache
+            .insert_hot(&key, bytes::Bytes::from_static(b"hot"))
+            .await;
+        cache
+            .insert_recent_write_hot(&key, bytes::Bytes::from_static(b"write-hot"))
+            .await;
+        cache.cold_cache.insert(key.clone(), ()).await;
+
+        // A directory at the deterministic cache-file path makes remove_file
+        // fail consistently across supported platforms.
+        let filepath = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
+        tokio::fs::create_dir(&filepath).await.unwrap();
+
+        assert!(cache.remove(&key).await.is_err());
+        assert!(cache.write_hot_cache.get(&key).is_none());
+        assert!(cache.hot_cache.get(&key).await.is_none());
+        assert!(!cache.is_disk_cached(&key).await);
     }
 
     #[tokio::test]
