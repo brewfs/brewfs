@@ -703,6 +703,9 @@ where
         meta_config.options.open_file_cache.capacity = capacity;
     }
     meta_config.options.open_file_cache.allow_write = args.meta_allow_write_open_cache;
+    if let Some(interval_ms) = args.meta_slice_version_check_interval_ms {
+        meta_config.options.slice_version_check_interval = Duration::from_millis(interval_ms);
+    }
     meta_config.compact = args.compact.clone();
 
     tracing::info!("mount startup meta client create begin");

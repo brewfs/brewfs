@@ -149,6 +149,7 @@ meta:
   open_file_cache_ttl_ms: 30000
   open_file_cache_capacity: 65536
   allow_write_open_cache: false
+  slice_version_check_interval_ms: 1000
 
 cache:
   root: /var/cache/brewfs
@@ -275,6 +276,7 @@ export AWS_EC2_METADATA_DISABLED=true
 | `meta.open_file_cache_ttl_ms` | 关闭 | 只读 open 文件属性缓存 TTL，单位 ms。 |
 | `meta.open_file_cache_capacity` | 默认值 | open file cache 容量。 |
 | `meta.allow_write_open_cache` | `false` | 允许写 open 复用属性缓存。仅建议在单客户端或可接受跨客户端 close-to-open 新鲜度减弱的性能场景中启用。 |
+| `meta.slice_version_check_interval_ms` | `1000` | Redis slice-list 缓存的后端版本复检间隔。远端 compact/write 最多可在该窗口内暂未被当前客户端看到；设为 `0` 会在每次缓存命中时复检。与复检重叠的变更可能在下一次复检时可见。 |
 
 示例：
 

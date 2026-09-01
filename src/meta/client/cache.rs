@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::chunk::SliceDesc;
 use crate::meta::entities::etcd::EtcdEntryInfo;
@@ -16,6 +16,13 @@ use tracing::debug;
 /// Type alias for children map to reduce complexity
 /// BTreeMap provides ordered iteration for consistent ls output
 pub(crate) type ChildrenMap = BTreeMap<String, i64>;
+
+#[derive(Clone)]
+pub(crate) struct CachedSlices {
+    pub(crate) version: Option<u64>,
+    pub(crate) slices: Vec<SliceDesc>,
+    pub(crate) validated_at: Instant,
+}
 
 #[derive(Clone)]
 pub(crate) enum ChildrenState {
@@ -56,8 +63,8 @@ pub(crate) struct InodeEntry {
     pub(crate) children: Arc<RwLock<ChildrenState>>,
     /// Monotonic generation for child map mutations to detect stale readdir snapshots.
     pub(crate) children_generation: Arc<AtomicU64>,
-    /// Cache slice metadata per chunk index
-    pub(crate) slices: DashMap<u64, Vec<SliceDesc>>,
+    /// Cache slice metadata per chunk index, with an optional backend version token.
+    pub(crate) slices: DashMap<u64, CachedSlices>,
 }
 
 impl Clone for InodeEntry {
@@ -358,8 +365,8 @@ impl InodeCache {
             // after truncate: invalidate_inode clears the cache, insert_node
             // recreates it with an empty slices map, and post-truncate writes
             // would otherwise seed a partial entry that shadows the full list.
-            if let Some(mut slices) = node.slices.get_mut(&chunk_index) {
-                slices.push(desc);
+            if let Some(mut cached) = node.slices.get_mut(&chunk_index) {
+                cached.slices.push(desc);
             }
         }
     }
@@ -368,8 +375,8 @@ impl InodeCache {
     pub(crate) async fn replace_slices(&self, inode: i64, chunk_index: u64, desc: &[SliceDesc]) {
         if let Some(node) = self.ttl_manager.get(&inode).await {
             // Same rationale as append_slice: only update an existing entry.
-            if let Some(mut slices) = node.slices.get_mut(&chunk_index) {
-                *slices = desc.to_owned();
+            if let Some(mut cached) = node.slices.get_mut(&chunk_index) {
+                cached.slices = desc.to_owned();
             }
         }
     }
@@ -378,18 +385,63 @@ impl InodeCache {
         &self,
         inode: i64,
         chunk_index: u64,
+        version: Option<u64>,
         desc: &[SliceDesc],
     ) -> Option<Vec<SliceDesc>> {
         let node = self.ttl_manager.get(&inode).await?;
         let entry = node.slices.entry(chunk_index);
         Some(match entry {
-            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Occupied(entry) => entry.get().slices.clone(),
             Entry::Vacant(entry) => {
-                let cached = desc.to_owned();
+                let slices = desc.to_owned();
+                let cached = CachedSlices {
+                    version,
+                    slices,
+                    validated_at: Instant::now(),
+                };
                 entry.insert(cached.clone());
-                cached
+                cached.slices
             }
         })
+    }
+
+    pub(crate) async fn get_cached_slices(
+        &self,
+        inode: i64,
+        chunk_index: u64,
+    ) -> Option<CachedSlices> {
+        let node = self.ttl_manager.get(&inode).await?;
+        node.slices.get(&chunk_index).map(|entry| entry.clone())
+    }
+
+    pub(crate) async fn touch_slices_validation(
+        &self,
+        inode: i64,
+        chunk_index: u64,
+        expected_version: u64,
+    ) {
+        if let Some(node) = self.ttl_manager.get(&inode).await
+            && let Some(mut cached) = node.slices.get_mut(&chunk_index)
+            && cached.version == Some(expected_version)
+        {
+            cached.validated_at = Instant::now();
+        }
+    }
+
+    pub(crate) async fn invalidate_slices_if_version(
+        &self,
+        inode: i64,
+        chunk_index: u64,
+        expected_version: u64,
+    ) {
+        let Some(node) = self.ttl_manager.get(&inode).await else {
+            return;
+        };
+        if let Entry::Occupied(entry) = node.slices.entry(chunk_index)
+            && entry.get().version == Some(expected_version)
+        {
+            entry.remove();
+        }
     }
 
     pub(crate) async fn invalidate_slices(&self, inode: i64, chunk_index: u64) {
@@ -404,7 +456,7 @@ impl InodeCache {
         // Use entry api to ensure consistency, it will lock the bucket.
         let entry = node.slices.entry(chunk_index);
         match entry {
-            Entry::Occupied(entry) => entry.get().clone().into(),
+            Entry::Occupied(entry) => entry.get().slices.clone().into(),
             Entry::Vacant(_) => None,
         }
     }

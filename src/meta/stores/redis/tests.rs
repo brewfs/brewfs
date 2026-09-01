@@ -1,4 +1,4 @@
-use crate::meta::client::MetaClient;
+use crate::meta::client::{MetaClient, MetaClientOptions};
 use crate::meta::config::Config;
 use crate::meta::config::{
     CacheCapacity, CacheConfig, CacheTtl, ClientOptions, CompactConfig, DatabaseConfig,
@@ -2217,6 +2217,96 @@ async fn test_file_full_lifecycle_flow() {
     assert!(
         deleted.contains(&ino),
         "file should be in deleted set after unlink"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn get_slices_cache_detects_remote_compact_via_version_token() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let client = MetaClient::with_options(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+        MetaClientOptions {
+            slice_version_check_interval: Duration::ZERO,
+            ..MetaClientOptions::default()
+        },
+    );
+
+    let ino = client
+        .create_file(root, "slice_version.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 201,
+        chunk_id,
+        offset: 0,
+        length: 4096,
+    };
+    client.append_slice(chunk_id, old_slice).await.unwrap();
+    assert_eq!(client.get_slices(chunk_id).await.unwrap(), vec![old_slice]);
+
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 202,
+        chunk_id,
+        offset: 0,
+        length: 8192,
+    };
+    store
+        .replace_slices_for_compact_with_version(chunk_id, &[new_slice], &[], &[old_slice])
+        .await
+        .unwrap();
+    assert_eq!(
+        client.get_slices(chunk_id).await.unwrap(),
+        vec![new_slice],
+        "a client must not keep serving slices replaced by a remote compaction"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn get_slices_cache_detects_first_remote_append_after_empty_read() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let client = MetaClient::with_options(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+        MetaClientOptions {
+            slice_version_check_interval: Duration::ZERO,
+            ..MetaClientOptions::default()
+        },
+    );
+
+    let ino = client
+        .create_file(root, "empty_slice_version.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    assert!(client.get_slices(chunk_id).await.unwrap().is_empty());
+
+    let remote_slice = crate::chunk::SliceDesc {
+        slice_id: 301,
+        chunk_id,
+        offset: 0,
+        length: 4096,
+    };
+    store.append_slice(chunk_id, remote_slice).await.unwrap();
+    assert_eq!(
+        client.get_slices(chunk_id).await.unwrap(),
+        vec![remote_slice],
+        "a cached empty chunk must observe the first remote append"
     );
 }
 
