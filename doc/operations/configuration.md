@@ -278,6 +278,8 @@ export AWS_EC2_METADATA_DISABLED=true
 | `meta.allow_write_open_cache` | `false` | 允许写 open 复用属性缓存。仅建议在单客户端或可接受跨客户端 close-to-open 新鲜度减弱的性能场景中启用。 |
 | `meta.slice_version_check_interval_ms` | `1000` | Redis slice-list 缓存的后端版本复检间隔。远端 compact/write 最多可在该窗口内暂未被当前客户端看到；设为 `0` 会在每次缓存命中时复检。与复检重叠的变更可能在下一次复检时可见。 |
 
+Redis 后端的 `statfs`/`df` 是每个客户端独立维护的近似快照，固定缓存 5 秒。`create`、`unlink`、`write`、`truncate` 等本地或远端变更可能要到该窗口过期后的第一次查询才会反映到 `used_space` / `used_inodes`；这是为了避免重复 SCAN 全 inode 空间以及在每次元数据变更上增加全局 epoch 写入。
+
 示例：
 
 ```yaml

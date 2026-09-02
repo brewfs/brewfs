@@ -533,6 +533,21 @@ const UNCOMMITTED_PENDING_INDEX_KEY: &str = "uc_pending_idx";
 const UNCOMMITTED_ORPHAN_INDEX_KEY: &str = "uc_orphan_idx";
 const COMPACT_RETRY_LIMIT: usize = 64;
 
+/// Keep repeated `df`/statfs calls from rescanning every inode in Redis.
+///
+/// This is deliberately a per-client, best-effort snapshot: metadata
+/// mutations do not invalidate it, so local or remote changes may remain
+/// invisible until the TTL expires. That bounded staleness avoids adding a
+/// global mutation epoch write to every metadata operation.
+const STAT_FS_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Suggested number of inode keys Redis should return for each SCAN call.
+const STAT_FS_SCAN_COUNT: usize = 1000;
+
+/// Hard upper bound for node payloads fetched by one MGET. Unlike SCAN's COUNT,
+/// this is enforced client-side because COUNT is only a hint to Redis.
+const STAT_FS_MGET_BATCH_SIZE: usize = 512;
+
 // Lua script for atomically appending a slice, extending file size, and updating
 // best-effort allocated block accounting in one RTT.
 // KEYS[1] = chunk_key, KEYS[2] = version_key, KEYS[3] = node_key
@@ -1447,6 +1462,9 @@ pub struct RedisMetaStore {
     chunk_scan_buffer: std::sync::Mutex<Vec<u64>>,
     chunk_scan_next_cursor: std::sync::Mutex<Option<String>>,
     global_lock_tokens: std::sync::Mutex<HashMap<String, String>>,
+    /// The async mutex also provides single-flight behavior on a cold cache:
+    /// concurrent statfs callers wait for the first scan instead of duplicating it.
+    stat_fs_cache: tokio::sync::Mutex<Option<(std::time::Instant, StatFsSnapshot)>>,
 }
 
 impl RedisMetaStore {
@@ -1575,6 +1593,7 @@ impl RedisMetaStore {
             chunk_scan_buffer: std::sync::Mutex::new(Vec::new()),
             chunk_scan_next_cursor: std::sync::Mutex::new(None),
             global_lock_tokens: std::sync::Mutex::new(HashMap::new()),
+            stat_fs_cache: tokio::sync::Mutex::new(None),
         };
         store.init_root_directory().await?;
         Ok(store)
@@ -3184,43 +3203,65 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
-        let mut conn = self.conn.clone();
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(format!("{NODE_KEY_PREFIX}*"))
-            .query_async(&mut conn)
-            .await
-            .map_err(redis_err)?;
-
-        if keys.is_empty() {
-            return Ok(stat_fs_snapshot_from_usage(0, 0));
+        let mut cached = self.stat_fs_cache.lock().await;
+        if let Some((cached_at, snapshot)) = cached.as_ref()
+            && cached_at.elapsed() < STAT_FS_CACHE_TTL
+        {
+            return Ok(snapshot.clone());
         }
 
-        let nodes: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
-            .arg(&keys)
-            .query_async(&mut conn)
-            .await
-            .map_err(redis_err)?;
-
+        let mut conn = self.conn.clone();
         let mut used_space = 0u64;
         let mut used_inodes = 0u64;
+        let mut cursor = 0u64;
 
-        for (key, data) in keys.iter().zip(nodes.into_iter()) {
-            let Some(bytes) = data else {
-                continue;
-            };
-            let node: StoredNode = serde_json::from_slice(&bytes)
-                .map_err(|e| MetaError::Internal(format!("Failed to parse node {key}: {e}")))?;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(format!("{NODE_KEY_PREFIX}*"))
+                .arg("COUNT")
+                .arg(STAT_FS_SCAN_COUNT)
+                .query_async(&mut conn)
+                .instrument(tracing::trace_span!("stat_fs.redis_scan", cursor))
+                .await
+                .map_err(redis_err)?;
 
-            if node.deleted || node.attr.nlink == 0 {
-                continue;
+            for key_batch in keys.chunks(STAT_FS_MGET_BATCH_SIZE) {
+                let nodes: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
+                    .arg(key_batch)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(redis_err)?;
+
+                for (key, data) in key_batch.iter().zip(nodes) {
+                    let Some(bytes) = data else {
+                        continue;
+                    };
+                    let node: StoredNode = serde_json::from_slice(&bytes).map_err(|e| {
+                        MetaError::Internal(format!("Failed to parse node {key}: {e}"))
+                    })?;
+
+                    if node.deleted || node.attr.nlink == 0 {
+                        continue;
+                    }
+
+                    let attr = node.as_file_attr();
+                    used_space =
+                        used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+                    used_inodes = used_inodes.saturating_add(1);
+                }
             }
 
-            let attr = node.as_file_attr();
-            used_space = used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
-            used_inodes = used_inodes.saturating_add(1);
+            if next_cursor == 0 {
+                break;
+            }
+            cursor = next_cursor;
         }
 
-        Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
+        let snapshot = stat_fs_snapshot_from_usage(used_space, used_inodes);
+        *cached = Some((std::time::Instant::now(), snapshot.clone()));
+        Ok(snapshot)
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
