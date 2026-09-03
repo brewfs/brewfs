@@ -2039,7 +2039,12 @@ impl Policy {
 /// - Access statistics use lock-free atomic operations
 /// - Cache operations use Moka's concurrent-safe implementation
 ///
-/// Cache statistics for monitoring and diagnostics
+/// Cache statistics for monitoring and diagnostics.
+///
+/// Moka applies hot-cache accounting and eviction during asynchronous
+/// maintenance. `hot_bytes` and `hot_entries` are therefore approximate while
+/// writes are pending, and `max_hot_bytes` is an eventual, best-effort bound
+/// rather than a synchronous per-insert ceiling.
 #[derive(Debug, Clone)]
 pub struct CacheStats {
     pub hot_bytes: u64,
@@ -2056,7 +2061,9 @@ pub struct CacheStats {
 
 /// # Memory Management
 ///
-/// - **Hot Cache**: Stores actual data, limited by `hot_cache_size`
+/// - **Hot Cache**: Stores actual data with a byte-weighted Moka capacity.
+///   Eviction runs asynchronously, so `max_hot_bytes` can be exceeded
+///   transiently until maintenance catches up.
 /// - **Cold Cache**: Stores only `()` markers, minimal memory overhead
 /// - **Access Stats**: Per-key statistics, automatically cleaned up when idle
 /// - **Disk Storage**: Uses system temp directory, respects available space
@@ -2068,9 +2075,6 @@ pub struct ChunksCache {
     /// Hot cache tier storing frequently accessed data in memory
     /// Uses Moka's high-performance concurrent cache implementation
     hot_cache: moka::future::Cache<String, bytes::Bytes>,
-
-    /// Approximate hot cache bytes (sum of Bytes lengths)
-    hot_bytes: Arc<AtomicU64>,
 
     /// Recently uploaded write data. This protects read-after-write workloads
     /// from the normal TinyLFU admission policy, where older read-hot blocks can
@@ -2127,8 +2131,6 @@ impl ChunksCache {
         )
         .await?;
 
-        let hot_bytes = Arc::new(AtomicU64::new(0));
-        let hot_bytes_evict = hot_bytes.clone();
         let max_write_hot_bytes = recent_write_hot_capacity(config.max_hot_bytes);
         // Use byte-weighted capacity: moka evicts entries when total weight exceeds max_capacity.
         // The weigher returns the byte size of each entry (clamped to u32::MAX).
@@ -2139,13 +2141,7 @@ impl ChunksCache {
                 (value.len() as u64 + 64).min(u32::MAX as u64) as u32
             })
             .time_to_idle(Duration::from_secs(300))
-            .time_to_live(Duration::from_secs(3600))
-            .eviction_listener(move |_key, value: bytes::Bytes, _cause| {
-                // Saturating sub to prevent underflow from racing insert_hot/eviction
-                let _ = hot_bytes_evict.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    Some(v.saturating_sub(value.len() as u64))
-                });
-            });
+            .time_to_live(Duration::from_secs(3600));
         let cold_cache_builder = moka::future::Cache::builder()
             .max_capacity(config.cold_cache_size as u64)
             .time_to_idle(Duration::from_secs(300))
@@ -2171,7 +2167,6 @@ impl ChunksCache {
         Ok(Self {
             disk_storage,
             hot_cache: hot_cache_builder.build(),
-            hot_bytes,
             write_hot_cache: RecentWriteHotCache::new(max_write_hot_bytes),
             cold_cache: cold_cache_builder.build(),
             disk_insert_inflight: Arc::new(DashSet::new()),
@@ -2381,6 +2376,9 @@ impl ChunksCache {
             return false;
         }
 
+        // Moka's weighted size can lag queued maintenance. Treat this as a soft
+        // admission threshold; Moka's own byte capacity eventually evicts any
+        // transient excess.
         let current_bytes = self.hot_cache.weighted_size();
         let next_bytes = current_bytes
             .saturating_add(value_len as u64)
@@ -2415,7 +2413,10 @@ impl ChunksCache {
             .update_cache_utilization(utilization_scaled, 10000);
     }
 
-    /// Get cache statistics
+    /// Get cache statistics.
+    ///
+    /// Hot-cache size and entry counters are approximate until Moka has drained
+    /// its pending maintenance work.
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             hot_bytes: self.hot_cache.weighted_size(),
@@ -2432,10 +2433,7 @@ impl ChunksCache {
     }
 
     async fn insert_hot_locked(&self, key: &str, data: bytes::Bytes) {
-        let len = data.len() as u64;
         self.hot_cache.insert(key.to_owned(), data).await;
-        self.hot_cache.run_pending_tasks().await;
-        self.hot_bytes.fetch_add(len, Ordering::Relaxed);
     }
 
     async fn insert_hot_at_generation(
@@ -3007,6 +3005,56 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn hot_cache_concurrent_inserts_eventually_respect_weighted_capacity() {
+        const MAX_HOT_BYTES: u64 = 64 * 1024;
+        const VALUE_BYTES: usize = 8 * 1024;
+        const WORKERS: usize = 4;
+        const INSERTS_PER_WORKER: usize = 64;
+
+        let temp_dir = tempdir().unwrap();
+        let cache = Arc::new(
+            ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+                MAX_HOT_BYTES,
+                16 * 1024 * 1024,
+                temp_dir.path().to_path_buf(),
+            ))
+            .await
+            .unwrap(),
+        );
+
+        let mut workers = Vec::with_capacity(WORKERS);
+        for worker in 0..WORKERS {
+            let cache = cache.clone();
+            workers.push(tokio::spawn(async move {
+                for insert in 0..INSERTS_PER_WORKER {
+                    cache
+                        .insert_hot(
+                            &format!("hot-capacity-{worker}-{insert}"),
+                            bytes::Bytes::from(vec![worker as u8; VALUE_BYTES]),
+                        )
+                        .await;
+                }
+            }));
+        }
+        for worker in workers {
+            worker.await.unwrap();
+        }
+
+        cache.hot_cache.run_pending_tasks().await;
+        let stats = cache.stats();
+        assert!(
+            stats.hot_bytes <= MAX_HOT_BYTES,
+            "hot cache should be bounded after maintenance: {} > {} bytes",
+            stats.hot_bytes,
+            MAX_HOT_BYTES
+        );
+        assert!(
+            stats.hot_entries < (WORKERS * INSERTS_PER_WORKER) as u64,
+            "sustained inserts above capacity should evict entries"
+        );
+    }
+
     #[tokio::test]
     async fn test_recent_write_hot_cache_serves_read_after_write_under_hot_pressure() {
         let temp_dir = tempdir().unwrap();
@@ -3521,7 +3569,6 @@ mod tests {
 
         cache.hot_cache.invalidate(&key).await;
         cache.hot_cache.run_pending_tasks().await;
-        cache.hot_bytes.store(0, Ordering::Relaxed);
         assert!(cache.hot_cache.get(&key).await.is_none());
 
         assert_eq!(
@@ -3587,6 +3634,7 @@ mod tests {
         cache
             .insert_hot("hot-filler", bytes::Bytes::from(vec![1u8; 3 * 1024 * 1024]))
             .await;
+        cache.hot_cache.run_pending_tasks().await;
         assert!(cache.hot_cache.weighted_size() > cache.config.max_hot_bytes * 700 / 1000);
 
         let key = "disk-hit-budget-key".to_string();
