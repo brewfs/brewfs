@@ -10,8 +10,11 @@ use crate::meta::stores::RedisMetaStore;
 use crate::meta::{MetaLayer, MetaStore};
 use crate::vfs::fs::VFS;
 use crate::{chunk::layout::ChunkLayout, chunk::store::InMemoryBlockStore};
+use asyncfuse::Errno;
+use asyncfuse::raw::{Filesystem, Request};
 use redis::AsyncCommands;
 use serial_test::serial;
+use std::ffi::OsStr;
 use std::sync::Arc;
 use tokio::time::{self, Duration};
 use uuid::Uuid;
@@ -2611,6 +2614,100 @@ async fn test_lookup_with_attr_returns_inode_attr_and_warms_node_cache() {
 
     let missing = store.lookup_with_attr(root, "missing.txt").await.unwrap();
     assert!(missing.is_none());
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_meta_client_lookup_uses_fused_store_path() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "client_lookup_attr.txt".to_string())
+        .await
+        .unwrap();
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+
+    store.node_cache.invalidate(&ino).await;
+    store
+        .lookup_with_attr(root, "warm-lookup-script")
+        .await
+        .unwrap();
+    reset_redis_commandstats(&store).await;
+
+    assert_eq!(
+        client.lookup(root, "client_lookup_attr.txt").await.unwrap(),
+        Some(ino)
+    );
+
+    let script_calls = redis_script_calls(&store).await;
+    assert!(
+        (1..=2).contains(&script_calls),
+        "MetaClient::lookup should use Redis lookup_with_attr as one business Lua script; observed {script_calls} script calls including client-side script cache handling"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_dangling_dentry_lookup_returns_not_found_and_fuse_enoent() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let name = "dangling-client-lookup.txt";
+    let ino = store.create_file(root, name.to_string()).await.unwrap();
+
+    let deleted: usize = store.conn.clone().del(store.node_key(ino)).await.unwrap();
+    assert_eq!(
+        deleted, 1,
+        "test must remove the inode but retain its dentry"
+    );
+    store.node_cache.invalidate(&ino).await;
+    assert_eq!(
+        store.lookup(root, name).await.unwrap(),
+        Some(ino),
+        "the directory entry must remain after deleting the inode record"
+    );
+
+    let client = MetaClient::new(
+        store,
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+    assert!(matches!(
+        client.lookup(root, name).await,
+        Err(MetaError::NotFound(found)) if found == ino
+    ));
+
+    let fs = VFS::with_meta_layer_with_default_background(
+        ChunkLayout::default(),
+        Arc::new(InMemoryBlockStore::new()),
+        client,
+    )
+    .unwrap();
+    let err = Filesystem::lookup(
+        &fs,
+        Request {
+            unique: 1,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        },
+        root as u64,
+        OsStr::new(name),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, Errno::from(libc::ENOENT));
 }
 
 #[serial]
