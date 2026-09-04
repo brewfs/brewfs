@@ -122,7 +122,7 @@ function New-AckCluster {
         worker_instance_types = @('ecs.e-c1m2.large')
         worker_system_disk_category = 'cloud_essd'
         worker_system_disk_size = 40
-        node_cidr_mask = 24
+        node_cidr_mask = '24'
         proxy_mode = 'ipvs'
         runtime = @{ name = 'containerd'; version = '1.6.28' }
         addons = @(
