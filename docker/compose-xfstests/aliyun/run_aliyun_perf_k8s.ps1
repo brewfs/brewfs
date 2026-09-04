@@ -134,7 +134,7 @@ function Render-Manifests {
         @"
       initContainers:
       - name: rustfs-init
-        image: amazon/aws-cli:latest
+        image: docker.m.daocloud.io/amazon/aws-cli:latest
         command: ["sh", "-ec"]
         args:
         - |
@@ -162,7 +162,7 @@ spec:
     spec:
       containers:
       - name: rustfs
-        image: rustfs/rustfs:latest
+        image: docker.m.daocloud.io/rustfs/rustfs:latest
         args: ["--address", ":9000", "--console-enable", "--server-domains", "rustfs", "--access-key", "rustfsadmin", "--secret-key", "rustfsadmin", "/data"]
         readinessProbe: { tcpSocket: { port: 9000 }, initialDelaySeconds: 5 }
 ---
@@ -184,7 +184,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.2-alpine
+        image: docker.m.daocloud.io/library/redis:7.2-alpine
         args: ["redis-server", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
         readinessProbe: { exec: { command: ["redis-cli", "ping"] } }
 ---
@@ -309,7 +309,12 @@ function Apply-Test {
         } elseif ($phase -in @('Succeeded', 'Failed')) { break }
         if (-not $exported) { Start-Sleep -Seconds 10 }
     }
-    Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
+    $jobStatus = ((Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'jsonpath={.status.failed}:{.status.succeeded}') -join '')).Trim()
+    if ($jobStatus -match '^([1-9][0-9]*|[1-9]):') {
+        Write-Warning "Job 已记录失败项（status=$jobStatus），但 artifacts 已成功导出。"
+    } else {
+        Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
+    }
     if (-not $exported) { throw 'Job 完成前未能导出 artifacts；如需稍后导出，请使用 -KeepJob 并在 hold 窗口内执行 -Action export。' }
     if (-not $KeepJob) { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host }
 }

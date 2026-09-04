@@ -7,6 +7,7 @@ param(
     [string]$KeyPairName,
     [string]$RegionId = 'ap-northeast-2',
     [string]$ZoneId = 'ap-northeast-2a',
+    [string]$WorkerInstanceType = 'ecs.e-c1m2.large',
     [string]$Namespace = 'default',
     [string]$KubeconfigPath,
     [string]$OperatorImage = 'ghcr.io/ivanbeethoven/brewfs-operator:latest',
@@ -123,7 +124,7 @@ function New-AckCluster {
         endpoint_public_access = $true
         snat_entry = $true
         num_of_nodes = 1
-        worker_instance_types = @('ecs.e-c1m2.large')
+        worker_instance_types = @($WorkerInstanceType)
         key_pair = $KeyPairName
         worker_system_disk_category = 'cloud_essd'
         worker_system_disk_size = 40

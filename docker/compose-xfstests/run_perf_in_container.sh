@@ -937,6 +937,13 @@ run_logged_tool() {
     redis_diag_before_tool "$tool"
     start_writeback_sampler "$tool" || true
     sampler_pid="${WRITEBACK_SAMPLER_PID:-}"
+    # Run the tool without changing the caller's errexit mode.  Several
+    # profiles intentionally continue after a failed tool so that the
+    # remaining matrix and the artifact report are still produced.
+    local errexit_was_enabled=false
+    case "$-" in
+        *e*) errexit_was_enabled=true ;;
+    esac
     set +e
     if [[ "${PERF_LOG_TO_CONSOLE:-false}" == "true" ]]; then
         "$@" 2>&1 | tee "$log_path"
@@ -945,7 +952,11 @@ run_logged_tool() {
         "$@" >"$log_path" 2>&1
         status=$?
     fi
-    set -e
+    if [[ "$errexit_was_enabled" == "true" ]]; then
+        set -e
+    else
+        set +e
+    fi
     stop_writeback_sampler "$sampler_pid"
     end="$(date +%s)"
     elapsed="$((end - start))"
