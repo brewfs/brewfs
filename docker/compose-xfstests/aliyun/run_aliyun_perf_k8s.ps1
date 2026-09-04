@@ -219,11 +219,11 @@ function Apply-Test {
         $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
         $phase = ((Invoke-Checked $Kubectl @('get', 'pod', $pod, '-n', $Namespace, '-o', 'jsonpath={.status.phase}') -join '')).Trim()
         if ($phase -eq 'Running') {
-            $probe = & $Kubectl @('exec', '-n', $Namespace, $pod, '-c', 'perf', '--', 'test', '-s', "/artifacts/$JobName/brewfs.log") 2>&1
+            $probe = & $Kubectl @('exec', '-n', $Namespace, $pod, '-c', 'perf', '--', 'test', '-f', "/artifacts/$JobName/perf.complete") 2>&1
             if ($LASTEXITCODE -eq 0) {
                 New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts') | Out-Null
                 Push-Location $RepoRoot
-                try { Invoke-Checked $Kubectl @('cp', "$Namespace/$pod`:/artifacts/$JobName", 'docker/compose-xfstests/artifacts/') | Out-Host }
+                try { Invoke-Checked $Kubectl @('cp', '--retries=3', "$Namespace/$pod`:/artifacts/$JobName", 'docker/compose-xfstests/artifacts/') | Out-Host }
                 finally { Pop-Location }
                 $copied = $true
             }

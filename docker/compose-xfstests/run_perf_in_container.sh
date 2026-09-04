@@ -2667,6 +2667,7 @@ main() {
     fi
 
     generate_perf_report || true
+    touch "$artifact_dir/perf.complete"
 
     if [[ "$status" -eq 0 ]]; then
         ok "性能测试全部完成"
