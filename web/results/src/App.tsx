@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { isZip, makeZip, readDirectory, readZip, textPreview, type ArtifactFile } from './archive';
+import { deleteServerRun, listServerRuns, uploadServerRun } from './serverApi';
 import { deleteRun, listRuns, saveRun, type ResultRun, type RunStatus } from './store';
 import './styles.css';
 
@@ -89,7 +90,15 @@ export function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { listRuns().then(setRuns).catch((error: unknown) => setMessage(error instanceof Error ? error.message : '读取本地结果失败')); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listRuns(), listServerRuns().catch(() => [])]).then(([localRuns, serverRuns]) => {
+      if (!cancelled) setRuns([...serverRuns, ...localRuns]);
+    }).catch((error: unknown) => {
+      if (!cancelled) setMessage(error instanceof Error ? error.message : '读取结果失败');
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const filteredRuns = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -113,7 +122,9 @@ export function App() {
     let cancelled = false;
     setPreview(null);
     if (selectedFile && selectedFile.kind === 'file' && /\.(md|log|txt|tsv|json|yaml|yml|env|out)$/i.test(selectedFile.path)) {
-      textPreview(selectedFile).then((value) => { if (!cancelled) setPreview(value); });
+      textPreview(selectedFile).then((value) => { if (!cancelled) setPreview(value); }).catch((error: unknown) => {
+        if (!cancelled) setPreview(error instanceof Error ? error.message : '预览失败');
+      });
     }
     return () => { cancelled = true; };
   }, [selectedFile]);
@@ -127,7 +138,7 @@ export function App() {
       if (artifactFiles.length === 0) throw new Error('没有在上传内容中找到文件。');
       const uploadedAt = Date.now();
       const mtimes = artifactFiles.map((file) => file.mtime).filter(Boolean);
-      const run: ResultRun = {
+      const localRun: ResultRun = {
         id: `run-${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`,
         name: runName(source?.name ?? files[0].name, artifactFiles),
         sourceName: source?.name ?? `${files.length} 个文件`,
@@ -139,12 +150,20 @@ export function App() {
         totalBytes: artifactFiles.reduce((sum, file) => sum + file.size, 0),
         earliestMtime: Math.min(...mtimes, uploadedAt),
         latestMtime: Math.max(...mtimes, uploadedAt),
+        storage: 'browser',
         files: artifactFiles,
       };
-      await saveRun(run);
+      let run = localRun;
+      try {
+        const archive = source ?? new File([await makeZip(artifactFiles)], `${localRun.name || 'brewfs-run'}.zip`, { type: 'application/zip' });
+        run = await uploadServerRun(archive);
+        setMessage(`已上传服务器：${run.name}，原始时间戳已保留。`);
+      } catch {
+        await saveRun(localRun);
+        setMessage(`服务器暂不可用，已保存在当前浏览器：${run.name}。`);
+      }
       setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
       setSelectedId(run.id); setSelectedPath(run.files.find((file) => file.kind === 'file')?.path ?? null);
-      setMessage(`已导入 ${run.name}，原始时间戳已保留。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '导入失败');
     } finally { setBusy(false); }
@@ -160,7 +179,10 @@ export function App() {
   }
 
   async function downloadRun(run: ResultRun) {
-    const blob = await makeZip(run.files);
+    const blob = run.archiveUrl ? await fetch(run.archiveUrl).then((response) => {
+      if (!response.ok) throw new Error('服务器归档下载失败。');
+      return response.blob();
+    }) : await makeZip(run.files);
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = `${run.name || run.id}.zip`; link.click();
     URL.revokeObjectURL(url);
@@ -168,7 +190,8 @@ export function App() {
 
   async function removeRun(run: ResultRun) {
     if (!window.confirm(`删除本地结果“${run.name}”？`)) return;
-    await deleteRun(run.id); setRuns((current) => current.filter((item) => item.id !== run.id));
+    if (run.storage === 'server') await deleteServerRun(run.id); else await deleteRun(run.id);
+    setRuns((current) => current.filter((item) => item.id !== run.id));
     if (selectedId === run.id) { setSelectedId(null); setSelectedPath(null); }
   }
 
@@ -180,7 +203,7 @@ export function App() {
         <div className="brand-mark"><Archive size={21} /><span>BrewFS</span></div>
         <p className="brand-subtitle">RESULT VAULT</p>
         <div className="side-note"><Clock3 size={15} /><span>本地优先<br />时间戳可追溯</span></div>
-        <div className="side-footer">{runs.length} RUNS STORED<br /><span>IndexedDB · browser-only</span></div>
+        <div className="side-footer">{runs.length} RUNS STORED<br /><span>server + browser fallback</span></div>
       </aside>
       <main className="workspace">
         <header className="topbar">
@@ -195,7 +218,7 @@ export function App() {
 
         <section className={`drop-zone ${dragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
           <UploadCloud size={27} />
-          <div><strong>{busy ? '正在解析并保存…' : '拖放结果 ZIP 到这里'}</strong><span>支持脚本导出的 .zip，也支持直接选择结果目录；所有文件原始 mtime 会被保存。</span></div>
+          <div><strong>{busy ? '正在解析并上传…' : '拖放结果 ZIP 到这里'}</strong><span>支持脚本导出的 .zip，也支持直接选择结果目录；所有文件原始 mtime 会被保存。</span></div>
           <button className="text-button" type="button" onClick={() => fileInput.current?.click()}>选择文件 <ChevronRight size={15} /></button>
         </section>
         {message ? <div className="notice">{message}</div> : null}
@@ -203,7 +226,7 @@ export function App() {
         <section className="stats-grid">
           <div className="stat-card"><span>RUNS</span><strong>{runs.length}</strong><small>本地已保存</small></div>
           <div className="stat-card"><span>FILES</span><strong>{runs.reduce((sum, run) => sum + run.fileCount, 0).toLocaleString()}</strong><small>含原始元数据</small></div>
-          <div className="stat-card"><span>STORAGE</span><strong>{formatBytes(totalBytes)}</strong><small>浏览器 IndexedDB</small></div>
+          <div className="stat-card"><span>STORAGE</span><strong>{formatBytes(totalBytes)}</strong><small>服务器 / IndexedDB</small></div>
           <div className="stat-card accent"><span>LAST IMPORT</span><strong>{runs[0] ? formatDate(runs[0].uploadedAt).slice(5, 16) : '—'}</strong><small>{runs[0]?.name ?? '等待第一次上传'}</small></div>
         </section>
 
@@ -211,7 +234,7 @@ export function App() {
           <article className="panel runs-panel">
             <div className="panel-heading"><div><p className="eyebrow">INDEX</p><h2>测试跑次</h2></div><span className="result-count">{filteredRuns.length} / {runs.length}</span></div>
             <div className="filters"><label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、文件、后端…" /></label><select value={backendFilter} onChange={(event) => setBackendFilter(event.target.value)}><option value="all">全部后端</option><option value="redis">Redis</option><option value="tikv">TiKV</option><option value="unknown">未识别</option></select><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option><option value="pass">通过</option><option value="attention">需关注</option><option value="unknown">未判定</option></select></div>
-            {filteredRuns.length === 0 ? <div className="empty-state"><Archive size={29} /><strong>还没有匹配的跑次</strong><span>上传 ACK 导出的 zip，结果会保存在当前浏览器。</span></div> : <div className="run-list">{filteredRuns.map((run) => <button key={run.id} className={`run-row ${selectedRun?.id === run.id ? 'selected' : ''}`} type="button" onClick={() => { setSelectedId(run.id); setSelectedPath(run.files.find((file) => file.kind === 'file')?.path ?? null); }}><div className="run-icon"><StatusIcon status={run.status} /></div><div className="run-main"><strong>{run.name}</strong><span>{run.backend.toUpperCase()} · {run.dataBackend} · {run.fileCount} files</span></div><div className="run-time"><span>{formatDate(run.uploadedAt)}</span><small>{statusLabel(run.status)}</small></div><ChevronRight size={17} className="row-chevron" /></button>)}</div>}
+            {filteredRuns.length === 0 ? <div className="empty-state"><Archive size={29} /><strong>还没有匹配的跑次</strong><span>上传 ACK 导出的 zip，结果会保存在服务器（离线时回退到浏览器）。</span></div> : <div className="run-list">{filteredRuns.map((run) => <button key={run.id} className={`run-row ${selectedRun?.id === run.id ? 'selected' : ''}`} type="button" onClick={() => { setSelectedId(run.id); setSelectedPath(run.files.find((file) => file.kind === 'file')?.path ?? null); }}><div className="run-icon"><StatusIcon status={run.status} /></div><div className="run-main"><strong>{run.name}</strong><span>{run.backend.toUpperCase()} · {run.dataBackend} · {run.fileCount} files</span></div><div className="run-time"><span>{formatDate(run.uploadedAt)}</span><small>{statusLabel(run.status)}</small></div><ChevronRight size={17} className="row-chevron" /></button>)}</div>}
           </article>
 
           <article className="panel detail-panel">
@@ -224,7 +247,7 @@ export function App() {
             </>}
           </article>
         </section>
-        <footer className="app-footer">BrewFS Result Vault · 文件只保存在当前浏览器，不会自动上传到服务器。</footer>
+        <footer className="app-footer">BrewFS Result Vault · 默认保存到服务器；服务器不可用时使用当前浏览器作为兜底。</footer>
       </main>
     </div>
   );

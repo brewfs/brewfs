@@ -19,3 +19,17 @@ npm run dev
 - 将当前跑次重新下载为 ZIP，重新打包时继续写入每个文件的原始 mtime。
 
 `run_aliyun_perf_k8s.ps1` 导出的目录或 `.zip` 可以直接拖到页面中。浏览器清理站点数据会删除本地结果，因此需要长期保存时请同时保留脚本生成的 ZIP 归档。
+
+## 服务器模式
+
+`server.py` 提供同源静态站点和持久化 API。它把原始 ZIP 保存在 `BREWFS_RESULTS_ROOT`，同时解压出带原始 mtime/mode 的文件树；重启服务不会丢失已上传跑次。
+
+```bash
+BREWFS_RESULTS_BIND=0.0.0.0 \
+BREWFS_RESULTS_PORT=8080 \
+BREWFS_RESULTS_ROOT=/var/lib/brewfs-results \
+BREWFS_RESULTS_STATIC=/opt/brewfs-results/dist \
+python3 server.py
+```
+
+API 为 `GET /api/runs`、`POST /api/runs`（multipart 字段 `archive`）、`GET /api/runs/<id>/files/<path>`、`GET /api/runs/<id>/archive` 和 `DELETE /api/runs/<id>`。生产环境请将实例安全组或反向代理限制为可信网络，并自行增加认证；服务本身不提供用户认证。

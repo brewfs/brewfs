@@ -2,12 +2,13 @@ import { unzipSync, zipSync } from 'fflate';
 
 export type ArtifactFile = {
   path: string;
-  blob: Blob;
+  blob?: Blob;
   size: number;
   mtime: number;
   mode?: number;
   kind: 'file' | 'directory';
   compression?: number;
+  remoteUrl?: string;
 };
 
 function u16(view: DataView, offset: number): number {
@@ -113,14 +114,25 @@ export async function makeZip(files: ArtifactFile[]): Promise<Blob> {
   const entries: Record<string, [Uint8Array, { mtime: Date }]> = {};
   for (const file of files) {
     if (file.kind === 'directory') continue;
-    entries[file.path] = [new Uint8Array(await file.blob.arrayBuffer()), { mtime: new Date(file.mtime) }];
+    const blob = file.blob ?? (file.remoteUrl ? await fetch(file.remoteUrl).then((response) => {
+      if (!response.ok) throw new Error(`Unable to download ${file.path}.`);
+      return response.blob();
+    }) : null);
+    if (!blob) throw new Error(`File data is unavailable for ${file.path}.`);
+    entries[file.path] = [new Uint8Array(await blob.arrayBuffer()), { mtime: new Date(file.mtime) }];
   }
   return new Blob([zipSync(entries, { level: 0 })], { type: 'application/zip' });
 }
 
 export async function textPreview(file: ArtifactFile, limit = 512_000): Promise<string> {
   if (file.kind === 'directory' || file.size > limit) return `Preview unavailable for files larger than ${limit.toLocaleString()} bytes.`;
-  return file.blob.text();
+  if (file.blob) return file.blob.text();
+  if (file.remoteUrl) {
+    const response = await fetch(file.remoteUrl);
+    if (!response.ok) throw new Error(`Unable to load ${file.path}.`);
+    return response.text();
+  }
+  return 'File data is unavailable.';
 }
 
 export function isZip(file: File): boolean {

@@ -14,6 +14,8 @@ export type ResultRun = {
   totalBytes: number;
   earliestMtime: number;
   latestMtime: number;
+  storage: 'browser' | 'server';
+  archiveUrl?: string;
   files: ArtifactFile[];
 };
 
