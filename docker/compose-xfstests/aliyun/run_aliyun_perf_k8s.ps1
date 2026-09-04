@@ -12,6 +12,7 @@ param(
     [ValidateSet('s3', 'local-fs')]
     [string]$DataBackend = 'local-fs',
     [string]$PerfTools = 'dirstress dirperf metaperf looptest',
+    [switch]$SkipImageBuild,
     [switch]$KeepJob
 )
 
@@ -155,7 +156,8 @@ spec:
     metadata: { labels: { app: brewfs-perf, job: $JobName } }
     spec:
       restartPolicy: Never
-$initContainers      containers:
+$initContainers
+      containers:
       - name: perf
         image: $Image
         imagePullPolicy: Always
@@ -210,7 +212,7 @@ function Apply-Test {
 }
 
 switch ($Action) {
-    'test' { Ensure-Image; Apply-Test }
+    'test' { if (-not $SkipImageBuild) { Ensure-Image }; Apply-Test }
     'status' { Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'wide') }
     'destroy' { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') }
 }
