@@ -1,4 +1,5 @@
 import { textPreview, type ArtifactFile } from './archive';
+import type { RunEnvironment } from './store';
 
 export type PerfMetric = {
   tool: string;
@@ -96,4 +97,15 @@ export async function extractMetrics(files: ArtifactFile[]): Promise<PerfMetric[
   const drained = files.find((file) => /(^|\/)fully-drained-throughput\.tsv$/i.test(file.path));
   if (drained) parseFullyDrained(await textPreview(drained, 2_000_000), metrics);
   return [...metrics.values()].sort((left, right) => left.tool.localeCompare(right.tool));
+}
+
+export async function extractEnvironment(files: ArtifactFile[]): Promise<RunEnvironment | undefined> {
+  const metadata = files.find((file) => /(^|\/)run-metadata\.json$/i.test(file.path));
+  if (!metadata) return undefined;
+  try {
+    const value = JSON.parse(await textPreview(metadata, 1_000_000)) as unknown;
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as RunEnvironment : undefined;
+  } catch {
+    return undefined;
+  }
 }

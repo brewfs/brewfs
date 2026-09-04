@@ -3,6 +3,23 @@ import type { PerfMetric } from './metrics';
 
 export type RunStatus = 'pass' | 'attention' | 'unknown';
 
+export type RunEnvironment = {
+  jobName?: string;
+  namespace?: string;
+  image?: string;
+  nodeName?: string;
+  instanceType?: string;
+  cpuCapacity?: string;
+  memoryCapacity?: string;
+  ephemeralStorageCapacity?: string;
+  osImage?: string;
+  kernelVersion?: string;
+  kubeletVersion?: string;
+  startedAt?: string;
+  completedAt?: string;
+  perfTools?: string[];
+};
+
 export type ResultRun = {
   id: string;
   name: string;
@@ -18,6 +35,7 @@ export type ResultRun = {
   storage: 'browser' | 'server';
   archiveUrl?: string;
   metrics?: PerfMetric[];
+  environment?: RunEnvironment;
   files: ArtifactFile[];
 };
 

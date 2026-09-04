@@ -78,16 +78,36 @@ function Export-Artifacts {
     $stage = Join-Path $root ('.staging-{0}-{1}' -f $JobName, [guid]::NewGuid().ToString('N'))
     $localArchive = Join-Path $root ('.{0}-{1}.tar.gz' -f $JobName, [guid]::NewGuid().ToString('N'))
     $remoteArchive = "/tmp/$JobName-artifacts.tar.gz"
+    $remoteSnapshot = "/tmp/$JobName-artifacts-snapshot"
     try {
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
-        # Create one archive in the pod before copying. This avoids kubectl cp racing
-        # with thousands of result files and makes the export reproducible.
-        Invoke-Checked $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'tar', '-czf', $remoteArchive, '-C', '/artifacts', $JobName) | Out-Host
+        # Snapshot first so an actively appended brewfs.log cannot make tar exit
+        # with "file changed as we read it" during the artifact hold window.
+        Invoke-Checked $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'sh', '-ec', "rm -rf '$remoteSnapshot'; cp -a '/artifacts/$JobName' '$remoteSnapshot'; tar -czf '$remoteArchive' -C /tmp '$(Split-Path -Leaf $remoteSnapshot)'") | Out-Host
         Invoke-Checked $Kubectl @('cp', '--retries=5', "$Namespace/$Pod`:$remoteArchive", $localArchive) | Out-Host
         Invoke-Checked $Tar @('-xzf', $localArchive, '-C', $stage) | Out-Host
-        $stagedTarget = Join-Path $stage $JobName
+        $stagedTarget = Join-Path $stage (Split-Path -Leaf $remoteSnapshot)
         if (-not (Test-Path -LiteralPath $stagedTarget)) { throw "导出的归档中缺少 $JobName。" }
         Move-Item -LiteralPath $stagedTarget -Destination $target
+        $podInfo = ((Invoke-Checked $Kubectl @('get', 'pod', $Pod, '-n', $Namespace, '-o', 'json')) -join [Environment]::NewLine) | ConvertFrom-Json
+        $nodeInfo = ((Invoke-Checked $Kubectl @('get', 'node', $podInfo.spec.nodeName, '-o', 'json')) -join [Environment]::NewLine) | ConvertFrom-Json
+        $runMetadata = [ordered]@{
+            jobName = $JobName
+            namespace = $Namespace
+            image = $Image
+            nodeName = $podInfo.spec.nodeName
+            instanceType = $nodeInfo.metadata.labels.'node.kubernetes.io/instance-type'
+            cpuCapacity = $nodeInfo.status.capacity.cpu
+            memoryCapacity = $nodeInfo.status.capacity.memory
+            ephemeralStorageCapacity = $nodeInfo.status.capacity.'ephemeral-storage'
+            osImage = $nodeInfo.status.nodeInfo.osImage
+            kernelVersion = $nodeInfo.status.nodeInfo.kernelVersion
+            kubeletVersion = $nodeInfo.status.nodeInfo.kubeletVersion
+            startedAt = $podInfo.status.startTime
+            completedAt = [DateTime]::UtcNow.ToString('o')
+            perfTools = @($PerfTools -split '\s+' | Where-Object { $_ })
+        }
+        $runMetadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $target 'run-metadata.json') -Encoding utf8
         $archive = if ($ArchivePath) {
             if ([IO.Path]::IsPathRooted($ArchivePath)) { [IO.Path]::GetFullPath($ArchivePath) }
             else { [IO.Path]::GetFullPath((Join-Path $RepoRoot $ArchivePath)) }
@@ -99,7 +119,7 @@ function Export-Artifacts {
     } finally {
         Remove-Item -LiteralPath $stage, $localArchive -Force -Recurse -ErrorAction SilentlyContinue
         # Best effort: the pod may already have exited when this cleanup runs.
-        & $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'rm', '-f', $remoteArchive) 2>$null | Out-Null
+        & $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'sh', '-ec', "rm -rf '$remoteArchive' '$remoteSnapshot'") 2>$null | Out-Null
     }
 }
 

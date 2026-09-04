@@ -160,6 +160,17 @@ def parse_metrics(extracted: Path) -> List[dict]:
     return [metrics[key] for key in sorted(metrics)]
 
 
+def parse_environment(extracted: Path) -> dict:
+    metadata = next(extracted.rglob("run-metadata.json"), None)
+    if not metadata or not metadata.is_file():
+        return {}
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def create_run(archive: bytes, source_name: str) -> dict:
     run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     run_dir = ROOT / run_id
@@ -217,6 +228,7 @@ def create_run(archive: bytes, source_name: str) -> dict:
         "earliestMtime": min(mtimes) if mtimes else now_ms(),
         "latestMtime": max(mtimes) if mtimes else now_ms(),
         "metrics": parse_metrics(extracted),
+        "environment": parse_environment(extracted),
         "files": files,
     }
     (run_dir / "metadata.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -231,6 +243,8 @@ def load_runs() -> List[dict]:
             run = json.loads(metadata.read_text(encoding="utf-8"))
             if "metrics" not in run:
                 run["metrics"] = parse_metrics(metadata.parent / "files")
+            if "environment" not in run:
+                run["environment"] = parse_environment(metadata.parent / "files")
                 metadata.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
             runs.append(run)
         except (OSError, json.JSONDecodeError):
