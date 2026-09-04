@@ -7,16 +7,19 @@
 性能测试的推荐路径是本地构建镜像后交给 ACK 运行，避免在临时 ECS 上冷编译。`run_aliyun_perf_k8s.ps1` 使用 `Dockerfile.perf-local` 在本地 Docker builder 中构建 Linux BrewFS 镜像，推送到 GHCR（或其他可访问 registry），然后在已有 ACK 集群中创建 Redis/TiKV 依赖和特权 FUSE Job，并把 `/artifacts` 拷回本地。
 
 ```powershell
+$env:BREWFS_RESULTS_URL = 'https://results.example.com'
+
 .\docker\compose-xfstests\aliyun\run_aliyun_perf_k8s.ps1 `
   -KubeconfigPath $env:KUBECONFIG `
   -RegistryImage ghcr.io/ivanbeethoven/brewfs-perf `
   -GhcrToken $env:GHCR_TOKEN `
   -Backend redis -DataBackend local-fs `
-  -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis `
-  -ResultVaultUrl http://112.124.50.201
+  -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis
 ```
 
-测试完成后脚本会在本地输出两个结果：完整结果目录和同名 `.zip` 归档。指定 `-ResultVaultUrl` 后，脚本还会自动把同一个 ZIP POST 到网站；网站不可用时不会丢弃本地结果，只会发出警告。归档包含性能报告、原始日志、BrewFS 日志、后端诊断和性能统计，便于上传或脱离集群查看（xfstests/LTP runner 的 artifacts 也使用同样的目录结构）。脚本会在容器中先生成单个 `tar.gz` 再下载，避免逐文件复制时出现 `unexpected EOF`。
+测试完成后脚本会在本地输出两个结果：完整结果目录和同名 `.zip` 归档。设置 `BREWFS_RESULTS_URL` 后，脚本还会自动把同一个 ZIP POST 到网站；`-ResultVaultUrl` 可临时覆盖环境变量，未配置时只保存在本地。网站不可用时不会丢弃本地结果，只会发出警告。归档包含性能报告、原始日志、BrewFS 日志、后端诊断和性能统计，便于上传或脱离集群查看（xfstests/LTP runner 的 artifacts 也使用同样的目录结构）。脚本会在容器中先生成单个 `tar.gz` 再下载，避免逐文件复制时出现 `unexpected EOF`。
+
+默认情况下，无论测试成功还是失败，runner 都会清理本轮带有 `app.kubernetes.io/managed-by=brewfs-perf-runner` 标签的 Job、Redis/TiKV、RustFS、ConfigMap 和镜像拉取 Secret，避免共享 ACK 集群上留下持续占用节点的资源。需要保留现场或手工导出时使用 `-KeepJob`；之后通过 `-Action destroy` 清理。
 
 若希望在测试进行时从另一终端手动导出，保留 Job 并延长结果保留窗口：
 
@@ -31,7 +34,7 @@ $tag = 'aliyun-20260904-redis'
   -KubeconfigPath $env:KUBECONFIG -ArtifactDirectory .\artifacts\manual
 ```
 
-`-Action export` 只能在 Pod 仍处于 Running 且 `perf.complete` 已出现的 hold 窗口内执行；默认 `emptyDir` 随 Pod 结束而消失。因此正常使用应直接等待 `-Action test` 自动导出。若需要测试结束后仍可导出，应为 Job 改用持久化卷（后续可增加 `-ArtifactPvc` 参数）。
+`-Action export` 只能在 Pod 仍处于 Running 且 `perf.complete` 已出现的 hold 窗口内执行；默认 `emptyDir` 随 Pod 结束而消失。因此正常使用应直接等待 `-Action test` 自动导出。若需要测试结束后仍可导出，应为 Job 改用持久化卷（后续可增加 `-ArtifactPvc` 参数）。不带 `-KeepJob` 时，自动导出完成后会立即清理测试资源，不再等待 hold 窗口。
 
 ACK 集群本身可使用 `operator/brewfs-operator/scripts/ack-e2e.ps1` 创建/销毁；K8s runner 不创建 VPC、节点或账号级网络资源。`run_aliyun_perf.ps1` 保留为 ECS/Cloud Assistant fallback，适合没有 ACK 集群的故障诊断，不是主性能测试路径。
 

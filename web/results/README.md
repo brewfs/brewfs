@@ -31,7 +31,18 @@ BREWFS_RESULTS_BIND=0.0.0.0 \
 BREWFS_RESULTS_PORT=8080 \
 BREWFS_RESULTS_ROOT=/var/lib/brewfs-results \
 BREWFS_RESULTS_STATIC=/opt/brewfs-results/dist \
+BREWFS_RESULTS_MAX_UPLOAD=1073741824 \
 python3 server.py
 ```
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `BREWFS_RESULTS_BIND` | `127.0.0.1` | HTTP 监听地址 |
+| `BREWFS_RESULTS_PORT` | `8080` | HTTP 监听端口 |
+| `BREWFS_RESULTS_ROOT` | `/var/lib/brewfs-results` | ZIP 与解压结果的持久化目录 |
+| `BREWFS_RESULTS_STATIC` | `web/results/dist` | Vite 构建后的静态文件目录 |
+| `BREWFS_RESULTS_MAX_UPLOAD` | `1073741824` | 单个上传请求的最大字节数 |
+
+云端 runner 使用独立的 `BREWFS_RESULTS_URL` 环境变量指定此服务的公开基址，例如 `https://results.example.com`；该值属于上传客户端配置，不需要设置在服务器进程中。
 
 API 为 `GET /api/runs`、`POST /api/runs`（multipart 字段 `archive`）、`GET /api/runs/<id>/files/<path>`、`GET /api/runs/<id>/archive` 和 `DELETE /api/runs/<id>`。生产环境请将实例安全组或反向代理限制为可信网络，并自行增加认证；服务本身不提供用户认证。

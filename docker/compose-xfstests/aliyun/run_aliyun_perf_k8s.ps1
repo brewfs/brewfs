@@ -18,7 +18,7 @@ param(
     [string]$ExistingJobName,
     [string]$ArtifactDirectory,
     [string]$ArchivePath,
-    [string]$ResultVaultUrl,
+    [string]$ResultVaultUrl = $env:BREWFS_RESULTS_URL,
     [ValidateRange(30, 86400)]
     [int]$ArtifactHoldSeconds = 900,
     [ValidateRange(1, 1440)]
@@ -30,6 +30,8 @@ Set-StrictMode -Version Latest
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $Image = "$RegistryImage`:$ImageTag"
 $JobName = if ($ExistingJobName) { $ExistingJobName } else { "brewfs-perf-$ImageTag".ToLowerInvariant() }
+$ManagedByLabel = 'app.kubernetes.io/managed-by=brewfs-perf-runner'
+$script:TestResourcesApplied = $false
 
 function Resolve-Tool([string]$Name, [string[]]$Candidates = @()) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
@@ -135,11 +137,18 @@ function Export-Artifacts {
 function Upload-ResultVault {
     param([Parameter(Mandatory = $true)][string]$Archive)
     if (-not $ResultVaultUrl) { return }
-    $endpoint = "$($ResultVaultUrl.TrimEnd('/'))/api/runs"
+    $baseUrl = $ResultVaultUrl.Trim().TrimEnd('/')
+    $parsedUrl = $null
+    if (-not [Uri]::TryCreate($baseUrl, [UriKind]::Absolute, [ref]$parsedUrl) -or
+        $parsedUrl.Scheme -notin @('http', 'https')) {
+        Write-Warning "忽略无效的 BREWFS_RESULTS_URL/ResultVaultUrl: $ResultVaultUrl"
+        return
+    }
+    $endpoint = "$baseUrl/api/runs"
     try {
         $response = Invoke-RestMethod -Uri $endpoint -Method Post -Form @{ archive = Get-Item -LiteralPath $Archive }
         Write-Host "Result Vault 跑次: $($response.id)"
-        Write-Host "Result Vault URL: $($ResultVaultUrl.TrimEnd('/'))"
+        Write-Host "Result Vault URL: $baseUrl"
     } catch {
         Write-Warning "上传 Result Vault 失败（本地归档仍已保留）：$($_.Exception.Message)"
     }
@@ -183,7 +192,7 @@ function Render-Manifests {
         @"
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: rustfs, namespace: $Namespace }
+metadata: { name: rustfs, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec:
   selector: { matchLabels: { app: rustfs } }
   template:
@@ -197,7 +206,7 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: rustfs, namespace: $Namespace }
+metadata: { name: rustfs, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec: { selector: { app: rustfs }, ports: [{ port: 9000 }] }
 "@
     } else { '' }
@@ -205,7 +214,7 @@ spec: { selector: { app: rustfs }, ports: [{ port: 9000 }] }
         @" 
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: redis, namespace: $Namespace }
+metadata: { name: redis, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec:
   selector: { matchLabels: { app: redis } }
   template:
@@ -219,14 +228,14 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: redis, namespace: $Namespace }
+metadata: { name: redis, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec: { selector: { app: redis }, ports: [{ port: 6379 }] }
 "@ 
     } else {
         @" 
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: pd, namespace: $Namespace }
+metadata: { name: pd, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec:
   selector: { matchLabels: { app: pd } }
   template:
@@ -236,12 +245,12 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: pd, namespace: $Namespace }
+metadata: { name: pd, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec: { selector: { app: pd }, ports: [{ port: 2379 }] }
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: tikv, namespace: $Namespace }
+metadata: { name: tikv, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec:
   selector: { matchLabels: { app: tikv } }
   template:
@@ -254,7 +263,7 @@ spec:
     $job = @"
 apiVersion: batch/v1
 kind: Job
-metadata: { name: $JobName, namespace: $Namespace, labels: { app: brewfs-perf } }
+metadata: { name: $JobName, namespace: $Namespace, labels: { app: brewfs-perf, app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 86400
@@ -309,6 +318,7 @@ $initContainers
 
 function Apply-Test {
     Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+    $script:TestResourcesApplied = $true
     $runnerSource = Join-Path $RepoRoot 'docker\compose-xfstests\run_perf_in_container.sh'
     $runnerPath = Join-Path $env:TEMP "brewfs-perf-runner-$([guid]::NewGuid().ToString('N')).sh"
     try {
@@ -316,6 +326,8 @@ function Apply-Test {
         [IO.File]::WriteAllText($runnerPath, $runnerContent, [Text.UTF8Encoding]::new($false))
         Invoke-Checked $Kubectl @('create', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
             "--from-file=run_perf_in_container.sh=$runnerPath", '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+        Invoke-Checked $Kubectl @('label', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
+            $ManagedByLabel, '--overwrite') | Out-Null
     } finally {
         Remove-Item -LiteralPath $runnerPath -Force -ErrorAction SilentlyContinue
     }
@@ -324,6 +336,8 @@ function Apply-Test {
             '--docker-server=ghcr.io', '--docker-username=Ivanbeethoven', "--docker-password=$GhcrToken",
             '--dry-run=client', '-o', 'yaml')
         Invoke-Checked $Kubectl $secretArgs | & $Kubectl apply -f - | Out-Host
+        Invoke-Checked $Kubectl @('label', 'secret', 'brewfs-ghcr', '--namespace', $Namespace,
+            $ManagedByLabel, '--overwrite') | Out-Null
     }
     $yaml = Render-Manifests
     $yaml | & $Kubectl apply -f - 2>&1 | Out-Host
@@ -354,13 +368,9 @@ function Apply-Test {
         if (-not $exported) { Start-Sleep -Seconds 10 }
     }
     if (-not $exported) { throw 'Job 完成前未能导出 artifacts；如需稍后导出，请使用 -KeepJob 并在 hold 窗口内执行 -Action export。' }
-    # perf.complete means the report is finalized. Once it has been exported,
-    # do not pay for the artifact hold window unless the caller asked to keep
-    # the Job for interactive inspection.
-    if (-not $KeepJob) {
-        Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host
-        return
-    }
+    # perf.complete means the report is finalized. Cleanup is handled by the
+    # caller so failures and successful exports follow the same policy.
+    if (-not $KeepJob) { return }
     $jobStatus = ((Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'jsonpath={.status.failed}:{.status.succeeded}') -join '')).Trim()
     if ($jobStatus -match '^([1-9][0-9]*|[1-9]):') {
         Write-Warning "Job 已记录失败项（status=$jobStatus），但 artifacts 已成功导出。"
@@ -391,9 +401,31 @@ function Export-ExistingJob {
     throw "在 $ExportTimeoutMinutes 分钟内未发现可导出的 perf.complete。"
 }
 
+function Remove-TestResources {
+    $output = & $Kubectl @(
+        'delete', 'job,deployment,service,configmap,secret', '--namespace', $Namespace,
+        '--selector', $ManagedByLabel, '--ignore-not-found=true', '--wait=false'
+    ) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "清理 BrewFS 性能测试资源失败：$($output -join [Environment]::NewLine)"
+    } elseif ($output) {
+        $output | Out-Host
+    }
+    # Also remove jobs created by an older runner that did not carry the
+    # managed-by label. The exact job name keeps this fallback scoped.
+    & $Kubectl @('delete', 'job', $JobName, '--namespace', $Namespace, '--ignore-not-found=true', '--wait=false') 2>$null | Out-Null
+}
+
 switch ($Action) {
-    'test' { if (-not $SkipImageBuild) { Ensure-Image }; Apply-Test }
+    'test' {
+        try {
+            if (-not $SkipImageBuild) { Ensure-Image }
+            Apply-Test
+        } finally {
+            if ($script:TestResourcesApplied -and -not $KeepJob) { Remove-TestResources }
+        }
+    }
     'status' { Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'wide') }
     'export' { Export-ExistingJob }
-    'destroy' { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') }
+    'destroy' { Remove-TestResources }
 }
