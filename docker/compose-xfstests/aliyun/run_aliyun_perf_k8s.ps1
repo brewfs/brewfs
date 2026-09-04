@@ -21,10 +21,13 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $Image = "$RegistryImage`:$ImageTag"
 $JobName = "brewfs-perf-$ImageTag".ToLowerInvariant()
 
-function Resolve-Tool([string]$Name) {
+function Resolve-Tool([string]$Name, [string[]]$Candidates = @()) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if (-not $cmd) { throw "找不到 $Name，请先安装并加入 PATH。" }
-    return $cmd.Source
+    if ($cmd) { return $cmd.Source }
+    foreach ($candidate in $Candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    throw "找不到 $Name，请先安装并加入 PATH。"
 }
 function Invoke-Checked([string]$File, [string[]]$Args) {
     $out = & $File @Args 2>&1
@@ -32,7 +35,7 @@ function Invoke-Checked([string]$File, [string[]]$Args) {
     return $out
 }
 
-$Docker = Resolve-Tool 'docker'
+$Docker = Resolve-Tool 'docker' @('C:\Program Files\Docker\Docker\resources\bin\docker.exe')
 $Kubectl = Resolve-Tool 'kubectl'
 if ($KubeconfigPath) { $env:KUBECONFIG = (Resolve-Path $KubeconfigPath).Path }
 
