@@ -298,7 +298,9 @@ function Run-Test {
 function Remove-AckCluster {
     if (-not $ClusterId) { throw 'destroy 需要 -ClusterId。' }
     $nodes = Invoke-AliyunJson @('cs', 'DescribeClusterNodes', '--region', $RegionId, '--ClusterId', $ClusterId)
-    $nodeNames = @($nodes.nodes | ForEach-Object { $_.name })
+    $nodeNames = @($nodes.nodes | ForEach-Object {
+        if ($_.name) { $_.name } else { $_.node_name }
+    })
     if ($nodeNames.Count -gt 0) {
         $body = @{ nodes = $nodeNames; drain_node = $false; release_node = $true } | ConvertTo-Json -Compress
         $nodeTask = Invoke-AliyunJson @('cs', 'DeleteClusterNodes', '--region', $RegionId, '--ClusterId', $ClusterId, '--body', $body)
