@@ -1,6 +1,20 @@
 # Aliyun ECS 性能测试
 
-这个目录把现有 Redis/TiKV Docker Compose 性能测试迁移到 Aliyun ECS：脚本创建或复用一台 ECS，通过 ECS Cloud Assistant 在远端安装 Docker Compose，拉取仓库并直接调用现有的 `run_redis_perf.sh` 或 `run_tikv_perf.sh`。测试产物仍写入 ECS 上的 `docker/compose-xfstests/artifacts/`，命令完成时会把最新 `perf-summary.tsv` 输出到调用结果。
+这个目录把现有 Redis/TiKV Docker Compose 性能测试迁移到 Aliyun。推荐使用 ACK/Kubernetes runner：镜像在本地构建并推送，测试在 K8s Job 中运行；ECS/Cloud Assistant runner 仅作为没有 ACK 集群时的 fallback。
+
+## ACK/Kubernetes 主流程
+
+性能测试的推荐路径是本地构建镜像后交给 ACK 运行，避免在临时 ECS 上冷编译。`run_aliyun_perf_k8s.ps1` 使用 `Dockerfile.perf-local` 在本地 Docker builder 中构建 Linux BrewFS 镜像，推送到 GHCR（或其他可访问 registry），然后在已有 ACK 集群中创建 Redis/TiKV 依赖和特权 FUSE Job，并把 `/artifacts` 拷回本地。
+
+```powershell
+.\docker\compose-xfstests\aliyun\run_aliyun_perf_k8s.ps1 `
+  -KubeconfigPath $env:KUBECONFIG `
+  -RegistryImage ghcr.io/ivanbeethoven/brewfs-perf `
+  -GhcrToken $env:GHCR_TOKEN `
+  -Backend redis -DataBackend local-fs
+```
+
+ACK 集群本身可使用 `operator/brewfs-operator/scripts/ack-e2e.ps1` 创建/销毁；K8s runner 不创建 VPC、节点或账号级网络资源。`run_aliyun_perf.ps1` 保留为 ECS/Cloud Assistant fallback，适合没有 ACK 集群的故障诊断，不是主性能测试路径。
 
 ## 前置条件
 
