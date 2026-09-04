@@ -29,8 +29,8 @@ function Resolve-Tool([string]$Name, [string[]]$Candidates = @()) {
     }
     throw "找不到 $Name，请先安装并加入 PATH。"
 }
-function Invoke-Checked([string]$File, [string[]]$Args) {
-    $out = & $File @Args 2>&1
+function Invoke-Checked([string]$File, [string[]]$Arguments) {
+    $out = & $File @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) { throw "$File 失败:`n$($out -join [Environment]::NewLine)" }
     return $out
 }
