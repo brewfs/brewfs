@@ -186,7 +186,7 @@ function Invoke-PerfOnEcs {
         $item = @($result.Invocation.InvocationResults.InvocationResult)[0]
         if (-not $item) { return $false }
         Write-Host "  invocation status=$($item.InvocationStatus)"
-        if ($item.InvocationStatus -in @('Success', 'Failed', 'Stopped', 'Error')) {
+        if ($item.InvocationStatus -in @('Success', 'Failed', 'Stopped', 'Error', 'Terminated')) {
             if ($item.Output) {
                 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($item.Output))
                 Write-Output $text
