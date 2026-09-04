@@ -31,6 +31,15 @@ const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
 
 type Page = 'overview' | 'runs' | 'compare';
 
+type ComparisonChartProps = {
+  title: string;
+  description: string;
+  unit: string;
+  runs: ResultRun[];
+  tools: string[];
+  value: (metric: PerfMetric) => number | undefined;
+};
+
 const expectedTools = [
   'fio-bigwrite', 'fio-bigread', 'fio-seqread', 'fio-seqwrite', 'fio-randread',
   'fio-randwrite', 'fio-randrw', 'dirstress', 'dirperf', 'metaperf', 'looptest',
@@ -93,12 +102,74 @@ function StatusIcon({ status }: { status: RunStatus }) {
   return <HelpCircle className="status-icon unknown" size={16} aria-hidden="true" />;
 }
 
+function chartValue(value: number, unit: string): string {
+  if (unit === 'IOPS') return `${value.toFixed(value >= 100 ? 0 : 1)} IOPS`;
+  if (unit === 'ms') return `${value.toFixed(1)} ms`;
+  if (unit === 's') return `${value.toFixed(1)} s`;
+  return `${value.toFixed(1)} MiB/s`;
+}
+
+function ComparisonLineChart({ title, description, unit, runs, tools, value }: ComparisonChartProps) {
+  const width = 960;
+  const height = 330;
+  const margin = { top: 24, right: 28, bottom: 82, left: 76 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const observations = runs.flatMap((run) => tools.map((tool) => {
+    const metric = run.metrics?.find((item) => item.tool === tool);
+    return metric ? value(metric) : undefined;
+  })).filter((item): item is number => item !== undefined && Number.isFinite(item));
+  const observedMax = Math.max(...observations, 0);
+  const domainMax = observedMax > 0 ? observedMax * 1.12 : 1;
+  const x = (index: number) => margin.left + (tools.length === 1 ? plotWidth / 2 : (plotWidth * index) / (tools.length - 1));
+  const y = (item: number) => margin.top + plotHeight - (item / domainMax) * plotHeight;
+  const ticks = Array.from({ length: 5 }, (_, index) => (domainMax * index) / 4);
+
+  return (
+    <article className="comparison-figure">
+      <div className="comparison-figure-heading"><div><h3>{title}</h3><p>{description}</p></div><span>{unit}</span></div>
+      {observations.length === 0 ? <p className="muted chart-empty">选中的跑次没有该指标。</p> : <div className="line-chart-scroll">
+        <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title}：按测试工具比较选中的不同跑次`}>
+          <title>{title}</title>
+          <desc>{description}。横轴为测试工具，纵轴单位为 {unit}，每条线代表一个测试跑次。</desc>
+          {ticks.map((tick) => <g key={tick}>
+            <line className="chart-grid-line" x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} />
+            <text className="chart-y-label" x={margin.left - 12} y={y(tick) + 4} textAnchor="end">{tick.toFixed(tick >= 100 ? 0 : 1)}</text>
+          </g>)}
+          <line className="chart-axis" x1={margin.left} x2={margin.left} y1={margin.top} y2={margin.top + plotHeight} />
+          <line className="chart-axis" x1={margin.left} x2={width - margin.right} y1={margin.top + plotHeight} y2={margin.top + plotHeight} />
+          <text className="chart-axis-title" transform={`translate(18 ${margin.top + plotHeight / 2}) rotate(-90)`} textAnchor="middle">{unit}</text>
+          {tools.map((tool, index) => <text className="chart-x-label" key={tool} x={x(index)} y={margin.top + plotHeight + 24} transform={`rotate(-28 ${x(index)} ${margin.top + plotHeight + 24})`} textAnchor="end">{tool}</text>)}
+          {runs.map((run, runIndex) => {
+            let connected = false;
+            const path = tools.map((tool, toolIndex) => {
+              const metric = run.metrics?.find((item) => item.tool === tool);
+              const item = metric ? value(metric) : undefined;
+              if (item === undefined || !Number.isFinite(item)) { connected = false; return ''; }
+              const command = connected ? 'L' : 'M';
+              connected = true;
+              return `${command}${x(toolIndex)},${y(item)}`;
+            }).join(' ');
+            return <g className={`chart-series series-${runIndex}`} key={run.id}>
+              <path className="chart-series-line" d={path} />
+              {tools.map((tool, toolIndex) => {
+                const metric = run.metrics?.find((item) => item.tool === tool);
+                const item = metric ? value(metric) : undefined;
+                return item === undefined || !Number.isFinite(item) ? null : <circle className="chart-series-point" key={tool} cx={x(toolIndex)} cy={y(item)} r="5"><title>{run.name} · {tool}: {chartValue(item, unit)}</title></circle>;
+              })}
+            </g>;
+          })}
+        </svg>
+      </div>}
+    </article>
+  );
+}
+
 export function App() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [runs, setRuns] = useState<ResultRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
-  const [compareMetric, setCompareMetric] = useState<'totalMiBps' | 'seconds' | 'iops'>('totalMiBps');
   const [query, setQuery] = useState('');
   const [backendFilter, setBackendFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -124,7 +195,11 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([listRuns(), listServerRuns().catch(() => [])]).then(([localRuns, serverRuns]) => {
-      if (!cancelled) setRuns([...serverRuns, ...localRuns]);
+      if (!cancelled) {
+        const loadedRuns = [...serverRuns, ...localRuns];
+        setRuns(loadedRuns);
+        setCompareIds((current) => current.length ? current : loadedRuns.filter((run) => run.metrics?.length).slice(0, 4).map((run) => run.id));
+      }
     }).catch((error: unknown) => {
       if (!cancelled) setMessage(error instanceof Error ? error.message : '读取结果失败');
     });
@@ -143,13 +218,8 @@ export function App() {
 
   const selectedRun = runs.find((run) => run.id === selectedId) ?? filteredRuns[0] ?? null;
   const comparisonRuns = useMemo(() => {
-    const ids = selectedRun && !compareIds.includes(selectedRun.id) ? [selectedRun.id, ...compareIds] : compareIds;
-    return ids.map((id) => runs.find((run) => run.id === id)).filter((run): run is ResultRun => Boolean(run)).slice(0, 4);
-  }, [compareIds, runs, selectedRun]);
-  const comparisonMetrics = useMemo(() => {
-    const tools = new Set(comparisonRuns.flatMap((run) => (run.metrics ?? []).map((metric) => metric.tool)));
-    return [...tools].sort().map((tool) => ({ tool, values: comparisonRuns.map((run) => ({ run, metric: (run.metrics ?? []).find((metric) => metric.tool === tool) })) }));
-  }, [comparisonRuns]);
+    return compareIds.map((id) => runs.find((run) => run.id === id)).filter((run): run is ResultRun => Boolean(run)).slice(0, 4);
+  }, [compareIds, runs]);
   const visibleFiles = useMemo(() => {
     if (!selectedRun) return [];
     const needle = query.trim().toLowerCase();
@@ -241,21 +311,6 @@ export function App() {
     setCompareIds((current) => current.includes(id) ? current.filter((item) => item !== id) : current.length < 4 ? [...current, id] : current);
   }
 
-  function metricValue(metric: PerfMetric | undefined): number | undefined {
-    if (!metric) return undefined;
-    if (compareMetric === 'seconds') return metric.seconds || undefined;
-    if (compareMetric === 'iops') return (metric.readIops ?? 0) + (metric.writeIops ?? 0) || undefined;
-    return metric.totalMiBps ?? (((metric.readMiBps ?? 0) + (metric.writeMiBps ?? 0)) || undefined);
-  }
-
-  function metricLabel(metric: PerfMetric | undefined): string {
-    const value = metricValue(metric);
-    if (value === undefined) return '—';
-    if (compareMetric === 'seconds') return `${value.toFixed(1)} s`;
-    if (compareMetric === 'iops') return `${value.toFixed(0)} IOPS`;
-    return `${value.toFixed(1)} MiB/s`;
-  }
-
   const totalBytes = runs.reduce((sum, run) => sum + run.totalBytes, 0);
   const latestRun = runs[0] ?? null;
   const latestMetrics = latestRun?.metrics ?? [];
@@ -266,6 +321,9 @@ export function App() {
   const coveredCount = coverage.filter(({ metric }) => Boolean(metric)).length;
   const failedCount = coverage.filter(({ metric }) => metric && !metric.status.startsWith('pass')).length;
   const maxLatestThroughput = Math.max(...latestMetrics.map((metric) => metric.totalMiBps ?? 0), 1);
+  const comparableRuns = runs.filter((run) => run.metrics?.length);
+  const comparisonFioTools = expectedTools.filter((tool) => tool.startsWith('fio-') && comparisonRuns.some((run) => run.metrics?.some((metric) => metric.tool === tool)));
+  const comparisonAllTools = expectedTools.filter((tool) => comparisonRuns.some((run) => run.metrics?.some((metric) => metric.tool === tool)));
   const pageTitle = page === 'overview' ? '性能总览' : page === 'runs' ? '测试跑次' : '结果对比';
   const pageLede = page === 'overview'
     ? '快速确认矩阵覆盖率、吞吐、延迟与运行环境。'
@@ -348,7 +406,29 @@ export function App() {
             </>}
           </article>
         </section> : null}
-        {page === 'compare' ? <section className="panel comparison-panel"><div className="panel-heading"><div><p className="eyebrow">COMPARE</p><h2>跑次对比</h2></div><div className="comparison-controls"><select value={compareMetric} onChange={(event) => setCompareMetric(event.target.value as typeof compareMetric)}><option value="totalMiBps">吞吐（MiB/s）</option><option value="iops">IOPS</option><option value="seconds">耗时（秒）</option></select><span>最多选择 4 个跑次</span></div></div>{comparisonRuns.length === 0 ? <p className="muted">先到“跑次详情”勾选最多四个跑次。</p> : comparisonMetrics.length === 0 ? <p className="muted">选中的跑次还没有解析到性能指标。</p> : <div className="comparison-chart">{comparisonMetrics.map(({ tool, values }) => { const max = Math.max(...values.map(({ metric }) => metricValue(metric) ?? 0), 1); return <div className="chart-row" key={tool}><strong>{tool}</strong><div className="chart-bars">{values.map(({ run, metric }) => { const value = metricValue(metric); return <div className="chart-bar-line" key={run.id} title={`${run.name}: ${metricLabel(metric)}`}><span>{run.name}</span><div className="chart-track"><div className="chart-bar" style={{ width: `${Math.max(0, Math.min(100, ((value ?? 0) / max) * 100))}%` }} /></div><b>{metricLabel(metric)}</b></div>})}</div></div>})}</div>}</section> : null}
+        {page === 'compare' ? <section className="panel comparison-panel">
+          <div className="panel-heading"><div><p className="eyebrow">COMPARE</p><h2>跑次趋势对比</h2></div><span className="result-count">已选 {comparisonRuns.length} / 4</span></div>
+          <div className="compare-run-picker" aria-label="选择需要对比的测试跑次">
+            {comparableRuns.map((run) => {
+              const checked = compareIds.includes(run.id);
+              return <label className={`compare-run-option ${checked ? 'selected' : ''}`} key={run.id}>
+                <input type="checkbox" checked={checked} disabled={!checked && compareIds.length >= 4} onChange={() => toggleCompare(run.id)} />
+                <span><strong>{run.name}</strong><small>{formatDate(run.uploadedAt)} · {run.backend}/{run.dataBackend} · {run.metrics?.length ?? 0} 项</small></span>
+              </label>;
+            })}
+          </div>
+          {comparisonRuns.length === 0 ? <p className="muted compare-empty">至少选择一个有性能数据的跑次。</p> : <>
+            <div className="comparison-legend" aria-label="图表跑次图例">
+              {comparisonRuns.map((run, index) => <div key={run.id} className={`series-${index}`}><i aria-hidden="true" /><span><strong>{run.name}</strong><small>{run.environment?.instanceType ?? '规格未知'} · {formatDate(run.uploadedAt)}</small></span></div>)}
+            </div>
+            <div className="comparison-chart-grid">
+              <ComparisonLineChart title="吞吐量" description="相同 fio workload 在不同跑次中的总读写吞吐" unit="MiB/s" runs={comparisonRuns} tools={comparisonFioTools} value={(metric) => metric.totalMiBps ?? ((metric.readMiBps ?? 0) + (metric.writeMiBps ?? 0) || undefined)} />
+              <ComparisonLineChart title="IOPS" description="相同 fio workload 的总读写操作数" unit="IOPS" runs={comparisonRuns} tools={comparisonFioTools} value={(metric) => ((metric.readIops ?? 0) + (metric.writeIops ?? 0)) || undefined} />
+              <ComparisonLineChart title="P99 延迟" description="读取与写入 P99 中较高的一项，越低越好" unit="ms" runs={comparisonRuns} tools={comparisonFioTools} value={(metric) => Math.max(metric.readP99Ms ?? 0, metric.writeP99Ms ?? 0) || undefined} />
+              <ComparisonLineChart title="测试耗时" description="完整矩阵各工具的脚本墙钟时间，越低越好" unit="s" runs={comparisonRuns} tools={comparisonAllTools} value={(metric) => metric.seconds || undefined} />
+            </div>
+          </>}
+        </section> : null}
         <footer className="app-footer">BrewFS Result Vault · 默认保存到服务器；服务器不可用时使用当前浏览器作为兜底。</footer>
       </main>
     </div>
