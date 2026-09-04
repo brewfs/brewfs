@@ -25,6 +25,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:CreatedInstance = $false
 
 function Resolve-Executable([string]$Name, [string[]]$Candidates = @()) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -74,19 +75,30 @@ function New-EcsInstance {
         $script:InstanceName = 'brewfs-perf-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss')
     }
     $release = (Get-Date).ToUniversalTime().AddMinutes([int]$AutoReleaseMinutes).ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $result = Invoke-AliyunJson @(
+    $clientToken = [Guid]::NewGuid().ToString('N')
+    $runArgs = @(
         'ecs', 'RunInstances', '--region', $RegionId,
         '--ImageId', $ImageId, '--InstanceType', $InstanceType,
         '--VSwitchId', $VSwitchId, '--SecurityGroupId', $SecurityGroupId,
         '--ZoneId', $ZoneId, '--Amount', '1', '--InstanceName', $InstanceName,
+        '--ClientToken', $clientToken,
         '--InstanceChargeType', 'PostPaid', '--InternetChargeType', 'PayByTraffic',
         '--InternetMaxBandwidthOut', '20', '--AutoReleaseTime', $release,
         '--SystemDisk.Category', 'cloud_essd', '--SystemDisk.Size', '80',
         '--SystemDisk.PerformanceLevel', 'PL1',
         '--Tag.1.Key', 'brewfs-test', '--Tag.1.Value', $InstanceName
     )
-    $script:InstanceId = @($result.InstanceIdSets.InstanceId)[0]
+    try {
+        $result = Invoke-AliyunJson $runArgs
+    } catch {
+        if ($_.Exception.Message -notmatch 'EOF|timeout|timed out') { throw }
+        Write-Warning 'RunInstances 返回网络 EOF，使用同一 ClientToken 重试。'
+        Start-Sleep -Seconds 5
+        $result = Invoke-AliyunJson $runArgs
+    }
+    $script:InstanceId = @($result.InstanceIdSets.InstanceIdSet)[0]
     if (-not $InstanceId) { throw 'RunInstances 未返回 InstanceId。' }
+    $script:CreatedInstance = $true
     Write-Host "ECS 创建成功: $InstanceId"
     Wait-Until {
         $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]")
@@ -113,8 +125,18 @@ DATA_ARGS=__DATA_ARGS__
 BENCH_ARGS=__BENCH_ARGS__
 
 apt-get update
-apt-get install -y git docker.io docker-compose-v2 || apt-get install -y git docker.io docker-compose-plugin
+apt-get install -y git curl docker.io docker-compose-v2 || apt-get install -y git curl docker.io docker-compose-plugin
 systemctl enable --now docker
+
+# The distro Cargo on the supported Ubuntu image may predate Rust 2024
+# edition support.  Install a current stable toolchain with rustup so the
+# checked-out BrewFS revision is built with the same language features as CI.
+if ! command -v rustup >/dev/null 2>&1; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+export PATH="/root/.cargo/bin:${PATH}"
+rustup toolchain install stable --profile minimal
+rustup default stable
 mkdir -p "$WORK"
 if [[ ! -d "$WORK/.git" ]]; then
   git clone --depth=1 --branch "$REF" "$REPO" "$WORK"
@@ -178,19 +200,34 @@ function Invoke-PerfOnEcs {
 
 function Remove-EcsInstance {
     if (-not $InstanceId) { throw 'destroy 需要 -InstanceId。' }
-    Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId) | Out-Null
+    try {
+        Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--Force', 'true') | Out-Null
+    } catch {
+        # 新实例可能仍处于初始化锁定状态，先停止后再释放。
+        Invoke-AliyunJson @('ecs', 'StopInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--ForceStop', 'true') | Out-Null
+        Wait-Until {
+            $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]")
+            @($instance.Instances.Instance)[0].Status -eq 'Stopped'
+        } "ECS $InstanceId 停止" 300
+        Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId) | Out-Null
+    }
     Write-Host "ECS 删除任务已提交: $InstanceId"
 }
 
-if ($Action -in @('run', 'create') -and -not $InstanceId) { New-EcsInstance }
-if ($Action -eq 'status') {
-    if (-not $InstanceId) { throw 'status 需要 -InstanceId。' }
-    Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]") | ConvertTo-Json -Depth 8
-    exit 0
-}
-if ($Action -in @('run', 'create')) {
-    if ($Action -eq 'run') { Invoke-PerfOnEcs }
-}
-if ($Action -eq 'destroy' -or ($Action -eq 'run' -and -not $KeepInstance -and -not $NoCleanup)) {
-    Remove-EcsInstance
+try {
+    if ($Action -in @('run', 'create') -and -not $InstanceId) {
+        New-EcsInstance
+    }
+    if ($Action -eq 'status') {
+        if (-not $InstanceId) { throw 'status 需要 -InstanceId。' }
+        Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]") | ConvertTo-Json -Depth 8
+    } elseif ($Action -in @('run', 'create')) {
+        if ($Action -eq 'run') { Invoke-PerfOnEcs }
+    } elseif ($Action -eq 'destroy') {
+        Remove-EcsInstance
+    }
+} finally {
+    if ($Action -eq 'run' -and $script:CreatedInstance -and -not $KeepInstance -and -not $NoCleanup) {
+        try { Remove-EcsInstance } catch { Write-Warning "ECS 自动清理失败: $($_.Exception.Message)" }
+    }
 }
