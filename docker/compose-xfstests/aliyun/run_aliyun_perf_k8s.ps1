@@ -353,14 +353,20 @@ function Apply-Test {
         } elseif ($phase -in @('Succeeded', 'Failed')) { break }
         if (-not $exported) { Start-Sleep -Seconds 10 }
     }
+    if (-not $exported) { throw 'Job 完成前未能导出 artifacts；如需稍后导出，请使用 -KeepJob 并在 hold 窗口内执行 -Action export。' }
+    # perf.complete means the report is finalized. Once it has been exported,
+    # do not pay for the artifact hold window unless the caller asked to keep
+    # the Job for interactive inspection.
+    if (-not $KeepJob) {
+        Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host
+        return
+    }
     $jobStatus = ((Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'jsonpath={.status.failed}:{.status.succeeded}') -join '')).Trim()
     if ($jobStatus -match '^([1-9][0-9]*|[1-9]):') {
         Write-Warning "Job 已记录失败项（status=$jobStatus），但 artifacts 已成功导出。"
     } else {
         Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
     }
-    if (-not $exported) { throw 'Job 完成前未能导出 artifacts；如需稍后导出，请使用 -KeepJob 并在 hold 窗口内执行 -Action export。' }
-    if (-not $KeepJob) { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host }
 }
 
 function Export-ExistingJob {
