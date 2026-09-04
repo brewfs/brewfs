@@ -30,7 +30,9 @@ from urllib.parse import unquote, urlparse
 
 ROOT = Path(os.environ.get("BREWFS_RESULTS_ROOT", "/var/lib/brewfs-results")).resolve()
 STATIC = Path(os.environ.get("BREWFS_RESULTS_STATIC", str(Path(__file__).parent / "dist"))).resolve()
-MAX_UPLOAD = int(os.environ.get("BREWFS_RESULTS_MAX_UPLOAD", str(1024 * 1024 * 1024)))
+MAX_UPLOAD = int(os.environ.get("BREWFS_RESULTS_MAX_UPLOAD", str(64 * 1024 * 1024)))
+MAX_EXTRACTED = int(os.environ.get("BREWFS_RESULTS_MAX_EXTRACTED", str(4 * 1024 * 1024 * 1024)))
+MAX_FILES = int(os.environ.get("BREWFS_RESULTS_MAX_FILES", "100000"))
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -49,6 +51,14 @@ def safe_relative(value: str) -> str:
     return value
 
 
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def dos_mtime(info: zipfile.ZipInfo) -> int:
     return int(datetime(*info.date_time).timestamp() * 1000)
 
@@ -63,7 +73,19 @@ def classify(paths: List[str], extracted: Path) -> Tuple[str, str, str]:
                 continue
     backend = "tikv" if "tikv" in haystack or "pd-" in haystack else "redis" if "redis" in haystack else "unknown"
     data_backend = "s3" if "rustfs" in haystack or "s3" in haystack else "local-fs" if "local-fs" in haystack or "local_fs" in haystack else "unknown"
-    status = "attention" if re.search(r"\b(failed|failure|error)\b", haystack) and not re.search(r"0\s+(failed|failure|error)", haystack) else "pass" if re.search(r"\b(pass|passed|success|succeeded)\b", haystack) else "unknown"
+    summary = next(iter(extracted.rglob("perf-summary.tsv")), None)
+    statuses = []
+    if summary and summary.is_file():
+        try:
+            with summary.open(newline="", errors="replace") as handle:
+                statuses = [row.get("status", "").strip().lower() for row in csv.DictReader(handle, delimiter="\t")]
+        except (OSError, ValueError):
+            statuses = []
+    if statuses:
+        passing = {"pass", "passed", "success", "succeeded"}
+        status = "pass" if all(value in passing for value in statuses) else "attention"
+    else:
+        status = "attention" if re.search(r"\b(failed|failure|error)\b", haystack) and not re.search(r"0\s+(failed|failure|error)", haystack) else "pass" if re.search(r"\b(pass|passed|success|succeeded)\b", haystack) else "unknown"
     return backend, data_backend, status
 
 
@@ -183,7 +205,15 @@ def create_run(archive: bytes, source_name: str) -> dict:
     paths: List[str] = []
     try:
         with zipfile.ZipFile(archive_path) as archive_file:
-            for info in archive_file.infolist():
+            members = archive_file.infolist()
+            if len(members) > MAX_FILES:
+                raise ValueError(f"archive contains more than {MAX_FILES} entries")
+            total_extracted = sum(info.file_size for info in members)
+            if total_extracted > MAX_EXTRACTED:
+                raise ValueError(f"archive expands beyond {MAX_EXTRACTED} bytes")
+            if any(info.flag_bits & 0x1 for info in members):
+                raise ValueError("encrypted ZIP entries are not supported")
+            for info in members:
                 path = safe_relative(info.filename)
                 paths.append(path)
                 mtime = dos_mtime(info)
@@ -200,7 +230,9 @@ def create_run(archive: bytes, source_name: str) -> dict:
                     os.utime(target, (mtime / 1000, mtime / 1000))
                     if mode:
                         try:
-                            os.chmod(target, mode & 0o7777)
+                            # Preserve ordinary rwx bits without applying
+                            # setuid/setgid/sticky flags from an uploaded ZIP.
+                            os.chmod(target, mode & 0o0777)
                         except OSError:
                             pass
                 files.append({
@@ -298,12 +330,14 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) >= 4 and parts[3] == "files":
                     relative = "/".join(parts[4:])
                     target = (directory / "files" / safe_relative(relative)).resolve()
-                    if not str(target).startswith(str((directory / "files").resolve())) or not target.is_file():
+                    if not is_within(target, (directory / "files").resolve()) or not target.is_file():
                         raise FileNotFoundError(relative)
                     self.send_file(target, mimetypes.guess_type(target.name)[0] or "application/octet-stream")
                     return
-                self.send_json(run)
-                return
+                if len(parts) == 3:
+                    self.send_json(run)
+                    return
+                raise FileNotFoundError(parsed.path)
             self.serve_static(parsed.path)
         except FileNotFoundError:
             self.send_error_text(HTTPStatus.NOT_FOUND, "result not found")
@@ -351,19 +385,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error_text(HTTPStatus.NOT_FOUND, "result not found")
 
     def send_file(self, path: Path, content_type: str, download: bool = False) -> None:
-        body = path.read_bytes()
+        length = path.stat().st_size
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
         if download:
             self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
-        self.wfile.write(body)
+        with path.open("rb") as source:
+            shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
 
     def serve_static(self, path: str) -> None:
         relative = unquote(path.lstrip("/")) or "index.html"
         target = (STATIC / relative).resolve()
-        if not str(target).startswith(str(STATIC)) or not target.is_file():
+        if not is_within(target, STATIC) or not target.is_file():
             target = STATIC / "index.html"
         self.send_file(target, mimetypes.guess_type(target.name)[0] or "application/octet-stream")
 

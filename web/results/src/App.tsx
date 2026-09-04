@@ -21,7 +21,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { isZip, makeZip, readDirectory, readZip, textPreview, type ArtifactFile } from './archive';
 import { deleteServerRun, listServerRuns, uploadServerRun } from './serverApi';
-import { extractEnvironment, extractMetrics, type PerfMetric } from './metrics';
+import { extractEnvironment, extractMetrics, statusFromMetrics, type PerfMetric } from './metrics';
 import { deleteRun, listRuns, saveRun, type ResultRun, type RunStatus } from './store';
 import './styles.css';
 
@@ -77,7 +77,9 @@ function inferDataBackend(files: ArtifactFile[]): ResultRun['dataBackend'] {
   return 'unknown';
 }
 
-async function inferStatus(files: ArtifactFile[]): Promise<RunStatus> {
+async function inferStatus(files: ArtifactFile[], metrics: PerfMetric[]): Promise<RunStatus> {
+  const metricStatus = statusFromMetrics(metrics);
+  if (metricStatus) return metricStatus;
   const report = files.find((file) => /(^|\/)report\.md$/i.test(file.path));
   if (!report) return 'unknown';
   const content = (await textPreview(report, 1_000_000)).toLowerCase();
@@ -247,13 +249,14 @@ export function App() {
       if (artifactFiles.length === 0) throw new Error('没有在上传内容中找到文件。');
       const uploadedAt = Date.now();
       const mtimes = artifactFiles.map((file) => file.mtime).filter(Boolean);
+      const metrics = await extractMetrics(artifactFiles);
       const localRun: ResultRun = {
         id: `run-${uploadedAt}-${Math.random().toString(36).slice(2, 8)}`,
         name: runName(source?.name ?? files[0].name, artifactFiles),
         sourceName: source?.name ?? `${files.length} 个文件`,
         backend: inferBackend(artifactFiles),
         dataBackend: inferDataBackend(artifactFiles),
-        status: await inferStatus(artifactFiles),
+        status: await inferStatus(artifactFiles, metrics),
         uploadedAt,
         fileCount: artifactFiles.length,
         totalBytes: artifactFiles.reduce((sum, file) => sum + file.size, 0),
@@ -261,7 +264,7 @@ export function App() {
         latestMtime: Math.max(...mtimes, uploadedAt),
         storage: 'browser',
         files: artifactFiles,
-        metrics: await extractMetrics(artifactFiles),
+        metrics,
         environment: await extractEnvironment(artifactFiles),
       };
       let run = localRun;
@@ -300,7 +303,7 @@ export function App() {
   }
 
   async function removeRun(run: ResultRun) {
-    if (!window.confirm(`删除本地结果“${run.name}”？`)) return;
+    if (!window.confirm(`删除结果“${run.name}”？`)) return;
     if (run.storage === 'server') await deleteServerRun(run.id); else await deleteRun(run.id);
     setRuns((current) => current.filter((item) => item.id !== run.id));
     setCompareIds((current) => current.filter((id) => id !== run.id));

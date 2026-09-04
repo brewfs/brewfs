@@ -31,7 +31,9 @@ BREWFS_RESULTS_BIND=0.0.0.0 \
 BREWFS_RESULTS_PORT=8080 \
 BREWFS_RESULTS_ROOT=/var/lib/brewfs-results \
 BREWFS_RESULTS_STATIC=/opt/brewfs-results/dist \
-BREWFS_RESULTS_MAX_UPLOAD=1073741824 \
+BREWFS_RESULTS_MAX_UPLOAD=67108864 \
+BREWFS_RESULTS_MAX_EXTRACTED=4294967296 \
+BREWFS_RESULTS_MAX_FILES=100000 \
 python3 server.py
 ```
 
@@ -41,7 +43,9 @@ python3 server.py
 | `BREWFS_RESULTS_PORT` | `8080` | HTTP 监听端口 |
 | `BREWFS_RESULTS_ROOT` | `/var/lib/brewfs-results` | ZIP 与解压结果的持久化目录 |
 | `BREWFS_RESULTS_STATIC` | `web/results/dist` | Vite 构建后的静态文件目录 |
-| `BREWFS_RESULTS_MAX_UPLOAD` | `1073741824` | 单个上传请求的最大字节数 |
+| `BREWFS_RESULTS_MAX_UPLOAD` | `67108864` | 单个上传请求的最大字节数；上传体会在内存中解析，应保持合理上限 |
+| `BREWFS_RESULTS_MAX_EXTRACTED` | `4294967296` | ZIP 解压后的最大总字节数，用于限制压缩炸弹 |
+| `BREWFS_RESULTS_MAX_FILES` | `100000` | ZIP 中允许的最大条目数 |
 
 云端 runner 使用独立的 `BREWFS_RESULTS_URL` 环境变量指定此服务的公开基址，例如 `https://results.example.com`；该值属于上传客户端配置，不需要设置在服务器进程中。
 

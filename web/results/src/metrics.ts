@@ -1,5 +1,5 @@
 import { textPreview, type ArtifactFile } from './archive';
-import type { RunEnvironment } from './store';
+import type { RunEnvironment, RunStatus } from './store';
 
 export type PerfMetric = {
   tool: string;
@@ -13,6 +13,12 @@ export type PerfMetric = {
   readP99Ms?: number;
   writeP99Ms?: number;
 };
+
+export function statusFromMetrics(metrics: PerfMetric[]): RunStatus | undefined {
+  if (metrics.length === 0) return undefined;
+  const passing = new Set(['pass', 'passed', 'success', 'succeeded']);
+  return metrics.every((metric) => passing.has(metric.status.trim().toLowerCase())) ? 'pass' : 'attention';
+}
 
 function numberValue(value: unknown): number | undefined {
   const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));

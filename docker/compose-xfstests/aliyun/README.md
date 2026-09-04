@@ -1,4 +1,4 @@
-# Aliyun ECS 性能测试
+# Aliyun 云端性能测试
 
 这个目录把现有 Redis/TiKV Docker Compose 性能测试迁移到 Aliyun。推荐使用 ACK/Kubernetes runner：镜像在本地构建并推送，测试在 K8s Job 中运行；ECS/Cloud Assistant runner 仅作为没有 ACK 集群时的 fallback。
 
@@ -12,6 +12,7 @@ $env:BREWFS_RESULTS_URL = 'https://results.example.com'
 .\docker\compose-xfstests\aliyun\run_aliyun_perf_k8s.ps1 `
   -KubeconfigPath $env:KUBECONFIG `
   -RegistryImage ghcr.io/ivanbeethoven/brewfs-perf `
+  -GhcrUsername Ivanbeethoven `
   -GhcrToken $env:GHCR_TOKEN `
   -Backend redis -DataBackend local-fs `
   -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis

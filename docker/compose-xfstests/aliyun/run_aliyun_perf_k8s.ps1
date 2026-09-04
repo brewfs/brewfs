@@ -6,6 +6,7 @@ param(
     [string]$Namespace = 'brewfs-perf',
     [string]$RegistryImage = 'ghcr.io/ivanbeethoven/brewfs-perf',
     [string]$ImageTag = ('aliyun-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss')),
+    [string]$GhcrUsername = 'Ivanbeethoven',
     [string]$GhcrToken,
     [ValidateSet('redis', 'tikv')]
     [string]$Backend = 'redis',
@@ -47,9 +48,15 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     return $out
 }
 
-$Docker = Resolve-Tool 'docker' @('C:\Program Files\Docker\Docker\resources\bin\docker.exe')
+function Invoke-KubectlYaml([object[]]$Yaml) {
+    $output = $Yaml | & $Kubectl @('apply', '-f', '-') 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "kubectl apply 失败:`n$($output -join [Environment]::NewLine)"
+    }
+    return $output
+}
+
 $Kubectl = Resolve-Tool 'kubectl'
-$Tar = Resolve-Tool 'tar' @('C:\Windows\System32\tar.exe')
 if ($KubeconfigPath) { $env:KUBECONFIG = (Resolve-Path $KubeconfigPath).Path }
 
 function Get-ArtifactRoot {
@@ -71,6 +78,7 @@ function Get-PerfPod {
 function Export-Artifacts {
     param([Parameter(Mandatory = $true)][string]$Pod)
 
+    $tar = Resolve-Tool 'tar' @('C:\Windows\System32\tar.exe')
     $root = Get-ArtifactRoot
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $target = Join-Path $root $JobName
@@ -96,7 +104,7 @@ function Export-Artifacts {
         } finally {
             Pop-Location
         }
-        Invoke-Checked $Tar @('-xzf', $localArchive, '-C', $stage) | Out-Host
+        Invoke-Checked $tar @('-xzf', $localArchive, '-C', $stage) | Out-Host
         $stagedTarget = Join-Path $stage (Split-Path -Leaf $remoteSnapshot)
         if (-not (Test-Path -LiteralPath $stagedTarget)) { throw "导出的归档中缺少 $JobName。" }
         Move-Item -LiteralPath $stagedTarget -Destination $target
@@ -155,14 +163,15 @@ function Upload-ResultVault {
 }
 
 function Ensure-Image {
+    $docker = Resolve-Tool 'docker' @('C:\Program Files\Docker\Docker\resources\bin\docker.exe')
     Push-Location $RepoRoot
     try {
-        Invoke-Checked $Docker @('build', '-f', 'docker/compose-xfstests/aliyun/Dockerfile.perf-local', '-t', $Image, '.') | Out-Host
+        Invoke-Checked $docker @('build', '-f', 'docker/compose-xfstests/aliyun/Dockerfile.perf-local', '-t', $Image, '.') | Out-Host
         if ($GhcrToken) {
-            $GhcrToken | & $Docker login ghcr.io --username Ivanbeethoven --password-stdin 2>&1 | Out-Host
+            $GhcrToken | & $docker login ghcr.io --username $GhcrUsername --password-stdin 2>&1 | Out-Host
             if ($LASTEXITCODE -ne 0) { throw 'docker login ghcr.io 失败。' }
         }
-        Invoke-Checked $Docker @('push', $Image) | Out-Host
+        Invoke-Checked $docker @('push', $Image) | Out-Host
     } finally { Pop-Location }
 }
 
@@ -211,7 +220,7 @@ spec: { selector: { app: rustfs }, ports: [{ port: 9000 }] }
 "@
     } else { '' }
     $meta = if ($Backend -eq 'redis') {
-        @" 
+        @"
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: redis, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
@@ -230,9 +239,9 @@ apiVersion: v1
 kind: Service
 metadata: { name: redis, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
 spec: { selector: { app: redis }, ports: [{ port: 6379 }] }
-"@ 
+"@
     } else {
-        @" 
+        @"
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: pd, namespace: $Namespace, labels: { app.kubernetes.io/managed-by: brewfs-perf-runner } }
@@ -317,25 +326,49 @@ $initContainers
 }
 
 function Apply-Test {
-    Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+    $namespaceYaml = Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml')
+    Invoke-KubectlYaml $namespaceYaml | Out-Host
+    $existingJobs = & $Kubectl @(
+        'get', 'job', '--namespace', $Namespace, '--selector', $ManagedByLabel,
+        '--output', 'name', '--ignore-not-found'
+    ) 2>$null
+    if ($LASTEXITCODE -eq 0 -and $existingJobs) {
+        throw "命名空间 $Namespace 已有 BrewFS 性能任务：$($existingJobs -join ', ')。请等待其结束、执行 -Action destroy，或使用不同的 -Namespace。"
+    }
     $script:TestResourcesApplied = $true
     $runnerSource = Join-Path $RepoRoot 'docker\compose-xfstests\run_perf_in_container.sh'
     $runnerPath = Join-Path $env:TEMP "brewfs-perf-runner-$([guid]::NewGuid().ToString('N')).sh"
     try {
         $runnerContent = (Get-Content -LiteralPath $runnerSource -Raw) -replace "`r`n", "`n"
         [IO.File]::WriteAllText($runnerPath, $runnerContent, [Text.UTF8Encoding]::new($false))
-        Invoke-Checked $Kubectl @('create', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
-            "--from-file=run_perf_in_container.sh=$runnerPath", '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+        $configMapYaml = Invoke-Checked $Kubectl @('create', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
+            "--from-file=run_perf_in_container.sh=$runnerPath", '--dry-run=client', '-o', 'yaml')
+        Invoke-KubectlYaml $configMapYaml | Out-Host
         Invoke-Checked $Kubectl @('label', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
             $ManagedByLabel, '--overwrite') | Out-Null
     } finally {
         Remove-Item -LiteralPath $runnerPath -Force -ErrorAction SilentlyContinue
     }
     if ($GhcrToken) {
-        $secretArgs = @('create', 'secret', 'docker-registry', 'brewfs-ghcr', '--namespace', $Namespace,
-            '--docker-server=ghcr.io', '--docker-username=Ivanbeethoven', "--docker-password=$GhcrToken",
-            '--dry-run=client', '-o', 'yaml')
-        Invoke-Checked $Kubectl $secretArgs | & $Kubectl apply -f - | Out-Host
+        $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${GhcrUsername}:${GhcrToken}"))
+        $dockerConfig = [ordered]@{
+            auths = [ordered]@{
+                'ghcr.io' = [ordered]@{
+                    username = $GhcrUsername
+                    password = $GhcrToken
+                    auth = $auth
+                }
+            }
+        } | ConvertTo-Json -Depth 8 -Compress
+        $dockerConfigBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($dockerConfig))
+        $secretYaml = [ordered]@{
+            apiVersion = 'v1'
+            kind = 'Secret'
+            metadata = [ordered]@{ name = 'brewfs-ghcr'; namespace = $Namespace }
+            type = 'kubernetes.io/dockerconfigjson'
+            data = [ordered]@{ '.dockerconfigjson' = $dockerConfigBase64 }
+        } | ConvertTo-Json -Depth 8 -Compress
+        Invoke-KubectlYaml $secretYaml | Out-Host
         Invoke-Checked $Kubectl @('label', 'secret', 'brewfs-ghcr', '--namespace', $Namespace,
             $ManagedByLabel, '--overwrite') | Out-Null
     }

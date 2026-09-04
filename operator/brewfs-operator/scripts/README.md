@@ -2,21 +2,21 @@
 
 `ack-e2e.ps1` 将之前在 Aliyun ACK 上验证 BrewFS Operator 的流程串起来：
 
-1. 可选创建一个单节点 ACK Managed Basic 集群（首尔、`ecs.e-c1m2.large`）。
+1. 可选创建一个单节点 ACK Managed Basic 集群（首尔、`ecs.e-c1m2.large`）；未指定 `-KeyPairName` 时创建临时 key pair。
 2. 获取临时 kubeconfig，并设置 `KUBECONFIG`。
 3. 创建 GHCR 拉取 Secret，部署 Operator。
 4. 将 ACK 的默认云盘 StorageClass 切到 `alicloud-disk-essd`，避免 `ap-northeast-2a` 不支持 `alicloud-disk-efficiency`。
 5. 创建 `BrewFSCluster/demo` 与 `BrewFSMount/demo-mount`。
 6. 执行写入、读取、复制、移动、硬链接、软链接、权限检查等冒烟测试。
 7. 使用 `-RunRestartTest` 时，删除挂载 Pod，清理节点上的旧 FUSE 挂载，再验证重启后的数据持久性。
-8. `-Action all` 默认清理 CR 并提交 ACK 集群删除任务。
+8. `-Action all` 默认在成功和失败路径都清理 CR、ACK 集群以及脚本创建的临时 key pair。
 
 ## 前置条件
 
 - Windows PowerShell 5.1+ 或 PowerShell 7+
 - Aliyun CLI，且已通过 `aliyun configure` 配置有 ACK/ECS 权限的 Profile
 - `kubectl`
-- GitHub CLI（`gh auth login`），Token 需要 `read:packages` 权限；也可以通过环境变量 `GHCR_TOKEN` 传入
+- GitHub CLI（`gh auth login`），Token 需要 `read:packages` 权限；也可以同时通过环境变量 `GHCR_USERNAME` 和 `GHCR_TOKEN` 传入，此时无需安装 `gh`
 - 当前分支的 Operator 镜像和 BrewFS 镜像已经发布到 GHCR
 
 ## 使用方式
@@ -53,7 +53,7 @@
 & .\operator\brewfs-operator\scripts\ack-e2e.ps1 -Action destroy -ClusterId cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-如需保留临时集群供人工检查，给 `all` 加 `-NoCleanup`。脚本不会删除 GHCR、Aliyun 账号密钥或集群外的云资源；集群删除是否释放其附属资源由 ACK 的 `retain_all_resources=false` 控制。
+如需保留临时集群供人工检查，给 `all` 加 `-NoCleanup`。此时脚本自动创建的 key pair 也会保留，并在输出中显示名称；后续可显式传入该名称自行清理。脚本不会删除 GHCR、Aliyun 账号密钥或其他集群外云资源；集群删除是否释放其附属资源由 ACK 的 `retain_all_resources=false` 控制。若测试失败，`all` 仍会进入清理；清理失败时输出会明确包含需要人工检查的 ClusterId。
 
 ## 已知限制
 

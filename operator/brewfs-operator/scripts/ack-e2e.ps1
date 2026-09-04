@@ -14,6 +14,7 @@ param(
     [string]$KubeconfigPath,
     [string]$OperatorImage = 'ghcr.io/ivanbeethoven/brewfs-operator:latest',
     [string]$BrewfsImage = 'ghcr.io/ivanbeethoven/brewfs:latest',
+    [string]$GhcrUsername,
     [string]$GhcrToken,
     [switch]$NoCleanup,
     [switch]$RunRestartTest
@@ -21,6 +22,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:CreatedCluster = $false
+$script:CreatedKeyPair = $false
+$script:KubeconfigPrepared = $false
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $ManifestDir = Join-Path $RepoRoot 'operator\brewfs-operator\manifests'
@@ -41,8 +45,12 @@ if ($env:LOCALAPPDATA) {
     $kubectlCandidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages\Kubernetes.kubectl_Microsoft.Winget.Source_8wekyb3d8bbwe\kubectl.exe')
 }
 $Aliyun = Resolve-Executable 'aliyun' $aliyunCandidates
-$Kubectl = Resolve-Executable 'kubectl' $kubectlCandidates
-$Gh = Resolve-Executable 'gh'
+$Kubectl = if ($Action -eq 'destroy') {
+    try { Resolve-Executable 'kubectl' $kubectlCandidates } catch { $null }
+} else {
+    Resolve-Executable 'kubectl' $kubectlCandidates
+}
+$Gh = $null
 
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
     $output = & $File @Arguments 2>&1
@@ -107,13 +115,43 @@ function Wait-AckTask([string]$TaskId, [int]$TimeoutSeconds = 1800) {
     if ($script:AckTaskFailure) { throw "ACK task $TaskId failed: $script:AckTaskFailure" }
 }
 
+function Ensure-KeyPair {
+    if (-not $script:KeyPairName) {
+        $script:KeyPairName = 'brewfs-e2e-{0}' -f (Get-Date -Format 'yyyyMMddHHmmss')
+        Invoke-AliyunJson @(
+            'ecs', 'CreateKeyPair', '--region', $RegionId,
+            '--KeyPairName', $KeyPairName
+        ) | Out-Null
+        $script:CreatedKeyPair = $true
+        Write-Host "临时 ECS key pair 已创建: $KeyPairName"
+        return
+    }
+
+    $response = Invoke-AliyunJson @(
+        'ecs', 'DescribeKeyPairs', '--region', $RegionId,
+        '--KeyPairName', $KeyPairName
+    )
+    if (@($response.KeyPairs.KeyPair).Count -eq 0) {
+        throw "ECS key pair 不存在: $KeyPairName"
+    }
+}
+
+function Remove-GeneratedKeyPair {
+    if (-not $script:CreatedKeyPair -or -not $KeyPairName) { return }
+    $names = ConvertTo-Json @($KeyPairName) -Compress
+    Invoke-AliyunJson @(
+        'ecs', 'DeleteKeyPairs', '--region', $RegionId,
+        '--KeyPairNames', $names
+    ) | Out-Null
+    $script:CreatedKeyPair = $false
+    Write-Host "临时 ECS key pair 已删除: $KeyPairName"
+}
+
 function New-AckCluster {
     if (-not $script:ClusterName) {
         $script:ClusterName = 'brewfs-e2e-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss')
     }
-    if (-not $script:KeyPairName) {
-        $script:KeyPairName = 'brewfs-e2e-{0}' -f (Get-Date -Format 'yyyyMMddHHmmss')
-    }
+    Ensure-KeyPair
     $body = [ordered]@{
         name = $ClusterName
         cluster_type = 'ManagedKubernetes'
@@ -143,6 +181,7 @@ function New-AckCluster {
     $result = Invoke-AliyunJson @('cs', 'CreateCluster', '--region', $RegionId, '--body', $json)
     $script:ClusterId = $result.cluster_id
     if (-not $ClusterId) { throw 'CreateCluster 未返回 cluster_id。' }
+    $script:CreatedCluster = $true
     Write-Host "ACK 集群创建任务已提交: $ClusterId"
     Wait-Until {
         $state = (Get-Cluster $ClusterId).state
@@ -171,6 +210,7 @@ function Write-Kubeconfig {
     Set-Content -LiteralPath $KubeconfigPath -Value $config -Encoding UTF8
     $env:KUBECONFIG = $KubeconfigPath
     Invoke-Kubectl @('cluster-info') | Out-Null
+    $script:KubeconfigPrepared = $true
     Write-Host "kubeconfig: $KubeconfigPath"
 }
 
@@ -178,18 +218,42 @@ function Ensure-GhcrPullSecret {
     if (-not $script:GhcrToken) {
         $script:GhcrToken = $env:GHCR_TOKEN
     }
+    if (-not $script:GhcrUsername) {
+        $script:GhcrUsername = $env:GHCR_USERNAME
+    }
+    if (-not $GhcrToken -or -not $GhcrUsername) {
+        $script:Gh = Resolve-Executable 'gh'
+    }
     if (-not $GhcrToken) {
         $script:GhcrToken = ((Invoke-Checked $Gh @('auth', 'token')) -join '').Trim()
     }
     if (-not $GhcrToken) { throw '未取得 GHCR token；请设置 GHCR_TOKEN 或执行 gh auth login。' }
-    $ghUser = ((Invoke-Checked $Gh @('api', 'user', '--jq', '.login')) -join '').Trim()
+    if (-not $GhcrUsername) {
+        $script:GhcrUsername = ((Invoke-Checked $Gh @('api', 'user', '--jq', '.login')) -join '').Trim()
+    }
+    if (-not $GhcrUsername) { throw '未取得 GHCR 用户名；请设置 GHCR_USERNAME 或执行 gh auth login。' }
+
+    $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${GhcrUsername}:${GhcrToken}"))
+    $dockerConfig = [ordered]@{
+        auths = [ordered]@{
+            'ghcr.io' = [ordered]@{
+                username = $GhcrUsername
+                password = $GhcrToken
+                auth = $auth
+            }
+        }
+    } | ConvertTo-Json -Depth 8 -Compress
+    $dockerConfigBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($dockerConfig))
+
     foreach ($ns in @('brewfs-system', $Namespace)) {
-        $yaml = Invoke-Checked $Kubectl @(
-            'create', 'secret', 'docker-registry', 'ghcr-pull', '-n', $ns,
-            '--docker-server=ghcr.io', "--docker-username=$ghUser",
-            "--docker-password=$GhcrToken", '--dry-run=client', '-o', 'yaml'
-        )
-        Invoke-KubectlYaml ($yaml -join [Environment]::NewLine) | Out-Null
+        $secret = [ordered]@{
+            apiVersion = 'v1'
+            kind = 'Secret'
+            metadata = [ordered]@{ name = 'ghcr-pull'; namespace = $ns }
+            type = 'kubernetes.io/dockerconfigjson'
+            data = [ordered]@{ '.dockerconfigjson' = $dockerConfigBase64 }
+        } | ConvertTo-Json -Depth 8 -Compress
+        Invoke-KubectlYaml $secret | Out-Null
         Invoke-Kubectl @('patch', 'serviceaccount', 'default', '-n', $ns,
             '--type', 'merge', '-p', '{"imagePullSecrets":[{"name":"ghcr-pull"}]}') | Out-Null
     }
@@ -316,24 +380,50 @@ function Remove-AckCluster {
     Write-Host "ACK 删除任务已提交: $ClusterId"
 }
 
-if ($Action -in @('create', 'all')) {
-    New-AckCluster
-    Write-Kubeconfig
-}
-if ($Action -in @('test', 'all')) {
-    if (-not $ClusterId) { throw 'test 需要 -ClusterId，或使用 -Action all 自动创建。' }
-    if (-not $env:KUBECONFIG -or -not (Test-Path -LiteralPath $env:KUBECONFIG)) { Write-Kubeconfig }
-    Run-Test
-}
-if ($Action -eq 'status') {
-    if (-not $ClusterId) { throw 'status 需要 -ClusterId。' }
-    Get-Cluster $ClusterId | ConvertTo-Json -Depth 8
-    Invoke-Kubectl @('get', 'brewfscluster,brewfsmount,pods', '-A')
-}
-if ($Action -eq 'destroy' -or ($Action -eq 'all' -and -not $NoCleanup)) {
-    if ($env:KUBECONFIG -and (Test-Path -LiteralPath $env:KUBECONFIG)) {
-        Invoke-Optional $Kubectl @('delete', 'brewfsmount', 'demo', '-n', $Namespace, '--ignore-not-found') | Out-Null
+function Remove-TestResources {
+    if ($script:KubeconfigPrepared) {
+        Invoke-Optional $Kubectl @('delete', 'brewfsmount', 'demo-mount', '-n', $Namespace, '--ignore-not-found') | Out-Null
         Invoke-Optional $Kubectl @('delete', 'brewfscluster', 'demo', '-n', $Namespace, '--ignore-not-found') | Out-Null
     }
-    Remove-AckCluster
+}
+
+$cleanupCluster = $Action -eq 'destroy' -or ($Action -eq 'all' -and -not $NoCleanup)
+$clusterCleanupSucceeded = $false
+$workflowSucceeded = $false
+try {
+    if ($Action -in @('create', 'all')) {
+        New-AckCluster
+        Write-Kubeconfig
+    }
+    if ($Action -in @('test', 'all')) {
+        if (-not $ClusterId) { throw 'test 需要 -ClusterId，或使用 -Action all 自动创建。' }
+        # Always fetch a short-lived kubeconfig for the requested cluster. A
+        # pre-existing KUBECONFIG may point at a different cluster.
+        if ($Action -eq 'test' -or -not $script:CreatedCluster) { Write-Kubeconfig }
+        Run-Test
+    }
+    if ($Action -eq 'status') {
+        if (-not $ClusterId) { throw 'status 需要 -ClusterId。' }
+        Get-Cluster $ClusterId | ConvertTo-Json -Depth 8
+        Write-Kubeconfig
+        Invoke-Kubectl @('get', 'brewfscluster,brewfsmount,pods', '-A')
+    }
+    if ($Action -eq 'destroy') {
+        try { Write-Kubeconfig } catch { Write-Warning "无法读取待删除集群的 kubeconfig，将只执行 ACK 删除：$($_.Exception.Message)" }
+    }
+    $workflowSucceeded = $true
+} finally {
+    if ($cleanupCluster) {
+        Remove-TestResources
+        try {
+            Remove-AckCluster
+            $clusterCleanupSucceeded = $true
+        } catch {
+            if ($workflowSucceeded) { throw }
+            Write-Warning "ACK 集群自动清理失败，请立即检查 ClusterId=$ClusterId：$($_.Exception.Message)"
+        }
+        if ($clusterCleanupSucceeded -or -not $script:CreatedCluster) {
+            try { Remove-GeneratedKeyPair } catch { Write-Warning "临时 key pair 清理失败: $($_.Exception.Message)" }
+        }
+    }
 }
