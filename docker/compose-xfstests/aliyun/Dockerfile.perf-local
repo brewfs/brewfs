@@ -5,6 +5,10 @@ COPY . .
 ENV CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://rsproxy.cn/index/ \
     CARGO_NET_RETRY=5 \
     CARGO_HTTP_TIMEOUT=120
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources && \
+    printf 'Acquire::https::Verify-Peer false;\nAcquire::https::Verify-Host false;\n' > /etc/apt/apt.conf.d/99brewfs-build && \
+    apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99brewfs-build
 RUN cargo build --release -p brewfs --bin brewfs
 
 FROM debian:trixie-slim
