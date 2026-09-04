@@ -2674,6 +2674,14 @@ main() {
         err "性能测试存在失败项 (exit=$status)"
     fi
 
+    # Keep the pod alive briefly so Kubernetes clients can copy artifacts before
+    # the completed container becomes non-executable.
+    local hold_seconds="${BREWFS_ARTIFACT_HOLD_SECONDS:-0}"
+    if [[ "$hold_seconds" =~ ^[0-9]+$ ]] && (( hold_seconds > 0 )); then
+        info "保留产物窗口: ${hold_seconds}s"
+        sleep "$hold_seconds"
+    fi
+
     return "$status"
 }
 

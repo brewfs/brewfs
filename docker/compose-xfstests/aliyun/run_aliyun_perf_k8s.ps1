@@ -175,6 +175,7 @@ $initContainers
         - { name: BREWFS_S3_BUCKET, value: brewfs-data }
         - { name: BREWFS_S3_FORCE_PATH_STYLE, value: "true" }
         - { name: BREWFS_S3_REGION, value: us-east-1 }
+        - { name: BREWFS_ARTIFACT_HOLD_SECONDS, value: "300" }
         - { name: AWS_ACCESS_KEY_ID, value: rustfsadmin }
         - { name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin }
         securityContext:
@@ -212,10 +213,25 @@ function Apply-Test {
         throw "Kubernetes manifest apply 失败，manifest 已保存到 $debugManifest。"
     }
     Invoke-Checked $Kubectl @('wait', '--for=condition=available', "deployment/$($Backend -eq 'redis' ? 'redis' : 'pd')", '-n', $Namespace, '--timeout=10m') | Out-Host
+    $copied = $false
+    $deadline = [DateTime]::UtcNow.AddHours(48)
+    while ([DateTime]::UtcNow -lt $deadline -and -not $copied) {
+        $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
+        $phase = ((Invoke-Checked $Kubectl @('get', 'pod', $pod, '-n', $Namespace, '-o', 'jsonpath={.status.phase}') -join '')).Trim()
+        if ($phase -eq 'Running') {
+            $probe = & $Kubectl @('exec', '-n', $Namespace, $pod, '-c', 'perf', '--', 'test', '-s', "/artifacts/$JobName/brewfs.log") 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts') | Out-Null
+                Push-Location $RepoRoot
+                try { Invoke-Checked $Kubectl @('cp', "$Namespace/$pod`:/artifacts/$JobName", 'docker/compose-xfstests/artifacts/') | Out-Host }
+                finally { Pop-Location }
+                $copied = $true
+            }
+        } elseif ($phase -in @('Succeeded', 'Failed')) { break }
+        if (-not $copied) { Start-Sleep -Seconds 10 }
+    }
     Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
-    $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
-    New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts') | Out-Null
-    Invoke-Checked $Kubectl @('cp', "${Namespace}/${pod}:/artifacts/$JobName", (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts\')) | Out-Host
+    if (-not $copied) { throw 'Job 完成前未能复制 artifacts。' }
     if (-not $KeepJob) { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host }
 }
 
