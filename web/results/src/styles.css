@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
-
 :root { color-scheme: light; font-family: 'Space Grotesk', 'Segoe UI', sans-serif; color: #17233c; background: #f4f6fa; --navy: #101b31; --ink: #17233c; --muted: #71809a; --line: #e3e8f0; --panel: #fff; --blue: #2868e8; --mint: #dff7ee; --green: #08764f; --amber: #b36c00; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
