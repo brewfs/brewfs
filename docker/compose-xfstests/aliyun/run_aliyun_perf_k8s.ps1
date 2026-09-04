@@ -53,6 +53,26 @@ function Ensure-Image {
 
 function Render-Manifests {
     $dataEnv = if ($DataBackend -eq 's3') { 's3' } else { 'local-fs' }
+    $initContainers = if ($DataBackend -eq 's3') {
+        @"
+      initContainers:
+      - name: rustfs-init
+        image: amazon/aws-cli:2
+        command: ["sh", "-ec"]
+        args:
+        - |
+          mkdir -p /root/.aws
+          printf '[default]\nregion = us-east-1\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+          until aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket brewfs-data >/dev/null 2>&1 || aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket brewfs-data >/dev/null 2>&1; do
+            sleep 2
+          done
+        env:
+        - { name: AWS_ACCESS_KEY_ID, value: rustfsadmin }
+        - { name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin }
+        - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+        - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
+"@
+    } else { '' }
     $storage = if ($DataBackend -eq 's3') {
         @"
 apiVersion: apps/v1
@@ -135,7 +155,7 @@ spec:
     metadata: { labels: { app: brewfs-perf, job: $JobName } }
     spec:
       restartPolicy: Never
-      containers:
+$initContainers      containers:
       - name: perf
         image: $Image
         imagePullPolicy: Always
@@ -149,6 +169,8 @@ spec:
         - { name: BREWFS_ARTIFACT_DIR, value: /artifacts/$JobName }
         - { name: BREWFS_S3_ENDPOINT, value: http://rustfs:9000 }
         - { name: BREWFS_S3_BUCKET, value: brewfs-data }
+        - { name: BREWFS_S3_FORCE_PATH_STYLE, value: "true" }
+        - { name: BREWFS_S3_REGION, value: us-east-1 }
         - { name: AWS_ACCESS_KEY_ID, value: rustfsadmin }
         - { name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin }
         securityContext:
