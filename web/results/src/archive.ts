@@ -25,7 +25,10 @@ function dosTime(date: number, time: number): number {
   const hours = (time >>> 11) & 0x1f;
   const minutes = (time >>> 5) & 0x3f;
   const seconds = (time & 0x1f) * 2;
-  const value = new Date(Date.UTC(year, Math.max(month - 1, 0), day, hours, minutes, seconds));
+  // ZIP stores DOS timestamps as local wall-clock time (there is no timezone
+  // field). Constructing a local Date keeps the displayed timestamp stable
+  // when a ZIP is imported and exported again with fflate.
+  const value = new Date(year, Math.max(month - 1, 0), day, hours, minutes, seconds);
   return Number.isNaN(value.getTime()) ? 0 : value.getTime();
 }
 
