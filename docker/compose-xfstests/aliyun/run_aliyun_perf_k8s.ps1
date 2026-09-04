@@ -196,7 +196,11 @@ function Apply-Test {
     Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
     $yaml = Render-Manifests
     $yaml | & $Kubectl apply -f - 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw 'Kubernetes manifest apply 失败。' }
+    if ($LASTEXITCODE -ne 0) {
+        $debugManifest = Join-Path $env:TEMP "$JobName.yaml"
+        Set-Content -LiteralPath $debugManifest -Value $yaml -Encoding utf8
+        throw "Kubernetes manifest apply 失败，manifest 已保存到 $debugManifest。"
+    }
     Invoke-Checked $Kubectl @('wait', '--for=condition=available', "deployment/$($Backend -eq 'redis' ? 'redis' : 'pd')", '-n', $Namespace, '--timeout=10m') | Out-Host
     Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
     $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
