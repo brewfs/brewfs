@@ -8,6 +8,8 @@ param(
     [string]$RegionId = 'ap-northeast-2',
     [string]$ZoneId = 'ap-northeast-2a',
     [string]$WorkerInstanceType = 'ecs.e-c1m2.large',
+    [ValidateRange(40, 2048)]
+    [int]$WorkerSystemDiskSize = 40,
     [string]$Namespace = 'default',
     [string]$KubeconfigPath,
     [string]$OperatorImage = 'ghcr.io/ivanbeethoven/brewfs-operator:latest',
@@ -127,7 +129,7 @@ function New-AckCluster {
         worker_instance_types = @($WorkerInstanceType)
         key_pair = $KeyPairName
         worker_system_disk_category = 'cloud_essd'
-        worker_system_disk_size = 40
+        worker_system_disk_size = $WorkerSystemDiskSize
         node_cidr_mask = '24'
         proxy_mode = 'ipvs'
         runtime = @{ name = 'containerd'; version = '1.6.28' }

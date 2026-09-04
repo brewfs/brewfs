@@ -84,7 +84,16 @@ function Export-Artifacts {
         # Snapshot first so an actively appended brewfs.log cannot make tar exit
         # with "file changed as we read it" during the artifact hold window.
         Invoke-Checked $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'sh', '-ec', "rm -rf '$remoteSnapshot'; cp -a '/artifacts/$JobName' '$remoteSnapshot'; tar -czf '$remoteArchive' -C /tmp '$(Split-Path -Leaf $remoteSnapshot)'") | Out-Host
-        Invoke-Checked $Kubectl @('cp', '--retries=5', "$Namespace/$Pod`:$remoteArchive", $localArchive) | Out-Host
+        # kubectl treats an absolute Windows destination (for example C:\...) as
+        # another remote specification because of the drive-letter colon. Run
+        # the copy from the artifact root and pass a relative local path.
+        Push-Location -LiteralPath $root
+        try {
+            $relativeArchive = Join-Path '.' (Split-Path -Leaf $localArchive)
+            Invoke-Checked $Kubectl @('cp', '--retries=5', "$Namespace/$Pod`:$remoteArchive", $relativeArchive) | Out-Host
+        } finally {
+            Pop-Location
+        }
         Invoke-Checked $Tar @('-xzf', $localArchive, '-C', $stage) | Out-Host
         $stagedTarget = Join-Path $stage (Split-Path -Leaf $remoteSnapshot)
         if (-not (Test-Path -LiteralPath $stagedTarget)) { throw "导出的归档中缺少 $JobName。" }
@@ -282,10 +291,15 @@ $initContainers
         - { name: fuse, mountPath: /dev/fuse }
         - { name: artifacts, mountPath: /artifacts }
         - { name: state, mountPath: /var/lib/brewfs }
+        - { name: perf-runner, mountPath: /usr/local/bin/run_perf_in_container.sh, subPath: run_perf_in_container.sh, readOnly: true }
       volumes:
       - { name: fuse, hostPath: { path: /dev/fuse, type: CharDevice } }
       - { name: artifacts, emptyDir: {} }
       - { name: state, emptyDir: {} }
+      - name: perf-runner
+        configMap:
+          name: brewfs-perf-runner
+          defaultMode: 0755
 "@
     $parts = @($meta.TrimEnd())
     if ($storage) { $parts += $storage.TrimEnd() }
@@ -295,6 +309,16 @@ $initContainers
 
 function Apply-Test {
     Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+    $runnerSource = Join-Path $RepoRoot 'docker\compose-xfstests\run_perf_in_container.sh'
+    $runnerPath = Join-Path $env:TEMP "brewfs-perf-runner-$([guid]::NewGuid().ToString('N')).sh"
+    try {
+        $runnerContent = (Get-Content -LiteralPath $runnerSource -Raw) -replace "`r`n", "`n"
+        [IO.File]::WriteAllText($runnerPath, $runnerContent, [Text.UTF8Encoding]::new($false))
+        Invoke-Checked $Kubectl @('create', 'configmap', 'brewfs-perf-runner', '--namespace', $Namespace,
+            "--from-file=run_perf_in_container.sh=$runnerPath", '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+    } finally {
+        Remove-Item -LiteralPath $runnerPath -Force -ErrorAction SilentlyContinue
+    }
     if ($GhcrToken) {
         $secretArgs = @('create', 'secret', 'docker-registry', 'brewfs-ghcr', '--namespace', $Namespace,
             '--docker-server=ghcr.io', '--docker-username=Ivanbeethoven', "--docker-password=$GhcrToken",
@@ -350,6 +374,7 @@ function Export-ExistingJob {
                 $exported = Export-Artifacts -Pod $pod
                 Write-Host "测试结果目录: $($exported.Directory)"
                 Write-Host "测试结果归档: $($exported.Archive)"
+                Upload-ResultVault -Archive $exported.Archive
                 return
             }
         } elseif ($phase -in @('Succeeded', 'Failed')) {
