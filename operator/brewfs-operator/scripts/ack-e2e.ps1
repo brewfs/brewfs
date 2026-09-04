@@ -4,6 +4,7 @@ param(
     [string]$Action = 'test',
     [string]$ClusterId,
     [string]$ClusterName,
+    [string]$KeyPairName,
     [string]$RegionId = 'ap-northeast-2',
     [string]$ZoneId = 'ap-northeast-2a',
     [string]$Namespace = 'default',
@@ -107,6 +108,9 @@ function New-AckCluster {
     if (-not $script:ClusterName) {
         $script:ClusterName = 'brewfs-e2e-{0}' -f (Get-Date -Format 'yyyyMMdd-HHmmss')
     }
+    if (-not $script:KeyPairName) {
+        $script:KeyPairName = 'brewfs-e2e-{0}' -f (Get-Date -Format 'yyyyMMddHHmmss')
+    }
     $body = [ordered]@{
         name = $ClusterName
         cluster_type = 'ManagedKubernetes'
@@ -120,6 +124,7 @@ function New-AckCluster {
         snat_entry = $true
         num_of_nodes = 1
         worker_instance_types = @('ecs.e-c1m2.large')
+        key_pair = $KeyPairName
         worker_system_disk_category = 'cloud_essd'
         worker_system_disk_size = 40
         node_cidr_mask = '24'
