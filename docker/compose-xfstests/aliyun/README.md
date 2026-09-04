@@ -11,8 +11,26 @@
   -KubeconfigPath $env:KUBECONFIG `
   -RegistryImage ghcr.io/ivanbeethoven/brewfs-perf `
   -GhcrToken $env:GHCR_TOKEN `
-  -Backend redis -DataBackend local-fs
+  -Backend redis -DataBackend local-fs `
+  -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis
 ```
+
+测试完成后脚本会在本地输出两个结果：完整结果目录和同名 `.zip` 归档。归档包含性能报告、原始日志、BrewFS 日志、后端诊断和性能统计，便于上传或脱离集群查看（xfstests/LTP runner 的 artifacts 也使用同样的目录结构）。脚本会在容器中先生成单个 `tar.gz` 再下载，避免逐文件复制时出现 `unexpected EOF`。
+
+若希望在测试进行时从另一终端手动导出，保留 Job 并延长结果保留窗口：
+
+```powershell
+$tag = 'aliyun-20260904-redis'
+.\docker\compose-xfstests\aliyun\run_aliyun_perf_k8s.ps1 `
+  -KubeconfigPath $env:KUBECONFIG -ImageTag $tag -Backend redis `
+  -KeepJob -ArtifactHoldSeconds 1800
+
+.\docker\compose-xfstests\aliyun\run_aliyun_perf_k8s.ps1 `
+  -Action export -JobName "brewfs-perf-$tag" `
+  -KubeconfigPath $env:KUBECONFIG -ArtifactDirectory .\artifacts\manual
+```
+
+`-Action export` 只能在 Pod 仍处于 Running 且 `perf.complete` 已出现的 hold 窗口内执行；默认 `emptyDir` 随 Pod 结束而消失。因此正常使用应直接等待 `-Action test` 自动导出。若需要测试结束后仍可导出，应为 Job 改用持久化卷（后续可增加 `-ArtifactPvc` 参数）。
 
 ACK 集群本身可使用 `operator/brewfs-operator/scripts/ack-e2e.ps1` 创建/销毁；K8s runner 不创建 VPC、节点或账号级网络资源。`run_aliyun_perf.ps1` 保留为 ECS/Cloud Assistant fallback，适合没有 ACK 集群的故障诊断，不是主性能测试路径。
 

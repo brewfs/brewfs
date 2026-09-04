@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('test', 'status', 'destroy')]
+    [ValidateSet('test', 'status', 'export', 'destroy')]
     [string]$Action = 'test',
     [string]$KubeconfigPath,
     [string]$Namespace = 'brewfs-perf',
@@ -13,14 +13,22 @@ param(
     [string]$DataBackend = 'local-fs',
     [string]$PerfTools = 'dirstress dirperf metaperf looptest',
     [switch]$SkipImageBuild,
-    [switch]$KeepJob
+    [switch]$KeepJob,
+    [Alias('JobName')]
+    [string]$ExistingJobName,
+    [string]$ArtifactDirectory,
+    [string]$ArchivePath,
+    [ValidateRange(30, 86400)]
+    [int]$ArtifactHoldSeconds = 900,
+    [ValidateRange(1, 1440)]
+    [int]$ExportTimeoutMinutes = 10
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $Image = "$RegistryImage`:$ImageTag"
-$JobName = "brewfs-perf-$ImageTag".ToLowerInvariant()
+$JobName = if ($ExistingJobName) { $ExistingJobName } else { "brewfs-perf-$ImageTag".ToLowerInvariant() }
 
 function Resolve-Tool([string]$Name, [string[]]$Candidates = @()) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
@@ -38,7 +46,61 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
 
 $Docker = Resolve-Tool 'docker' @('C:\Program Files\Docker\Docker\resources\bin\docker.exe')
 $Kubectl = Resolve-Tool 'kubectl'
+$Tar = Resolve-Tool 'tar' @('C:\Windows\System32\tar.exe')
 if ($KubeconfigPath) { $env:KUBECONFIG = (Resolve-Path $KubeconfigPath).Path }
+
+function Get-ArtifactRoot {
+    if ($ArtifactDirectory) {
+        if ([IO.Path]::IsPathRooted($ArtifactDirectory)) {
+            return [IO.Path]::GetFullPath($ArtifactDirectory)
+        }
+        return [IO.Path]::GetFullPath((Join-Path $RepoRoot $ArtifactDirectory))
+    }
+    return (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts')
+}
+
+function Get-PerfPod {
+    $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
+    if (-not $pod) { throw "找不到 Job $JobName 对应的 Pod。" }
+    return $pod
+}
+
+function Export-Artifacts {
+    param([Parameter(Mandatory = $true)][string]$Pod)
+
+    $root = Get-ArtifactRoot
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $target = Join-Path $root $JobName
+    if (Test-Path -LiteralPath $target) {
+        $target = Join-Path $root ("{0}-export-{1}" -f $JobName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    }
+    $stage = Join-Path $root ('.staging-{0}-{1}' -f $JobName, [guid]::NewGuid().ToString('N'))
+    $localArchive = Join-Path $root ('.{0}-{1}.tar.gz' -f $JobName, [guid]::NewGuid().ToString('N'))
+    $remoteArchive = "/tmp/$JobName-artifacts.tar.gz"
+    try {
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        # Create one archive in the pod before copying. This avoids kubectl cp racing
+        # with thousands of result files and makes the export reproducible.
+        Invoke-Checked $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'tar', '-czf', $remoteArchive, '-C', '/artifacts', $JobName) | Out-Host
+        Invoke-Checked $Kubectl @('cp', '--retries=5', "$Namespace/$Pod`:$remoteArchive", $localArchive) | Out-Host
+        Invoke-Checked $Tar @('-xzf', $localArchive, '-C', $stage) | Out-Host
+        $stagedTarget = Join-Path $stage $JobName
+        if (-not (Test-Path -LiteralPath $stagedTarget)) { throw "导出的归档中缺少 $JobName。" }
+        Move-Item -LiteralPath $stagedTarget -Destination $target
+        $archive = if ($ArchivePath) {
+            if ([IO.Path]::IsPathRooted($ArchivePath)) { [IO.Path]::GetFullPath($ArchivePath) }
+            else { [IO.Path]::GetFullPath((Join-Path $RepoRoot $ArchivePath)) }
+        } else { "$target.zip" }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $archive) | Out-Null
+        $archiveInputs = Get-ChildItem -LiteralPath $target -Force | Select-Object -ExpandProperty FullName
+        Compress-Archive -Path $archiveInputs -DestinationPath $archive -Force
+        return [pscustomobject]@{ Directory = $target; Archive = $archive }
+    } finally {
+        Remove-Item -LiteralPath $stage, $localArchive -Force -Recurse -ErrorAction SilentlyContinue
+        # Best effort: the pod may already have exited when this cleanup runs.
+        & $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'rm', '-f', $remoteArchive) 2>$null | Out-Null
+    }
+}
 
 function Ensure-Image {
     Push-Location $RepoRoot
@@ -175,7 +237,7 @@ $initContainers
         - { name: BREWFS_S3_BUCKET, value: brewfs-data }
         - { name: BREWFS_S3_FORCE_PATH_STYLE, value: "true" }
         - { name: BREWFS_S3_REGION, value: us-east-1 }
-        - { name: BREWFS_ARTIFACT_HOLD_SECONDS, value: "300" }
+        - { name: BREWFS_ARTIFACT_HOLD_SECONDS, value: "$ArtifactHoldSeconds" }
         - { name: AWS_ACCESS_KEY_ID, value: rustfsadmin }
         - { name: AWS_SECRET_ACCESS_KEY, value: rustfsadmin }
         securityContext:
@@ -213,30 +275,54 @@ function Apply-Test {
         throw "Kubernetes manifest apply 失败，manifest 已保存到 $debugManifest。"
     }
     Invoke-Checked $Kubectl @('wait', '--for=condition=available', "deployment/$($Backend -eq 'redis' ? 'redis' : 'pd')", '-n', $Namespace, '--timeout=10m') | Out-Host
-    $copied = $false
+    $exported = $null
     $deadline = [DateTime]::UtcNow.AddHours(48)
-    while ([DateTime]::UtcNow -lt $deadline -and -not $copied) {
-        $pod = ((Invoke-Checked $Kubectl @('get', 'pod', '-n', $Namespace, '-l', "job-name=$JobName", '-o', 'jsonpath={.items[0].metadata.name}') -join '')).Trim()
+    while ([DateTime]::UtcNow -lt $deadline -and -not $exported) {
+        $pod = Get-PerfPod
         $phase = ((Invoke-Checked $Kubectl @('get', 'pod', $pod, '-n', $Namespace, '-o', 'jsonpath={.status.phase}') -join '')).Trim()
         if ($phase -eq 'Running') {
             $probe = & $Kubectl @('exec', '-n', $Namespace, $pod, '-c', 'perf', '--', 'test', '-f', "/artifacts/$JobName/perf.complete") 2>&1
             if ($LASTEXITCODE -eq 0) {
-                New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'docker\compose-xfstests\artifacts') | Out-Null
-                Push-Location $RepoRoot
-                try { Invoke-Checked $Kubectl @('cp', '--retries=3', "$Namespace/$pod`:/artifacts/$JobName", 'docker/compose-xfstests/artifacts/') | Out-Host }
-                finally { Pop-Location }
-                $copied = $true
+                try {
+                    $exported = Export-Artifacts -Pod $pod
+                    Write-Host "测试结果目录: $($exported.Directory)"
+                    Write-Host "测试结果归档: $($exported.Archive)"
+                } catch {
+                    Write-Warning "导出 artifacts 失败，将在下一轮重试：$($_.Exception.Message)"
+                }
             }
         } elseif ($phase -in @('Succeeded', 'Failed')) { break }
-        if (-not $copied) { Start-Sleep -Seconds 10 }
+        if (-not $exported) { Start-Sleep -Seconds 10 }
     }
     Invoke-Checked $Kubectl @('wait', '--for=condition=complete', "job/$JobName", '-n', $Namespace, '--timeout=48h') | Out-Host
-    if (-not $copied) { throw 'Job 完成前未能复制 artifacts。' }
+    if (-not $exported) { throw 'Job 完成前未能导出 artifacts；如需稍后导出，请使用 -KeepJob 并在 hold 窗口内执行 -Action export。' }
     if (-not $KeepJob) { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') | Out-Host }
+}
+
+function Export-ExistingJob {
+    $deadline = [DateTime]::UtcNow.AddMinutes($ExportTimeoutMinutes)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $pod = Get-PerfPod
+        $phase = ((Invoke-Checked $Kubectl @('get', 'pod', $pod, '-n', $Namespace, '-o', 'jsonpath={.status.phase}') -join '')).Trim()
+        if ($phase -eq 'Running') {
+            $probe = & $Kubectl @('exec', '-n', $Namespace, $pod, '-c', 'perf', '--', 'test', '-f', "/artifacts/$JobName/perf.complete") 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $exported = Export-Artifacts -Pod $pod
+                Write-Host "测试结果目录: $($exported.Directory)"
+                Write-Host "测试结果归档: $($exported.Archive)"
+                return
+            }
+        } elseif ($phase -in @('Succeeded', 'Failed')) {
+            throw "Pod 已进入 $phase，emptyDir 中的结果无法再通过 kubectl exec 导出；请在测试运行期间导出，或下次使用持久化卷。"
+        }
+        Start-Sleep -Seconds 5
+    }
+    throw "在 $ExportTimeoutMinutes 分钟内未发现可导出的 perf.complete。"
 }
 
 switch ($Action) {
     'test' { if (-not $SkipImageBuild) { Ensure-Image }; Apply-Test }
     'status' { Invoke-Checked $Kubectl @('get', 'job', $JobName, '-n', $Namespace, '-o', 'wide') }
+    'export' { Export-ExistingJob }
     'destroy' { Invoke-Checked $Kubectl @('delete', 'job', $JobName, '-n', $Namespace, '--ignore-not-found') }
 }
