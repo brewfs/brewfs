@@ -18,6 +18,7 @@ param(
     [string]$ExistingJobName,
     [string]$ArtifactDirectory,
     [string]$ArchivePath,
+    [string]$ResultVaultUrl,
     [ValidateRange(30, 86400)]
     [int]$ArtifactHoldSeconds = 900,
     [ValidateRange(1, 1440)]
@@ -99,6 +100,19 @@ function Export-Artifacts {
         Remove-Item -LiteralPath $stage, $localArchive -Force -Recurse -ErrorAction SilentlyContinue
         # Best effort: the pod may already have exited when this cleanup runs.
         & $Kubectl @('exec', '-n', $Namespace, $Pod, '-c', 'perf', '--', 'rm', '-f', $remoteArchive) 2>$null | Out-Null
+    }
+}
+
+function Upload-ResultVault {
+    param([Parameter(Mandatory = $true)][string]$Archive)
+    if (-not $ResultVaultUrl) { return }
+    $endpoint = "$($ResultVaultUrl.TrimEnd('/'))/api/runs"
+    try {
+        $response = Invoke-RestMethod -Uri $endpoint -Method Post -Form @{ archive = Get-Item -LiteralPath $Archive }
+        Write-Host "Result Vault 跑次: $($response.id)"
+        Write-Host "Result Vault URL: $($ResultVaultUrl.TrimEnd('/'))"
+    } catch {
+        Write-Warning "上传 Result Vault 失败（本地归档仍已保留）：$($_.Exception.Message)"
     }
 }
 
@@ -287,6 +301,7 @@ function Apply-Test {
                     $exported = Export-Artifacts -Pod $pod
                     Write-Host "测试结果目录: $($exported.Directory)"
                     Write-Host "测试结果归档: $($exported.Archive)"
+                    Upload-ResultVault -Archive $exported.Archive
                 } catch {
                     Write-Warning "导出 artifacts 失败，将在下一轮重试：$($_.Exception.Message)"
                 }

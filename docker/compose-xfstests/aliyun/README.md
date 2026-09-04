@@ -12,10 +12,11 @@
   -RegistryImage ghcr.io/ivanbeethoven/brewfs-perf `
   -GhcrToken $env:GHCR_TOKEN `
   -Backend redis -DataBackend local-fs `
-  -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis
+  -ArtifactDirectory .\docker\compose-xfstests\artifacts\ack-redis `
+  -ResultVaultUrl http://112.124.50.201
 ```
 
-测试完成后脚本会在本地输出两个结果：完整结果目录和同名 `.zip` 归档。归档包含性能报告、原始日志、BrewFS 日志、后端诊断和性能统计，便于上传或脱离集群查看（xfstests/LTP runner 的 artifacts 也使用同样的目录结构）。脚本会在容器中先生成单个 `tar.gz` 再下载，避免逐文件复制时出现 `unexpected EOF`。
+测试完成后脚本会在本地输出两个结果：完整结果目录和同名 `.zip` 归档。指定 `-ResultVaultUrl` 后，脚本还会自动把同一个 ZIP POST 到网站；网站不可用时不会丢弃本地结果，只会发出警告。归档包含性能报告、原始日志、BrewFS 日志、后端诊断和性能统计，便于上传或脱离集群查看（xfstests/LTP runner 的 artifacts 也使用同样的目录结构）。脚本会在容器中先生成单个 `tar.gz` 再下载，避免逐文件复制时出现 `unexpected EOF`。
 
 若希望在测试进行时从另一终端手动导出，保留 Job 并延长结果保留窗口：
 
