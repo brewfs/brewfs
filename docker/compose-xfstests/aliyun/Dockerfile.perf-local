@@ -32,6 +32,7 @@ COPY docker/compose-xfstests/run_perf_in_container.sh /usr/local/bin/run_perf_in
 COPY docker/compose-xfstests/perf_metadata_fallback.py /usr/local/bin/perf_metadata_fallback.py
 
 RUN set -eux; \
+    sed -i 's/\r$//' /usr/local/bin/*.sh /usr/local/bin/*.py; \
     chmod +x /usr/local/bin/brewfs /usr/local/bin/xfstests_report.sh \
       /usr/local/bin/run_xfstests_in_container.sh /usr/local/bin/run_perf_in_container.sh \
       /usr/local/bin/perf_metadata_fallback.py; \
