@@ -124,8 +124,9 @@ RUNNER=__RUNNER__
 DATA_ARGS=__DATA_ARGS__
 BENCH_ARGS=__BENCH_ARGS__
 
-apt-get update
-apt-get install -y git curl docker.io docker-compose-v2 || apt-get install -y git curl docker.io docker-compose-plugin
+apt-get update -qq
+apt-get install -y -qq git curl docker.io docker-compose-v2 protobuf-compiler \
+  || apt-get install -y -qq git curl docker.io docker-compose-plugin protobuf-compiler
 systemctl enable --now docker
 
 # The distro Cargo on the supported Ubuntu image may predate Rust 2024
