@@ -2,6 +2,9 @@ FROM rust:1.91-bookworm AS brewfs-builder
 
 WORKDIR /src
 COPY . .
+ENV CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://rsproxy.cn/index/ \
+    CARGO_NET_RETRY=5 \
+    CARGO_HTTP_TIMEOUT=120
 RUN cargo build --release -p brewfs --bin brewfs
 
 FROM debian:trixie-slim
