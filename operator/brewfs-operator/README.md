@@ -14,6 +14,7 @@
 - `docs/brewfscluster.md`
 - `docs/brewfsmount.md`
 - `docs/workflows.md`
+- `scripts/README.md`（Aliyun ACK/Aliyun Kubernetes E2E 流程）
 
 ## 当前范围
 
