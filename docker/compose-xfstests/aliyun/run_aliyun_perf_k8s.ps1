@@ -145,6 +145,7 @@ spec:
       containers: [{ name: tikv, image: pingcap/tikv:v8.5.0, args: ["--addr=0.0.0.0:20160", "--advertise-addr=tikv:20160", "--pd=pd:2379"] }]
 "@
     }
+    $imagePullSecrets = if ($GhcrToken) { "      imagePullSecrets:`n      - name: brewfs-ghcr" } else { '' }
     $job = @"
 apiVersion: batch/v1
 kind: Job
@@ -156,6 +157,7 @@ spec:
     metadata: { labels: { app: brewfs-perf, job: $JobName } }
     spec:
       restartPolicy: Never
+$imagePullSecrets
 $initContainers
       containers:
       - name: perf
@@ -196,6 +198,12 @@ $initContainers
 
 function Apply-Test {
     Invoke-Checked $Kubectl @('create', 'namespace', $Namespace, '--dry-run=client', '-o', 'yaml') | & $Kubectl apply -f - | Out-Host
+    if ($GhcrToken) {
+        $secretArgs = @('create', 'secret', 'docker-registry', 'brewfs-ghcr', '--namespace', $Namespace,
+            '--docker-server=ghcr.io', '--docker-username=Ivanbeethoven', "--docker-password=$GhcrToken",
+            '--dry-run=client', '-o', 'yaml')
+        Invoke-Checked $Kubectl $secretArgs | & $Kubectl apply -f - | Out-Host
+    }
     $yaml = Render-Manifests
     $yaml | & $Kubectl apply -f - 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) {
