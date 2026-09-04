@@ -26,6 +26,7 @@ web/console/dist/
 !web/results/**
 web/results/node_modules/
 web/results/dist/
+web/results/__pycache__/
 
 # Editor and OS noise
 .DS_Store
