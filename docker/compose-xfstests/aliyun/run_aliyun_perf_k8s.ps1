@@ -58,7 +58,7 @@ function Render-Manifests {
         @"
       initContainers:
       - name: rustfs-init
-        image: amazon/aws-cli:2
+        image: amazon/aws-cli:latest
         command: ["sh", "-ec"]
         args:
         - |
