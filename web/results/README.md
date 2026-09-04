@@ -16,9 +16,11 @@ npm run dev
 - 保留 ZIP central directory 中的原始修改时间、文件大小、压缩方式和 Unix mode；
 - 按跑次名称、Redis/TiKV、S3/local-fs、状态和文件路径查询；
 - 查看跑次时间范围、文件清单和 Markdown/日志/TSV/JSON 等文本预览；
+- 自动解析 `perf-summary.tsv`、fio JSON 和 fully-drained throughput，展示耗时、吞吐、IOPS 与 p99；
+- 在左侧勾选最多四个跑次，按吞吐、IOPS 或耗时绘制可视化对比；
 - 将当前跑次重新下载为 ZIP，重新打包时继续写入每个文件的原始 mtime。
 
-`run_aliyun_perf_k8s.ps1` 导出的目录或 `.zip` 可以直接拖到页面中。浏览器清理站点数据会删除本地结果，因此需要长期保存时请同时保留脚本生成的 ZIP 归档。
+`run_aliyun_perf_k8s.ps1` 导出的目录或 `.zip` 可以直接拖到页面中。脚本默认包含 fio-bigwrite、fio-bigread、fio-seqread、fio-seqwrite、fio-randread、fio-randwrite、fio-randrw 以及 dirstress/dirperf/metaperf/looptest；也可以通过 `-PerfTools` 缩小矩阵。浏览器清理站点数据会删除本地结果，因此需要长期保存时请同时保留脚本生成的 ZIP 归档。
 
 ## 服务器模式
 

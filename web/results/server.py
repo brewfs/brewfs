@@ -7,6 +7,7 @@ group or a reverse proxy with authentication before exposing it publicly.
 """
 
 import email
+import csv
 import hashlib
 import json
 import mimetypes
@@ -66,6 +67,99 @@ def classify(paths: List[str], extracted: Path) -> Tuple[str, str, str]:
     return backend, data_backend, status
 
 
+def metric_number(value):
+    try:
+        parsed = float(value)
+        return parsed if parsed == parsed and parsed not in (float("inf"), float("-inf")) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_metrics(extracted: Path) -> List[dict]:
+    """Extract stable, comparable metrics without requiring fio or pandas on the server."""
+    metrics = {}
+    summary = next(iter(extracted.rglob("perf-summary.tsv")), None)
+    if summary and summary.is_file():
+        try:
+            with summary.open(newline="", errors="replace") as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    tool = row.get("tool", "")
+                    if tool:
+                        metrics[tool] = {
+                            "tool": tool,
+                            "status": row.get("status", "unknown"),
+                            "seconds": metric_number(row.get("seconds")) or 0,
+                        }
+        except (OSError, ValueError):
+            pass
+    drained = next(iter(extracted.rglob("fully-drained-throughput.tsv")), None)
+    if drained and drained.is_file():
+        try:
+            with drained.open(newline="", errors="replace") as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    metric = metrics.get(row.get("tool", ""))
+                    if not metric:
+                        continue
+                    for key, source in (("readMiBps", "read_mib_s"), ("writeMiBps", "write_mib_s"), ("totalMiBps", "total_mib_s")):
+                        value = metric_number(row.get(source))
+                        if value is not None:
+                            metric[key] = value
+        except (OSError, ValueError):
+            pass
+    for path in extracted.rglob("fio*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            jobs = data.get("jobs", [])
+            if not jobs:
+                continue
+            tool = path.stem
+            metric = metrics.setdefault(tool, {"tool": tool, "status": "unknown", "seconds": 0})
+            read_bw = write_bw = read_iops = write_iops = 0.0
+            read_p99 = write_p99 = 0.0
+            runtime_ms = 0.0
+            for job in jobs:
+                runtime_ms = max(runtime_ms, metric_number(job.get("job_runtime")) or 0)
+                for kind in ("read", "write"):
+                    op = job.get(kind) or {}
+                    runtime_ms = max(runtime_ms, metric_number(op.get("runtime")) or 0)
+                    bw = metric_number(op.get("bw_bytes")) or 0
+                    iops = metric_number(op.get("iops")) or 0
+                    if kind == "read":
+                        read_bw += bw; read_iops += iops
+                    else:
+                        write_bw += bw; write_iops += iops
+                    percentiles = (op.get("clat_ns") or {}).get("percentile") or {}
+                    p99 = metric_number(percentiles.get("99.000000") or percentiles.get("99")) or 0
+                    if kind == "read": read_p99 = max(read_p99, p99)
+                    else: write_p99 = max(write_p99, p99)
+            if read_bw: metric["readMiBps"] = read_bw / (1024 * 1024)
+            if write_bw: metric["writeMiBps"] = write_bw / (1024 * 1024)
+            if read_bw + write_bw: metric["totalMiBps"] = (read_bw + write_bw) / (1024 * 1024)
+            if read_iops: metric["readIops"] = read_iops
+            if write_iops: metric["writeIops"] = write_iops
+            if read_p99: metric["readP99Ms"] = read_p99 / 1000000
+            if write_p99: metric["writeP99Ms"] = write_p99 / 1000000
+            if not metric.get("seconds") and runtime_ms: metric["seconds"] = runtime_ms / 1000
+        except (OSError, ValueError, TypeError):
+            continue
+    # Fully-drained throughput includes close/flush time and intentionally wins
+    # over foreground fio bandwidth for write workloads.
+    if drained and drained.is_file():
+        try:
+            with drained.open(newline="", errors="replace") as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    metric = metrics.get(row.get("tool", ""))
+                    if not metric:
+                        continue
+                    for key, source in (("readMiBps", "read_mib_s"), ("writeMiBps", "write_mib_s"), ("totalMiBps", "total_mib_s")):
+                        value = metric_number(row.get(source))
+                        if value is not None:
+                            metric[key] = value
+        except (OSError, ValueError):
+            pass
+    return [metrics[key] for key in sorted(metrics)]
+
+
 def create_run(archive: bytes, source_name: str) -> dict:
     run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     run_dir = ROOT / run_id
@@ -122,6 +216,7 @@ def create_run(archive: bytes, source_name: str) -> dict:
         "totalBytes": sum(item["size"] for item in files),
         "earliestMtime": min(mtimes) if mtimes else now_ms(),
         "latestMtime": max(mtimes) if mtimes else now_ms(),
+        "metrics": parse_metrics(extracted),
         "files": files,
     }
     (run_dir / "metadata.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -133,7 +228,11 @@ def load_runs() -> List[dict]:
     ROOT.mkdir(parents=True, exist_ok=True)
     for metadata in ROOT.glob("*/metadata.json"):
         try:
-            runs.append(json.loads(metadata.read_text(encoding="utf-8")))
+            run = json.loads(metadata.read_text(encoding="utf-8"))
+            if "metrics" not in run:
+                run["metrics"] = parse_metrics(metadata.parent / "files")
+                metadata.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
+            runs.append(run)
         except (OSError, json.JSONDecodeError):
             continue
     return sorted(runs, key=lambda item: item.get("uploadedAt", 0), reverse=True)

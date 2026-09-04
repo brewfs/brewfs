@@ -11,7 +11,7 @@ param(
     [string]$Backend = 'redis',
     [ValidateSet('s3', 'local-fs')]
     [string]$DataBackend = 'local-fs',
-    [string]$PerfTools = 'dirstress dirperf metaperf looptest',
+    [string]$PerfTools = 'fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest',
     [switch]$SkipImageBuild,
     [switch]$KeepJob,
     [Alias('JobName')]

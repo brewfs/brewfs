@@ -1,4 +1,5 @@
 import type { ArtifactFile } from './archive';
+import type { PerfMetric } from './metrics';
 
 export type RunStatus = 'pass' | 'attention' | 'unknown';
 
@@ -16,6 +17,7 @@ export type ResultRun = {
   latestMtime: number;
   storage: 'browser' | 'server';
   archiveUrl?: string;
+  metrics?: PerfMetric[];
   files: ArtifactFile[];
 };
 
