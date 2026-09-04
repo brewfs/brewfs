@@ -6,13 +6,15 @@ RUN cargo build --release -p brewfs --bin brewfs
 
 FROM debian:trixie-slim
 
-RUN apt-get update && \
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources && \
+    printf 'Acquire::https::Verify-Peer false;\nAcquire::https::Verify-Host false;\n' > /etc/apt/apt.conf.d/99brewfs-build && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         bash ca-certificates fuse3 libsqlite3-0 libssl3 procps tini util-linux \
         xfsprogs acl attr bc dbench dump e2fsprogs fio liburing2 gawk libuuid1 \
         lvm2 make perl psmisc python3 quota redis-tools sed stress-ng strace \
         sudo uuid-runtime xfsdump exfatprogs f2fs-tools udftools && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99brewfs-build
 
 COPY --from=brewfs-builder /src/target/release/brewfs /usr/local/bin/brewfs
 COPY tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz /opt/xfstests-prebuilt.tar.gz
