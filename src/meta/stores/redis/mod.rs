@@ -39,6 +39,8 @@ use tracing::{Instrument, error, info};
 use uuid::Uuid;
 
 const ROOT_INODE: i64 = 1;
+const REDIS_CLUSTER_PROBE_KEY_A: &str = "c{brewfs-cluster-probe-a}";
+const REDIS_CLUSTER_PROBE_KEY_B: &str = "ds_{brewfs-cluster-probe-b}";
 const COUNTER_INODE_KEY: &str = "nextinode";
 const COUNTER_SLICE_KEY: &str = "nextchunk";
 const NODE_KEY_PREFIX: &str = "i";
@@ -84,6 +86,127 @@ const CHUNK_CAS_LUA: &str = r#"
         redis.call('SET', KEYS[2], new_ver)
     else
         redis.call('DEL', KEYS[2])
+    end
+
+    return 1
+"#;
+
+// Atomically replace a compacted chunk and create the delayed-GC ledger for
+// every removed slice. Redis does not roll back earlier writes when a Lua
+// script hits a runtime error, so all fallible type checks and delayed-ID
+// allocation happen before the chunk list is changed.
+// KEYS: chunk list, chunk version, delayed counter, delayed index,
+// uncommitted pending index, uncommitted orphan index.
+// ARGV: expected version, new version, delayed key prefix, chunk id,
+// timestamp, delayed count, uncommitted key prefix, new-slice count,
+// delayed (sid, offset, size) triples, new slice IDs, serialized final slices.
+const CHUNK_COMPACT_LUA: &str = r#"
+    local expected = tonumber(ARGV[1])
+    local new_ver = tonumber(ARGV[2])
+    local prefix = ARGV[3]
+    local cid = ARGV[4]
+    local now = ARGV[5]
+    local n = tonumber(ARGV[6])
+    local uc_prefix = ARGV[7]
+    local new_count = tonumber(ARGV[8])
+
+    if expected == nil or new_ver == nil or n == nil or new_count == nil
+        or n < 0 or n % 1 ~= 0 or new_count < 0 or new_count % 1 ~= 0 then
+        return redis.error_reply('invalid compact arguments')
+    end
+    if #ARGV < 8 + 3 * n + new_count then
+        return redis.error_reply('missing compact arguments')
+    end
+
+    local current = redis.call('GET', KEYS[2])
+    local current_ver = 0
+    if current then
+        current_ver = tonumber(current)
+        if current_ver == nil then
+            return redis.error_reply('invalid chunk version value')
+        end
+    end
+    if current_ver ~= expected then
+        return 0
+    end
+
+    local function key_type(key)
+        local reply = redis.call('TYPE', key)
+        if type(reply) == 'table' then
+            return reply.ok
+        end
+        return reply
+    end
+
+    local first_id = 0
+    if n > 0 then
+        local counter_type = key_type(KEYS[3])
+        if counter_type ~= 'none' and counter_type ~= 'string' then
+            return redis.error_reply('invalid delayed counter type')
+        end
+        local index_type = key_type(KEYS[4])
+        if index_type ~= 'none' and index_type ~= 'zset' then
+            return redis.error_reply('invalid delayed index type')
+        end
+
+        local allocation = redis.pcall('INCRBY', KEYS[3], n)
+        if type(allocation) == 'table' and allocation.err then
+            return redis.error_reply(allocation.err)
+        end
+        first_id = allocation - n + 1
+
+        -- A collision indicates a corrupt/out-of-sync counter. Reject it
+        -- before touching the chunk; consuming an ID range is harmless.
+        for i = 0, n - 1 do
+            local ds_key = prefix .. (first_id + i)
+            if key_type(ds_key) ~= 'none' then
+                return redis.error_reply('delayed id collision')
+            end
+        end
+    end
+
+    if new_count > 0 then
+        local pending_type = key_type(KEYS[5])
+        if pending_type ~= 'none' and pending_type ~= 'zset' then
+            return redis.error_reply('invalid uncommitted pending index type')
+        end
+        local orphan_type = key_type(KEYS[6])
+        if orphan_type ~= 'none' and orphan_type ~= 'zset' then
+            return redis.error_reply('invalid uncommitted orphan index type')
+        end
+    end
+
+    local new_id_start = 9 + 3 * n
+    local data_start = new_id_start + new_count
+    redis.call('DEL', KEYS[1])
+    for i = data_start, #ARGV do
+        redis.call('RPUSH', KEYS[1], ARGV[i])
+    end
+    if new_ver > 0 then
+        redis.call('SET', KEYS[2], new_ver)
+    else
+        redis.call('DEL', KEYS[2])
+    end
+
+    for i = 0, n - 1 do
+        local delayed_id = first_id + i
+        local ds_key = prefix .. delayed_id
+        local base = 9 + 3 * i
+        redis.call('HSET', ds_key,
+            'sid', ARGV[base],
+            'off', ARGV[base + 1],
+            'sz', ARGV[base + 2],
+            'st', 'pending',
+            'ca', now,
+            'cid', cid)
+        redis.call('ZADD', KEYS[4], now, delayed_id)
+    end
+
+    for i = 0, new_count - 1 do
+        local slice_id = ARGV[new_id_start + i]
+        redis.call('DEL', uc_prefix .. slice_id)
+        redis.call('ZREM', KEYS[5], slice_id)
+        redis.call('ZREM', KEYS[6], slice_id)
     end
 
     return 1
@@ -409,6 +532,21 @@ const UNCOMMITTED_KEY_PREFIX: &str = "uc";
 const UNCOMMITTED_PENDING_INDEX_KEY: &str = "uc_pending_idx";
 const UNCOMMITTED_ORPHAN_INDEX_KEY: &str = "uc_orphan_idx";
 const COMPACT_RETRY_LIMIT: usize = 64;
+
+/// Keep repeated `df`/statfs calls from rescanning every inode in Redis.
+///
+/// This is deliberately a per-client, best-effort snapshot: metadata
+/// mutations do not invalidate it, so local or remote changes may remain
+/// invisible until the TTL expires. That bounded staleness avoids adding a
+/// global mutation epoch write to every metadata operation.
+const STAT_FS_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Suggested number of inode keys Redis should return for each SCAN call.
+const STAT_FS_SCAN_COUNT: usize = 1000;
+
+/// Hard upper bound for node payloads fetched by one MGET. Unlike SCAN's COUNT,
+/// this is enforced client-side because COUNT is only a hint to Redis.
+const STAT_FS_MGET_BATCH_SIZE: usize = 512;
 
 // Lua script for atomically appending a slice, extending file size, and updating
 // best-effort allocated block accounting in one RTT.
@@ -1305,6 +1443,10 @@ struct LuaResponse {
 }
 
 /// Minimal Redis-backed meta store.
+///
+/// This backend requires standalone Redis command semantics. Redis Cluster is
+/// not supported because filesystem transitions use atomic Lua scripts across
+/// multiple metadata keys, including keys allocated dynamically by a script.
 pub struct RedisMetaStore {
     conn: ConnectionManager,
     _config: Config,
@@ -1320,9 +1462,45 @@ pub struct RedisMetaStore {
     chunk_scan_buffer: std::sync::Mutex<Vec<u64>>,
     chunk_scan_next_cursor: std::sync::Mutex<Option<String>>,
     global_lock_tokens: std::sync::Mutex<HashMap<String, String>>,
+    /// The async mutex also provides single-flight behavior on a cold cache:
+    /// concurrent statfs callers wait for the first scan instead of duplicating it.
+    stat_fs_cache: tokio::sync::Mutex<Option<(std::time::Instant, StatFsSnapshot)>>,
 }
 
 impl RedisMetaStore {
+    async fn verify_standalone_redis(conn: &mut ConnectionManager) -> Result<(), MetaError> {
+        // The backend requires EVAL and cross-key atomicity in normal operation.
+        // Probe that exact capability with two deliberately different hash tags;
+        // Redis Cluster rejects the request with CROSSSLOT before running the
+        // side-effect-free script. Other errors are also fatal because the real
+        // metadata scripts would be unusable for the same connection.
+        let probe: i32 = redis::cmd("EVAL")
+            .arg("return 1")
+            .arg(2)
+            .arg(REDIS_CLUSTER_PROBE_KEY_A)
+            .arg(REDIS_CLUSTER_PROBE_KEY_B)
+            .query_async(conn)
+            .await
+            .map_err(|err| {
+                if err.to_string().to_ascii_uppercase().contains("CROSSSLOT") {
+                    MetaError::Config(
+                        "Redis Cluster is not supported by the metadata backend; use a standalone Redis endpoint"
+                            .to_string(),
+                    )
+                } else {
+                    MetaError::Config(format!(
+                        "Redis standalone capability probe failed: {err}"
+                    ))
+                }
+            })?;
+        if probe != 1 {
+            return Err(MetaError::Config(
+                "Redis standalone capability probe returned an unexpected result".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn resolve_redis_url(url: &str) -> Result<String, MetaError> {
         let Some((scheme, rest)) = url.split_once("://") else {
             return Ok(url.to_string());
@@ -1415,6 +1593,7 @@ impl RedisMetaStore {
             chunk_scan_buffer: std::sync::Mutex::new(Vec::new()),
             chunk_scan_next_cursor: std::sync::Mutex::new(None),
             global_lock_tokens: std::sync::Mutex::new(HashMap::new()),
+            stat_fs_cache: tokio::sync::Mutex::new(None),
         };
         store.init_root_directory().await?;
         Ok(store)
@@ -1448,11 +1627,12 @@ impl RedisMetaStore {
                         "Failed to parse Redis URL {resolved_url} (from {url}): {e}"
                     ))
                 })?;
-                let cm = ConnectionManager::new(client).await.map_err(|e| {
+                let mut cm = ConnectionManager::new(client).await.map_err(|e| {
                     MetaError::Config(format!(
                         "Failed to connect to Redis backend using {resolved_url}: {e}"
                     ))
                 })?;
+                Self::verify_standalone_redis(&mut cm).await?;
                 info!("redis connection established");
                 Ok(cm)
             }
@@ -3023,43 +3203,65 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
-        let mut conn = self.conn.clone();
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(format!("{NODE_KEY_PREFIX}*"))
-            .query_async(&mut conn)
-            .await
-            .map_err(redis_err)?;
-
-        if keys.is_empty() {
-            return Ok(stat_fs_snapshot_from_usage(0, 0));
+        let mut cached = self.stat_fs_cache.lock().await;
+        if let Some((cached_at, snapshot)) = cached.as_ref()
+            && cached_at.elapsed() < STAT_FS_CACHE_TTL
+        {
+            return Ok(snapshot.clone());
         }
 
-        let nodes: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
-            .arg(&keys)
-            .query_async(&mut conn)
-            .await
-            .map_err(redis_err)?;
-
+        let mut conn = self.conn.clone();
         let mut used_space = 0u64;
         let mut used_inodes = 0u64;
+        let mut cursor = 0u64;
 
-        for (key, data) in keys.iter().zip(nodes.into_iter()) {
-            let Some(bytes) = data else {
-                continue;
-            };
-            let node: StoredNode = serde_json::from_slice(&bytes)
-                .map_err(|e| MetaError::Internal(format!("Failed to parse node {key}: {e}")))?;
+        loop {
+            let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(format!("{NODE_KEY_PREFIX}*"))
+                .arg("COUNT")
+                .arg(STAT_FS_SCAN_COUNT)
+                .query_async(&mut conn)
+                .instrument(tracing::trace_span!("stat_fs.redis_scan", cursor))
+                .await
+                .map_err(redis_err)?;
 
-            if node.deleted || node.attr.nlink == 0 {
-                continue;
+            for key_batch in keys.chunks(STAT_FS_MGET_BATCH_SIZE) {
+                let nodes: Vec<Option<Vec<u8>>> = redis::cmd("MGET")
+                    .arg(key_batch)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(redis_err)?;
+
+                for (key, data) in key_batch.iter().zip(nodes) {
+                    let Some(bytes) = data else {
+                        continue;
+                    };
+                    let node: StoredNode = serde_json::from_slice(&bytes).map_err(|e| {
+                        MetaError::Internal(format!("Failed to parse node {key}: {e}"))
+                    })?;
+
+                    if node.deleted || node.attr.nlink == 0 {
+                        continue;
+                    }
+
+                    let attr = node.as_file_attr();
+                    used_space =
+                        used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
+                    used_inodes = used_inodes.saturating_add(1);
+                }
             }
 
-            let attr = node.as_file_attr();
-            used_space = used_space.saturating_add(stat_fs_used_bytes(attr.size, attr.blocks));
-            used_inodes = used_inodes.saturating_add(1);
+            if next_cursor == 0 {
+                break;
+            }
+            cursor = next_cursor;
         }
 
-        Ok(stat_fs_snapshot_from_usage(used_space, used_inodes))
+        let snapshot = stat_fs_snapshot_from_usage(used_space, used_inodes);
+        *cached = Some((std::time::Instant::now(), snapshot.clone()));
+        Ok(snapshot)
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -3535,8 +3737,22 @@ impl MetaStore for RedisMetaStore {
 
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
-        let script = redis::Script::new(CHUNK_CAS_LUA);
+        let script = redis::Script::new(CHUNK_COMPACT_LUA);
         let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
+        let delayed_args: Vec<String> = delayed_slices
+            .iter()
+            .flat_map(|(slice_id, offset, size)| {
+                [
+                    slice_id.to_string(),
+                    offset.to_string(),
+                    u64::from(*size).to_string(),
+                ]
+            })
+            .collect();
+        let new_slice_ids: Vec<String> = new_slices
+            .iter()
+            .map(|slice| slice.slice_id.to_string())
+            .collect();
 
         for _ in 0..COMPACT_RETRY_LIMIT {
             let mut conn = self.conn.clone();
@@ -3571,12 +3787,25 @@ impl MetaStore for RedisMetaStore {
 
             let new_version = current_version + 1;
 
-            // Atomic CAS via Lua: replace list iff version still matches.
+            // The chunk swap and delayed-GC ledger are one script. All script
+            // errors that can be preflighted occur before the chunk changes.
             let ok: i32 = script
                 .key(&chunk_key)
                 .key(&version_key)
+                .key(DELAYED_COUNTER_KEY)
+                .key(DELAYED_INDEX_KEY)
+                .key(UNCOMMITTED_PENDING_INDEX_KEY)
+                .key(UNCOMMITTED_ORPHAN_INDEX_KEY)
                 .arg(current_version)
                 .arg(new_version)
+                .arg(DELAYED_KEY_PREFIX)
+                .arg(chunk_id)
+                .arg(Utc::now().timestamp())
+                .arg(delayed_slices.len())
+                .arg(UNCOMMITTED_KEY_PREFIX)
+                .arg(new_slice_ids.len())
+                .arg(&delayed_args)
+                .arg(&new_slice_ids)
                 .arg(&final_data)
                 .invoke_async(&mut conn)
                 .await
@@ -3584,38 +3813,6 @@ impl MetaStore for RedisMetaStore {
 
             if ok == 0 {
                 continue;
-            }
-
-            // CAS succeeded — create delayed records for removed slices.
-            if !delayed_slices.is_empty() {
-                let n = delayed_slices.len() as i64;
-                let last_id: i64 = redis::cmd("INCRBY")
-                    .arg(DELAYED_COUNTER_KEY)
-                    .arg(n)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(redis_err)?;
-                let first_id = last_id - n + 1;
-                let now = Utc::now().timestamp();
-
-                let mut pipe = redis::pipe();
-                pipe.atomic();
-                for (i, (slice_id, offset, size)) in delayed_slices.iter().enumerate() {
-                    let delayed_id = first_id + i as i64;
-                    let ds_key = self.delayed_key(delayed_id);
-                    pipe.hset(&ds_key, "sid", slice_id.to_string());
-                    pipe.hset(&ds_key, "off", offset.to_string());
-                    pipe.hset(&ds_key, "sz", u64::from(*size).to_string());
-                    pipe.hset(&ds_key, "st", "pending");
-                    pipe.hset(&ds_key, "ca", now.to_string());
-                    pipe.hset(&ds_key, "cid", chunk_id.to_string());
-                    pipe.cmd("ZADD")
-                        .arg(DELAYED_INDEX_KEY)
-                        .arg(now)
-                        .arg(delayed_id)
-                        .ignore();
-                }
-                pipe.query_async::<()>(&mut conn).await.map_err(redis_err)?;
             }
 
             return Ok(());
@@ -3653,8 +3850,22 @@ impl MetaStore for RedisMetaStore {
 
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
-        let script = redis::Script::new(CHUNK_CAS_LUA);
+        let script = redis::Script::new(CHUNK_COMPACT_LUA);
         let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
+        let delayed_args: Vec<String> = delayed_slices
+            .iter()
+            .flat_map(|(slice_id, offset, size)| {
+                [
+                    slice_id.to_string(),
+                    offset.to_string(),
+                    u64::from(*size).to_string(),
+                ]
+            })
+            .collect();
+        let new_slice_ids: Vec<String> = new_slices
+            .iter()
+            .map(|slice| slice.slice_id.to_string())
+            .collect();
 
         for _ in 0..COMPACT_RETRY_LIMIT {
             let mut conn = self.conn.clone();
@@ -3729,12 +3940,25 @@ impl MetaStore for RedisMetaStore {
                 final_data.push(crate::meta::serialization::serialize_meta(slice)?);
             }
 
-            // Atomic CAS via Lua: replace list iff version still matches.
+            // Commit the replacement, delayed-GC records, and uncommitted
+            // cleanup as one metadata transition.
             let ok: i32 = script
                 .key(&chunk_key)
                 .key(&version_key)
+                .key(DELAYED_COUNTER_KEY)
+                .key(DELAYED_INDEX_KEY)
+                .key(UNCOMMITTED_PENDING_INDEX_KEY)
+                .key(UNCOMMITTED_ORPHAN_INDEX_KEY)
                 .arg(current_version)
                 .arg(new_version)
+                .arg(DELAYED_KEY_PREFIX)
+                .arg(chunk_id)
+                .arg(Utc::now().timestamp())
+                .arg(delayed_slices.len())
+                .arg(UNCOMMITTED_KEY_PREFIX)
+                .arg(new_slice_ids.len())
+                .arg(&delayed_args)
+                .arg(&new_slice_ids)
                 .arg(&final_data)
                 .invoke_async(&mut conn)
                 .await
@@ -3742,72 +3966,6 @@ impl MetaStore for RedisMetaStore {
 
             if ok == 0 {
                 continue;
-            }
-
-            // CAS succeeded — create delayed records and clean up uncommitted entries.
-            if !delayed_slices.is_empty() {
-                let n = delayed_slices.len() as i64;
-                let last_id: i64 = redis::cmd("INCRBY")
-                    .arg(DELAYED_COUNTER_KEY)
-                    .arg(n)
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(redis_err)?;
-                let first_id = last_id - n + 1;
-                let now = Utc::now().timestamp();
-
-                let mut pipe = redis::pipe();
-                pipe.atomic();
-                for (i, (slice_id, offset, size)) in delayed_slices.iter().enumerate() {
-                    let delayed_id = first_id + i as i64;
-                    let ds_key = self.delayed_key(delayed_id);
-                    pipe.hset(&ds_key, "sid", slice_id.to_string());
-                    pipe.hset(&ds_key, "off", offset.to_string());
-                    pipe.hset(&ds_key, "sz", u64::from(*size).to_string());
-                    pipe.hset(&ds_key, "st", "pending");
-                    pipe.hset(&ds_key, "ca", now.to_string());
-                    pipe.hset(&ds_key, "cid", chunk_id.to_string());
-                    pipe.cmd("ZADD")
-                        .arg(DELAYED_INDEX_KEY)
-                        .arg(now)
-                        .arg(delayed_id)
-                        .ignore();
-                }
-                // Clean up uncommitted records for new slices
-                for slice in new_slices {
-                    let uc_key = self.uncommitted_key(slice.slice_id);
-                    pipe.cmd("DEL").arg(&uc_key).ignore();
-                    pipe.cmd("ZREM")
-                        .arg(UNCOMMITTED_PENDING_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore();
-                    pipe.cmd("ZREM")
-                        .arg(UNCOMMITTED_ORPHAN_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore();
-                }
-                pipe.query_async::<()>(&mut conn).await.map_err(redis_err)?;
-            } else {
-                // No delayed slices, still clean up uncommitted records.
-                for slice in new_slices {
-                    let uc_key = self.uncommitted_key(slice.slice_id);
-                    redis::pipe()
-                        .atomic()
-                        .cmd("DEL")
-                        .arg(&uc_key)
-                        .ignore()
-                        .cmd("ZREM")
-                        .arg(UNCOMMITTED_PENDING_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore()
-                        .cmd("ZREM")
-                        .arg(UNCOMMITTED_ORPHAN_INDEX_KEY)
-                        .arg(slice.slice_id.to_string())
-                        .ignore()
-                        .query_async::<()>(&mut conn)
-                        .await
-                        .map_err(redis_err)?;
-                }
             }
 
             return Ok(());

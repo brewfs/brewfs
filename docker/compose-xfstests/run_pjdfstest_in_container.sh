@@ -7,8 +7,22 @@ info() { log "INFO  $*"; }
 ok()   { log "OK    $*"; }
 err()  { log "ERROR $*" >&2; }
 
+validate_workspace_config() {
+    if [[ "$volume_format" == "workspace-v1" && -z "$workspace_id" ]]; then
+        err "BREWFS_WORKSPACE_ID is required for BREWFS_VOLUME_FORMAT=workspace-v1"
+        exit 2
+    fi
+    if [[ -n "$workspace_id" && "$volume_format" != "workspace-v1" ]]; then
+        err "BREWFS_WORKSPACE_ID requires BREWFS_VOLUME_FORMAT=workspace-v1"
+        exit 2
+    fi
+}
+
 config_path="${BREWFS_CONFIG_PATH:-/run/brewfs/config.yaml}"
 mount_dir="${BREWFS_MOUNT_POINT:-/mnt/brewfs}"
+volume_format="${BREWFS_VOLUME_FORMAT:-}"
+workspace_id="${BREWFS_WORKSPACE_ID:-}"
+workspace_namespace="${BREWFS_WORKSPACE_NAMESPACE:-brewfs}"
 data_backend="${BREWFS_DATA_BACKEND:-local-fs}"
 data_dir="${BREWFS_DATA_DIR:-${BREWFS_HOME:-/var/lib/brewfs}/data}"
 meta_backend="${BREWFS_META_BACKEND:-redis}"
@@ -22,6 +36,7 @@ artifact_root="${BREWFS_ARTIFACT_ROOT:-/artifacts}"
 artifact_dir="${BREWFS_ARTIFACT_DIR:-}"
 pjdfstest_dir="${PJDFSTEST_DIR:-/opt/pjdfstest}"
 pjdfstest_extra_args="${PJDFSTEST_EXTRA_ARGS:-}"
+pjdfstest_include_patterns="${PJDFSTEST_INCLUDE_PATTERNS:-}"
 pjdfstest_skip_patterns="${PJDFSTEST_SKIP_PATTERNS:-}"
 pjdfstest_skip_patterns_file="${PJDFSTEST_SKIP_PATTERNS_FILE:-}"
 pjdfstest_default_skip_file="${PJDFSTEST_DEFAULT_SKIP_FILE:-/usr/local/share/brewfs/pjdfstest_skip_tests.txt}"
@@ -35,6 +50,13 @@ write_config() {
 
     {
         echo "mount_point: $mount_dir"
+        if [[ -n "$volume_format" ]]; then
+            echo "volume_format: $volume_format"
+        fi
+        if [[ -n "$workspace_id" ]]; then
+            echo "workspace: $workspace_id"
+            echo "workspace_namespace: $workspace_namespace"
+        fi
         echo
         case "$data_backend" in
             local-fs)
@@ -322,11 +344,23 @@ trim_skip_file() {
 }
 
 prepare_test_list() {
+    local raw_includefile="$tmp_dir/include-patterns.raw"
+    local includefile="$tmp_dir/include-patterns.txt"
     local raw_skipfile="$tmp_dir/skip-patterns.raw"
     local skipfile="$tmp_dir/skip-patterns.txt"
     local all_tests="$tmp_dir/tests.all"
+    local included_tests="$tmp_dir/tests.included"
     local selected_tests="$tmp_dir/tests.selected"
+    local include_source
     local skip_source
+
+    : >"$raw_includefile"
+    if [[ -n "$pjdfstest_include_patterns" ]]; then
+        for include_source in $pjdfstest_include_patterns; do
+            printf '%s\n' "$include_source" >>"$raw_includefile"
+        done
+    fi
+    sort -u "$raw_includefile" >"$includefile"
 
     : >"$raw_skipfile"
     if [[ -f "$pjdfstest_default_skip_file" ]]; then
@@ -348,14 +382,20 @@ prepare_test_list() {
 
     cd "$pjdfstest_dir"
     find tests -type f -name '*.t' | sort >"$all_tests"
-    if [[ -s "$skipfile" ]]; then
-        grep -Ev -f "$skipfile" "$all_tests" >"$selected_tests"
+    if [[ -s "$includefile" ]]; then
+        grep -E -f "$includefile" "$all_tests" >"$included_tests" || true
     else
-        cp "$all_tests" "$selected_tests"
+        cp "$all_tests" "$included_tests"
+    fi
+    if [[ -s "$skipfile" ]]; then
+        grep -Ev -f "$skipfile" "$included_tests" >"$selected_tests" || true
+    else
+        cp "$included_tests" "$selected_tests"
     fi
 
     cp -f "$all_tests" "$artifact_dir/all-tests.txt"
     cp -f "$selected_tests" "$artifact_dir/selected-tests.txt"
+    cp -f "$includefile" "$artifact_dir/include-patterns.txt"
     cp -f "$skipfile" "$artifact_dir/skip-patterns.txt"
     printf '%s' "$selected_tests"
 }
@@ -411,6 +451,10 @@ run_pjdfstest() {
     selected_count="$(wc -l <"$selected_tests_file" | tr -d '[:space:]')"
     all_count="$(wc -l <"$artifact_dir/all-tests.txt" | tr -d '[:space:]')"
     skipped_count=$((all_count - selected_count))
+    if [[ "$selected_count" -eq 0 ]]; then
+        err "pjdfstest selection matched no tests"
+        return 2
+    fi
 
     if [[ -n "$pjdfstest_extra_args" ]]; then
         read -r -a extra <<<"$pjdfstest_extra_args"
@@ -470,6 +514,7 @@ on_exit() {
 }
 
 main() {
+    validate_workspace_config
     local normalized_fuse_op_log
 
     if [[ -z "$artifact_dir" ]]; then

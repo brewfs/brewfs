@@ -1,8 +1,16 @@
 use super::*;
+use crate::chunk::{layout::ChunkLayout, store::InMemoryBlockStore};
+use crate::meta::MetaLayer;
+use crate::meta::client::MetaClient;
+use crate::meta::config::{CacheCapacity, CacheTtl};
 use crate::meta::config::{CacheConfig, ClientOptions, CompactConfig, DatabaseConfig};
 use crate::meta::file_lock::{FileLockQuery, FileLockRange, FileLockType};
+use crate::vfs::fs::VFS;
+use asyncfuse::Errno;
+use asyncfuse::raw::{Filesystem, Request};
 use sea_orm::sqlx::sqlite::SqliteConnectOptions;
 use sea_orm::sqlx::{Connection, Executor, SqliteConnection};
+use std::ffi::OsStr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +67,66 @@ async fn new_test_store_with_session(session_id: Uuid) -> DatabaseMetaStore {
     let store = new_test_store().await;
     store.set_sid(session_id).expect("Failed to set session ID");
     store
+}
+
+#[tokio::test]
+async fn dangling_dentry_fused_lookup_returns_not_found_and_fuse_enoent() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let name = "dangling-client-lookup.txt";
+    let ino = store.create_file(root, name.to_string()).await.unwrap();
+
+    let deleted = FileMeta::delete_by_id(ino)
+        .exec(&store.db)
+        .await
+        .expect("delete inode metadata while retaining the dentry");
+    assert_eq!(deleted.rows_affected, 1);
+    assert_eq!(
+        store.lookup(root, name).await.unwrap(),
+        Some(ino),
+        "the directory entry must remain after deleting the inode record"
+    );
+
+    let client = MetaClient::new(
+        store,
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl {
+            inode_ttl: Duration::from_secs(60),
+            path_ttl: Duration::from_secs(60),
+        },
+    );
+    assert!(matches!(
+        client.lookup(root, name).await,
+        Err(MetaError::NotFound(found)) if found == ino
+    ));
+    assert!(matches!(
+        client.lookup_with_attr(root, name).await,
+        Err(MetaError::NotFound(found)) if found == ino
+    ));
+
+    let fs = VFS::with_meta_layer_with_default_background(
+        ChunkLayout::default(),
+        Arc::new(InMemoryBlockStore::new()),
+        client,
+    )
+    .unwrap();
+    let err = Filesystem::lookup(
+        &fs,
+        Request {
+            unique: 1,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        },
+        root as u64,
+        OsStr::new(name),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, Errno::from(libc::ENOENT));
 }
 
 #[tokio::test]

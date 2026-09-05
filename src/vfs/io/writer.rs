@@ -214,6 +214,44 @@ fn should_retry_meta_write(err: &MetaError) -> bool {
     }
 }
 
+async fn record_uploaded_orphan<B, M>(shared: &Shared<B, M>, desc: SliceDesc) -> bool
+where
+    B: BlockStore + Send + Sync + 'static,
+    M: MetaLayer + Send + Sync + 'static,
+{
+    #[cfg(not(feature = "workspace-overlay"))]
+    let _ = (shared, desc);
+    #[cfg(feature = "workspace-overlay")]
+    if let Some(provider) = shared.backend.workspace_read_plan()
+        && let Err(error) = provider
+            .record_orphan_slice(desc.slice_id, desc.length)
+            .await
+    {
+        tracing::error!(
+            slice_id = desc.slice_id,
+            slice_end = desc.length,
+            error = ?error,
+            "failed to persist uploaded workspace orphan; retaining local dirty record"
+        );
+        return false;
+    }
+    true
+}
+
+fn dirty_slice_key(
+    ino: i64,
+    chunk_id: u64,
+    local_seq: u64,
+    epoch: u64,
+) -> crate::vfs::cache::keys::DirtySliceKey {
+    crate::vfs::cache::keys::DirtySliceKey {
+        ino,
+        chunk_id,
+        local_seq,
+        epoch,
+    }
+}
+
 struct UploadPlan {
     chunk_id: u64,
     data: Vec<(usize, Vec<Bytes>)>,
@@ -951,12 +989,7 @@ where
             let slice_id = s.slice_id?;
             s.writeback_record_sealing = true;
             Some((
-                crate::vfs::cache::keys::DirtySliceKey {
-                    ino,
-                    chunk_id: s.chunk_id,
-                    local_seq: slice_id,
-                    epoch: 0,
-                },
+                dirty_slice_key(ino, s.chunk_id, slice_id, self.shared.writeback_epoch),
                 s.offset,
                 s.data.len(),
             ))
@@ -1083,6 +1116,11 @@ where
             return;
         }
 
+        let desc = match self.desc_for_commit() {
+            Some(desc) => desc,
+            None => return,
+        };
+
         let slice_epoch = self.slice.lock().frozen_epoch;
         if slice_epoch != 0 && self.shared.inode.data_epoch() != slice_epoch {
             tracing::warn!(
@@ -1091,6 +1129,16 @@ where
                 current_epoch = self.shared.inode.data_epoch(),
                 "skipping stale try_commit after inode epoch change"
             );
+            let orphan_recorded = record_uploaded_orphan(self.shared, desc).await;
+            if orphan_recorded && let Some(wb) = &self.shared.write_back {
+                let key = dirty_slice_key(
+                    self.shared.inode.ino(),
+                    desc.chunk_id,
+                    desc.slice_id,
+                    self.shared.writeback_epoch,
+                );
+                let _ = wb.remove(&key).await;
+            }
             self.mark_committed();
             return;
         }
@@ -1124,11 +1172,6 @@ where
                 return;
             }
         }
-
-        let desc = match self.desc_for_commit() {
-            Some(d) => d,
-            None => return,
-        };
 
         let (ino, chunk_index) = crate::vfs::extract_ino_and_chunk_index(desc.chunk_id);
         let new_size =
@@ -1164,12 +1207,12 @@ where
                     self.mark_committed();
 
                     if let Some(wb) = &self.shared.write_back {
-                        let key = crate::vfs::cache::keys::DirtySliceKey {
+                        let key = dirty_slice_key(
                             ino,
-                            chunk_id: desc.chunk_id,
-                            local_seq: desc.slice_id,
-                            epoch: 0,
-                        };
+                            desc.chunk_id,
+                            desc.slice_id,
+                            self.shared.writeback_epoch,
+                        );
                         let _ = wb.remove(&key).await;
                     }
                     return;
@@ -1193,18 +1236,19 @@ where
                         // Reset so commit_chunk can pick this up.
                         self.slice.lock().meta_write_started = false;
                     } else {
+                        let orphan_recorded = record_uploaded_orphan(self.shared, desc).await;
                         self.mark_failed(anyhow::anyhow!(
                             "try_commit failed for ino {ino}, chunk {}, slice {}: {err}",
                             desc.chunk_id,
                             desc.slice_id
                         ));
-                        if let Some(wb) = &self.shared.write_back {
-                            let key = crate::vfs::cache::keys::DirtySliceKey {
+                        if orphan_recorded && let Some(wb) = &self.shared.write_back {
+                            let key = dirty_slice_key(
                                 ino,
-                                chunk_id: desc.chunk_id,
-                                local_seq: desc.slice_id,
-                                epoch: 0,
-                            };
+                                desc.chunk_id,
+                                desc.slice_id,
+                                self.shared.writeback_epoch,
+                            );
                             let _ = wb.remove(&key).await;
                         }
                     }
@@ -1522,6 +1566,8 @@ struct Shared<B, M> {
     reader: Arc<DataReader<B, M>>,
     /// Local SSD write-back cache for persisting frozen slices before upload.
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+    /// Mount/session generation embedded in durable dirty keys. Flat mounts use zero.
+    writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
     /// Monotonically incremented for dirty-slice ordering.
     write_order: AtomicU64,
@@ -2052,6 +2098,7 @@ where
         reader: Arc<DataReader<B, M>>,
         buffer_usage: Arc<AtomicU64>,
         write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+        writeback_epoch: u64,
         memory_budget: Option<MemoryBudget>,
         recent_pending_upload: Arc<RecentPendingUploadState>,
     ) -> Self {
@@ -2072,6 +2119,7 @@ where
             backend,
             reader,
             write_back,
+            writeback_epoch,
             memory_budget,
             write_order: AtomicU64::new(0),
             write_gen: AtomicU64::new(0),
@@ -2559,6 +2607,7 @@ where
             reader,
             buffer_usage,
             write_back,
+            0,
             None,
             Arc::new(RecentPendingUploadState::new()),
         )
@@ -2572,6 +2621,7 @@ where
         reader: Arc<DataReader<B, M>>,
         buffer_usage: Arc<AtomicU64>,
         write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+        writeback_epoch: u64,
         memory_budget: Option<MemoryBudget>,
         recent_pending_upload: Arc<RecentPendingUploadState>,
     ) -> Self {
@@ -2582,6 +2632,7 @@ where
             reader,
             buffer_usage,
             write_back,
+            writeback_epoch,
             memory_budget,
             recent_pending_upload,
         ));
@@ -3887,12 +3938,12 @@ where
                             let chunks = all_chunks.clone();
                             let shared_for_persist = shared2.clone();
                             let slice_for_persist = slice_for_persist.clone();
-                            let key = crate::vfs::cache::keys::DirtySliceKey {
+                            let key = dirty_slice_key(
                                 ino,
                                 chunk_id,
-                                local_seq: slice_id,
-                                epoch: 0,
-                            };
+                                slice_id,
+                                shared_for_persist.writeback_epoch,
+                            );
                             async move {
                                 let stage_start = shared_for_persist
                                     .recent_pending_upload
@@ -4150,12 +4201,12 @@ where
             let Some(slice_id) = state.slice_id else {
                 return;
             };
-            crate::vfs::cache::keys::DirtySliceKey {
-                ino: shared.inode.ino(),
-                chunk_id: state.chunk_id,
-                local_seq: slice_id,
-                epoch: 0,
-            }
+            dirty_slice_key(
+                shared.inode.ino(),
+                state.chunk_id,
+                slice_id,
+                shared.writeback_epoch,
+            )
         };
 
         if let Some(wb) = &shared.write_back {
@@ -4667,6 +4718,23 @@ where
                         current_epoch = shared.inode.data_epoch(),
                         "skipping stale commit after truncate"
                     );
+                    if let Some(desc) = (SliceHandle {
+                        slice: &slice,
+                        shared: &shared,
+                    })
+                    .desc_for_commit()
+                    {
+                        let orphan_recorded = record_uploaded_orphan(&shared, desc).await;
+                        if orphan_recorded && let Some(wb) = &shared.write_back {
+                            let key = dirty_slice_key(
+                                shared.inode.ino(),
+                                desc.chunk_id,
+                                desc.slice_id,
+                                shared.writeback_epoch,
+                            );
+                            let _ = wb.remove(&key).await;
+                        }
+                    }
                     SliceHandle {
                         slice: &slice,
                         shared: &shared,
@@ -4728,6 +4796,7 @@ where
                             }
 
                             if !retryable || commit_failures >= COMMIT_META_MAX_RETRIES {
+                                let orphan_recorded = record_uploaded_orphan(&shared, desc).await;
                                 let message = if retryable {
                                     format!(
                                         "metadata commit failed after {commit_failures} attempts for ino {ino}, chunk {}, slice {}: {err}",
@@ -4760,13 +4829,13 @@ where
                                 // Clean up local SSD dirty record so a future
                                 // recovery scan does not re-upload a slice that
                                 // will fail the same metadata commit again.
-                                if let Some(wb) = &shared.write_back {
-                                    let key = crate::vfs::cache::keys::DirtySliceKey {
+                                if orphan_recorded && let Some(wb) = &shared.write_back {
+                                    let key = dirty_slice_key(
                                         ino,
-                                        chunk_id: desc.chunk_id,
-                                        local_seq: desc.slice_id,
-                                        epoch: 0,
-                                    };
+                                        desc.chunk_id,
+                                        desc.slice_id,
+                                        shared.writeback_epoch,
+                                    );
                                     let _ = wb.remove(&key).await;
                                 }
 
@@ -4802,12 +4871,12 @@ where
 
                             // Clean up local SSD dirty copy now that data is committed.
                             if let Some(wb) = &shared.write_back {
-                                let key = crate::vfs::cache::keys::DirtySliceKey {
+                                let key = dirty_slice_key(
                                     ino,
-                                    chunk_id: desc.chunk_id,
-                                    local_seq: desc.slice_id,
-                                    epoch: 0,
-                                };
+                                    desc.chunk_id,
+                                    desc.slice_id,
+                                    shared.writeback_epoch,
+                                );
                                 let _ = wb.remove(&key).await;
                             }
 
@@ -5153,6 +5222,7 @@ pub(crate) struct DataWriter<B, M> {
     files: DashMap<u64, Arc<FileWriter<B, M>>>,
     buffer_usage: Arc<AtomicU64>,
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+    writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
     recent_pending_upload: Arc<RecentPendingUploadState>,
 }
@@ -5284,6 +5354,7 @@ where
             files: DashMap::new(),
             buffer_usage: Arc::new(AtomicU64::new(0)),
             write_back,
+            writeback_epoch: 0,
             memory_budget: None,
             recent_pending_upload: Arc::new(RecentPendingUploadState::new()),
         }
@@ -5291,6 +5362,12 @@ where
 
     pub(crate) fn with_memory_budget(mut self, memory_budget: MemoryBudget) -> Self {
         self.memory_budget = Some(memory_budget);
+        self
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    pub(crate) fn with_writeback_epoch(mut self, epoch: u64) -> Self {
+        self.writeback_epoch = epoch;
         self
     }
 
@@ -5306,6 +5383,7 @@ where
                     self.reader.clone(),
                     self.buffer_usage.clone(),
                     self.write_back.clone(),
+                    self.writeback_epoch,
                     self.memory_budget.clone(),
                     self.recent_pending_upload.clone(),
                 ))
@@ -6083,6 +6161,15 @@ mod tests {
             WriteBackMode::UploadBeforeCommit,
             Duration::from_secs(60),
         )
+    }
+
+    #[test]
+    fn dirty_slice_key_preserves_the_mount_writer_epoch() {
+        let key = dirty_slice_key(7, 11, 13, 17);
+        assert_eq!(key.ino, 7);
+        assert_eq!(key.chunk_id, 11);
+        assert_eq!(key.local_seq, 13);
+        assert_eq!(key.epoch, 17);
     }
 
     #[test]

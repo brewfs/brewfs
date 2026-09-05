@@ -1,4 +1,4 @@
-use crate::meta::client::MetaClient;
+use crate::meta::client::{MetaClient, MetaClientOptions};
 use crate::meta::config::Config;
 use crate::meta::config::{
     CacheCapacity, CacheConfig, CacheTtl, ClientOptions, CompactConfig, DatabaseConfig,
@@ -10,8 +10,11 @@ use crate::meta::stores::RedisMetaStore;
 use crate::meta::{MetaLayer, MetaStore};
 use crate::vfs::fs::VFS;
 use crate::{chunk::layout::ChunkLayout, chunk::store::InMemoryBlockStore};
+use asyncfuse::Errno;
+use asyncfuse::raw::{Filesystem, Request};
 use redis::AsyncCommands;
 use serial_test::serial;
+use std::ffi::OsStr;
 use std::sync::Arc;
 use tokio::time::{self, Duration};
 use uuid::Uuid;
@@ -107,6 +110,14 @@ fn test_config() -> Config {
         client: ClientOptions::default(),
         compact: CompactConfig::default(),
     }
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn redis_standalone_capability_probe_accepts_test_server() {
+    cleanup_test_data().await.unwrap();
+    RedisMetaStore::from_config(test_config()).await.unwrap();
 }
 
 /// Configuration for shared database testing (multi-session)
@@ -2226,13 +2237,17 @@ async fn test_file_full_lifecycle_flow() {
 async fn get_slices_cache_detects_remote_compact_via_version_token() {
     let store = Arc::new(new_test_store().await);
     let root = store.root_ino();
-    let client = MetaClient::new(
+    let client = MetaClient::with_options(
         store.clone(),
         CacheCapacity {
             inode: 100,
             path: 100,
         },
         CacheTtl::for_redis(),
+        MetaClientOptions {
+            slice_version_check_interval: Duration::ZERO,
+            ..MetaClientOptions::default()
+        },
     );
 
     let ino = client
@@ -2259,8 +2274,6 @@ async fn get_slices_cache_detects_remote_compact_via_version_token() {
         .replace_slices_for_compact_with_version(chunk_id, &[new_slice], &[], &[old_slice])
         .await
         .unwrap();
-    time::sleep(Duration::from_millis(50)).await;
-
     assert_eq!(
         client.get_slices(chunk_id).await.unwrap(),
         vec![new_slice],
@@ -2274,13 +2287,17 @@ async fn get_slices_cache_detects_remote_compact_via_version_token() {
 async fn get_slices_cache_detects_first_remote_append_after_empty_read() {
     let store = Arc::new(new_test_store().await);
     let root = store.root_ino();
-    let client = MetaClient::new(
+    let client = MetaClient::with_options(
         store.clone(),
         CacheCapacity {
             inode: 100,
             path: 100,
         },
         CacheTtl::for_redis(),
+        MetaClientOptions {
+            slice_version_check_interval: Duration::ZERO,
+            ..MetaClientOptions::default()
+        },
     );
 
     let ino = client
@@ -2297,8 +2314,6 @@ async fn get_slices_cache_detects_first_remote_append_after_empty_read() {
         length: 4096,
     };
     store.append_slice(chunk_id, remote_slice).await.unwrap();
-    time::sleep(Duration::from_millis(50)).await;
-
     assert_eq!(
         client.get_slices(chunk_id).await.unwrap(),
         vec![remote_slice],
@@ -2599,6 +2614,100 @@ async fn test_lookup_with_attr_returns_inode_attr_and_warms_node_cache() {
 
     let missing = store.lookup_with_attr(root, "missing.txt").await.unwrap();
     assert!(missing.is_none());
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_meta_client_lookup_uses_fused_store_path() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "client_lookup_attr.txt".to_string())
+        .await
+        .unwrap();
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+
+    store.node_cache.invalidate(&ino).await;
+    store
+        .lookup_with_attr(root, "warm-lookup-script")
+        .await
+        .unwrap();
+    reset_redis_commandstats(&store).await;
+
+    assert_eq!(
+        client.lookup(root, "client_lookup_attr.txt").await.unwrap(),
+        Some(ino)
+    );
+
+    let script_calls = redis_script_calls(&store).await;
+    assert!(
+        (1..=2).contains(&script_calls),
+        "MetaClient::lookup should use Redis lookup_with_attr as one business Lua script; observed {script_calls} script calls including client-side script cache handling"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_dangling_dentry_lookup_returns_not_found_and_fuse_enoent() {
+    let store = Arc::new(new_test_store().await);
+    let root = store.root_ino();
+    let name = "dangling-client-lookup.txt";
+    let ino = store.create_file(root, name.to_string()).await.unwrap();
+
+    let deleted: usize = store.conn.clone().del(store.node_key(ino)).await.unwrap();
+    assert_eq!(
+        deleted, 1,
+        "test must remove the inode but retain its dentry"
+    );
+    store.node_cache.invalidate(&ino).await;
+    assert_eq!(
+        store.lookup(root, name).await.unwrap(),
+        Some(ino),
+        "the directory entry must remain after deleting the inode record"
+    );
+
+    let client = MetaClient::new(
+        store,
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+    assert!(matches!(
+        client.lookup(root, name).await,
+        Err(MetaError::NotFound(found)) if found == ino
+    ));
+
+    let fs = VFS::with_meta_layer_with_default_background(
+        ChunkLayout::default(),
+        Arc::new(InMemoryBlockStore::new()),
+        client,
+    )
+    .unwrap();
+    let err = Filesystem::lookup(
+        &fs,
+        Request {
+            unique: 1,
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        },
+        root as u64,
+        OsStr::new(name),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, Errno::from(libc::ENOENT));
 }
 
 #[serial]
@@ -3290,6 +3399,131 @@ async fn test_delayed_slice_workflow_consistency() {
 #[serial]
 #[tokio::test]
 #[ignore]
+async fn compact_delayed_record_failure_keeps_old_chunk_reachable() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "compact_atomic_failure.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 421,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 422,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    store.append_slice(chunk_id, old_slice).await.unwrap();
+
+    // Fault injection: INCRBY on a hash fails. The old implementation had
+    // already committed the chunk CAS before discovering this error.
+    let mut conn = store.conn.clone();
+    redis::cmd("HSET")
+        .arg(super::DELAYED_COUNTER_KEY)
+        .arg("invalid")
+        .arg("counter")
+        .query_async::<()>(&mut conn)
+        .await
+        .unwrap();
+    let delayed_data = crate::chunk::SliceDesc::encode_delayed_data(&[old_slice], &[421]);
+
+    assert!(
+        store
+            .replace_slices_for_compact(chunk_id, &[new_slice], &delayed_data)
+            .await
+            .is_err(),
+        "the injected delayed-record failure must surface"
+    );
+    assert_eq!(
+        store.get_slices(chunk_id).await.unwrap(),
+        vec![old_slice],
+        "a failed compact must leave the old object reachable from the chunk list"
+    );
+    assert!(
+        store
+            .process_delayed_slices(10, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn compact_version_conflict_leaves_chunk_and_delayed_index_unchanged() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "compact_conflict.txt".to_string())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let old_slice = crate::chunk::SliceDesc {
+        slice_id: 431,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    let new_slice = crate::chunk::SliceDesc {
+        slice_id: 432,
+        chunk_id,
+        offset: 0,
+        length: 1024,
+    };
+    store.append_slice(chunk_id, old_slice).await.unwrap();
+    let delayed_data = crate::chunk::SliceDesc::encode_delayed_data(&[old_slice], &[431]);
+
+    let conflict = store
+        .replace_slices_for_compact_with_version(chunk_id, &[new_slice], &delayed_data, &[])
+        .await;
+    assert!(matches!(conflict, Err(MetaError::ContinueRetry(_))));
+    assert_eq!(store.get_slices(chunk_id).await.unwrap(), vec![old_slice]);
+    assert!(
+        store
+            .process_delayed_slices(10, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    store
+        .record_uncommitted_slice(new_slice.slice_id, chunk_id, new_slice.length, "compact")
+        .await
+        .unwrap();
+    store
+        .replace_slices_for_compact_with_version(
+            chunk_id,
+            &[new_slice],
+            &delayed_data,
+            &[old_slice],
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.get_slices(chunk_id).await.unwrap(), vec![new_slice]);
+    assert_eq!(store.process_delayed_slices(10, 0).await.unwrap().len(), 1);
+
+    let mut conn = store.conn.clone();
+    let uncommitted_exists: bool = redis::cmd("EXISTS")
+        .arg(store.uncommitted_key(new_slice.slice_id))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        !uncommitted_exists,
+        "the newly referenced compacted slice must not remain eligible for orphan GC"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
 async fn test_uncommitted_slice_workflow_consistency() {
     let store = new_test_store().await;
     let slice_id = 501u64;
@@ -3530,6 +3764,8 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
     assert!(snap.used_inodes >= 6);
     let get_calls = redis_command_calls(&store, "get").await;
     let mget_calls = redis_command_calls(&store, "mget").await;
+    let scan_calls = redis_command_calls(&store, "scan").await;
+    let keys_calls = redis_command_calls(&store, "keys").await;
     assert!(
         get_calls <= 1,
         "stat_fs should batch node loads instead of issuing one GET per inode; observed {get_calls} GET calls"
@@ -3537,6 +3773,117 @@ async fn test_stat_fs_batches_node_fetches_with_mget() {
     assert_eq!(
         mget_calls, 1,
         "stat_fs should fetch all node payloads with one Redis MGET"
+    );
+    assert!(
+        scan_calls >= 1,
+        "stat_fs should page node keys with SCAN instead of KEYS"
+    );
+    assert_eq!(
+        keys_calls, 0,
+        "stat_fs must not use blocking KEYS; observed {keys_calls} KEYS calls"
+    );
+
+    let snap2 = store.stat_fs().await.unwrap();
+    assert_eq!(snap2.used_inodes, snap.used_inodes);
+    assert_eq!(
+        redis_command_calls(&store, "mget").await,
+        mget_calls,
+        "cached stat_fs should not re-fetch node payloads"
+    );
+    assert_eq!(
+        redis_command_calls(&store, "scan").await,
+        scan_calls,
+        "cached stat_fs should not re-scan the node key space"
+    );
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_bounds_each_mget_batch() {
+    let store = new_test_store().await;
+    let template: Vec<u8> = redis::cmd("GET")
+        .arg(store.node_key(store.root_ino()))
+        .query_async(&mut store.conn.clone())
+        .await
+        .unwrap();
+    let mut pipeline = redis::pipe();
+    for idx in 0..super::STAT_FS_MGET_BATCH_SIZE {
+        pipeline
+            .cmd("SET")
+            .arg(store.node_key(10_000 + idx as i64))
+            .arg(&template)
+            .ignore();
+    }
+    let _: () = pipeline.query_async(&mut store.conn.clone()).await.unwrap();
+
+    reset_redis_commandstats(&store).await;
+    let snapshot = store.stat_fs().await.unwrap();
+
+    assert_eq!(
+        snapshot.used_inodes,
+        super::STAT_FS_MGET_BATCH_SIZE as u64 + 1
+    );
+    assert!(
+        redis_command_calls(&store, "mget").await >= 2,
+        "more than one MGET batch should be used after crossing the hard batch limit"
+    );
+    assert_eq!(redis_command_calls(&store, "keys").await, 0);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_cold_cache_is_single_flight() {
+    let store = new_test_store().await;
+    reset_redis_commandstats(&store).await;
+
+    let (first, second, third) = tokio::join!(store.stat_fs(), store.stat_fs(), store.stat_fs());
+    let first = first.unwrap();
+    assert_eq!(second.unwrap().used_inodes, first.used_inodes);
+    assert_eq!(third.unwrap().used_inodes, first.used_inodes);
+    assert_eq!(
+        redis_command_calls(&store, "scan").await,
+        1,
+        "concurrent cold stat_fs calls should share one Redis scan"
+    );
+    assert_eq!(redis_command_calls(&store, "mget").await, 1);
+    assert_eq!(redis_command_calls(&store, "keys").await, 0);
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_stat_fs_cache_staleness_is_bounded_by_ttl() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+
+    let before = store.stat_fs().await.unwrap();
+    store
+        .create_file(root, "sf_bounded_stale.txt".to_string())
+        .await
+        .unwrap();
+
+    let cached = store.stat_fs().await.unwrap();
+    assert_eq!(
+        cached.used_inodes, before.used_inodes,
+        "stat_fs intentionally reuses its snapshot within the cache TTL"
+    );
+
+    {
+        let mut cache = store.stat_fs_cache.lock().await;
+        let (cached_at, _) = cache
+            .as_mut()
+            .expect("the first stat_fs populates the cache");
+        *cached_at = std::time::Instant::now()
+            .checked_sub(super::STAT_FS_CACHE_TTL + Duration::from_millis(1))
+            .unwrap();
+    }
+    let refreshed = store.stat_fs().await.unwrap();
+    assert_eq!(
+        refreshed.used_inodes,
+        before.used_inodes + 1,
+        "the first stat_fs after the TTL must refresh the Redis snapshot"
     );
 }
 
@@ -3565,8 +3912,8 @@ async fn test_stat_fs_accounting_fallback() {
     );
     let used_space = snap.total_space - snap.available_space;
     assert_eq!(
-        used_space, 1536,
-        "should count allocated file and symlink blocks"
+        used_space, 1512,
+        "used bytes = file size fallback (1000) + allocated symlink block (512)"
     );
     assert!(snap.total_space > used_space);
     assert!(snap.available_inodes > 0);

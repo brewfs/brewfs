@@ -11,6 +11,8 @@ mod posix;
 mod utils;
 #[allow(dead_code)]
 mod vfs;
+#[cfg(feature = "workspace-overlay")]
+pub mod workspace_overlay;
 
 #[cfg(all(feature = "jemalloc", target_os = "linux"))]
 use tikv_jemallocator::Jemalloc;
@@ -61,6 +63,33 @@ use crate::meta::factory::MetaStoreFactory;
 use crate::meta::layer::MetaLayer;
 use crate::meta::stores::{DatabaseMetaStore, EtcdMetaStore, RedisMetaStore, TiKvMetaStore};
 use crate::vfs::fs::VFS;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::catalog::{CreateVolumeRoot, WorkspaceStore};
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::control::WorkspaceControl;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::gc::WorkspaceGc;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::ids::{LayerId, WorkspaceId};
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::lifecycle::{
+    DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_LEASE_TTL, NoopDurableRemoteBarrier, WorkspaceLifecycle,
+    WorkspaceMountSession,
+};
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::publish::diff::WorkspaceDiff;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
+#[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::stores::tikv::TiKvWorkspaceBackend;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -70,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Command::Mount(args) => mount_cmd(MountConfig::from_sources(*args)?).await,
+        #[cfg(feature = "workspace-overlay")]
+        Command::Workspace(args) => workspace_cmd(args).await,
         Command::Gc(args) => gc_cmd(args).await,
         Command::Info(args) => info_cmd(args).await,
         Command::Console(args) => console::serve_cmd(args).await,
@@ -323,6 +354,7 @@ fn init_tracing() {
 }
 
 async fn mount_cmd(args: MountConfig) -> anyhow::Result<()> {
+    validate_volume_format_support(args.volume_format)?;
     if !args.mount_point.exists() {
         std::fs::create_dir_all(&args.mount_point)?;
     }
@@ -345,21 +377,49 @@ async fn mount_cmd(args: MountConfig) -> anyhow::Result<()> {
         data_backend = ?args.data_backend,
         "mount startup begin"
     );
-    let meta_store = create_meta_store(&args).await?;
-    tracing::info!("mount startup meta store ready");
-
     match args.data_backend {
         DataBackendKind::LocalFs => {
             let client = create_localfs_client(&args)?;
             tracing::info!("mount startup localfs client ready");
             let store = create_object_store(client, layout, &args.cache).await?;
-            mount_with_store(layout, store, meta_store, &args).await
+            dispatch_mount(layout, store, &args).await
         }
         DataBackendKind::S3 => {
             let client = create_s3_client(&args).await?;
             tracing::info!("mount startup s3 client ready");
             let store = create_object_store(client, layout, &args.cache).await?;
-            mount_with_store(layout, store, meta_store, &args).await
+            dispatch_mount(layout, store, &args).await
+        }
+    }
+}
+
+fn validate_volume_format_support(format: VolumeFormat) -> anyhow::Result<()> {
+    match format {
+        VolumeFormat::FlatV1 => Ok(()),
+        #[cfg(feature = "workspace-overlay")]
+        VolumeFormat::WorkspaceV1 => Ok(()),
+        #[cfg(not(feature = "workspace-overlay"))]
+        VolumeFormat::WorkspaceV1 => {
+            Err(anyhow::anyhow!("feature not compiled: workspace-overlay"))
+        }
+    }
+}
+
+async fn dispatch_mount<S>(layout: ChunkLayout, store: S, args: &MountConfig) -> anyhow::Result<()>
+where
+    S: BlockStore + Send + Sync + 'static,
+{
+    match args.volume_format {
+        VolumeFormat::FlatV1 => {
+            let meta_store = create_meta_store(args).await?;
+            tracing::info!("mount startup meta store ready");
+            mount_with_store(layout, store, meta_store, args).await
+        }
+        #[cfg(feature = "workspace-overlay")]
+        VolumeFormat::WorkspaceV1 => mount_workspace_with_store(layout, store, args).await,
+        #[cfg(not(feature = "workspace-overlay"))]
+        VolumeFormat::WorkspaceV1 => {
+            anyhow::bail!("feature not compiled: workspace-overlay")
         }
     }
 }
@@ -643,6 +703,9 @@ where
         meta_config.options.open_file_cache.capacity = capacity;
     }
     meta_config.options.open_file_cache.allow_write = args.meta_allow_write_open_cache;
+    if let Some(interval_ms) = args.meta_slice_version_check_interval_ms {
+        meta_config.options.slice_version_check_interval = Duration::from_millis(interval_ms);
+    }
     meta_config.compact = args.compact.clone();
 
     tracing::info!("mount startup meta client create begin");
@@ -705,6 +768,392 @@ where
         }
     }
     meta_client.shutdown_runtime().await;
+    Ok(())
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn mount_workspace_with_store<S>(
+    layout: ChunkLayout,
+    store: S,
+    args: &MountConfig,
+) -> anyhow::Result<()>
+where
+    S: BlockStore + Send + Sync + 'static,
+{
+    match args.meta_backend {
+        MetaBackendKind::Sqlx => {
+            if !args.meta_url.starts_with("sqlite:") {
+                anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
+            }
+            let catalog = Arc::new(SqliteWorkspaceStore::connect(&args.meta_url).await?);
+            mount_workspace_with_catalog(layout, store, args, catalog).await
+        }
+        MetaBackendKind::Redis => {
+            let backend =
+                RedisWorkspaceBackend::connect(&args.meta_url, &args.workspace_namespace).await?;
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            mount_workspace_with_catalog(layout, store, args, catalog).await
+        }
+        MetaBackendKind::TiKv => {
+            let backend = TiKvWorkspaceBackend::connect(
+                args.meta_tikv_pd_endpoints.clone(),
+                &args.workspace_namespace,
+            )
+            .await?;
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            mount_workspace_with_catalog(layout, store, args, catalog).await
+        }
+        MetaBackendKind::Etcd => {
+            anyhow::bail!("workspace-v1 does not support the etcd catalog backend")
+        }
+    }
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn mount_workspace_with_catalog<S, W>(
+    layout: ChunkLayout,
+    store: S,
+    args: &MountConfig,
+    workspace_store: Arc<W>,
+) -> anyhow::Result<()>
+where
+    S: BlockStore + Send + Sync + 'static,
+    W: WorkspaceStore + 'static,
+{
+    let workspace_id = args.workspace.map(WorkspaceId::from_uuid).ok_or_else(|| {
+        anyhow::anyhow!("--workspace is required when volume_format is workspace-v1")
+    })?;
+    let header = workspace_store
+        .load_volume_header()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("corrupt workspace metadata: volume marker is missing"))?;
+    if header.volume_format != "workspace-v1" {
+        anyhow::bail!(
+            "workspace volume marker mismatch: expected workspace-v1, found {}",
+            header.volume_format
+        )
+    }
+    if header.schema_version != WORKSPACE_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported workspace schema version {}",
+            header.schema_version
+        )
+    }
+    WorkspaceLifecycle::new(workspace_store.clone())
+        .recover_incomplete_seals()
+        .await?;
+
+    let generation = new_workspace_holder_generation();
+    let session = WorkspaceMountSession::acquire(
+        workspace_store.clone(),
+        workspace_id,
+        generation,
+        DEFAULT_LEASE_TTL,
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
+    .await?;
+    let block_store = Arc::new(store);
+    let gc_cancel = tokio_util::sync::CancellationToken::new();
+    let gc_task = {
+        let cancel = gc_cancel.clone();
+        let gc = WorkspaceGc::new(
+            workspace_store.clone(),
+            block_store.clone(),
+            layout,
+            DEFAULT_LEASE_TTL.saturating_mul(2),
+            DEFAULT_LEASE_TTL.saturating_mul(2),
+        );
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(DEFAULT_LEASE_TTL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        if let Err(error) = gc.run_once().await {
+                            tracing::warn!(?error, "workspace layer/orphan GC cycle failed");
+                        }
+                    }
+                }
+            }
+        })
+    };
+    let mount_result = async {
+        let meta_layer = Arc::new(WorkspaceMetaLayer::with_chunk_size(
+            workspace_store,
+            session.view.clone(),
+            layout.chunk_size,
+        ));
+        meta_layer.initialize().await?;
+        let writeback_root = crate::workspace_overlay::cache_scope::writeback_root(
+            &args.cache.cache_root,
+            header.volume_id,
+            workspace_id,
+            session.view.head_epoch,
+        )?;
+        let vfs_config =
+            crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone())
+                .workspace_writeback_root(writeback_root)
+                .workspace_writer_epoch(session.view.holder_generation);
+        let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer)?;
+        let concurrency = FuseConcurrencyConfig {
+            worker_count: args.fuse_workers,
+            max_background: args.fuse_max_background,
+        };
+        let handle = if args.privileged {
+            mount_vfs_privileged(fs, &args.mount_point, concurrency).await?
+        } else {
+            mount_vfs_unprivileged(fs, &args.mount_point, concurrency).await?
+        };
+        println!(
+            "mounted workspace {} at {}",
+            workspace_id,
+            args.mount_point.display()
+        );
+        let mut handle = handle;
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                println!("unmounting...");
+                handle.unmount().await?;
+            }
+            result = &mut handle => {
+                result?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    gc_cancel.cancel();
+    let _ = gc_task.await;
+    let release_result = session.release().await;
+    mount_result?;
+    release_result?;
+    Ok(())
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
+    let WorkspaceArgs {
+        meta_backend,
+        meta_url,
+        meta_tikv_pd_endpoints,
+        workspace_namespace,
+        command,
+    } = args;
+    match meta_backend {
+        WorkspaceMetaBackendKind::Sqlx => {
+            if !meta_url.starts_with("sqlite:") {
+                anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
+            }
+            workspace_cmd_with_catalog(
+                command,
+                Arc::new(SqliteWorkspaceStore::connect(&meta_url).await?),
+            )
+            .await
+        }
+        WorkspaceMetaBackendKind::Redis => {
+            let backend = RedisWorkspaceBackend::connect(&meta_url, &workspace_namespace).await?;
+            workspace_cmd_with_catalog(command, Arc::new(KvWorkspaceStore::new(backend))).await
+        }
+        WorkspaceMetaBackendKind::TiKv => {
+            let backend =
+                TiKvWorkspaceBackend::connect(meta_tikv_pd_endpoints, &workspace_namespace).await?;
+            workspace_cmd_with_catalog(command, Arc::new(KvWorkspaceStore::new(backend))).await
+        }
+    }
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn workspace_cmd_with_catalog<W>(
+    command: WorkspaceCommand,
+    store: Arc<W>,
+) -> anyhow::Result<()>
+where
+    W: WorkspaceStore + 'static,
+{
+    match command {
+        WorkspaceCommand::InitVolume { owner } => {
+            store.initialize_workspace_schema().await?;
+            if store.load_volume_header().await?.is_some() {
+                anyhow::bail!("workspace volume is already initialized")
+            }
+            let workspace = store
+                .create_volume_root(CreateVolumeRoot {
+                    volume_id: uuid::Uuid::now_v7(),
+                    workspace_id: WorkspaceId::new(),
+                    root_layer_id: LayerId::new(),
+                    writable_layer_id: LayerId::new(),
+                    owner_id: owner,
+                })
+                .await?;
+            print_json(&workspace)?;
+        }
+        WorkspaceCommand::Create { revision, owner } => {
+            validate_workspace_header(&store).await?;
+            let revision = match revision {
+                Some(revision) => revision,
+                None => store
+                    .list_workspaces()
+                    .await?
+                    .into_iter()
+                    .filter_map(|workspace| workspace.fork_base)
+                    .next()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "volume has no initial sealed revision; pass --from <revision>"
+                        )
+                    })?,
+            };
+            let mut created = WorkspaceLifecycle::new(store)
+                .fork_revision(revision, 1, owner)
+                .await?;
+            print_json(&created.remove(0))?;
+        }
+        WorkspaceCommand::Snapshot {
+            workspace,
+            name,
+            owner,
+        } => {
+            validate_workspace_header(&store).await?;
+            let revision = seal_workspace(store.clone(), workspace).await?;
+            let snapshot = WorkspaceLifecycle::new(store)
+                .snapshot_revision(revision, name, owner)
+                .await?;
+            print_json(&snapshot)?;
+        }
+        WorkspaceCommand::Fork {
+            source,
+            count,
+            owner,
+        } => {
+            validate_workspace_header(&store).await?;
+            if count == 0 {
+                anyhow::bail!("--count must be greater than zero")
+            }
+            let revision = match source.parse() {
+                Ok(revision) => revision,
+                Err(_) => {
+                    let workspace = source.parse::<WorkspaceId>().map_err(|error| {
+                        anyhow::anyhow!(
+                            "source must be a workspace UUID or exact revision: {error}"
+                        )
+                    })?;
+                    seal_workspace(store.clone(), workspace).await?
+                }
+            };
+            let created = WorkspaceLifecycle::new(store)
+                .fork_revision(revision, count, owner)
+                .await?;
+            print_json(&created)?;
+        }
+        WorkspaceCommand::List => {
+            validate_workspace_header(&store).await?;
+            print_json(&store.list_workspaces().await?)?;
+        }
+        WorkspaceCommand::Inspect { workspace } => {
+            validate_workspace_header(&store).await?;
+            print_json(&WorkspaceControl::new(store).inspect(workspace).await?)?;
+        }
+        WorkspaceCommand::Diff {
+            workspace,
+            against,
+            chunk_size,
+        } => {
+            validate_workspace_header(&store).await?;
+            let record = store.load_workspace(workspace).await?;
+            let base = against.or(record.fork_base).ok_or_else(|| {
+                anyhow::anyhow!("workspace has no fork base; pass --against <revision>")
+            })?;
+            let changes = WorkspaceDiff::new(store, chunk_size)
+                .diff(&base, record.head_layer_id)
+                .await?;
+            print_json(&changes)?;
+        }
+        WorkspaceCommand::Discard { workspace, force } => {
+            validate_workspace_header(&store).await?;
+            WorkspaceLifecycle::new(store)
+                .discard(workspace, force)
+                .await?;
+            println!("discarded {workspace}");
+        }
+        WorkspaceCommand::Commit { workspace, target } => {
+            validate_workspace_header(&store).await?;
+            let source = store.load_workspace(workspace).await?;
+            let fork_base = source.fork_base.clone().ok_or_else(|| {
+                anyhow::anyhow!("source workspace has no exact fork-base revision")
+            })?;
+            let revision = seal_workspace(store.clone(), workspace).await?;
+            let target = store.load_workspace(target).await?;
+            let result = WorkspaceLifecycle::new(store)
+                .fast_forward(revision, fork_base, &target)
+                .await?;
+            print_json(&result)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn validate_workspace_header<W: WorkspaceStore + ?Sized>(
+    store: &Arc<W>,
+) -> anyhow::Result<()> {
+    let header = store
+        .load_volume_header()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("corrupt workspace metadata: volume marker is missing"))?;
+    if header.volume_format != "workspace-v1" {
+        anyhow::bail!("unsupported volume format {}", header.volume_format)
+    }
+    if header.schema_version != WORKSPACE_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported workspace schema version {}",
+            header.schema_version
+        )
+    }
+    Ok(())
+}
+
+#[cfg(feature = "workspace-overlay")]
+async fn seal_workspace<W>(
+    store: Arc<W>,
+    workspace_id: WorkspaceId,
+) -> anyhow::Result<crate::workspace_overlay::model::BaseRevision>
+where
+    W: WorkspaceStore + 'static,
+{
+    let generation = new_workspace_holder_generation();
+    let session = WorkspaceMountSession::acquire(
+        store.clone(),
+        workspace_id,
+        generation,
+        DEFAULT_LEASE_TTL,
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
+    .await?;
+    let result = WorkspaceLifecycle::new(store)
+        .seal(&session.view, &NoopDurableRemoteBarrier)
+        .await;
+    let release_result = session.release().await;
+    let revision = result?.revision;
+    release_result?;
+    Ok(revision)
+}
+
+#[cfg(feature = "workspace-overlay")]
+fn new_workspace_holder_generation() -> u64 {
+    let suffix = u64::from_be_bytes(
+        uuid::Uuid::now_v7().as_bytes()[8..16]
+            .try_into()
+            .expect("UUID suffix has eight bytes"),
+    );
+    (suffix & i64::MAX as u64).max(1)
+}
+
+#[cfg(feature = "workspace-overlay")]
+fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 
@@ -945,5 +1394,35 @@ fn database_type_from_url(url: &str) -> DatabaseType {
         DatabaseType::Sqlite {
             url: url.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod volume_format_tests {
+    use super::*;
+
+    #[test]
+    fn flat_format_is_always_supported() {
+        validate_volume_format_support(VolumeFormat::FlatV1).unwrap();
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn workspace_holder_generation_fits_the_sqlite_integer_domain() {
+        for _ in 0..256 {
+            let generation = new_workspace_holder_generation();
+            assert!((1..=i64::MAX as u64).contains(&generation));
+        }
+    }
+
+    #[cfg(not(feature = "workspace-overlay"))]
+    #[test]
+    fn flat_only_binary_fails_closed_for_workspace_format() {
+        assert_eq!(
+            validate_volume_format_support(VolumeFormat::WorkspaceV1)
+                .unwrap_err()
+                .to_string(),
+            "feature not compiled: workspace-overlay"
+        );
     }
 }

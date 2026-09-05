@@ -219,11 +219,12 @@ impl SliceDesc {
 
     /// Decode the delayed deletion binary format into (slice_id, offset, size) tuples.
     pub fn decode_delayed_data(data: &[u8]) -> Option<Vec<(u64, u64, u32)>> {
-        if !data.len().is_multiple_of(20) {
+        let (chunks, remainder) = data.as_chunks::<20>();
+        if !remainder.is_empty() {
             return None;
         }
-        let mut out = Vec::with_capacity(data.len() / 20);
-        for chunk in data.chunks_exact(20) {
+        let mut out = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
             let slice_id = u64::from_le_bytes(chunk[0..8].try_into().unwrap());
             let offset = u64::from_le_bytes(chunk[8..16].try_into().unwrap());
             let size = u32::from_le_bytes(chunk[16..20].try_into().unwrap());

@@ -51,11 +51,7 @@ use path_trie::PathTrie;
 use session::{SessionInfo, SessionManager};
 
 const ROOT_INODE: i64 = 1;
-
-#[cfg(not(test))]
-const SLICE_VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const SLICE_VERSION_CHECK_INTERVAL: Duration = Duration::from_millis(20);
+const DEFAULT_SLICE_VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFileCacheConfig {
@@ -112,6 +108,11 @@ pub struct MetaClientOptions {
     /// to readonly opens; close may seed the final attr for a later readonly
     /// open without allowing write opens to skip their fresh stat.
     pub open_file_cache: OpenFileCacheConfig,
+    /// Maximum time a versioned slice-list cache hit may skip backend
+    /// revalidation. A remote mutation can therefore remain invisible for up
+    /// to this interval. `Duration::ZERO` revalidates every cache hit.
+    /// Mutations that overlap a validation may be observed by the next check.
+    pub slice_version_check_interval: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -292,6 +293,7 @@ impl Default for MetaClientOptions {
             max_symlinks: 40,
             batch_prefetch: BatchPrefetchConfig::default(),
             open_file_cache: OpenFileCacheConfig::default(),
+            slice_version_check_interval: DEFAULT_SLICE_VERSION_CHECK_INTERVAL,
         }
     }
 }
@@ -1499,6 +1501,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
     ///
     /// * `Ok(Some(i64))` - The inode number of the child entry if found
     /// * `Ok(None)` - If no entry with the given name exists in the parent
+    /// * `Err(MetaError::NotFound)` - If the store contains a dangling directory
+    ///   entry whose inode attributes no longer exist. This keeps inode-only
+    ///   lookup consistent with `lookup_with_attr` and maps to `ENOENT` at the
+    ///   FUSE boundary.
     /// * `Err(MetaError)` - On storage errors
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn cached_lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
@@ -1532,16 +1538,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         trace!("MetaClient: lookup MISS ({}, '{}')", parent, name);
         self.metrics.record_lookup_cache_miss();
 
-        let result = self.store.lookup(parent, name).await?;
+        let result = self.store.lookup_with_attr(parent, name).await?;
 
-        if let Some(ino) = result {
-            if let Ok(Some(attr)) = self.store.stat(ino).await {
-                self.cache_lookup_attr(parent, name, ino, attr).await;
-            } else {
-                self.inode_cache
-                    .add_child(parent, name.to_string(), ino)
-                    .await;
-            }
+        if let Some((ino, attr)) = result {
+            self.cache_lookup_attr(parent, name, ino, attr).await;
             Ok(Some(ino))
         } else if self.options.case_insensitive {
             self.resolve_case(parent, name).await
@@ -3082,7 +3082,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .await
         {
             if let Some(cached_version) = cached.version
-                && cached.validated_at.elapsed() >= SLICE_VERSION_CHECK_INTERVAL
+                && cached.validated_at.elapsed() >= self.options.slice_version_check_interval
             {
                 let store_version = self
                     .store
@@ -3671,7 +3671,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_meta_client_lookup_only_does_not_count_lookup_attr_fused_path() {
+    async fn test_meta_client_lookup_only_does_not_change_lookup_with_attr_api_metrics() {
         let client = create_test_client().await;
         let ino = client
             .create_file(1, "lookup-only.txt".to_string())
@@ -3690,7 +3690,7 @@ mod tests {
 
         assert_eq!(
             after.lookup_attr_fused_miss, before.lookup_attr_fused_miss,
-            "lookup-only callers should stay on the lighter inode-only path"
+            "lookup-only callers should not be counted as lookup_with_attr API calls"
         );
     }
 

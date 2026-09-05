@@ -15,6 +15,9 @@ pub mod sdk_fs;
 // Expose vfs for E2E testing - tests should rely on design contracts, not impl details
 pub mod vfs;
 
+#[cfg(feature = "workspace-overlay")]
+pub mod workspace_overlay;
+
 pub(crate) mod utils;
 
 // Public SDK surface for external users.
