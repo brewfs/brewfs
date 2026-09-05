@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::executor::block_on;
 use hex::encode;
-use moka::{Entry, ops::compute::Op};
+use moka::{Entry, future::Cache, ops::compute::Op};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -294,6 +294,11 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     page_cache: ReadPageCache,
     /// SingleFlight controller for coalescing concurrent page-cache misses.
     page_flight: SingleFlight<PageKey, Bytes>,
+    /// Per-object encoding classification. Chunk object keys are immutable, so
+    /// a classification remains valid for the lifetime of this store.
+    format_cache: Cache<String, bool>,
+    /// Coalesces concurrent header probes for an uncached object format.
+    format_flight: SingleFlight<String, bool>,
     /// SingleFlight controller for coalescing concurrent reads to the same block
     /// Thread-safe and shared across the store lifetime so concurrent requests can coalesce.
     read_flight: Arc<SingleFlight<BlockKey, Bytes>>,
@@ -398,6 +403,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             block_cache,
             page_cache,
             page_flight: SingleFlight::new(),
+            format_cache: Cache::new(4096),
+            format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             config,
@@ -445,6 +452,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             block_cache,
             page_cache,
             page_flight: SingleFlight::new(),
+            format_cache: Cache::new(4096),
+            format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             config: store_config,
@@ -470,6 +479,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             block_cache,
             page_cache,
             page_flight: SingleFlight::new(),
+            format_cache: Cache::new(4096),
+            format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             config: store_config,
@@ -495,19 +506,35 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     /// mount, so inspect its self-describing header rather than trusting the
     /// mount configuration.
     async fn persisted_block_is_raw(&self, key: &str) -> anyhow::Result<bool> {
+        if let Some(is_raw) = self.format_cache.get(key).await {
+            return Ok(is_raw);
+        }
+
+        let key = key.to_string();
+        let client = self.client.clone();
+        let bandwidth = self.bandwidth.clone();
+        let object_metrics = self.object_metrics.clone();
+        let format_cache = self.format_cache.clone();
         let mut header = [0u8; 4];
-        self.bandwidth.acquire_download(header.len()).await;
-        let started = Instant::now();
-        let read_len = self
-            .client
-            .get_object_range(key, 0, &mut header)
+        let is_raw = self
+            .format_flight
+            .execute(key.clone(), || async move {
+                bandwidth.acquire_download(header.len()).await;
+                let started = Instant::now();
+                let read_len = client
+                    .get_object_range(&key, 0, &mut header)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("object store header read failed: {key}, {error:?}")
+                    })?;
+                object_metrics.record_get(read_len as u64, started.elapsed());
+                let is_raw = !has_compression_header(&header[..read_len]);
+                format_cache.insert(key, is_raw).await;
+                Ok::<bool, anyhow::Error>(is_raw)
+            })
             .await
-            .map_err(|error| {
-                anyhow::anyhow!("object store header read failed: {key}, {error:?}")
-            })?;
-        self.object_metrics
-            .record_get(read_len as u64, started.elapsed());
-        Ok(!has_compression_header(&header[..read_len]))
+            .map_err(|error| anyhow::anyhow!("object format probe failed: {error}"))?;
+        Ok(*is_raw)
     }
 
     async fn populate_write_cache_after_upload(&self, key: String, data: Bytes) {
@@ -802,11 +829,15 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         }
 
         let range_size_threshold = self.config.range_size_threshold();
-        let can_read_object_ranges = offset > 0
-            && len <= range_size_threshold
-            && self.persisted_block_is_raw(&key_str).await?;
+        // Object ranges can only be used when the current mount is configured
+        // without compression.  An existing full-block read takes precedence:
+        // it already owns the complete decoded block, so avoid even a format
+        // probe before joining it.
+        let can_try_object_ranges = matches!(self.config.compression, Compression::None)
+            && offset > 0
+            && len <= range_size_threshold;
 
-        if can_read_object_ranges {
+        if can_try_object_ranges {
             if let Some(block_data) = self.read_flight.try_piggyback(&key).await {
                 tracing::Span::current().record("strategy", "piggyback_full");
                 self.object_metrics.record_read_piggyback_full();
@@ -824,7 +855,16 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 tracing::Span::current().record("read_len", copy_len);
                 return Ok(());
             }
+        }
 
+        // A chunk object is immutable after commit, and the classification is
+        // cached and coalesced by `persisted_block_is_raw`.  Compressed legacy
+        // objects fall through to the full-block path, which decodes from the
+        // persisted header instead of relying on this mount's configuration.
+        let can_read_object_ranges =
+            can_try_object_ranges && self.persisted_block_is_raw(&key_str).await?;
+
+        if can_read_object_ranges {
             // Small range read — serve via page-granularity cache so that
             // repeated small reads within the same 64KB page avoid a network
             // round-trip.
@@ -2121,8 +2161,8 @@ mod tests {
 
         assert_eq!(
             *backend.get_object_range_calls.lock().unwrap(),
-            1,
-            "concurrent small reads for one page should share one range GET"
+            2,
+            "concurrent small reads should share one format probe and one page range GET"
         );
 
         for _ in 0..100 {
@@ -2387,7 +2427,11 @@ mod tests {
                 .map(|i| (i % 251) as u8)
                 .collect::<Vec<_>>()
         );
-        assert_eq!(*backend.get_object_range_calls.lock().unwrap(), 1);
+        assert_eq!(
+            *backend.get_object_range_calls.lock().unwrap(),
+            2,
+            "one format probe and one page range GET are expected"
+        );
 
         for _ in 0..100 {
             if *backend.get_object_calls.lock().unwrap() >= 1 {
@@ -2660,7 +2704,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         future::try_join_all(reads).await?;
-        assert_eq!(backend.get_object_range_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            backend.get_object_range_calls.load(Ordering::SeqCst),
+            4,
+            "each immutable object needs one cached format probe and one page range GET"
+        );
 
         for _ in 0..100 {
             if backend.get_object_calls.load(Ordering::SeqCst) >= 1 {
@@ -2788,7 +2836,11 @@ mod tests {
 
         let mut buf = vec![0u8; 4096];
         store.read_range((92, 0), 1024, &mut buf).await?;
-        assert_eq!(backend.get_object_range_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            backend.get_object_range_calls.load(Ordering::SeqCst),
+            2,
+            "one format probe and one page range GET are expected"
+        );
 
         for _ in 0..20 {
             let snapshot = store
