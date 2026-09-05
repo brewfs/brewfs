@@ -1972,12 +1972,13 @@ impl MetaStore for DatabaseMetaStore {
         skip(self),
         fields(old_parent, old_name, new_parent, new_name)
     )]
-    async fn rename(
+    async fn rename_with_mode(
         &self,
         old_parent: i64,
         old_name: &str,
         new_parent: i64,
         new_name: String,
+        noreplace: bool,
     ) -> Result<(), MetaError> {
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
@@ -2034,6 +2035,14 @@ impl MetaStore for DatabaseMetaStore {
             .one(&txn)
             .await
             .map_err(MetaError::Database)?;
+
+        if noreplace && existing.is_some() {
+            txn.rollback().await.map_err(MetaError::Database)?;
+            return Err(MetaError::AlreadyExists {
+                parent: new_parent,
+                name: new_name,
+            });
+        }
 
         if let Some(existing) = existing {
             if existing.inode == target_entry.inode {

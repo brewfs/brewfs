@@ -712,6 +712,35 @@ pub trait MetaStore: Send + Sync {
         old_name: &str,
         new_parent: i64,
         new_name: String,
+    ) -> Result<(), MetaError> {
+        self.rename_with_mode(old_parent, old_name, new_parent, new_name, false)
+            .await
+    }
+
+    /// Atomically rename an entry only if `new_parent/new_name` is absent.
+    ///
+    /// Implementations must perform the absence check in the same transaction,
+    /// compare-and-swap, or script as the namespace mutation. Callers must not
+    /// emulate this operation with a lookup followed by [`Self::rename`].
+    async fn rename_noreplace(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+    ) -> Result<(), MetaError> {
+        self.rename_with_mode(old_parent, old_name, new_parent, new_name, true)
+            .await
+    }
+
+    /// Backend implementation for ordinary and no-replace rename.
+    async fn rename_with_mode(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+        noreplace: bool,
     ) -> Result<(), MetaError>;
 
     async fn rename_with_outcome(

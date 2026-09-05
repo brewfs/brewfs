@@ -2181,12 +2181,13 @@ impl MetaStore for EtcdMetaStore {
         skip(self),
         fields(old_parent, old_name, new_parent, new_name)
     )]
-    async fn rename(
+    async fn rename_with_mode(
         &self,
         old_parent: i64,
         old_name: &str,
         new_parent: i64,
         new_name: String,
+        noreplace: bool,
     ) -> Result<(), MetaError> {
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
@@ -2207,6 +2208,7 @@ impl MetaStore for EtcdMetaStore {
                 let old_name = old_name.to_string();
                 let new_name = new_name.clone();
                 let client = self.client.clone();
+                let noreplace = noreplace;
 
                 Box::pin(async move {
                     let old_forward_entry: EtcdForwardEntry = tx
@@ -2225,6 +2227,12 @@ impl MetaStore for EtcdMetaStore {
                         .get_typed_json::<EtcdForwardEntry>(&new_forward_key)
                         .await?
                     {
+                        if noreplace {
+                            return Err(MetaError::AlreadyExists {
+                                parent: new_parent,
+                                name: new_name,
+                            });
+                        }
                         if replaced_forward.inode == entry_ino {
                             return Ok(entry_ino);
                         }

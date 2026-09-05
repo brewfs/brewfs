@@ -186,6 +186,18 @@ pub trait MetaLayer: Send + Sync {
         new_name: String,
     ) -> Result<(), MetaError>;
 
+    /// Atomically rename only when the destination name is absent.
+    ///
+    /// Implementations must delegate to metadata storage that checks and
+    /// updates the namespace within one atomic operation.
+    async fn rename_noreplace(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+    ) -> Result<(), MetaError>;
+
     /// Rename after the caller already resolved the source and destination
     /// parent attributes. Implementations that cannot use this context can
     /// fall back to the regular rename path.
@@ -281,14 +293,7 @@ pub trait MetaLayer: Send + Sync {
             self.rename_exchange(old_parent, old_name, new_parent, &new_name)
                 .await
         } else if flags.noreplace {
-            // Check if destination exists
-            if self.lookup(new_parent, &new_name).await?.is_some() {
-                return Err(MetaError::AlreadyExists {
-                    parent: new_parent,
-                    name: new_name,
-                });
-            }
-            self.rename(old_parent, old_name, new_parent, new_name)
+            self.rename_noreplace(old_parent, old_name, new_parent, new_name)
                 .await
         } else {
             // Default behavior

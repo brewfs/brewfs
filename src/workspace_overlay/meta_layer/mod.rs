@@ -932,6 +932,23 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         Ok(())
     }
 
+    async fn rename_noreplace(
+        &self,
+        _old_parent: i64,
+        _old_name: &str,
+        _new_parent: i64,
+        _new_name: String,
+    ) -> Result<(), MetaError> {
+        // The workspace namespace uses an optimistic head guard. Its current
+        // replacement rename path cannot use an already-resolved destination
+        // as a no-replace precondition without reintroducing a TOCTOU window.
+        // Refuse the operation until it has a dedicated guarded mutation,
+        // rather than silently degrading RENAME_NOREPLACE to replacement.
+        Err(MetaError::NotSupported(
+            "atomic RENAME_NOREPLACE is not yet available for workspace overlays".into(),
+        ))
+    }
+
     async fn rename_exchange(
         &self,
         old_parent: i64,

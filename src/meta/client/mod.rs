@@ -1715,6 +1715,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         known_src: Option<(i64, FileAttr)>,
         known_new_parent_attr: Option<FileAttr>,
         known_dest_ino: Option<Option<i64>>,
+        noreplace: bool,
     ) -> Result<(), MetaError> {
         self.ensure_writable()?;
 
@@ -1752,16 +1753,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             }
         }
 
-        // Resolve destination inode before store rename so we can invalidate its
+        // Resolve destination inode before replace-capable store renames so we can invalidate its
         // cache entry afterwards.  When the store replaces an existing destination,
         // its nlink is decremented (possibly to 0, which deletes the node).  The
         // cache must reflect this, otherwise a subsequent stat on an fd that was
         // open before the overwrite returns a stale (non-zero) nlink.
-        let dest_ino = match known_dest_ino {
-            Some(dest_ino) => dest_ino.map(|ino| self.check_root(ino)),
-            None => self.cached_lookup(new_parent, &new_name).await?,
+        // A no-replace operation must not make a correctness decision based on
+        // this cache: another client may create the name after a lookup. Its
+        // backend transaction/script is the sole authority for the absence
+        // check.
+        let dest_ino = if noreplace {
+            None
+        } else {
+            match known_dest_ino {
+                Some(dest_ino) => dest_ino.map(|ino| self.check_root(ino)),
+                None => self.cached_lookup(new_parent, &new_name).await?,
+            }
         };
-        if dest_ino == Some(src_ino) {
+        if !noreplace && dest_ino == Some(src_ino) {
             return Ok(());
         }
         let dest_attr = match dest_ino {
@@ -1770,9 +1779,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         };
 
         // Execute the store-level rename with atomic cache updates.
-        self.store
-            .rename(old_parent, old_name, new_parent, new_name.clone())
-            .await?;
+        if noreplace {
+            self.store
+                .rename_noreplace(old_parent, old_name, new_parent, new_name.clone())
+                .await?;
+        } else {
+            self.store
+                .rename(old_parent, old_name, new_parent, new_name.clone())
+                .await?;
+        }
         self.invalidate_open_file_cache_inode(src_ino).await;
         if let Some(dest_ino) = dest_ino {
             self.invalidate_open_file_cache_inode(dest_ino).await;
@@ -2621,8 +2636,23 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         new_parent: i64,
         new_name: String,
     ) -> Result<(), MetaError> {
-        self.rename_cached(old_parent, old_name, new_parent, new_name, None, None, None)
-            .await
+        self.rename_cached(
+            old_parent, old_name, new_parent, new_name, None, None, None, false,
+        )
+        .await
+    }
+
+    async fn rename_noreplace(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: String,
+    ) -> Result<(), MetaError> {
+        self.rename_cached(
+            old_parent, old_name, new_parent, new_name, None, None, None, true,
+        )
+        .await
     }
 
     #[tracing::instrument(
@@ -2659,6 +2689,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             Some((src_ino, src_attr)),
             Some(new_parent_attr),
             known_dest_ino,
+            false,
         )
         .await
     }
@@ -2817,14 +2848,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             self.rename_exchange(old_parent, old_name, new_parent, &new_name)
                 .await
         } else if flags.noreplace {
-            // Check if destination exists
-            if self.cached_lookup(new_parent, &new_name).await?.is_some() {
-                return Err(MetaError::AlreadyExists {
-                    parent: new_parent,
-                    name: new_name,
-                });
-            }
-            self.rename(old_parent, old_name, new_parent, new_name)
+            self.rename_noreplace(old_parent, old_name, new_parent, new_name)
                 .await
         } else {
             // Default behavior
