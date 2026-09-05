@@ -1018,6 +1018,7 @@ const RENAME_LUA: &str = r#"
     local timestamp = tonumber(ARGV[5])
     local node_prefix = ARGV[6]
     local link_parent_prefix = ARGV[7]
+    local noreplace = ARGV[8] == "1"
 
     -- Check source dentry exists.
     local dentry_ino = redis.call('HGET', old_parent_dir_key, old_name)
@@ -1057,6 +1058,9 @@ const RENAME_LUA: &str = r#"
     local replaced_ino = nil
     local dest_ino_str = redis.call('HGET', new_parent_dir_key, new_name)
     if dest_ino_str then
+        if noreplace then
+            return cjson.encode({ok=false, error="already_exists", ino=tonumber(dest_ino_str)})
+        end
         if dest_ino_str == dentry_ino then
             return cjson.encode({ok=true, ino=child_ino})
         end
@@ -2764,16 +2768,73 @@ impl MetaStore for RedisMetaStore {
         skip(self),
         fields(old_parent, old_name, new_parent, new_name)
     )]
-    async fn rename(
+    async fn rename_with_mode(
         &self,
         old_parent: i64,
         old_name: &str,
         new_parent: i64,
         new_name: String,
+        noreplace: bool,
     ) -> Result<(), MetaError> {
-        self.rename_with_outcome(old_parent, old_name, new_parent, new_name)
+        if !noreplace {
+            return self
+                .rename_with_outcome(old_parent, old_name, new_parent, new_name)
+                .await
+                .map(|_| ());
+        }
+
+        let old_parent_dir_key = self.dir_key(old_parent);
+        let new_parent_dir_key = self.dir_key(new_parent);
+        let old_parent_node_key = self.node_key(old_parent);
+        let new_parent_node_key = self.node_key(new_parent);
+        let deleted_set_key = self.deleted_set_key();
+        let now = current_time();
+
+        let result: String = redis::Script::new(RENAME_LUA)
+            .key(&old_parent_dir_key)
+            .key(&new_parent_dir_key)
+            .key(&old_parent_node_key)
+            .key(&new_parent_node_key)
+            .key(deleted_set_key)
+            .arg(old_name)
+            .arg(&new_name)
+            .arg(old_parent)
+            .arg(new_parent)
+            .arg(now)
+            .arg(NODE_KEY_PREFIX)
+            .arg(LINK_PARENT_KEY_PREFIX)
+            .arg(1)
+            .invoke_async(&mut self.conn.clone())
             .await
-            .map(|_| ())
+            .map_err(redis_err)?;
+        let response: LuaResponse = serde_json::from_str(&result)
+            .map_err(|e| MetaError::Internal(format!("Lua response parse error: {e}")))?;
+
+        match response.error.as_deref() {
+            Some("already_exists") => Err(MetaError::AlreadyExists {
+                parent: new_parent,
+                name: new_name,
+            }),
+            Some("not_found") => Err(MetaError::NotFound(response.ino.unwrap_or(old_parent))),
+            Some("parent_not_found") => Err(MetaError::ParentNotFound(new_parent)),
+            Some("parent_not_directory") => Err(MetaError::NotDirectory(new_parent)),
+            Some("node_not_found") => Err(MetaError::NotFound(response.ino.unwrap_or(old_parent))),
+            Some("corrupt_node") => Err(MetaError::Internal("corrupt node data".into())),
+            Some("link_parent_not_found") => Err(MetaError::Internal(format!(
+                "expected link parent binding {old_parent}/{old_name} for inode {}",
+                response.ino.unwrap_or(old_parent)
+            ))),
+            Some(other) => Err(MetaError::Internal(format!("Lua error: {other}"))),
+            None if response.ok => {
+                let child = response
+                    .ino
+                    .ok_or_else(|| MetaError::Internal("missing ino in rename response".into()))?;
+                self.invalidate_nodes(&[old_parent, new_parent, child])
+                    .await;
+                Ok(())
+            }
+            None => Err(MetaError::Internal("unexpected Lua response".into())),
+        }
     }
 
     async fn rename_with_outcome(

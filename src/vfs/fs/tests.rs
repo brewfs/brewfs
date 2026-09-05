@@ -366,6 +366,53 @@ mod rename_tests {
         println!("All VFS rename boundary condition tests passed!");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_noreplace_preserves_concurrently_created_destination() {
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let fs = Arc::new(
+            VFS::new(
+                ChunkLayout::default(),
+                InMemoryBlockStore::new(),
+                meta_handle.store(),
+            )
+            .await
+            .unwrap(),
+        );
+        fs.mkdir_p("/race").await.unwrap();
+        fs.create_file("/race/left").await.unwrap();
+        fs.create_file("/race/right").await.unwrap();
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let left_fs = Arc::clone(&fs);
+        let left_barrier = Arc::clone(&barrier);
+        let left = tokio::spawn(async move {
+            left_barrier.wait().await;
+            left_fs
+                .rename_noreplace("/race/left", "/race/destination")
+                .await
+        });
+        let right_fs = Arc::clone(&fs);
+        let right_barrier = Arc::clone(&barrier);
+        let right = tokio::spawn(async move {
+            right_barrier.wait().await;
+            right_fs
+                .rename_noreplace("/race/right", "/race/destination")
+                .await
+        });
+
+        let left = left.await.unwrap();
+        let right = right.await.unwrap();
+        assert_ne!(left.is_ok(), right.is_ok(), "exactly one rename must win");
+        assert!(fs.exists("/race/destination").await);
+        if left.is_ok() {
+            assert!(!fs.exists("/race/left").await);
+            assert!(fs.exists("/race/right").await);
+        } else {
+            assert!(fs.exists("/race/left").await);
+            assert!(!fs.exists("/race/right").await);
+        }
+    }
+
     #[tokio::test]
     async fn test_rename_error_cases_vfs() {
         let layout = ChunkLayout::default();

@@ -2344,6 +2344,49 @@ where
         Ok(())
     }
 
+    /// Rename an entry without replacement, using the metadata backend's
+    /// atomic no-replace primitive for the final namespace mutation.
+    pub(crate) async fn rename_at_noreplace(
+        &self,
+        old_parent_ino: i64,
+        old_name: &str,
+        new_parent_ino: i64,
+        new_name: &str,
+    ) -> Result<(), VfsError> {
+        Self::validate_entry_name(old_name)?;
+        Self::validate_entry_name(new_name)?;
+
+        let src_ino = self
+            .meta_lookup_required(old_parent_ino, old_name, PathHint::none())
+            .await?;
+        let src_attr = self.meta_stat_required(src_ino, PathHint::none()).await?;
+        let new_parent_attr = self
+            .meta_stat_required(new_parent_ino, PathHint::none())
+            .await?;
+        if new_parent_attr.kind != FileType::Dir {
+            return Err(VfsError::NotADirectory {
+                path: PathHint::none(),
+            });
+        }
+        if src_attr.kind == FileType::Dir
+            && self
+                .parent_is_descendant_of(new_parent_ino, src_ino)
+                .await?
+        {
+            return Err(VfsError::CircularRename {
+                path: PathHint::none(),
+            });
+        }
+
+        self.meta_rename_noreplace(
+            old_parent_ino,
+            old_name,
+            new_parent_ino,
+            new_name.to_string(),
+        )
+        .await
+    }
+
     /// Create a hard link at `link_path` that references `existing_path`.
     #[tracing::instrument(level = "debug", skip(self), fields(existing_path, link_path))]
     pub async fn link(&self, existing_path: &str, link_path: &str) -> Result<FileAttr, VfsError> {
@@ -2538,16 +2581,12 @@ where
     pub async fn rename_noreplace(&self, old: &str, new: &str) -> Result<(), VfsError> {
         let old = Self::norm_path(old);
         let new = Self::norm_path(new);
-
-        // Check if destination exists
-        if self.meta_lookup_path(&new).await?.is_some() {
-            return Err(VfsError::AlreadyExists {
-                path: PathHint::some(format!("destination '{}' already exists", new)),
-            });
-        }
-
-        // Use standard rename
-        self.rename(&old, &new).await
+        let (old_dir, old_name) = Self::split_dir_file(&old);
+        let (new_dir, new_name) = Self::split_dir_file(&new);
+        let old_parent_ino = self.resolve_parent_inode(&old_dir).await?;
+        let new_parent_ino = self.resolve_parent_inode(&new_dir).await?;
+        self.rename_at_noreplace(old_parent_ino, &old_name, new_parent_ino, &new_name)
+            .await
     }
 
     /// Atomically exchange the source and destination (RENAME_EXCHANGE).
