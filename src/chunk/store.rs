@@ -1,7 +1,7 @@
 //! Storage backends: asynchronous block-level IO traits and in-memory implementations.
 
 use crate::chunk::bandwidth::BandwidthLimiter;
-use crate::chunk::compress::{Compression, compress, decompress_bytes};
+use crate::chunk::compress::{Compression, compress, decompress_bytes, has_compression_header};
 use crate::chunk::page_cache::{PageKey, ReadPageCache};
 use crate::chunk::singleflight::SingleFlight;
 use crate::utils::NumCastExt;
@@ -490,6 +490,26 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         format!("chunks/{chunk_id}/{block_index}")
     }
 
+    /// Range GET offsets are valid only for raw objects. A block may have
+    /// been written with a different compression setting than the current
+    /// mount, so inspect its self-describing header rather than trusting the
+    /// mount configuration.
+    async fn persisted_block_is_raw(&self, key: &str) -> anyhow::Result<bool> {
+        let mut header = [0u8; 4];
+        self.bandwidth.acquire_download(header.len()).await;
+        let started = Instant::now();
+        let read_len = self
+            .client
+            .get_object_range(key, 0, &mut header)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("object store header read failed: {key}, {error:?}")
+            })?;
+        self.object_metrics
+            .record_get(read_len as u64, started.elapsed());
+        Ok(!has_compression_header(&header[..read_len]))
+    }
+
     async fn populate_write_cache_after_upload(&self, key: String, data: Bytes) {
         // Make freshly uploaded data immediately visible through a protected
         // read-after-write tier. The normal hot cache uses admission control,
@@ -566,7 +586,6 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         let read_flight = self.read_flight.clone();
         let prefetch_limit = self.range_prefetch_limit.clone();
         let bandwidth = self.bandwidth.clone();
-        let compression = self.config.compression;
         let block_size = self.config.block_size;
         let object_metrics = self.object_metrics.clone();
 
@@ -600,12 +619,11 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                             return Ok(Bytes::new());
                         }
                     };
-                    let decompressed = if !matches!(compression, Compression::None) {
-                        decompress_bytes(raw_bytes)
-                            .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?
-                    } else {
-                        raw_bytes
-                    };
+                    // Persisted blocks are self-describing. The compression
+                    // setting controls future writes, not how an existing
+                    // object must be decoded after a remount.
+                    let decompressed = decompress_bytes(raw_bytes)
+                        .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?;
                     Ok::<_, anyhow::Error>(decompressed)
                 })
                 .await;
@@ -784,11 +802,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         }
 
         let range_size_threshold = self.config.range_size_threshold();
-
-        if matches!(self.config.compression, Compression::None)
-            && offset > 0
+        let can_read_object_ranges = offset > 0
             && len <= range_size_threshold
-        {
+            && self.persisted_block_is_raw(&key_str).await?;
+
+        if can_read_object_ranges {
             if let Some(block_data) = self.read_flight.try_piggyback(&key).await {
                 tracing::Span::current().record("strategy", "piggyback_full");
                 self.object_metrics.record_read_piggyback_full();
@@ -907,7 +925,6 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         // Large read — fetch full block via SingleFlight, then cache it.
         tracing::Span::current().record("strategy", "coalesced_full");
         let client = &self.client;
-        let compression = self.config.compression;
         let object_metrics = self.object_metrics.clone();
 
         let block_data =
@@ -932,13 +949,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                             return Ok(Bytes::new());
                         }
                     };
-                    // Decompress if compression is enabled (auto-detects from header)
-                    let decompressed = if !matches!(compression, Compression::None) {
-                        decompress_bytes(raw_bytes)
-                            .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?
-                    } else {
-                        raw_bytes
-                    };
+                    // The object header is authoritative. This covers blocks
+                    // written by a previous mount with LZ4/Zstd even when the
+                    // current mount is configured to write uncompressed data.
+                    let decompressed = decompress_bytes(raw_bytes)
+                        .map_err(|e| anyhow::anyhow!("block decompression failed: {e}"))?;
                     Ok::<_, anyhow::Error>(decompressed)
                 })
                 .await
@@ -1246,8 +1261,8 @@ mod tests {
             "Range miss should schedule one background full-block prefetch"
         );
         assert_eq!(
-            stats.get_object_range_calls, 8,
-            "Non-zero 512KB read should fetch 8 pages (8 x 64KB range reads)"
+            stats.get_object_range_calls, 9,
+            "Non-zero 512KB read should probe the format then fetch 8 pages"
         );
         for _ in 0..100 {
             if backend.get_stats().get_object_calls >= 1 {
@@ -1294,8 +1309,8 @@ mod tests {
             .expect("ObjectBlockStore exposes object metrics")
             .snapshot();
         assert_eq!(
-            disabled_stats.get_object_range_calls, 8,
-            "Disabled background prefetch should still serve the request via page ranges"
+            disabled_stats.get_object_range_calls, 9,
+            "Disabled background prefetch should probe the format then serve page ranges"
         );
         assert_eq!(
             disabled_stats.get_object_calls, 0,
@@ -1464,6 +1479,114 @@ mod tests {
             "subsequent reads should hit block_cache without range GETs"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_remount_without_compression_decodes_persisted_compressed_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cadapter::client::{ObjectBackend, ObjectClient};
+        use crate::chunk::compress::{Compression, compress};
+        use async_trait::async_trait;
+        use std::{
+            collections::HashMap,
+            sync::{Arc, Mutex},
+        };
+
+        #[derive(Clone, Default)]
+        struct MockBackend {
+            data: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+            full_gets: Arc<Mutex<usize>>,
+            range_gets: Arc<Mutex<usize>>,
+        }
+
+        #[async_trait]
+        impl ObjectBackend for MockBackend {
+            async fn put_object(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
+                self.data
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), data.to_vec());
+                Ok(())
+            }
+
+            async fn get_object(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+                *self.full_gets.lock().unwrap() += 1;
+                Ok(self.data.lock().unwrap().get(key).cloned())
+            }
+
+            async fn get_object_range(
+                &self,
+                key: &str,
+                offset: u64,
+                buf: &mut [u8],
+            ) -> anyhow::Result<usize> {
+                *self.range_gets.lock().unwrap() += 1;
+                let objects = self.data.lock().unwrap();
+                let Some(data) = objects.get(key) else {
+                    return Ok(0);
+                };
+                let offset = offset as usize;
+                if offset >= data.len() {
+                    return Ok(0);
+                }
+                let len = (data.len() - offset).min(buf.len());
+                buf[..len].copy_from_slice(&data[offset..offset + len]);
+                Ok(len)
+            }
+
+            async fn get_etag(&self, _key: &str) -> anyhow::Result<String> {
+                Ok("test-etag".to_string())
+            }
+
+            async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
+                self.data.lock().unwrap().remove(key);
+                Ok(())
+            }
+        }
+
+        let backend = MockBackend::default();
+        let raw: Vec<u8> = (0..(256 * 1024)).map(|index| (index % 16) as u8).collect();
+        let stored = compress(&raw, Compression::Lz4).into_owned();
+        assert!(stored.len() < raw.len());
+        backend
+            .data
+            .lock()
+            .unwrap()
+            .insert("chunks/17/0".to_string(), stored);
+
+        // Simulate a remount whose current write setting is none after this
+        // block was committed with LZ4.
+        let cache_dir = tempfile::tempdir()?;
+        let store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(backend.clone()),
+            ChunksCacheConfig::with_budgets(
+                16 * 1024 * 1024,
+                16 * 1024 * 1024,
+                cache_dir.path().to_path_buf(),
+            ),
+            BlockStoreConfig {
+                block_size: raw.len(),
+                compression: Compression::None,
+                range_background_prefetch: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let offset = 16 * 1024;
+        let mut actual = vec![0xa5; 4096];
+        store
+            .read_range((17, 0), offset as u64, &mut actual)
+            .await?;
+
+        assert_eq!(actual, raw[offset..offset + actual.len()]);
+        assert_eq!(*backend.full_gets.lock().unwrap(), 1);
+        assert_eq!(
+            *backend.range_gets.lock().unwrap(),
+            1,
+            "one header probe must precede the safe full-object read"
+        );
         Ok(())
     }
 

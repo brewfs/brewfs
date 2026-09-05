@@ -45,6 +45,19 @@ impl Compression {
     }
 }
 
+/// Return whether bytes begin with a valid BrewFS compressed-block header.
+///
+/// This is intentionally separate from decompression: callers that want to
+/// serve an object range need to know whether offsets address raw file data or
+/// an encoded payload before fetching that range.
+pub fn has_compression_header(data: &[u8]) -> bool {
+    data.len() >= 4
+        && data[0] == MAGIC[0]
+        && data[1] == MAGIC[1]
+        && data[3] == 0
+        && Compression::from_algo_byte(data[2]).is_some()
+}
+
 /// Compress data using the specified algorithm.
 /// Returns `Cow::Borrowed` when data should be stored as-is (no compression or incompressible),
 /// and `Cow::Owned` with compressed+header bytes when compression is beneficial.
