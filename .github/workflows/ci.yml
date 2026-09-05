@@ -217,6 +217,37 @@ jobs:
           path: docker/compose-xfstests/artifacts/**
           if-no-files-found: warn
 
+  results-web:
+    name: Results web
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/results/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web/results
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: web/results
+        run: npm test -- --run
+
+      - name: Build frontend
+        working-directory: web/results
+        run: npm run build
+
+      - name: Test result server
+        working-directory: web/results
+        run: python3 -m unittest -v test_server.py
+
   docker-pjdfstest:
     name: Docker pjdfstest smoke
     runs-on: ubuntu-latest

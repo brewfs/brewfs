@@ -22,6 +22,11 @@ perf.data
 # Web console generated assets
 web/console/node_modules/
 web/console/dist/
+!web/results/
+!web/results/**
+web/results/node_modules/
+web/results/dist/
+web/results/__pycache__/
 
 # Editor and OS noise
 .DS_Store
