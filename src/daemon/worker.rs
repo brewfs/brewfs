@@ -218,6 +218,8 @@ impl<B: ObjectBackend + Clone> MarkBasedGarbageCollector<B> {
                     for block_index in 0..blocks_per_chunk {
                         let key = format!("chunks/{chunk_id}/{block_index}");
                         self.object_client.delete_object(&key).await?;
+                        let versioned_key = format!("chunks-v2/{chunk_id}/{block_index}");
+                        self.object_client.delete_object(&versioned_key).await?;
                         deleted_objects += 1;
                     }
                 }
