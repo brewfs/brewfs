@@ -1775,7 +1775,6 @@ impl MetaStore for TiKvMetaStore {
         self.write_txn_serialized(operation, old_parent as u64, |store, txn| {
             let old_name = old_name.clone();
             let new_name = new_name.clone();
-            let noreplace = noreplace;
             Box::pin(async move {
                 let old_parent_key = store.inode_key(old_parent);
                 let new_parent_key = store.inode_key(new_parent);

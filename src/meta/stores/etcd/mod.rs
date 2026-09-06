@@ -2208,7 +2208,6 @@ impl MetaStore for EtcdMetaStore {
                 let old_name = old_name.to_string();
                 let new_name = new_name.clone();
                 let client = self.client.clone();
-                let noreplace = noreplace;
 
                 Box::pin(async move {
                     let old_forward_entry: EtcdForwardEntry = tx
