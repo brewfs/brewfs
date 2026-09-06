@@ -837,24 +837,24 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             && offset > 0
             && len <= range_size_threshold;
 
-        if can_try_object_ranges {
-            if let Some(block_data) = self.read_flight.try_piggyback(&key).await {
-                tracing::Span::current().record("strategy", "piggyback_full");
-                self.object_metrics.record_read_piggyback_full();
-                let block_data = block_data
-                    .map_err(|e| anyhow::anyhow!("SingleFlight piggyback read failed: {e}"))?;
+        if can_try_object_ranges
+            && let Some(block_data) = self.read_flight.try_piggyback(&key).await
+        {
+            tracing::Span::current().record("strategy", "piggyback_full");
+            self.object_metrics.record_read_piggyback_full();
+            let block_data = block_data
+                .map_err(|e| anyhow::anyhow!("SingleFlight piggyback read failed: {e}"))?;
 
-                let offset_usize = offset as usize;
-                let end = offset_usize + len;
-                let mut copy_len = 0;
-                if offset_usize < block_data.len() {
-                    let copy_end = end.min(block_data.len());
-                    copy_len = copy_end - offset_usize;
-                    buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
-                }
-                tracing::Span::current().record("read_len", copy_len);
-                return Ok(());
+            let offset_usize = offset as usize;
+            let end = offset_usize + len;
+            let mut copy_len = 0;
+            if offset_usize < block_data.len() {
+                let copy_end = end.min(block_data.len());
+                copy_len = copy_end - offset_usize;
+                buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
             }
+            tracing::Span::current().record("read_len", copy_len);
+            return Ok(());
         }
 
         // A chunk object is immutable after commit, and the classification is
