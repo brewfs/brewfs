@@ -995,12 +995,21 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             }
         }
 
-        let layout = self.resolve_object_layout(key).await?;
-        let object_key = Self::object_key_for(key, layout);
-        let range_base = Self::range_base_offset(layout, self.config.compression);
-        let can_read_object_ranges = can_try_object_ranges && range_base.is_some();
+        // Only small reads need a layout decision before joining the full-read
+        // flight. Keeping the full-read probe inside that flight lets a
+        // concurrent small read piggyback instead of issuing its own probe.
+        let layout = if can_try_object_ranges {
+            Some(self.resolve_object_layout(key).await?)
+        } else {
+            None
+        };
+        let range_base =
+            layout.and_then(|layout| Self::range_base_offset(layout, self.config.compression));
+        let can_read_object_ranges = range_base.is_some();
 
         if can_read_object_ranges {
+            let layout = layout.expect("range path resolved an object layout");
+            let object_key = Self::object_key_for(key, layout);
             // Small range read — serve via page-granularity cache so that
             // repeated small reads within the same 64KB page avoid a network
             // round-trip.
@@ -1108,6 +1117,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         let block_data =
             self.read_flight
                 .execute(key, || async move {
+                    let layout = match layout {
+                        Some(layout) => layout,
+                        None => self.resolve_object_layout(key).await?,
+                    };
+                    let object_key = Self::object_key_for(key, layout);
                     self.bandwidth
                         .acquire_download(self.config.block_size)
                         .await;
@@ -1643,8 +1657,8 @@ mod tests {
         let stats = backend.get_stats();
         assert_eq!(stats.get_object_calls, 1, "Large read should use full read");
         assert_eq!(
-            stats.get_object_range_calls, 0,
-            "Large read should not use range read"
+            stats.get_object_range_calls, 1,
+            "Large read should probe the versioned layout before its full read"
         );
 
         // Concurrent large reads for a DIFFERENT (uncached) block should
@@ -2257,7 +2271,10 @@ mod tests {
             snapshot.get_ops, 2,
             "a legacy full read probes the versioned namespace before fetching legacy data"
         );
-        assert_eq!(snapshot.get_bytes, full_block.len() as u64);
+        assert_eq!(
+            snapshot.get_bytes,
+            full_block.len() as u64 + PERSISTED_HEADER_LEN as u64
+        );
         assert_eq!(snapshot.put_ops, 1);
         assert_eq!(snapshot.del_ops, 1);
         assert_eq!(snapshot.read_full_gets, 1);
