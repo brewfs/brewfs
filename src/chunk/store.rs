@@ -2274,10 +2274,7 @@ mod tests {
             snapshot.get_ops, 2,
             "a legacy full read probes the versioned namespace before fetching legacy data"
         );
-        assert_eq!(
-            snapshot.get_bytes,
-            full_block.len() as u64 + PERSISTED_HEADER_LEN as u64
-        );
+        assert_eq!(snapshot.get_bytes, full_block.len() as u64);
         assert_eq!(snapshot.put_ops, 1);
         assert_eq!(snapshot.del_ops, 1);
         assert_eq!(snapshot.read_full_gets, 1);
