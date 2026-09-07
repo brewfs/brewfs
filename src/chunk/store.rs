@@ -1682,8 +1682,8 @@ mod tests {
             "Concurrent reads should coalesce to 1 call"
         );
         assert_eq!(
-            stats.get_object_range_calls, 0,
-            "Coalesced path should not fall back to range reads",
+            stats.get_object_range_calls, 1,
+            "Concurrent full reads should share one versioned-layout probe",
         );
 
         Ok(())
@@ -2251,7 +2251,10 @@ mod tests {
         store.write_fresh_range((10, 0), 0, &uploaded).await?;
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.put_ops, 1);
-        assert_eq!(snapshot.put_bytes, uploaded.len() as u64);
+        assert_eq!(
+            snapshot.put_bytes,
+            uploaded.len() as u64 + PERSISTED_HEADER_LEN as u64
+        );
         assert_eq!(snapshot.get_ops, 0);
 
         let full_block = vec![7u8; 64 * 1024];
@@ -2640,8 +2643,8 @@ mod tests {
         assert_eq!(*backend.get_object_calls.lock().unwrap(), 1);
         assert_eq!(
             *backend.get_object_range_calls.lock().unwrap(),
-            0,
-            "small read should join the in-flight full-block read instead of issuing range GET"
+            1,
+            "the full read should issue one shared layout probe; the small read should piggyback without another range GET"
         );
 
         Ok(())
