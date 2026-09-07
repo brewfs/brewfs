@@ -34,18 +34,21 @@ services:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
-      RUSTFS_SERVER_DOMAINS: ${RUSTFS_SERVER_DOMAINS:-rustfs}
     command:
       - --address
       - :9000
       - --console-enable
-      - --server-domains
-      - ${RUSTFS_SERVER_DOMAINS:-rustfs}
       - --access-key
       - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       - --secret-key
       - ${RUSTFS_SECRET_KEY:-rustfsadmin}
       - /data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
     volumes:
       - ${BREWFS_PERF_RUSTFS_DATA_MOUNT:-rustfs-data-perf-redis}:/data
     networks:
@@ -55,7 +58,7 @@ services:
     image: amazon/aws-cli:latest
     depends_on:
       rustfs:
-        condition: service_started
+        condition: service_healthy
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
