@@ -756,6 +756,45 @@ async fn test_hardlink_dentry_binding_cross_dir_move_rename() {
 }
 
 #[tokio::test]
+async fn rename_exchange_rejects_ancestor_in_both_directions_at_store_boundary() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+    let ancestor = store.mkdir(root, "ancestor".to_string()).await.unwrap();
+    let descendant = store
+        .mkdir(ancestor, "descendant".to_string())
+        .await
+        .unwrap();
+
+    let error = store
+        .rename_exchange(root, "ancestor", ancestor, "descendant")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MetaError::InvalidPath(_)));
+    assert_eq!(
+        store.lookup(root, "ancestor").await.unwrap(),
+        Some(ancestor)
+    );
+    assert_eq!(
+        store.lookup(ancestor, "descendant").await.unwrap(),
+        Some(descendant)
+    );
+
+    let error = store
+        .rename_exchange(ancestor, "descendant", root, "ancestor")
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MetaError::InvalidPath(_)));
+    assert_eq!(
+        store.lookup(root, "ancestor").await.unwrap(),
+        Some(ancestor)
+    );
+    assert_eq!(
+        store.lookup(ancestor, "descendant").await.unwrap(),
+        Some(descendant)
+    );
+}
+
+#[tokio::test]
 async fn test_symlink_uses_parent_field() {
     // Test that symlinks use parent field (they always have nlink=1)
     let store = new_test_store().await;

@@ -2283,6 +2283,8 @@ impl MetaStore for DatabaseMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        self.validate_rename_exchange_ancestry(old_parent, old_name, new_parent, new_name)
+            .await?;
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         // Find both entries to exchange
