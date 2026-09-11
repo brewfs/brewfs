@@ -849,8 +849,7 @@ async fn apply_consumer_workload(
     let mount_name = mount.name_any();
     let workload_name = consumer_workload_name(&mount_name);
     let match_labels = labels(&mount_name, "consumer");
-    let mut workload_labels = match_labels.clone();
-    workload_labels.extend(consumer.workload_labels.clone());
+    let workload_labels = build_consumer_workload_labels(consumer, match_labels.clone());
     let workload_annotations = consumer.workload_annotations.clone();
     let template = build_consumer_pod_template(consumer, host_mount_path, match_labels.clone());
     let headless_service_name = consumer_headless_service_name(&mount_name);
@@ -1167,8 +1166,7 @@ fn build_consumer_pod_template(
     host_mount_path: &str,
     match_labels: BTreeMap<String, String>,
 ) -> PodTemplateSpec {
-    let mut labels = match_labels;
-    labels.extend(consumer.pod_labels.clone());
+    let labels = merge_operator_labels(&consumer.pod_labels, match_labels);
 
     let mut annotations = consumer.pod_annotations.clone();
     annotations.insert(
@@ -1218,6 +1216,22 @@ fn build_consumer_pod_template(
             ..PodSpec::default()
         }),
     }
+}
+
+fn build_consumer_workload_labels(
+    consumer: &MountConsumerSpec,
+    match_labels: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    merge_operator_labels(&consumer.workload_labels, match_labels)
+}
+
+fn merge_operator_labels(
+    user_labels: &BTreeMap<String, String>,
+    operator_labels: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut labels = user_labels.clone();
+    labels.extend(operator_labels);
+    labels
 }
 
 fn mount_state_volume(mount: &BrewFSMount) -> Volume {
@@ -2272,5 +2286,72 @@ mod tests {
 
         desired.ready_replicas = Some(0);
         assert!(!mount_status_semantically_equal(&current, &desired));
+    }
+
+    #[test]
+    fn consumer_pod_labels_cannot_override_selectors_for_any_workload_kind() {
+        for workload_kind in [
+            ConsumerWorkloadKind::Deployment,
+            ConsumerWorkloadKind::DaemonSet,
+            ConsumerWorkloadKind::StatefulSet,
+        ] {
+            let mut consumer: MountConsumerSpec =
+                serde_json::from_value(json!({})).expect("default consumer spec");
+            consumer.workload_kind = workload_kind.clone();
+            consumer.pod_labels = BTreeMap::from([
+                (
+                    "app.kubernetes.io/component".to_string(),
+                    "overridden".to_string(),
+                ),
+                ("example.com/custom".to_string(), "kept".to_string()),
+            ]);
+            consumer.workload_labels = BTreeMap::from([
+                (
+                    "app.kubernetes.io/component".to_string(),
+                    "overridden".to_string(),
+                ),
+                ("example.com/workload".to_string(), "kept".to_string()),
+            ]);
+            let selector_labels = labels("demo-mount", "consumer");
+
+            let template =
+                build_consumer_pod_template(&consumer, "/mnt/demo", selector_labels.clone());
+            let template_labels = template
+                .metadata
+                .and_then(|metadata| metadata.labels)
+                .expect("consumer pod template labels");
+
+            assert_eq!(
+                template_labels
+                    .get("app.kubernetes.io/component")
+                    .map(String::as_str),
+                Some("consumer"),
+                "{workload_kind:?} must preserve the operator selector"
+            );
+            assert_eq!(
+                template_labels
+                    .get("example.com/custom")
+                    .map(String::as_str),
+                Some("kept"),
+                "{workload_kind:?} must preserve non-conflicting custom labels"
+            );
+
+            let workload_labels =
+                build_consumer_workload_labels(&consumer, selector_labels.clone());
+            assert_eq!(
+                workload_labels
+                    .get("app.kubernetes.io/component")
+                    .map(String::as_str),
+                Some("consumer"),
+                "{workload_kind:?} must preserve the operator workload label"
+            );
+            assert_eq!(
+                workload_labels
+                    .get("example.com/workload")
+                    .map(String::as_str),
+                Some("kept"),
+                "{workload_kind:?} must preserve non-conflicting workload labels"
+            );
+        }
     }
 }
