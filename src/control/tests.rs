@@ -1,9 +1,15 @@
 use super::job::{GcJobResult, JobManager, JobOutcome, JobState};
-use super::protocol::{ControlAclEntry, ControlRequest, ControlResponse, ControlTrashEntry};
+use super::protocol::{
+    CONTROL_IO_TIMEOUT, CONTROL_MAX_REQUEST_BYTES, CONTROL_MAX_RESPONSE_BYTES, ControlAclEntry,
+    ControlRequest, ControlResponse, ControlTrashEntry,
+};
 use super::runtime::{InstanceRecord, RuntimeRegistry};
 use super::server::{ControlHandler, ControlServer};
 use async_trait::async_trait;
+use std::time::Duration;
 use tempfile::tempdir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::timeout;
 
 #[test]
 fn protocol_roundtrip_preserves_gc_request() {
@@ -296,4 +302,94 @@ async fn uds_server_creates_parent_directory() {
         .expect("bind server");
 
     assert!(socket_path.exists());
+}
+
+#[tokio::test]
+async fn uds_server_rejects_oversized_requests() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("control.sock");
+    let _server = ControlServer::bind(socket_path.clone(), FakeHandler)
+        .await
+        .expect("bind server");
+
+    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .expect("connect server");
+    stream
+        .write_all(&vec![b'x'; CONTROL_MAX_REQUEST_BYTES + 1])
+        .await
+        .expect("write oversized request");
+    stream.shutdown().await.expect("shutdown request");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("read response");
+    assert!(response.len() < CONTROL_MAX_RESPONSE_BYTES);
+    assert_eq!(
+        serde_json::from_slice::<ControlResponse>(&response).expect("decode response"),
+        ControlResponse::Error {
+            code: "request_too_large".to_string(),
+            message: format!(
+                "control request exceeds {} bytes",
+                CONTROL_MAX_REQUEST_BYTES
+            ),
+        }
+    );
+}
+
+#[tokio::test]
+async fn uds_server_times_out_stalled_requests() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("control.sock");
+    let _server = ControlServer::bind(socket_path.clone(), FakeHandler)
+        .await
+        .expect("bind server");
+
+    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .expect("connect server");
+    let mut response = Vec::new();
+    timeout(CONTROL_IO_TIMEOUT + Duration::from_secs(1), async {
+        stream.read_to_end(&mut response).await
+    })
+    .await
+    .expect("stalled request should time out")
+    .expect("read timeout response");
+    assert_eq!(
+        serde_json::from_slice::<ControlResponse>(&response).expect("decode response"),
+        ControlResponse::Error {
+            code: "request_timeout".to_string(),
+            message: format!(
+                "control request exceeded {:?} read timeout",
+                CONTROL_IO_TIMEOUT
+            ),
+        }
+    );
+}
+
+#[tokio::test]
+async fn control_client_rejects_oversized_responses() {
+    let dir = tempdir().expect("tempdir");
+    let socket_path = dir.path().join("control.sock");
+    let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind listener");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept client");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read request");
+        stream
+            .write_all(&vec![b'x'; CONTROL_MAX_RESPONSE_BYTES + 1])
+            .await
+            .expect("write oversized response");
+        stream.shutdown().await.expect("shutdown response");
+    });
+
+    let error = super::client::send_request(&socket_path, &ControlRequest::Ping)
+        .await
+        .expect_err("oversized response must be rejected");
+    assert!(error.to_string().contains("control response exceeds"));
+    server.await.expect("server task");
 }
