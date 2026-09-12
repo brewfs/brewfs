@@ -16,8 +16,8 @@ use super::error::WorkspaceError;
 use super::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
 use super::metrics::{WorkspaceMetrics, global_workspace_metrics};
 use super::model::{
-    BaseRevision, CommitResult, LayerRecord, LayerState, SealPhase, SealResult, SnapshotLease,
-    SnapshotRecord, ViewContext, WorkspaceRecord,
+    BaseRevision, CommitResult, LayerRecord, LayerState, LeaseState, SealPhase, SealResult,
+    SnapshotLease, SnapshotRecord, ViewContext, WorkspaceRecord,
 };
 
 pub const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(30);
@@ -240,9 +240,22 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
     }
 
     pub async fn recover_incomplete_seals(&self) -> Result<Vec<SealResult>, WorkspaceError> {
+        // Expire leases before deciding whether a journal is still owned by a
+        // live client.  Recovery must never mutate a journal while its
+        // workspace still has an active lease.
+        self.store.reap_expired_leases().await?;
         let journals = self.store.list_incomplete_seal_journals().await?;
         let mut completed = Vec::new();
         for journal in journals {
+            let live_lease = self
+                .store
+                .list_leases(journal.workspace_id)
+                .await?
+                .into_iter()
+                .any(|lease| lease.state == LeaseState::Active);
+            if live_lease {
+                continue;
+            }
             match journal.phase {
                 SealPhase::Prepare | SealPhase::Quiesced => {
                     self.store
