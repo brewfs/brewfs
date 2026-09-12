@@ -1,7 +1,12 @@
 use crate::control::job::{JobInfo, JobOutcome, JobState};
 use crate::meta::store::{FileAttr, FileType, MetaStoreCapabilities};
+use std::time::Duration;
 
 pub const CONTROL_ACL_XATTR_NAME: &str = "system.brewfs.acl";
+pub const CONTROL_MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub const CONTROL_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub const CONTROL_MAX_CONNECTIONS: usize = 64;
+pub const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ControlRequest {
