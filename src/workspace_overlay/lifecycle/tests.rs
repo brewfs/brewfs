@@ -176,6 +176,8 @@ async fn fork_snapshot_discard_and_fast_forward_are_revision_checked() {
 #[tokio::test]
 async fn recovery_aborts_pre_hash_journal_to_the_old_view() {
     let (store, session) = setup().await;
+    let workspace_id = session.view.workspace_id;
+    let old_head_layer_id = session.view.head_layer_id;
     store
         .begin_seal(BeginSeal {
             guard: HeadGuard {
@@ -198,13 +200,33 @@ async fn recovery_aborts_pre_hash_journal_to_the_old_view() {
             .unwrap()
             .is_empty()
     );
-    let workspace = store
-        .load_workspace(session.view.workspace_id)
-        .await
-        .unwrap();
-    assert_eq!(workspace.state, WorkspaceState::Active);
-    assert_eq!(workspace.head_layer_id, session.view.head_layer_id);
+    assert_eq!(
+        store
+            .load_seal_journal(
+                store
+                    .list_incomplete_seal_journals()
+                    .await
+                    .unwrap()
+                    .first()
+                    .unwrap()
+                    .journal_id
+            )
+            .await
+            .unwrap()
+            .phase,
+        SealPhase::Prepare
+    );
     session.release().await.unwrap();
+    assert!(
+        lifecycle
+            .recover_incomplete_seals()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let workspace = store.load_workspace(workspace_id).await.unwrap();
+    assert_eq!(workspace.state, WorkspaceState::Active);
+    assert_eq!(workspace.head_layer_id, old_head_layer_id);
 }
 
 #[tokio::test]
@@ -250,6 +272,7 @@ async fn recovery_completes_data_drained_and_hashed_journals_exactly_once() {
             store.hash_seal(journal_id).await.unwrap();
         }
 
+        session.release().await.unwrap();
         let completed = WorkspaceLifecycle::new(store.clone())
             .recover_incomplete_seals()
             .await
@@ -266,7 +289,93 @@ async fn recovery_completes_data_drained_and_hashed_journals_exactly_once() {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[tokio::test]
+async fn recovery_skips_journals_with_a_live_workspace_lease() {
+    for stop_phase in [SealPhase::Prepare, SealPhase::Hashed] {
+        let (store, session) = setup().await;
+        let journal_id = JournalId::new();
+        store
+            .begin_seal(BeginSeal {
+                guard: HeadGuard {
+                    workspace_id: session.view.workspace_id,
+                    expected_head_layer_id: session.view.head_layer_id,
+                    expected_head_epoch: session.view.head_epoch,
+                    lease_id: session.view.lease_id,
+                    holder_generation: session.view.holder_generation,
+                },
+                journal_id,
+                new_head_layer_id: LayerId::new(),
+            })
+            .await
+            .unwrap();
+        if stop_phase == SealPhase::Hashed {
+            store
+                .advance_seal(AdvanceSeal {
+                    journal_id,
+                    expected_phase: SealPhase::Prepare,
+                    next_phase: SealPhase::Quiesced,
+                    pending_bytes: None,
+                    last_error: None,
+                })
+                .await
+                .unwrap();
+            store
+                .advance_seal(AdvanceSeal {
+                    journal_id,
+                    expected_phase: SealPhase::Quiesced,
+                    next_phase: SealPhase::DataDrained,
+                    pending_bytes: Some(0),
+                    last_error: None,
+                })
+                .await
+                .unwrap();
+            store.hash_seal(journal_id).await.unwrap();
+        }
+
+        let lifecycle = WorkspaceLifecycle::new(store.clone());
+        assert!(
+            lifecycle
+                .recover_incomplete_seals()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.load_seal_journal(journal_id).await.unwrap().phase,
+            stop_phase
+        );
+        assert_eq!(
+            store
+                .load_workspace(session.view.workspace_id)
+                .await
+                .unwrap()
+                .state,
+            WorkspaceState::Sealing
+        );
+
         session.release().await.unwrap();
+        if stop_phase == SealPhase::Prepare {
+            assert!(
+                lifecycle
+                    .recover_incomplete_seals()
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                store.load_seal_journal(journal_id).await.unwrap().phase,
+                SealPhase::Aborted
+            );
+        } else {
+            assert_eq!(lifecycle.recover_incomplete_seals().await.unwrap().len(), 1);
+            assert_eq!(
+                store.load_seal_journal(journal_id).await.unwrap().phase,
+                SealPhase::Completed
+            );
+        }
     }
 }
 
