@@ -450,6 +450,10 @@ pub struct RedisSpec {
     pub image: String,
     #[serde(default = "default_redis_port")]
     pub port: i32,
+    #[serde(default = "default_redis_storage_size")]
+    pub storage_size: String,
+    #[serde(default)]
+    pub storage_class_name: Option<String>,
 }
 
 impl Default for RedisSpec {
@@ -457,6 +461,8 @@ impl Default for RedisSpec {
         Self {
             image: default_redis_image(),
             port: default_redis_port(),
+            storage_size: default_redis_storage_size(),
+            storage_class_name: None,
         }
     }
 }
@@ -533,6 +539,10 @@ fn default_redis_image() -> String {
 
 fn default_redis_port() -> i32 {
     6379
+}
+
+fn default_redis_storage_size() -> String {
+    "1Gi".to_string()
 }
 
 fn default_rustfs_image() -> String {
