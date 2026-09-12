@@ -2001,6 +2001,9 @@ impl MetaStore for TiKvMetaStore {
             return Ok(());
         }
 
+        self.validate_rename_exchange_ancestry(old_parent, old_name, new_parent, new_name)
+            .await?;
+
         let operation = "rename_exchange";
         let old_name = old_name.to_string();
         let new_name = new_name.to_string();

@@ -2441,6 +2441,8 @@ impl MetaStore for EtcdMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        self.validate_rename_exchange_ancestry(old_parent, old_name, new_parent, new_name)
+            .await?;
         let old_forward_key = Self::etcd_forward_key(old_parent, old_name);
         let new_forward_key = Self::etcd_forward_key(new_parent, new_name);
 

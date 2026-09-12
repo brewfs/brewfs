@@ -900,6 +900,35 @@ mod basic_tests {
     }
 
     #[tokio::test]
+    async fn test_rename_exchange_rejects_ancestor_in_both_directions() {
+        let fs = new_basic_fs().await;
+        fs.mkdir_p("/a/b").await.unwrap();
+        let a_ino = fs.stat("/a").await.unwrap().ino;
+        let b_ino = fs.stat("/a/b").await.unwrap().ino;
+        let flags = crate::vfs::fs::RenameFlags {
+            noreplace: false,
+            exchange: true,
+            whiteout: false,
+        };
+
+        let descendant_target = fs.rename_with_flags("/a", "/a/b", flags).await.unwrap_err();
+        assert!(matches!(
+            descendant_target,
+            crate::vfs::error::VfsError::CircularRename { .. }
+        ));
+        assert_eq!(fs.stat("/a").await.unwrap().ino, a_ino);
+        assert_eq!(fs.stat("/a/b").await.unwrap().ino, b_ino);
+
+        let ancestor_target = fs.rename_with_flags("/a/b", "/a", flags).await.unwrap_err();
+        assert!(matches!(
+            ancestor_target,
+            crate::vfs::error::VfsError::CircularRename { .. }
+        ));
+        assert_eq!(fs.stat("/a").await.unwrap().ino, a_ino);
+        assert_eq!(fs.stat("/a/b").await.unwrap().ino, b_ino);
+    }
+
+    #[tokio::test]
     async fn test_rename_exchange_fails_if_missing() {
         // Test that exchange fails if either file doesn't exist
         let layout = ChunkLayout::default();

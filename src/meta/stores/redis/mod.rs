@@ -3227,6 +3227,9 @@ impl MetaStore for RedisMetaStore {
             return Ok(());
         }
 
+        self.validate_rename_exchange_ancestry(old_parent, old_name, new_parent, new_name)
+            .await?;
+
         let Some(old_ino) = self.lookup(old_parent, old_name).await? else {
             return Err(MetaError::Internal(format!(
                 "Entry '{}' not found in parent {} for exchange",

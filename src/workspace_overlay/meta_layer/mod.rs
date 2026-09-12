@@ -183,6 +183,39 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         resolve_dentry(&chain, &rows, parent, name).map_err(workspace_to_meta)
     }
 
+    async fn directory_is_descendant_of(
+        &self,
+        mut directory: i64,
+        ancestor: i64,
+    ) -> Result<bool, MetaError> {
+        let root = self.root_ino.load(Ordering::Acquire);
+        let mut visited = BTreeSet::new();
+        loop {
+            if directory == ancestor {
+                return Ok(true);
+            }
+            if directory == root {
+                return Ok(false);
+            }
+            if !visited.insert(directory) {
+                return Err(MetaError::InvalidPath(format!(
+                    "directory ancestry contains a cycle at inode {directory}"
+                )));
+            }
+            let inode = self
+                .resolve_inode_delta(directory)
+                .await?
+                .ok_or(MetaError::NotFound(directory))?;
+            if file_type_from_code(inode.kind)? != FileType::Dir {
+                return Err(MetaError::NotDirectory(directory));
+            }
+            match inode.parent_hint {
+                Some(parent) if parent != directory => directory = parent,
+                _ => return Ok(false),
+            }
+        }
+    }
+
     async fn mutate_inode(&self, mut inode: InodeDelta) -> Result<InodeDelta, MetaError> {
         let guard = self.guard().await;
         inode.layer_id = guard.expected_head_layer_id;
@@ -947,6 +980,26 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
             .ok_or(MetaError::NotFound(new_parent))?;
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
+        }
+        if file_type_from_code(left.entry_type)? == FileType::Dir
+            && self
+                .directory_is_descendant_of(new_parent, left.ino)
+                .await?
+        {
+            return Err(MetaError::InvalidPath(format!(
+                "cannot exchange directory inode {} with an entry below it",
+                left.ino
+            )));
+        }
+        if file_type_from_code(right.entry_type)? == FileType::Dir
+            && self
+                .directory_is_descendant_of(old_parent, right.ino)
+                .await?
+        {
+            return Err(MetaError::InvalidPath(format!(
+                "cannot exchange directory inode {} with an entry below it",
+                right.ino
+            )));
         }
         let guard = self.guard().await;
         let head = guard.expected_head_layer_id;

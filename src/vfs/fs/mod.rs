@@ -2618,13 +2618,38 @@ where
         let new_parent_ino = self.resolve_parent_inode(&new_dir).await?;
 
         // Both entries must exist
-        let _old_ino = self
+        let old_ino = self
             .meta_lookup_required(old_parent_ino, &old_name, PathHint::some(old.as_str()))
             .await?;
 
-        let _new_ino = self
+        let new_ino = self
             .meta_lookup_required(new_parent_ino, &new_name, PathHint::some(new.as_str()))
             .await?;
+
+        let old_attr = self
+            .meta_stat_required(old_ino, PathHint::some(old.as_str()))
+            .await?;
+        let new_attr = self
+            .meta_stat_required(new_ino, PathHint::some(new.as_str()))
+            .await?;
+        if old_attr.kind == FileType::Dir
+            && self
+                .parent_is_descendant_of(new_parent_ino, old_ino)
+                .await?
+        {
+            return Err(VfsError::CircularRename {
+                path: PathHint::some(new.as_str()),
+            });
+        }
+        if new_attr.kind == FileType::Dir
+            && self
+                .parent_is_descendant_of(old_parent_ino, new_ino)
+                .await?
+        {
+            return Err(VfsError::CircularRename {
+                path: PathHint::some(old.as_str()),
+            });
+        }
 
         // Perform atomic exchange via store layer
         self.meta_rename_exchange(old_parent_ino, &old_name, new_parent_ino, &new_name)

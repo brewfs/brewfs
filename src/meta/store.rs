@@ -7,7 +7,7 @@ use crate::meta::config::Config;
 use crate::meta::entities::content_meta::EntryType;
 use crate::meta::file_lock::{FileLockInfo, FileLockQuery, FileLockRange, FileLockType};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
@@ -759,6 +759,86 @@ pub trait MetaStore: Send + Sync {
     ) -> Result<RenameOutcome, MetaError> {
         self.rename_with_mode(old_parent, old_name, new_parent, new_name, false)
             .await
+    }
+
+    /// Reject an exchange that would move a directory below itself.
+    ///
+    /// Backends call this at their mutation boundary so callers that bypass
+    /// the VFS cannot create a cyclic directory namespace.
+    async fn validate_rename_exchange_ancestry(
+        &self,
+        old_parent: i64,
+        old_name: &str,
+        new_parent: i64,
+        new_name: &str,
+    ) -> Result<(), MetaError> {
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
+        }
+
+        let old_ino = self
+            .lookup(old_parent, old_name)
+            .await?
+            .ok_or(MetaError::NotFound(old_parent))?;
+        let new_ino = self
+            .lookup(new_parent, new_name)
+            .await?
+            .ok_or(MetaError::NotFound(new_parent))?;
+        if old_ino == new_ino {
+            return Ok(());
+        }
+
+        let old_attr = self
+            .stat(old_ino)
+            .await?
+            .ok_or(MetaError::NotFound(old_ino))?;
+        let new_attr = self
+            .stat(new_ino)
+            .await?
+            .ok_or(MetaError::NotFound(new_ino))?;
+
+        if old_attr.kind == FileType::Dir
+            && self.directory_is_descendant_of(new_parent, old_ino).await?
+        {
+            return Err(MetaError::InvalidPath(format!(
+                "cannot exchange directory inode {old_ino} with an entry below it"
+            )));
+        }
+        if new_attr.kind == FileType::Dir
+            && self.directory_is_descendant_of(old_parent, new_ino).await?
+        {
+            return Err(MetaError::InvalidPath(format!(
+                "cannot exchange directory inode {new_ino} with an entry below it"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn directory_is_descendant_of(
+        &self,
+        mut directory: i64,
+        ancestor: i64,
+    ) -> Result<bool, MetaError> {
+        let root = self.root_ino();
+        let mut visited = HashSet::new();
+        loop {
+            if directory == ancestor {
+                return Ok(true);
+            }
+            if directory == root {
+                return Ok(false);
+            }
+            if !visited.insert(directory) {
+                return Err(MetaError::InvalidPath(format!(
+                    "directory ancestry contains a cycle at inode {directory}"
+                )));
+            }
+            match self.get_dir_parent(directory).await? {
+                Some(parent) if parent != directory => directory = parent,
+                _ => return Ok(false),
+            }
+        }
     }
 
     /// Atomically exchange two files (RENAME_EXCHANGE)
