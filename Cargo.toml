@@ -260,7 +260,7 @@ bytes = { workspace = true }
 crc32c = { workspace = true }
 hex = { workspace = true }
 tokio-util = { workspace = true }
-moka = { workspace = true, features = ["future"] }
+moka = { workspace = true, features = ["future", "sync"] }
 dashmap = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
