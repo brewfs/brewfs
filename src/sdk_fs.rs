@@ -10,12 +10,28 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncSeek, AsyncWrite, ReadBuf};
 use tokio::sync::Mutex;
 
+use crate::fs::OpenFlags;
 use crate::meta::store::{
     DirEntry as MetaDirEntry, FileAttr as MetaFileAttr, FileType as MetaFileType,
 };
 
 // Re-export useful types from meta store
 pub use crate::meta::store::{SetAttrFlags, SetAttrRequest, StatFsSnapshot};
+
+/// A real open-file backend used by native/foreign-language adapters.
+///
+/// Unlike the path-based `ClientBackend` methods, this trait owns the VFS file
+/// handle for the lifetime of the adapter and exposes the durability boundary
+/// explicitly.
+#[async_trait]
+pub trait OpenFileBackend: Send + Sync {
+    async fn read_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<usize>;
+    async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<usize>;
+    async fn flush(&self) -> io::Result<()>;
+    async fn sync_data(&self) -> io::Result<()>;
+    async fn sync_all(&self) -> io::Result<()>;
+    async fn close(&self) -> io::Result<()>;
+}
 
 /// Backend trait for filesystem operations used by the std-like Client.
 ///
@@ -79,6 +95,82 @@ pub trait ClientBackend: Send + Sync + 'static {
     /// Create a hard link.
     async fn link(&self, existing: &str, link_path: &str) -> io::Result<MetaFileAttr>;
 
+    /// Open a file with a backend-owned handle and explicit durability methods.
+    ///
+    /// Existing third-party path-only backends remain source compatible and
+    /// report `Unsupported` until they implement this optional capability.
+    async fn open_handle(
+        &self,
+        _opts: &OpenOptions,
+        _path: &str,
+    ) -> io::Result<Arc<dyn OpenFileBackend>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide open file handles",
+        ))
+    }
+
+    /// Set an extended attribute on a path.
+    async fn set_xattr(
+        &self,
+        _path: &str,
+        _name: &str,
+        _value: &[u8],
+        _flags: u32,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide xattrs",
+        ))
+    }
+
+    /// Get an extended attribute from a path.
+    async fn get_xattr(&self, _path: &str, _name: &str) -> io::Result<Option<Vec<u8>>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide xattrs",
+        ))
+    }
+
+    /// List extended attribute names on a path.
+    async fn list_xattr(&self, _path: &str) -> io::Result<Vec<String>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide xattrs",
+        ))
+    }
+
+    /// Remove an extended attribute from a path.
+    async fn remove_xattr(&self, _path: &str, _name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide xattrs",
+        ))
+    }
+
+    /// Flush pending writes for a path.
+    async fn flush(&self, _path: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide flush",
+        ))
+    }
+
+    /// Synchronize data for a path.
+    async fn sync_data(&self, _path: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide data sync",
+        ))
+    }
+
+    /// Synchronize data and metadata for a path.
+    async fn sync_all(&self, _path: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend does not provide full sync",
+        ))
+    }
     /// Create a symbolic link.
     async fn symlink(&self, link_path: &str, target: &str) -> io::Result<MetaFileAttr>;
 
@@ -101,6 +193,60 @@ impl Client {
 
     pub fn client(&self) -> &DynClient {
         &self.client
+    }
+
+    pub async fn open_handle(
+        &self,
+        opts: &OpenOptions,
+        path: impl AsRef<Path>,
+    ) -> io::Result<Arc<dyn OpenFileBackend>> {
+        let path = path_to_str(path)?;
+        self.client.open_handle(opts, &path).await
+    }
+
+    pub async fn set_xattr(
+        &self,
+        path: impl AsRef<Path>,
+        name: &str,
+        value: &[u8],
+        flags: u32,
+    ) -> io::Result<()> {
+        let path = path_to_str(path)?;
+        self.client.set_xattr(&path, name, value, flags).await
+    }
+
+    pub async fn get_xattr(
+        &self,
+        path: impl AsRef<Path>,
+        name: &str,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let path = path_to_str(path)?;
+        self.client.get_xattr(&path, name).await
+    }
+
+    pub async fn list_xattr(&self, path: impl AsRef<Path>) -> io::Result<Vec<String>> {
+        let path = path_to_str(path)?;
+        self.client.list_xattr(&path).await
+    }
+
+    pub async fn remove_xattr(&self, path: impl AsRef<Path>, name: &str) -> io::Result<()> {
+        let path = path_to_str(path)?;
+        self.client.remove_xattr(&path, name).await
+    }
+
+    pub async fn flush(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path_to_str(path)?;
+        self.client.flush(&path).await
+    }
+
+    pub async fn sync_data(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path_to_str(path)?;
+        self.client.sync_data(&path).await
+    }
+
+    pub async fn sync_all(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path_to_str(path)?;
+        self.client.sync_all(&path).await
     }
 
     pub async fn open(&self, opts: &OpenOptions, path: impl AsRef<Path>) -> io::Result<File> {
@@ -357,6 +503,69 @@ impl Client {
     }
 }
 
+struct VfsOpenFile<S, M>
+where
+    S: crate::chunk::store::BlockStore + Send + Sync + 'static,
+    M: crate::meta::MetaStore + Send + Sync + 'static,
+{
+    file: Mutex<Option<crate::fs::File<S, M>>>,
+}
+
+#[async_trait]
+impl<S, M> OpenFileBackend for VfsOpenFile<S, M>
+where
+    S: crate::chunk::store::BlockStore + Send + Sync + 'static,
+    M: crate::meta::MetaStore + Send + Sync + 'static,
+{
+    async fn read_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<usize> {
+        let guard = self.file.lock().await;
+        let file = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("file is closed"))?;
+        file.read_at(buffer, offset).await
+    }
+
+    async fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<usize> {
+        let guard = self.file.lock().await;
+        let file = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("file is closed"))?;
+        file.write_at(data, offset).await
+    }
+
+    async fn flush(&self) -> io::Result<()> {
+        let guard = self.file.lock().await;
+        let file = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("file is closed"))?;
+        file.flush().await
+    }
+
+    async fn sync_data(&self) -> io::Result<()> {
+        let guard = self.file.lock().await;
+        let file = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("file is closed"))?;
+        file.fsync(true).await
+    }
+
+    async fn sync_all(&self) -> io::Result<()> {
+        let guard = self.file.lock().await;
+        let file = guard
+            .as_ref()
+            .ok_or_else(|| io::Error::other("file is closed"))?;
+        file.fsync(false).await
+    }
+
+    async fn close(&self) -> io::Result<()> {
+        let mut guard = self.file.lock().await;
+        let mut file = guard
+            .take()
+            .ok_or_else(|| io::Error::other("file is already closed"))?;
+        file.close().await
+    }
+}
+
 #[async_trait]
 impl<S, M> ClientBackend for crate::vfs::sdk::VfsClient<S, M>
 where
@@ -434,6 +643,60 @@ where
 
     async fn link(&self, existing: &str, link_path: &str) -> io::Result<MetaFileAttr> {
         self.link(existing, link_path).await
+    }
+
+    async fn open_handle(
+        &self,
+        opts: &OpenOptions,
+        path: &str,
+    ) -> io::Result<Arc<dyn OpenFileBackend>> {
+        let file = self.filesystem().open(path, opts.vfs_flags()).await?;
+        Ok(Arc::new(VfsOpenFile {
+            file: Mutex::new(Some(file)),
+        }))
+    }
+
+    async fn set_xattr(&self, path: &str, name: &str, value: &[u8], flags: u32) -> io::Result<()> {
+        self.filesystem().set_xattr(path, name, value, flags).await
+    }
+
+    async fn get_xattr(&self, path: &str, name: &str) -> io::Result<Option<Vec<u8>>> {
+        self.filesystem().get_xattr(path, name).await
+    }
+
+    async fn list_xattr(&self, path: &str) -> io::Result<Vec<String>> {
+        self.filesystem().list_xattr(path).await
+    }
+
+    async fn remove_xattr(&self, path: &str, name: &str) -> io::Result<()> {
+        self.filesystem().remove_xattr(path, name).await
+    }
+
+    async fn flush(&self, path: &str) -> io::Result<()> {
+        // Path-based durability boundary: open a fresh handle because the
+        // caller only identified the file by path. A file that was deleted
+        // after the caller's handle was opened has nothing left to flush.
+        match self.filesystem().open(path, OpenFlags::read_write()).await {
+            Ok(file) => file.flush().await,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn sync_data(&self, path: &str) -> io::Result<()> {
+        match self.filesystem().open(path, OpenFlags::read_write()).await {
+            Ok(file) => file.fsync(true).await,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn sync_all(&self, path: &str) -> io::Result<()> {
+        match self.filesystem().open(path, OpenFlags::read_write()).await {
+            Ok(file) => file.fsync(false).await,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     async fn symlink(&self, link_path: &str, target: &str) -> io::Result<MetaFileAttr> {
@@ -659,6 +922,18 @@ impl OpenOptions {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn vfs_flags(&self) -> OpenFlags {
+        OpenFlags {
+            read: self.read,
+            write: self.write || self.append,
+            append: self.append,
+            create: self.create || self.create_new,
+            truncate: self.truncate,
+            exclusive: self.create_new,
+            mode: 0,
+        }
     }
 
     pub async fn open(&self, client: DynClient, path: impl AsRef<Path>) -> io::Result<File> {
@@ -922,29 +1197,29 @@ impl File {
 
     /// Synchronize all file data and metadata to storage.
     ///
-    /// In BrewFS, writes are persisted immediately to object storage,
-    /// so this is a no-op but provided for API compatibility.
+    /// Read-only handles have nothing to sync and return success without
+    /// touching the backend, matching std::fs flush semantics for readers.
     pub async fn sync_all(&self) -> io::Result<()> {
-        // BrewFS writes directly to object storage, so data is already persisted.
-        // This method exists for API compatibility with std::fs::File.
-        Ok(())
+        if !self.opts.write && !self.opts.append {
+            return Ok(());
+        }
+        self.client.sync_all(&self.path).await
     }
 
     /// Synchronize file data to storage (without metadata).
-    ///
-    /// In BrewFS, writes are persisted immediately to object storage,
-    /// so this is a no-op but provided for API compatibility.
     pub async fn sync_data(&self) -> io::Result<()> {
-        // BrewFS writes directly to object storage, so data is already persisted.
-        Ok(())
+        if !self.opts.write && !self.opts.append {
+            return Ok(());
+        }
+        self.client.sync_data(&self.path).await
     }
 
-    /// Flush internal buffers.
-    ///
-    /// In BrewFS, there are no internal buffers to flush,
-    /// so this is a no-op but provided for API compatibility.
+    /// Flush internal buffers and return writeback errors.
     pub async fn flush(&self) -> io::Result<()> {
-        Ok(())
+        if !self.opts.write && !self.opts.append {
+            return Ok(());
+        }
+        self.client.flush(&self.path).await
     }
 }
 
@@ -1434,6 +1709,41 @@ mod tests {
 
         let meta = fs.metadata("/t.txt").await.unwrap();
         assert_eq!(meta.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn sync_on_read_only_file_is_noop() {
+        let (_tmp, fs) = local_client().await;
+
+        let mut w = OpenOptions::new();
+        w.write(true).create(true).truncate(true);
+        let writer = fs.open(&w, "/ro.txt").await.unwrap();
+        writer.write_all(b"hello").await.unwrap();
+
+        let mut r = OpenOptions::new();
+        r.read(true);
+        let reader = fs.open(&r, "/ro.txt").await.unwrap();
+        // Read-only handles must not error (e.g. PermissionDenied) on the
+        // durability methods even though the backend syncs by path.
+        reader.flush().await.unwrap();
+        reader.sync_data().await.unwrap();
+        reader.sync_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_after_delete_is_success() {
+        let (_tmp, fs) = local_client().await;
+
+        let mut w = OpenOptions::new();
+        w.write(true).create(true).truncate(true);
+        let file = fs.open(&w, "/gone.txt").await.unwrap();
+        file.write_all(b"hello").await.unwrap();
+
+        fs.remove_file("/gone.txt").await.unwrap();
+        // Flushing a handle whose path was deleted must not error.
+        file.flush().await.unwrap();
+        file.sync_data().await.unwrap();
+        file.sync_all().await.unwrap();
     }
 
     #[tokio::test]

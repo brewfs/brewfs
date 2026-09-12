@@ -133,6 +133,8 @@ pub struct OpenFlags {
     pub create: bool,
     pub truncate: bool,
     pub exclusive: bool,
+    /// Permission bits applied when a new file is created.
+    pub mode: u32,
 }
 
 impl OpenFlags {
@@ -144,6 +146,7 @@ impl OpenFlags {
             create: false,
             truncate: false,
             exclusive: false,
+            mode: 0,
         }
     }
 
@@ -155,6 +158,7 @@ impl OpenFlags {
             create: false,
             truncate: false,
             exclusive: false,
+            mode: 0,
         }
     }
 
@@ -166,6 +170,7 @@ impl OpenFlags {
             create: false,
             truncate: false,
             exclusive: false,
+            mode: 0,
         }
     }
 
@@ -177,6 +182,7 @@ impl OpenFlags {
             create: true,
             truncate: false,
             exclusive: false,
+            mode: 0,
         }
     }
 
@@ -188,6 +194,7 @@ impl OpenFlags {
             create: true,
             truncate: false,
             exclusive: true,
+            mode: 0,
         }
     }
 
@@ -713,6 +720,7 @@ where
         let log_ctx = self.log_context();
         let result = async {
             let mut resolved: Option<FileStat> = None;
+            let mut created = false;
             // Handle file creation
             if flags.create {
                 match self.resolve(&path, true).await {
@@ -735,12 +743,13 @@ where
                         // Create the file
                         self.create_file_in_existing_dir(&path, flags.exclusive)
                             .await?;
+                        created = true;
                     }
                     Err(e) => return Err(e),
                 }
             }
 
-            let fi = match resolved {
+            let mut fi = match resolved {
                 Some(fi) => fi,
                 None => self.resolve(&path, true).await?,
             };
@@ -749,6 +758,14 @@ where
                     io::ErrorKind::InvalidInput,
                     "cannot open directory as file",
                 ));
+            }
+            if created && flags.mode != 0 {
+                let attr = self
+                    .vfs
+                    .chmod(fi.inode(), flags.mode)
+                    .await
+                    .map_err(io::Error::from)?;
+                fi = FileStat::new(fi.name().to_string(), fi.inode(), attr);
             }
             let mut access = AccessMask::empty();
             if flags.read {
@@ -792,6 +809,7 @@ where
                 offset: AtomicU64::new(0),
                 vfs: self.vfs.clone(),
                 access_log_tx: self.access_log_tx.clone(),
+                closed: std::sync::atomic::AtomicBool::new(false),
             })
         }
         .await;
@@ -846,6 +864,7 @@ where
                 offset: AtomicU64::new(0),
                 vfs: self.vfs.clone(),
                 access_log_tx: self.access_log_tx.clone(),
+                closed: std::sync::atomic::AtomicBool::new(false),
             })
         }
         .await;
@@ -1396,6 +1415,54 @@ where
         result
     }
 
+    /// Set an extended attribute on a path.
+    pub async fn set_xattr(
+        &self,
+        path: &str,
+        name: &str,
+        value: &[u8],
+        flags: u32,
+    ) -> io::Result<()> {
+        let path = Self::normalize_path(path);
+        let fi = self.resolve(&path, false).await?;
+        self.check_owner(fi.attr(), &path)?;
+        self.vfs
+            .set_xattr_ino(fi.inode(), name, value, flags)
+            .await
+            .map_err(io::Error::from)
+    }
+
+    /// Get an extended attribute from a path.
+    pub async fn get_xattr(&self, path: &str, name: &str) -> io::Result<Option<Vec<u8>>> {
+        let path = Self::normalize_path(path);
+        let fi = self.resolve(&path, false).await?;
+        self.vfs
+            .get_xattr_ino(fi.inode(), name)
+            .await
+            .map_err(io::Error::from)
+    }
+
+    /// List extended attribute names on a path.
+    pub async fn list_xattr(&self, path: &str) -> io::Result<Vec<String>> {
+        let path = Self::normalize_path(path);
+        let fi = self.resolve(&path, false).await?;
+        self.vfs
+            .list_xattr_ino(fi.inode())
+            .await
+            .map_err(io::Error::from)
+    }
+
+    /// Remove an extended attribute from a path.
+    pub async fn remove_xattr(&self, path: &str, name: &str) -> io::Result<()> {
+        let path = Self::normalize_path(path);
+        let fi = self.resolve(&path, false).await?;
+        self.check_owner(fi.attr(), &path)?;
+        self.vfs
+            .remove_xattr_ino(fi.inode(), name)
+            .await
+            .map_err(io::Error::from)
+    }
+
     /// Read directory entries.
     pub async fn readdir(&self, path: &str) -> io::Result<Vec<DirEntry>> {
         let path = Self::normalize_path(path);
@@ -1717,6 +1784,7 @@ where
     offset: AtomicU64,
     vfs: VFS<S, MetaClient<M>>,
     access_log_tx: Option<mpsc::Sender<AccessLogEntry>>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl<S, M> File<S, M>
@@ -1956,6 +2024,31 @@ where
         result
     }
 
+    /// Explicitly close the VFS handle and propagate writeback errors.
+    pub async fn close(&mut self) -> io::Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let result = self.vfs.close(self.fh).await.map_err(io::Error::from);
+        if result.is_ok() {
+            self.closed.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    /// Flush pending writes for this file handle.
+    pub async fn flush(&self) -> io::Result<()> {
+        self.vfs.flush(self.fh).await.map_err(io::Error::from)
+    }
+
+    /// Synchronize data or data plus metadata for this file handle.
+    pub async fn fsync(&self, datasync: bool) -> io::Result<()> {
+        self.vfs
+            .fsync(self.fh, datasync)
+            .await
+            .map_err(io::Error::from)
+    }
+
     /// Get current file size.
     pub async fn size(&self) -> io::Result<u64> {
         self.vfs
@@ -1983,7 +2076,9 @@ where
     M: MetaStore + 'static,
 {
     fn drop(&mut self) {
-        close_handle_best_effort(self.vfs.clone(), self.fh);
+        if !self.closed.load(Ordering::Acquire) {
+            close_handle_best_effort(self.vfs.clone(), self.fh);
+        }
     }
 }
 

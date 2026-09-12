@@ -1,0 +1,23 @@
+language = "C"
+include_guard = "BREWFS_H"
+pragma_once = true
+include_version = true
+after_includes = "#include <stddef.h>\n#include <stdint.h>\ntypedef struct BrewFsClient BrewFsClient;\ntypedef struct BrewFsFile BrewFsFile;\ntypedef struct BrewFsDir BrewFsDir;"
+
+[parse]
+parse_deps = false
+
+[export]
+include = [
+  "BrewFsStatus",
+  "BrewFsClientOptionsV1",
+  "BrewFsOpenOptionsV1",
+  "BrewFsStatV1",
+  "BrewFsStatFsV1",
+  "BrewFsSetAttrV1",
+]
+exclude = ["BrewFsClient", "BrewFsFile", "BrewFsDir"]
+item_types = ["constants", "globals", "structs", "enums", "typedefs", "functions"]
+
+[fn]
+rename_args = "SnakeCase"

@@ -7,6 +7,9 @@ description = "High-performance Rust & Layers-aware Distributed Filesystem"
 repository = "https://github.com/brewfs/brewfs"
 license = "MIT"
 
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 [workspace]
 members = [
     "tools/stats"
@@ -205,6 +208,7 @@ tikv-client = { version = "0.4.0", default-features = false }
 tonic = "0.14.2"
 tower = "0.5.2"
 tower-http = "0.6.6"
+cbindgen = "0.28.0"
 tower-sessions = { version = "0.12.3", features = ["memory-store"] }
 tracing = "0.1.41"
 tracing-log = "0.2.0"
@@ -246,6 +250,9 @@ ssh-key = { version = "0.6.7", features = ["std", "crypto"] }
 lz4_flex = "0.11"
 zstd = "0.13"
 governor = "0.8"
+
+[build-dependencies]
+cbindgen = { workspace = true }
 
 [dependencies]
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "time", "net", "signal", "tracing"] }
@@ -319,6 +326,7 @@ fuse-io-uring-runtime = ["asyncfuse/io-uring-runtime"]
 fuse-tokio-runtime = ["asyncfuse/tokio-runtime"]
 gateway-s3 = ["dep:s3s", "dep:tower"]
 gateway-webdav = ["dep:dav-server", "dep:axum-server", "dep:rustls"]
+hdfs-sdk = []
 workspace-overlay = ["dep:bincode", "dep:blake3"]
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]
 jemalloc = ["dep:tikv-jemallocator"]

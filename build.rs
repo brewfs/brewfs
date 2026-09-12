@@ -32,6 +32,23 @@ fn main() {
     println!("cargo:rustc-env=BREWFS_GIT_DIRTY={dirty}");
     println!("cargo:rustc-env=BREWFS_BUILD_TIMESTAMP={build_timestamp}");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+
+    if env::var_os("CARGO_FEATURE_HDFS_SDK").is_some() {
+        generate_hdfs_header(&manifest_dir);
+    }
+}
+
+fn generate_hdfs_header(manifest_dir: &str) {
+    let config_path = format!("{manifest_dir}/cbindgen.toml");
+    let output_path = format!("{}/brewfs.h", env::var("OUT_DIR").unwrap_or_default());
+    let config = cbindgen::Config::from_file(&config_path)
+        .unwrap_or_else(|error| panic!("failed to read {config_path}: {error}"));
+    cbindgen::Builder::new()
+        .with_crate(manifest_dir)
+        .with_config(config)
+        .generate()
+        .unwrap_or_else(|error| panic!("failed to generate HDFS C ABI header: {error}"))
+        .write_to_file(output_path);
 }
 
 fn git_output(cwd: &str, args: &[&str]) -> Option<String> {

@@ -58,6 +58,10 @@ impl<S: BlockStore + Send + Sync + 'static, M: MetaStore + 'static> VfsClient<S,
         Self { fs }
     }
 
+    pub(crate) fn filesystem(&self) -> &FileSystem<S, M> {
+        &self.fs
+    }
+
     /// Create directories recursively (like `mkdir -p`).
     pub async fn mkdir_p(&self, path: &str) -> io::Result<()> {
         self.fs.mkdir_all(path).await

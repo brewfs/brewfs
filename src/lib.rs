@@ -10,6 +10,8 @@ pub(crate) mod fs;
 pub mod fuse;
 #[cfg(any(feature = "gateway-s3", feature = "gateway-webdav"))]
 pub mod gateway;
+#[cfg(feature = "hdfs-sdk")]
+pub mod hdfs;
 // Expose meta for E2E testing - tests should rely on design contracts, not impl details
 pub mod meta;
 pub(crate) mod posix;
@@ -25,7 +27,7 @@ pub(crate) mod utils;
 // Public SDK surface for external users.
 pub use crate::sdk_fs::{
     AccessMode, Client, ClientBackend, DirEntry as SdkDirEntry, File, FileType as SdkFileType,
-    Metadata, OpenOptions, ReadDir,
+    Metadata, OpenFileBackend, OpenOptions, ReadDir,
 };
 pub use crate::vfs::sdk::{LocalClient, VfsClient};
 
