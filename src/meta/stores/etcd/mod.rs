@@ -1493,6 +1493,36 @@ impl EtcdMetaStore {
     }
 }
 
+fn update_link_parent_for_exchange(
+    link_parents: &mut [EtcdLinkParent],
+    old_parent: i64,
+    old_name: &str,
+    new_parent: i64,
+    new_name: &str,
+) -> Result<(), MetaError> {
+    if link_parents
+        .iter()
+        .any(|link| link.parent_inode == new_parent && link.entry_name == new_name)
+    {
+        return Err(MetaError::Internal(format!(
+            "LinkParent destination already exists for parent {new_parent} name {new_name}"
+        )));
+    }
+
+    let Some(link) = link_parents
+        .iter_mut()
+        .find(|link| link.parent_inode == old_parent && link.entry_name == old_name)
+    else {
+        return Err(MetaError::Internal(format!(
+            "LinkParent binding not found for parent {old_parent} name {old_name}"
+        )));
+    };
+
+    link.parent_inode = new_parent;
+    link.entry_name = new_name.to_string();
+    Ok(())
+}
+
 #[async_trait]
 impl MetaStore for EtcdMetaStore {
     fn name(&self) -> &'static str {
@@ -2441,6 +2471,10 @@ impl MetaStore for EtcdMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
+        }
+
         let old_forward_key = Self::etcd_forward_key(old_parent, old_name);
         let new_forward_key = Self::etcd_forward_key(new_parent, new_name);
 
@@ -2469,10 +2503,137 @@ impl MetaStore for EtcdMetaStore {
                             ))
                         })?;
 
+                    let old_ino = old_forward_entry.inode;
+                    let new_ino = new_forward_entry.inode;
+                    let old_reverse_key = Self::etcd_reverse_key(old_ino);
+                    let mut old_info: EtcdEntryInfo = tx
+                        .get_typed_json(&old_reverse_key)
+                        .await?
+                        .ok_or(MetaError::NotFound(old_ino))?;
+
+                    if old_info.deleted || old_info.nlink == 0 {
+                        return Err(MetaError::Internal(format!(
+                            "source inode {old_ino} is deleted during exchange"
+                        )));
+                    }
+                    if old_info.is_file != old_forward_entry.is_file {
+                        return Err(MetaError::Internal(format!(
+                            "source inode {old_ino} type disagrees with its forward entry"
+                        )));
+                    }
+
+                    let mut new_info = if old_ino == new_ino {
+                        None
+                    } else {
+                        let new_reverse_key = Self::etcd_reverse_key(new_ino);
+                        let info: EtcdEntryInfo = tx
+                            .get_typed_json(&new_reverse_key)
+                            .await?
+                            .ok_or(MetaError::NotFound(new_ino))?;
+                        if info.deleted || info.nlink == 0 {
+                            return Err(MetaError::Internal(format!(
+                                "destination inode {new_ino} is deleted during exchange"
+                            )));
+                        }
+                        if info.is_file != new_forward_entry.is_file {
+                            return Err(MetaError::Internal(format!(
+                                "destination inode {new_ino} type disagrees with its forward entry"
+                            )));
+                        }
+                        Some(info)
+                    };
+
+                    let now = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+
+                    if old_ino == new_ino {
+                        if !old_info.is_file || old_info.nlink <= 1 {
+                            return Err(MetaError::Internal(format!(
+                                "inode {old_ino} has duplicate forward bindings without hard links"
+                            )));
+                        }
+
+                        let link_parent_key = Self::etcd_link_parent_key(old_ino);
+                        let link_parents: Vec<EtcdLinkParent> = tx
+                            .get_typed_json(&link_parent_key)
+                            .await?
+                            .ok_or_else(|| {
+                                MetaError::Internal(format!(
+                                    "LinkParent key {link_parent_key} not found for inode {old_ino}"
+                                ))
+                            })?;
+                        let has_old = link_parents.iter().any(|link| {
+                            link.parent_inode == old_parent && link.entry_name == old_name
+                        });
+                        let has_new = link_parents.iter().any(|link| {
+                            link.parent_inode == new_parent && link.entry_name == new_name
+                        });
+                        if !has_old || !has_new {
+                            return Err(MetaError::Internal(format!(
+                                "LinkParent bindings do not contain both exchange entries for inode {old_ino}"
+                            )));
+                        }
+                    } else {
+                        if old_info.is_file && old_info.nlink > 1 {
+                            let link_parent_key = Self::etcd_link_parent_key(old_ino);
+                            let mut link_parents: Vec<EtcdLinkParent> = tx
+                                .get_typed_json(&link_parent_key)
+                                .await?
+                                .ok_or_else(|| {
+                                    MetaError::Internal(format!(
+                                        "LinkParent key {link_parent_key} not found for inode {old_ino}"
+                                    ))
+                                })?;
+                            update_link_parent_for_exchange(
+                                &mut link_parents,
+                                old_parent,
+                                &old_name,
+                                new_parent,
+                                &new_name,
+                            )?;
+                            tx.set_typed_json(link_parent_key, &link_parents)?;
+                            old_info.modify_time = now;
+                            tx.set_typed_json(&old_reverse_key, &old_info)?;
+                        } else {
+                            old_info.parent_inode = new_parent;
+                            old_info.entry_name = new_name.clone();
+                            old_info.modify_time = now;
+                            tx.set_typed_json(&old_reverse_key, &old_info)?;
+                        }
+
+                        let new_info = new_info.as_mut().expect("distinct inode metadata");
+                        let new_reverse_key = Self::etcd_reverse_key(new_ino);
+                        if new_info.is_file && new_info.nlink > 1 {
+                            let link_parent_key = Self::etcd_link_parent_key(new_ino);
+                            let mut link_parents: Vec<EtcdLinkParent> = tx
+                                .get_typed_json(&link_parent_key)
+                                .await?
+                                .ok_or_else(|| {
+                                    MetaError::Internal(format!(
+                                        "LinkParent key {link_parent_key} not found for inode {new_ino}"
+                                    ))
+                                })?;
+                            update_link_parent_for_exchange(
+                                &mut link_parents,
+                                new_parent,
+                                &new_name,
+                                old_parent,
+                                &old_name,
+                            )?;
+                            tx.set_typed_json(link_parent_key, &link_parents)?;
+                            new_info.modify_time = now;
+                            tx.set_typed_json(&new_reverse_key, new_info)?;
+                        } else {
+                            new_info.parent_inode = old_parent;
+                            new_info.entry_name = old_name.clone();
+                            new_info.modify_time = now;
+                            tx.set_typed_json(&new_reverse_key, new_info)?;
+                        }
+                    }
+
                     let swapped_old_forward = EtcdForwardEntry {
                         parent_inode: old_parent,
                         name: old_name.clone(),
-                        inode: new_forward_entry.inode,
+                        inode: new_ino,
                         is_file: new_forward_entry.is_file,
                         entry_type: new_forward_entry.entry_type.clone(),
                     };
@@ -2480,7 +2641,7 @@ impl MetaStore for EtcdMetaStore {
                     let swapped_new_forward = EtcdForwardEntry {
                         parent_inode: new_parent,
                         name: new_name.clone(),
-                        inode: old_forward_entry.inode,
+                        inode: old_ino,
                         is_file: old_forward_entry.is_file,
                         entry_type: old_forward_entry.entry_type.clone(),
                     };

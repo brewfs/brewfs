@@ -222,6 +222,90 @@ async fn test_hardlink_dentry_binding_cross_dir_move_rename() {
     assert_eq!(store.lookup(dir_a, "x").await.unwrap(), Some(ino));
 }
 
+#[test]
+fn link_parent_exchange_rejects_missing_source_binding() {
+    let mut link_parents = vec![crate::meta::entities::etcd::EtcdLinkParent {
+        parent_inode: 1,
+        entry_name: "existing".to_string(),
+    }];
+
+    let result =
+        super::update_link_parent_for_exchange(&mut link_parents, 1, "missing", 2, "destination");
+
+    assert!(matches!(result, Err(MetaError::Internal(message)) if message.contains("not found")));
+    assert_eq!(link_parents[0].parent_inode, 1);
+    assert_eq!(link_parents[0].entry_name, "existing");
+}
+
+#[serial]
+#[tokio::test]
+#[ignore]
+async fn test_rename_exchange_updates_reverse_and_link_parent_indexes() {
+    let store = new_test_store().await;
+    let root = store.root_ino();
+
+    let same_a = store.create_file(root, "same-a".to_string()).await.unwrap();
+    let same_b = store.create_file(root, "same-b".to_string()).await.unwrap();
+    store
+        .rename_exchange(root, "same-a", root, "same-b")
+        .await
+        .unwrap();
+    assert_eq!(store.lookup(root, "same-a").await.unwrap(), Some(same_b));
+    assert_eq!(store.lookup(root, "same-b").await.unwrap(), Some(same_a));
+    assert_eq!(store.get_paths(same_a).await.unwrap(), vec!["/same-b"]);
+    assert_eq!(store.get_paths(same_b).await.unwrap(), vec!["/same-a"]);
+
+    let left = store.mkdir(root, "left".to_string()).await.unwrap();
+    let right = store.mkdir(root, "right".to_string()).await.unwrap();
+    let cross_a = store
+        .create_file(left, "cross-a".to_string())
+        .await
+        .unwrap();
+    let cross_b = store
+        .create_file(right, "cross-b".to_string())
+        .await
+        .unwrap();
+    store
+        .rename_exchange(left, "cross-a", right, "cross-b")
+        .await
+        .unwrap();
+    assert_eq!(store.lookup(left, "cross-a").await.unwrap(), Some(cross_b));
+    assert_eq!(store.lookup(right, "cross-b").await.unwrap(), Some(cross_a));
+    assert_eq!(
+        store.get_paths(cross_a).await.unwrap(),
+        vec!["/right/cross-b"]
+    );
+    assert_eq!(
+        store.get_paths(cross_b).await.unwrap(),
+        vec!["/left/cross-a"]
+    );
+
+    let linked = store
+        .create_file(left, "linked-old".to_string())
+        .await
+        .unwrap();
+    store.link(linked, right, "linked-peer").await.unwrap();
+    let plain = store.create_file(left, "plain".to_string()).await.unwrap();
+    store
+        .rename_exchange(left, "linked-old", left, "plain")
+        .await
+        .unwrap();
+    assert_eq!(store.lookup(left, "linked-old").await.unwrap(), Some(plain));
+    assert_eq!(store.lookup(left, "plain").await.unwrap(), Some(linked));
+    assert_eq!(
+        store.lookup(right, "linked-peer").await.unwrap(),
+        Some(linked)
+    );
+    let linked_names = store.get_names(linked).await.unwrap();
+    assert!(linked_names.contains(&(Some(left), "plain".to_string())));
+    assert!(linked_names.contains(&(Some(right), "linked-peer".to_string())));
+    assert!(!linked_names.contains(&(Some(left), "linked-old".to_string())));
+    assert_eq!(
+        store.get_paths(plain).await.unwrap(),
+        vec!["/left/linked-old"]
+    );
+}
+
 #[serial]
 #[tokio::test]
 #[ignore]
