@@ -3556,7 +3556,7 @@ where
         let start = Instant::now();
         let mut captured_slices = 0u64;
         let mut completed_gen_for_cache = None;
-        let result = {
+        let result = async {
             let mut flushed_gen = self.shared.write_gen.load(Ordering::Acquire);
             loop {
                 self.coalesce_cached_slices_before_explicit_flush().await?;
@@ -3698,7 +3698,8 @@ where
                 }
                 flushed_gen = current_gen;
             }
-        };
+        }
+        .await;
         self.shared
             .recent_pending_upload
             .record_flush_wait(start.elapsed(), captured_slices);
@@ -9454,6 +9455,11 @@ mod tests {
             err.to_string().contains("writeback failed"),
             "unexpected flush error: {err:?}"
         );
+        assert_eq!(
+            writer.shared.inner.lock().await.flush_waiting,
+            0,
+            "flush error must release the flush gate"
+        );
         assert!(
             writer.has_pending().await,
             "writeback error should remain observable by later flush/fsync/close calls"
@@ -9624,6 +9630,11 @@ mod tests {
             err.to_string()
                 .contains("metadata commit failed with non-retryable error"),
             "unexpected flush error: {err:?}"
+        );
+        assert_eq!(
+            writer.shared.inner.lock().await.flush_waiting,
+            0,
+            "metadata commit error must release the flush gate"
         );
     }
 
