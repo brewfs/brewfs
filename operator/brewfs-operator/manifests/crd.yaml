@@ -61,6 +61,8 @@ spec:
                 default:
                   image: redis:7.2-alpine
                   port: 6379
+                  storageClassName: null
+                  storageSize: 1Gi
                 properties:
                   image:
                     default: redis:7.2-alpine
@@ -69,6 +71,12 @@ spec:
                     default: 6379
                     format: int32
                     type: integer
+                  storageClassName:
+                    nullable: true
+                    type: string
+                  storageSize:
+                    default: 1Gi
+                    type: string
                 type: object
               rustfs:
                 default:
