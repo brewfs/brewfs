@@ -5,6 +5,7 @@ use crate::meta::config::{
 };
 use crate::meta::factory::MetaStoreFactory;
 use crate::meta::store::{FileType, MetaStore};
+use crate::vfs::chunk_id_for;
 
 #[test]
 fn special_node_round_trip_preserves_kind_mode_and_rdev() {
@@ -663,6 +664,84 @@ async fn tikv_rename_exchange_swaps_entries() {
     assert_eq!(store.lookup(root, "b").await.unwrap(), Some(a));
     assert_eq!(store.get_paths(a).await.unwrap(), vec!["/b".to_string()]);
     assert_eq!(store.get_paths(b).await.unwrap(), vec!["/a".to_string()]);
+}
+
+#[tokio::test]
+#[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
+async fn tikv_truncate_prunes_slices_before_extension_and_restart() {
+    let config = integration_config("truncate-slices");
+    let store = TiKvMetaStore::from_config(config.clone())
+        .await
+        .expect("tikv store should connect");
+    store.initialize().await.unwrap();
+    let root = store.root_ino();
+    let ino = store
+        .create_file(root, "truncate".to_string())
+        .await
+        .unwrap();
+    let chunk_size = 1024;
+    let chunk0 = chunk_id_for(ino, 0).unwrap();
+    let chunk1 = chunk_id_for(ino, 1).unwrap();
+
+    store
+        .write(
+            ino,
+            chunk0,
+            SliceDesc {
+                slice_id: 1,
+                chunk_id: chunk0,
+                offset: 0,
+                length: 800,
+            },
+            800,
+        )
+        .await
+        .unwrap();
+    store
+        .write(
+            ino,
+            chunk0,
+            SliceDesc {
+                slice_id: 2,
+                chunk_id: chunk0,
+                offset: 800,
+                length: 224,
+            },
+            1024,
+        )
+        .await
+        .unwrap();
+    store
+        .write(
+            ino,
+            chunk1,
+            SliceDesc {
+                slice_id: 3,
+                chunk_id: chunk1,
+                offset: 0,
+                length: 128,
+            },
+            1152,
+        )
+        .await
+        .unwrap();
+
+    store.truncate(ino, 600, chunk_size).await.unwrap();
+    assert_eq!(store.get_slices(chunk0).await.unwrap().len(), 1);
+    assert_eq!(store.get_slices(chunk0).await.unwrap()[0].length, 600);
+    assert!(store.get_slices(chunk1).await.unwrap().is_empty());
+    assert_eq!(store.stat(ino).await.unwrap().unwrap().size, 600);
+
+    store.truncate(ino, 1200, chunk_size).await.unwrap();
+    assert_eq!(store.get_slices(chunk0).await.unwrap()[0].length, 600);
+    assert!(store.get_slices(chunk1).await.unwrap().is_empty());
+    assert_eq!(store.stat(ino).await.unwrap().unwrap().size, 1200);
+
+    let restarted = TiKvMetaStore::from_config(config)
+        .await
+        .expect("recreated tikv store should connect");
+    assert_eq!(restarted.get_slices(chunk0).await.unwrap()[0].length, 600);
+    assert!(restarted.get_slices(chunk1).await.unwrap().is_empty());
 }
 
 #[tokio::test]

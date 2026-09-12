@@ -15,7 +15,9 @@ use crate::meta::store::{
     OpenFlags, RenameOutcome, RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
     stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
+use crate::meta::stores::trim_slices_in_place;
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
+use crate::vfs::chunk_id_for;
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::{RngCore, rng};
@@ -909,6 +911,45 @@ impl TiKvMetaStore {
         } else {
             Self::txn_put_raw(txn, chunk_key, Self::encode(&slices)?, operation).await
         }
+    }
+
+    async fn txn_prune_slices_for_truncate(
+        &self,
+        txn: &mut Transaction,
+        ino: i64,
+        new_size: u64,
+        old_size: u64,
+        chunk_size: u64,
+        operation: &str,
+    ) -> Result<(), MetaError> {
+        if new_size >= old_size || chunk_size == 0 {
+            return Ok(());
+        }
+
+        let cutoff_chunk = new_size / chunk_size;
+        let cutoff_offset = new_size % chunk_size;
+        let old_chunk_count =
+            old_size / chunk_size + u64::from(!old_size.is_multiple_of(chunk_size));
+        let drop_start = if cutoff_offset == 0 {
+            cutoff_chunk
+        } else {
+            cutoff_chunk + 1
+        };
+
+        if cutoff_offset > 0 {
+            let chunk_id = chunk_id_for(ino, cutoff_chunk).map_err(MetaError::Io)?;
+            let mut slices = self.txn_get_slices(txn, chunk_id, true, operation).await?;
+            trim_slices_in_place(&mut slices, cutoff_offset);
+            self.txn_put_slices_or_delete(txn, chunk_id, &slices, operation)
+                .await?;
+        }
+
+        for chunk_index in drop_start..old_chunk_count {
+            let chunk_id = chunk_id_for(ino, chunk_index).map_err(MetaError::Io)?;
+            Self::txn_delete_raw(txn, self.chunk_key(chunk_id), operation).await?;
+        }
+
+        Ok(())
     }
 
     async fn txn_stage_delayed_slice_records(
@@ -2125,6 +2166,41 @@ impl MetaStore for TiKvMetaStore {
                         apply_nlink_delta(new_parent_node.nlink, new_parent_nlink_delta);
                     store.txn_put_node(txn, &old_parent_node, operation).await?;
                     store.txn_put_node(txn, &new_parent_node, operation).await?;
+                }
+
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
+        let operation = "truncate";
+        self.write_txn(operation, |store, txn| {
+            Box::pin(async move {
+                let mut node = store
+                    .txn_get_node(txn, ino, true, operation)
+                    .await?
+                    .ok_or(MetaError::NotFound(ino))?;
+                if node.kind != StoredNodeKind::File {
+                    return Err(MetaError::NotSupported(
+                        "TiKV truncate currently supports only regular files".to_string(),
+                    ));
+                }
+
+                let old_size = node.size;
+                if size != old_size {
+                    store
+                        .txn_prune_slices_for_truncate(
+                            txn, ino, size, old_size, chunk_size, operation,
+                        )
+                        .await?;
+                    let now = Self::now();
+                    node.size = size;
+                    node.blocks = size.div_ceil(512);
+                    node.mtime = now;
+                    node.ctime = now;
+                    store.txn_put_node(txn, &node, operation).await?;
                 }
 
                 Ok(())
