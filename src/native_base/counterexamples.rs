@@ -412,7 +412,7 @@ pub mod retention {
     }
 
     /// Weak protocol: switch the head first, register retention later.
-    pub fn publish_weak(domain: &mut Domain, candidate: &Candidate) -> Vec<&'static str> {
+    pub fn publish_weak(_domain: &mut Domain, candidate: &Candidate) -> Vec<&'static str> {
         // Head now references candidate.needed, but no retain batch has
         // been registered yet — the objects are still "eligible".
         candidate.needed.clone()

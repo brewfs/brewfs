@@ -1,0 +1,21 @@
+{
+  "scope": "Envelope and one fixed kind7 example only; not a complete control codec.",
+  "native_control_version": 2,
+  "vectors": [
+    {
+      "filename": "kv_base_retention.bnct",
+      "kind": 7,
+      "bytes": 104,
+      "payload_bytes": 88,
+      "hex": "424e4354020007005800000001010101010101010101010101010101020202020202020202020202020202020300000000000000abababababababababababababababababababababababababababababababab0404040404040404040404040404040489ac824e",
+      "sha256": "1959c861fb1c60abbf506e5e38e3a59329c21f56ec95784e334fdfe2fb4759e3",
+      "fields": {
+        "volume_id": "01010101010101010101010101010101",
+        "layer_id": "02020202020202020202020202020202",
+        "sealed_version": 3,
+        "logical_revision": "abababababababababababababababababababababababababababababababab",
+        "first_publication_id": "04040404040404040404040404040404"
+      }
+    }
+  ]
+}

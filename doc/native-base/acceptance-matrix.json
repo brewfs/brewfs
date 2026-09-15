@@ -18,8 +18,8 @@
     "expected": "Rust编码与独立示例逐字节一致",
     "invariants": "INV-01",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0, 73 passed/0 failed): datapack::tests::golden_empty_pack/two_plain_frames/native_none/plain_magic_prefix 均 scrub 后 PackBuilder 重建与 fixture 逐字节一致; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-003",
@@ -29,8 +29,8 @@
     "expected": "0/127/128/max正确且非最短/溢出拒绝",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): uvarint::tests::positive_vectors_match_goldens(8向量)/negative_vectors_rejected(6负例含 11 字节与超 u64)/roundtrip_boundaries; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-004",
@@ -40,8 +40,8 @@
     "expected": "拒绝解析且不分配数据buffer",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::scrub_rejects_header_crc_error（CRC 校验只读前 64B, 失败发生在任何 payload 分配前; Reader::take 先验证长度再切片）; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-005",
@@ -51,8 +51,8 @@
     "expected": "拒绝返回成功内容",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::scrub_rejects_corrupt_raw_digest（帧 CRC 仍通过, raw_digest 拒绝）; frame::tests::zstd_roundtrip_and_exact_length_enforced（digest 损坏拒绝）; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-006",
@@ -62,8 +62,8 @@
     "expected": "UnsupportedFormat而非fallback",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::scrub_rejects_unsupported_required_features（未知 bit fail-closed）; frame::tests::frame_header_rejects_unknown_version_format_codec_flags; container/refs 的 Codec::from_u8/PageKind::from_u8 未知值拒绝; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-007",
@@ -73,8 +73,8 @@
     "expected": "保持原始数据不猜native编码",
     "invariants": "INV-14",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::golden_plain_magic_prefix_keeps_raw_bytes（fixture plain_magic_prefix.brfdp 的 SF 前缀 payload 原样保留并重建一致）; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-008",
@@ -84,8 +84,8 @@
     "expected": "依据持久化header解码",
     "invariants": "INV-14",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): frame::tests::zstd_roundtrip_and_exact_length_enforced 与 datapack::tests::golden_native_none（解码 codec 均取自持久化 FrameHeader, 不读运行时配置）; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-009",
@@ -95,8 +95,8 @@
     "expected": "checked arithmetic和硬预算拒绝",
     "invariants": "INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::builder_rejects_oversized_payloads; frame::tests::frame_header_enforces_payload_limits（64MiB/65MiB 上限）; page::tests::page_rejects_oversized_raw_page_and_entries; uvarint Reader 全部 checked; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-010",
@@ -117,8 +117,8 @@
     "expected": "拒绝读取索引",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): page::tests::internal_rejects_child_level_not_descending（local+external child 均校验恰降一级）; refs::tests::child_must_descend_exactly_one_level; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "WIRE-012",
@@ -128,8 +128,8 @@
     "expected": "没有data frame，正常EOF",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): datapack::tests::zero_length_payloads_are_never_frames 与 golden_empty_pack（空 builder 只产 header+footer, 零帧, scrub 干净）; doc/native-base/logs/pr02-gate.log"
   },
   {
     "test_id": "READ-001",

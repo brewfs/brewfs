@@ -1,0 +1,277 @@
+{
+  "wire_major": 3,
+  "wire_minor": 0,
+  "hash": "SHA-256",
+  "structs": {
+    "ContainerHeader": {
+      "size": 64,
+      "struct": "<8sHHIQQQIIBB10sI",
+      "fields": [
+        [
+          "magic",
+          0,
+          8
+        ],
+        [
+          "major",
+          8,
+          2
+        ],
+        [
+          "minor",
+          10,
+          2
+        ],
+        [
+          "header_len",
+          12,
+          4
+        ],
+        [
+          "required_features",
+          16,
+          8
+        ],
+        [
+          "object_len",
+          24,
+          8
+        ],
+        [
+          "root_offset",
+          32,
+          8
+        ],
+        [
+          "root_stored_len",
+          40,
+          4
+        ],
+        [
+          "root_raw_len",
+          44,
+          4
+        ],
+        [
+          "hash_id",
+          48,
+          1
+        ],
+        [
+          "root_codec",
+          49,
+          1
+        ],
+        [
+          "reserved",
+          50,
+          10
+        ],
+        [
+          "header_crc32c",
+          60,
+          4
+        ]
+      ]
+    },
+    "ContainerFooter": {
+      "size": 64,
+      "struct": "<8sQ32s12sI",
+      "fields": [
+        [
+          "magic",
+          0,
+          8
+        ],
+        [
+          "object_len",
+          8,
+          8
+        ],
+        [
+          "root_stored_digest",
+          16,
+          32
+        ],
+        [
+          "reserved",
+          48,
+          12
+        ],
+        [
+          "footer_crc32c",
+          60,
+          4
+        ]
+      ]
+    },
+    "FrameHeader": {
+      "size": 80,
+      "struct": "<4sBBBBQII32s20sI",
+      "fields": [
+        [
+          "magic",
+          0,
+          4
+        ],
+        [
+          "frame_version",
+          4,
+          1
+        ],
+        [
+          "payload_format",
+          5,
+          1
+        ],
+        [
+          "codec",
+          6,
+          1
+        ],
+        [
+          "flags",
+          7,
+          1
+        ],
+        [
+          "ordinal",
+          8,
+          8
+        ],
+        [
+          "stored_len",
+          16,
+          4
+        ],
+        [
+          "raw_len",
+          20,
+          4
+        ],
+        [
+          "raw_digest",
+          24,
+          32
+        ],
+        [
+          "reserved",
+          56,
+          20
+        ],
+        [
+          "header_crc32c",
+          76,
+          4
+        ]
+      ]
+    },
+    "PageAddress": {
+      "size": 56,
+      "struct": "<QIIBBBBI32s",
+      "fields": [
+        [
+          "offset",
+          0,
+          8
+        ],
+        [
+          "stored_len",
+          8,
+          4
+        ],
+        [
+          "raw_len",
+          12,
+          4
+        ],
+        [
+          "codec",
+          16,
+          1
+        ],
+        [
+          "page_kind",
+          17,
+          1
+        ],
+        [
+          "level",
+          18,
+          1
+        ],
+        [
+          "reserved",
+          19,
+          1
+        ],
+        [
+          "entry_count",
+          20,
+          4
+        ],
+        [
+          "stored_digest",
+          24,
+          32
+        ]
+      ]
+    },
+    "FrameDescriptor": {
+      "size": 96,
+      "struct": "<IQQIIBBH32s32s",
+      "fields": [
+        [
+          "object_ordinal",
+          0,
+          4
+        ],
+        [
+          "frame_ordinal",
+          4,
+          8
+        ],
+        [
+          "object_offset",
+          12,
+          8
+        ],
+        [
+          "stored_len",
+          20,
+          4
+        ],
+        [
+          "raw_len",
+          24,
+          4
+        ],
+        [
+          "payload_format",
+          28,
+          1
+        ],
+        [
+          "codec",
+          29,
+          1
+        ],
+        [
+          "reserved",
+          30,
+          2
+        ],
+        [
+          "stored_digest",
+          32,
+          32
+        ],
+        [
+          "raw_digest",
+          64,
+          32
+        ]
+      ]
+    }
+  }
+}

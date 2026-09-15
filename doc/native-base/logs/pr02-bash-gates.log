@@ -1,0 +1,7 @@
+bashn:run_perf_in_container.sh:PASS:0
+bashn:run_redis_perf.sh:PASS:0
+bashn:run_juicefs_perf_in_container.sh:PASS:0
+bashn:run_juicefs_perf.sh:PASS:0
+test:test_perf_report_delta.sh:PASS:0
+test:test_juicefs_direct_matrix.sh:PASS:0
+test:test_juicefs_perf_report.sh:PASS:0
