@@ -91,7 +91,20 @@ pub async fn reconcile_cluster(
 
     apply_rustfs_secret(&client, &namespace, &cluster, &owner).await?;
     apply_rustfs_pvc(&client, &namespace, &cluster, &owner).await?;
-    apply_redis_pvc(&client, &namespace, &cluster, &owner).await?;
+    match apply_redis_pvc(&client, &namespace, &cluster, &owner).await? {
+        RedisPvcApplyOutcome::Applied => {}
+        RedisPvcApplyOutcome::UnsupportedExpansion(reason) => {
+            patch_cluster_status_phase(
+                &client,
+                &namespace,
+                &cluster,
+                "Failed",
+                &format!("Redis PVC expansion is unsupported: {reason}"),
+            )
+            .await?;
+            return Ok(Action::await_change());
+        }
+    }
     apply_redis_service(&client, &namespace, &cluster, &owner).await?;
     apply_redis_deployment(&client, &namespace, &cluster, &owner).await?;
     apply_rustfs_service(&client, &namespace, &cluster, &owner).await?;
@@ -561,16 +574,49 @@ fn build_redis_pvc(cluster: &BrewFSCluster, owner: &OwnerReference) -> Persisten
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RedisPvcApplyOutcome {
+    Applied,
+    UnsupportedExpansion(String),
+}
+
+fn is_unsupported_pvc_expansion_rejection(code: u16, message: &str) -> bool {
+    if code != 403 && code != 422 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("storageclass")
+        && (message.contains("resize")
+            || message.contains("resized")
+            || message.contains("expansion")
+            || message.contains("expand"))
+}
+
 async fn apply_redis_pvc(
     client: &kube::Client,
     namespace: &str,
     cluster: &BrewFSCluster,
     owner: &OwnerReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<RedisPvcApplyOutcome, anyhow::Error> {
     let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     let name = redis_pvc_name(&cluster.name_any());
     let desired = build_redis_pvc(cluster, owner);
-    apply(&api, &name, &desired).await
+    match api
+        .patch(
+            &name,
+            &PatchParams::apply("brewfs-operator").force(),
+            &Patch::Apply(&desired),
+        )
+        .await
+    {
+        Ok(_) => Ok(RedisPvcApplyOutcome::Applied),
+        Err(kube::Error::Api(error))
+            if is_unsupported_pvc_expansion_rejection(error.code, &error.message) =>
+        {
+            Ok(RedisPvcApplyOutcome::UnsupportedExpansion(error.message))
+        }
+        Err(error) => Err(error).with_context(|| format!("apply resource {name}")),
+    }
 }
 
 async fn apply_redis_service(
@@ -2980,5 +3026,29 @@ mod tests {
                 .map(String::as_str),
             Some("kept")
         );
+    }
+
+    #[test]
+    fn unsupported_pvc_expansion_rejection_is_terminal() {
+        assert!(is_unsupported_pvc_expansion_rejection(
+            403,
+            "only dynamically provisioned pvc can be resized and the storageclass that provisions the pvc must support resize",
+        ));
+        assert!(is_unsupported_pvc_expansion_rejection(
+            422,
+            "StorageClass fast does not allow volume expansion",
+        ));
+    }
+
+    #[test]
+    fn unrelated_pvc_apply_errors_remain_retryable() {
+        assert!(!is_unsupported_pvc_expansion_rejection(
+            409,
+            "StorageClass fast does not allow volume expansion",
+        ));
+        assert!(!is_unsupported_pvc_expansion_rejection(
+            403,
+            "admission policy denied the PVC",
+        ));
     }
 }

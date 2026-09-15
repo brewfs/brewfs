@@ -78,6 +78,11 @@ spec:
                     default: 1Gi
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: redis.storageClassName is immutable after creation
+                  rule: self.storageClassName == oldSelf.storageClassName
+                - message: redis.storageSize cannot be reduced
+                  rule: quantity(self.storageSize).compareTo(quantity(oldSelf.storageSize)) >= 0
               rustfs:
                 default:
                   accessKey: rustfsadmin
