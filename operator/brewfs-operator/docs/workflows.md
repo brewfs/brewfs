@@ -28,6 +28,11 @@ kubectl apply -f manifests/example-cluster.yaml
 
 如果这一步没有完成，`BrewFSMount` 只会不断等待，不会真正进入运行态。
 
+`BrewFSMount` reconciliation is gated on the referenced `BrewFSCluster` being
+`Ready` for its current `observedGeneration`. Missing workload status is
+treated as `Progressing`, so a newly created workload is not reported Ready
+until its controllers publish usable replica counts.
+
 ## 流程 2：仅创建挂载 workload
 
 适合：

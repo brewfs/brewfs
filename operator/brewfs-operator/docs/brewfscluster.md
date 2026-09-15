@@ -152,7 +152,11 @@ legacy fixed-name Job, are removed after the replacement is applied.
 常见理解方式：
 
 - `phase: Ready`
-  - 说明 operator 已完成本轮 reconcile
+  - The operator has observed both backend Deployments available, the RustFS
+    PVC Bound, and the current bucket-init Job succeeded.
+- `phase: Progressing`
+  - At least one required child resource is still pending or unavailable;
+    `message` identifies the observed dependency.
 - `redisService`
   - 挂载平面可以用这个服务名访问 Redis
 - `rustfsService`

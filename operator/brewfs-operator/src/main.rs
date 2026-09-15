@@ -8,11 +8,16 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim, Secret, Service};
 use kube::api::Api;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher;
 use kube::runtime::Controller;
 use kube::Client;
 use kube::CustomResourceExt;
+use kube::ResourceExt;
 use tracing::{error, info};
 
 use crate::crd::{BrewFSCluster, BrewFSMount};
@@ -93,6 +98,12 @@ async fn run_controller() -> anyhow::Result<()> {
     info!("starting BrewFS controllers");
 
     let cluster_controller = Controller::new(cluster_api, watcher::Config::default())
+        .owns::<Deployment>(Api::all(client.clone()), watcher::Config::default())
+        .owns::<PersistentVolumeClaim>(Api::all(client.clone()), watcher::Config::default())
+        .owns::<Job>(Api::all(client.clone()), watcher::Config::default())
+        .owns::<Service>(Api::all(client.clone()), watcher::Config::default())
+        .owns::<Secret>(Api::all(client.clone()), watcher::Config::default())
+        .owns::<ConfigMap>(Api::all(client.clone()), watcher::Config::default())
         .run(
             reconciler::reconcile_cluster,
             reconciler::error_policy_cluster,
@@ -109,7 +120,24 @@ async fn run_controller() -> anyhow::Result<()> {
             }
         });
 
-    let mount_controller = Controller::new(mount_api, watcher::Config::default())
+    let mount_controller_builder = Controller::new(mount_api, watcher::Config::default());
+    let mount_store = mount_controller_builder.store();
+    let mount_controller = mount_controller_builder
+        .watches(
+            Api::<BrewFSCluster>::all(client.clone()),
+            watcher::Config::default(),
+            move |cluster: BrewFSCluster| {
+                mount_store
+                    .state()
+                    .into_iter()
+                    .filter(|mount| {
+                        mount.namespace() == cluster.namespace()
+                            && mount.spec.cluster_ref.name == cluster.name_any()
+                    })
+                    .map(|mount| ObjectRef::from_obj(mount.as_ref()))
+                    .collect::<Vec<_>>()
+            },
+        )
         .run(
             reconciler::reconcile_mount,
             reconciler::error_policy_mount,
