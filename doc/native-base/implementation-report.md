@@ -224,8 +224,8 @@ extent+binding+placement；重排上传反例」）：
 | PR04-REDIS | `bash .claude/pr04-redis-test.sh`（scratch redis:7.4-alpine @127.0.0.1:16379，`--ignored`） | 0 | PASS（17 passed / 0 failed：16 场景 + 独立连接竞争） | [pr04-redis-test.log](logs/pr04-redis-test.log) |
 | PR04-TIKV | `bash .claude/pr04-tikv-test.sh`（scratch pd+tikv v8.5.0 docker network；测试二进制挂载进 ubuntu:24.04 容器执行，`--ignored`） | 0 | PASS（17 passed / 0 failed） | [pr04-tikv-test.log](logs/pr04-tikv-test.log) |
 | PR04-FMT | `cargo fmt --all --check` | 0 | PASS | [pr04-gate.log](logs/pr04-gate.log) |
-| PR04-BASHN | `bash -n run_{perf_in_container,redis_perf,juicefs_perf_in_container,juicefs_perf}.sh` | 0×4 | PASS（LF 归一化 scratch 副本，原件未动） | [pr04-gate.log](logs/pr04-gate.log) |
-| PR04-BASHTEST | `bash test_{perf_report_delta,juicefs_direct_matrix,juicefs_perf_report}.sh` | 0×3 | PASS（LF 归一化 scratch 副本） | [pr04-gate.log](logs/pr04-gate.log) |
+| PR04-BASHN | `bash -n run_{perf_in_container,redis_perf,juicefs_perf_in_container,juicefs_perf}.sh`（LF 归一化 scratch 副本） | 0×4 | PASS（**记录值**：逐脚本 exit=0） | [pr04-bash-gates.log](logs/pr04-bash-gates.log) |
+| PR04-BASHTEST | `bash test_{perf_report_delta,juicefs_direct_matrix,juicefs_perf_report}.sh`（LF 归一化 scratch 副本） | 0×3 | PASS（**记录值**：逐脚本 exit=0） | [pr04-bash-gates.log](logs/pr04-bash-gates.log) |
 | PR04-CHECK | `cargo check --workspace` | 0 | PASS | [pr04-gate.log](logs/pr04-gate.log) |
 | PR04-BUILD | `cargo build --workspace` | 0 | PASS | [pr04-gate.log](logs/pr04-gate.log) |
 | PR04-FEAT-TOKIO | `cargo check -p brewfs --no-default-features --features fuse-tokio-runtime` | 0 | PASS | [pr04-gate.log](logs/pr04-gate.log) |
@@ -253,8 +253,31 @@ ORD-001/002/003/004/006/007 共 12 项 PASS（ORD-001/002 证据中注明
 - 门禁脚本 [pr04-gate.sh](logs/pr04-gate.sh)（bash 门 + cargo 门一体，
   docker 脚本门在 LF 归一化 scratch 副本执行）/
   [pr04-redis-test.sh](logs/pr04-redis-test.sh) /
-  [pr04-tikv-test.sh](logs/pr04-tikv-test.sh) 可复现并逐项记录 exit
-  code。
+  [pr04-tikv-test.sh](logs/pr04-tikv-test.sh) 可复现；其中 redis/tikv
+  两个测试脚本逐项记录 exit code。
+- **证据更正（2026-09-16）**：PR04 表格里各行的退出码来源此前未写清，
+  现逐条说明日志到底记录了什么：
+  - PR04-FOCUSED / PR04-REDIS / PR04-TIKV：三个日志都含 cargo 自己的
+    判定行（`test result: ok. … 0 failed`），与表中 “0” 一致，但**没有**
+    单独的退出码记录行；表中 “0” 与该判定行相符，不是逐进程捕获的值。
+  - PR04-FMT / CHECK / BUILD / FEAT-TOKIO / FEAT-URING / GATE / CLIPPY：
+    [pr04-gate.log](logs/pr04-gate.log) 末行是 `=== GATE: ALL PASSED ===`，
+    该行只有在脚本里所有 `|| exit 1` 守卫都未触发时才会打印，因此这些
+    步骤的 “0” 由日志的**终态标记**支撑（聚合层面），日志内没有逐步
+    退出码行。
+  - PR04-BASHN / PR04-BASHTEST：这是真正的缺口——脚本里这些是
+    `bash -n … || exit 1` / `(cd … && bash …) || exit 1`，成功时脚本自身
+    **静默**，pr04-gate.log 对应段落只有 step 标题，连 cargo 那样的判定行
+    都没有，原表 “0×4 / 0×3” 由控制流推断。此外 pr04-gate.sh 原版本
+    `cd "$(dirname "$0")/.."` 从其提交位置 `doc/native-base/logs` 只上溯到
+    `doc/native-base`，提交的副本不能复现自己的日志（原运行用的是高一层
+    的副本，这也是 pr04-gate.log 里 cargo 路径显示 worktree 的原因）。
+    现已修正 cd 为上溯三级并打印解析出的根（见脚本头部 NOTE），并用
+    [pr04-bash-gates.sh](logs/pr04-bash-gates.sh) 在当前 commit 重跑这七个
+    脚本，逐项打印 `bashn:<name>:exit=$?` / `test:<name>:exit=$?` 到
+    [pr04-bash-gates.log](logs/pr04-bash-gates.log)（7 行全部 exit=0，
+    脚本 overall=0）。上表两行因此改引该日志：现在有记录值支撑，状态仍为
+    PASS。cargo 侧各行未改动，仍以 pr04-gate.log 的原始运行为准。
 - TiKV 集成门执行方式：WSL docker 的 host-port hairpin 使 PD advertise
   端口从宿主不可达（gRPC preface EOF），故 pd/tikv 全部放进自建 docker
   network 用容器内地址互通，已编译测试二进制（仅依赖 libc/libgcc/libm）

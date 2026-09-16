@@ -2,9 +2,23 @@
 # PR04 local CI gate (AGENTS.md "Local CI Gate For Accepted Code").
 # Runs every Rust-job command except `git diff --check`, which must run on
 # the Windows-side git. Exits non-zero on the first failing step.
+#
+# NOTE (correction, 2026-09-16): the original version of this script did
+# `cd "$(dirname "$0")/.."`, which from this file's committed location
+# (doc/native-base/logs) lands in doc/native-base, not the repository
+# root, so the copy as committed could not reproduce its own log. Fixed
+# to walk up three levels and to echo the resolved root. The original run
+# was made from a copy one level higher, which is why its log shows
+# worktree paths; the cargo-side steps in pr04-gate.log are unaffected.
+# Also note: this script's bash-script steps are silent on success, so
+# pr04-gate.log records no exit code for them. Recorded exit codes for
+# those seven scripts live in pr04-bash-gates.log
+# (doc/native-base/logs/pr04-bash-gates.sh).
 set -u
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")" || exit 1
+cd ../../.. || exit 1
+echo "gate root: $(pwd)"
 
 step() { echo "=== GATE: $* ==="; }
 
