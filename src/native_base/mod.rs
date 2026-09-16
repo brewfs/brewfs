@@ -26,8 +26,17 @@
 //! transaction with the per-inode ordering gate, and the write overlay
 //! (admission tickets, dirty handoff, ordered drain) that turns a
 //! reordered upload into a permanent error (spec 07, spec 18, spec 20).
+//!
+//! PR05 scope: local/seekable-tar ingest — the unified source contract
+//! with consistency revalidation, the BNWL journaled session state
+//! machine, the stable frozen upload plan with resume digest checks, the
+//! multipart ambiguity-resolution protocol over the object-backend
+//! capability interface, and the two remote-verification profiles,
+//! stopping at BUILT_UNPUBLISHED so unpublished artifacts stay invisible
+//! (spec 08).
 
 pub mod counterexamples;
+pub mod ingest;
 pub mod seal;
 pub mod wire;
 pub mod write;

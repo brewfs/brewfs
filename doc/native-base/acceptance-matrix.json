@@ -524,8 +524,8 @@
     "expected": "内容/属性/引用闭包一致",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: source::tests::local_source_inventory_hardlinks_and_no_symlink_follow / tar_source_reads_members_and_detects_change; LocalDirSource identity=SHA-256(dev||ino||size||mtime) 逐项 revalidate，SeekableTarSource 重算整档摘要；build::tests::build_to_unpublished_stops_unpublished_and_uploads_every_object 端到端冻结后打包"
   },
   {
     "test_id": "INGEST-002",
@@ -535,8 +535,8 @@
     "expected": "停止发布并保留可诊断session",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: build::tests::source_change_after_inventory_stops_publication（inventory 后改写文件 -> SourceChanged，发布不启动）; session::tests::unpublished_sessions_have_no_artifact_view（session 留盘，状态由 journal 重放可得）"
   },
   {
     "test_id": "INGEST-003",
@@ -546,8 +546,8 @@
     "expected": "输入拒绝不写出目标外",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: source::tests::member_path_validation_rejects_escapes / tar_source_rejects_escapes_and_duplicates （绝对路径、.. 逃逸、重复成员均拒绝，不写出目标外）"
   },
   {
     "test_id": "INGEST-004",
@@ -557,8 +557,8 @@
     "expected": "保留身份且不跟随链接",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: source::tests::local_source_inventory_hardlinks_and_no_symlink_follow（hardlink 同组、symlink 不跟随、目标作内容）/ tar_source_hardlinks_share_identity_and_compressed_is_refused / local_source_rejects_devices"
   },
   {
     "test_id": "INGEST-005",
@@ -568,8 +568,8 @@
     "expected": "核实同对象再恢复不盲重发",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: upload::tests::lost_complete_response_resumes_by_status（complete 超时 -> multipart_status 见 Completed 后收敛）; lost_part_response_is_resolved_by_query_not_resend；no_such_upload_after_completion_is_resolved_by_final_object"
   },
   {
     "test_id": "INGEST-006",
@@ -579,8 +579,8 @@
     "expected": "不能标记REMOTE_VERIFIED",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: upload::tests::http200_embedded_error_never_becomes_verified（HTTP 200 内嵌错误 -> CompleteOutcome::Failed，不置 remote-verified）"
   },
   {
     "test_id": "INGEST-007",
@@ -590,8 +590,8 @@
     "expected": "同内容经验证幂等，异内容拒绝",
     "invariants": "INV-01",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: upload::tests::precondition_412_same_content_is_idempotent_and_different_is_rejected（同内容幂等、异内容 PreconditionMismatch）"
   },
   {
     "test_id": "INGEST-008",
@@ -601,8 +601,8 @@
     "expected": "不能仅HEAD通过full verify",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: upload::tests::corrupted_payload_fails_exact_readback（ExactReadback 整对象回读比对捕获损坏）; service_validated_profile_uses_service_facts_not_readback（显式 profile 才用服务端事实）"
   },
   {
     "test_id": "INGEST-009",
@@ -612,8 +612,8 @@
     "expected": "尾部有界恢复，中间损坏停止",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: wal::tests::truncated_final_record_is_dropped / crc_bad_final_record_is_dropped_but_middle_corruption_stops / sequence_gap_is_corrupt_journal / garbage_at_the_tail_is_not_droppable / writer_assigns_sequences_and_recovers_damaged_tail; session::tests::truncated_journal_tail_recovers_to_the_last_durable_state / damaged_middle_record_stops_the_resume"
   },
   {
     "test_id": "INGEST-010",
@@ -623,8 +623,8 @@
     "expected": "不暴露不完整artifact",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test --lib -j 4 native_base::ingest -- --test-threads 4 (exit 0, 54 passed / 0 failed, 1010 filtered); doc/native-base/logs/pr05-gate.log: build::tests::disk_budget_stops_the_build_before_anything_is_uploaded（预算门在任何字节上传前 -> InsufficientDisk，P1 以预算模拟 ENOSPC）; resume_after_clean_close_finishes_the_upload / resume_mid_upload_skips_the_verified_object（续传跳已 verified，不重复上传）; session::tests::unpublished_sessions_have_no_artifact_view（不暴露不完整 artifact）"
   },
   {
     "test_id": "FROZEN-001",

@@ -1,6 +1,6 @@
 # Native Base 实现及实验报告
 
-状态：进行中（PR04 完成）。本报告按规格包模板维护，逐 PR 追加真实证据；
+状态：进行中（PR05 完成）。本报告按规格包模板维护，逐 PR 追加真实证据；
 不把参考模型 PASS 抄成产品验收 PASS，无环境项如实 NOT_RUN。
 
 ## 身份与范围
@@ -9,12 +9,14 @@
   控制契约 native_control_version=2。
 - 基准 commit：`8ff73d9c18c0f81e88c183383b00d2ba86bd42ba`（实现开始时 HEAD 与其一致）。
 - 阶段：P1（PR01 基线审计 → PR02 wire codec → PR03 seal reader →
-  PR04 写管线与控制面事务）。
+  PR04 写管线与控制面事务 → PR05 ingest 与上传验证/resume）。
 - 已读：仓库 AGENTS.md；规格包 README、CODEX_TASK、00/01/02/03/04/06/09/10/15/18/20。
 - 关联不变量：本轮全部（INV-01..INV-24），PR03 重点核 INV-03/04/05/13/14
   （固定视图/缺失即错误/索引序/预算取消/不猜编码）；PR04 重点核
   INV-03/04/06/08/22（按 inode 有序提交/截断与 hole 语义/单事务原子性/
-  独立写者 fencing/receipt 证据绑定）。
+  独立写者 fencing/receipt 证据绑定）；PR05 重点核 INV-01/02/04/07/12
+  （同内容幂等/身份保留不跟随链接/不得仅凭 HEAD 通过验证/源一致性与有界
+  恢复/逃逸输入拒绝）。
 - 关联发现：FNL-03/FNL-04/FNL-08/FNL-10/FNL-11（保留精确性/原子性/顺序/证据）。
 
 ## 真实测试证据
@@ -262,6 +264,106 @@ ORD-001/002/003/004/006/007 共 12 项 PASS（ORD-001/002 证据中注明
   re-derive），该映射由独立连接竞争场景在真实集群上验证。
 - mark_failed 只改状态（Failed + 后继 Blocked），上报由 drain Phase 1
   pop 终态时统一负责（单次上报）。
+
+### PR05 · local/seekable-tar ingest、稳定计划、上传验证与 resume
+
+工具链：同 PR01-04（WSL Ubuntu-24.04，rustc 1.98.1；git 在 Windows 侧）。
+raw 日志在 `doc/native-base/logs/`。实现位于 `src/native_base/ingest/`（9 个模块，
+约 4900 行，54 个测试）：
+
+- `source`：统一输入契约 `IngestSource{policy, inventory, read_range, revalidate}`。
+  `LocalDirSource` 以 `symlink_metadata` 遍历（不跟随 symlink，symlink 目标
+  作为内容）、hardlink 按 `(dev, ino)` 归组、设备/管道/套接字成员拒绝、
+  身份 = SHA-256(dev‖ino‖size‖mtime)；`SeekableTarSource` 解析 ustar，拒绝
+  绝对路径/`..` 逃逸/重复路径/设备成员/压缩档（xz、gz magic），支持 old-GNU
+  sparse（固定头最多 4 extent；带 extension header 超出 P1 界则拒绝），并校验
+  存储序前缀和 `Σextent_len == stored size`。
+- `wal`：BNWL 记录 `"BNWL"[4] + record_len:u32 + sequence:u64 + kind:u16 +
+  reserved:u16 + payload + crc32c:u32`（最小 24B、最大 16MiB），sequence 自 1
+  严格 +1；`ReplayOutcome::{Complete, DroppedTail}` 只允许丢弃截断或 CRC 错的
+  **最终**记录，中间 CRC 错/坏 magic/坏长度/序号缺口一律 `CorruptJournal`；
+  `WalWriter::open` 就地修复损坏尾；checkpoint 走
+  temp→fsync→rename→fsync(parent)。
+- `plan`：`PLAN_ALGORITHM_VERSION=1`，uvarint 规范编码，`digest()` =
+  SHA-256(版本 LE ‖ 编码)，与主计划同为 temp→fsync→rename→fsync(parent)。
+  resume 时版本或 digest 不符 → `PlanMismatch`：不静默重新分区，也不把上一轮
+  的 receipt 混进改动过的计划。
+- `session`：布局 `session.json`/`inventory.bin`/`upload.plan`/`journal.wal`/
+  `checkpoint.bin`/`objects/`/`spool/` + 单 owner 独占锁 `owner.lock`
+  （`flock(LOCK_EX|LOCK_NB)`）；10 态状态机（NEW→INVENTORIED→PLAN_FROZEN→
+  METADATA_STAGED→DATA_UPLOADING→DATA_VERIFIED→SEAL_VERIFIED→
+  MANIFEST_VERIFIED→PUBLISHED，外加 BUILT_UNPUBLISHED 显式停点；
+  Published/BuiltUnpublished 为终态）默认停 BUILT_UNPUBLISHED；journal 权威
+  （先 WAL，再 session.json/checkpoint）；`artifact_view()` 对任何非 Published
+  状态返回 `NotPublished`。
+- `backend`：比既有 `ObjectBackend` 更严的上传合同 —— 原子 create-only PUT
+  （不支持且无等价验证路径则拒绝启用可写发布，E02）、`range_get_exact` 全填充
+  失败即错（绝不补零）、multipart 结果分类；配套内存实现与全套故障注入。
+- `upload`：两验证 profile —— `ExactReadback`（默认，整对象回读比对）与
+  `ServiceValidatedChecksums`（显式，用服务端事实）。CreateOnly 分支 412 →
+  inspect 同 len+hash 视为幂等、异则 `PreconditionMismatch`；Multipart 分支
+  part 计划先持久化再上传，part 超时 → `multipart_status` 按已接收 part 恢复
+  （不重发、不换号），complete 超时 → 查状态，`NoSuchUpload` → 核对最终对象，
+  HTTP 200 内嵌错误 → `Failed`；重试有界（part 4 / complete 4 / 整体重启 3）。
+- `build`：inventory → revalidate → 打包（目录跳过、symlink 取内容、hardlink
+  按组去重、`PackFrame::plain_bytes`、`object_key` 命名、按 content budget 切
+  pack 与 part）→ 冻结计划 → 上传（resume 先比对 plan digest，跳过已 verified
+  对象）→ 停 BUILT_UNPUBLISHED；`build_to_unpublished` 按相位恢复（New 全跑 /
+  Inventoried 只冻结 / 其余续传 / BuiltUnpublished 幂等返回）。
+
+证据要点（对应 spec15 PR05 验收关键词「源一致性、模糊结果、未发布产物不可见」）：
+
+- **源一致性**：`LocalDirSource::revalidate` 逐项重算 identity（dev/ino/size/
+  mtime），tar 源重算整档摘要；inventory 之后源被改动 → `SourceChanged` 且
+  发布停止（场景：inventory 后改写文件 → 报错，session 连同状态与计划留在
+  磁盘上供诊断）。不跟随 symlink 由 `symlink_metadata` 保证；hardlink 共享
+  `hardlink_group`，身份保留而数据只落一份。
+- **模糊结果**：4 类歧义都以「查询同一身份」收敛而非盲目重发 —— part 响应
+  丢失但服务端已落盘 → 按计划身份恢复该 part（序号不变）；part 超时且未落盘
+  → 同号重试；complete 响应丢失 → `multipart_status` 报 Completed → 按服务端
+  事实收敛；complete 报 NoSuchUpload 而已组装 → 核对最终对象内容后收敛。
+  HTTP 200 内嵌错误与 409 都永不变成 remote-verified。
+- **未发布产物不可见**：`Session::artifact_view()` 对任何非 Published 状态
+  （含 BUILT_UNPUBLISHED）返回 `NotPublished`，P1 构建的本地对象与计划在发布
+  路径上不可见；磁盘预算门在**任何字节上传之前**失败（`InsufficientDisk`），
+  不留半成品。
+- **resume 不静默改计划**：篡改 `upload.plan` 后 resume → `PlanMismatch`；已
+  verified 的对象在续传时被跳过（不重复上传），权威状态由 journal 重放得出，
+  截断尾有界恢复、中间损坏停止。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR05-FOCUSED | `cargo test --lib -j 4 native_base::ingest -- --test-threads 4` | 0 | PASS（54 passed / 0 failed, 1010 filtered） | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-FMT | `cargo fmt --all --check` | 0 | PASS | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-BASHN | `bash -n run_{perf_in_container,redis_perf,juicefs_perf_in_container,juicefs_perf}.sh` | 0×4 | PASS（LF 归一化 scratch 副本，仓库原件未动） | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-BASHTEST | `bash test_{perf_report_delta,juicefs_direct_matrix,juicefs_perf_report}.sh` | 0×3 | PASS（LF 归一化 scratch 副本） | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-CHECK | `cargo check --workspace` | 0 | PASS | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-BUILD | `cargo build --workspace` | 0 | PASS | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-FEAT-TOKIO | `cargo check -p brewfs --no-default-features --features fuse-tokio-runtime` | 0 | PASS | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-FEAT-URING | `cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime` | 0 | PASS | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-GATE | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins` | 0 | PASS（845+721 passed, 0 failed, 219+185 ignored） | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-CLIPPY | `cargo clippy --workspace` | 0 | PASS（native_base/ingest 0 警告；src/main.rs 存量 `unused import: CacheTtl` 非本 PR 引入） | [pr05-gate.log](logs/pr05-gate.log) |
+| PR05-GITDIFF | `git diff --check`（Windows 侧；WSL git 无法解析 worktree 路径） | 0 | PASS | — |
+
+验收矩阵：PR05 后 INGEST-001..010 共 10 项 PASS。如实说明范围：
+- 上传侧证据全部来自带故障注入的内存 `MemoryUploadBackend` —— 被验证的是
+  `UploadBackend` 合同语义（PR07 的真实对象后端必须满足同一合同）；真实
+  后端集成（rustfs/S3 语义、服务端 multipart 并发交叠）属 PR07，本 PR 不主张。
+- INGEST-010 的「磁盘耗尽」在 P1 以 build 的 disk budget 门实现
+  （`InsufficientDisk`，上传前失败）；后端侧配额/507 的真实注入属 PR07。
+- 未做项（如实保留）：跨 session 的 lease 回收与私有清理策略属 PR06B；manifest
+  层（SealVerified→ManifestVerified→Published）属 PR06A。
+
+说明：
+- 门禁脚本 [pr05-gate.sh](logs/pr05-gate.sh) 与 [pr05-gate.log](logs/pr05-gate.log)
+  可复现（脚本从自身位置回溯到仓库根，先打印 `gate root:` 供核对；docker 脚本门
+  在 LF 归一化 scratch 副本执行）。
+- 本轮修复的两个真实缺陷（PR05 开发中自查 + 焦点测试暴露）：多 extent 成员的
+  存储偏移必须累加前序 extent 长度（原实现会让稀疏成员读错位）；常规 tar 成员
+  必须携带覆盖整个逻辑尺寸的 extent（原实现让常规成员整段走 hole 分支读零）。
+- `cargo clippy` 曾就新增代码报 6 条风格警告（`new_without_default`、
+  `collapsible_if`×2、`needless_borrows_for_generic_args`×2、
+  `manual_div_ceil`），已全部修掉；门禁日志为修后运行。
 
 PR01：审计现有写/读路径的捕获与顺序机制，结论见 pr01-baseline-audit.md。
 反例模型测试记录三个弱协议失败模式（torn capture、乱序重叠提交、先切 head

@@ -22,7 +22,7 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 02 | wire3 codec + BNCT 控制记录 v2 骨架 | 完成（门禁全绿, WIRE 10/12 项 PASS） |
 | 03 | Pack/Seal reader、view-bound placement、budget/cancel | 完成（门禁全绿, WIRE 12/12 + READ 3 项 PASS） |
 | 04 | receipt、按 inode 顺序 commit、dirty 交接 | 完成（门禁全绿, WRITE/KV/ORD 共 12 项 PASS） |
-| 05 | ingest、上传验证/断点恢复 | 未开始 |
+| 05 | ingest、上传验证/断点恢复 | 完成（门禁全绿, INGEST 10/10 项 PASS，上传侧为合同级证据） |
 | 06A | PublishedRevision、RetainBatch、seal/fork/recovery | 未开始 |
 | 06B | close 证书、终结私有 cleaner、旧 GC 隔离 | 未开始 |
 | 07+ | P1 接入、P2 Frozen、P3 优化 | 未开始 |
