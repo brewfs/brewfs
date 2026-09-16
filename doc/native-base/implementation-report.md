@@ -392,6 +392,44 @@ PR01：审计现有写/读路径的捕获与顺序机制，结论见 pr01-baseli
 反例模型测试记录三个弱协议失败模式（torn capture、乱序重叠提交、先切 head
 后补保留），作为 PR03/PR04/PR06A 实现的对照契约。
 
+### PR06A · 永久 PublishedRevision、精确 RetainBatch、seal/fork/recovery（进行中）
+
+状态：**未完成，不主张 PASS**。本小节只记录交接点 `e19c990` 上已落地且已验证的
+第一步；验收矩阵各项保持原状态。
+
+第一步（前置重构）：PR06A 需要为物理 inventory 与 RetainBatch 建 BNPG 索引树，
+其形状与 Data Seal 四表完全相同。把树 writer 从 `seal/builder.rs` 抽到
+`wire/index_build.rs`（`IndexTreeParams{leaf_target, leaf_kind, page_kind}`、
+`place_page(body, page, page_kind)`、`build_index_tree(entries, params, body)`），
+使 seal 与 06A 的索引共用一份实现。
+
+| 测试项 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|---|
+| PR06A-IDX-TEST | `cargo test -p brewfs --lib -j 4 -- native_base:: --test-threads 4` | 0 | PASS（204 passed / 0 failed / 34 ignored；含 `wire::index_build::*` 3 项与字节稳定性 golden 1 项） | [pr06a-checkpoint-gate.log](logs/pr06a-checkpoint-gate.log) |
+| PR06A-GATE | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins -j 4 -- --test-threads 4` | 0 | PASS（849 + 721 passed, 0 failed, 219 + 185 ignored） | [pr06a-checkpoint-gate.log](logs/pr06a-checkpoint-gate.log) |
+| PR06A-CLIPPY | `cargo clippy --workspace` | 0 | PASS（无新增警告；`bin "brewfs"` 的 1 条为 PR05 记录的存量项） | 同上 |
+| PR06A-GITDIFF | `git diff --check`（Windows 侧；WSL git 无法解析 worktree 路径） | 0 | PASS | — |
+
+字节不变性不是推断而是被钉住的：`seal/tests.rs::seal_bytes_are_unchanged_by_the_
+shared_index_builder` 断言混合 Loose/Packed fixture 与 64B 叶子多层 fixture 的
+seal 对象摘要，摘要取自 `7291196`（重构前）的 detached worktree 探针
+（`8c361922…b8b0`、`a0723bc3…f298`），探针已随 worktree 删除，值留在测试里。
+
+未开始（如实保留为 `SPECIFIED_NOT_IMPLEMENTED`）：manifest 组装、physical
+inventory 与 RetainBatch 索引、publish 单次原子事务与 OperationId 幂等、
+seal 八态状态机与逐阶段恢复、fork/fast-forward、KvBaseRetention。其中
+`RET-020`、`RET-023` 清理侧与 `CLN-*` 属 PR06B；`RET-012` 属 P2；
+`RET-021`（拒绝 TTL/published_gc/read_retention_leases 配置）需 PR07 的配置
+加载器接线，本 PR 只做纯校验函数、不标 PASS。设计与续做步骤见
+[pr06a-handoff.md](pr06a-handoff.md)。
+
+说明：本轮门禁与前几轮不同之处在于**每个步骤都记录了自己的退出码**（含 7 个
+bash 脚本门），不再依赖“成功即静默 + 末尾聚合标记”推断（PR04 曾因此更正）。
+门禁由 [pr06a-checkpoint-run.sh](logs/pr06a-checkpoint-run.sh)（WSL 包装，设置
+工具链环境、读 `.claude/gate-commit.txt` 取提交号、tee 日志）调用
+[pr06a-checkpoint-gate.sh](logs/pr06a-checkpoint-gate.sh)（门禁本体）产生；
+WSL git 读不到本 worktree 的 Windows 路径，故提交号由 Windows 侧 git 先写入文件。
+
 ## 永久保留与私有清理
 
 PR01：盘点全部现有 delete/GC 入口及其触发条件，形成隔离清单

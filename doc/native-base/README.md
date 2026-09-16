@@ -12,6 +12,8 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
   每项 `implementation_status` 从 `SPECIFIED_NOT_IMPLEMENTED` 起步；每项 PASS 必须附
   `evidence`（真实 commit/命令/exit code/日志路径）。无环境如实标 `NOT_RUN`。
 - [implementation-report.md](implementation-report.md) — 按 spec 包模板维护的实现报告。
+- [pr06a-handoff.md](pr06a-handoff.md) — PR06A 交接说明（交接点 `e19c990`）：现状、
+  环境命令、红线、已定设计、验收映射、踩坑清单。
 - `pr01-baseline-audit.md` — PR01 基线调用者与旧 GC delete 入口审计。
 
 ## PR 状态
@@ -23,7 +25,7 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 03 | Pack/Seal reader、view-bound placement、budget/cancel | 完成（门禁全绿, WIRE 12/12 + READ 3 项 PASS） |
 | 04 | receipt、按 inode 顺序 commit、dirty 交接 | 完成（门禁全绿, WRITE/KV/ORD 共 12 项 PASS） |
 | 05 | ingest、上传验证/断点恢复 | 完成（门禁全绿, INGEST 10/10 项 PASS，上传侧为合同级证据） |
-| 06A | PublishedRevision、RetainBatch、seal/fork/recovery | 未开始 |
+| 06A | PublishedRevision、RetainBatch、seal/fork/recovery | 进行中（共享索引 builder 已抽取并验证 `e19c990`；lifecycle 模块未开始） |
 | 06B | close 证书、终结私有 cleaner、旧 GC 隔离 | 未开始 |
 | 07+ | P1 接入、P2 Frozen、P3 优化 | 未开始 |
 
