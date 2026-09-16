@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.48s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 17 tests
+test native_base::write::tests_redis::non_active_domain_rejects_registration ... ok
+test native_base::write::tests_redis::non_active_domain_rejects_commit ... ok
+test native_base::write::tests_redis::failed_predecessor_blocks_successors_instead_of_skipping_them ... ok
+test native_base::write::tests_redis::cross_inode_mutations_do_not_block_each_other ... ok
+test native_base::write::tests_redis::mutation_order_continues_from_the_durable_watermark ... ok
+test native_base::write::tests_redis::ordering_gate_rejects_late_and_early_slots_permanently ... ok
+test native_base::write::tests_redis::registry_binds_one_object_key_to_one_identity ... ok
+test native_base::write::tests_redis::unaligned_writes_are_refused_at_admission ... ok
+test native_base::write::tests_redis::commit_writes_extent_binding_placement_inode_and_head_together ... ok
+test native_base::write::tests_redis::failed_transaction_applies_no_subset_of_its_writes ... ok
+test native_base::write::tests_redis::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ok
+test native_base::write::tests_redis::stale_head_guard_fails_and_writes_nothing ... ok
+test native_base::write::tests_redis::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ok
+test native_base::write::tests_redis::commit_with_tampered_registration_fails_atomically ... ok
+test native_base::write::tests_redis::independent_stores_racing_same_head_commit_once ... ok
+test native_base::write::tests_redis::reordered_upload_cannot_overtake_its_predecessor ... ok
+test native_base::write::tests_redis::truncate_down_and_extend_and_punch_produce_holes ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 993 filtered out; finished in 0.12s
+

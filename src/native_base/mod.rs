@@ -19,7 +19,15 @@
 //! validation, the pinned-view SealReader with exact-key BNPG lookup, and
 //! the synchronous planned read executor with byte budgeting and
 //! cooperative cancellation (spec 04, spec 06).
+//!
+//! PR04 scope: the write pipeline — the control-store transaction model
+//! (memory / Redis / TiKV), the `nb2` key layout, ownership domains and
+//! upload registration, the type 3 receipts container, the atomic commit
+//! transaction with the per-inode ordering gate, and the write overlay
+//! (admission tickets, dirty handoff, ordered drain) that turns a
+//! reordered upload into a permanent error (spec 07, spec 18, spec 20).
 
 pub mod counterexamples;
 pub mod seal;
 pub mod wire;
+pub mod write;

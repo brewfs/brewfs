@@ -1,0 +1,73 @@
+   Compiling brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 06s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 63 tests
+test native_base::write::receipts::tests::receipt_set_roundtrip_and_rejects_trailing ... ok
+test native_base::write::records::tests::extent_roundtrip_and_invariants ... ok
+test native_base::write::keys::tests::keys_are_volume_scoped_and_lexicographic ... ok
+test native_base::write::records::tests::inode_data_roundtrip ... ok
+test native_base::write::records::tests::head_state_roundtrip_and_next_commit ... ok
+test native_base::write::redis::tests::glob_escape_quotes_metacharacters ... ok
+test native_base::write::records::tests::head_placement_roundtrip_and_closed_tags ... ok
+test native_base::write::receipts::tests::receipts_container_is_a_valid_single_value_frozen_metadata_object ... ok
+test native_base::write::tests::hole_splits_and_replacement ... ok
+test native_base::write::tests::memory_backend::commit_with_tampered_registration_fails_atomically ... ok
+test native_base::write::tests::memory_backend::commit_writes_extent_binding_placement_inode_and_head_together ... ok
+test native_base::write::tests::memory_backend::cross_inode_mutations_do_not_block_each_other ... ok
+test native_base::write::tests::memory_backend::failed_predecessor_blocks_successors_instead_of_skipping_them ... ok
+test native_base::write::tests::memory_backend::failed_transaction_applies_no_subset_of_its_writes ... ok
+test native_base::write::tests::memory_backend::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ok
+test native_base::write::tests::memory_backend::independent_stores_racing_same_head_commit_once ... ok
+test native_base::write::tests::memory_backend::mutation_order_continues_from_the_durable_watermark ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_commit ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_registration ... ok
+test native_base::write::tests::memory_backend::ordering_gate_rejects_late_and_early_slots_permanently ... ok
+test native_base::write::tests::memory_backend::registry_binds_one_object_key_to_one_identity ... ok
+test native_base::write::tests::memory_backend::reordered_upload_cannot_overtake_its_predecessor ... ok
+test native_base::write::tests::memory_backend::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ok
+test native_base::write::tests::memory_backend::stale_head_guard_fails_and_writes_nothing ... ok
+test native_base::write::tests::memory_backend::truncate_down_and_extend_and_punch_produce_holes ... ok
+test native_base::write::tests::memory_backend::unaligned_writes_are_refused_at_admission ... ok
+test native_base::write::tests::partial_overlap_splits_data_extents_block_aligned ... ok
+test native_base::write::tests::unaligned_cut_keeps_partial_tail_block ... ok
+test native_base::write::tests_redis::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::non_active_domain_rejects_commit ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::non_active_domain_rejects_registration ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_tikv::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_commit ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_registration ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tikv::tests::prefix_range_end_increments_the_last_free_byte ... ok
+
+test result: ok. 29 passed; 0 failed; 34 ignored; 0 measured; 947 filtered out; finished in 0.12s
+

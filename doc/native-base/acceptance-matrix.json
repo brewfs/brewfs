@@ -249,8 +249,8 @@
     "expected": "故障时两者均可见或均不可见",
     "invariants": "INV-06",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. 场景 commit_writes_extent_binding_placement_inode_and_head_together: 单事务同时落 extent/binding(36B)/placement(Loose)/inode head 行, head commit_seq 前进恰 1; failed_transaction_applies_no_subset_of_its_writes 与 commit_with_tampered_registration_fails_atomically: 失败路径前后整卷 KV snapshot 逐字节相等(无任何子集落盘)"
   },
   {
     "test_id": "WRITE-004",
@@ -304,8 +304,8 @@
     "expected": "旧尾部永不复活",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. 场景 truncate_down_and_extend_and_punch_produce_holes: truncate 到 64 后 [64,∞) extent 行整体移除, 再 extend 到 256 时 [128,256) 为 Hole extent(非旧数据复活); ordering_gate_rejects_late_and_early_slots_permanently: 迟到 upload 对已过 slot 永久拒绝(非 retryable), 不得覆盖新内容"
   },
   {
     "test_id": "WRITE-009",
@@ -315,8 +315,8 @@
     "expected": "指定范围零化不改变其他内容",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. 场景 truncate_down_and_extend_and_punch_produce_holes 的 punch 段: PunchHole{0,64} 后 [0,64) 变 Hole, [64,128) Data 与 [128,256) Hole 不受影响; 纯代数补充 hole_splits_and_replacement(头/尾分裂+同范围 replacement)"
   },
   {
     "test_id": "WRITE-010",
@@ -370,8 +370,8 @@
     "expected": "HeadGuard/receipt事务一致",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored). tests_redis 17 项全过(16 场景+独立连接竞争): independent_stores_racing_same_head_commit_once 用两个独立 RedisControlStore 连接从同一 HeadGuard 并发 commit 不同 order-1 truncate, 恰一个 Committed, 落败方 Conflict/StaleHeadGuard 且不留 mutation result; 单 Lua 脚本 TXN 原子 check+write; doc/native-base/logs/pr04-redis-test.log"
   },
   {
     "test_id": "KV-002",
@@ -381,8 +381,8 @@
     "expected": "同等事务contract通过",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored). tests_tikv 17 项全过(与 Redis 同一场景集, 契约等价): 悲观事务 get_for_update 锁后验证+原子提交, 锁竞争/写冲突统一映射 Conflict; 同 head 竞争场景恰一次提交; doc/native-base/logs/pr04-tikv-test.log"
   },
   {
     "test_id": "KV-003",
@@ -392,8 +392,8 @@
     "expected": "重试不重复commit相同operation",
     "invariants": "INV-06",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. independent_stores_racing_same_head_commit_once: 同 head 两个写者并发, 恰一个消费 head/order slot(commit_seq=1, committed_order=1), 落败事务无任何部分结果, 重试走 re-derive; same_operation_id_is_idempotent_and_payload_mismatch_is_rejected: 同 OperationId 重放返回已记录结果(AlreadyCommitted), payload 不符永久拒绝"
   },
   {
     "test_id": "KV-004",
@@ -1734,8 +1734,8 @@
     "expected": "提交覆盖顺序仍A后B，最终B",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04(组件级: commit/overlay 层). 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. reordered_upload_cannot_overtake_its_predecessor: 同 inode 两写 admission 序 A(order1)/B(order2), 仅 B 上传完成时 drain 0 提交(committed_order 保持 0, 无 inode 行), A 迟到补齐后按 A 后 B 序两笔齐落(size 128, 两 extent 按 offset 序); 同范围覆盖最终内容语义由 hole_splits_and_replacement(replacement 落于被切范围)代数测试补证"
   },
   {
     "test_id": "ORD-002",
@@ -1745,8 +1745,8 @@
     "expected": "旧write不得复活尾部或覆盖Hole",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04(组件级: commit 层). 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. ordering_gate_rejects_late_and_early_slots_permanently: slot 已过后迟到 mutation(不同 OperationId)永久 OutOfOrder(\"late upload\")且 !is_retryable, 不得复活尾部或覆盖 Hole; truncate 越界行移除见 truncate_down_and_extend_and_punch_produce_holes"
   },
   {
     "test_id": "ORD-003",
@@ -1756,8 +1756,8 @@
     "expected": "扩展区严格为零",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. truncate_down_and_extend_and_punch_produce_holes: Truncate{256} 后 [128,256) 为 ExtentKind::Hole(logical_len 128), 扩展区严格为零语义, 无旧内容复活"
   },
   {
     "test_id": "ORD-004",
@@ -1767,8 +1767,8 @@
     "expected": "只移除旧operation引用，较新dirty仍可读",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. handoff_removes_only_committed_dirty_and_captures_keep_theirs: 仅被提交 operation 的 dirty 引用被交接移除, 未提交 sibling 的 dirty 保留; 更早 capture 的 Arc 克隆集合在其下不被收缩"
   },
   {
     "test_id": "ORD-005",
@@ -1789,8 +1789,8 @@
     "expected": "负例可复现，ordered协议拒绝",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. 负例可复现且协议拒绝: reordered_upload_cannot_overtake_its_predecessor(上传顺序反转时 0 提交)+ordering_gate_rejects_late_and_early_slots_permanently(早到 slot 缺前序/迟到 slot 已过均永久拒绝)"
   },
   {
     "test_id": "ORD-007",
@@ -1800,8 +1800,8 @@
     "expected": "不同inode上传/提交可并发，同inode有序",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR04. 三后端同一场景集(memory/Redis/TiKV)全部通过; cargo test -p brewfs --lib native_base::write (exit 0, 29 passed/0 failed, 含 16 场景×内存后端+同head竞争+3 extent代数+redis glob/tikv prefix 单测); bash .claude/pr04-redis-test.sh (exit 0, 17 passed/0 failed; scratch redis:7.4-alpine, BREWFS_REDIS_TEST_URL=redis://127.0.0.1:16379, --ignored); bash .claude/pr04-tikv-test.sh (exit 0, 17 passed/0 failed; scratch pd+tikv v8.5.0 docker network, 测试二进制于 ubuntu:24.04 容器内运行, --ignored); doc/native-base/logs/pr04-focused.log, pr04-redis-test.log, pr04-tikv-test.log. cross_inode_mutations_do_not_block_each_other: inode7 有未上传写时 inode8 照常提交; mutation_order_continues_from_the_durable_watermark: order 从每 inode 持久 committed_order 水位续排(重载 overlay 后 order=2 而非重启 1)"
   },
   {
     "test_id": "ORD-008",
