@@ -7,8 +7,8 @@
     "expected": "Header64/Footer64/Frame80/PageAddress56/FrameDescriptor96一致",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): Header64/Footer64/Frame80/PageAddress56 见 PR02; PR03 补 FrameDescriptor96: descriptor::tests::descriptor_is_exactly_96_bytes_and_roundtrips(精确 96B)/reserved_must_be_zero([30..32])/range_get_covers_header_and_payload(offset,+80+stored_len)/header_mismatch_detected_on_every_field; seal::tests::frame_descriptor_mismatch_with_actual_header_is_an_error; doc/native-base/logs/pr03-focused.log"
   },
   {
     "test_id": "WIRE-002",
@@ -106,8 +106,8 @@
     "expected": "完整verify拒绝，lookup不误报缺失",
     "invariants": "INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): decode 侧重复/乱序/bounds 拒绝见 PR02 page::tests; PR03 补 lookup 侧: seal::tests::multi_level_index_lookup_hits_and_absent_keys_miss(40块 leaf_target=64, root level≥2, 缺失 key→None 不误报)/empty_table_reports_missing_table_on_query; reader.rs lookup 页走查中页读取/解析失败=错误(HashMismatch/Integrity), 从不当作缺失缓存; 深度>MAX_INDEX_LEVEL+2 拒绝; doc/native-base/logs/pr03-focused.log"
   },
   {
     "test_id": "WIRE-011",
@@ -150,8 +150,8 @@
     "expected": "同一个ReadView且坐标正确",
     "invariants": "INV-03",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): seal::tests::cross_block_read_over_full_size_blocks — 起点位于块内 100 跨 4 个满尺寸块读与整 5 块读均与原始字节 oracle 逐字节一致, 坐标经 block_index*block_size 编址与 span block_offset/frame_raw_offset 换算; 单次 read_range 对一个 pinned SealSnapshot 一次性 plan(同一视图); 整 5 块=3 GET(共享 frame 去重); seal reader 层, FUSE ReadView 接入在 PR07+; doc/native-base/logs/pr03-focused.log"
   },
   {
     "test_id": "READ-003",
@@ -161,8 +161,8 @@
     "expected": "MissingPlacement不尝试Loose",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): seal::tests::binding_without_placement_is_an_error — 有 binding 无 placement 时 verify_key_sets 报 KeySetMismatch、resolve_block 报 Placement 错误; BlockPlacement 无 Unknown/Fallback/Zero 标签, 读取路径不存在 Loose 回退分支; doc/native-base/logs/pr03-focused.log"
   },
   {
     "test_id": "READ-004",
@@ -172,8 +172,8 @@
     "expected": "IncompleteObjectRead不补零",
     "invariants": "INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "cargo test -p brewfs --lib native_base (exit 0): seal::tests::source_not_found_is_an_error_not_zeros 与 short_read_is_an_error_not_zeros — 对象源契约级(内存 CountingSource 模拟 404 与短读), reader 返回错误, 输出从不补零; frame 短读在 FrameHeader::parse 前即拒绝; 活的 S3 适配器接线在 PR05/07; doc/native-base/logs/pr03-focused.log"
   },
   {
     "test_id": "READ-005",

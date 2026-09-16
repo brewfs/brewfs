@@ -13,6 +13,13 @@
 //! PR02 scope: read-only wire 3/0 codecs (container header/footer, frame,
 //! page, DataPack scrub/build) and the BNCT native control records v2,
 //! with goldens for the packaged fixtures and fail-closed negatives.
+//!
+//! PR03 scope: the Data Seal (`.brfds`) exact reader — table directory,
+//! bindings/placements/objects/frames records, SealBuilder with referential
+//! validation, the pinned-view SealReader with exact-key BNPG lookup, and
+//! the synchronous planned read executor with byte budgeting and
+//! cooperative cancellation (spec 04, spec 06).
 
 pub mod counterexamples;
+pub mod seal;
 pub mod wire;
