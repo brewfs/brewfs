@@ -1311,3 +1311,53 @@ fn seal_root_table_directory_shape_is_preserved_end_to_end() {
         .unwrap();
     assert_eq!(objects, 2);
 }
+
+/// Byte-stability guard for the shared index builder (PR06A).
+///
+/// The BNPG tree writer used by every seal table moved into
+/// `wire::index_build` so the inventory and RetainBatch indexes (PR06A) can
+/// reuse it. These two digests were captured from the pre-refactor
+/// implementation (commit 7291196, via a throwaway probe in a detached
+/// worktree) and pin the seal object bytes: the mixed Loose/Packed fixture
+/// exercises all four tables, and the second build forces multi-level
+/// internal pages with a 64-byte leaf target.
+#[test]
+fn seal_bytes_are_unchanged_by_the_shared_index_builder() {
+    use sha2::Digest;
+
+    let mixed = mixed_fixture();
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(&mixed.seal_bytes)),
+        "8c361922a9b647f57b282364456c664b3631d9940e1a0eac9335ce909addb8b0"
+    );
+
+    let block = vec![0x5Au8; 64];
+    let (pack_bytes, scrubbed) = build_pack(vec![PackFrame::plain_bytes(&block).unwrap()]);
+    let mut seal = SealBuilder::new(BLOCK_SIZE).with_leaf_target(64);
+    seal.add_object(
+        0,
+        object_ref(PACK_ID, ObjectKind::DataPack.as_u8(), &pack_bytes, b"k"),
+    );
+    let slots = register_frames(&mut seal, &scrubbed, 0);
+    for i in 0..40u32 {
+        seal.add_packed_block(
+            SLICE,
+            i,
+            &block,
+            vec![span(0, block.len() as u32, slots[0], 0)],
+        )
+        .unwrap();
+    }
+    let bytes = seal.build().unwrap();
+    assert!(
+        matches!(
+            SealSnapshot::open(bytes.clone()).unwrap().table(TableId::Bindings),
+            Some(ChildRef::Local(addr)) if addr.level >= 2
+        ),
+        "the second fixture must reach multi-level internal pages"
+    );
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(&bytes)),
+        "a0723bc338b23c90c44641c68c937ab84228e7ea2e482e774b50609be03ef298"
+    );
+}

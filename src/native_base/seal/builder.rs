@@ -29,10 +29,8 @@ use crate::native_base::wire::container::{
 };
 use crate::native_base::wire::error::WireError;
 use crate::native_base::wire::frame::PayloadFormat;
-use crate::native_base::wire::page::{
-    BnpgKind, IndexPage, InternalEntry, LeafEntry, MAX_PAGE_ENTRIES, MAX_RAW_PAGE, PageBody,
-};
-use crate::native_base::wire::refs::{ChildRef, MAX_INDEX_LEVEL, ObjectRef, PageAddress, PageKind};
+use crate::native_base::wire::index_build::{IndexTreeParams, build_index_tree};
+use crate::native_base::wire::refs::{ChildRef, ObjectRef};
 use crate::native_base::wire::uvarint::Writer;
 
 /// Default target size for one leaf page's encoded bytes. Pages are capped
@@ -413,155 +411,15 @@ impl SealBuilder {
     }
 }
 
-/// Append one page to the body region and return its PageAddress. Pages are
-/// stored uncompressed, 8-byte aligned, digest-authenticated.
-fn place_page(body: &mut Vec<u8>, page: IndexPage) -> Result<PageAddress, WireError> {
-    let raw = page.encode();
-    if raw.len() > MAX_RAW_PAGE {
-        return Err(WireError::LimitExceeded(format!(
-            "page {} bytes exceeds {MAX_RAW_PAGE}",
-            raw.len()
-        )));
-    }
-    if page.entry_count() > MAX_PAGE_ENTRIES {
-        return Err(WireError::LimitExceeded(format!(
-            "page entry count {} exceeds {MAX_PAGE_ENTRIES}",
-            page.entry_count()
-        )));
-    }
-    while !(HEADER_LEN + body.len()).is_multiple_of(8) {
-        body.push(0);
-    }
-    let addr = PageAddress {
-        offset: (HEADER_LEN + body.len()) as u64,
-        stored_len: raw.len() as u32,
-        raw_len: raw.len() as u32,
-        codec: Codec::None,
-        page_kind: PageKind::GenericKeyValue,
-        level: page.level,
-        entry_count: page.entry_count(),
-        stored_digest: Sha256::digest(&raw).into(),
-    };
-    body.extend_from_slice(&raw);
-    Ok(addr)
-}
-
-fn flush_leaf(
-    entries: &mut Vec<LeafEntry>,
-    children: &mut Vec<(Vec<u8>, Vec<u8>, ChildRef)>,
-    body: &mut Vec<u8>,
-) -> Result<(), WireError> {
-    let first = entries.first().unwrap().key.clone();
-    let last = entries.last().unwrap().key.clone();
-    let page = IndexPage {
-        kind: BnpgKind::GenericKeyValue,
-        level: 0,
-        body: PageBody::Leaf(std::mem::take(entries)),
-    };
-    let addr = place_page(body, page)?;
-    children.push((first, last, ChildRef::Local(addr)));
-    Ok(())
-}
-
-fn flush_internal(
-    entries: &mut Vec<InternalEntry>,
-    first: &mut Option<Vec<u8>>,
-    last: Vec<u8>,
-    level: u8,
-    children: &mut Vec<(Vec<u8>, Vec<u8>, ChildRef)>,
-    body: &mut Vec<u8>,
-) -> Result<(), WireError> {
-    let first = first.take().unwrap();
-    let page = IndexPage {
-        kind: BnpgKind::GenericKeyValue,
-        level,
-        body: PageBody::Internal(std::mem::take(entries)),
-    };
-    let addr = place_page(body, page)?;
-    children.push((first, last, ChildRef::Local(addr)));
-    Ok(())
-}
-
 /// Build a BNPG tree over `entries` (non-empty, key-sorted) and return the
-/// root child. Leaf pages are chunked to `leaf_target` encoded bytes;
-/// internal levels are built bottom-up until a single root remains.
+/// root child. Every page of a seal table is a generic key/value page
+/// advertising `PageKind::GenericKeyValue` (spec 04 §2). The tree shape
+/// itself lives in [`build_index_tree`], shared with the PR06A inventory and
+/// RetainBatch indexes.
 fn build_table_tree(
     entries: &[(Vec<u8>, Vec<u8>)],
     leaf_target: usize,
     body: &mut Vec<u8>,
 ) -> Result<ChildRef, WireError> {
-    let mut children: Vec<(Vec<u8>, Vec<u8>, ChildRef)> = Vec::new();
-    let mut current: Vec<LeafEntry> = Vec::new();
-    let mut current_est = 0usize;
-    for (key, value) in entries {
-        // Upper bound on the encoded record: varint lengths + payload.
-        let est = 10 + key.len() + value.len();
-        if !current.is_empty() && current_est + est > leaf_target {
-            flush_leaf(&mut current, &mut children, body)?;
-            current_est = 0;
-        }
-        current.push(LeafEntry {
-            key: key.clone(),
-            value: value.clone(),
-        });
-        current_est += est;
-    }
-    if !current.is_empty() {
-        flush_leaf(&mut current, &mut children, body)?;
-    }
-
-    let mut level: u8 = 1;
-    while children.len() > 1 {
-        if level > MAX_INDEX_LEVEL {
-            return Err(WireError::LimitExceeded(format!(
-                "index height exceeds {MAX_INDEX_LEVEL}"
-            )));
-        }
-        let mut next: Vec<(Vec<u8>, Vec<u8>, ChildRef)> = Vec::new();
-        let mut current_internal: Vec<InternalEntry> = Vec::new();
-        let mut current_est = 0usize;
-        let mut first_key: Option<Vec<u8>> = None;
-        let mut last_key: Vec<u8> = Vec::new();
-        for (min_key, max_key, child) in std::mem::take(&mut children) {
-            // Upper bound: two length-prefixed keys + child ref (Local = 57).
-            let est = 2 * (10 + min_key.len().max(max_key.len())) + 72;
-            // At least two entries per internal page so each level strictly
-            // reduces the page count (a target smaller than one entry must
-            // not stall the tree at constant width).
-            if current_internal.len() >= 2 && current_est + est > leaf_target {
-                flush_internal(
-                    &mut current_internal,
-                    &mut first_key,
-                    std::mem::take(&mut last_key),
-                    level,
-                    &mut next,
-                    body,
-                )?;
-                current_est = 0;
-            }
-            if first_key.is_none() {
-                first_key = Some(min_key.clone());
-            }
-            last_key = max_key.clone();
-            current_internal.push(InternalEntry {
-                min_key,
-                max_key,
-                child,
-            });
-            current_est += est;
-        }
-        if !current_internal.is_empty() {
-            flush_internal(
-                &mut current_internal,
-                &mut first_key,
-                last_key,
-                level,
-                &mut next,
-                body,
-            )?;
-        }
-        children = next;
-        level += 1;
-    }
-    Ok(children.pop().expect("non-empty tree").2)
+    build_index_tree(entries, &IndexTreeParams::generic(leaf_target), body)
 }

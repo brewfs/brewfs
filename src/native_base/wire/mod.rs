@@ -31,9 +31,12 @@ pub mod container;
 pub mod datapack;
 pub mod error;
 pub mod frame;
+pub mod index_build;
 pub mod page;
 pub mod refs;
 pub mod uvarint;
+
+pub use index_build::{IndexTreeParams, build_index_tree};
 
 pub use error::{WireError, WireResult};
 
