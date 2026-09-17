@@ -744,8 +744,8 @@
     "expected": "其他waiter正常完成",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: planner::FrameSingleflight; cancelled waiter does not cancel shared loader"
   },
   {
     "test_id": "OPT-004",
@@ -766,8 +766,8 @@
     "expected": "拆开GET不违反预算",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: planner::coalesce_ranges deduplicates + enforces max_merge_amplification; gap also bounded"
   },
   {
     "test_id": "OPT-006",
@@ -799,8 +799,8 @@
     "expected": "新旧视图依赖均永久保留，不报告净回收",
     "invariants": "INV-11",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: validate_layout_variant; source+candidate union retained, semantic identity enforced, budget fail-closed"
   },
   {
     "test_id": "OPT-009",
@@ -821,8 +821,8 @@
     "expected": "expected StorageView冲突拒绝",
     "invariants": "INV-08",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: apply requires clean head, zero orphans, no valid writer; any busy state rejected"
   },
   {
     "test_id": "REGRESS-001",
@@ -1118,8 +1118,8 @@
     "expected": "prefix限制下前驱+后继，不误填Hole",
     "invariants": "INV-04 INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: frozen::query_extents prefix-scoped + query_extent_rows lower_bound; 1 inode/chunk boundary never leaks"
   },
   {
     "test_id": "IDX-002",
@@ -1129,8 +1129,8 @@
     "expected": "禁止跨前缀取错记录",
     "invariants": "INV-02 INV-04",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: frozen::query_extents inode+chunk prefix; cross-inode and cross-chunk rows excluded"
   },
   {
     "test_id": "IDX-003",
@@ -1349,8 +1349,8 @@
     "expected": "無inode KV查询/保留RPC，授权与完整性仍检查",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: FixedRevisionReader zero KV RPC; manifest + all pages digest-authenticated; no mutable client held"
   },
   {
     "test_id": "RET-013",
@@ -1822,8 +1822,8 @@
     "expected": "拒绝；不得套用旧GC状态",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: header::admission_rejects_control_wire; native_control_version=1 rejected as unsupported"
   },
   {
     "test_id": "CTRL-002",
@@ -1833,8 +1833,8 @@
     "expected": "受限解码器及Rust控制codec明确拒绝",
     "invariants": "INV-12 INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: wire container + BNCT tests; CRC mismatch, unknown magic, reserved field, wrong length all fail-closed"
   },
   {
     "test_id": "CTRL-003",

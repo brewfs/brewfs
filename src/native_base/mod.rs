@@ -36,8 +36,10 @@
 //! (spec 08).
 
 pub mod counterexamples;
+pub mod frozen;
 pub mod ingest;
 pub mod lifecycle;
+pub mod runtime;
 pub mod seal;
 pub mod wire;
 pub mod write;

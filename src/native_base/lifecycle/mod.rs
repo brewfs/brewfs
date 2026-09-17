@@ -14,6 +14,7 @@ pub mod options;
 pub mod publish;
 pub mod retention;
 pub mod seal;
+pub mod variant;
 
 #[cfg(test)]
 mod tests;

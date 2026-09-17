@@ -51,6 +51,8 @@ pub struct HeadGuard {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateVolumeRoot {
+    pub volume_format: String,
+    pub schema_version: u32,
     pub volume_id: Uuid,
     pub workspace_id: WorkspaceId,
     pub root_layer_id: LayerId,

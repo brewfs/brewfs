@@ -22,6 +22,8 @@ fn id(value: u128) -> Uuid {
 
 fn create_request() -> CreateVolumeRoot {
     CreateVolumeRoot {
+        volume_format: "workspace-v1".into(),
+        schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
         volume_id: id(1),
         workspace_id: WorkspaceId::from_uuid(id(2)),
         root_layer_id: LayerId::from_uuid(id(3)),

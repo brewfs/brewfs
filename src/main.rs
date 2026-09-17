@@ -9,6 +9,8 @@ mod fuse;
 #[cfg(any(feature = "gateway-s3", feature = "gateway-webdav"))]
 mod gateway;
 mod meta;
+#[cfg(feature = "native-packed-base")]
+mod native_base;
 mod posix;
 mod utils;
 #[allow(dead_code)]
@@ -63,6 +65,26 @@ use crate::meta::config::{
 };
 use crate::meta::layer::MetaLayer;
 use crate::meta::stores::{DatabaseMetaStore, EtcdMetaStore, RedisMetaStore, TiKvMetaStore};
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::runtime::{
+    BackendObjectRepository, NativeDataRuntime, NativeRuntimeCapabilities, NativeVolumeHeader,
+    WorkspaceBaseDataSource, initialize_volume, load_volume_header,
+};
+#[cfg(feature = "native-packed-base")]
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::keys::Keys;
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::overlay::{OverlayParams, WriteOverlay};
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::receipts::ObjectSink;
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::records::HeadState;
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::redis::RedisControlStore;
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::store::ControlStore;
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::write::tikv::TiKvControlStore;
 use crate::vfs::fs::VFS;
 #[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay::catalog::{CreateVolumeRoot, WorkspaceStore};
@@ -91,6 +113,8 @@ use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
 use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
 #[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay::stores::tikv::TiKvWorkspaceBackend;
+#[cfg(feature = "native-packed-base")]
+use sha2::{Digest, Sha256};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -386,11 +410,15 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
         DataBackendKind::LocalFs => {
             let client = create_localfs_client(&args)?;
             tracing::info!("mount startup localfs client ready");
+            #[cfg(feature = "native-packed-base")]
+            if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
+                return mount_native_with_client(client, layout, &args).await;
+            }
             let store = create_object_store(
                 client,
                 layout,
                 &args.cache,
-                args.volume_format == VolumeFormat::WorkspaceV1,
+                args.volume_format != VolumeFormat::FlatV1,
             )
             .await?;
             dispatch_mount(layout, store, &args).await
@@ -398,11 +426,15 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
         DataBackendKind::S3 => {
             let client = create_s3_client(&args).await?;
             tracing::info!("mount startup s3 client ready");
+            #[cfg(feature = "native-packed-base")]
+            if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
+                return mount_native_with_client(client, layout, &args).await;
+            }
             let store = create_object_store(
                 client,
                 layout,
                 &args.cache,
-                args.volume_format == VolumeFormat::WorkspaceV1,
+                args.volume_format != VolumeFormat::FlatV1,
             )
             .await?;
             dispatch_mount(layout, store, &args).await
@@ -800,6 +832,12 @@ fn validate_volume_format_support(format: VolumeFormat) -> anyhow::Result<()> {
         VolumeFormat::WorkspaceV1 => {
             Err(anyhow::anyhow!("feature not compiled: workspace-overlay"))
         }
+        #[cfg(feature = "native-packed-base")]
+        VolumeFormat::WorkspaceNativeV2 => Ok(()),
+        #[cfg(not(feature = "native-packed-base"))]
+        VolumeFormat::WorkspaceNativeV2 => {
+            Err(anyhow::anyhow!("feature not compiled: native-packed-base"))
+        }
     }
 }
 
@@ -819,7 +857,221 @@ where
         VolumeFormat::WorkspaceV1 => {
             anyhow::bail!("feature not compiled: workspace-overlay")
         }
+        #[cfg(feature = "native-packed-base")]
+        VolumeFormat::WorkspaceNativeV2 => {
+            anyhow::bail!("native mount must be dispatched with its object client")
+        }
+        #[cfg(not(feature = "native-packed-base"))]
+        VolumeFormat::WorkspaceNativeV2 => {
+            anyhow::bail!("feature not compiled: native-packed-base")
+        }
     }
+}
+
+#[cfg(feature = "native-packed-base")]
+async fn mount_native_with_client<B>(
+    client: ObjectClient<B>,
+    layout: ChunkLayout,
+    args: &MountConfig,
+) -> anyhow::Result<()>
+where
+    B: ObjectBackend + Clone + Send + Sync + 'static,
+{
+    let store = create_object_store(client.clone(), layout, &args.cache, true).await?;
+    let sink: Arc<dyn ObjectSink> = Arc::new(BackendObjectRepository::new(client));
+    match args.meta_backend {
+        MetaBackendKind::Redis => {
+            let control: Arc<dyn ControlStore> = Arc::new(
+                RedisControlStore::connect(&args.meta_url)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            );
+            let backend =
+                RedisWorkspaceBackend::connect(&args.meta_url, &args.workspace_namespace).await?;
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            mount_native_with_catalog(layout, store, sink, args, control, catalog).await
+        }
+        MetaBackendKind::TiKv => {
+            let control: Arc<dyn ControlStore> = Arc::new(
+                TiKvControlStore::connect(&args.meta_tikv_pd_endpoints)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            );
+            let backend = TiKvWorkspaceBackend::connect(
+                args.meta_tikv_pd_endpoints.clone(),
+                &args.workspace_namespace,
+            )
+            .await?;
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            mount_native_with_catalog(layout, store, sink, args, control, catalog).await
+        }
+        MetaBackendKind::Sqlx | MetaBackendKind::Etcd => {
+            anyhow::bail!(
+                "workspace-native-v2 supports only Redis or TiKV control/catalog backends"
+            )
+        }
+    }
+}
+
+#[cfg(feature = "native-packed-base")]
+async fn mount_native_with_catalog<S, W>(
+    layout: ChunkLayout,
+    store: S,
+    sink: Arc<dyn ObjectSink>,
+    args: &MountConfig,
+    control: Arc<dyn ControlStore>,
+    workspace_store: Arc<W>,
+) -> anyhow::Result<()>
+where
+    S: BlockStore + Send + Sync + 'static,
+    W: WorkspaceStore + 'static,
+{
+    let workspace_id = args
+        .workspace
+        .map(WorkspaceId::from_uuid)
+        .ok_or_else(|| anyhow::anyhow!("--workspace is required for workspace-native-v2"))?;
+    let workspace_header = workspace_store
+        .load_volume_header()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("corrupt workspace metadata: volume marker is missing"))?;
+    if workspace_header.volume_format != "workspace-v1"
+        || workspace_header.schema_version != WORKSPACE_SCHEMA_VERSION
+    {
+        anyhow::bail!(
+            "native P1 requires a workspace-v1 schema-1 metadata base; found {} schema {}",
+            workspace_header.volume_format,
+            workspace_header.schema_version
+        );
+    }
+
+    let native_header = load_volume_header(
+        control.as_ref(),
+        &args.workspace_namespace,
+        NativeRuntimeCapabilities::compiled(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!(error))?;
+    let volume_id = *workspace_header.volume_id.as_bytes();
+    if native_header.volume_id != volume_id {
+        anyhow::bail!("native volume header volume_id does not match workspace metadata volume_id");
+    }
+    let expected_namespace_id = native_namespace_id(&args.workspace_namespace, &volume_id);
+    if native_header.storage_namespace_id != expected_namespace_id {
+        anyhow::bail!(
+            "native volume header storage namespace does not match the configured workspace namespace"
+        );
+    }
+
+    if !args.workspace_operator_managed {
+        WorkspaceLifecycle::new(workspace_store.clone())
+            .recover_incomplete_seals()
+            .await?;
+    }
+    let generation = new_workspace_holder_generation();
+    let session = WorkspaceMountSession::acquire(
+        workspace_store.clone(),
+        workspace_id,
+        generation,
+        DEFAULT_LEASE_TTL,
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
+    .await?;
+
+    let keys = Keys::new(&volume_id);
+    let workspace_bytes = *workspace_id.as_bytes();
+    let domain_id = match control.get(&keys.head(&workspace_bytes)).await? {
+        Some(bytes) => HeadState::decode(&bytes)?.write_domain_id,
+        None => *uuid::Uuid::now_v7().as_bytes(),
+    };
+    let params = OverlayParams {
+        volume_id,
+        workspace_id: workspace_bytes,
+        domain_id,
+        writer_generation: session.view.holder_generation,
+        block_size: layout.block_size as u64,
+    };
+    let block_store = Arc::new(store);
+    let mut meta_layer = WorkspaceMetaLayer::with_chunk_size(
+        workspace_store,
+        session.view.clone(),
+        layout.chunk_size,
+    );
+    if let Some(max_weight) = args.meta_read_plan_cache_max_weight {
+        meta_layer = meta_layer.with_read_plan_cache_max_weight(max_weight);
+    }
+    let meta_layer = Arc::new(meta_layer);
+    meta_layer.initialize().await?;
+    let overlay = Arc::new(WriteOverlay::new(control.clone(), sink, params));
+    let runtime = Arc::new(NativeDataRuntime::new(
+        overlay.clone(),
+        Arc::new(WorkspaceBaseDataSource::new(
+            block_store.clone(),
+            meta_layer.clone(),
+            layout,
+        )),
+    ));
+    runtime
+        .initialize(*uuid::Uuid::now_v7().as_bytes(), session.view.head_epoch)
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+
+    let writeback_root = crate::workspace_overlay::cache_scope::writeback_root(
+        &args.cache.cache_root,
+        uuid::Uuid::from_bytes(native_header.volume_id),
+        workspace_id,
+        session.view.head_epoch,
+    )?;
+    let vfs_config =
+        crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone())
+            .workspace_writeback_root(writeback_root)
+            .workspace_writer_epoch(session.view.holder_generation);
+    let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer)?;
+    fs.attach_native_runtime(runtime)
+        .map_err(anyhow::Error::from)?;
+    let concurrency = FuseConcurrencyConfig {
+        worker_count: args.fuse_workers,
+        max_background: args.fuse_max_background,
+    };
+    let mount_result = async {
+        let handle = if args.privileged {
+            mount_vfs_privileged(fs, &args.mount_point, concurrency).await?
+        } else {
+            mount_vfs_unprivileged(fs, &args.mount_point, concurrency).await?
+        };
+        println!(
+            "mounted native workspace {} at {}",
+            workspace_id,
+            args.mount_point.display()
+        );
+        let mut handle = handle;
+        tokio::select! {
+            signal = shutdown_signal() => {
+                signal?;
+                println!("unmounting...");
+                handle.unmount().await?;
+            }
+            result = &mut handle => {
+                result?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let release_result = session.release().await;
+    mount_result?;
+    release_result?;
+    Ok(())
+}
+
+#[cfg(feature = "native-packed-base")]
+fn native_namespace_id(namespace: &str, volume_id: &[u8; 16]) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"brewfs/native-storage-namespace/v2");
+    hasher.update(namespace.as_bytes());
+    hasher.update(volume_id);
+    hasher.finalize()[..16]
+        .try_into()
+        .expect("sha256 prefix length")
 }
 
 async fn create_object_store<B>(
@@ -1371,6 +1623,12 @@ async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
     } = args;
     match meta_backend {
         WorkspaceMetaBackendKind::Sqlx => {
+            #[cfg(feature = "native-packed-base")]
+            if matches!(&command, WorkspaceCommand::InitNative) {
+                anyhow::bail!(
+                    "workspace-native-v2 initialization requires Redis or TiKV control backend"
+                )
+            }
             if !meta_url.starts_with("sqlite:") {
                 anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
             }
@@ -1382,12 +1640,40 @@ async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
         }
         WorkspaceMetaBackendKind::Redis => {
             let backend = RedisWorkspaceBackend::connect(&meta_url, &workspace_namespace).await?;
-            workspace_cmd_with_catalog(command, Arc::new(KvWorkspaceStore::new(backend))).await
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            #[cfg(feature = "native-packed-base")]
+            if matches!(&command, WorkspaceCommand::InitNative) {
+                let control: Arc<dyn ControlStore> = Arc::new(
+                    RedisControlStore::connect(&meta_url)
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error))?,
+                );
+                return init_native_volume_with_catalog(catalog, control, &workspace_namespace)
+                    .await;
+            }
+            workspace_cmd_with_catalog(command, catalog).await
         }
         WorkspaceMetaBackendKind::TiKv => {
             let backend =
-                TiKvWorkspaceBackend::connect(meta_tikv_pd_endpoints, &workspace_namespace).await?;
-            workspace_cmd_with_catalog(command, Arc::new(KvWorkspaceStore::new(backend))).await
+                TiKvWorkspaceBackend::connect(meta_tikv_pd_endpoints.clone(), &workspace_namespace)
+                    .await?;
+            let catalog = Arc::new(KvWorkspaceStore::new(backend));
+            #[cfg(feature = "native-packed-base")]
+            if matches!(&command, WorkspaceCommand::InitNative) {
+                let control: Arc<dyn ControlStore> = Arc::new(
+                    TiKvControlStore::connect(
+                        // The command consumes the endpoint vector above; the
+                        // catalog backend has its own client, so read the
+                        // canonical endpoint list from the CLI args instead.
+                        &meta_tikv_pd_endpoints,
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                );
+                return init_native_volume_with_catalog(catalog, control, &workspace_namespace)
+                    .await;
+            }
+            workspace_cmd_with_catalog(command, catalog).await
         }
     }
 }
@@ -1408,6 +1694,8 @@ where
             }
             let workspace = store
                 .create_volume_root(CreateVolumeRoot {
+                    volume_format: "workspace-v1".into(),
+                    schema_version: WORKSPACE_SCHEMA_VERSION,
                     volume_id: uuid::Uuid::now_v7(),
                     workspace_id: WorkspaceId::new(),
                     root_layer_id: LayerId::new(),
@@ -1416,6 +1704,10 @@ where
                 })
                 .await?;
             print_json(&workspace)?;
+        }
+        #[cfg(feature = "native-packed-base")]
+        WorkspaceCommand::InitNative => {
+            anyhow::bail!("native initialization must use the backend-aware command path")
         }
         WorkspaceCommand::Create { revision, owner } => {
             validate_workspace_header(&store).await?;
@@ -1520,6 +1812,40 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "native-packed-base")]
+async fn init_native_volume_with_catalog<W>(
+    catalog: Arc<W>,
+    control: Arc<dyn ControlStore>,
+    namespace: &str,
+) -> anyhow::Result<()>
+where
+    W: WorkspaceStore + 'static,
+{
+    let header = catalog
+        .load_volume_header()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("initialize workspace-v1 catalog before native volume"))?;
+    if header.volume_format != "workspace-v1" || header.schema_version != WORKSPACE_SCHEMA_VERSION {
+        anyhow::bail!(
+            "native initialization requires workspace-v1 schema-1 catalog; found {} schema {}",
+            header.volume_format,
+            header.schema_version
+        );
+    }
+    let volume_id = *header.volume_id.as_bytes();
+    let native_header =
+        NativeVolumeHeader::p1(volume_id, native_namespace_id(namespace, &volume_id));
+    initialize_volume(
+        control.as_ref(),
+        namespace,
+        &native_header,
+        NativeRuntimeCapabilities::compiled(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!(error))?;
+    print_json(&native_header)
 }
 
 #[cfg(feature = "workspace-overlay")]
@@ -1827,6 +2153,23 @@ mod volume_format_tests {
     #[test]
     fn flat_format_is_always_supported() {
         validate_volume_format_support(VolumeFormat::FlatV1).unwrap();
+    }
+
+    #[cfg(feature = "native-packed-base")]
+    #[test]
+    fn native_format_requires_its_explicit_feature() {
+        validate_volume_format_support(VolumeFormat::WorkspaceNativeV2).unwrap();
+    }
+
+    #[cfg(not(feature = "native-packed-base"))]
+    #[test]
+    fn binary_without_native_feature_fails_closed_for_native_format() {
+        assert_eq!(
+            validate_volume_format_support(VolumeFormat::WorkspaceNativeV2)
+                .unwrap_err()
+                .to_string(),
+            "feature not compiled: native-packed-base"
+        );
     }
 
     #[cfg(feature = "workspace-overlay")]

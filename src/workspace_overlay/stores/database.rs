@@ -454,6 +454,14 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         &self,
         request: CreateVolumeRoot,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
+        if request.volume_format != VOLUME_FORMAT
+            || request.schema_version != WORKSPACE_SCHEMA_VERSION
+        {
+            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
+                "{}/{}",
+                request.volume_format, request.schema_version
+            )));
+        }
         if request.root_layer_id == request.writable_layer_id {
             return Err(WorkspaceError::CorruptMetadata(
                 "root and writable layer IDs must differ".into(),

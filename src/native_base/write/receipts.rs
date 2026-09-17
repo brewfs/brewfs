@@ -14,6 +14,7 @@
 //! references it; `ObjectSink` is the upload seam the PR05/PR07 backends
 //! plug into. Tests use an in-memory sink.
 
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::native_base::wire::container::{
@@ -27,17 +28,62 @@ use crate::native_base::wire::uvarint::{Reader, Writer};
 /// Where uploaded control/metadata objects land before a commit references
 /// them. The PR05 ingest path and the PR07 S3 adapter implement this; the
 /// commit itself only records the [`RootRef`], it never uploads.
-pub trait ObjectSink {
-    fn put(&self, object_id: &ObjectId, bytes: &[u8]);
+#[async_trait]
+pub trait ObjectSink: Send + Sync {
+    async fn put(
+        &self,
+        object: &crate::native_base::wire::refs::ObjectRef,
+        bytes: &[u8],
+    ) -> anyhow::Result<()>;
+
+    /// Fetch the complete immutable object and verify its declared identity.
+    async fn get(
+        &self,
+        object: &crate::native_base::wire::refs::ObjectRef,
+    ) -> anyhow::Result<Vec<u8>>;
 }
 
 /// In-memory [`ObjectSink`] for tests and the reference pipeline.
 #[derive(Default)]
 pub struct MemorySink(pub std::sync::Mutex<std::collections::HashMap<ObjectId, Vec<u8>>>);
 
+#[async_trait]
 impl ObjectSink for MemorySink {
-    fn put(&self, object_id: &ObjectId, bytes: &[u8]) {
-        self.0.lock().unwrap().insert(*object_id, bytes.to_vec());
+    async fn put(
+        &self,
+        object: &crate::native_base::wire::refs::ObjectRef,
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let mut objects = self.0.lock().unwrap();
+        match objects.get(&object.object_id) {
+            Some(existing) if existing != bytes => {
+                anyhow::bail!("object identity already exists with different bytes")
+            }
+            Some(_) => {}
+            None => {
+                objects.insert(object.object_id, bytes.to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        object: &crate::native_base::wire::refs::ObjectRef,
+    ) -> anyhow::Result<Vec<u8>> {
+        let bytes = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&object.object_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("object is missing"))?;
+        if bytes.len() as u64 != object.object_len
+            || <[u8; 32]>::from(Sha256::digest(&bytes)) != object.full_hash
+        {
+            anyhow::bail!("object bytes do not match the declared identity")
+        }
+        Ok(bytes)
     }
 }
 

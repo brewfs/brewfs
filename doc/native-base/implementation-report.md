@@ -1,6 +1,6 @@
 # Native Base 实现及实验报告
 
-状态：进行中（PR06A、PR06B 组件交付完成，下一步为 PR07）。本报告按规格包模板维护，逐 PR 追加真实证据；
+状态：进行中（PR01–PR06B 已交付，PR07/08/09/10/12 核心模块完成并通过 focused tests，下一步为 PR11 共享缓存服务骨架与 PR13 文档收尾）。本报告按规格包模板维护，逐 PR 追加真实证据；
 不把参考模型 PASS 抄成产品验收 PASS，无环境项如实 NOT_RUN。
 
 ## 身份与范围
@@ -10,7 +10,7 @@
 - 基准 commit：`8ff73d9c18c0f81e88c183383b00d2ba86bd42ba`（实现开始时 HEAD 与其一致）。
 - 阶段：P1（PR01 基线审计 → PR02 wire codec → PR03 seal reader →
   PR04 写管线与控制面事务 → PR05 ingest 与上传验证/resume → PR06A
-  永久发布、精确保留、seal/fork/recovery → PR06B close/cleanup/旧GC隔离）。
+  永久发布、精确保留、seal/fork/recovery → PR06B close/cleanup/旧GC隔离 → PR07 P1 FUSE 挂载与初始化 → PR08 Frozen Metadata 格式与索引 → PR09 固定 revision 零 KV 读取 → PR10 读取 planner 与预算/singleflight → PR12 lossless 布局变体校验）。
 - 已读：仓库 AGENTS.md；规格包 README、CODEX_TASK、00/01/02/03/04/06/09/10/15/18/20。
 - 关联不变量：本轮全部（INV-01..INV-24），PR03 重点核 INV-03/04/05/13/14
   （固定视图/缺失即错误/索引序/预算取消/不猜编码）；PR04 重点核
@@ -473,6 +473,178 @@ rollback retain-all、版本化/ObjectLock 能力拒绝、两个 cleaner 竞争�
 Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 runtime/FUSE
 接线、quota hard-limit、独立 ControlEvidence 引导对象和 operator 实际删除路由
 属于后续 PR07/运维集成；因此本节不宣称完整 P1 已开放。
+
+
+### PR07 · P1 FUSE 接入、初始化命令与运行时准入
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。实现分布：
+
+- `src/main.rs`：`mount_native_with_client` / `mount_native_with_catalog` /
+  `init_native_volume_with_catalog` 接线；Redis/TiKV 分别创建独立
+  `ControlStore` 与 workspace catalog；拒绝 SQLite/etcd。
+- `src/native_base/runtime/header.rs`：`NativeVolumeHeader` 编码/校验、
+  `initialize_volume`（create-only 事务）、`load_volume_header`（重新校验）。
+- `src/native_base/runtime/io.rs`：`NativeDataRuntime` / `BaseDataSource` /
+  `ZeroBaseDataSource` 写入边界与 fsync 语义骨架。
+- `src/native_base/runtime/workspace.rs`：`WorkspaceBaseDataSource` 桥接
+  workspace-v1 meta layer 与 native baseline reads（feature-gated）。
+- `src/native_base/runtime/migration.rs`：迁移模式与模式 0（拒绝）。
+- `src/native_base/runtime/object.rs`：`BackendObjectRepository` 对象后端。
+- `src/vfs/fs/mod.rs`：`attach_native_runtime` 与 13 处 VFS 操作派发点。
+
+校验点：
+- volume_format / schema_version 失败关闭（不隐式升级旧 workspace-v1）。
+- `workspace-v1` catalog 必须先存在；native header create-only。
+- `volume_id` 与 `storage_namespace_id` 双校验，不匹配即拒绝挂载。
+- Redis / TiKV control + catalog 双后端矩阵：2 类控制面 × 2 类元数据面。
+- 新卷 `workspace init-native` 命令：仅创建 native header，不改动 catalog。
+- remount writer generation 更新与 head 持久域复用。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07-FOCUSED | `bash doc/native-base/logs/pr07-focused.sh` | 0 | PASS（942 passed, 221 ignored, 0 failed；clippy/format/default-feature-check 均通过） | [pr07-focused.log](logs/pr07-focused.log) |
+| PR07-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07-NATIVE-CHECK | `cargo check -p brewfs --features native-packed-base` | 0 | PASS（同上） | 同上 |
+| PR07-DEFAULT-CHECK | `cargo check -p brewfs`（无 native feature） | 0 | PASS（不破坏旧构建） | 同上 |
+| PR07-TEST | `cargo test -p brewfs --features native-packed-base --lib` | 0 | PASS（942 passed, 0 failed） | 同上 |
+| PR07-CLIPPY | `cargo clippy -p brewfs --features native-packed-base --lib` | 0 | PASS（仅 4 条存量 warning，无新增） | 同上 |
+| PR07-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS | — |
+
+聚焦反例覆盖：header roundtrip 与 CRC fail-closed、未知 control_version /
+required_features 拒绝、namespace 路径逃逸拒绝、create-only 幂等性、
+默认 feature 下 native 模块不编译。
+
+仍如实 NOT_RUN：真实 FUSE 挂载测试（READ-001/WRITE-001/004/005/010 等需
+真实后端 + FUSE 设备的集成场景）、Redis/TiKV durability、S3 实际上传。
+这些条目在验收矩阵中保持 `SPECIFIED_NOT_IMPLEMENTED`，待有环境时补测。
+
+### PR08 · Frozen Metadata 格式、索引与目录游标
+
+工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行
+结构 + 编解码 + 约 280 行 reader + 约 260 行测试）。
+
+核心结构：`FrozenInodeRecord`（11 字段 + parent_hint + symlink_target）、
+`SnapshotManifest`（namespace_mode 1/2 + data/inventory/namespace root）、
+`FrozenExtent`、`DirectoryCursor`（bounded cookie spool + replay）。
+
+BNPG 索引用共享 `wire::index_build` 模块构建；reader 使用 `ObjectSource`
+trait 做按需页加载，配合 `sha2` 做 digest 验证。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR08-MANIFEST | manifest roundtrip + mode shape fail-closed | 0 | PASS（单元测试） | frozen::tests |
+| PR08-EXTENT-PREFIX | extent predecessor 查询不跨 inode/chunk | 0 | PASS（单元测试） | frozen::tests |
+| PR08-DIR-COOKIE | directory cursor cookie replay + unknown cookie 拒绝 | 0 | PASS（单元测试） | frozen::tests |
+| PR08-MULTI-PAGE | FixedRevisionReader 多级 BNPG 索引遍历（150 条目 ≥ 2 层） | 0 | PASS（新增集成测试） | frozen::tests |
+| PR08-NEGATIVE | negative lookup 返回 None 且不触发 KV RPC | 0 | PASS（新增集成测试） | frozen::tests |
+| PR08-CORRUPT | 页损坏 fail-closed（digest 不匹配） | 0 | PASS（新增集成测试） | frozen::tests |
+| PR08-FULL-TEST | `cargo test -p brewfs --features native-packed-base --lib native_base::frozen` | 0 | PASS（6 passed, 0 failed） | 见 PR07 focused log |
+
+修复的 bug：`read_page` 中 `ObjectKind::from_magic` 传入整个 header（64B）
+而非 magic（8B），导致所有 FrozenMetadata 对象被判为未知格式。
+
+### PR09 · P2 Frozen + KV head、固定 revision 零 KV 读取
+
+工具链：同上。实现为 `FixedRevisionReader<'a, S>` 结构（同 frozen 模块）。
+
+核心保证：
+- 零 KV RPC：reader 不持有任何 KV client，所有查找来自已认证 manifest 与页。
+- `metadata_rpc_count()` 计数器永久为 0，用于 observability 证明。
+- 命名空间、数据、inventory 三棵树各自独立 root。
+- prefix-scoped extent 查询（predecessor + successor 不跨 inode/chunk）。
+- 页级 digest 认证；子页损坏即失败，不降级。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR09-ZERO-KV | lookup_inode / lookup_data / lookup_inventory 全程 0 KV RPC | 0 | PASS（`metadata_rpc_count() == 0` 断言） | frozen::tests |
+| PR09-FIXED-REV | manifest 验证后 reader 仅引用已包含 root 的对象 | 0 | PASS | frozen::tests |
+| PR09-MODE-1 | namespace_mode=1（KV-layer 模式）打开成功但 frozen lookup 返回 None | 0 | PASS（`namespace_root: None`） | frozen::tests |
+
+注意：PR09 目前只提供只读 P2 路径，不包含增量页重建、seal 扫描成本计算、
+或 cold lookup 性能指标。这些属于 P2 完整交付的后续工作。
+
+### PR10 · 读取 planner、Range 合并与预算
+
+工具链：同上。实现位于 `src/native_base/runtime/planner.rs`（约 370 行）。
+
+核心组件：
+- `ReadUnit` + `CoalescedRange`：identity 精确合并，去重 duplicate，
+  gap / physical size / amplification 三层限制。
+- `MergePolicy`：`max_coalesced_get`、`max_gap_bytes`、`max_merge_amplification`。
+- `ReadBudget` + `BudgetPermit`：demand reserve、prefetch 不得占用、RAII 释放。
+- `FrameSingleflight<K, V>`：后台 loader、waiter cancel 不取消共享 loader、
+  loader 失败不永久缓存。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR10-COALESCE | coalesce 去重 + amplification 限制 | 0 | PASS（单元测试） | planner::tests |
+| PR10-BUDGET | prefetch 不能消耗 demand reserve | 0 | PASS（单元测试） | planner::tests |
+| PR10-SINGLEFLIGHT | cancel waiter 不取消 loader | 0 | PASS（单元测试） | planner::tests |
+
+注意：planner 尚未接入真实 reader 与 VFS 读取路径；当前为独立可测试的
+核心算法模块。接入 PR07 运行时读取路径属于后续整合工作。
+
+### PR12 · 显式 lossless 布局变体
+
+工具链：同上。实现位于 `src/native_base/lifecycle/variant.rs`（约 136 行）。
+
+核心保证：
+- 永远不删除旧正式对象：`permanent_objects = source ∪ candidate`。
+- 不改变 logical revision 或 block bindings（semantic identity 校验）。
+- `max_extra_bytes` 预算超支即拒绝。
+- apply 需要 clean head + 0 open orphan + 无有效 writer + view 匹配。
+- `added_objects` 精确列出新增对象集合，便于保留追踪。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR12-UNION | 新旧对象并集永久保留 | 0 | PASS（单元测试） | variant::tests |
+| PR12-SEMANTIC | logical/binding 变化拒绝 | 0 | PASS（单元测试） | variant::tests |
+| PR12-BUDGET | 预算超支拒绝 | 0 | PASS（单元测试） | variant::tests |
+| PR12-BUSY | busy apply 拒绝（open orphan） | 0 | PASS（单元测试） | variant::tests |
+
+注意：variant 尚未接入真实 publish/retain 事务路径；当前为纯函数验证模块。
+与 PublishedRevision 的集成在完整 P2/P3 阶段推进。
+
+
+### PR13 · 性能实验、能力发布与运维文档
+
+当前状态：代码实现部分（PR07–PR12）完成 focused unit test 验证；性能
+实验与完整集成门尚未运行。本节说明各 profile 的验证状态与计划。
+
+**性能 A–F 对照（当前状态）**：
+
+| Profile | 描述 | 状态 | 说明 |
+|---|---|---|---|
+| A | P1 retained-trial baseline | NOT_RUN | 需 docker compose + Redis + FUSE + fio |
+| B | P1 + zstd compression | NOT_RUN | 待 A 通过后启用 |
+| C | P2 frozen-read baseline | NOT_RUN | 需 P1 + frozen snapshot 生成工具 |
+| D | P3 shared-cache warm | NOT_RUN | 需 PR11 Unix socket cache service |
+| E | P3 repacked layout | NOT_RUN | 需 PR12 variant apply + repack 工具 |
+| F | 对照 JuiceFS writeback | NOT_RUN | 需 compose-xfstests runner + JuiceFS 镜像 |
+
+**能力发布矩阵**：
+
+| 能力 | P1 | P2 | P3 |
+|---|---|---|---|
+| Packed/Loose mixed 与范围 COW | 代码已写，集成未验 | — | — |
+| receipt、ordered commit、seal/fork/recovery | 已验证（PR06A） | — | — |
+| PublishedRevision 永久保留 | 已验证（PR06A） | — | — |
+| 终结私有域清理 | 已验证（PR06B，内存后端） | — | — |
+| Frozen 只读按需元数据 | 代码已写，单元验证 | 集成未验 | — |
+| shared-frame、跨请求合并、host cache | planner 算法已写 | 未接入 reader | 服务未实现 |
+| 历史 sealed 自动删除/TTL | 不支持（设计如此） | 不支持 | 不支持 |
+| 自动 repack 释放 published 空间 | 不支持（variant 纯加法） | 不支持 | 不支持 |
+
+**回滚与运维**：
+
+- 回滚：native header 是 create-only 的 KV 记录；回滚到
+  `workspace-v1` 只需不加载 native feature，旧路径完全不受影响。
+- 数据安全：所有 native 对象写入前计算 full_hash，读取时校验；
+  控制面事务原子（Redis Lua / TiKV txn）。
+- 容量：native 对象仅追加，不删除已发布基线；私有域在 close 后清理。
+- 监控：`brewfs_writeback_*`、`brewfs_native_*` 计数器（逐步接入）。
+- 已知限制：见 `doc/native-base/README.md` 与 `acceptance-matrix.json`
+  中所有 NOT_RUN / SPECIFIED_NOT_IMPLEMENTED 条目。
 
 ## 后端、故障与准入
 

@@ -40,6 +40,8 @@ pub enum WriteError {
     /// Malformed control-plane record.
     #[error("record decode: {0}")]
     Record(String),
+    #[error("object backend: {0}")]
+    Object(String),
     #[error("store: {0}")]
     Store(#[from] super::store::StoreError),
     #[error("wire: {0}")]

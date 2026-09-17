@@ -393,6 +393,17 @@ where
         &self,
         request: CreateVolumeRoot,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
+        let supported_header = (request.volume_format == VOLUME_FORMAT
+            && request.schema_version == WORKSPACE_SCHEMA_VERSION)
+            || (cfg!(feature = "native-packed-base")
+                && request.volume_format == "workspace-native-v2"
+                && request.schema_version == 2);
+        if !supported_header {
+            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
+                "{}/{}",
+                request.volume_format, request.schema_version
+            )));
+        }
         if request.root_layer_id == request.writable_layer_id {
             return Err(WorkspaceError::CorruptMetadata(
                 "root and writable layer IDs must differ".into(),
@@ -480,8 +491,8 @@ where
             state.allocators.insert("slice".into(), 1);
             state.allocators.insert("sealed_version".into(), 2);
             state.header = Some(VolumeHeader {
-                volume_format: VOLUME_FORMAT.into(),
-                schema_version: WORKSPACE_SCHEMA_VERSION,
+                volume_format: request.volume_format.clone(),
+                schema_version: request.schema_version,
                 volume_id: request.volume_id,
                 created_at_ns: now,
             });
@@ -2480,6 +2491,8 @@ mod tests {
 
     fn create_request(offset: u128) -> CreateVolumeRoot {
         CreateVolumeRoot {
+            volume_format: "workspace-v1".into(),
+            schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: id(offset + 1),
             workspace_id: WorkspaceId::from_uuid(id(offset + 2)),
             root_layer_id: LayerId::from_uuid(id(offset + 3)),
@@ -2814,6 +2827,8 @@ mod tests {
     {
         store_a.initialize_workspace_schema().await.unwrap();
         let request = CreateVolumeRoot {
+            volume_format: "workspace-v1".into(),
+            schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::now_v7(),
             workspace_id: WorkspaceId::new(),
             root_layer_id: LayerId::new(),

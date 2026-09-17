@@ -208,7 +208,26 @@ pub async fn ensure_workspace_head(
                     found.head.head_id
                 )));
             }
-            Ok(found)
+            if found.writer_generation == head.writer_generation {
+                return Ok(found);
+            }
+            let next = HeadState {
+                writer_generation: head.writer_generation,
+                ..found
+            };
+            store
+                .run(
+                    Txn::new()
+                        .check_bytes(head_key.clone(), existing)
+                        .put(head_key, next.encode()),
+                )
+                .await
+                .map_err(|_| {
+                    WriteError::Conflict(
+                        "workspace head generation raced with another initializer".into(),
+                    )
+                })?;
+            Ok(next)
         }
         None => {
             store
@@ -468,7 +487,10 @@ impl WriteOverlay {
             let registration =
                 mark_dispatched(&*self.store, &self.keys, &self.params.domain_id, &object_id)
                     .await?;
-            self.sink.put(&object_id, &framed);
+            self.sink
+                .put(&object_ref, &framed)
+                .await
+                .map_err(|error| WriteError::Object(error.to_string()))?;
             prepared.push(PreparedBlock {
                 block_index: block_index as u64,
                 binding: BlockBinding::of_decoded(content),
@@ -547,7 +569,10 @@ impl WriteOverlay {
             &receipts_object_id,
         )
         .await?;
-        self.sink.put(&receipts_object_id, &built.bytes);
+        self.sink
+            .put(&built.root.object, &built.bytes)
+            .await
+            .map_err(|error| WriteError::Object(error.to_string()))?;
 
         let mut state = self.state.lock().await;
         let inode_state = state.inodes.get_mut(&ticket.inode).unwrap();
@@ -824,6 +849,22 @@ impl WriteOverlay {
             .await?
             .ok_or_else(|| WriteError::Record("workspace head not found".into()))?;
         Ok(HeadState::decode(&bytes)?)
+    }
+
+    pub(crate) fn control_store(&self) -> &dyn ControlStore {
+        &*self.store
+    }
+
+    pub(crate) fn object_sink(&self) -> &dyn ObjectSink {
+        &*self.sink
+    }
+
+    pub(crate) fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    pub(crate) fn params(&self) -> &OverlayParams {
+        &self.params
     }
 }
 

@@ -15,7 +15,7 @@ use asyncfuse::notify::Notify as FuseNotify;
 use dashmap::{DashMap, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 
@@ -113,6 +113,8 @@ fn vfs_timing_enabled_from_env() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "native-packed-base")]
+use crate::native_base::runtime::NativeDataRuntime;
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::CacheConfig;
@@ -756,6 +758,8 @@ where
     pub(crate) backend: Arc<Backend<S, M>>,
     pub(crate) meta_layer: Arc<M>,
     root: i64,
+    #[cfg(feature = "native-packed-base")]
+    native_runtime: OnceLock<Arc<NativeDataRuntime>>,
 }
 
 impl<S, M> VfsCore<S, M>
@@ -774,6 +778,8 @@ where
             backend,
             meta_layer,
             root,
+            #[cfg(feature = "native-packed-base")]
+            native_runtime: OnceLock::new(),
         }
     }
 }
@@ -1288,6 +1294,22 @@ where
 
     pub(crate) fn meta_layer_arc(&self) -> Arc<M> {
         Arc::clone(&self.core.meta_layer)
+    }
+
+    #[cfg(feature = "native-packed-base")]
+    pub(crate) fn attach_native_runtime(
+        &self,
+        runtime: Arc<NativeDataRuntime>,
+    ) -> Result<(), VfsError> {
+        self.core
+            .native_runtime
+            .set(runtime)
+            .map_err(|_| VfsError::Anyhow(anyhow::anyhow!("native runtime already attached")))
+    }
+
+    #[cfg(feature = "native-packed-base")]
+    fn native_runtime(&self) -> Option<Arc<NativeDataRuntime>> {
+        self.core.native_runtime.get().cloned()
     }
 
     fn file_handle(&self, fh: u64) -> Option<Arc<FileHandle<S, M>>> {
@@ -2801,6 +2823,39 @@ where
     /// Truncate/extend file size by inode (metadata only; holes are read as zeros).
     /// Shrinking does not eagerly reclaim block data.
     pub async fn truncate_inode(&self, ino: i64, size: u64) -> Result<(), VfsError> {
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let attr = self.meta_stat_required(ino, PathHint::none()).await?;
+            if attr.kind != FileType::File {
+                return Err(if attr.kind == FileType::Dir {
+                    VfsError::IsADirectory {
+                        path: PathHint::none(),
+                    }
+                } else {
+                    VfsError::InvalidInput
+                });
+            }
+            runtime
+                .truncate(ino as u64, size)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            self.meta_truncate(ino, size, self.core.layout.chunk_size)
+                .await?;
+            self.state.reader.invalidate_all(ino as u64).await;
+            let inode = self
+                .lock_inode(ino)
+                .or_insert_with(|| Inode::new(ino, size));
+            inode.set_size(size);
+            inode.invalidate_allocated_blocks();
+            inode.bump_data_epoch();
+            if let Some(mut attr) = self.state.handles.attr_for_inode(ino) {
+                attr.size = size;
+                self.state.handles.update_attr_for_inode(ino, &attr);
+            }
+            self.notify_kernel_invalidate_inode_all(ino);
+            return Ok(());
+        }
+
         // Flush dirty data BEFORE acquiring mutation_lock so that we do not hold the
         // lock across a potentially long upload wait (up to FLUSH_DEADLINE = 300 s).
         // Holding the lock during flush would cause all concurrent FUSE WRITEs for
@@ -2895,6 +2950,21 @@ where
             return Ok(());
         }
 
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
+            let current_size = self.inode_size_cached(ino).unwrap_or(attr.size);
+            if end > current_size {
+                runtime
+                    .truncate(ino as u64, end)
+                    .await
+                    .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+                self.meta_extend_file_size(ino, end).await?;
+                self.extend_local_file_size(ino, end);
+            }
+            return Ok(());
+        }
+
         let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
         let current_size = self.inode_size_cached(ino).unwrap_or(attr.size);
 
@@ -2958,6 +3028,29 @@ where
             return Err(VfsError::InvalidInput);
         }
         if length == 0 {
+            return Ok(());
+        }
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            runtime
+                .discard(ino as u64, offset, length, keep_size)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            if !keep_size {
+                let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
+                self.meta_extend_file_size(ino, end).await?;
+                self.extend_local_file_size(ino, end);
+            }
+            let _ = self
+                .state
+                .reader
+                .invalidate(
+                    ino as u64,
+                    offset,
+                    usize::try_from(length).map_err(|_| VfsError::FileTooLarge)?,
+                )
+                .await;
             return Ok(());
         }
 
@@ -3029,6 +3122,23 @@ where
             return Err(VfsError::InvalidInput);
         }
         if length == 0 {
+            return Ok(());
+        }
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let end = offset.checked_add(length).ok_or(VfsError::FileTooLarge)?;
+            let current_size = self.inode_size_cached(ino).unwrap_or(attr.size);
+            if end > current_size {
+                self.ensure_fallocate_space_available(current_size, end)
+                    .await?;
+                runtime
+                    .truncate(ino as u64, end)
+                    .await
+                    .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+                self.meta_extend_file_size(ino, end).await?;
+                self.extend_local_file_size(ino, end);
+            }
             return Ok(());
         }
 
@@ -3388,6 +3498,16 @@ where
             });
         }
 
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let data = runtime
+                .read(handle.ino as u64, offset, len)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            handle.update_offset(offset + data.len() as u64);
+            return Ok(data);
+        }
+
         let file_size = self
             .inode_size_cached(handle.ino)
             .unwrap_or_else(|| handle.attr().size);
@@ -3496,6 +3616,42 @@ where
             return Err(VfsError::PermissionDenied {
                 path: PathHint::none(),
             });
+        }
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let write_offset = if handle.flags.append {
+                runtime
+                    .size(handle.ino as u64)
+                    .await
+                    .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?
+            } else {
+                offset
+            };
+            let write_end = write_offset
+                .checked_add(data.len() as u64)
+                .ok_or(VfsError::FileTooLarge)?;
+            if write_end >= i64::MAX as u64 {
+                return Err(VfsError::FileTooLarge);
+            }
+            let receipt = runtime
+                .write(handle.ino as u64, write_offset, data)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            let written = receipt.accepted_len;
+            handle.update_offset(write_end);
+            handle.extend_size(write_end);
+            if write_end > handle.attr().size {
+                self.meta_extend_file_size(handle.ino, write_end).await?;
+                self.extend_local_file_size(handle.ino, write_end);
+            }
+            handle.mark_write_dirty_extending_size();
+            let _ = self
+                .state
+                .reader
+                .invalidate(handle.ino as u64, write_offset, written)
+                .await;
+            return Ok(written);
         }
 
         tracing::trace!(fh, ino = handle.ino, offset, len = data.len(), "vfs.write");
@@ -3619,6 +3775,37 @@ where
             return Ok(0);
         }
 
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let attr = self.meta_stat_required(ino, PathHint::none()).await?;
+            if attr.kind == FileType::Dir {
+                return Err(VfsError::IsADirectory {
+                    path: PathHint::none(),
+                });
+            }
+            if attr.kind != FileType::File {
+                return Err(VfsError::InvalidInput);
+            }
+            let receipt = runtime
+                .write(ino as u64, offset, data)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            let written = receipt.accepted_len;
+            let new_end = offset
+                .checked_add(written as u64)
+                .ok_or(VfsError::FileTooLarge)?;
+            if new_end > attr.size {
+                self.meta_extend_file_size(ino, new_end).await?;
+                self.extend_local_file_size(ino, new_end);
+            }
+            let _ = self
+                .state
+                .reader
+                .invalidate(ino as u64, offset, written)
+                .await;
+            return Ok(written);
+        }
+
         let mutation_lock = self.state.append_lock(ino);
         let _mutation_guard = mutation_lock.lock_owned().await;
 
@@ -3682,6 +3869,29 @@ where
     ) -> Result<usize, VfsError> {
         if data.is_empty() {
             return Ok(0);
+        }
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let receipt = runtime
+                .write(ino as u64, offset, data)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            let written = receipt.accepted_len;
+            let new_end = offset
+                .checked_add(written as u64)
+                .ok_or(VfsError::FileTooLarge)?;
+            let attr = self.meta_stat_required(ino, PathHint::none()).await?;
+            if new_end > attr.size {
+                self.meta_extend_file_size(ino, new_end).await?;
+                self.extend_local_file_size(ino, new_end);
+            }
+            let _ = self
+                .state
+                .reader
+                .invalidate(ino as u64, offset, written)
+                .await;
+            return Ok(written);
         }
 
         let inode = self.ensure_inode_registered(ino).await?;
@@ -4065,6 +4275,15 @@ where
     pub(crate) async fn flush_dirty_handle_snapshot(&self, fh: u64) -> Result<(), VfsError> {
         let handle = self.file_handle_required(fh)?;
 
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            runtime
+                .fsync(handle.ino as u64)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            return Ok(());
+        }
+
         tracing::trace!(
             fh,
             ino = handle.ino,
@@ -4120,6 +4339,16 @@ where
     async fn flush_and_sync_handle(&self, fh: u64) -> Result<i64, VfsError> {
         let handle = self.file_handle_required(fh)?;
 
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            runtime
+                .fsync(handle.ino as u64)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            self.update_mtime_ctime(handle.ino).await?;
+            return Ok(handle.ino);
+        }
+
         tracing::info!(fh, ino = handle.ino, "vfs.flush_handle_start");
         let dirty_state = self.state.handles.take_write_dirty_for_inode(handle.ino);
         let flushed_pending = match self.state.writer.flush_required(handle.ino as u64).await {
@@ -4167,6 +4396,11 @@ where
     /// Used by rename and other metadata operations that need write-back
     /// convergence before modifying directory entries.
     pub async fn flush_inode(&self, ino: u64) {
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            let _ = runtime.fsync(ino).await;
+            return;
+        }
         let _ = self.state.writer.flush_if_exists(ino).await;
     }
 
@@ -4191,6 +4425,16 @@ where
     /// snapshot without chasing writes that arrive after this fsync started.
     pub(crate) async fn fsync_snapshot(&self, fh: u64, _datasync: bool) -> Result<(), VfsError> {
         let handle = self.file_handle_required(fh)?;
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(runtime) = self.native_runtime() {
+            runtime
+                .fsync(handle.ino as u64)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            self.update_mtime_ctime(handle.ino).await?;
+            return Ok(());
+        }
 
         tracing::trace!(
             fh,

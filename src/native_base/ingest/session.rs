@@ -338,7 +338,14 @@ impl Session {
     fn release_lock(&mut self) {
         #[cfg(unix)]
         {
-            self.lock_file = None; // dropping closes + releases the flock
+            if let Some(file) = self.lock_file.as_ref() {
+                use std::os::unix::io::AsRawFd;
+                // Explicitly unlock before dropping the descriptor.  This
+                // makes clean close deterministic even when another test or
+                // builder opens the same path immediately.
+                let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+            }
+            self.lock_file = None;
         }
         #[cfg(not(unix))]
         {
@@ -500,8 +507,8 @@ impl Session {
     /// directory (inventory, plan, journal, checkpoint, objects) stays on
     /// disk for resume or diagnosis.
     pub fn close(mut self) {
-        self.release_lock();
         self.wal = None;
+        self.release_lock();
     }
 }
 

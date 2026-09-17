@@ -55,6 +55,15 @@ impl Keys {
         self.volume_id
     }
 
+    /// Locator for the native volume header. This key is intentionally
+    /// outside the per-volume prefix because the header is what supplies the
+    /// volume ID used to construct every other key.
+    pub fn volume_header(namespace: &str) -> Vec<u8> {
+        let mut key = b"nb2/header/".to_vec();
+        key.extend_from_slice(namespace.as_bytes());
+        key
+    }
+
     fn join(&self, parts: &[&[u8]]) -> Vec<u8> {
         let mut key = self.prefix.clone();
         for part in parts {
@@ -258,6 +267,7 @@ mod tests {
         let a = Keys::new(&[1u8; 16]);
         let b = Keys::new(&[2u8; 16]);
         assert_ne!(a.domain(&[9u8; 16]), b.domain(&[9u8; 16]));
+        assert_eq!(Keys::volume_header("trial"), b"nb2/header/trial");
         assert!(a.domain(&[1u8; 16]).starts_with(b"nb2/0101"));
         // BE suffix: numeric order == byte order.
         assert!(a.inventory(&[0u8; 16], 1) < a.inventory(&[0u8; 16], 2));
