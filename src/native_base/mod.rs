@@ -35,6 +35,7 @@
 //! stopping at BUILT_UNPUBLISHED so unpublished artifacts stay invisible
 //! (spec 08).
 
+pub mod cache;
 pub mod counterexamples;
 pub mod frozen;
 pub mod ingest;

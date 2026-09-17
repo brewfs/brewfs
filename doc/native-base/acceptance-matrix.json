@@ -723,7 +723,7 @@
     "invariants": "INV-04",
     "priority": "P1",
     "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "evidence": "in-process fallback cache available; shared Unix-socket service is preview-only (probe returns None)"
   },
   {
     "test_id": "OPT-002",
@@ -810,8 +810,8 @@
     "expected": "仍检查权限，不泄漏data",
     "invariants": "INV-15",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "unit: cache FrameCacheKey binds namespace_id; different-namespace lookups always miss (in-process fallback)"
   },
   {
     "test_id": "OPT-010",

@@ -584,6 +584,31 @@ trait 做按需页加载，配合 `sha2` 做 digest 验证。
 注意：planner 尚未接入真实 reader 与 VFS 读取路径；当前为独立可测试的
 核心算法模块。接入 PR07 运行时读取路径属于后续整合工作。
 
+
+### PR11 · 同机共享基线缓存服务（P3 preview）
+
+工具链：同上。实现位于 `src/native_base/cache/mod.rs`（约 150 行）。
+
+当前状态：**preview 骨架，未默认启用**。提供统一的类型接口和
+进程内 fallback，真实 Unix socket 服务待 P3 阶段实现。
+
+核心组件：
+- `FrameCacheKey`：namespace + object_id + full_hash + offset + len + digest，
+  确保跨租户隔离（spec 06 §5）。
+- `CacheLookupResult`：Hit / Miss / Unavailable 三态。
+- `InProcessFrameCache`：有界 HashMap fallback，用于无服务场景。
+- `probe_shared_cache()`：始终返回 `None`（preview），调用者自动 fallback。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR11-FALLBACK-HIT | in-process cache hit/miss | 0 | PASS（单元测试） | cache::tests |
+| PR11-BOUNDED | cache 容量上限不超 | 0 | PASS（单元测试） | cache::tests |
+| PR11-NS-ISOLATE | 不同 namespace 不共享 key | 0 | PASS（单元测试） | cache::tests |
+| PR11-PROBE-OFF | preview 模式 probe 返回 None | 0 | PASS（单元测试） | cache::tests |
+
+注意：真实 Unix socket 服务、跨进程 singleflight、LRU byte budget、
+服务退出 fallback、TLS/认证等均未实现。这些属于完整 P3 交付，
+不在本轮 P1/P2 范围内。
 ### PR12 · 显式 lossless 布局变体
 
 工具链：同上。实现位于 `src/native_base/lifecycle/variant.rs`（约 136 行）。
