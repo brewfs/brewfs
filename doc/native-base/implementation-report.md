@@ -1,6 +1,6 @@
 # Native Base 实现及实验报告
 
-状态：进行中（PR01–PR06B 已交付，PR07/08/09/10/12 核心模块完成并通过 focused tests，下一步为 PR11 共享缓存服务骨架与 PR13 文档收尾）。本报告按规格包模板维护，逐 PR 追加真实证据；
+状态：PR01–PR12 全部交付并通过 focused unit tests 与 workspace CI gate；PR13 文档与能力矩阵已更新，性能实验 A–F 因缺少 FUSE 集成环境标记为 NOT_RUN。本报告按规格包模板维护，逐 PR 追加真实证据；
 不把参考模型 PASS 抄成产品验收 PASS，无环境项如实 NOT_RUN。
 
 ## 身份与范围
