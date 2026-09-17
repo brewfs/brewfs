@@ -425,8 +425,8 @@
     "expected": "不强制repack或复制干净data",
     "invariants": "INV-09",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; cargo test -p brewfs --lib -j 4 -- native_base::lifecycle:: --test-threads 4 (exit 0, 8 passed): two_domain_publication_is_atomic_exact_and_idempotent 发布含 Loose+整 Pack 的原布局闭包，不生成 repack/copy；doc/native-base/logs/pr06a-focused.log；完整 gate doc/native-base/logs/pr06a-final-gate.log"
   },
   {
     "test_id": "LIFE-002",
@@ -436,8 +436,8 @@
     "expected": "限定drain token可提交而不死锁",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers：freeze 边界内已登记 ticket 在 QUIESCED 后以 DrainBatch 合法提交且阶段可恢复；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-003",
@@ -447,8 +447,8 @@
     "expected": "幂等恢复到定义状态",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action 覆盖 PREPARE/QUIESCED/DATA_DRAINED/CANDIDATE_VERIFIED/RETENTION_PREPARED/PUBLISHED_RETAINED/COMPLETED/ABORTED，复合测试同时验证各 transition 重放幂等；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-004",
@@ -458,8 +458,8 @@
     "expected": "相同operation返回同一result",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent：publish 后同 OperationId 重试返回 AlreadyPublished 同一 PublicationResult，异 payload 拒绝；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-005",
@@ -469,8 +469,8 @@
     "expected": "复用基线不复制N倍metadata/data",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward：100 fork 后仅 1+5*100 条控制记录，无 per-file metadata/data copy；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-006",
@@ -491,8 +491,8 @@
     "expected": "明确Conflict不自动覆盖",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward：visible_delta_count=1 的目标明确 Conflict，clean target 才能 CAS advance；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-008",
@@ -502,8 +502,8 @@
     "expected": "真实write publication拒绝",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers：RemoteDurability::NoopTestBarrier 对 has_writes=true 的候选验证失败；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "LIFE-009",
@@ -513,8 +513,8 @@
     "expected": "不能修改新head或候选journal",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers：旧 journal owner 遇 head epoch 变化时 mark_candidate_verified 拒绝且不修改 journal；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "INGEST-001",
@@ -964,8 +964,8 @@
     "expected": "冻结计划包含已接受写，不按sequence漏掉",
     "invariants": "INV-07 INV-16",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 固定 head commit_seq=5 但持久化并提交 admission_ticket=7 的计划项，证明冻结不按 commit sequence 漏写；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "DRAIN-002",
@@ -975,8 +975,8 @@
     "expected": "登记ticket所属物理计划后合法drain",
     "invariants": "INV-06 INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 将 freeze 前 ticket 连同 payload_digest/source_token 先固化到 DrainBatch，QUIESCED 后按该身份完成；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "DRAIN-003",
@@ -986,8 +986,8 @@
     "expected": "不在持久化batch中的receipt拒绝",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 篡改持久化 entry 的 admission_ticket 后 commit_drain_batch 失败；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "DRAIN-004",
@@ -997,8 +997,8 @@
     "expected": "不宣称完成seal，已fsync提交不丢",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 对 payload_fsynced=false 明确拒绝，true 后固定结果可重放且 finish_data_drain 幂等；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "DRAIN-005",
@@ -1008,8 +1008,8 @@
     "expected": "有界batch和OperationId结果幂等",
     "invariants": "INV-06 INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; drain_batches_enforce_entry_and_payload_limits_before_persistence 覆盖 128 entry/1MiB 上限，bounded_drain... 覆盖同 batch OperationId 回包丢失重放；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "VFY-001",
@@ -1228,8 +1228,8 @@
     "expected": "全部依赖仍保留，可重新fork/挂载",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward 仅凭 retention_policy=Forever 的持久 PublishedRevision 重建 100 个 workspace，不依赖 Agent/read lease；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-002",
@@ -1250,8 +1250,8 @@
     "expected": "Loose在同publication事务进入RetainBatch",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 验证刚写 Loose B 出现在 workspace RetainBatch，并与 PublishedRevision/head switch 同一 Txn；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-004",
@@ -1261,8 +1261,8 @@
     "expected": "查询相同OperationId返回同一永久结果",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent：相同 OperationId/payload 返回 AlreadyPublished 同一固定结果，异 payload 返回 OperationIdMismatch；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-005",
@@ -1272,8 +1272,8 @@
     "expected": "只永久化B及必要依赖，A活跃期间临时保留",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 显式注册 overwritten A，但精确计划只保留 candidate 引用的 B 与传递依赖；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-006",
@@ -1294,8 +1294,8 @@
     "expected": "保留全Pack，不按slice范围删除",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 的 mixed candidate 将 Pack 作为单个 ObjectRef 进入 RetainBatch，不存在 span 级删除/保留状态；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-008",
@@ -1316,8 +1316,8 @@
     "expected": "KvBaseRetention阻止layer元数据删除",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 在发布事务内 create-only 写 KvBaseRetention(layer_id,sealed_version)，并校验与 manifest namespace/logical_revision 精确绑定；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-010",
@@ -1327,8 +1327,8 @@
     "expected": "PrivateWriteDomain不更换，旧open-unlink仍合法",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 验证 head epoch 前进后 write_domain_id 不变，open_orphan_count/orphan_carry_digest 原样携带；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-011",
@@ -1360,8 +1360,8 @@
     "expected": "由receipt/evidence隐式保留，无自引用hash",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; manifest_and_object_inventory_roundtrip_without_self_reference 与 two_domain_publication... 均断言 index ObjectId 不在自身 entries，receipt.evidence_root 绑定该索引根；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-014",
@@ -1371,8 +1371,8 @@
     "expected": "没有新增永久保留，终结build域后可清理",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 在 RETENTION_PREPARED 前 abort，恢复 workspace 为 RUNNING 且 journal=ABORTED；永久 receipt/PublishedRevision 只可能由 publish_candidate 单事务创建；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-015",
@@ -1382,8 +1382,8 @@
     "expected": "返回已提交结果，不撤销保留或删对象",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 发布后调用 abort_publication 返回既有 PublicationResult，PublishedRevision/receipt 不撤销；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-016",
@@ -1393,8 +1393,8 @@
     "expected": "两个RetainBatch及head切换全有全无",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent：build 域先 DRAINING 时两个 receipt/PublishedRevision/head 均不写；ACTIVE 时两个域 retention_seq/receipt 与 head 全部提交；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-017",
@@ -1404,8 +1404,8 @@
     "expected": "拒绝；必须先publish才能跨workspace共享",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; exact_retention_partitions_owned_domains_and_rejects_siblings 将 manifest origin 改为 sibling private domain 后 prepare_retention 拒绝；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-018",
@@ -1415,8 +1415,8 @@
     "expected": "拒绝复活，不裸hash/adopt",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; two_domain_publication_is_atomic_exact_and_idempotent 将 registry key 绑定到另一个 ObjectId 后发布失败且不产生 PublishedRevision；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-019",
@@ -1426,8 +1426,8 @@
     "expected": "必须受控验证/登记来源，不能绕过PublishedRevision",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; fork_from_published/fast_forward 均先按 storage_view_id 读取并逐字段比对 retention_policy=Forever 的 PublishedRevision；one_hundred_forks... 只经该入口创建 base；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "RET-020",
@@ -1459,8 +1459,8 @@
     "expected": "新增保留对象登记和全量metadata扫描分别报告",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit ea373a9b8af5187c01b16b65c46a16c56ddd9ee2; exact_retention_partitions_owned_domains_and_rejects_siblings 断言 RetentionMetrics.scanned_metadata_bytes=999，并独立累计 new_retained_objects/new_retained_bytes；focused exit 0；doc/native-base/logs/pr06a-focused.log"
   },
   {
     "test_id": "CLN-001",

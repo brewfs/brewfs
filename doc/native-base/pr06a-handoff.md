@@ -1,4 +1,8 @@
-# PR06A 交接说明（交接点 commit `e19c990`）
+# PR06A 开发期交接记录（历史交接点 commit `e19c990`）
+
+> PR06A 已在实现提交 `ea373a9b8af5187c01b16b65c46a16c56ddd9ee2` 完成并通过
+> exact-SHA 完整门禁。本文件保留开发期上下文；最终状态与证据见
+> `README.md` 和 `implementation-report.md`，后续顺序从 PR06B 继续。
 
 面向接手本机后续工作的 agent。目标：在**不重新推导已有结论**的前提下继续
 PR06A → PR06B → PR07+。所有事实性陈述都对应到本仓库的真实 commit/文件；凡

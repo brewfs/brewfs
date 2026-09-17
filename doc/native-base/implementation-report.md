@@ -1,6 +1,6 @@
 # Native Base 实现及实验报告
 
-状态：进行中（PR05 完成）。本报告按规格包模板维护，逐 PR 追加真实证据；
+状态：进行中（PR06A 完成，PR06B 开发中）。本报告按规格包模板维护，逐 PR 追加真实证据；
 不把参考模型 PASS 抄成产品验收 PASS，无环境项如实 NOT_RUN。
 
 ## 身份与范围
@@ -9,7 +9,8 @@
   控制契约 native_control_version=2。
 - 基准 commit：`8ff73d9c18c0f81e88c183383b00d2ba86bd42ba`（实现开始时 HEAD 与其一致）。
 - 阶段：P1（PR01 基线审计 → PR02 wire codec → PR03 seal reader →
-  PR04 写管线与控制面事务 → PR05 ingest 与上传验证/resume）。
+  PR04 写管线与控制面事务 → PR05 ingest 与上传验证/resume → PR06A
+  永久发布、精确保留、seal/fork/recovery）。
 - 已读：仓库 AGENTS.md；规格包 README、CODEX_TASK、00/01/02/03/04/06/09/10/15/18/20。
 - 关联不变量：本轮全部（INV-01..INV-24），PR03 重点核 INV-03/04/05/13/14
   （固定视图/缺失即错误/索引序/预算取消/不猜编码）；PR04 重点核
@@ -392,43 +393,46 @@ PR01：审计现有写/读路径的捕获与顺序机制，结论见 pr01-baseli
 反例模型测试记录三个弱协议失败模式（torn capture、乱序重叠提交、先切 head
 后补保留），作为 PR03/PR04/PR06A 实现的对照契约。
 
-### PR06A · 永久 PublishedRevision、精确 RetainBatch、seal/fork/recovery（进行中）
+### PR06A · 永久 PublishedRevision、精确 RetainBatch、seal/fork/recovery（完成）
 
-状态：**未完成，不主张 PASS**。本小节只记录交接点 `e19c990` 上已落地且已验证的
-第一步；验收矩阵各项保持原状态。
+实现提交：`ea373a9b8af5187c01b16b65c46a16c56ddd9ee2`。实现位于
+`src/native_base/lifecycle/`：kind-4 manifest、kind-5 physical inventory 与
+RetainBatch 索引、精确 origin partition、八阶段 seal journal、认证有界 drain、
+PublishedRevision/RetentionReceipt/KvBaseRetention/head 的单事务发布，以及只允许
+PublishedRevision 源的 fork/fast-forward。PR04 的紧凑 `HeadState` 字节保持不变，
+生命周期事务与 kind-16 `NativeWorkspaceHead` 同步双写。
 
-第一步（前置重构）：PR06A 需要为物理 inventory 与 RetainBatch 建 BNPG 索引树，
-其形状与 Data Seal 四表完全相同。把树 writer 从 `seal/builder.rs` 抽到
-`wire/index_build.rs`（`IndexTreeParams{leaf_target, leaf_kind, page_kind}`、
-`place_page(body, page, page_kind)`、`build_index_tree(entries, params, body)`），
-使 seal 与 06A 的索引共用一份实现。
+关键反例证据：
 
-| 测试项 | 命令 | 退出码 | 结果 | 证据 |
-|---|---|---|---|---|
-| PR06A-IDX-TEST | `cargo test -p brewfs --lib -j 4 -- native_base:: --test-threads 4` | 0 | PASS（204 passed / 0 failed / 34 ignored；含 `wire::index_build::*` 3 项与字节稳定性 golden 1 项） | [pr06a-checkpoint-gate.log](logs/pr06a-checkpoint-gate.log) |
-| PR06A-GATE | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins -j 4 -- --test-threads 4` | 0 | PASS（849 + 721 passed, 0 failed, 219 + 185 ignored） | [pr06a-checkpoint-gate.log](logs/pr06a-checkpoint-gate.log) |
-| PR06A-CLIPPY | `cargo clippy --workspace` | 0 | PASS（无新增警告；`bin "brewfs"` 的 1 条为 PR05 记录的存量项） | 同上 |
-| PR06A-GITDIFF | `git diff --check`（Windows 侧；WSL git 无法解析 worktree 路径） | 0 | PASS | — |
+- 混合 Loose/Packed 候选按实际闭包切为 workspace/build 两个 RetainBatch；已覆盖
+  的 Loose A 不进入永久集合，Loose B、整 Pack、Seal、inventory 与 manifest
+  精确进入所属域；任一域先进入 DRAINING 时事务全不生效。
+- admission ticket 大于当前 commit sequence 的写仍进入冻结计划；伪造条目、未
+  fsync payload、Noop remote barrier 与 stale head 全部被拒绝；重复 batch 与
+  phase transition 幂等。
+- 发布成功、OperationId 回包丢失重试、误 abort 和 complete 都返回同一固定结果；
+  两域 receipt、PublishedRevision、KV base 与 head switch 全有全无。
+- 100 个 fork 只新增每个 workspace 的 5 条有界控制记录，不复制 metadata/data；
+  有 visible delta 的目标明确拒绝 fast-forward。
 
-字节不变性不是推断而是被钉住的：`seal/tests.rs::seal_bytes_are_unchanged_by_the_
-shared_index_builder` 断言混合 Loose/Packed fixture 与 64B 叶子多层 fixture 的
-seal 对象摘要，摘要取自 `7291196`（重构前）的 detached worktree 探针
-（`8c361922…b8b0`、`a0723bc3…f298`），探针已随 worktree 删除，值留在测试里。
+| 测试项 | 原样命令 | 退出码 | 结果 | raw 证据 |
+|---|---|---:|---|---|
+| PR06A-FOCUSED | `cargo test -p brewfs --lib -j 4 -- native_base::lifecycle:: --test-threads 4` | 0 | PASS（8 passed / 0 failed） | [pr06a-focused.log](logs/pr06a-focused.log) |
+| PR06A-NATIVE | `cargo test -p brewfs --lib -j 4 -- native_base:: --test-threads 4` | 0 | PASS（212 passed / 0 failed / 34 ignored） | 同上 |
+| PR06A-FMT/BASH/CHECK/BUILD/FEATURE | `bash doc/native-base/logs/pr06a-final-run.sh` 内逐步执行 AGENTS 门禁 | 0 | PASS（每个步骤独立 `:exit=0`） | [pr06a-final-gate.log](logs/pr06a-final-gate.log) |
+| PR06A-WORKSPACE-TEST | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins -j 4 -- --test-threads 4` | 0 | PASS（857 + 721 passed；0 failed） | 同上 |
+| PR06A-CLIPPY | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace` | 0 | PASS（无新增警告） | 同上 |
+| PR06A-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS | 本报告更新前复核 |
 
-未开始（如实保留为 `SPECIFIED_NOT_IMPLEMENTED`）：manifest 组装、physical
-inventory 与 RetainBatch 索引、publish 单次原子事务与 OperationId 幂等、
-seal 八态状态机与逐阶段恢复、fork/fast-forward、KvBaseRetention。其中
-`RET-020`、`RET-023` 清理侧与 `CLN-*` 属 PR06B；`RET-012` 属 P2；
-`RET-021`（拒绝 TTL/published_gc/read_retention_leases 配置）需 PR07 的配置
-加载器接线，本 PR 只做纯校验函数、不标 PASS。设计与续做步骤见
-[pr06a-handoff.md](pr06a-handoff.md)。
+完整门禁日志第 2 行固定上述实现 SHA，末尾为 `=== GATE: ALL PASSED ===`；WSL
+包装的流水线退出码为 0。共享 index builder 的字节稳定 golden 仍钉住重构前
+`7291196` 的两个 seal 摘要，证明 06A 没有改写既有 Data Seal 字节。
 
-说明：本轮门禁与前几轮不同之处在于**每个步骤都记录了自己的退出码**（含 7 个
-bash 脚本门），不再依赖“成功即静默 + 末尾聚合标记”推断（PR04 曾因此更正）。
-门禁由 [pr06a-checkpoint-run.sh](logs/pr06a-checkpoint-run.sh)（WSL 包装，设置
-工具链环境、读 `.claude/gate-commit.txt` 取提交号、tee 日志）调用
-[pr06a-checkpoint-gate.sh](logs/pr06a-checkpoint-gate.sh)（门禁本体）产生；
-WSL git 读不到本 worktree 的 Windows 路径，故提交号由 Windows 侧 git 先写入文件。
+本阶段未虚标的范围：`LIFE-006` 需要 PR07 FUSE/SDK 真读 mixed base；`RET-006`
+多次 seal 并集、`RET-020/023` 与全部 `CLN-*` 归 06B；`RET-008` 的 Frozen
+metadata 外部页归 PR08/09；`RET-011` 是 PR07 runtime 读计数；`RET-012` 是 P2；
+`RET-021` 已有纯拒绝函数但必须等 PR07 配置加载器接线后才能 PASS。06A 证据是
+内存控制后端的确定性事务/故障注入；Redis/TiKV/S3/FUSE 真后端门禁不在此冒充。
 
 ## 永久保留与私有清理
 

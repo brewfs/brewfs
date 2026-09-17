@@ -1,0 +1,275 @@
+   Compiling brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 51s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 8 tests
+test native_base::lifecycle::tests::exact_retention_partitions_owned_domains_and_rejects_siblings ... ok
+test native_base::lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action ... ok
+test native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers ... ok
+test native_base::lifecycle::tests::drain_batches_enforce_entry_and_payload_limits_before_persistence ... ok
+test native_base::lifecycle::tests::manifest_and_object_inventory_roundtrip_without_self_reference ... ok
+test native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring ... ok
+test native_base::lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent ... ok
+test native_base::lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.00s
+
+lifecycle:exit=0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.80s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 246 tests
+test native_base::counterexamples::capture::tests::weak_capture_serves_stale_content_after_handoff ... ok
+test native_base::counterexamples::capture::tests::token_revalidation_retries_mixed_candidate ... ok
+test native_base::counterexamples::capture::tests::gated_capture_never_mixes_generations ... ok
+test native_base::counterexamples::capture::tests::weak_capture_reads_accepted_tail_as_hole ... ok
+test native_base::counterexamples::ordered_commit::tests::handoff_releases_only_its_own_dirty ... ok
+test native_base::counterexamples::ordered_commit::tests::overlapping_writes_commit_in_acceptance_order ... ok
+test native_base::counterexamples::ordered_commit::tests::late_write_cannot_undo_truncate ... ok
+test native_base::counterexamples::retention::tests::close_wins_over_late_publication ... ok
+test native_base::counterexamples::retention::tests::atomic_publish_shields_exactly_the_needed_objects ... ok
+test native_base::counterexamples::retention::tests::weak_publish_leaves_published_objects_deletable ... ok
+test native_base::ingest::backend::tests::create_only_put_unsupported_is_refused ... ok
+test native_base::ingest::backend::tests::create_only_put_is_idempotent_for_identical_content ... ok
+test native_base::ingest::backend::tests::http200_with_embedded_error_is_a_failed_complete ... ok
+test native_base::ingest::backend::tests::lost_complete_response_is_resolvable_by_status ... ok
+test native_base::ingest::backend::tests::no_such_upload_after_completion_is_resolvable_by_object ... ok
+test native_base::ingest::backend::tests::part_checksum_mismatch_is_refused_server_side ... ok
+test native_base::ingest::backend::tests::range_get_exact_never_pads ... ok
+test native_base::ingest::backend::tests::multipart_happy_path_verifies_composite ... ok
+test native_base::ingest::build::tests::disk_budget_stops_the_build_before_anything_is_uploaded ... ok
+test native_base::ingest::build::tests::changed_plan_on_resume_is_refused ... ok
+test native_base::ingest::build::tests::source_change_after_inventory_stops_publication ... ok
+test native_base::ingest::build::tests::build_to_unpublished_stops_unpublished_and_uploads_every_object ... ok
+test native_base::ingest::plan::tests::digest_changes_when_the_plan_changes ... ok
+test native_base::ingest::build::tests::resume_after_clean_close_finishes_the_upload ... ok
+test native_base::ingest::plan::tests::plan_roundtrip_and_digest_stability ... ok
+test native_base::ingest::plan::tests::unknown_algorithm_version_is_refused ... ok
+test native_base::ingest::plan::tests::plan_file_roundtrip ... ok
+test native_base::ingest::session::tests::fresh_session_starts_new_with_journal_generation ... ok
+test native_base::ingest::build::tests::resume_mid_upload_skips_the_verified_object ... ok
+test native_base::ingest::session::tests::second_builder_is_refused_while_the_first_holds_the_lock ... ok
+test native_base::ingest::session::tests::damaged_middle_record_stops_the_resume ... ok
+test native_base::ingest::build::tests::without_create_only_the_build_is_refused_not_simulated ... ok
+test native_base::ingest::session::tests::invalid_transitions_are_refused ... ok
+test native_base::ingest::source::tests::inventory_encoding_roundtrip ... ok
+test native_base::ingest::source::tests::local_source_inventory_hardlinks_and_no_symlink_follow ... ok
+test native_base::ingest::source::tests::local_source_rejects_devices ... ok
+test native_base::ingest::source::tests::member_path_validation_rejects_escapes ... ok
+test native_base::ingest::source::tests::tar_source_hardlinks_share_identity_and_compressed_is_refused ... ok
+test native_base::ingest::session::tests::transitions_are_journaled_and_replayed ... ok
+test native_base::ingest::source::tests::tar_source_reads_members_and_detects_change ... ok
+test native_base::ingest::session::tests::truncated_journal_tail_recovers_to_the_last_durable_state ... ok
+test native_base::ingest::source::tests::tar_source_rejects_escapes_and_duplicates ... ok
+test native_base::ingest::upload::tests::create_only_upload_and_readback_verification ... ok
+test native_base::ingest::upload::tests::corrupted_payload_fails_exact_readback ... ok
+test native_base::ingest::upload::tests::http200_embedded_error_never_becomes_verified ... ok
+test native_base::ingest::source::tests::tar_sparse_member_reads_holes_as_zeros ... ok
+test native_base::ingest::upload::tests::lost_complete_response_resumes_by_status ... ok
+test native_base::ingest::upload::tests::multipart_part_layout_covers_the_object_exactly ... ok
+test native_base::ingest::upload::tests::no_such_upload_after_completion_is_resolved_by_final_object ... ok
+test native_base::ingest::upload::tests::lost_part_response_is_resolved_by_query_not_resend ... ok
+test native_base::ingest::upload::tests::plan_length_or_hash_mismatch_is_refused_before_upload ... ok
+test native_base::ingest::upload::tests::precondition_412_same_content_is_idempotent_and_different_is_rejected ... ok
+test native_base::ingest::wal::tests::bad_magic_or_length_in_the_middle_is_corrupt_journal ... ok
+test native_base::ingest::upload::tests::part_timeout_without_landing_retries_the_same_part_number ... ok
+test native_base::ingest::wal::tests::crc_bad_final_record_is_dropped_but_middle_corruption_stops ... ok
+test native_base::ingest::wal::tests::garbage_at_the_tail_is_not_droppable ... ok
+test native_base::ingest::wal::tests::record_format_bounds_and_crc ... ok
+test native_base::ingest::wal::tests::replay_accepts_full_journal_with_strict_sequences ... ok
+test native_base::ingest::upload::tests::service_validated_profile_uses_service_facts_not_readback ... ok
+test native_base::ingest::wal::tests::sequence_gap_is_corrupt_journal ... ok
+test native_base::ingest::wal::tests::truncated_final_record_is_dropped ... ok
+test native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers ... ok
+test native_base::lifecycle::tests::drain_batches_enforce_entry_and_payload_limits_before_persistence ... ok
+test native_base::lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action ... ok
+test native_base::lifecycle::tests::exact_retention_partitions_owned_domains_and_rejects_siblings ... ok
+test native_base::lifecycle::tests::manifest_and_object_inventory_roundtrip_without_self_reference ... ok
+test native_base::ingest::wal::tests::checkpoint_roundtrip_and_durability_dance ... ok
+test native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring ... ok
+test native_base::lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent ... ok
+test native_base::seal::binding::tests::binding_is_exactly_36_bytes_and_roundtrips ... ok
+test native_base::seal::binding::tests::hash_covers_leading_zeros_of_decoded_domain ... ok
+test native_base::seal::binding::tests::zero_length_binding_rejected_and_truncated_rejected ... ok
+test native_base::seal::descriptor::tests::descriptor_is_exactly_96_bytes_and_roundtrips ... ok
+test native_base::seal::descriptor::tests::header_mismatch_detected_on_every_field ... ok
+test native_base::seal::descriptor::tests::range_get_covers_header_and_payload ... ok
+test native_base::seal::descriptor::tests::reserved_must_be_zero ... ok
+test native_base::lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward ... ok
+test native_base::seal::placement::tests::loose_roundtrip_and_rejects_unknown_layout_and_reserved ... ok
+test native_base::seal::placement::tests::native_single_span_rule ... ok
+test native_base::seal::placement::tests::packed_roundtrip ... ok
+test native_base::seal::placement::tests::span_validation_counterexamples ... ok
+test native_base::seal::placement::tests::unknown_tag_and_zero_span_count_rejected ... ok
+test native_base::seal::tables::tests::keys_are_big_endian_so_numeric_order_equals_byte_order ... ok
+test native_base::seal::tables::tests::root_rejects_wrong_version_count_unsorted_ids_and_trailing_bytes ... ok
+test native_base::seal::tables::tests::root_roundtrip_with_empty_and_present_tables ... ok
+test native_base::seal::tests::binding_without_placement_is_an_error ... ok
+test native_base::seal::tests::budget_that_fits_only_some_units_rejects_the_whole_plan ... ok
+test native_base::seal::tests::builder_add_packed_block_rejects_short_span_coverage ... ok
+test native_base::seal::tests::builder_validate_rejects_missing_frame_and_kind_mismatch ... ok
+test native_base::seal::tests::cancellation_between_units_stops_fetching ... ok
+test native_base::seal::tests::corrupted_frame_payload_is_an_error_not_zeros ... ok
+test native_base::seal::tests::descriptor_pointing_at_a_non_frame_offset_is_an_error ... ok
+test native_base::seal::tests::empty_table_reports_missing_table_on_query ... ok
+test native_base::seal::tests::cross_block_read_over_full_size_blocks ... ok
+test native_base::ingest::wal::tests::writer_assigns_sequences_and_recovers_damaged_tail ... ok
+test native_base::seal::tests::external_frames_table_reuse_reads_through_the_old_seal ... ok
+test native_base::seal::tests::loose_object_corruption_is_an_error ... ok
+test native_base::seal::tests::frame_descriptor_mismatch_with_actual_header_is_an_error ... ok
+test native_base::seal::tests::metrics_report_each_component_separately ... ok
+test native_base::seal::tests::missing_frame_descriptor_is_an_error_not_zeros ... ok
+test native_base::seal::tests::mixed_pack_and_loose_blocks_read_back_exactly ... ok
+test native_base::seal::tests::native_multi_span_placement_rejected_at_read_time ... ok
+test native_base::seal::tests::native_span_length_must_not_borrow_frame_raw_len ... ok
+test native_base::seal::tests::plain_bytes_starting_with_the_sf_magic_stay_raw ... ok
+test native_base::seal::tests::pre_cancelled_read_does_no_io ... ok
+test native_base::seal::tests::read_beyond_decoded_len_is_an_error_not_zeros ... ok
+test native_base::seal::tests::resolved_placements_and_descriptors_roundtrip_through_the_seal ... ok
+test native_base::seal::tests::seal_root_table_directory_shape_is_preserved_end_to_end ... ok
+test native_base::seal::tests::multi_level_index_lookup_hits_and_absent_keys_miss ... ok
+test native_base::seal::tests::sf_framed_native_block_roundtrips_through_the_native_path ... ok
+test native_base::seal::tests::shared_frame_is_fetched_once_per_read ... ok
+test native_base::seal::tests::short_read_is_an_error_not_zeros ... ok
+test native_base::seal::tests::source_not_found_is_an_error_not_zeros ... ok
+test native_base::seal::tests::seal_bytes_are_unchanged_by_the_shared_index_builder ... ok
+test native_base::seal::tests::table_override_rejects_local_entries ... ok
+test native_base::wire::bnct::tests::envelope_rejects_crc_and_length_mismatch ... ok
+test native_base::wire::bnct::tests::all_kinds_roundtrip_through_envelope ... ok
+test native_base::seal::tests::undersized_budget_rejects_before_any_io ... ok
+test native_base::wire::bnct::tests::envelope_rejects_wrong_version ... ok
+test native_base::wire::bnct::tests::envelope_rejects_unknown_kind ... ok
+test native_base::ingest::session::tests::unpublished_sessions_have_no_artifact_view ... ok
+test native_base::wire::bnct::tests::kind7_golden_byte_exact ... ok
+test native_base::wire::bnct::tests::other_unknown_enums_rejected ... ok
+test native_base::wire::bnct::tests::plan_entries_roundtrip ... ok
+test native_base::wire::bnct::tests::payload_trailing_bytes_rejected ... ok
+test native_base::wire::bnct::tests::unknown_enum_values_rejected ... ok
+test native_base::wire::container::tests::crc32c_standard_vector ... ok
+test native_base::wire::container::tests::footer_roundtrip_and_validation ... ok
+test native_base::wire::container::tests::header_rejects_crc_mismatch ... ok
+test native_base::wire::container::tests::header_rejects_nonzero_reserved_and_short_object ... ok
+test native_base::wire::container::tests::header_rejects_unknown_magic_codec_and_hash ... ok
+test native_base::wire::container::tests::header_rejects_unknown_major ... ok
+test native_base::wire::container::tests::header_roundtrip_all_kinds ... ok
+test native_base::wire::container::tests::parse_footer_checks_object_len ... ok
+test native_base::wire::container::tests::unsupported_required_features_rejected ... ok
+test native_base::wire::datapack::tests::builder_rejects_oversized_payloads ... ok
+test native_base::wire::datapack::tests::golden_empty_pack_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::golden_native_none_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::golden_plain_magic_prefix_keeps_raw_bytes ... ok
+test native_base::wire::datapack::tests::golden_two_plain_frames_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::scrub_rejects_corrupt_raw_digest ... ok
+test native_base::wire::datapack::tests::scrub_rejects_header_crc_error ... ok
+test native_base::wire::datapack::tests::scrub_rejects_nonzero_padding ... ok
+test native_base::wire::datapack::tests::scrub_rejects_truncated_object ... ok
+test native_base::wire::datapack::tests::scrub_rejects_unsupported_required_features ... ok
+test native_base::wire::datapack::tests::scrub_rejects_ordinal_gap ... ok
+test native_base::wire::datapack::tests::zero_length_payloads_are_never_frames ... ok
+test native_base::wire::bnct::tests::envelope_rejects_oversized_payload ... ok
+test native_base::wire::frame::tests::codec_none_requires_stored_eq_raw ... ok
+test native_base::wire::frame::tests::frame_header_rejects_crc_and_reserved ... ok
+test native_base::wire::frame::tests::frame_header_enforces_payload_limits ... ok
+test native_base::wire::frame::tests::frame_header_rejects_unknown_version_format_codec_flags ... ok
+test native_base::wire::frame::tests::frame_span_pads_to_alignment ... ok
+test native_base::wire::frame::tests::frame_header_roundtrip ... ok
+test native_base::wire::frame::tests::native_block_v1_requires_outer_codec_none ... ok
+test native_base::wire::frame::tests::zstd_roundtrip_and_exact_length_enforced ... ok
+test native_base::wire::index_build::tests::every_reachable_page_is_aligned_and_digest_authenticated ... ok
+test native_base::wire::page::tests::empty_leaf_page_is_valid ... ok
+test native_base::wire::page::tests::internal_page_roundtrip_and_range_validation ... ok
+test native_base::wire::index_build::tests::oversized_page_is_rejected_by_the_leaf_target_cap ... ok
+test native_base::wire::page::tests::internal_rejects_child_level_not_descending ... ok
+test native_base::wire::page::tests::leaf_page_roundtrip_with_prefix_compression ... ok
+test native_base::wire::page::tests::leaf_rejects_duplicate_and_unsorted_keys ... ok
+test native_base::wire::page::tests::leaf_rejects_nonzero_first_shared_prefix_and_overlong_shared ... ok
+test native_base::wire::page::tests::page_rejects_trailing_bytes_and_count_mismatch ... ok
+test native_base::wire::page::tests::page_rejects_unknown_kind_and_flags ... ok
+test native_base::wire::refs::tests::child_must_descend_exactly_one_level ... ok
+test native_base::wire::refs::tests::child_ref_both_tags_roundtrip_and_rejects_unknown ... ok
+test native_base::wire::refs::tests::object_kind_page_kind_matrix ... ok
+test native_base::wire::refs::tests::object_ref_roundtrip_and_key_validation ... ok
+test native_base::wire::page::tests::page_rejects_oversized_raw_page_and_entries ... ok
+test native_base::wire::refs::tests::page_address_is_exactly_56_bytes_and_roundtrips ... ok
+test native_base::wire::refs::tests::page_address_rejects_unknown_codec_kind_and_reserved ... ok
+test native_base::wire::refs::tests::root_ref_roundtrip ... ok
+test native_base::wire::tests::all_brfdp_fixtures_scrub_clean ... ok
+test native_base::wire::tests::packaged_fixture_hashes_match_spec_vectors ... ok
+test native_base::wire::index_build::tests::single_leaf_and_multi_level_shapes ... ok
+test native_base::wire::uvarint::tests::positive_vectors_match_goldens ... ok
+test native_base::wire::uvarint::tests::negative_vectors_rejected ... ok
+test native_base::wire::uvarint::tests::reader_bytes_validates_length_before_use ... ok
+test native_base::wire::uvarint::tests::reader_rejects_invalid_bool_and_option_tags ... ok
+test native_base::wire::uvarint::tests::roundtrip_boundaries ... ok
+test native_base::wire::datapack::tests::zstd_frames_roundtrip_through_scrub ... ok
+test native_base::write::receipts::tests::receipt_set_roundtrip_and_rejects_trailing ... ok
+test native_base::write::keys::tests::keys_are_volume_scoped_and_lexicographic ... ok
+test native_base::write::records::tests::extent_roundtrip_and_invariants ... ok
+test native_base::write::receipts::tests::receipts_container_is_a_valid_single_value_frozen_metadata_object ... ok
+test native_base::write::records::tests::head_placement_roundtrip_and_closed_tags ... ok
+test native_base::write::records::tests::head_state_roundtrip_and_next_commit ... ok
+test native_base::write::records::tests::inode_data_roundtrip ... ok
+test native_base::write::redis::tests::glob_escape_quotes_metacharacters ... ok
+test native_base::write::tests::hole_splits_and_replacement ... ok
+test native_base::write::tests::memory_backend::commit_with_tampered_registration_fails_atomically ... ok
+test native_base::write::tests::memory_backend::failed_predecessor_blocks_successors_instead_of_skipping_them ... ok
+test native_base::write::tests::memory_backend::cross_inode_mutations_do_not_block_each_other ... ok
+test native_base::write::tests::memory_backend::commit_writes_extent_binding_placement_inode_and_head_together ... ok
+test native_base::write::tests::memory_backend::failed_transaction_applies_no_subset_of_its_writes ... ok
+test native_base::write::tests::memory_backend::independent_stores_racing_same_head_commit_once ... ok
+test native_base::write::tests::memory_backend::mutation_order_continues_from_the_durable_watermark ... ok
+test native_base::write::tests::memory_backend::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_registration ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_commit ... ok
+test native_base::write::tests::memory_backend::registry_binds_one_object_key_to_one_identity ... ok
+test native_base::write::tests::memory_backend::ordering_gate_rejects_late_and_early_slots_permanently ... ok
+test native_base::write::tests::memory_backend::reordered_upload_cannot_overtake_its_predecessor ... ok
+test native_base::write::tests::memory_backend::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ok
+test native_base::write::tests::memory_backend::stale_head_guard_fails_and_writes_nothing ... ok
+test native_base::write::tests::partial_overlap_splits_data_extents_block_aligned ... ok
+test native_base::write::tests::memory_backend::unaligned_writes_are_refused_at_admission ... ok
+test native_base::write::tests_redis::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::non_active_domain_rejects_commit ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests::unaligned_cut_keeps_partial_tail_block ... ok
+test native_base::write::tests_redis::non_active_domain_rejects_registration ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_tikv::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_commit ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_registration ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tikv::tests::prefix_range_end_increments_the_last_free_byte ... ok
+test native_base::write::tests::memory_backend::truncate_down_and_extend_and_punch_produce_holes ... ok
+
+test result: ok. 212 passed; 0 failed; 34 ignored; 0 measured; 830 filtered out; finished in 0.16s
+
+native_base:exit=0
