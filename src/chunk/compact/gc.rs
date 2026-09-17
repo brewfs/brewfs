@@ -31,6 +31,7 @@ impl Default for BlockGcConfig {
 }
 
 impl BlockGcConfig {
+    #[allow(dead_code)]
     pub fn with_volume_format(mut self, volume_format: impl Into<String>) -> Self {
         self.volume_format = Some(volume_format.into());
         self

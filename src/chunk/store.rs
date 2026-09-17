@@ -561,6 +561,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
 
     /// Bind this store to a volume format. Native-v2 rejects all legacy
     /// block-range deletion; its domain cleaner is the only deletion owner.
+    #[allow(dead_code)]
     pub fn with_volume_format(mut self, volume_format: impl AsRef<str>) -> Self {
         self.legacy_delete_allowed = volume_format.as_ref() != "workspace-native-v2";
         self
