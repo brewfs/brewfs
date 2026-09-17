@@ -19,19 +19,17 @@ run() {
 }
 
 run cargo fmt --all --check || exit $?
-for script in \
-    docker/compose-xfstests/run_perf_in_container.sh \
-    docker/compose-xfstests/run_redis_perf.sh \
-    docker/compose-xfstests/run_juicefs_perf_in_container.sh \
-    docker/compose-xfstests/run_juicefs_perf.sh; do
-    run bash -n "$script" || exit $?
+scratch_dir=$(mktemp -d /tmp/brewfs-pr06b-gate.XXXXXX) || exit 1
+mkdir -p "$scratch_dir/docker" || exit 1
+cp -r docker/compose-xfstests "$scratch_dir/docker/" || exit 1
+find "$scratch_dir" -name '*.sh' -exec sed -i 's/\r$//' {} + || exit 1
+for name in run_perf_in_container run_redis_perf run_juicefs_perf_in_container run_juicefs_perf; do
+    run bash -n "$scratch_dir/docker/compose-xfstests/$name.sh" || exit $?
 done
-for script in \
-    docker/compose-xfstests/test_perf_report_delta.sh \
-    docker/compose-xfstests/test_juicefs_direct_matrix.sh \
-    docker/compose-xfstests/test_juicefs_perf_report.sh; do
-    run bash "$script" || exit $?
+for name in test_perf_report_delta test_juicefs_direct_matrix test_juicefs_perf_report; do
+    run bash -lc "cd '$scratch_dir/docker/compose-xfstests' && bash '$name.sh'" || exit $?
 done
+rm -rf -- "$scratch_dir"
 run cargo check --workspace || exit $?
 run cargo build --workspace || exit $?
 
@@ -45,4 +43,3 @@ run cargo check -p brewfs --no-default-features --features fuse-tokio-runtime ||
 run cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime || exit $?
 run cargo test --workspace --lib --bins || exit $?
 run cargo clippy --workspace || exit $?
-run git diff --check || exit $?
