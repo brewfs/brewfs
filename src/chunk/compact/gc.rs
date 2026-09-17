@@ -13,6 +13,8 @@ pub struct BlockGcConfig {
     pub batch_size: usize,
     pub block_size: u64,
     pub orphan_cleanup_age_secs: i64,
+    /// Native-v2 domains cannot be cleaned by this legacy slice collector.
+    pub volume_format: Option<String>,
 }
 
 impl Default for BlockGcConfig {
@@ -23,7 +25,15 @@ impl Default for BlockGcConfig {
             batch_size: 1000,
             block_size: 4 * 1024 * 1024,
             orphan_cleanup_age_secs: 3600,
+            volume_format: None,
         }
+    }
+}
+
+impl BlockGcConfig {
+    pub fn with_volume_format(mut self, volume_format: impl Into<String>) -> Self {
+        self.volume_format = Some(volume_format.into());
+        self
     }
 }
 
@@ -66,6 +76,9 @@ where
     }
 
     pub async fn run_gc_cycle(&self, config: &BlockGcConfig) -> Result<(), GCError> {
+        if config.volume_format.as_deref() == Some("workspace-native-v2") {
+            return Err(GCError::UnsupportedVolumeFormat);
+        }
         let pending_deletions = self
             .meta_store
             .process_delayed_slices(config.batch_size, config.min_age_secs)
@@ -214,4 +227,6 @@ pub enum GCError {
     MetaError(#[from] MetaError),
     #[error("BlockStore error: {0}")]
     BlockStoreError(String),
+    #[error("legacy block GC is disabled for workspace-native-v2")]
+    UnsupportedVolumeFormat,
 }

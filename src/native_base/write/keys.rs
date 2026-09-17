@@ -87,6 +87,11 @@ impl Keys {
         key
     }
 
+    /// Prefix for the append-only object inventory of one ownership domain.
+    pub fn inventory_prefix(&self, domain_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"inv/", domain_id.as_slice(), b"/"])
+    }
+
     /// Workspace head token.
     pub fn head(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
         self.join(&[b"head/", workspace_id.as_slice()])
@@ -202,6 +207,45 @@ impl Keys {
     pub fn writer_lease(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
         self.join(&[b"writer/", workspace_id.as_slice()])
     }
+
+    /// Prefix for all object registrations belonging to one ownership domain.
+    pub fn objects_prefix(&self, domain_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"obj/", domain_id.as_slice(), b"/"])
+    }
+
+    /// Domain close certificate (BNCT kind 5), written once per domain.
+    pub fn close_certificate(&self, domain_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"close/", domain_id.as_slice()])
+    }
+
+    /// Cleanup batch journal (BNCT kind 6), keyed by close generation and
+    /// batch number. The cleanup id is part of the value and binds retries.
+    pub fn cleanup_batch(
+        &self,
+        domain_id: &[u8; 16],
+        close_generation: u64,
+        batch_number: u64,
+    ) -> Vec<u8> {
+        let mut key = self.join(&[b"clean/", domain_id.as_slice(), b"/"]);
+        key.extend_from_slice(&close_generation.to_be_bytes());
+        key.push(b'/');
+        key.extend_from_slice(&batch_number.to_be_bytes());
+        key
+    }
+
+    /// Prefix for all cleanup batches of a closed domain generation.
+    pub fn cleanup_batches_prefix(&self, domain_id: &[u8; 16], close_generation: u64) -> Vec<u8> {
+        let mut key = self.join(&[b"clean/", domain_id.as_slice(), b"/"]);
+        key.extend_from_slice(&close_generation.to_be_bytes());
+        key.push(b'/');
+        key
+    }
+
+    /// Immutable cleanup-plan digest and batch-count binding for one cleanup
+    /// operation. This prevents retrying a cleanup id with a different plan.
+    pub fn cleanup_operation(&self, cleanup_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"cleanop/", cleanup_id.as_slice()])
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +273,10 @@ mod tests {
         assert!(
             a.drain_batch(&[5u8; 16], 9)
                 .starts_with(&a.drain_batches_prefix(&[5u8; 16]))
+        );
+        assert!(
+            a.cleanup_batch(&[6u8; 16], 1, 2)
+                .starts_with(&a.cleanup_batches_prefix(&[6u8; 16], 1))
         );
         // Registry keys embed the full object key.
         let reg = a.registry(&[3u8; 16], b"native-base/v3/v/k/o/h.brfcl");

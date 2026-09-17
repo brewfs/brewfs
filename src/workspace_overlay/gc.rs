@@ -24,6 +24,7 @@ pub struct WorkspaceGc<W, B> {
     layout: ChunkLayout,
     layer_grace: Duration,
     lease_grace: Duration,
+    volume_format: Option<String>,
 }
 
 impl<W, B> WorkspaceGc<W, B>
@@ -44,7 +45,16 @@ where
             layout,
             layer_grace,
             lease_grace,
+            volume_format: None,
         }
+    }
+
+    /// Bind this legacy collector to a volume format. Native-v2 volumes must
+    /// use `native_base::lifecycle::cleanup::apply_private_cleanup`; allowing
+    /// the old mark-and-sweep would not distinguish permanent objects.
+    pub fn with_volume_format(mut self, volume_format: impl Into<String>) -> Self {
+        self.volume_format = Some(volume_format.into());
+        self
     }
 
     pub async fn run_once(&self) -> Result<GcReport, WorkspaceError> {
@@ -52,6 +62,11 @@ where
     }
 
     pub async fn run_at(&self, now_ns: i64) -> Result<GcReport, WorkspaceError> {
+        if self.volume_format.as_deref() == Some("workspace-native-v2") {
+            return Err(WorkspaceError::UnsupportedVolumeFormat(
+                "legacy WorkspaceGc is disabled for workspace-native-v2; use the private-domain cleaner".into(),
+            ));
+        }
         let lease_grace_ns = duration_ns(self.lease_grace)?;
         let snapshot = self.store.gc_snapshot(now_ns, lease_grace_ns).await?;
         let parents = snapshot
@@ -322,6 +337,22 @@ mod tests {
             .unwrap_err();
         assert!(error.downcast_ref::<IncompleteBlockRead>().is_some());
         assert_eq!(output, [9; 6]);
+        session.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_gc_rejects_native_v2_volumes() {
+        let (store, session) = setup().await;
+        let gc = WorkspaceGc::new(
+            store,
+            Arc::new(InMemoryBlockStore::new()),
+            ChunkLayout::default(),
+            Duration::ZERO,
+            Duration::from_secs(60),
+        )
+        .with_volume_format("workspace-native-v2");
+        let error = gc.run_at(i64::MAX / 2).await.unwrap_err();
+        assert!(matches!(error, WorkspaceError::UnsupportedVolumeFormat(_)));
         session.release().await.unwrap();
     }
 }

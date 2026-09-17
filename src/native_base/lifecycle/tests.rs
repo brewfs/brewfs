@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
+use super::cleanup::{CloseStartRequest, close_domain_start};
 use super::fork::{FastForwardRequest, ForkRequest, fast_forward, fork_from_published};
 use super::index::{build_object_index, open_object_index};
 use super::manifest::{KvNamespace, SnapshotManifest, open_manifest};
@@ -966,6 +967,33 @@ async fn two_domain_publication_is_atomic_exact_and_idempotent() {
             .iter()
             .any(|object| object.kind == ObjectKind::DataPack.as_u8())
     );
+
+    // In the opposite serialization order, publication commits first and
+    // close_start must freeze the incremented retention sequence.
+    let published_domain = decode_domain(
+        &store
+            .get(&keys.domain(&build_domain))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let close = close_domain_start(
+        &store,
+        &keys,
+        &CloseStartRequest {
+            domain_id: build_domain,
+            expected_owner_generation: published_domain.owner_generation,
+            expected_entity_version: published_domain.entity_version,
+            expected_inventory_seq: published_domain.inventory_seq,
+            expected_retention_seq: published_domain.retention_seq,
+            accepted_ticket_end: 13,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(close.state, DomainState::Draining);
+    assert_eq!(close.retention_seq, 1);
 }
 
 #[tokio::test]

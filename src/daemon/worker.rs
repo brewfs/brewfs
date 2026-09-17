@@ -27,6 +27,8 @@ pub struct ObjectGcConfig {
     /// Minimum age of delayed slices to delete (seconds)
     pub max_age_secs: i64,
     pub layout: ChunkLayout,
+    /// Legacy mark-and-sweep must never run against a native-v2 volume.
+    pub volume_format: Option<String>,
 }
 
 impl Default for ObjectGcConfig {
@@ -36,6 +38,7 @@ impl Default for ObjectGcConfig {
             batch_size: 100,
             max_age_secs: 3600,
             layout: ChunkLayout::default(),
+            volume_format: None,
         }
     }
 }
@@ -110,6 +113,12 @@ impl<B: ObjectBackend + Clone> MarkBasedGarbageCollector<B> {
     async fn run_gc_cycle(
         &self,
     ) -> Result<(usize, usize, usize), Box<dyn std::error::Error + Send + Sync>> {
+        if self.config.volume_format.as_deref() == Some("workspace-native-v2") {
+            return Err(anyhow::anyhow!(
+                "legacy mark-and-sweep GC is disabled for workspace-native-v2; use private-domain cleanup"
+            )
+            .into());
+        }
         info!("Starting GC cycle");
 
         // Phase 1: Process delayed slices (from compaction) and delete their block data

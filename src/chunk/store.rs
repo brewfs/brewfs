@@ -365,6 +365,9 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     bandwidth: BandwidthLimiter,
     /// Object store request counters exposed through VFS `.stats`.
     object_metrics: Arc<ObjectStoreMetrics>,
+    /// Native-v2 volumes must route private deletion through the lifecycle
+    /// cleaner, so the legacy block-range entry point is fail-closed.
+    legacy_delete_allowed: bool,
 }
 
 /// Configuration for ObjectBlockStore read strategy
@@ -467,6 +470,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
+            legacy_delete_allowed: true,
         }
     }
 
@@ -516,6 +520,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
+            legacy_delete_allowed: true,
         })
     }
 
@@ -543,6 +548,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
+            legacy_delete_allowed: true,
         })
     }
 
@@ -550,6 +556,13 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     #[allow(unused)]
     pub fn with_bandwidth(mut self, limiter: BandwidthLimiter) -> Self {
         self.bandwidth = limiter;
+        self
+    }
+
+    /// Bind this store to a volume format. Native-v2 rejects all legacy
+    /// block-range deletion; its domain cleaner is the only deletion owner.
+    pub fn with_volume_format(mut self, volume_format: impl AsRef<str>) -> Self {
+        self.legacy_delete_allowed = volume_format.as_ref() != "workspace-native-v2";
         self
     }
 
@@ -1228,6 +1241,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
     }
 
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()> {
+        if !self.legacy_delete_allowed {
+            anyhow::bail!(
+                "legacy block deletion is disabled for workspace-native-v2; use private-domain cleanup"
+            );
+        }
         let (chunk_id, block_index) = key;
         let start = block_index;
         let end = start + block_count.as_u32();
@@ -3369,5 +3387,20 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_v2_rejects_legacy_block_range_deletion() {
+        let object_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let store = local_object_store(object_dir.path(), cache_dir.path(), 4096)
+            .await
+            .with_volume_format("workspace-native-v2");
+        let error = store.delete_range((1, 0), 1).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("legacy block deletion is disabled")
+        );
     }
 }

@@ -6,6 +6,7 @@
 //! encoding is left untouched; lifecycle transactions maintain the richer
 //! BNCT kind-16 view alongside it.
 
+pub mod cleanup;
 pub mod fork;
 pub mod index;
 pub mod manifest;
