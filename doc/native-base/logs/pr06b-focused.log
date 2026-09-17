@@ -1,0 +1,67 @@
+   Compiling brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.84s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 11 tests
+test native_base::lifecycle::cleanup::tests::cleanup_batches_are_bounded ... ok
+test native_base::lifecycle::cleanup::tests::lease_expiry_or_unresolved_proof_is_not_delete_authority ... ok
+test native_base::lifecycle::cleanup::tests::close_freezes_domain_and_cleanup_protects_retained_object ... ok
+test native_base::lifecycle::cleanup::tests::blocked_delete_stays_pending_and_same_operation_retries ... ok
+test native_base::lifecycle::cleanup::tests::missing_or_rollback_evidence_enters_retain_all ... ok
+test native_base::lifecycle::cleanup::tests::replan_after_partial_delete_preserves_digest_and_skips_deleted_rows ... ok
+test native_base::lifecycle::cleanup::tests::multiple_retention_batches_form_exact_union_and_survive_cleaned ... ok
+test native_base::lifecycle::cleanup::tests::unknown_attempt_quarantines_domain_and_prevents_cleanup ... ok
+test native_base::lifecycle::cleanup::tests::two_cleaners_cannot_own_the_same_deleting_batch ... ok
+test native_base::lifecycle::cleanup::tests::versioned_or_locked_namespace_is_rejected_before_delete ... ok
+test native_base::lifecycle::cleanup::tests::cleanup_reuses_operation_across_batches_and_cleans_after_last_batch ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 1077 filtered out; finished in 0.01s
+
+cleanup:exit=0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 19 tests
+test native_base::lifecycle::cleanup::tests::cleanup_batches_are_bounded ... ok
+test native_base::lifecycle::cleanup::tests::lease_expiry_or_unresolved_proof_is_not_delete_authority ... ok
+test native_base::lifecycle::cleanup::tests::blocked_delete_stays_pending_and_same_operation_retries ... ok
+test native_base::lifecycle::cleanup::tests::close_freezes_domain_and_cleanup_protects_retained_object ... ok
+test native_base::lifecycle::cleanup::tests::missing_or_rollback_evidence_enters_retain_all ... ok
+test native_base::lifecycle::cleanup::tests::replan_after_partial_delete_preserves_digest_and_skips_deleted_rows ... ok
+test native_base::lifecycle::cleanup::tests::multiple_retention_batches_form_exact_union_and_survive_cleaned ... ok
+test native_base::lifecycle::cleanup::tests::two_cleaners_cannot_own_the_same_deleting_batch ... ok
+test native_base::lifecycle::cleanup::tests::unknown_attempt_quarantines_domain_and_prevents_cleanup ... ok
+test native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers ... ok
+test native_base::lifecycle::cleanup::tests::versioned_or_locked_namespace_is_rejected_before_delete ... ok
+test native_base::lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action ... ok
+test native_base::lifecycle::tests::exact_retention_partitions_owned_domains_and_rejects_siblings ... ok
+test native_base::lifecycle::tests::drain_batches_enforce_entry_and_payload_limits_before_persistence ... ok
+test native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring ... ok
+test native_base::lifecycle::tests::manifest_and_object_inventory_roundtrip_without_self_reference ... ok
+test native_base::lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent ... ok
+test native_base::lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward ... ok
+test native_base::lifecycle::cleanup::tests::cleanup_reuses_operation_across_batches_and_cleans_after_last_batch ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 1069 filtered out; finished in 0.01s
+
+lifecycle:exit=0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon-7caff5/debug/deps/brewfs-92c42df678a3d645)
+
+running 1 test
+test chunk::store::tests::native_v2_rejects_legacy_block_range_deletion ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1087 filtered out; finished in 0.00s
+
+legacy-delete-guard:exit=0
+    Checking brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 42.57s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+clippy:exit=0

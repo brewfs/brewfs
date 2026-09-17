@@ -1,6 +1,6 @@
 # Native Base 实现及实验报告
 
-状态：进行中（PR06A 完成，PR06B 开发中）。本报告按规格包模板维护，逐 PR 追加真实证据；
+状态：进行中（PR06A、PR06B 组件交付完成，下一步为 PR07）。本报告按规格包模板维护，逐 PR 追加真实证据；
 不把参考模型 PASS 抄成产品验收 PASS，无环境项如实 NOT_RUN。
 
 ## 身份与范围
@@ -10,7 +10,7 @@
 - 基准 commit：`8ff73d9c18c0f81e88c183383b00d2ba86bd42ba`（实现开始时 HEAD 与其一致）。
 - 阶段：P1（PR01 基线审计 → PR02 wire codec → PR03 seal reader →
   PR04 写管线与控制面事务 → PR05 ingest 与上传验证/resume → PR06A
-  永久发布、精确保留、seal/fork/recovery）。
+  永久发布、精确保留、seal/fork/recovery → PR06B close/cleanup/旧GC隔离）。
 - 已读：仓库 AGENTS.md；规格包 README、CODEX_TASK、00/01/02/03/04/06/09/10/15/18/20。
 - 关联不变量：本轮全部（INV-01..INV-24），PR03 重点核 INV-03/04/05/13/14
   （固定视图/缺失即错误/索引序/预算取消/不猜编码）；PR04 重点核
@@ -375,7 +375,7 @@ raw 日志在 `doc/native-base/logs/`。实现位于 `src/native_base/ingest/`�
   后端集成（rustfs/S3 语义、服务端 multipart 并发交叠）属 PR07，本 PR 不主张。
 - INGEST-010 的「磁盘耗尽」在 P1 以 build 的 disk budget 门实现
   （`InsufficientDisk`，上传前失败）；后端侧配额/507 的真实注入属 PR07。
-- 未做项（如实保留）：跨 session 的 lease 回收与私有清理策略属 PR06B；manifest
+- 未做项（如实保留）：跨 session 的真实后端 lease 回收与 runtime 私有清理接线属 PR07；manifest
   层（SealVerified→ManifestVerified→Published）属 PR06A。
 
 说明：
@@ -436,9 +436,43 @@ metadata 外部页归 PR08/09；`RET-011` 是 PR07 runtime 读计数；`RET-012`
 
 ## 永久保留与私有清理
 
-PR01：盘点全部现有 delete/GC 入口及其触发条件，形成隔离清单
-（pr01-baseline-audit.md）。PR06B 将按此清单逐入口接入卷格式隔离，
-不实现时默认拒绝。
+### PR06B · ownership close 证书、终结私有 cleaner、旧 GC 隔离（组件交付完成）
+
+实现提交：`48966c9b0b5e6754d163a35631bc25e83d08a10e`；门禁脚本修订与最终
+精确 SHA 为 `ea86664da47123837a79976f95c293c7e307acc7`。实现位于
+`src/native_base/lifecycle/cleanup.rs`，并扩展 `Keys` 的 inventory/object/close/
+cleanup journal 命名空间。关闭只接受同一 volume/domain 的连续库存、终态
+registration、连续 RetentionReceipt 和认证索引根；未知 attempt 会原子进入
+`QUARANTINED`，不会靠 lease expiry 或取消 HTTP future 伪造终结。
+
+私有计划绑定固定 close certificate、`I(d)−K(d)−C(d)`、seq/root/digest 与
+有界 128-object/1MiB journal batch；apply 先将 registration 置
+`DELETE_PENDING`，再在 KV 锁外逐对象删除，按 `Deleted`/`AlreadyAbsent` 记录
+实际结果。重复 operation/batch、部分失败重试、两个 cleaner 竞争和
+`RECOVERY_RETAIN_ALL` 均 fail-closed。`CLEANED` 只表示计划候选处理完，保留
+对象继续存在。
+
+旧删除入口增加 native-v2 隔离：`ObjectBlockStore::delete_range`、
+`WorkspaceGc`、`BlockStoreGC` 与 mark-sweep 配置均拒绝
+`workspace-native-v2`，后续 runtime 构造器必须显式绑定新 cleaner。
+
+| 测试项 | 原样命令 | 退出码 | 结果 | raw 证据 |
+|---|---|---:|---|---|
+| PR06B-FOCUSED | `bash doc/native-base/logs/pr06b-focused.sh` | 0 | PASS（cleanup 11、lifecycle 19、legacy-delete guard 1；0 failed；clippy -D warnings） | [pr06b-focused.log](logs/pr06b-focused.log) |
+| PR06B-FMT/BASH/CHECK/BUILD/FEATURE | `bash doc/native-base/logs/pr06b-final-run.sh` | 0 | PASS（每个步骤独立 `exit=0`；shell 使用 LF scratch 副本） | [pr06b-final-gate.log](logs/pr06b-final-gate.log) |
+| PR06B-WORKSPACE-TEST | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins` | 0 | PASS（869 + 722 passed；0 failed；219 + 185 ignored） | 同上 |
+| PR06B-CLIPPY | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace` | 0 | PASS（无 PR06B 新警告；仅 feature 组合下存量 `CacheTtl` warning 已知） | 同上 |
+| PR06B-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS（提交后工作树仅保留用户 `.claude/`） | 本报告更新前复核 |
+
+聚焦反例覆盖：publish-before-close 与 close-before-publish、UNKNOWN/quarantine、
+lease 不足、多个 RetainBatch 并集、I/K/C 精确差集、证据缺失与 authority
+rollback retain-all、版本化/ObjectLock 能力拒绝、两个 cleaner 竞争、部分删除
+重试与 CLEANED 后 retained 可读。验收矩阵从 65 项 PASS 增至 80 项 PASS。
+
+仍如实保留的范围：cleanup 目前在内存 `ControlStore`/故障注入 deleter 上验证，
+Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 runtime/FUSE
+接线、quota hard-limit、独立 ControlEvidence 引导对象和 operator 实际删除路由
+属于后续 PR07/运维集成；因此本节不宣称完整 P1 已开放。
 
 ## 后端、故障与准入
 

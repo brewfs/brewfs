@@ -1283,8 +1283,8 @@
     "expected": "域retained集合为并集，不能用最新替换",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; multiple_retention_batches_form_exact_union_and_survive_cleaned 以两条连续RetentionReceipt/两个RetainBatch构造K(d)精确并集，cleaner只选未保留对象；focused exit 0；exact-sha gate ea86664da47123837a79976f95c293c7e307acc7；doc/native-base/logs/pr06b-focused.log, pr06b-final-gate.log"
   },
   {
     "test_id": "RET-007",
@@ -1481,8 +1481,8 @@
     "expected": "关闭证书的retention_seq包含该发布批次",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; two_domain_publication_is_atomic_exact_and_idempotent 在publication提交后调用close_domain_start，断言冻结后的retention_seq=1；focused lifecycle exit 0；exact-sha gate ea86664da47123837a79976f95c293c7e307acc7"
   },
   {
     "test_id": "CLN-003",
@@ -1492,8 +1492,8 @@
     "expected": "publisher失败，不能创建遗漏保留的新版本",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; two_domain_publication_is_atomic_exact_and_idempotent 先将build域置DRAINING，再断言publisher失败且PublishedRevision/head/receipt均无部分效果；focused lifecycle exit 0；doc/native-base/logs/pr06b-focused.log"
   },
   {
     "test_id": "CLN-004",
@@ -1514,8 +1514,8 @@
     "expected": "QUARANTINED，不用TTL伪造完成",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; unknown_attempt_quarantines_domain_and_prevents_cleanup 断言UNKNOWN registration使DRAINING原子进入QUARANTINED且不生成close certificate；focused exit 0；doc/native-base/logs/pr06b-focused.log"
   },
   {
     "test_id": "CLN-006",
@@ -1525,8 +1525,8 @@
     "expected": "不签发关闭证书",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; lease_expiry_or_unresolved_proof_is_not_delete_authority 以attempts_resolved=false证明仅有lease/调用方意图不足，拒绝证书并QUARANTINED；focused exit 0"
   },
   {
     "test_id": "CLN-007",
@@ -1547,8 +1547,8 @@
     "expected": "旧逻辑操作失败但域继续保留/隔离",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; close_domain_commit没有force旁路，lease_expiry_or_unresolved_proof_is_not_delete_authority 断言缺可信attempt终态证明一律隔离且无close certificate；focused exit 0"
   },
   {
     "test_id": "CLN-009",
@@ -1558,8 +1558,8 @@
     "expected": "I减K减控制证据，只删eligible",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; close_freezes_domain_and_cleanup_protects_retained_object 使用认证I/K/C索引，plan_private_cleanup只产生I-K-C中的doomed对象，kept与RetainBatch控制对象不删；focused exit 0"
   },
   {
     "test_id": "CLN-010",
@@ -1569,8 +1569,8 @@
     "expected": "外排序归并精确，不漏历史保留对象",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; multiple_retention_batches_form_exact_union_and_survive_cleaned 逐条验证连续receipt、本地域RetainBatch根与精确K(d)并集，两个历史保留对象均未进入candidate；focused exit 0"
   },
   {
     "test_id": "CLN-011",
@@ -1580,8 +1580,8 @@
     "expected": "作为控制根保留，不造成自引用",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; close_freezes_domain_and_cleanup_protects_retained_object 与 multiple_retention_batches... 断言RetainBatch/evidence根进入C(d)，close certificate root由domain.close_ref直接持有且不进入I/K/C自引用候选；focused exit 0"
   },
   {
     "test_id": "CLN-012",
@@ -1591,8 +1591,8 @@
     "expected": "校验固定close身份和hash后幂等执行",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; replan_after_partial_delete_preserves_digest_and_skips_deleted_rows 断言部分DELETE后重建plan仍绑定同close roots/seq与同digest，已DELETED不重复调用，DELETE_PENDING可幂等续跑；focused exit 0"
   },
   {
     "test_id": "CLN-013",
@@ -1602,8 +1602,8 @@
     "expected": "域内generation/批次记录唯一胜者",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; two_cleaners_cannot_own_the_same_deleting_batch 用阻塞backend固定竞争窗口，首worker持有DELETING后第二worker Conflict，backend仅收到一次DELETE；focused exit 0"
   },
   {
     "test_id": "CLN-014",
@@ -1635,8 +1635,8 @@
     "expected": "拒绝cleanup apply，但不混淆只读能力",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; versioned_or_locked_namespace_is_rejected_before_delete 覆盖versioning=Enabled、ObjectLock和delete unsupported，全部在backend调用前拒绝；focused exit 0"
   },
   {
     "test_id": "CLN-017",
@@ -1657,8 +1657,8 @@
     "expected": "RECOVERY_RETAIN_ALL，停止所有物理DELETE",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; missing_or_rollback_evidence_enters_retain_all 覆盖缺认证inventory bytes与AuthorityHealth::RecoveryRetainAll，两者均0 DELETE且域保持CLOSED；focused exit 0"
   },
   {
     "test_id": "CLN-019",
@@ -1668,8 +1668,8 @@
     "expected": "拒绝或按新政策路由，不误删",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e（组件级隔离）；native_v2_rejects_legacy_block_range_deletion 与 legacy_gc_rejects_native_v2_volumes 证明ObjectBlockStore/WorkspaceGc拒绝native-v2，BlockStoreGC与dead mark-sweep同样有格式闸门；PR07仍需把native runtime构造器绑定该格式；focused guard exit 0"
   },
   {
     "test_id": "CLN-020",
@@ -1679,8 +1679,8 @@
     "expected": "CLEANED不等于所有字节消失，retained仍可读",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "commit 48966c9b0b5e6754d163a35631bc25e83d08a10e; multiple_retention_batches_form_exact_union_and_survive_cleaned 使用可读内存对象backend，域到CLEANED后kept-a/kept-b及两条控制证据仍可读，只有eligible对象消失；focused exit 0"
   },
   {
     "test_id": "CLN-021",
