@@ -14,12 +14,12 @@
 
 use sha2::{Digest, Sha256};
 
+use super::container::HEADER_LEN;
 use super::error::{WireError, WireResult};
 use super::page::{
     BnpgKind, IndexPage, InternalEntry, LeafEntry, MAX_PAGE_ENTRIES, MAX_RAW_PAGE, PageBody,
 };
 use super::refs::{ChildRef, MAX_INDEX_LEVEL, PageAddress, PageKind};
-use super::container::HEADER_LEN;
 
 /// Shape parameters of one index tree.
 #[derive(Debug, Clone, Copy)]
@@ -212,20 +212,15 @@ mod tests {
 
     fn entries(n: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
         (0..n)
-            .map(|i| {
-                (
-                    (i as u32).to_be_bytes().to_vec(),
-                    vec![b'v'; 40 + (i % 7)],
-                )
-            })
+            .map(|i| ((i as u32).to_be_bytes().to_vec(), vec![b'v'; 40 + (i % 7)]))
             .collect()
     }
 
     #[test]
     fn single_leaf_and_multi_level_shapes() {
         let mut body = Vec::new();
-        let root = build_index_tree(&entries(1), &IndexTreeParams::generic(16 * 1024), &mut body)
-            .unwrap();
+        let root =
+            build_index_tree(&entries(1), &IndexTreeParams::generic(16 * 1024), &mut body).unwrap();
         match root {
             ChildRef::Local(addr) => {
                 assert_eq!(addr.level, 0);
@@ -245,7 +240,9 @@ mod tests {
                 assert!(addr.level >= 2, "expected a multi-level tree");
                 // PageAddress offsets are object-relative (header included),
                 // so the stored range must land inside header + body.
-                assert!(addr.offset + addr.stored_len as u64 <= HEADER_LEN as u64 + body.len() as u64);
+                assert!(
+                    addr.offset + addr.stored_len as u64 <= HEADER_LEN as u64 + body.len() as u64
+                );
             }
             _ => panic!("local root expected"),
         }
@@ -283,9 +280,7 @@ mod tests {
                     assert!(!entries.is_empty());
                     Vec::new()
                 }
-                PageBody::Internal(entries) => {
-                    entries.iter().map(|e| e.child.clone()).collect()
-                }
+                PageBody::Internal(entries) => entries.iter().map(|e| e.child.clone()).collect(),
             }
         }
 
@@ -305,8 +300,6 @@ mod tests {
         // produce an unreadable page.
         let big = vec![(b"k".to_vec(), vec![0u8; MAX_RAW_PAGE + 1])];
         let mut body = Vec::new();
-        assert!(
-            build_index_tree(&big, &IndexTreeParams::generic(16 * 1024), &mut body).is_err()
-        );
+        assert!(build_index_tree(&big, &IndexTreeParams::generic(16 * 1024), &mut body).is_err());
     }
 }

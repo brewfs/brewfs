@@ -37,6 +37,7 @@
 
 pub mod counterexamples;
 pub mod ingest;
+pub mod lifecycle;
 pub mod seal;
 pub mod wire;
 pub mod write;

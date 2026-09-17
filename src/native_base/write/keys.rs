@@ -15,6 +15,12 @@
 //! | `ext/{workspace_id}/{inode}/{offset:BE64}` | [`NativeExtent`](super::records::NativeExtent) |
 //! | `bnd/{slice_id}/{block:BE64}` | [`BlockBinding`](crate::native_base::seal::BlockBinding) (36 bytes) |
 //! | `plc/{slice_id}/{block:BE64}` | [`HeadPlacement`](super::records::HeadPlacement) |
+//! | `view/{workspace_id}` | BNCT kind 16 `NativeWorkspaceHead` envelope |
+//! | `pubj/{operation_id}` | BNCT kind 17 `NativePublicationJournal` envelope |
+//! | `drn/{operation_id}/{batch:BE64}` | BNCT kind 18 `NativeDrainBatch` envelope |
+//! | `ret/{domain_id}/{seq:BE64}` | BNCT kind 3 `RetentionReceipt` envelope |
+//! | `pub/{storage_view_id}` | BNCT kind 4 `PublishedRevision` envelope |
+//! | `kvr/{layer_id}/{sealed_version:BE64}` | BNCT kind 7 `KvBaseRetention` envelope |
 //!
 //! Big-endian suffixes keep the unsigned byte-string key order (spec 02 §10)
 //! equal to the numeric order, so `scan` yields extents in logical offset
@@ -128,6 +134,74 @@ impl Keys {
         key.extend_from_slice(&block.to_be_bytes());
         key
     }
+
+    /// Rich workspace view record (BNCT kind 16). The compact `head/` row
+    /// remains byte-for-byte unchanged for the PR04 write path; lifecycle
+    /// transactions update both rows atomically.
+    pub fn workspace_view(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"view/", workspace_id.as_slice()])
+    }
+
+    /// Publication journal (BNCT kind 17), keyed by OperationId.
+    pub fn publication_journal(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"pubj/", operation_id.as_slice()])
+    }
+
+    /// Stored canonical request digest for publication idempotency.
+    pub fn publication_operation(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"pop/", operation_id.as_slice()])
+    }
+
+    /// One persisted drain batch (BNCT kind 18).
+    pub fn drain_batch(&self, operation_id: &[u8; 16], batch_id: u64) -> Vec<u8> {
+        let mut key = self.join(&[b"drn/", operation_id.as_slice(), b"/"]);
+        key.extend_from_slice(&batch_id.to_be_bytes());
+        key
+    }
+
+    /// Prefix for every drain batch belonging to a publication operation.
+    pub fn drain_batches_prefix(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"drn/", operation_id.as_slice(), b"/"])
+    }
+
+    /// Append-only retention receipt for one origin domain.
+    pub fn retention_receipt(&self, domain_id: &[u8; 16], seq: u64) -> Vec<u8> {
+        let mut key = self.join(&[b"ret/", domain_id.as_slice(), b"/"]);
+        key.extend_from_slice(&seq.to_be_bytes());
+        key
+    }
+
+    /// Prefix for every committed retention receipt of a domain.
+    pub fn retention_receipts_prefix(&self, domain_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"ret/", domain_id.as_slice(), b"/"])
+    }
+
+    /// Permanent published-revision record, keyed by StorageViewId.
+    pub fn published_revision(&self, storage_view_id: &[u8; 32]) -> Vec<u8> {
+        self.join(&[b"pub/", storage_view_id.as_slice()])
+    }
+
+    /// Permanent P1 KV-base retention record.
+    pub fn kv_base_retention(&self, layer_id: &[u8; 16], sealed_version: u64) -> Vec<u8> {
+        let mut key = self.join(&[b"kvr/", layer_id.as_slice(), b"/"]);
+        key.extend_from_slice(&sealed_version.to_be_bytes());
+        key
+    }
+
+    /// Fork base fixed at workspace creation; fast-forward must match it.
+    pub fn fork_base(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"forkbase/", workspace_id.as_slice()])
+    }
+
+    /// Fork-operation idempotency row.
+    pub fn fork_operation(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"forkop/", operation_id.as_slice()])
+    }
+
+    /// Presence means the target workspace currently has a valid writer.
+    pub fn writer_lease(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"writer/", workspace_id.as_slice()])
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +220,16 @@ mod tests {
         assert!(a.inventory(&[0u8; 16], 255) < a.inventory(&[0u8; 16], 256));
         assert!(a.extent(&[0u8; 16], 7, 10) < a.extent(&[0u8; 16], 7, 11));
         assert!(a.extent(&[0u8; 16], 7, u64::MAX) < a.extent(&[0u8; 16], 8, 0));
+        assert!(a.retention_receipt(&[4u8; 16], 9) < a.retention_receipt(&[4u8; 16], 10));
+        assert!(a.drain_batch(&[5u8; 16], 9) < a.drain_batch(&[5u8; 16], 10));
+        assert!(
+            a.retention_receipt(&[4u8; 16], 9)
+                .starts_with(&a.retention_receipts_prefix(&[4u8; 16]))
+        );
+        assert!(
+            a.drain_batch(&[5u8; 16], 9)
+                .starts_with(&a.drain_batches_prefix(&[5u8; 16]))
+        );
         // Registry keys embed the full object key.
         let reg = a.registry(&[3u8; 16], b"native-base/v3/v/k/o/h.brfcl");
         assert!(reg.starts_with(&a.prefix));
