@@ -831,6 +831,34 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 的验收是组件级（seal reader + 进程内对象源），真实对象后端的分片/延迟 GET 等价性仍需 P3 集成门。
 
 
+### PR07M · 读路径组合与并发身份（READ-001/READ-007/READ-008）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。本组把三条此前只有"合同级"的
+读取契约变成可执行断言：
+
+- `src/native_base/runtime/io.rs`：测试新增 `PackedSealBase`——baseline 是真实
+  `.brfds`（`SealBuilder` + `DataPack` + `SealReader::read_range`）而不是字节数组；
+  在同一 inode 上叠 loose patch 与 hole，全量与跨边界局部读都与 oracle 逐字节一致
+  （READ-001）。
+- `src/native_base/runtime/planner.rs`：新增 `ReadUnit::flight_key()` / `FrameKey`，
+  把 namespace 显式写进可缓存身份；`coalesce_ranges` 与 singleflight 都以该身份为准
+  （READ-007）；并新增"并发 scatter 中取消 4/8 个等待者"的测试，证明被取消者既不
+  持有 buffer 引用、也不会成为 loader，已完成条目继续服务后续读者（READ-008）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07M-FOCUSED | `bash doc/native-base/logs/pr07m-runtime-read-composition.sh` | 0 | PASS（runtime io 14 passed/0 failed、planner 6 passed/0 failed） | [pr07m-runtime-read-composition.log](logs/pr07m-runtime-read-composition.log) |
+| PR07M-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07M-READ001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io` | 0 | PASS：`packed_baseline_loose_patch_and_hole_read_back_byte_exact` | 同上 |
+| PR07M-READ007 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::planner` | 0 | PASS：`the_same_object_id_in_two_namespaces_shares_nothing` | 同上 |
+| PR07M-READ008 | 同上 | 0 | PASS：`a_cancelled_scatter_waiter_leaves_no_buffer_reference_or_waiter` | 同上 |
+
+范围说明（不虚标）：READ-001 的 baseline 是进程内 `.brfds` + 进程内 ObjectSource，
+没有真实对象后端的延迟/分片 GET；READ-007 的 namespace 隔离在 planner 身份层完成，
+跨进程共享缓存（PR11 preview）仍未启用；READ-008 的取消是 tokio 任务级取消，
+FUSE 层 request 级取消（D-state/teardown）不在本项证据内。
+
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -768,7 +768,19 @@ impl NativeDataRuntime {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use std::collections::BTreeMap;
+
+    use sha2::{Digest, Sha256};
+
     use super::*;
+    use crate::native_base::seal::builder::SealBuilder;
+    use crate::native_base::seal::descriptor::FrameDescriptor;
+    use crate::native_base::seal::placement::Span;
+    use crate::native_base::seal::source::{ObjectSource, ObjectSourceError};
+    use crate::native_base::seal::{SealReader, SealSnapshot};
+    use crate::native_base::wire::container::ObjectKind;
+    use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
+    use crate::native_base::wire::refs::ObjectRef;
     use crate::native_base::write::memory::MemoryControlStore;
     use crate::native_base::write::overlay::OverlayParams;
     use crate::native_base::write::receipts::MemorySink;
@@ -865,7 +877,7 @@ mod tests {
     async fn runtime(
         store: Arc<MemoryControlStore>,
         sink: Arc<dyn ObjectSink>,
-        base: Arc<CountingBase>,
+        base: Arc<dyn BaseDataSource>,
     ) -> NativeDataRuntime {
         let overlay = Arc::new(WriteOverlay::new(
             store,
@@ -1273,5 +1285,153 @@ mod tests {
         expected[80..96].fill(0); // hole region (not overwritten by second write)
         expected[96..128].fill(0xbb); // second write wins
         assert_eq!(runtime.read(24, 0, 256).await.unwrap(), expected);
+    }
+
+    const PACKED_SLICE: u64 = 1;
+    const PACKED_PACK_ID: [u8; 16] = [0x91; 16];
+
+    /// An in-process object backend for the packed baseline fixture.
+    #[derive(Default)]
+    struct MapSource {
+        objects: BTreeMap<[u8; 16], Vec<u8>>,
+    }
+
+    impl ObjectSource for MapSource {
+        fn get_range(
+            &self,
+            object_id: &[u8; 16],
+            start: u64,
+            end: u64,
+        ) -> Result<Vec<u8>, ObjectSourceError> {
+            let bytes = self
+                .objects
+                .get(object_id)
+                .ok_or(ObjectSourceError::NotFound)?;
+            if start > end || end > bytes.len() as u64 {
+                return Err(ObjectSourceError::ShortRead {
+                    requested: end - start,
+                    received: (bytes.len() as u64).saturating_sub(start),
+                });
+            }
+            Ok(bytes[start as usize..end as usize].to_vec())
+        }
+    }
+
+    /// A `BaseDataSource` whose baseline is a real packed `.brfds` seal read
+    /// through the planned reader ? not a byte array.
+    struct PackedSealBase {
+        snapshot: SealSnapshot,
+        source: MapSource,
+        blocks: u32,
+        block_size: u32,
+    }
+
+    #[async_trait]
+    impl BaseDataSource for PackedSealBase {
+        async fn size(&self, _inode: u64) -> Result<u64, NativeIoError> {
+            Ok(u64::from(self.block_size) * u64::from(self.blocks))
+        }
+
+        async fn read_exact(
+            &self,
+            _inode: u64,
+            offset: u64,
+            output: &mut [u8],
+        ) -> Result<(), NativeIoError> {
+            let reader = SealReader::new(&self.snapshot, &self.source);
+            let bytes = reader
+                .read_range(PACKED_SLICE, offset, output.len() as u64, self.block_size)
+                .map_err(|error| NativeIoError::Base(error.to_string()))?;
+            output.copy_from_slice(&bytes);
+            Ok(())
+        }
+    }
+
+    /// Build one DataPack and a seal with one packed block per input block.
+    fn packed_seal(blocks: &[Vec<u8>]) -> (Vec<u8>, Vec<u8>) {
+        let block_size = blocks[0].len() as u32;
+        let mut pack = PackBuilder::new();
+        for block in blocks {
+            pack.push(PackFrame::plain_bytes(block).unwrap());
+        }
+        let pack_bytes = pack.build().unwrap();
+        let scrubbed = ScrubbedPack::scrub(&pack_bytes).unwrap();
+
+        let mut seal = SealBuilder::new(block_size);
+        let ordinal = seal.next_object_ordinal();
+        seal.add_object(
+            ordinal,
+            ObjectRef {
+                object_id: PACKED_PACK_ID,
+                kind: ObjectKind::DataPack.as_u8(),
+                object_len: pack_bytes.len() as u64,
+                full_hash: Sha256::digest(&pack_bytes).into(),
+                key: b"runtime/packed".to_vec(),
+            },
+        );
+        let mut slots = Vec::new();
+        for frame in &scrubbed.frames {
+            let slot = seal.next_frame_slot();
+            seal.add_frame(slot, FrameDescriptor::from_scrubbed(frame, ordinal));
+            slots.push(slot);
+        }
+        for (index, block) in blocks.iter().enumerate() {
+            seal.add_packed_block(
+                PACKED_SLICE,
+                index as u32,
+                block,
+                vec![Span {
+                    block_offset: 0,
+                    length: block.len() as u32,
+                    frame_slot: slots[index],
+                    frame_raw_offset: 0,
+                }],
+            )
+            .unwrap();
+        }
+        seal.validate().unwrap();
+        (seal.build().unwrap(), pack_bytes)
+    }
+
+    /// READ-001: one read that spans packed baseline blocks, a loose patch and
+    /// a hole must match a byte-for-byte oracle.  The baseline here is a real
+    /// `.brfds` pack read through the seal reader, not a byte array.
+    #[tokio::test]
+    async fn packed_baseline_loose_patch_and_hole_read_back_byte_exact() {
+        let blocks: Vec<Vec<u8>> = (0..4u8).map(|seed| vec![0x10 + seed; 64]).collect();
+        let (seal_bytes, pack_bytes) = packed_seal(&blocks);
+        let mut source = MapSource::default();
+        source.objects.insert(PACKED_PACK_ID, pack_bytes);
+        let base = Arc::new(PackedSealBase {
+            snapshot: SealSnapshot::open(seal_bytes).unwrap(),
+            source,
+            blocks: blocks.len() as u32,
+            block_size: 64,
+        });
+
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let runtime = runtime(store, sink, base).await;
+        assert_eq!(runtime.size(9).await.unwrap(), 256);
+
+        // A loose patch straddling the first block boundary, and a hole inside
+        // the last block.
+        runtime.write(9, 32, b"LOOSE").await.unwrap();
+        runtime.discard(9, 200, 16, true).await.unwrap();
+        runtime.fsync(9).await.unwrap();
+
+        let mut oracle: Vec<u8> = blocks.concat();
+        oracle[32..37].copy_from_slice(b"LOOSE");
+        oracle[200..216].fill(0);
+
+        assert_eq!(runtime.read(9, 0, 256).await.unwrap(), oracle);
+        assert_eq!(
+            runtime.read(9, 30, 8).await.unwrap(),
+            oracle[30..38].to_vec()
+        );
+        assert_eq!(
+            runtime.read(9, 198, 20).await.unwrap(),
+            oracle[198..218].to_vec()
+        );
     }
 }

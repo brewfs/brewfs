@@ -139,8 +139,8 @@
     "expected": "与逐字节oracle一致",
     "invariants": "INV-03",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR07M: runtime/io.rs 测试新增真实 .brfds packed baseline（SealBuilder + DataPack + SealReader::read_range 的 BaseDataSource），在其上做 loose patch 与 hole 后逐字节比对 oracle。cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io (exit 0, 14 passed/0 failed): packed_baseline_loose_patch_and_hole_read_back_byte_exact（256B 全量读、跨 loose/hole 边界的 8B 与 20B 局部读均与 oracle 一致）。doc/native-base/logs/pr07m-runtime-read-composition.{sh,log}"
   },
   {
     "test_id": "READ-002",
@@ -205,8 +205,8 @@
     "expected": "缓存和请求不串内容",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR07M: runtime/planner.rs 新增 ReadUnit::flight_key()（FrameKey 显式包含 namespace），coalesce_ranges 不合并不同 namespace 的同一 object_id，singleflight 以该 key 为身份。cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::planner (exit 0, 6 passed/0 failed): the_same_object_id_in_two_namespaces_shares_nothing（2 个 unit 不合并；flight_key 不同；loader 调用 2 次而非 1 次；两个 buffer 既不 Arc::ptr_eq 也不同内容）。doc/native-base/logs/pr07m-runtime-read-composition.{sh,log}"
   },
   {
     "test_id": "READ-008",
@@ -216,8 +216,8 @@
     "expected": "无悬挂buffer访问，无waiter泄漏",
     "invariants": "INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR07M: 并发 scatter 取消后无悬挂 buffer 引用、无 waiter 泄漏。cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::planner (exit 0, 6 passed/0 failed): a_cancelled_scatter_waiter_leaves_no_buffer_reference_or_waiter（8 个等待者中 4 个 abort，loader 仍只调用 1 次；存活者共享同一 buffer；Arc::strong_count == 2 证明被取消的等待者没有残留引用；后续读者复用已完成条目且不再触发 loader）。预算令牌在取消路径释放见 native_base::seal::tests::budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel。doc/native-base/logs/pr07m-runtime-read-composition.{sh,log}"
   },
   {
     "test_id": "WRITE-001",

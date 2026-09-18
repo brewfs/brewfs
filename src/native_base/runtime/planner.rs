@@ -21,6 +21,33 @@ impl ReadUnit {
     pub fn len(&self) -> u64 {
         self.end.saturating_sub(self.start)
     }
+
+    /// The identity a per-frame cache or singleflight must key on. The
+    /// namespace is part of it: the same object id under two namespaces is a
+    /// different unit and shares neither a fetch, a decoded buffer nor a
+    /// waiter.
+    pub fn flight_key(&self) -> FrameKey {
+        FrameKey {
+            namespace: self.namespace,
+            object_id: self.object_id,
+            full_hash: self.full_hash,
+            authorized_domain: self.authorized_domain,
+            start: self.start,
+            end: self.end,
+        }
+    }
+}
+
+/// Exact immutable identity of one schedulable unit, including the
+/// namespace it was authorized in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
+pub struct FrameKey {
+    pub namespace: [u8; 16],
+    pub object_id: [u8; 16],
+    pub full_hash: [u8; 32],
+    pub authorized_domain: [u8; 16],
+    pub start: u64,
+    pub end: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -390,6 +417,114 @@ mod tests {
             "every reader observes the one shared buffer"
         );
         assert_eq!(&*buffers[0], &[9u8; 64]);
+    }
+
+    /// READ-007: the same object id in two namespaces is a different
+    /// identity.  It is neither merged into one physical range nor shared
+    /// through the singleflight, so neither a range request nor a decoded
+    /// buffer can hand one namespace's content to the other.
+    #[tokio::test]
+    async fn the_same_object_id_in_two_namespaces_shares_nothing() {
+        let mut other_namespace = unit(0, 100);
+        other_namespace.namespace = [9; 16];
+        let merged = coalesce_ranges(
+            vec![unit(0, 100), other_namespace.clone()],
+            MergePolicy {
+                max_coalesced_get: 4096,
+                max_gap_bytes: 4096,
+                max_merge_amplification: 2.0,
+            },
+        );
+        assert_eq!(merged.len(), 2, "different namespaces never merge");
+        assert_ne!(unit(0, 100).flight_key(), other_namespace.flight_key());
+
+        let flights = Arc::new(FrameSingleflight::<FrameKey, Vec<u8>>::default());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for key in [unit(0, 100).flight_key(), other_namespace.flight_key()] {
+            let flights = flights.clone();
+            let loads = loads.clone();
+            let namespace = key.namespace;
+            handles.push(tokio::spawn(async move {
+                flights
+                    .get_or_load(key, move || async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        Ok(vec![namespace[0]])
+                    })
+                    .await
+                    .unwrap()
+            }));
+        }
+        let first = handles.remove(0).await.unwrap();
+        let second = handles.remove(0).await.unwrap();
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            2,
+            "one fetch per namespace, never one for both"
+        );
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_ne!(&*first, &*second, "buffers never cross namespaces");
+    }
+
+    /// READ-008: cancelling waiters of a concurrent scatter leaves nothing
+    /// behind.  The aborted waiters hold no reference to the shared buffer
+    /// and never become the loader, and the completed entry keeps serving
+    /// later readers.
+    #[tokio::test]
+    async fn a_cancelled_scatter_waiter_leaves_no_buffer_reference_or_waiter() {
+        let flights = Arc::new(FrameSingleflight::<u64, Vec<u8>>::default());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let flights = flights.clone();
+            let loads = loads.clone();
+            waiters.push(tokio::spawn(async move {
+                flights
+                    .get_or_load(7, || async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                        Ok(vec![5u8; 32])
+                    })
+                    .await
+            }));
+        }
+        tokio::task::yield_now().await;
+        for waiter in waiters.drain(..4) {
+            waiter.abort();
+        }
+        let mut buffers = Vec::new();
+        for waiter in waiters {
+            buffers.push(waiter.await.unwrap().unwrap());
+        }
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "one loader for the scatter"
+        );
+
+        let only = buffers.pop().unwrap();
+        assert!(
+            buffers.iter().all(|buffer| Arc::ptr_eq(buffer, &only)),
+            "every surviving reader observes the one shared buffer"
+        );
+        let mut dropped = 0;
+        while buffers.pop().is_some() {
+            dropped += 1;
+        }
+        assert_eq!(dropped, 3);
+        // The flight table's own reference plus this handle: an aborted
+        // waiter left no dangling reference behind.
+        assert_eq!(Arc::strong_count(&only), 2, "no dangling buffer access");
+        drop(only);
+
+        // The aborted waiters never turned into the loader either: the
+        // completed entry still serves a later reader without a new load.
+        let again = flights
+            .get_or_load(7, || async { Ok(vec![0u8; 1]) })
+            .await
+            .unwrap();
+        assert_eq!(&*again, &[5u8; 32]);
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "no waiter leak");
     }
 
     #[tokio::test]
