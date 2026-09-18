@@ -1470,8 +1470,8 @@
     "expected": "不进入物理DELETE候选",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07i-private-cleanup.sh (exit 0; native_base::lifecycle::cleanup 18 passed/0 failed): an_active_domain_never_exposes_delete_candidates —— ACTIVE 域内已覆盖/失败的私有对象（registration state=Abandoned）无论带不带 close 工件都不产生 DELETE 候选：无证书时 plan_private_cleanup 返回 InvalidState（close certificate），把域行改回 Active（close_ref=None，保留证书）后仍返回 InvalidState——候选集只来自 CLOSED 域的冻结库存，覆盖率/失败本身不构成删除授权。log: doc/native-base/logs/pr07i-private-cleanup.log"
   },
   {
     "test_id": "CLN-002",
@@ -1503,8 +1503,8 @@
     "expected": "未CLOSED不能清理，关闭固定完整inventory",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07i-private-cleanup.sh (exit 0; native_base::lifecycle::cleanup 18 passed/0 failed): a_dispatch_after_the_frozen_inventory_is_refused_not_cleaned —— 域先 CLOSED 并冻结 inventory（final_inventory_seq=1），随后一个合法 dispatch 以 registration_seq=2 落库；plan_private_cleanup 返回 Retention（registration is outside the frozen close inventory），即未纳入冻结库存的合法新对象不会被当成候选，也不会被静默跳过。log: doc/native-base/logs/pr07i-private-cleanup.log"
   },
   {
     "test_id": "CLN-005",
@@ -1613,8 +1613,8 @@
     "expected": "保留journal，重复delete不重复释放统计",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07i-private-cleanup.sh (exit 0; native_base::lifecycle::cleanup 18 passed/0 failed): a_lost_delete_response_is_counted_once_and_keeps_its_journal —— 后端报 AlreadyAbsent（DELETE 成功、回包丢失）时该对象仍被登记为 Deleted 并计入 deleted_objects，但 deleted_bytes 为 0（未重复释放统计）；cleanup_batches 前缀下 journal 仍在（state=Complete、cleanup_id=113、batch_number=0），重复 apply 返回 AlreadyComplete且 deleted_objects/deleted_bytes 均为 0。log: doc/native-base/logs/pr07i-private-cleanup.log"
   },
   {
     "test_id": "CLN-015",
@@ -1624,8 +1624,8 @@
     "expected": "逐对象核对，不全部计成功",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07i-private-cleanup.sh (exit 0; native_base::lifecycle::cleanup 18 passed/0 failed): a_partially_failed_batch_counts_each_object_separately —— 两个候选对象中一个 delete 失败：status=Blocked、deleted_objects=1、failed_objects=1、deleted_bytes 只含成功对象，域未进入 Cleaned；换健康后端重试后 status=Complete、failed_objects=0、deleted_objects=1（已删对象被跳过而非重复计费）、deleted_bytes 只含失败对象，且 deleter 只被调用一次（private/two），即逐对象核对而非整批按 200 计成功。log: doc/native-base/logs/pr07i-private-cleanup.log"
   },
   {
     "test_id": "CLN-016",

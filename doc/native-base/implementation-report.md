@@ -716,6 +716,34 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 尚未走到 `FeatureClosure` 校验（当前测试夹具只产出 None root）。此缺口留待
 后续增量补齐，不并入本项 PASS。
 
+### PR07I · 私有清理判定与记账（CLN-001/CLN-004/CLN-014/CLN-015）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。这一组不新增机制，而是把
+`lifecycle::cleanup` 已有的判定与记账契约钉成可执行断言：
+
+- 候选集只来自 CLOSED 域的冻结库存：ACTIVE 域即使存在被覆盖/失败的对象也不产生
+  DELETE 候选（无证书或域行非 CLOSED 都是 `InvalidState`）。
+- 冻结库存之后的合法 dispatch（`registration_seq > final_inventory_seq`）被
+  `Retention` 拒绝，不会被静默跳过或当成候选。
+- 丢失回包（后端 `AlreadyAbsent`）时对象登记为 Deleted 但 `deleted_bytes` 不增加，
+  batch journal 保留，重复 apply 返回 `AlreadyComplete` 且不再释放统计。
+- 批量删除逐对象核对：部分失败时 `Blocked` + `failed_objects=1`，仅成功对象计入
+  `deleted_bytes`；重试只处理失败对象并只计它的字节。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07I-FOCUSED | `bash doc/native-base/logs/pr07i-private-cleanup.sh` | 0 | PASS（native_base::lifecycle::cleanup 18 passed/0 failed） | [pr07i-private-cleanup.log](logs/pr07i-private-cleanup.log) |
+| PR07I-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07I-CLN001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::cleanup` | 0 | PASS：`an_active_domain_never_exposes_delete_candidates` | 同上 |
+| PR07I-CLN004 | 同上 | 0 | PASS：`a_dispatch_after_the_frozen_inventory_is_refused_not_cleaned` | 同上 |
+| PR07I-CLN014 | 同上 | 0 | PASS：`a_lost_delete_response_is_counted_once_and_keeps_its_journal` | 同上 |
+| PR07I-CLN015 | 同上 | 0 | PASS：`a_partially_failed_batch_counts_each_object_separately` | 同上 |
+
+仍未覆盖（不虚标）：CLN-007（discard 时仍有 open/read/decoder 任务的 Busy/deadline
+排空）、CLN-017（正式记录永久保留但 alias 删除）、CLN-021（hard-limit 前的准入停止）
+仍待补；CLN-022/023 属 repack/变体记账，见 PR12 相关条目。
+
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -2105,6 +2105,209 @@ mod tests {
         assert_eq!(retried.status, CleanupApplyStatus::AlreadyComplete);
     }
 
+    /// CLN-001: objects that were superseded or failed inside a domain that
+    /// is still ACTIVE never become physical DELETE candidates. Even with
+    /// close artifacts at hand, planning requires the domain itself to be
+    /// CLOSED with a frozen certificate.
+    #[tokio::test]
+    async fn an_active_domain_never_exposes_delete_candidates() {
+        let volume = [1; 16];
+        let domain_id = [5; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let superseded = object(20, "private/superseded");
+        let failed = object(21, "private/failed");
+        let inventory_objects = vec![superseded.clone(), failed.clone()];
+        let mut active = domain(volume, domain_id);
+        active.inventory_seq = inventory_objects.len() as u64;
+        put(
+            &store,
+            keys.domain(&domain_id),
+            ControlRecord::OwnershipDomain(active.clone()).encode(),
+        )
+        .await;
+        for (index, item) in inventory_objects.iter().enumerate() {
+            put_registration(
+                &store,
+                &keys,
+                domain_id,
+                index as u64 + 1,
+                item,
+                RegistrationState::Abandoned,
+            )
+            .await;
+        }
+        let artifacts = CloseArtifacts {
+            inventory: Some(object_index(&inventory_objects, 24)),
+            retention_batches: Vec::new(),
+            retained_union: None,
+            control_evidence: None,
+        };
+
+        // No close certificate exists for an ACTIVE domain.
+        let error = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::InvalidState(_)), "{error}");
+        assert!(error.to_string().contains("close certificate"), "{error}");
+
+        // And a stale certificate cannot re-open the door: the domain row
+        // itself must still say CLOSED with a close reference.
+        let mut stale = domain(volume, domain_id);
+        stale.state = DomainState::Active;
+        stale.inventory_seq = 2;
+        stale.close_ref = None;
+        store
+            .run(Txn::new().put(
+                keys.domain(&domain_id),
+                ControlRecord::OwnershipDomain(stale).encode(),
+            ))
+            .await
+            .unwrap();
+        let error = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::InvalidState(_)), "{error}");
+    }
+
+    /// CLN-004: a domain is only cleanable once CLOSED, and the CLOSED
+    /// inventory is frozen. A legal dispatch that lands afterwards is not a
+    /// candidate — cleanup refuses instead of guessing at the delta.
+    #[tokio::test]
+    async fn a_dispatch_after_the_frozen_inventory_is_refused_not_cleaned() {
+        let volume = [1; 16];
+        let domain_id = [6; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let kept = object(30, "private/kept");
+        let late = object(31, "private/late");
+        let artifacts =
+            seed_closed_domain(&store, &keys, domain_id, std::slice::from_ref(&kept)).await;
+
+        put_registration(
+            &store,
+            &keys,
+            domain_id,
+            2,
+            &late,
+            RegistrationState::Verified,
+        )
+        .await;
+
+        let error = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::Retention(_)), "{error}");
+        assert!(
+            error.to_string().contains("frozen close inventory"),
+            "{error}"
+        );
+    }
+
+    /// CLN-014: a DELETE that landed but whose response was lost must not
+    /// release the same bytes twice. The retry sees the object already gone
+    /// (`AlreadyAbsent`), the batch journal stays, and the freed-byte
+    /// statistic is only ever credited to a real delete.
+    #[tokio::test]
+    async fn a_lost_delete_response_is_counted_once_and_keeps_its_journal() {
+        let volume = [110; 16];
+        let domain_id = [111; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let doomed = object(112, "private/lost-response");
+        let artifacts =
+            seed_closed_domain(&store, &keys, domain_id, std::slice::from_ref(&doomed)).await;
+        let plan = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+        assert_eq!(plan.candidate_bytes, doomed.object_len);
+        let close_generation = plan.close_generation;
+        let request = apply_request(plan, [113; 16], 0, 114);
+
+        // The object is already gone: the DELETE landed, its response did not.
+        let backend = ReadableDeleter::new(std::iter::empty::<String>());
+        let applied = apply_private_cleanup(&store, &keys, &backend, &request)
+            .await
+            .unwrap();
+        assert_eq!(applied.status, CleanupApplyStatus::Complete);
+        assert_eq!(applied.deleted_objects, 1);
+        assert_eq!(
+            applied.deleted_bytes, 0,
+            "an already-absent object releases no new bytes"
+        );
+        assert_eq!(applied.domain_state, DomainState::Cleaned);
+
+        let journal = store
+            .scan(&keys.cleanup_batches_prefix(&domain_id, close_generation))
+            .await
+            .unwrap();
+        assert_eq!(journal.len(), 1, "the batch journal is preserved");
+        let ControlRecord::CleanupBatch(journal_batch) =
+            ControlRecord::decode(&journal[0].1).unwrap()
+        else {
+            panic!("cleanup batch key holds another record kind");
+        };
+        assert_eq!(journal_batch.state, CleanupState::Complete);
+        assert_eq!(journal_batch.cleanup_id, [113; 16]);
+        assert_eq!(journal_batch.batch_number, 0);
+
+        // A repeated apply is idempotent and credits nothing more.
+        let retried = apply_private_cleanup(&store, &keys, &backend, &request)
+            .await
+            .unwrap();
+        assert_eq!(retried.status, CleanupApplyStatus::AlreadyComplete);
+        assert_eq!(retried.deleted_objects, 0);
+        assert_eq!(retried.deleted_bytes, 0);
+    }
+
+    /// CLN-015: a batch is verified object by object. One failing DELETE
+    /// leaves that object pending and the batch BLOCKED; the successful
+    /// objects are still recorded, and the retry only charges the remainder.
+    #[tokio::test]
+    async fn a_partially_failed_batch_counts_each_object_separately() {
+        let volume = [120; 16];
+        let domain_id = [121; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let first = object(122, "private/one");
+        let second = object(123, "private/two");
+        let objects = vec![first.clone(), second.clone()];
+        let artifacts = seed_closed_domain(&store, &keys, domain_id, &objects).await;
+        let plan = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+        assert_eq!(plan.candidate_objects.len(), 2);
+        let request = apply_request(plan, [124; 16], 0, 125);
+
+        let failing = FakeDeleter::failing_once("private/two");
+        let applied = apply_private_cleanup(&store, &keys, &failing, &request)
+            .await
+            .unwrap();
+        assert_eq!(applied.status, CleanupApplyStatus::Blocked);
+        assert_eq!(applied.deleted_objects, 1, "only the object that landed");
+        assert_eq!(applied.failed_objects, 1);
+        assert_eq!(applied.deleted_bytes, first.object_len);
+        assert_ne!(applied.domain_state, DomainState::Cleaned);
+
+        let healthy = FakeDeleter::default();
+        let retried = apply_private_cleanup(&store, &keys, &healthy, &request)
+            .await
+            .unwrap();
+        assert_eq!(retried.status, CleanupApplyStatus::Complete);
+        assert_eq!(retried.failed_objects, 0);
+        assert_eq!(
+            retried.deleted_objects, 1,
+            "the already-deleted object is skipped, not re-charged"
+        );
+        assert_eq!(retried.deleted_bytes, second.object_len);
+        assert_eq!(retried.domain_state, DomainState::Cleaned);
+        assert_eq!(
+            healthy.deleted.lock().unwrap().as_slice(),
+            ["private/two"],
+            "the failed object is the one retried"
+        );
+    }
+
     #[test]
     fn cleanup_batches_are_bounded() {
         assert_eq!(CleanupPlan::batch_count(0), 0);
