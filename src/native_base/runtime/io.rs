@@ -152,6 +152,12 @@ impl NativeDataRuntime {
         Ok(())
     }
 
+    async fn ensure_baseline_size(&self, inode: u64) -> Result<u64, NativeIoError> {
+        let size = self.base.size(inode).await?;
+        self.overlay.set_baseline_size(inode, size).await;
+        Ok(size)
+    }
+
     pub async fn write(
         &self,
         inode: u64,
@@ -168,6 +174,7 @@ impl NativeDataRuntime {
         offset
             .checked_add(data.len() as u64)
             .ok_or(NativeIoError::RangeOverflow)?;
+        self.ensure_baseline_size(inode).await?;
         let mut state = self.state.lock().await;
         state.next_ticket = state
             .next_ticket
@@ -230,6 +237,7 @@ impl NativeDataRuntime {
         inode: u64,
         new_size: u64,
     ) -> Result<RuntimeWriteReceipt, NativeIoError> {
+        self.ensure_baseline_size(inode).await?;
         self.accept_control(inode, |ticket, dirty_generation| {
             PendingMutation::Truncate {
                 ticket,
@@ -247,6 +255,7 @@ impl NativeDataRuntime {
         len: u64,
         keep_size: bool,
     ) -> Result<RuntimeWriteReceipt, NativeIoError> {
+        self.ensure_baseline_size(inode).await?;
         let resulting_size = offset
             .checked_add(len)
             .ok_or(NativeIoError::RangeOverflow)?;
@@ -299,7 +308,11 @@ impl NativeDataRuntime {
             inode,
         )
         .await?;
-        let mut size = base_size.max(committed.data.size);
+        let mut size = if committed.had_record {
+            committed.data.size
+        } else {
+            base_size
+        };
         for mutation in self.pending_through(inode, boundary).await {
             match mutation {
                 PendingMutation::Write(write) => {
@@ -342,15 +355,6 @@ impl NativeDataRuntime {
         ];
 
         let base_size = self.base.size(inode).await?;
-        if offset < base_size {
-            let base_end = end.min(base_size);
-            let take =
-                usize::try_from(base_end - offset).map_err(|_| NativeIoError::RangeOverflow)?;
-            self.base
-                .read_exact(inode, offset, &mut output[..take])
-                .await?;
-        }
-
         let committed = read_inode_view(
             self.overlay.control_store(),
             self.overlay.keys(),
@@ -358,6 +362,19 @@ impl NativeDataRuntime {
             inode,
         )
         .await?;
+        let baseline_visible_end = if committed.had_record {
+            committed.data.size.min(base_size)
+        } else {
+            base_size
+        };
+        if offset < baseline_visible_end {
+            let base_end = end.min(baseline_visible_end);
+            let take =
+                usize::try_from(base_end - offset).map_err(|_| NativeIoError::RangeOverflow)?;
+            self.base
+                .read_exact(inode, offset, &mut output[..take])
+                .await?;
+        }
         for (&extent_start, extent) in &committed.extents {
             let extent_end = extent_start
                 .checked_add(extent.logical_len)
@@ -543,29 +560,94 @@ impl NativeDataRuntime {
         }
         let effective_size = self.effective_size_at(inode, boundary).await?;
         let block_size = self.overlay.params().block_size;
-        let mut blocks = BTreeSet::new();
+
+        // Collect write ranges for overlap detection.
+        let mut write_ranges: Vec<(u64, u64)> = Vec::new();
+        let mut write_blocks = BTreeSet::new();
         for mutation in &pending {
             if let PendingMutation::Write(write) = mutation {
                 let end = write
                     .offset
                     .checked_add(write.data.len() as u64)
                     .ok_or(NativeIoError::RangeOverflow)?;
+                write_ranges.push((write.offset, end));
                 let first = write.offset / block_size;
                 let last = (end - 1) / block_size;
-                blocks.extend(first..=last);
+                write_blocks.extend(first..=last);
             }
+        }
+
+        // Read the committed view to check whether the punch hole would
+        // overlap any committed data extents.  The direct-hole path produces
+        // native Hole extents via the commit planner, but punching into an
+        // existing data extent would split it and leave sub-block-aligned
+        // fragments that the read path cannot decode.  In that case we fall
+        // back to block materialization.
+        let committed_view = read_inode_view(
+            self.overlay.control_store(),
+            self.overlay.keys(),
+            &self.overlay.params().workspace_id,
+            inode,
+        )
+        .await?;
+        let committed_data_ranges: Vec<(u64, u64)> = committed_view
+            .extents
+            .iter()
+            .filter(|(_, ext)| ext.kind == ExtentKind::Data)
+            .map(|(&off, ext)| (off, off + ext.logical_len))
+            .collect();
+
+        // Punch holes that don't overlap any pending write AND don't
+        // overlap any committed data extent go directly to the commit
+        // planner as MutationSpec::PunchHole, producing proper Hole extents
+        // instead of zero-filled data blocks.  Holes that do overlap either
+        // pending writes or committed data extents still go through block
+        // materialization so last-writer-wins ordering is preserved and
+        // sub-block-aligned extent fragments are avoided.
+        let mut direct_holes: Vec<(u64, u64)> = Vec::new();
+        for mutation in &pending {
             if let PendingMutation::PunchHole { offset, len, .. } = mutation {
-                if *len != 0 {
-                    let end = offset
-                        .checked_add(*len)
-                        .ok_or(NativeIoError::RangeOverflow)?;
-                    blocks.extend((*offset / block_size)..=((end - 1) / block_size));
+                if *len == 0 {
+                    continue;
+                }
+                let hole_end = offset
+                    .checked_add(*len)
+                    .ok_or(NativeIoError::RangeOverflow)?;
+                let overlaps_pending = write_ranges
+                    .iter()
+                    .any(|&(w_start, w_end)| *offset < w_end && w_start < hole_end);
+                let overlaps_committed = committed_data_ranges
+                    .iter()
+                    .any(|&(d_start, d_end)| *offset < d_end && d_start < hole_end);
+                if overlaps_pending || overlaps_committed {
+                    let first = *offset / block_size;
+                    let last = (hole_end - 1) / block_size;
+                    write_blocks.extend(first..=last);
+                } else {
+                    direct_holes.push((*offset, hole_end));
                 }
             }
         }
 
         let mut report = DrainReport::default();
-        for block in blocks {
+
+        // Commit non-overlapping punch holes directly as Hole extents.
+        for (hole_offset, hole_end) in direct_holes {
+            let ticket = self
+                .overlay
+                .accept(
+                    inode,
+                    MutationSpec::PunchHole {
+                        offset: hole_offset,
+                        len: hole_end - hole_offset,
+                    },
+                )
+                .await?;
+            self.commit_ticket(&ticket, &mut report).await?;
+        }
+
+        // Materialize blocks touched by writes (or holes overlapping writes).
+        for block in write_blocks {
             let block_offset = block
                 .checked_mul(block_size)
                 .ok_or(NativeIoError::RangeOverflow)?;
@@ -782,5 +864,249 @@ mod tests {
         assert_eq!(&runtime.read(5, 10, 4).await.unwrap(), b"BBBB");
         assert_eq!(runtime.discard_dirty(5).await, 2);
         assert_eq!(&runtime.read(5, 10, 4).await.unwrap(), &[0; 4]);
+    }
+
+    #[tokio::test]
+    async fn mixed_baseline_loose_and_hole_read_matches_byte_oracle() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        // The baseline represents the immutable packed snapshot. The
+        // committed loose extent and hole below must override it only in
+        // their exact ranges.
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        let patch: Vec<u8> = (0xa0..=0xdf).collect();
+        runtime.write(11, 64, &patch).await.unwrap();
+        runtime.fsync(11).await.unwrap();
+        runtime.discard(11, 128, 64, true).await.unwrap();
+        runtime.fsync(11).await.unwrap();
+        let view = read_inode_view(
+            runtime.overlay.control_store(),
+            runtime.overlay.keys(),
+            &runtime.overlay.params().workspace_id,
+            11,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            view.extents.get(&128).map(|extent| extent.kind),
+            Some(ExtentKind::Hole)
+        ));
+
+        let mut expected = baseline;
+        expected[64..128].copy_from_slice(&patch);
+        expected[128..192].fill(0);
+        let got = runtime.read(11, 0, expected.len()).await.unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[tokio::test]
+    async fn truncate_down_then_extend_does_not_resurrect_baseline_tail() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        runtime.truncate(12, 128).await.unwrap();
+        runtime.fsync(12).await.unwrap();
+        assert_eq!(runtime.read(12, 0, 256).await.unwrap(), baseline[..128]);
+
+        runtime.truncate(12, 256).await.unwrap();
+        runtime.fsync(12).await.unwrap();
+        let mut expected = baseline[..128].to_vec();
+        expected.resize(256, 0);
+        assert_eq!(runtime.read(12, 0, 256).await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn punch_hole_on_fresh_inode_preserves_baseline_size_and_tail() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        runtime.discard(13, 64, 64, true).await.unwrap();
+        runtime.fsync(13).await.unwrap();
+
+        let mut expected = baseline;
+        expected[64..128].fill(0);
+        assert_eq!(runtime.read(13, 0, 256).await.unwrap(), expected);
+        let view = read_inode_view(
+            runtime.overlay.control_store(),
+            runtime.overlay.keys(),
+            &runtime.overlay.params().workspace_id,
+            13,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.data.size, 256);
+        assert!(matches!(
+            view.extents.get(&64).map(|extent| extent.kind),
+            Some(ExtentKind::Hole)
+        ));
+    }
+
+    #[tokio::test]
+    async fn truncate_then_far_write_keeps_the_truncated_gap_zeroed() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        runtime.truncate(14, 128).await.unwrap();
+        runtime.fsync(14).await.unwrap();
+        runtime.write(14, 192, &[0xa5; 64]).await.unwrap();
+        runtime.fsync(14).await.unwrap();
+
+        let mut expected = baseline[..128].to_vec();
+        expected.extend_from_slice(&[0; 64]);
+        expected.extend_from_slice(&[0xa5; 64]);
+        assert_eq!(runtime.read(14, 0, 256).await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn cross_block_partial_write_roundtrips_byte_exact() {
+        // WRITE-002: a write that straddles a native block boundary must
+        // round-trip correctly.  With block_size=64, offset 60 + len 10
+        // spans block 0 ([0..64]) and block 1 ([64..128]).
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        let patch: Vec<u8> = (0xa0..=0xa9).collect();
+        runtime.write(21, 60, &patch).await.unwrap();
+        // Dirty read must see the cross-block patch immediately.
+        assert_eq!(
+            &runtime.read(21, 58, 14).await.unwrap(),
+            &[
+                58, 59, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 70, 71
+            ]
+        );
+
+        runtime.fsync(21).await.unwrap();
+        // After fsync the committed view must match.
+        assert_eq!(
+            &runtime.read(21, 58, 14).await.unwrap(),
+            &[
+                58, 59, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 70, 71
+            ]
+        );
+
+        // Full-file read matches oracle.
+        let mut expected = baseline;
+        expected[60..70].copy_from_slice(&patch);
+        assert_eq!(runtime.read(21, 0, 256).await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn multi_extent_non_contiguous_writes_read_back_correctly() {
+        // Two disjoint writes produce two extents; the gap between them
+        // must still read from baseline.
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        runtime.write(22, 10, &[0xaa; 20]).await.unwrap();
+        runtime.write(22, 200, &[0xbb; 30]).await.unwrap();
+        runtime.fsync(22).await.unwrap();
+
+        let mut expected = baseline;
+        expected[10..30].fill(0xaa);
+        expected[200..230].fill(0xbb);
+        assert_eq!(runtime.read(22, 0, 256).await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn size_consistency_after_write_truncate_and_punch() {
+        // CONS-001 (component-level): size() must stay consistent with
+        // the committed extent set after every mutation.
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        // Fresh inode: size == baseline.
+        assert_eq!(runtime.size(23).await.unwrap(), 256);
+
+        // Write past end extends the logical size.
+        runtime.write(23, 250, &[0xcc; 20]).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 270);
+        runtime.fsync(23).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 270);
+
+        // Truncate down shrinks it.
+        runtime.truncate(23, 100).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 100);
+        runtime.fsync(23).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 100);
+
+        // Punch hole within size keeps size unchanged.
+        runtime.discard(23, 40, 20, true).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 100);
+        runtime.fsync(23).await.unwrap();
+        assert_eq!(runtime.size(23).await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn overlapping_write_hole_write_last_writer_wins() {
+        // Write -> punch hole (overlap) -> write (overlap hole) pattern.
+        // Final state: the last write wins over the hole range.
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink, base).await;
+
+        // First write fills [64..128] with 0xaa.
+        runtime.write(24, 64, &[0xaa; 64]).await.unwrap();
+        runtime.fsync(24).await.unwrap();
+
+        // Punch hole [80..112] inside the written range.
+        runtime.discard(24, 80, 32, true).await.unwrap();
+        runtime.fsync(24).await.unwrap();
+
+        // Second write [96..128] (overlaps tail of hole + post-hole area).
+        runtime.write(24, 96, &[0xbb; 32]).await.unwrap();
+        runtime.fsync(24).await.unwrap();
+
+        let mut expected = baseline;
+        expected[64..80].fill(0xaa); // first write, untouched
+        expected[80..96].fill(0); // hole region (not overwritten by second write)
+        expected[96..128].fill(0xbb); // second write wins
+        assert_eq!(runtime.read(24, 0, 256).await.unwrap(), expected);
     }
 }

@@ -163,6 +163,7 @@ async fn truncate_request(
         receipts,
         receipts_registration,
         block_size: env.params.block_size,
+        baseline_size: 0,
         domain_id: env.params.domain_id,
     }
 }

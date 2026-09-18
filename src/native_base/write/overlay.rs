@@ -176,6 +176,7 @@ struct OverlayState {
     head: Option<HeadState>,
     next_ticket: u64,
     next_dirty_generation: u64,
+    baseline_sizes: HashMap<u64, u64>,
     inodes: HashMap<u64, InodeOverlay>,
 }
 
@@ -699,6 +700,7 @@ impl WriteOverlay {
                         receipts: receipts_root.clone(),
                         receipts_registration: receipts_registration.clone(),
                         block_size: self.params.block_size,
+                        baseline_size: state.baseline_sizes.get(&inode).copied().unwrap_or(0),
                         domain_id: self.params.domain_id,
                     }
                 };
@@ -865,6 +867,13 @@ impl WriteOverlay {
 
     pub(crate) fn params(&self) -> &OverlayParams {
         &self.params
+    }
+
+    /// Record the immutable workspace size used when planning the first
+    /// native mutation for an inode. The value is request-local metadata and
+    /// is never persisted as a separate control-plane record.
+    pub(crate) async fn set_baseline_size(&self, inode: u64, size: u64) {
+        self.state.lock().await.baseline_sizes.insert(inode, size);
     }
 }
 

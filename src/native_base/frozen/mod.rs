@@ -676,8 +676,7 @@ pub struct DirectoryCursor {
     entries: Vec<DirectoryEntry>,
     next_cookie: u64,
     cookies: BTreeMap<u64, usize>,
-    spool_bytes: usize,
-    max_spool_bytes: usize,
+    cookie_by_index: BTreeMap<usize, u64>,
 }
 
 impl DirectoryCursor {
@@ -686,7 +685,7 @@ impl DirectoryCursor {
         if entries.windows(2).any(|pair| pair[0].name == pair[1].name) {
             return Err(WireError::invalid("directory", "duplicate names"));
         }
-        let spool_bytes = entries.iter().map(|entry| entry.name.len() + 24).sum();
+        let spool_bytes: usize = entries.iter().map(|entry| entry.name.len() + 24).sum();
         if spool_bytes > max_spool_bytes || spool_bytes > MAX_DIRECTORY_COOKIE_SPOOL {
             return Err(WireError::LimitExceeded(
                 "directory cookie spool budget".into(),
@@ -696,21 +695,27 @@ impl DirectoryCursor {
             entries,
             next_cookie: 1,
             cookies: BTreeMap::new(),
-            spool_bytes,
-            max_spool_bytes,
+            cookie_by_index: BTreeMap::new(),
         })
     }
 
     pub fn page(&mut self, after: u64, limit: usize) -> WireResult<(u64, Vec<DirectoryEntry>)> {
+        if limit == 0 {
+            return Err(WireError::invalid(
+                "directory cursor",
+                "page limit must be non-zero",
+            ));
+        }
         if after != 0 && !self.cookies.contains_key(&after) {
             return Err(WireError::invalid("directory cursor", "unknown cookie"));
         }
-        let start = after.checked_add(1).unwrap_or(u64::MAX);
         let index = self.cookies.get(&after).copied().unwrap_or(0);
         let end = index.saturating_add(limit).min(self.entries.len());
         let page = self.entries[index..end].to_vec();
         let cookie = if end == self.entries.len() {
             0
+        } else if let Some(cookie) = self.cookie_by_index.get(&end).copied() {
+            cookie
         } else {
             let cookie = self.next_cookie;
             self.next_cookie = self
@@ -718,9 +723,9 @@ impl DirectoryCursor {
                 .checked_add(1)
                 .ok_or_else(|| WireError::LimitExceeded("directory cookie overflow".into()))?;
             self.cookies.insert(cookie, end);
+            self.cookie_by_index.insert(end, cookie);
             cookie
         };
-        let _ = (start, self.spool_bytes, self.max_spool_bytes);
         Ok((cookie, page))
     }
 }
@@ -895,12 +900,310 @@ mod tests {
             1024,
         )
         .unwrap();
+        assert!(cursor.page(0, 0).is_err());
         let (cookie, first) = cursor.page(0, 2).unwrap();
         assert_eq!(first[0].name, b"a");
+        for _ in 0..1024 {
+            assert_eq!(cursor.page(0, 2).unwrap().0, cookie);
+        }
+        assert_eq!(cursor.next_cookie, cookie + 1);
         let (last, second) = cursor.page(cookie, 2).unwrap();
         assert_eq!(last, 0);
         assert_eq!(second[0].name, b"c");
         assert!(cursor.page(cookie + 100, 1).is_err());
+    }
+
+    #[test]
+    fn one_million_directory_entries_page_in_order() {
+        let entries: Vec<DirectoryEntry> = (0..1_000_000u32)
+            .map(|entry_index| DirectoryEntry {
+                name: entry_index.to_be_bytes().to_vec(),
+                inode: u64::from(entry_index) + 1,
+                kind: 1,
+            })
+            .collect();
+        let mut cursor = DirectoryCursor::new(entries, MAX_DIRECTORY_COOKIE_SPOOL).unwrap();
+        let mut first_name = Vec::new();
+        let mut last_name = Vec::new();
+        let mut observed_count = 0usize;
+        let mut cookie = 0u64;
+        loop {
+            let (next_cookie, page) = cursor.page(cookie, 16_384).unwrap();
+            if cookie == 0
+                && let Some(first) = page.first()
+            {
+                first_name = first.name.clone();
+            }
+            if let Some(last) = page.last() {
+                last_name = last.name.clone();
+            }
+            observed_count += page.len();
+            cookie = next_cookie;
+            if cookie == 0 {
+                break;
+            }
+        }
+
+        assert_eq!(observed_count, 1_000_000);
+        assert_eq!(first_name, 0u32.to_be_bytes());
+        assert_eq!(last_name, 999_999u32.to_be_bytes());
+        // Cookie zero means "restart from the beginning"; only an unknown
+        // non-zero cookie must be rejected after the final page.
+        assert!(cursor.page(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn non_utf8_dentry_names_preserve_original_bytes() {
+        let mut cursor = DirectoryCursor::new(
+            vec![
+                DirectoryEntry {
+                    name: vec![b'a', 0xff, b'b'],
+                    inode: 1,
+                    kind: 1,
+                },
+                DirectoryEntry {
+                    name: vec![b'a', 0xfe, b'c'],
+                    inode: 2,
+                    kind: 1,
+                },
+                DirectoryEntry {
+                    name: b"plain".to_vec(),
+                    inode: 3,
+                    kind: 1,
+                },
+            ],
+            1024,
+        )
+        .unwrap();
+        let (cookie, first) = cursor.page(0, 2).unwrap();
+        assert_eq!(first[0].name, vec![b'a', 0xfe, b'c']);
+        assert_eq!(first[1].name, vec![b'a', 0xff, b'b']);
+        let (_, second) = cursor.page(cookie, 2).unwrap();
+        assert_eq!(second[0].name, b"plain");
+    }
+
+    #[test]
+    fn hardlinked_names_across_pages_share_one_inode_record() {
+        let inode_number = 777u64;
+        let inode_record = FrozenInodeRecord {
+            kind: 1,
+            mode: 0o100_644,
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            nlink: 2,
+            size: 4096,
+            atime_ns: 1,
+            mtime_ns: 2,
+            ctime_ns: 3,
+            parent_hint: Some(1),
+            symlink_target: None,
+        };
+        let mut entries: Vec<(Vec<u8>, Vec<u8>)> = (0..151u32)
+            .map(|entry_index| {
+                let name = format!("hardlink-{entry_index:03}");
+                (dentry_key(1, name.as_bytes()), inode_key(inode_number))
+            })
+            .collect();
+        entries.push((inode_key(inode_number), inode_record.encode()));
+
+        let namespace_id = [13u8; 16];
+        let (namespace_obj, namespace_root) =
+            build_frozen_metadata_object(namespace_id, b"frozen/hardlinks", &entries);
+        let inv_id = [14u8; 16];
+        let (inv_obj, inv_root) = build_frozen_metadata_object(
+            inv_id,
+            b"frozen/inventory",
+            &[(b"__inv_sentinel".to_vec(), vec![])],
+        );
+        let manifest = SnapshotManifest {
+            volume_id: [1; 16],
+            storage_namespace_id: [2; 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [15; 32],
+            namespace_digest: [16; 32],
+            binding_digest: [17; 32],
+            namespace_mode: 2,
+            kv_layer_id: None,
+            kv_sealed_version: None,
+            namespace_root: Some(namespace_root.clone()),
+            data_root: inv_root.clone(),
+            inventory_root: inv_root,
+            file_count: 1,
+            directory_count: 1,
+            total_logical_bytes: 4096,
+            created_at_ns: 0,
+        };
+        let manifest_id = [19u8; 16];
+        let manifest_obj = build_manifest_object(manifest_id, b"frozen/manifest", &manifest);
+
+        let mut source = MemoryObjectSource::new();
+        source.insert(namespace_id, namespace_obj);
+        source.insert(inv_id, inv_obj);
+        source.insert(manifest_id, manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+
+        let loaded = reader.lookup_inode(inode_number).unwrap().unwrap();
+        assert_eq!(loaded, inode_record);
+        for entry_index in [0u32, 75, 150] {
+            let name = format!("hardlink-{entry_index:03}");
+            let got = reader.lookup_dentry(1, name.as_bytes()).unwrap().unwrap();
+            assert_eq!(got, inode_key(inode_number));
+        }
+        assert!(reader.lookup_dentry(1, b"hardlink-151").unwrap().is_none());
+    }
+
+    #[test]
+    fn directory_rename_keeps_inode_and_descendant_identity() {
+        let directory_inode = 42u64;
+        let child_inode = 43u64;
+        let directory_record = FrozenInodeRecord {
+            kind: 2,
+            mode: 0o040_755,
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            nlink: 2,
+            size: 0,
+            atime_ns: 1,
+            mtime_ns: 2,
+            ctime_ns: 3,
+            parent_hint: Some(1),
+            symlink_target: None,
+        };
+        let child_record = FrozenInodeRecord {
+            kind: 1,
+            mode: 0o100_644,
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            nlink: 1,
+            size: 128,
+            atime_ns: 4,
+            mtime_ns: 5,
+            ctime_ns: 6,
+            parent_hint: Some(directory_inode),
+            symlink_target: None,
+        };
+        // This is the post-rename snapshot: the old dentry is absent, while
+        // the replacement dentry and the descendant still use stable inode
+        // keys and records.
+        let entries = vec![
+            (dentry_key(1, b"after"), inode_key(directory_inode)),
+            (dentry_key(directory_inode, b"leaf"), inode_key(child_inode)),
+            (inode_key(directory_inode), directory_record.encode()),
+            (inode_key(child_inode), child_record.encode()),
+        ];
+
+        let namespace_id = [20u8; 16];
+        let (namespace_obj, namespace_root) =
+            build_frozen_metadata_object(namespace_id, b"frozen/rename", &entries);
+        let inventory_id = [21u8; 16];
+        let (inventory_obj, inventory_root) = build_frozen_metadata_object(
+            inventory_id,
+            b"frozen/inventory-rename",
+            &[(b"__inv_sentinel".to_vec(), vec![])],
+        );
+        let manifest = SnapshotManifest {
+            volume_id: [1; 16],
+            storage_namespace_id: [2; 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [22; 32],
+            namespace_digest: [23; 32],
+            binding_digest: [24; 32],
+            namespace_mode: 2,
+            kv_layer_id: None,
+            kv_sealed_version: None,
+            namespace_root: Some(namespace_root),
+            data_root: inventory_root.clone(),
+            inventory_root,
+            file_count: 1,
+            directory_count: 2,
+            total_logical_bytes: 128,
+            created_at_ns: 0,
+        };
+        let manifest_id = [25u8; 16];
+        let manifest_obj = build_manifest_object(manifest_id, b"frozen/manifest-rename", &manifest);
+
+        let mut source = MemoryObjectSource::new();
+        source.insert(namespace_id, namespace_obj);
+        source.insert(inventory_id, inventory_obj);
+        source.insert(manifest_id, manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+
+        assert!(reader.lookup_dentry(1, b"before").unwrap().is_none());
+        assert_eq!(
+            reader.lookup_dentry(1, b"after").unwrap(),
+            Some(inode_key(directory_inode))
+        );
+        assert_eq!(
+            reader.lookup_inode(directory_inode).unwrap(),
+            Some(directory_record)
+        );
+        assert_eq!(
+            reader.lookup_dentry(directory_inode, b"leaf").unwrap(),
+            Some(inode_key(child_inode))
+        );
+        assert_eq!(
+            reader.lookup_inode(child_inode).unwrap(),
+            Some(child_record)
+        );
+    }
+
+    #[test]
+    fn partial_namespace_arrival_fails_closed() {
+        let namespace_id = [26u8; 16];
+        let (namespace_object, namespace_root) = build_frozen_metadata_object(
+            namespace_id,
+            b"frozen/partial-namespace",
+            &[(dentry_key(1, b"entry"), inode_key(99))],
+        );
+        let inventory_id = [27u8; 16];
+        let (inventory_object, inventory_root) = build_frozen_metadata_object(
+            inventory_id,
+            b"frozen/partial-inventory",
+            &[(b"__inv_sentinel".to_vec(), vec![])],
+        );
+        let manifest = SnapshotManifest {
+            volume_id: [1; 16],
+            storage_namespace_id: [2; 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [28; 32],
+            namespace_digest: [29; 32],
+            binding_digest: [30; 32],
+            namespace_mode: 2,
+            kv_layer_id: None,
+            kv_sealed_version: None,
+            namespace_root: Some(namespace_root),
+            data_root: inventory_root.clone(),
+            inventory_root,
+            file_count: 0,
+            directory_count: 1,
+            total_logical_bytes: 0,
+            created_at_ns: 0,
+        };
+        let manifest_id = [31u8; 16];
+        let manifest_obj =
+            build_manifest_object(manifest_id, b"frozen/manifest-partial", &manifest);
+
+        let mut source = MemoryObjectSource::new();
+        // The namespace object is intentionally omitted. A manifest without
+        // all referenced namespace bytes must never degrade to an empty tree.
+        let _ = namespace_object;
+        source.insert(inventory_id, inventory_object);
+        source.insert(manifest_id, manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+
+        assert!(matches!(
+            reader.lookup_dentry(1, b"entry"),
+            Err(FrozenReadError::Source(ObjectSourceError::NotFound))
+        ));
     }
 
     /// Build a complete FrozenMetadata container with a BNPG index over the

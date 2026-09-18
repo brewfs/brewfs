@@ -634,8 +634,8 @@
     "expected": "顺序/缺失判断准确，RAM有界",
     "invariants": "INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: cargo test -p brewfs --features native-packed-base --lib native_base::frozen（11 passed/0 failed）: one_million_directory_entries_page_in_order 验证 1,000,000 条目按序分页、64 MiB spool 上限与未知 cookie 拒绝。 全量 frozen 套件 11 passed/0 failed（log: doc/native-base/logs/pr07b-baseline-overlay.log）。"
   },
   {
     "test_id": "FROZEN-002",
@@ -645,8 +645,8 @@
     "expected": "原始bytes保持或明确拒绝能力",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: cargo test -p brewfs --features native-packed-base --lib native_base::frozen（11 passed/0 failed）: non_utf8_dentry_names_preserve_original_bytes 验证非 UTF-8 dentry 名称按原始 bytes 排序、分页和返回。 全量 frozen 套件 11 passed/0 failed（log: doc/native-base/logs/pr07b-baseline-overlay.log）。"
   },
   {
     "test_id": "FROZEN-003",
@@ -656,8 +656,8 @@
     "expected": "子树inode不随路径变化",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: cargo test -p brewfs --features native-packed-base --lib native_base::frozen（11 passed/0 failed）: directory_rename_keeps_inode_and_descendant_identity 验证旧 dentry 消失、新 dentry 指向同一目录 inode，且子树 inode/记录保持不变。 全量 frozen 套件 11 passed/0 failed（log: doc/native-base/logs/pr07b-baseline-overlay.log）。"
   },
   {
     "test_id": "FROZEN-004",
@@ -667,8 +667,8 @@
     "expected": "同ino在workspace内数据一致",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: cargo test -p brewfs --features native-packed-base --lib native_base::frozen（11 passed/0 failed）: hardlinked_names_across_pages_share_one_inode_record 验证跨页 dentry 仍指向同一 inode 记录，并拒绝不存在的链接名。 全量 frozen 套件 11 passed/0 failed（log: doc/native-base/logs/pr07b-baseline-overlay.log）。"
   },
   {
     "test_id": "FROZEN-005",
@@ -700,8 +700,8 @@
     "expected": "不返回不完整readdir为完成",
     "invariants": "INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: cargo test -p brewfs --features native-packed-base --lib native_base::frozen（11 passed/0 failed）: partial_namespace_arrival_fails_closed 验证 manifest 已到达但 namespace 对象缺失时返回 ObjectSourceError::NotFound，不降级为空 namespace。 全量 frozen 套件 11 passed/0 failed（log: doc/native-base/logs/pr07b-baseline-overlay.log）。"
   },
   {
     "test_id": "FROZEN-008",

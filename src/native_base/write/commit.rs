@@ -99,6 +99,11 @@ pub struct CommitRequest {
     pub receipts_registration: VerifiedObject,
     /// Volume block size, for block-alignment validation of data writes.
     pub block_size: u64,
+    /// Size of the immutable workspace baseline for this inode. A fresh
+    /// native inode has no extent row for baseline bytes, so truncate and
+    /// write planning must treat this as its initial logical size without
+    /// materializing the untouched baseline as Hole extents.
+    pub baseline_size: u64,
     /// The origin ownership domain (spec 20 §6: commit fixes it).
     pub domain_id: [u8; 16],
 }
@@ -343,11 +348,11 @@ pub async fn commit_uploaded_slice(
     }
 
     // --- Derive the extent changes and the new inode row.
-    let change = plan_mutation(&req.mutation, &view, req.block_size)?;
+    let change = plan_mutation(&req.mutation, &view, req.block_size, req.baseline_size)?;
     let mut new_data = view.data.clone();
     new_data.committed_order = req.mutation_order;
     new_data.data_version += 1;
-    if let Some(size) = planned_size(&req.mutation, &view) {
+    if let Some(size) = planned_size(&req.mutation, &view, req.baseline_size) {
         new_data.size = size;
     }
 
@@ -559,15 +564,24 @@ pub async fn record_failed_mutation(
 }
 
 /// The post-mutation file size, if it changes.
-fn planned_size(mutation: &Mutation, view: &InodeView) -> Option<u64> {
+fn logical_size(view: &InodeView, baseline_size: u64) -> u64 {
+    if view.had_record {
+        view.data.size
+    } else {
+        baseline_size
+    }
+}
+
+fn planned_size(mutation: &Mutation, view: &InodeView, baseline_size: u64) -> Option<u64> {
+    let current_size = logical_size(view, baseline_size);
     match mutation {
         Mutation::Write {
             logical_offset,
             logical_len,
             ..
-        } => Some(view.data.size.max(logical_offset + logical_len)),
+        } => Some(current_size.max(logical_offset + logical_len)),
         Mutation::Truncate { new_size } => Some(*new_size),
-        Mutation::PunchHole { .. } => None,
+        Mutation::PunchHole { .. } => Some(current_size),
     }
 }
 
@@ -577,10 +591,12 @@ fn plan_mutation(
     mutation: &Mutation,
     view: &InodeView,
     block_size: u64,
+    baseline_size: u64,
 ) -> Result<ExtentChange, WriteError> {
     if block_size == 0 {
         return Err(WriteError::Record("block size must be > 0".into()));
     }
+    let current_size = logical_size(view, baseline_size);
     match mutation {
         Mutation::Write {
             logical_offset,
@@ -610,26 +626,37 @@ fn plan_mutation(
                 blocks.first().map(|b| b.block_index).unwrap_or(0),
                 blocks.len() as u64,
             );
-            Ok(plan_extent_change(
+            let mut change = plan_extent_change(
                 &view.extents,
                 &(*logical_offset..*logical_offset + *logical_len),
                 Some(extent),
                 block_size,
-            ))
+            );
+            if *logical_offset > current_size {
+                let gap = plan_extent_change(
+                    &view.extents,
+                    &(current_size..*logical_offset),
+                    Some(NativeExtent::hole(*logical_offset - current_size)),
+                    block_size,
+                );
+                change.removed.extend(gap.removed);
+                change.added.extend(gap.added);
+            }
+            Ok(change)
         }
         Mutation::Truncate { new_size } => {
-            if *new_size < view.data.size {
+            if *new_size < current_size {
                 Ok(plan_extent_change(
                     &view.extents,
-                    &(*new_size..view.data.size),
+                    &(*new_size..current_size),
                     None,
                     block_size,
                 ))
-            } else if *new_size > view.data.size {
-                let hole = NativeExtent::hole(*new_size - view.data.size);
+            } else if *new_size > current_size {
+                let hole = NativeExtent::hole(*new_size - current_size);
                 Ok(plan_extent_change(
                     &view.extents,
-                    &(view.data.size..*new_size),
+                    &(current_size..*new_size),
                     Some(hole),
                     block_size,
                 ))
@@ -638,8 +665,8 @@ fn plan_mutation(
             }
         }
         Mutation::PunchHole { offset, len } => {
-            let end = (*offset + len).min(view.data.size);
-            if *offset >= view.data.size || end == *offset {
+            let end = (*offset + len).min(current_size);
+            if *offset >= current_size || end == *offset {
                 return Ok(ExtentChange::default());
             }
             let hole = NativeExtent::hole(end - *offset);

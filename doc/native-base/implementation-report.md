@@ -485,7 +485,10 @@ Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 run
 - `src/native_base/runtime/header.rs`：`NativeVolumeHeader` 编码/校验、
   `initialize_volume`（create-only 事务）、`load_volume_header`（重新校验）。
 - `src/native_base/runtime/io.rs`：`NativeDataRuntime` / `BaseDataSource` /
-  `ZeroBaseDataSource` 写入边界与 fsync 语义骨架。
+  `ZeroBaseDataSource` 写入边界与 fsync 语义；baseline、loose extent 与
+  Hole 的范围合成，以及纯 punch-hole 的直接提交。
+- `src/native_base/write/commit.rs` / `overlay.rs`：commit planner 携带
+  immutable baseline 尺寸，首次 mutation 不把未修改 baseline 物化成 Hole。
 - `src/native_base/runtime/workspace.rs`：`WorkspaceBaseDataSource` 桥接
   workspace-v1 meta layer 与 native baseline reads（feature-gated）。
 - `src/native_base/runtime/migration.rs`：迁移模式与模式 0（拒绝）。
@@ -507,6 +510,9 @@ Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 run
 | PR07-NATIVE-CHECK | `cargo check -p brewfs --features native-packed-base` | 0 | PASS（同上） | 同上 |
 | PR07-DEFAULT-CHECK | `cargo check -p brewfs`（无 native feature） | 0 | PASS（不破坏旧构建） | 同上 |
 | PR07-TEST | `cargo test -p brewfs --features native-packed-base --lib` | 0 | PASS（942 passed, 0 failed） | 同上 |
+| PR07-BASELINE-OVERLAY | `bash doc/native-base/logs/pr07b-baseline-overlay.sh` | 0 | PASS（runtime io 11 passed/0 failed；native lib 959 passed, 221 ignored, 0 failed）：Packed-like baseline + loose patch + Hole 逐字节 oracle；fresh punch-hole 保留 baseline 尺寸与尾部；truncate-down 后 extend/far-write 不复活旧尾部；跨 block 局部写与多 extent 非连续写逐字节回读 | [pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log) |
+| PR07-DIRECT-HOLE | `cargo test -p brewfs --features native-packed-base --lib native_base::runtime::io::tests` | 0 | PASS（11 passed, 0 failed）：不与 pending 写、也不与已提交 Data extent 重叠的 punch-hole 直接提交为 Hole extent；会切开已提交 Data extent 的孔回落块物化，避免留下非块对齐 extent 片段 | 同上 |
+| PR07-BASELINE-SIZE | 同上 | 0 | PASS（11 passed, 0 failed）：commit planner 携带 immutable baseline 尺寸，首次 mutation / truncate / punch-hole 不再把未修改 baseline 物化成 Hole，也不复活截断尾部 | 同上 |
 | PR07-CLIPPY | `cargo clippy -p brewfs --features native-packed-base --lib` | 0 | PASS（仅 4 条存量 warning，无新增） | 同上 |
 | PR07-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS | — |
 
@@ -514,9 +520,12 @@ Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 run
 required_features 拒绝、namespace 路径逃逸拒绝、create-only 幂等性、
 默认 feature 下 native 模块不编译。
 
-仍如实 NOT_RUN：真实 FUSE 挂载测试（READ-001/WRITE-001/004/005/010 等需
+仍如实 NOT_RUN：真实 FUSE 挂载测试（READ-001/WRITE-001/002/004/005/010 等需
 真实后端 + FUSE 设备的集成场景）、Redis/TiKV durability、S3 实际上传。
-这些条目在验收矩阵中保持 `SPECIFIED_NOT_IMPLEMENTED`，待有环境时补测。
+`native_base::runtime::io::tests` 目前只覆盖组件级语义（内存 control store +
+内存 sink + immutable baseline）：WRITE-002/004/005 与 READ-001 的逻辑已被 11
+个场景逐字节验证，但没有真实 FUSE/Redis/TiKV/S3 参与，因此这些条目在验收矩阵
+中保持 `SPECIFIED_NOT_IMPLEMENTED`，待接入真实后端后补测。
 
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
@@ -525,7 +534,9 @@ required_features 拒绝、namespace 路径逃逸拒绝、create-only 幂等性�
 
 核心结构：`FrozenInodeRecord`（11 字段 + parent_hint + symlink_target）、
 `SnapshotManifest`（namespace_mode 1/2 + data/inventory/namespace root）、
-`FrozenExtent`、`DirectoryCursor`（bounded cookie spool + replay）。
+`FrozenExtent`、`DirectoryCursor`（bounded cookie spool + replay）。游标拒绝
+零大小分页，并按页端点复用 continuation cookie，避免重复 readdir 请求导致
+cookie 表无界增长。
 
 BNPG 索引用共享 `wire::index_build` 模块构建；reader 使用 `ObjectSource`
 trait 做按需页加载，配合 `sha2` 做 digest 验证。
@@ -535,10 +546,16 @@ trait 做按需页加载，配合 `sha2` 做 digest 验证。
 | PR08-MANIFEST | manifest roundtrip + mode shape fail-closed | 0 | PASS（单元测试） | frozen::tests |
 | PR08-EXTENT-PREFIX | extent predecessor 查询不跨 inode/chunk | 0 | PASS（单元测试） | frozen::tests |
 | PR08-DIR-COOKIE | directory cursor cookie replay + unknown cookie 拒绝 | 0 | PASS（单元测试） | frozen::tests |
+| PR08-DIR-COOKIE-BOUND | 同一页端点复用 continuation cookie（重复分页不再分配新 cookie）；`limit=0` 拒绝 | 0 | PASS（新增聚焦测试） | `directory_cookie_survives_page_replay` |
+| PR08-MILLION-DIR | 1,000,000 条目按序分页，64 MiB spool 上限与未知 cookie 拒绝 | 0 | PASS（新增聚焦测试） | `one_million_directory_entries_page_in_order` |
+| PR08-NON-UTF8 | 非 UTF-8 dentry 名称按原始 bytes 排序、分页和返回 | 0 | PASS（新增聚焦测试） | `non_utf8_dentry_names_preserve_original_bytes` |
+| PR08-HARDLINK-PAGE | 跨页 dentry 仍解析到同一 inode 记录，缺失名称返回 None | 0 | PASS（新增聚焦测试） | `hardlinked_names_across_pages_share_one_inode_record` |
+| PR08-RENAME | rename 后新路径复用原目录 inode，旧 dentry 消失且子树身份不变 | 0 | PASS（新增聚焦测试） | `directory_rename_keeps_inode_and_descendant_identity` |
+| PR08-PARTIAL-NAMESPACE | manifest 到达但 namespace 对象缺失时 fail-closed | 0 | PASS（新增聚焦测试） | `partial_namespace_arrival_fails_closed` |
 | PR08-MULTI-PAGE | FixedRevisionReader 多级 BNPG 索引遍历（150 条目 ≥ 2 层） | 0 | PASS（新增集成测试） | frozen::tests |
 | PR08-NEGATIVE | negative lookup 返回 None 且不触发 KV RPC | 0 | PASS（新增集成测试） | frozen::tests |
 | PR08-CORRUPT | 页损坏 fail-closed（digest 不匹配） | 0 | PASS（新增集成测试） | frozen::tests |
-| PR08-FULL-TEST | `cargo test -p brewfs --features native-packed-base --lib native_base::frozen` | 0 | PASS（6 passed, 0 failed） | 见 PR07 focused log |
+| PR08-FULL-TEST | `cargo test -p brewfs --features native-packed-base --lib native_base::frozen` | 0 | PASS（11 passed, 0 failed） | [pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log) |
 
 修复的 bug：`read_page` 中 `ObjectKind::from_magic` 传入整个 header（64B）
 而非 magic（8B），导致所有 FrozenMetadata 对象被判为未知格式。
