@@ -1778,8 +1778,8 @@
     "expected": "等待依赖链或报告错误，不跳过",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07c-ord005-008.sh (exit 0; ord_005 1 passed/0 failed, runtime io 12 passed/0 failed, write 29 passed/0 failed, native lib 963 passed/0 failed): 新增 NativeDataRuntime::fsync 的 ord_005_incomplete_predecessor_fails_fsync_and_is_not_skipped —— 上传失败（注入 put 失败）时 fsync 返回错误、两条 pending mutation 全部保留（pending_count==2）、committed view 无记录（未跳过/未丢数据）；随后修复根因：fsync 先调用 overlay.retry_incomplete() 重试半途操作（复用原 ticket，保持 inode 注册顺序），并在消费 pending 前用 overlay.incomplete_count() 断言无未完成操作，否则报错而不丢弃。修复后重试 fsync 完整提交两条写入并逐字节回读一致。log: doc/native-base/logs/pr07c-ord005-008.log"
   },
   {
     "test_id": "ORD-006",
@@ -1811,8 +1811,8 @@
     "expected": "必须遵循注册逻辑顺序，不扩张计划",
     "invariants": "INV-03 INV-06 INV-22",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07c-ord005-008.sh (exit 0; reordered_upload 1 passed/0 failed, write 29 passed/0 failed, native lib 963 passed/0 failed): reordered_upload_cannot_overtake_its_predecessor 验证按网络完成顺序乱序时 drain 不扩张计划也不抢跑：后序上传先完成时 drain committed 为空、committed_order 仍为 0；前序完成后两条按 admission order 一起提交（committed=2、committed_order=2、size=128、两个 extent 位于 0 与 64）；failed_predecessor_blocks_successors_instead_of_skipping_them 验证前序永久失败时后继被标记 blocked 而非跳过。log: doc/native-base/logs/pr07c-ord005-008.log"
   },
   {
     "test_id": "CTRL-001",

@@ -558,6 +558,11 @@ impl NativeDataRuntime {
         if pending.is_empty() {
             return Ok(DrainReport::default());
         }
+        // A previous attempt may have left operations half-way (an upload
+        // that failed after registration).  Re-drive them first: the retry
+        // waits for the dependency chain instead of skipping it, and it
+        // reuses the original tickets so per-inode order is preserved.
+        self.overlay.retry_incomplete(inode).await?;
         let effective_size = self.effective_size_at(inode, boundary).await?;
         let block_size = self.overlay.params().block_size;
 
@@ -688,6 +693,18 @@ impl NativeDataRuntime {
             self.commit_ticket(&ticket, &mut report).await?;
         }
 
+        // ORD-005: fsync may only consume its pending mutations once the
+        // overlay has no unfinished work left.  If anything is still
+        // accepted/uploaded the drain stopped early (for example behind an
+        // incomplete predecessor), so report it instead of silently dropping
+        // the write.
+        let incomplete = self.overlay.incomplete_count(inode).await;
+        if incomplete != 0 {
+            return Err(NativeIoError::Fsync(format!(
+                "{incomplete} native mutations remain uncommitted"
+            )));
+        }
+
         let mut state = self.state.lock().await;
         if let Some(writes) = state.pending.get_mut(&inode) {
             while writes
@@ -755,6 +772,36 @@ mod tests {
     use crate::native_base::write::memory::MemoryControlStore;
     use crate::native_base::write::overlay::OverlayParams;
     use crate::native_base::write::receipts::MemorySink;
+    use crate::native_base::write::receipts::ObjectSink;
+
+    /// A sink whose uploads can be failed on demand, to model an incomplete
+    /// predecessor at an fsync boundary.
+    #[derive(Default)]
+    struct FlakySink {
+        inner: MemorySink,
+        fail_puts: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl ObjectSink for FlakySink {
+        async fn put(
+            &self,
+            object: &crate::native_base::wire::refs::ObjectRef,
+            bytes: &[u8],
+        ) -> anyhow::Result<()> {
+            if self.fail_puts.load(Ordering::Relaxed) {
+                anyhow::bail!("injected upload failure");
+            }
+            self.inner.put(object, bytes).await
+        }
+
+        async fn get(
+            &self,
+            object: &crate::native_base::wire::refs::ObjectRef,
+        ) -> anyhow::Result<Vec<u8>> {
+            self.inner.get(object).await
+        }
+    }
 
     struct CountingBase {
         data: Vec<u8>,
@@ -788,7 +835,7 @@ mod tests {
 
     async fn runtime(
         store: Arc<MemoryControlStore>,
-        sink: Arc<MemorySink>,
+        sink: Arc<dyn ObjectSink>,
         base: Arc<CountingBase>,
     ) -> NativeDataRuntime {
         let overlay = Arc::new(WriteOverlay::new(
@@ -1076,6 +1123,68 @@ mod tests {
         assert_eq!(runtime.size(23).await.unwrap(), 100);
         runtime.fsync(23).await.unwrap();
         assert_eq!(runtime.size(23).await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn ord_005_incomplete_predecessor_fails_fsync_and_is_not_skipped() {
+        // ORD-005 (INV-03/INV-06/INV-22): when an upload for a mutation at or
+        // before the fsync boundary cannot complete, fsync must report the
+        // error and keep every mutation pending.  It must never drop the
+        // predecessor (or commit its successor ahead of it).
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(FlakySink::default());
+        let baseline: Vec<u8> = (0..=255).collect();
+        let base = Arc::new(CountingBase {
+            data: baseline.clone(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink.clone(), base).await;
+
+        runtime.write(31, 70, b"PATCH").await.unwrap();
+        runtime.write(31, 130, b"TAIL").await.unwrap();
+        assert_eq!(runtime.pending_count(31).await, 2);
+
+        sink.fail_puts.store(true, Ordering::Relaxed);
+        assert!(
+            runtime.fsync(31).await.is_err(),
+            "an incomplete predecessor must surface an error"
+        );
+        sink.fail_puts.store(false, Ordering::Relaxed);
+
+        // Nothing was committed and nothing was dropped: both mutations are
+        // still pending, so a retry can complete the dependency chain.
+        assert_eq!(
+            runtime.pending_count(31).await,
+            2,
+            "the blocked mutations must stay pending, not be skipped"
+        );
+        // Dirty reads still see both pending mutations ...
+        assert_eq!(
+            &runtime.read(31, 68, 10).await.unwrap(),
+            &[68, 69, b'P', b'A', b'T', b'C', b'H', 75, 76, 77]
+        );
+        assert_eq!(
+            &runtime.read(31, 128, 6).await.unwrap(),
+            &[128, 129, b'T', b'A', b'I', b'L']
+        );
+        // ... but nothing reached the committed view.
+        let view = read_inode_view(
+            runtime.overlay.control_store(),
+            runtime.overlay.keys(),
+            &runtime.overlay.params().workspace_id,
+            31,
+        )
+        .await
+        .unwrap();
+        assert!(!view.had_record);
+
+        // The retry commits both, in admission order, byte-exact.
+        runtime.fsync(31).await.unwrap();
+        assert_eq!(runtime.pending_count(31).await, 0);
+        let mut expected = baseline;
+        expected[70..75].copy_from_slice(b"PATCH");
+        expected[130..134].copy_from_slice(b"TAIL");
+        assert_eq!(runtime.read(31, 0, 256).await.unwrap(), expected);
     }
 
     #[tokio::test]

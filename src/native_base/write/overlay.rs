@@ -789,6 +789,80 @@ impl WriteOverlay {
         }
     }
 
+    /// Number of operations for `inode` that have not reached a terminal
+    /// state.  After a successful drain this must be zero: a non-zero count
+    /// means the caller would otherwise be dropping uncommitted work.
+    pub async fn incomplete_count(&self, inode: u64) -> usize {
+        let state = self.state.lock().await;
+        state
+            .inodes
+            .get(&inode)
+            .map(|inode_state| {
+                inode_state
+                    .pending
+                    .iter()
+                    .filter(|op| matches!(op.state, OpState::Accepted | OpState::Uploaded(_)))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Re-drive operations a previous attempt left half-way: an accepted
+    /// operation is dispatched again (registration and upload are idempotent
+    /// for one identity) and an upload without receipts is completed.  This
+    /// is how a retry waits for the dependency chain instead of skipping it
+    /// (spec 18 §10); admission order is unchanged because the same tickets
+    /// are reused.
+    pub async fn retry_incomplete(&self, inode: u64) -> Result<usize, WriteError> {
+        let candidates: Vec<Ticket> = {
+            let state = self.state.lock().await;
+            let Some(inode_state) = state.inodes.get(&inode) else {
+                return Ok(0);
+            };
+            inode_state
+                .pending
+                .iter()
+                .filter(|op| matches!(op.state, OpState::Accepted | OpState::Uploaded(_)))
+                .map(|op| Ticket {
+                    admission_ticket: op.ticket,
+                    inode,
+                    mutation_order: op.mutation_order,
+                    operation_id: op.operation_id,
+                })
+                .collect()
+        };
+
+        let mut driven = 0;
+        for ticket in candidates {
+            let (accepted, needs_receipts) = {
+                let state = self.state.lock().await;
+                let Some(op) = state.inodes.get(&inode).and_then(|inode_state| {
+                    inode_state
+                        .pending
+                        .iter()
+                        .find(|op| op.ticket == ticket.admission_ticket)
+                }) else {
+                    continue;
+                };
+                match &op.state {
+                    OpState::Accepted => (true, true),
+                    OpState::Uploaded(uploaded) => (false, uploaded.receipts.is_none()),
+                    _ => (false, false),
+                }
+            };
+            if accepted {
+                self.dispatch(&ticket).await?;
+            }
+            if needs_receipts {
+                self.complete_upload(&ticket).await?;
+            }
+            if accepted || needs_receipts {
+                driven += 1;
+            }
+        }
+        Ok(driven)
+    }
+
     /// Re-read the authoritative head and inode view after a commit and
     /// return the re-locked overlay state.
     async fn refresh_state(

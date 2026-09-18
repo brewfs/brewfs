@@ -536,6 +536,28 @@ Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 run
 | PR07-BASELINE-OVERLAY | `bash doc/native-base/logs/pr07b-baseline-overlay.sh` | 0 | PASS（runtime io 11 passed/0 failed；native lib 959 passed, 221 ignored, 0 failed）：Packed-like baseline + loose patch + Hole 逐字节 oracle；fresh punch-hole 保留 baseline 尺寸与尾部；truncate-down 后 extend/far-write 不复活旧尾部；跨 block 局部写与多 extent 非连续写逐字节回读 | [pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log) |
 | PR07-DIRECT-HOLE | `cargo test -p brewfs --features native-packed-base --lib native_base::runtime::io::tests` | 0 | PASS（11 passed, 0 failed）：不与 pending 写、也不与已提交 Data extent 重叠的 punch-hole 直接提交为 Hole extent；会切开已提交 Data extent 的孔回落块物化，避免留下非块对齐 extent 片段 | 同上 |
 | PR07-BASELINE-SIZE | 同上 | 0 | PASS（11 passed, 0 failed）：commit planner 携带 immutable baseline 尺寸，首次 mutation / truncate / punch-hole 不再把未修改 baseline 物化成 Hole，也不复活截断尾部 | 同上 |
+| PR07C-ORD005 | `bash doc/native-base/logs/pr07c-ord005-008.sh` | 0 | PASS（ord_005 1 passed/0 failed；runtime io 12 passed/0 failed；write 29 passed/0 failed；native lib 963 passed, 221 ignored, 0 failed） | [pr07c-ord005-008.log](logs/pr07c-ord005-008.log) |
+| PR07C-ORD008 | 同上 | 0 | PASS（reordered_upload 1 passed/0 failed；write 29 passed/0 failed；native lib 963 passed/0 failed） | 同上 |
+
+补充（PR07C · ORD-005/ORD-008）：fsync 边界此前存在一个真实的静默丢弃缺陷。
+`NativeDataRuntime::fsync` 会在结尾把 `ticket <= boundary` 的 pending mutation 全部出队，
+但 overlay 的 `drain()` 遇到前序操作仍是 `Accepted`（例如上传失败后停留在该状态）时
+只会在队首 `break`，既不提交也不报错；`commit_ticket` 因此看到空报告并返回成功，
+于是 fsync 返回 Ok 却把这条写入丢掉了，同时该 inode 之后的所有操作都被卡在
+队首永远无法提交。修复分两点：
+
+- `WriteOverlay::retry_incomplete(inode)`：重试半途操作（`Accepted` 重新 dispatch、
+  缺 receipts 的补 `complete_upload`）。注册与上传对同一身份幂等，且复用原 ticket，
+  因此 inode 的注册顺序不变——这就是"等待依赖链"而不是"跳过"。
+- `WriteOverlay::incomplete_count(inode)`：fsync 在消费 pending 之前断言该 inode
+  没有 `Accepted`/`Uploaded` 残留；仍存在时返回 `Fsync` 错误并保留 pending，
+  重试可继续（`ord_005_incomplete_predecessor_fails_fsync_and_is_not_skipped`
+  验证失败时 pending 仍为 2、committed view 为空，修好 sink 后重试逐字节一致）。
+
+ORD-008 由既有 `reordered_upload_cannot_overtake_its_predecessor` 与
+`failed_predecessor_blocks_successors_instead_of_skipping_them` 覆盖：乱序完成的
+上传不得抢跑，drain 只按 admission order 提交且不扩张计划（committed=2、
+committed_order=2、两个 extent）。
 | PR07-CLIPPY | `cargo clippy -p brewfs --features native-packed-base --lib` | 0 | PASS（仅 4 条存量 warning，无新增） | 同上 |
 | PR07-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS | — |
 
