@@ -451,8 +451,77 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::backend::{InjectedCompleteFault, InjectedPartFailure, MemoryUploadBackend};
+    use async_trait::async_trait;
+
+    use super::super::backend::{
+        InjectedCompleteFault, InjectedPartFailure, MemoryUploadBackend, ObjectStat, UploadId,
+    };
     use super::*;
+
+    /// A backend whose object facts disagree with the stored content: the
+    /// reported composite is not the locally sealed full hash.
+    struct MismatchingFactsBackend {
+        inner: MemoryUploadBackend,
+    }
+
+    #[async_trait]
+    impl UploadBackend for MismatchingFactsBackend {
+        async fn create_only_put(&self, key: &[u8], bytes: &[u8]) -> Result<(), UploadError> {
+            self.inner.create_only_put(key, bytes).await
+        }
+
+        async fn range_get_exact(
+            &self,
+            key: &[u8],
+            offset: u64,
+            buf: &mut [u8],
+        ) -> Result<(), UploadError> {
+            self.inner.range_get_exact(key, offset, buf).await
+        }
+
+        async fn read_full(&self, key: &[u8]) -> Result<Vec<u8>, UploadError> {
+            self.inner.read_full(key).await
+        }
+
+        async fn inspect(&self, key: &[u8]) -> Result<Option<ObjectStat>, UploadError> {
+            Ok(self.inner.inspect(key).await?.map(|mut stat| {
+                stat.sha256[0] ^= 0xff;
+                stat
+            }))
+        }
+
+        async fn multipart_create(
+            &self,
+            key: &[u8],
+            spec: &MultipartSpec,
+        ) -> Result<UploadId, UploadError> {
+            self.inner.multipart_create(key, spec).await
+        }
+
+        async fn multipart_upload_part(
+            &self,
+            upload: &UploadId,
+            part: &PartPlan,
+            bytes: &[u8],
+        ) -> Result<PartReceipt, UploadError> {
+            self.inner.multipart_upload_part(upload, part, bytes).await
+        }
+
+        async fn multipart_complete(
+            &self,
+            upload: &UploadId,
+            parts: &[PartReceipt],
+        ) -> Result<CompleteOutcome, UploadError> {
+            self.inner.multipart_complete(upload, parts).await
+        }
+
+        async fn multipart_status(
+            &self,
+            upload: &UploadId,
+        ) -> Result<MultipartStatus, UploadError> {
+            self.inner.multipart_status(upload).await
+        }
+    }
 
     fn object(key: &[u8], bytes: &[u8]) -> (PlannedObject, Vec<u8>) {
         let mut planned = PlannedObject::single_put(
@@ -613,6 +682,30 @@ mod tests {
             }
             other => panic!("expected service-validated evidence, got {other:?}"),
         }
+    }
+
+    /// VFY-001: the multipart composite is a *different* fact from the
+    /// locally sealed full hash. When the two disagree the object is refused,
+    /// so the service value can never be written into `ObjectRef.full_hash`.
+    #[tokio::test]
+    async fn service_composite_that_differs_from_the_local_hash_is_refused() {
+        let backend = MismatchingFactsBackend {
+            inner: MemoryUploadBackend::new(),
+        };
+        let executor = UploadExecutor::new(
+            &backend,
+            RemoteVerificationProfile::ServiceValidatedChecksums,
+        );
+        let (planned, bytes) = object(b"obj", b"hello world");
+        let err = executor.upload_object(&planned, &bytes).await.unwrap_err();
+        assert!(
+            matches!(err, IngestError::RemoteVerificationFailed(_)),
+            "{err}"
+        );
+        // The identity used by every later read is still the locally sealed
+        // full hash; the mismatching service composite produced no evidence.
+        let local_full_hash: [u8; 32] = Sha256::digest(&bytes).into();
+        assert_eq!(planned.full_hash, local_full_hash);
     }
 
     #[tokio::test]

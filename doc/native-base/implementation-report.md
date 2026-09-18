@@ -635,6 +635,33 @@ cleanup 只接受 close 证书 + 已验证 unversioned delete 能力。
 执行器、Range GET 合并与预取尚未接入真实 reader，因此矩阵中与"真实 FUSE
 读取"绑定的条目（READ-001/005/006/007/008、CONS-003 等）仍保持未实现。
 
+### PR07F · ingest 上传验证证据（VFY-001/VFY-004）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。这一组把 PR05 上传侧的两条
+证据契约从"合同级"推进到可执行断言：
+
+- `src/native_base/ingest/upload.rs`：`VerificationEvidence::ServiceValidated
+  { composite_sha256 }` 与 `PlannedObject::full_hash` 是两个独立事实。服务端
+  composite 只用于确认，写入 `ObjectRef.full_hash` 的永远是本地 sealed hash；
+  两者不一致时 `verify_remote` 返回 `RemoteVerificationFailed`。
+- `src/native_base/ingest/plan.rs` + `build.rs`：plan 在冻结时持久化 digest，
+  resume 时 `plan.digest()` 必须等于 journal 中记录的值，否则
+  `IngestError::PlanMismatch`；新 plan 必须由 `Session::record_plan_digest`
+  显式登记后才会被接受（旧回执不会混入不同分区的 attempt）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07F-FOCUSED | `bash doc/native-base/logs/pr07f-ingest-verification.sh` | 0 | PASS（native_base::ingest 56 passed/0 failed） | [pr07f-ingest-verification.log](logs/pr07f-ingest-verification.log) |
+| PR07F-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07F-VFY001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::ingest` | 0 | PASS：`service_composite_that_differs_from_the_local_hash_is_refused`、`service_validated_profile_uses_service_facts_not_readback`、`part_checksum_mismatch_is_refused_server_side` | 同上 |
+| PR07F-VFY004 | 同上 | 0 | PASS：`resume_with_changed_part_boundaries_is_refused_until_registered`（改写 plan → PlanMismatch、0 对象上传；显式登记后才放行）、`changed_plan_on_resume_is_refused` | 同上 |
+
+仍如实 NOT_RUN：VFY-002/VFY-003 需要的能力探测（服务端只回显 metadata hash、
+Create 未指定算法或错误 part 校验）尚未实现——当前 `RemoteVerificationProfile`
+的正确性依赖调用方显式选择，尚无"探测未校验即拒绝 ServiceValidatedChecksums"
+的运行时门。此外 `MemoryUploadBackend::corrupt_payload` 目前只写入
+`corrupt_keys`、没有任何读取点（存量缺口，本轮未改）。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -1019,8 +1019,8 @@
     "expected": "区分COMPOSITE与FULL_OBJECT，不混写ObjectRef",
     "invariants": "INV-19",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07f-ingest-verification.sh (exit 0; native_base::ingest 56 passed/0 failed): upload::tests::service_composite_that_differs_from_the_local_hash_is_refused —— ServiceValidatedChecksums profile 下 inspect 报出的 composite 与本地 full_hash 不一致时返回 RemoteVerificationFailed，ObjectRef.full_hash 仍是本地 sealed hash，服务端的 COMPOSITE 永远不会被写进 ObjectRef（VFY-001「区分COMPOSITE与FULL_OBJECT，不混写ObjectRef」）；upload::tests::service_validated_profile_uses_service_facts_not_readback 证明 VerificationEvidence::ServiceValidated{composite_sha256} 是独立字段；backend::tests::part_checksum_mismatch_is_refused_server_side 与 multipart_complete 的 composite 校验证明组装后 composite != spec.sha256 时返回 CompleteOutcome::Failed（HTTP 200 也不标 REMOTE_VERIFIED）。log: doc/native-base/logs/pr07f-ingest-verification.log"
   },
   {
     "test_id": "VFY-002",
@@ -1052,8 +1052,8 @@
     "expected": "拒绝混合旧回执，新attempt计划显式登记",
     "invariants": "INV-01 INV-19",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07f-ingest-verification.sh (exit 0; native_base::ingest 56 passed/0 failed): build::tests::resume_with_changed_part_boundaries_is_refused_until_registered —— 把冻结 plan 改写成 part_size/verification 不同但仍可解码的合法 plan 后 resume：upload 返回 IngestError::PlanMismatch 且 backend.object_keys() 为空（旧回执不混入、不静默重新分区）；显式 session.record_plan_digest(new_digest) 登记新 plan 之后同一 attempt 才能上传（verified == 计划对象数、对象确实上传）。另有 build::tests::changed_plan_on_resume_is_refused 覆盖字节级篡改（解码失败或 digest 变化都拒绝，绝不静默 re-plan）。log: doc/native-base/logs/pr07f-ingest-verification.log"
   },
   {
     "test_id": "RES-001",

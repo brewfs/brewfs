@@ -661,6 +661,77 @@ mod tests {
         }
     }
 
+    /// VFY-004: a resume that would change the part boundaries or the
+    /// verification profile must not mix the old receipts into a differently
+    /// planned attempt. The rewritten plan decodes, so only the journaled
+    /// digest can catch it - and a new attempt has to register that digest
+    /// explicitly.
+    #[tokio::test]
+    async fn resume_with_changed_part_boundaries_is_refused_until_registered() {
+        let root = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        write_source(src.path(), &[("a.txt", b"alpha")]);
+
+        let backend = MemoryUploadBackend::new();
+        {
+            let session = Session::create(root.path(), "s1").unwrap();
+            let mut builder = IngestBuilder::new(
+                session,
+                LocalDirSource::new(src.path(), ConsistencyPolicy::SnapshotBacked),
+                config(),
+            );
+            builder.run_inventory().unwrap();
+            builder.freeze_plan().unwrap();
+            builder.into_session().close();
+        }
+
+        // Rewrite the frozen plan with different part boundaries and a
+        // different verification profile. It still decodes.
+        let plan_path = root.path().join("s1/upload.plan");
+        let original = UploadPlan::decode(&fs::read(&plan_path).unwrap()).unwrap();
+        let mut reworked = original.clone();
+        reworked.part_size = 1;
+        reworked.verification = RemoteVerificationProfile::ServiceValidatedChecksums;
+        assert_ne!(reworked.digest(), original.digest());
+        let new_digest = reworked.write_to(&plan_path).unwrap();
+
+        // The rewritten plan is not the journaled one: refuse, upload nothing,
+        // and do not touch the old receipts.
+        {
+            let session = Session::open(root.path(), "s1").unwrap();
+            let mut builder = IngestBuilder::new(
+                session,
+                LocalDirSource::new(src.path(), ConsistencyPolicy::SnapshotBacked),
+                config(),
+            );
+            let err = builder.upload(&backend).await.unwrap_err();
+            assert!(matches!(err, IngestError::PlanMismatch(_)), "{err}");
+            assert!(
+                backend.object_keys().is_empty(),
+                "a differently planned attempt must not reuse or produce receipts"
+            );
+            builder.into_session().close();
+        }
+
+        // Registering the new plan explicitly is what admits the attempt.
+        {
+            let mut session = Session::open(root.path(), "s1").unwrap();
+            session.record_plan_digest(new_digest).unwrap();
+            session.close();
+        }
+
+        let session = Session::open(root.path(), "s1").unwrap();
+        let mut builder = IngestBuilder::new(
+            session,
+            LocalDirSource::new(src.path(), ConsistencyPolicy::SnapshotBacked),
+            config(),
+        );
+        builder.upload(&backend).await.unwrap();
+        assert_eq!(builder.outcome().verified, original.objects.len());
+        assert!(!backend.object_keys().is_empty());
+        builder.into_session().close();
+    }
+
     #[tokio::test]
     async fn without_create_only_the_build_is_refused_not_simulated() {
         // E02: no atomic create-only PUT → refusal, never HEAD+PUT.
