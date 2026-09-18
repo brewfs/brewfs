@@ -356,6 +356,42 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// OPT-002: a hundred same-host readers of the same immutable frame must
+    /// schedule exactly one fetch/decode; every reader observes the same
+    /// shared buffer.
+    #[tokio::test]
+    async fn one_hundred_concurrent_readers_share_one_fetch_and_decode() {
+        let flights = Arc::new(FrameSingleflight::<u64, Vec<u8>>::default());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..100 {
+            let flights = flights.clone();
+            let loads = loads.clone();
+            handles.push(tokio::spawn(async move {
+                flights
+                    .get_or_load(7, || async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok(vec![9u8; 64])
+                    })
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut buffers = Vec::new();
+        for handle in handles {
+            buffers.push(handle.await.unwrap());
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "one fetch/decode");
+        assert!(
+            buffers
+                .iter()
+                .all(|buffer| Arc::ptr_eq(buffer, &buffers[0])),
+            "every reader observes the one shared buffer"
+        );
+        assert_eq!(&*buffers[0], &[9u8; 64]);
+    }
+
     #[tokio::test]
     async fn prefetch_cannot_consume_demand_reserve() {
         let budget = ReadBudget::new(ReadBudgetConfig {

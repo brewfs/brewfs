@@ -733,8 +733,8 @@
     "expected": "共享服务只调度一次fetch/decode",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07g-read-amortization.sh (exit 0; native_base::runtime::planner::tests 4 passed/0 failed, native_base::runtime::io::tests 13 passed/0 failed): one_hundred_concurrent_readers_share_one_fetch_and_decode —— 100 个并发读者对同一 frame key 调用 FrameSingleflight::get_or_load，loader 只执行 1 次（fetch/decode 计数 == 1），每个等待者拿到的都是同一个 Arc（Arc::ptr_eq 对全部 100 个 buffer 成立，内容为同一份 64B buffer），即每次 fetch/decode 只被调度一次（与 OPT-003 同一个 singleflight 基元，取消一个 waiter 不会取消 loader）。log: doc/native-base/logs/pr07g-read-amortization.log"
   },
   {
     "test_id": "OPT-003",
@@ -755,8 +755,8 @@
     "expected": "不自动下载所有文件data",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07g-read-amortization.sh (exit 0; native_base::runtime::planner::tests 4 passed/0 failed, native_base::runtime::io::tests 13 passed/0 failed): metadata_only_operations_never_fetch_file_data —— Runtime::size（getattr/readdir 走的元数据入口）在 3 个 4KiB 基线块的对象上返回 4096*3，且 clear_cache() 之后仍未产生任何对象 GET（CountingSink.gets == 0）、不产生对象 PUT（puts == 0），基线的 bytes_read 计数为 0（未复制任何文件 data）；即只 stat/readdir 的工作负载不会下载文件 data。log: doc/native-base/logs/pr07g-read-amortization.log"
   },
   {
     "test_id": "OPT-005",

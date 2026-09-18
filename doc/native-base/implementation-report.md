@@ -662,6 +662,29 @@ Create 未指定算法或错误 part 校验）尚未实现——当前 `RemoteVe
 的运行时门。此外 `MemoryUploadBackend::corrupt_payload` 目前只写入
 `corrupt_keys`、没有任何读取点（存量缺口，本轮未改）。
 
+### PR07G · 读取摊薄与元数据专用路径（OPT-002/OPT-004）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。这一组把 P3 的两条读取路径
+契约从"计划"推进到可执行断言，复用已 PASS 的 OPT-003/OPT-005 所在的
+`runtime::planner` 基元：
+
+- `src/native_base/runtime/planner.rs`：`FrameSingleflight::get_or_load` 在 100 个
+  并发读者请求同一 frame key 时只调用 loader 一次，并让每个等待者
+  `Arc::ptr_eq` 到同一个 buffer（OPT-002）。
+- `src/native_base/runtime/io.rs`：`Runtime::size`（getattr/readdir 背后的元数据
+  入口）只走控制面与基线长度，不触发对象 GET/PUT，也不复制基线 data（OPT-004）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07G-FOCUSED | `bash doc/native-base/logs/pr07g-read-amortization.sh` | 0 | PASS（planner 4 passed/0 failed、io 13 passed/0 failed） | [pr07g-read-amortization.log](logs/pr07g-read-amortization.log) |
+| PR07G-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07G-OPT002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::planner::tests` | 0 | PASS：`one_hundred_concurrent_readers_share_one_fetch_and_decode`（loader 调用次数 == 1；100 个返回 buffer 两两 `Arc::ptr_eq`） | 同上 |
+| PR07G-OPT004 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests` | 0 | PASS：`metadata_only_operations_never_fetch_file_data`（`size` 返回 4096*3；对象 GET/PUT 均为 0，基线 `bytes_read` 为 0） | 同上 |
+
+范围说明（不虚标）：OPT-002 的证据是进程内 singleflight 基元——跨进程
+Unix-socket 共享服务仍是 PR11 preview 骨架（`probe_shared_cache()` 恒为 `None`），
+因此本项只覆盖"同一消费者进程内的并发读只调度一次 fetch/decode"。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -803,6 +803,35 @@ mod tests {
         }
     }
 
+    /// A sink that counts object traffic, so a metadata-only workload can be
+    /// proven not to touch file data.
+    #[derive(Default)]
+    struct CountingSink {
+        inner: MemorySink,
+        puts: AtomicU64,
+        gets: AtomicU64,
+    }
+
+    #[async_trait]
+    impl ObjectSink for CountingSink {
+        async fn put(
+            &self,
+            object: &crate::native_base::wire::refs::ObjectRef,
+            bytes: &[u8],
+        ) -> anyhow::Result<()> {
+            self.puts.fetch_add(1, Ordering::Relaxed);
+            self.inner.put(object, bytes).await
+        }
+
+        async fn get(
+            &self,
+            object: &crate::native_base::wire::refs::ObjectRef,
+        ) -> anyhow::Result<Vec<u8>> {
+            self.gets.fetch_add(1, Ordering::Relaxed);
+            self.inner.get(object).await
+        }
+    }
+
     struct CountingBase {
         data: Vec<u8>,
         bytes_read: AtomicU64,
@@ -875,6 +904,33 @@ mod tests {
         assert_eq!(
             &runtime.read(7, 68, 10).await.unwrap(),
             &[68, 69, b'P', b'A', b'T', b'C', b'H', 75, 76, 77]
+        );
+    }
+
+    /// OPT-004: a stat/readdir-only workload must not drag file data along.
+    /// `size` is the metadata-only entry point behind getattr: it may read
+    /// the control plane and the baseline size, but it must issue no object
+    /// GET/PUT and copy no baseline bytes.
+    #[tokio::test]
+    async fn metadata_only_operations_never_fetch_file_data() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(CountingSink::default());
+        let base = Arc::new(CountingBase {
+            data: vec![7u8; 4096 * 3],
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store, sink.clone(), base.clone()).await;
+
+        assert_eq!(runtime.size(41).await.unwrap(), 4096 * 3);
+        assert_eq!(runtime.pending_count(41).await, 0);
+        runtime.clear_cache().await;
+
+        assert_eq!(sink.gets.load(Ordering::Relaxed), 0, "no object GET");
+        assert_eq!(sink.puts.load(Ordering::Relaxed), 0, "no object PUT");
+        assert_eq!(
+            base.bytes_read.load(Ordering::Relaxed),
+            0,
+            "no baseline data copy"
         );
     }
 
