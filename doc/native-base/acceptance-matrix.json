@@ -1855,8 +1855,8 @@
     "expected": "停删并报告authority/evidence错误",
     "invariants": "INV-19 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr06d-ctrl004.sh (exit 0; ctrl_004 2 passed/0 failed, lifecycle 24 passed/0 failed, native lib 962 passed/0 failed): 新增 build_single_value_record 生成规范化 type-3 单值容器（header+GenericKeyValue 叶+footer）。close_domain_commit 现在用权威证书重建副本并要求 RootRef 完全相等（含 full_hash/stored_digest/object_len/key），不一致时返回 Durability 错误且不写任何记录（域仍为 Draining、无证书行）；load_cleanup_authority 在删除前用 KV 权威证书重建副本并要求等于 plan.close_ref，证书被置换时立即停删（deleter 无任何删除）。log: doc/native-base/logs/pr06d-ctrl004.log"
   },
   {
     "test_id": "RET-023",

@@ -13,7 +13,7 @@ use crate::native_base::wire::container::{
     Codec, ContainerFooter, ContainerHeader, FOOTER_LEN, HEADER_LEN, ObjectKind, parse_footer,
 };
 use crate::native_base::wire::index_build::{IndexTreeParams, build_index_tree};
-use crate::native_base::wire::page::{BnpgKind, IndexPage, PageBody};
+use crate::native_base::wire::page::{BnpgKind, IndexPage, LeafEntry, PageBody};
 use crate::native_base::wire::refs::{
     ChildRef, Hash32, ObjectRef, PageAddress, PageKind, RootRef, ensure_child_descends,
 };
@@ -125,6 +125,81 @@ pub fn build_object_index(
         bytes,
         root: RootRef { object, address },
         entries,
+    })
+}
+
+/// A built type-3 single-value control record container: the complete object
+/// bytes plus the [`RootRef`] that an authority record must reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltSingleValue {
+    pub bytes: Vec<u8>,
+    pub root: RootRef,
+}
+
+/// Build the canonical type-3 single-value container for one control record.
+///
+/// Layout: 64-byte header, one level-0 `GenericKeyValue` leaf holding exactly
+/// one entry (fixed empty key, `record_bytes` as the value) at offset 64, then
+/// the 64-byte footer.  The encoding is a pure function of
+/// `(object_id, key, record_bytes)`, so any party can recompute the expected
+/// `full_hash`/`stored_digest` and compare a published copy against the
+/// authoritative record instead of trusting the copy.
+pub fn build_single_value_record(
+    object_id: [u8; 16],
+    key: Vec<u8>,
+    record_bytes: Vec<u8>,
+) -> LifecycleResult<BuiltSingleValue> {
+    let page = IndexPage {
+        kind: BnpgKind::GenericKeyValue,
+        level: 0,
+        body: PageBody::Leaf(vec![LeafEntry {
+            key: Vec::new(),
+            value: record_bytes,
+        }]),
+    };
+    let raw = page.encode();
+    let stored = raw.clone();
+    let root_offset = HEADER_LEN as u64;
+    let object_len = HEADER_LEN + stored.len() + FOOTER_LEN;
+    let header = ContainerHeader {
+        kind: ObjectKind::FrozenMetadata,
+        required_features: 0,
+        object_len: object_len as u64,
+        root_offset,
+        root_stored_len: stored.len() as u32,
+        root_raw_len: raw.len() as u32,
+        hash_id: 1,
+        root_codec: Codec::None,
+    };
+    let address = PageAddress {
+        offset: root_offset,
+        stored_len: stored.len() as u32,
+        raw_len: raw.len() as u32,
+        codec: Codec::None,
+        page_kind: PageKind::GenericKeyValue,
+        level: 0,
+        entry_count: 1,
+        stored_digest: Sha256::digest(&stored).into(),
+    };
+    let footer = ContainerFooter {
+        object_len: object_len as u64,
+        root_stored_digest: address.stored_digest,
+    };
+    let mut bytes = Vec::with_capacity(object_len);
+    bytes.extend_from_slice(&header.encode());
+    bytes.extend_from_slice(&stored);
+    bytes.extend_from_slice(&footer.encode());
+    let object = ObjectRef {
+        object_id,
+        kind: ObjectKind::FrozenMetadata.as_u8(),
+        object_len: object_len as u64,
+        full_hash: Sha256::digest(&bytes).into(),
+        key,
+    };
+    crate::native_base::wire::refs::validate_object_key(&object.key)?;
+    Ok(BuiltSingleValue {
+        bytes,
+        root: RootRef { object, address },
     })
 }
 

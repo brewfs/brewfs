@@ -1,0 +1,1365 @@
+=== CTRL-004: format check ===
+=== CTRL-004: lifecycle cleanup focused tests ===
+   Compiling brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+warning: variable does not need to be mutable
+   --> src/native_base/cache/mod.rs:139:13
+    |
+139 |         let mut k1 = key(1);
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `object_id`
+    --> src/native_base/frozen/mod.rs:1264:9
+     |
+1264 |         object_id: [u8; 16],
+     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_object_id`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `key`
+    --> src/native_base/frozen/mod.rs:1265:9
+     |
+1265 |         key: &[u8],
+     |         ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: variable does not need to be mutable
+    --> src/native_base/frozen/mod.rs:1372:21
+     |
+1372 |                 let mut k = i.to_be_bytes().to_vec();
+     |                     ----^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: `brewfs` (lib test) generated 4 warnings (run `cargo fix --lib -p brewfs --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 1m 21s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon/debug/deps/brewfs-7ef2ca62008df755)
+
+running 2 tests
+test native_base::lifecycle::cleanup::tests::ctrl_004_close_copy_hash_mismatch_is_rejected_before_write ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_004_authority_swap_after_plan_stops_cleanup ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1181 filtered out; finished in 0.00s
+
+=== CTRL-004: lifecycle focused tests ===
+warning: variable does not need to be mutable
+   --> src/native_base/cache/mod.rs:139:13
+    |
+139 |         let mut k1 = key(1);
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `object_id`
+    --> src/native_base/frozen/mod.rs:1264:9
+     |
+1264 |         object_id: [u8; 16],
+     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_object_id`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `key`
+    --> src/native_base/frozen/mod.rs:1265:9
+     |
+1265 |         key: &[u8],
+     |         ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: variable does not need to be mutable
+    --> src/native_base/frozen/mod.rs:1372:21
+     |
+1372 |                 let mut k = i.to_be_bytes().to_vec();
+     |                     ----^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: `brewfs` (lib test) generated 4 warnings (run `cargo fix --lib -p brewfs --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 0.70s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon/debug/deps/brewfs-7ef2ca62008df755)
+
+running 24 tests
+test native_base::lifecycle::cleanup::tests::cleanup_batches_are_bounded ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_003_empty_domain_expresses_the_empty_set_as_option_none ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_004_close_copy_hash_mismatch_is_rejected_before_write ... ok
+test native_base::lifecycle::cleanup::tests::lease_expiry_or_unresolved_proof_is_not_delete_authority ... ok
+test native_base::lifecycle::cleanup::tests::missing_or_rollback_evidence_enters_retain_all ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_004_authority_swap_after_plan_stops_cleanup ... ok
+test native_base::lifecycle::cleanup::tests::blocked_delete_stays_pending_and_same_operation_retries ... ok
+test native_base::lifecycle::cleanup::tests::close_freezes_domain_and_cleanup_protects_retained_object ... ok
+test native_base::lifecycle::cleanup::tests::multiple_retention_batches_form_exact_union_and_survive_cleaned ... ok
+test native_base::lifecycle::cleanup::tests::two_cleaners_cannot_own_the_same_deleting_batch ... ok
+test native_base::lifecycle::cleanup::tests::replan_after_partial_delete_preserves_digest_and_skips_deleted_rows ... ok
+test native_base::lifecycle::cleanup::tests::unknown_attempt_quarantines_domain_and_prevents_cleanup ... ok
+test native_base::lifecycle::cleanup::tests::versioned_or_locked_namespace_is_rejected_before_delete ... ok
+test native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers ... ok
+test native_base::lifecycle::tests::drain_batches_enforce_entry_and_payload_limits_before_persistence ... ok
+test native_base::lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action ... ok
+test native_base::lifecycle::tests::exact_retention_partitions_owned_domains_and_rejects_siblings ... ok
+test native_base::lifecycle::cleanup::tests::cleanup_reuses_operation_across_batches_and_cleans_after_last_batch ... ok
+test native_base::lifecycle::tests::manifest_and_object_inventory_roundtrip_without_self_reference ... ok
+test native_base::lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward ... ok
+test native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring ... ok
+test native_base::lifecycle::variant::tests::semantic_change_budget_overrun_and_busy_apply_fail_closed ... ok
+test native_base::lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent ... ok
+test native_base::lifecycle::variant::tests::variant_retains_old_and_new_dependencies ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 1159 filtered out; finished in 0.04s
+
+=== CTRL-004: native lib tests ===
+warning: variable does not need to be mutable
+   --> src/native_base/cache/mod.rs:139:13
+    |
+139 |         let mut k1 = key(1);
+    |             ----^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `object_id`
+    --> src/native_base/frozen/mod.rs:1264:9
+     |
+1264 |         object_id: [u8; 16],
+     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_object_id`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `key`
+    --> src/native_base/frozen/mod.rs:1265:9
+     |
+1265 |         key: &[u8],
+     |         ^^^ help: if this is intentional, prefix it with an underscore: `_key`
+
+warning: variable does not need to be mutable
+    --> src/native_base/frozen/mod.rs:1372:21
+     |
+1372 |                 let mut k = i.to_be_bytes().to_vec();
+     |                     ----^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: `brewfs` (lib test) generated 4 warnings (run `cargo fix --lib -p brewfs --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized] target(s) in 0.81s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/luxian/brewfs-target-vigorous-solomon/debug/deps/brewfs-7ef2ca62008df755)
+
+running 1183 tests
+test cadapter::s3::tests::rustfs_small_object_vectored_put_compat ... ignored, requires live S3-compatible endpoint; set BREWFS_S3_ENDPOINT and BREWFS_S3_BUCKET
+test cadapter::s3::tests::s3_config_defaults_raise_parallelism ... ok
+test chunk::bandwidth::tests::test_unlimited_does_not_block ... ok
+test chunk::bandwidth::tests::test_zero_limit_means_unlimited ... ok
+test cadapter::s3::tests::small_vectored_direct_stream_preserves_chunks ... ok
+test chunk::bandwidth::tests::test_limiter_creation ... ok
+test chunk::bandwidth::tests::test_acquire_small_data ... ok
+test chunk::cache::tests::chunks_cache_remove_deletes_disk_and_memory_entries ... ok
+test chunk::cache::tests::chunks_cache_remove_propagates_disk_deletion_errors ... ok
+test chunk::cache::tests::disk_remove_if_exists_is_idempotent ... ok
+test chunk::cache::tests::disk_hit_promotes_to_hot_cache_when_hot_tier_has_room ... ok
+test chunk::cache::tests::disk_remove_uses_one_write_permit_instead_of_stopping_all_writes ... ok
+test chunk::cache::tests::disk_storage_can_bypass_integrity_framing ... ok
+test chunk::cache::tests::disk_hit_fast_promotion_respects_hot_tier_budget ... ok
+test chunk::cache::tests::preacquired_store_token_cannot_adopt_generation_after_remove ... ok
+test chunk::cache::tests::hot_cache_concurrent_inserts_eventually_respect_weighted_capacity ... ok
+test chunk::cache::tests::preacquired_store_token_rejects_a_different_key_in_the_same_shard ... ok
+test cadapter::localfs::tests::create_only_put_never_overwrites_an_existing_object ... ok
+test chunk::cache::tests::remove_rejects_a_late_cold_marker_after_store_publish ... ok
+test chunk::cache::tests::remove_rejects_cache_commit_from_an_inflight_disk_read ... ok
+test chunk::cache::tests::test_access_stats_basic_functionality ... ok
+test chunk::cache::tests::stale_disk_cache_temporary_files_are_cleaned_outside_remove ... ok
+test chunk::cache::tests::test_access_stats_concurrent_access ... ok
+test chunk::cache::tests::test_access_stats_frequency_calculation ... ok
+test chunk::cache::tests::test_adaptive_threshold_lowers_when_hit_rate_is_poor ... ok
+test chunk::cache::tests::test_chunks_cache_insert_swallows_disk_cache_errors ... ok
+test chunk::cache::tests::test_default_promotion_policy_is_more_aggressive_for_read_cache_warmup ... ok
+test chunk::cache::tests::test_disk_health_bypass_and_recovery ... ok
+test chunk::cache::tests::test_concurrent_operations ... ok
+test chunk::cache::tests::test_disk_health_bypass_on_repeated_store_errors ... ok
+test chunk::cache::tests::test_error_messages ... ok
+test chunk::cache::tests::test_etag_to_filename_special_characters ... ok
+test chunk::cache::tests::test_disk_range_cache_miss_when_cached_value_does_not_cover_request ... ok
+test chunk::cache::tests::test_filename_uniqueness ... ok
+test chunk::cache::tests::test_files_actually_created ... ok
+test chunk::cache::tests::test_load_nonexistent_file ... ok
+test chunk::cache::tests::test_load_range_ignores_corruption_outside_requested_checksum_block ... ok
+test chunk::cache::tests::test_multiple_operations_same_etag ... ok
+test chunk::cache::tests::test_new_creates_directory ... ok
+test chunk::cache::tests::test_new_existing_directory ... ok
+test chunk::cache::tests::repeated_disk_range_hits_promote_to_hot_cache ... ok
+test chunk::cache::tests::test_range_cache_miss_when_cached_value_does_not_cover_request ... ok
+test chunk::cache::tests::test_recent_write_hot_cache_serves_range_before_hot_cache ... ok
+test chunk::cache::tests::test_recent_write_hot_capacity_is_bounded ... ok
+test chunk::cache::tests::test_recent_write_hot_cache_serves_read_after_write_under_hot_pressure ... ok
+test chunk::cache::tests::test_remove_nonexistent_file ... ok
+test chunk::cache::tests::test_remove_existing_file ... ok
+test chunk::cache::tests::test_store_and_load_basic ... ok
+test chunk::cache::tests::test_store_and_load_empty_data ... ok
+test chunk::cache::tests::test_store_handles_saturated_disk_usage_counter ... ok
+test chunk::cache::tests::test_store_overwrite ... ok
+test chunk::cache_integrity::tests::decode_bytes_detects_corruption ... ok
+test chunk::cache::tests::test_store_to_disk_with_permit_accepts_bytes ... ok
+test chunk::cache::tests::test_insert_opportunistic_persists_when_write_permit_available ... ok
+test chunk::cache_integrity::tests::decode_bytes_reuses_framed_payload_without_copy ... ok
+test chunk::cache_integrity::tests::decode_bytes_reuses_legacy_payload_without_copy ... ok
+test chunk::cache_integrity::tests::detects_corruption ... ok
+test chunk::cache_integrity::tests::detects_truncation ... ok
+test chunk::cache::tests::test_store_and_load_large_data ... ok
+test chunk::cache_integrity::tests::empty_data ... ok
+test chunk::cache_integrity::tests::legacy_format_accepted ... ok
+test chunk::cache_integrity::tests::roundtrip_exact_block ... ok
+test chunk::cache_integrity::tests::roundtrip_multi_block ... ok
+test chunk::cache_integrity::tests::roundtrip_small ... ok
+test chunk::compress::tests::parser_rejects_invalid_framed_headers_consistently ... ok
+test chunk::compress::tests::test_decompress_bytes_reuses_raw_buffer ... ok
+test chunk::cache_integrity::tests::large_block_4mb ... ok
+test chunk::compress::tests::test_decompress_bytes_slices_none_header_without_copy ... ok
+test chunk::compress::tests::test_empty_data ... ok
+test chunk::compress::tests::test_incompressible_data_stored_raw ... ok
+test chunk::compress::tests::test_raw_data_without_header ... ok
+test chunk::compress::tests::test_raw_data_without_header_is_borrowed ... ok
+test chunk::compress::tests::test_roundtrip_lz4 ... ok
+test chunk::compress::tests::test_roundtrip_none ... ok
+test chunk::compress::tests::test_roundtrip_zstd ... ok
+test chunk::compress::tests::versioned_raw_frame_preserves_magic_like_user_bytes ... ok
+test chunk::layout::tests::test_chunk_byte_range ... ok
+test chunk::layout::tests::test_default_helpers ... ok
+test chunk::layout::tests::test_in_memory_index ... ok
+test chunk::layout::tests::test_layout_block_mapping ... ok
+test chunk::cache::tests::test_insert_opportunistic_skips_disk_when_write_permits_saturated ... ok
+test chunk::read_plan::tests::executor_reads_only_data_segments_and_preserves_zeroes ... ok
+test chunk::read_plan::tests::executor_rejects_overlap_and_out_of_range_before_io ... ok
+test chunk::reader::tests::test_visible_reads_latest_slice_covers_range ... ok
+test chunk::reader::tests::test_visible_reads_overlapping_slices_latest_wins ... ok
+test chunk::reader::tests::test_fetcher_cross_block_boundary ... ok
+test chunk::singleflight::tests::test_different_keys_not_coalesced ... ok
+test chunk::singleflight::tests::test_error_propagation ... ok
+test chunk::singleflight::tests::test_executor_cancellation_cleans_up_and_allows_retry ... ok
+test chunk::singleflight::tests::test_late_caller_starts_new_flight ... ok
+test chunk::singleflight::tests::test_sequential_requests_both_execute ... ok
+test chunk::singleflight::tests::test_single_request ... ok
+test chunk::singleflight::tests::test_try_piggyback_joins_existing_flight_without_starting_one ... ok
+test chunk::slice::tests::test_cross_two_blocks ... ok
+test chunk::slice::tests::test_fragmentation_chain_overlap ... ok
+test chunk::slice::tests::test_fragmentation_empty ... ok
+test chunk::reader::tests::test_fetcher_overlapping_slices_latest_wins ... ok
+test chunk::slice::tests::test_fragmentation_full_overlap ... ok
+test chunk::slice::tests::test_fragmentation_no_overlap ... ok
+test chunk::slice::tests::test_fragmentation_partial_overlap ... ok
+test chunk::slice::tests::test_fragmentation_single_slice ... ok
+test chunk::slice::tests::test_fragmentation_superset_coverage ... ok
+test chunk::slice::tests::test_fragmentation_zero_length_ignored ... ok
+test chunk::slice::tests::test_remove_fully_covered_chain ... ok
+test chunk::slice::tests::test_remove_fully_covered_empty ... ok
+test chunk::slice::tests::test_remove_fully_covered_exact_same_range ... ok
+test chunk::slice::tests::test_remove_fully_covered_full_coverage ... ok
+test chunk::slice::tests::test_remove_fully_covered_no_overlap ... ok
+test chunk::cache::tests::remove_cancels_an_older_store_before_it_can_publish ... ok
+test chunk::cache::tests::remove_and_inflight_eviction_do_not_double_account ... ok
+test chunk::slice::tests::test_remove_fully_covered_partial_overlap_kept ... ok
+test chunk::slice::tests::test_remove_fully_covered_sorted_by_offset ... ok
+test chunk::slice::tests::test_single_block_span ... ok
+test chunk::slice::tests::test_slice_desc_json_backward_compat ... ok
+test chunk::slice::tests::test_slice_desc_serialization_roundtrip ... ok
+test chunk::span::tests::test_basic_split_spanning_multiple_blocks ... ok
+test chunk::span::tests::test_cross_chunk_boundary_logic ... ok
+test chunk::span::tests::test_exact_alignment ... ok
+test chunk::span::tests::test_invalid_alignments_panic - should panic ... ok
+test chunk::span::tests::test_relative_vs_absolute_indexing ... ok
+test chunk::span::tests::test_tiny_span_within_block ... ok
+test chunk::span::tests::test_zero_length ... ok
+test chunk::singleflight::tests::test_concurrent_requests_coalesced ... ok
+test chunk::store::tests::native_v2_rejects_legacy_block_range_deletion ... ok
+test chunk::singleflight::tests::test_concurrent_requests_executor_fails ... ok
+test chunk::store::tests::missing_and_truncated_referenced_blocks_fail_exact_reads ... ok
+test chunk::store::tests::test_complete_page_cache_promotes_to_block_cache ... ok
+test chunk::reader::tests::test_read_at_into_prepared_borrows_slice_metadata ... ok
+test chunk::reader::tests::test_reader_into_zero_fills_holes ... ok
+test chunk::store::tests::test_legacy_raw_magic_survives_none_read ... ok
+test chunk::reader::tests::test_reader_zero_fills_holes ... ok
+test chunk::store::tests::test_object_store_metrics_record_backend_ops ... ok
+test chunk::store::tests::test_page_cache_hit_does_not_reprobe_evicted_layout ... ok
+test chunk::store::tests::test_compressed_full_read_populates_only_block_cache ... ok
+test chunk::store::tests::test_remount_without_compression_decodes_persisted_compressed_block ... ok
+test chunk::store::tests::test_background_range_prefetch_drops_when_limit_saturated ... ok
+test chunk::store::tests::test_versioned_raw_magic_survives_none_remount ... ok
+test chunk::store::tests::test_localfs_block_store_put_get ... ok
+test chunk::store::tests::test_cache_effectiveness ... ok
+test chunk::store::tests::test_partial_read_uses_disk_cache_range_when_unrequested_block_is_corrupt ... ok
+test chunk::store::tests::valid_short_tail_block_still_serves_covered_ranges ... ok
+test chunk::store::tests::test_write_fresh_range_write_cache_population_is_configurable ... ok
+test chunk::store::tests::test_small_range_read_prefetches_full_block_in_background ... ok
+test chunk::store::tests::test_small_read_piggybacks_in_flight_full_block_read ... ok
+test chunk::writer::tests::test_data_uploader_roundtrip ... ok
+test control::tests::job_manager_tracks_gc_job_lifecycle ... ok
+test control::tests::protocol_roundtrip_preserves_acl_requests_and_responses ... ok
+test control::tests::protocol_roundtrip_preserves_directory_listing_request ... ok
+test control::tests::protocol_roundtrip_preserves_gc_request ... ok
+test chunk::store::tests::test_concurrent_small_reads_coalesce_same_page_miss ... ok
+test control::tests::protocol_roundtrip_preserves_path_metadata_and_readlink_requests ... ok
+test chunk::store::tests::test_background_range_prefetch_is_serialized ... ok
+test chunk::writer::tests::test_data_uploader_vectored_roundtrip ... ok
+test control::tests::protocol_roundtrip_preserves_trash_requests_and_responses ... ok
+test control::tests::runtime_registry_auto_selects_single_live_instance ... ok
+test control::tests::uds_server_creates_parent_directory ... ok
+test chunk::writer::tests::test_background_priority_waits_for_background_permits ... ok
+test control::tests::control_client_rejects_oversized_responses ... ok
+test control::tests::uds_server_handles_single_request_response ... ok
+test chunk::writer::tests::test_data_uploader_honors_local_upload_limit ... ok
+test control::tests::uds_server_rejects_oversized_requests ... ok
+test chunk::writer::tests::test_writeback_priority_waits_for_writeback_permits_only ... ok
+test chunk::store::tests::test_intelligent_read_strategy ... ok
+test fs::tests::test_append_writes ... ok
+test fuse::fuse_init_tests::cache_ttl_defaults_keep_create_attrs_uncached ... ok
+test fs::tests::test_failed_rename_preserves_destination ... ok
+test fs::tests::test_file_pread_pwrite ... ok
+test fs::tests::test_file_read_write ... ok
+test fs::tests::test_filesystem_basic ... ok
+test fs::tests::test_lstat_stat_symlink ... ok
+test fs::tests::test_rename_atomically_replaces_destination ... ok
+test fuse::fuse_init_tests::chown_setattr_allows_non_owner_noop_ids ... ok
+test fuse::fuse_init_tests::distinguishes_linux_posix_acl_xattrs_from_brewfs_acl_metadata ... ok
+test fs::tests::test_rename_same_inode_is_a_noop ... ok
+test fuse::fuse_init_tests::fuse_copy_file_range_defaults_on_and_can_opt_out ... ok
+test fuse::fuse_init_tests::init_reply_advertises_large_write_requests ... ok
+test fuse::fuse_init_tests::chown_setattr_allows_owner_group_change_and_clears_suid_sgid ... ok
+test fuse::fuse_init_tests::chown_setattr_allows_owner_group_change_with_kernel_clear_mode ... ok
+test fuse::fuse_init_tests::chown_setattr_rejects_non_owner_group_change ... ok
+test fuse::fuse_init_tests::chown_setattr_rejects_owner_group_change_to_non_member_group ... ok
+test fuse::fuse_init_tests::create_existing_file_preserves_existing_mode ... ok
+test fuse::fuse_init_tests::creation_in_setgid_directory_inherits_group_and_directory_setgid ... ok
+test fuse::fuse_init_tests::fallocate_requires_write_access_on_inode ... ok
+test fuse::fuse_init_tests::internal_control_xattrs_are_hidden_from_getxattr_and_listxattr ... ok
+test fuse::fuse_init_tests::lookup_rejects_child_when_parent_lacks_search_access ... ok
+test fuse::fuse_init_tests::link_rejects_cached_source_inode_when_parent_lacks_search_access ... ok
+test fuse::fuse_init_tests::lseek_hole_on_dense_file_returns_eof ... ok
+test fuse::fuse_init_tests::lseek_hole_on_empty_file_returns_enxio ... ok
+test fuse::fuse_init_tests::mknod_creates_char_device_metadata_with_rdev ... ok
+test fuse::fuse_init_tests::mknod_creates_fifo_metadata ... ok
+test fuse::fuse_init_tests::mode_setattr_allows_non_owner_to_clear_only_suid_sgid_bits ... ok
+test fuse::fuse_init_tests::open_reply_flags_can_opt_into_all_handle_direct_io ... ok
+test fuse::fuse_init_tests::open_reply_flags_can_opt_into_keep_cache ... ok
+test fuse::fuse_init_tests::open_reply_flags_can_opt_into_read_only_direct_io ... ok
+test fuse::fuse_init_tests::open_reply_flags_can_opt_into_write_only_direct_io ... ok
+test fuse::fuse_init_tests::open_reply_flags_default_to_buffered_handles_for_mmap ... ok
+test fuse::fuse_init_tests::open_reply_flags_direct_io_off_overrides_read_only_opt_in ... ok
+test fuse::fuse_init_tests::open_reply_flags_ignore_empty_env_values ... ok
+test fuse::fuse_init_tests::mode_setattr_allows_owner_without_write_bits ... ok
+test fuse::fuse_init_tests::mode_setattr_clears_sgid_for_owner_outside_file_group ... ok
+test fuse::fuse_init_tests::mode_setattr_preserves_sgid_for_owner_inside_file_group ... ok
+test fuse::fuse_init_tests::mode_setattr_rejects_non_owner_even_with_write_bits ... ok
+test fuse::fuse_init_tests::non_owner_write_clears_suid_and_sgid_bits ... ok
+test fuse::fuse_init_tests::open_allows_root_for_cached_inode_when_parent_lacks_search_access ... ok
+test fuse::fuse_init_tests::open_rejects_cached_inode_when_parent_lacks_search_access ... ok
+test fuse::fuse_init_tests::open_with_trunc_clears_existing_file ... ok
+test fuse::fuse_init_tests::removexattr_rejects_internal_control_xattrs ... ok
+test fuse::fuse_init_tests::rename_rejects_cross_parent_directory_move_without_source_dir_mutation_access ... ok
+test fuse::fuse_init_tests::rename_rejects_non_owner_from_sticky_source_parent ... ok
+test fuse::fuse_init_tests::rename_rejects_non_owner_over_sticky_destination_child ... ok
+test chunk::cache::tests::eviction_restats_overwrite_under_the_shard_gate ... ok
+test fuse::fuse_init_tests::rename_requires_namespace_access_on_destination_parent ... ok
+test fuse::fuse_init_tests::rename_requires_namespace_access_on_source_parent ... ok
+test fuse::fuse_init_tests::setattr_rejects_cached_inode_when_parent_lacks_search_access ... ok
+test fuse::fuse_init_tests::user_xattr_namespace_policy_rejects_reserved_namespaces ... ok
+test fuse::mode_sanitization_tests::access_mode_from_bits_remains_mode_fallback_without_acl ... ok
+test fuse::mode_sanitization_tests::acl_access_mode_applies_mask_to_group_class ... ok
+test fuse::mode_sanitization_tests::acl_access_mode_prefers_named_user_entry_over_mode_bits ... ok
+test fuse::mode_sanitization_tests::apply_creation_umask_preserves_special_bits_and_masks_permissions ... ok
+test fuse::mode_sanitization_tests::handle_readdir_offsets_do_not_skip_children_between_pages ... ok
+test fuse::mode_sanitization_tests::mode_setattr_clear_suid_sgid_exception_is_narrow ... ok
+test fuse::mode_sanitization_tests::namespace_mutations_require_write_and_execute_on_parent ... ok
+test fuse::mode_sanitization_tests::open_flags_map_to_access_masks ... ok
+test fuse::mode_sanitization_tests::opendir_requires_read_access ... ok
+test fuse::mode_sanitization_tests::parent_namespace_mutations_use_namespace_mutation_mask ... ok
+test fuse::mode_sanitization_tests::parse_proc_status_groups_reads_supplementary_groups ... ok
+test fuse::fuse_init_tests::setattr_size_and_timestamps_allow_write_handle_for_mode_zero_create ... ok
+test fuse::mode_sanitization_tests::sanitize_special_mode_bits_preserves_setuid_setgid_and_sticky ... ok
+test fuse::mode_sanitization_tests::special_file_types_map_to_fuse_types_and_rdev ... ok
+test fuse::mode_sanitization_tests::validate_fuse_name_returns_enametoolong_for_long_component ... ok
+test fuse::mount::tests::default_mount_options_enable_kernel_permission_checks ... ok
+test fuse::mount::tests::default_mount_options_request_large_read_requests ... ok
+test fuse::mount::tests::fuse_writeback_cache_defaults_off_and_can_be_enabled ... ok
+test fuse::mount_tests::smoke_mount_and_basic_ops ... ok
+test gateway::s3::list::tests::delimiter_collects_common_prefixes ... ok
+test gateway::s3::list::tests::descend_rules ... ok
+test gateway::s3::list::tests::directory_object_uses_its_trailing_slash_for_matching ... ok
+test gateway::s3::list::tests::finish_sorts_and_limits ... ok
+test fuse::fuse_init_tests::setattr_size_requires_write_access_on_inode ... ok
+test gateway::s3::list::tests::hidden_directory_objects_do_not_consume_page_slots ... ok
+test gateway::s3::list::tests::invisible_directories_do_not_consume_page_slots ... ok
+test gateway::s3::list::tests::invisible_directories_still_produce_common_prefixes ... ok
+test gateway::s3::list::tests::start_after_filters ... ok
+test gateway::s3::list::tests::zero_limit_is_not_truncated ... ok
+test gateway::s3::multipart::tests::multipart_etag_format ... ok
+test gateway::s3::multipart::tests::part_names ... ok
+test gateway::s3::multipart::tests::upload_paths ... ok
+test gateway::s3::path::tests::bucket_name_rules ... ok
+test gateway::s3::path::tests::internal_system_bucket_is_reserved_in_multi_mode ... ok
+test gateway::s3::path::tests::listing_prefix_validation_allows_unrepresentable_paths ... ok
+test gateway::s3::path::tests::multi_bucket_mode ... ok
+test gateway::s3::path::tests::rejects_escaping_keys ... ok
+test gateway::s3::path::tests::rejects_leading_slash_and_reserved_system_keys ... ok
+test gateway::s3::path::tests::single_bucket_mode ... ok
+test gateway::s3::store::tests::bucket_lock_shards_are_bounded_and_stable ... ok
+test gateway::s3::store::tests::key_lock_shards_are_bounded_and_stable ... ok
+test gateway::s3::store::tests::multipart_part_numbers_are_bounded ... ok
+test gateway::webdav::fs::tests::if_match_uses_metadata_version ... ok
+test gateway::webdav::fs::tests::lock_shards_group_descendants ... ok
+test gateway::webdav::fs::tests::nanosecond_time_round_trip ... ok
+test gateway::webdav::fs::tests::seek_rejects_before_start ... ok
+test fuse::fuse_init_tests::setxattr_rejects_reserved_namespaces_but_allows_user_namespace ... ok
+test gateway::webdav::path::tests::dav_parser_rejects_encoded_separators_and_nul ... ok
+test gateway::webdav::path::tests::enforces_component_name_limit ... ok
+test gateway::webdav::path::tests::internal_top_level_parent_maps_to_root ... ok
+test gateway::webdav::path::tests::normalizes_collections_and_encoded_utf8 ... ok
+test gateway::webdav::path::tests::rejects_non_utf8_and_internal_namespace ... ok
+test gateway::webdav::path::tests::root_is_readable_but_not_mutable ... ok
+test gateway::webdav::props::tests::mixed_failed_patch_does_not_persist_successful_operations ... ok
+test gateway::webdav::props::tests::oversized_property_is_rejected_transactionally ... ok
+test gateway::webdav::props::tests::patch_round_trip_and_remove ... ok
+test gateway::webdav::props::tests::removing_missing_property_reports_not_found ... ok
+test gateway::webdav::tests::basic_auth_accepts_exact_credentials ... ok
+test gateway::webdav::tests::bounded_body_accepts_exact_length ... ok
+test gateway::webdav::tests::bounded_body_rejects_short_and_long_input ... ok
+test gateway::webdav::tests::content_range_length_parses_byte_ranges ... ok
+test gateway::webdav::tests::infinite_depth_gating_matches_only_propfind_and_report ... ok
+test fuse::fuse_init_tests::stateless_write_requires_write_access_on_inode ... ok
+test gateway::webdav::tests::infinite_depth_response_is_501_with_dav_error_body ... ok
+test gateway::webdav::tests::request_method_scope_identifies_lock ... ok
+test fuse::fuse_init_tests::timestamp_setattr_allows_non_owner_ctime_only_chown_noop ... ok
+test fuse::fuse_init_tests::timestamp_setattr_allows_non_owner_current_time_with_write_bits ... ok
+test meta::client::cache::tests::readdir_returns_none_when_child_attr_is_missing ... ok
+test chunk::cache::tests::test_policy_basic_operations ... ok
+test fuse::fuse_init_tests::timestamp_setattr_allows_owner_without_write_bits ... ok
+test fuse::fuse_init_tests::timestamp_setattr_rejects_non_owner_explicit_time_even_with_write_bits ... ok
+test gateway::webdav::fs::tests::with_vfs::parent_recheck_accepts_unchanged_parent ... ok
+test meta::client::tests::directory_namespace_mutations_keep_cached_parent_nlink_current ... ok
+test meta::client::tests::mkdir_invalidates_cached_parent_attr_after_store_updates_parent_timestamp ... ok
+test gateway::webdav::fs::tests::with_vfs::intermediate_file_component_maps_to_not_found ... ok
+test meta::client::tests::rename_exchange_does_not_restore_stale_child_cache_entries ... ok
+test gateway::webdav::fs::tests::with_vfs::parent_recheck_rejects_replaced_parent ... ok
+test meta::client::tests::rename_ignores_stale_same_inode_destination_hint ... ok
+test meta::client::tests::rename_over_linked_destination_refreshes_replaced_inode_nlink ... ok
+test meta::client::tests::setattr_preserves_cached_parent_relationship ... ok
+test meta::client::tests::test_complex_mixed_operations ... ok
+test meta::client::cache::tests::open_file_cache_refreshes_idle_deadline_on_attr_access ... ok
+test meta::client::tests::test_control_plane_acl_rejects_invalid_entries ... ok
+test meta::client::tests::test_control_plane_acl_requests_persist_entries ... ok
+test meta::client::tests::test_control_plane_get_info_returns_mount_metadata ... ok
+test meta::client::tests::test_control_plane_delete_trash_permanently_removes_entry ... ok
+test meta::client::tests::test_control_plane_list_trash_returns_unlinked_files ... ok
+test meta::client::tests::test_control_plane_lists_directory_metadata ... ok
+test meta::client::tests::test_control_plane_registers_and_serves_gc_jobs ... ok
+test meta::client::tests::test_database_acl_capability_matches_rule_storage ... ok
+test meta::client::tests::test_delete_operations ... ok
+test meta::client::tests::test_control_plane_shutdown_cleans_runtime_record ... ok
+test meta::client::tests::test_empty_directory_handling ... ok
+test meta::client::tests::test_control_plane_restore_trash_preserves_entry_on_name_conflict ... ok
+test meta::client::tests::test_get_parent_and_name ... ok
+test meta::client::tests::test_control_plane_stats_paths_and_reads_symlinks ... ok
+test meta::client::tests::test_control_plane_trash_actions_reject_live_inodes_with_trash_metadata ... ok
+test meta::client::tests::test_normalize_path ... ok
+test meta::client::tests::test_hardlink_get_names_and_rename_one_link ... ok
+test meta::client::tests::test_hardlink_link_should_not_poison_cached_parent ... ok
+test meta::client::tests::test_meta_client_cache_metrics_track_stat_and_lookup ... ok
+test meta::client::tests::test_intelligent_path_invalidation ... ok
+test meta::client::tests::test_meta_client_lookup_only_does_not_change_lookup_with_attr_api_metrics ... ok
+test meta::client::tests::test_meta_client_lookup_with_attr_populates_stat_cache_and_metrics ... ok
+test meta::backoff::tests::test_easy_backoff_macro ... ok
+test meta::client::tests::test_namespace_create_keeps_parent_child_cache_for_lookup_with_attr ... ok
+test meta::client::tests::test_open_file_cache_can_opt_in_write_capable_opens ... ok
+test meta::backoff::tests::test_backoff ... ok
+test meta::client::tests::test_open_file_cache_disabled_preserves_fresh_open_stat ... ok
+test meta::client::tests::validate_entry_name_returns_filename_too_long_for_long_component ... ok
+test meta::client::tests::validate_entry_name_returns_invalid_filename_for_slash_and_nul ... ok
+test meta::entities::etcd::tests::legacy_file_json_defaults_to_regular_file_without_rdev ... ok
+test meta::entities::etcd::tests::special_node_json_round_trip_preserves_kind_and_rdev ... ok
+test meta::permission::tests::test_chmod_directory_preserves_type ... ok
+test meta::permission::tests::test_chmod_masks_to_0o7777 ... ok
+test meta::client::tests::test_open_file_cache_hits_readonly_open_and_invalidates_on_mutation ... ok
+test meta::permission::tests::test_chmod_preserves_file_type ... ok
+test meta::permission::tests::test_chmod_replaces_old_special_bits ... ok
+test meta::permission::tests::test_chmod_with_special_bits_at_permission_level ... ok
+test meta::permission::tests::test_chown_preserves_mode ... ok
+test meta::permission::tests::test_chown_updates_uid_and_gid ... ok
+test meta::permission::tests::test_default_permissions ... ok
+test meta::permission::tests::test_permission_creation ... ok
+test meta::serialization::tests::test_roundtrip ... ok
+test meta::store::tests::chmod_request_preserves_special_permission_bits ... ok
+test meta::client::tests::test_rename_keeps_parent_child_cache_for_followup_lookup ... ok
+test meta::store::tests::stat_fs_snapshot_expands_space_when_default_would_be_nearly_full ... ok
+test meta::store::tests::stat_fs_snapshot_reports_default_capacity_and_availability ... ok
+test meta::client::tests::test_rename_same_location_noop ... ok
+test meta::stores::database::tests::chmod_preserves_special_node_type_and_rdev ... ok
+test meta::client::tests::test_rename_operations ... ok
+test meta::client::tests::test_rename_with_known_attrs_skips_client_prelookups ... ok
+test meta::stores::database::tests::test_basic_read_lock ... ignored
+test meta::stores::database::tests::rename_exchange_rejects_descendants_at_store_boundary ... ok
+test meta::stores::database::tests::rename_exchange_updates_directory_and_file_bindings ... ok
+test meta::client::tests::test_slice_operations ... ok
+test meta::stores::database::tests::test_chmod_nonexistent_inode ... ok
+test meta::client::tests::test_stat_fresh_refreshes_cached_file_entry_in_place ... ok
+test meta::stores::database::tests::test_chmod_preserves_special_bits ... ok
+test meta::stores::database::tests::test_chmod_updates_mode ... ok
+test meta::stores::database::tests::dangling_dentry_fused_lookup_returns_not_found_and_fuse_enoent ... ok
+test meta::stores::database::tests::test_chown_ctime_does_not_advance_past_wall_clock ... ok
+test meta::stores::database::tests::test_chown_directory ... ok
+test meta::stores::database::tests::test_chown_gid_only ... ok
+test meta::stores::database::tests::test_concurrent_read_write_locks ... ignored
+test meta::stores::database::tests::test_cross_session_lock_visibility ... ignored
+test meta::stores::database::tests::test_chown_nonexistent_inode ... ok
+test meta::stores::database::tests::test_chown_preserves_mode ... ok
+test meta::stores::database::tests::test_chown_uid_only ... ok
+test meta::stores::database::tests::test_chown_updates_uid_and_gid ... ok
+test meta::stores::database::tests::test_hardlink_multiple_links ... ignored
+test meta::stores::database::tests::test_hardlink_no_reversion_to_parent ... ignored
+test meta::stores::database::tests::test_directory_default_mode ... ok
+test meta::stores::database::tests::test_hardlink_parent_field_single_link ... ignored
+test meta::stores::database::tests::test_file_default_mode ... ok
+test meta::stores::database::tests::test_hardlink_transition_to_linkparent ... ignored
+test meta::stores::database::tests::test_lock_release ... ignored
+test meta::stores::database::tests::test_multiple_read_locks ... ignored
+test meta::stores::database::tests::test_non_overlapping_locks ... ignored
+test meta::stores::database::tests::test_hardlink_dentry_binding_cross_dir_move_rename ... ok
+test meta::stores::database::tests::test_hardlink_last_unlink_cleanup ... ok
+test meta::stores::database::tests::test_write_lock_conflict ... ignored
+test meta::stores::database::tests::test_symlink_uses_parent_field ... ok
+test meta::stores::etcd::tests::rename_exchange_updates_bindings_and_prevents_concurrent_cycle ... ignored
+test meta::stores::database::tests::test_stat_fs_reports_capacity_and_usage ... ok
+test meta::stores::database::tests::test_hardlink_dentry_binding_cross_dir_rename_unlink ... ok
+test meta::stores::etcd::tests::test_basic_read_lock ... ignored
+test meta::stores::etcd::tests::test_chmod_nonexistent_inode ... ignored
+test meta::stores::etcd::tests::test_chmod_updates_mode ... ignored
+test meta::stores::etcd::tests::test_chunk_compact_lock_blocks_write_until_release_etcd ... ignored
+test meta::stores::etcd::tests::test_cleanup_orphan_uncommitted_slices_pages_and_keeps_oldest_ids_etcd ... ignored
+test meta::stores::etcd::tests::test_compaction_gc_roundtrip_etcd ... ignored
+test meta::stores::etcd::tests::test_concurrent_read_write_locks ... ignored
+test meta::stores::etcd::tests::test_cross_session_lock_visibility ... ignored
+test meta::stores::etcd::tests::test_directory_default_mode ... ignored
+test meta::stores::etcd::tests::test_directory_same_parent_rename_updates_lookup ... ignored
+test meta::stores::etcd::tests::test_expired_compact_lock_does_not_block_write_etcd ... ignored
+test meta::stores::database::tests::truncate_updates_file_ctime ... ok
+test meta::stores::etcd::tests::test_file_default_mode ... ignored
+test meta::stores::etcd::tests::test_hardlink_dentry_binding_cross_dir_move_rename ... ignored
+test meta::stores::etcd::tests::test_hardlink_dentry_binding_cross_dir_rename_unlink ... ignored
+test meta::stores::etcd::tests::test_light_compaction_preserves_unreplaced_slices_etcd ... ignored
+test meta::stores::etcd::tests::test_list_chunk_ids_does_not_duplicate_short_prefix_scan_etcd ... ignored
+test meta::stores::database::tests::xattr_mutations_update_ctime ... ok
+test meta::stores::etcd::tests::test_list_chunk_ids_rotates_scan_window_etcd ... ignored
+test meta::stores::etcd::tests::test_lock_release ... ignored
+test meta::stores::etcd::tests::test_multiple_read_locks ... ignored
+test meta::stores::etcd::tests::test_non_overlapping_locks ... ignored
+test meta::stores::etcd::tests::test_process_delayed_slices_filters_by_age_before_limit_etcd ... ignored
+test meta::stores::etcd::tests::test_process_delayed_slices_removes_empty_chunk_key_etcd ... ignored
+test meta::stores::etcd::tests::test_rename_overwrites_existing_file ... ignored
+test meta::stores::etcd::tests::test_rename_replaces_empty_directory ... ignored
+test meta::stores::etcd::tests::test_replace_slices_for_compact_rejects_non_atomic_large_delayed_batch_etcd ... ignored
+test meta::stores::etcd::tests::test_same_session_different_owner_lock_conflict ... ignored
+test meta::stores::etcd::tests::test_set_attr_mode_preserves_special_bits ... ignored
+test meta::stores::etcd::tests::test_stale_compact_lock_release_does_not_delete_reacquired_lock_etcd ... ignored
+test meta::stores::etcd::tests::test_stat_fs_scans_multiple_pages ... ignored
+test meta::stores::etcd::tests::test_truncate_batches_large_chunk_deletes_etcd ... ignored
+test meta::stores::etcd::tests::test_truncate_updates_mtime_and_ctime ... ignored
+test meta::stores::etcd::tests::test_truncate_updates_size_and_prunes_slices_etcd ... ignored
+test meta::stores::etcd::tests::test_uncommitted_gc_and_version_conflict_etcd ... ignored
+test meta::stores::etcd::tests::test_write_lock_conflict ... ignored
+test meta::stores::etcd::txn::tests::local_lock_slot_is_stable_for_same_key ... ok
+test meta::stores::etcd::txn::tests::typed_json_helpers_roundtrip ... ok
+test meta::stores::etcd::watch::tests::test_parse_forward_key_delete ... ok
+test meta::stores::etcd::watch::tests::test_parse_forward_key_invalid_value ... ok
+test meta::stores::etcd::watch::tests::test_parse_forward_key_put ... ok
+test meta::stores::etcd::watch::tests::test_parse_reverse_key ... ok
+test meta::stores::etcd::watch::tests::test_watch_config_default ... ok
+test meta::stores::etcd::watch::tests::test_watch_config_effective_prefixes ... ok
+test meta::stores::etcd::watch::tests::test_watch_config_effective_prefixes_empty ... ok
+test meta::stores::etcd::watch::tests::test_watch_config_from_env ... ok
+test meta::stores::redis::tests::compact_delayed_record_failure_keeps_old_chunk_reachable ... ignored
+test meta::stores::redis::tests::compact_version_conflict_leaves_chunk_and_delayed_index_unchanged ... ignored
+test meta::stores::redis::tests::get_slices_cache_detects_first_remote_append_after_empty_read ... ignored
+test meta::stores::redis::tests::get_slices_cache_detects_remote_compact_via_version_token ... ignored
+test meta::stores::redis::tests::local_txlock_serializes_same_primary_key ... ok
+test meta::stores::redis::tests::local_txlock_slot_is_stable_for_same_key ... ok
+test meta::stores::redis::tests::redis_standalone_capability_probe_accepts_test_server ... ignored
+test meta::stores::redis::tests::test_basic_read_lock ... ignored
+test meta::stores::redis::tests::test_batch_stat_empty_fallback ... ignored
+test meta::stores::redis::tests::test_batch_stat_mixed_flow ... ignored
+test meta::stores::redis::tests::test_blocking_set_plock_succeeds_after_unlink_releases_lock ... ignored, requires Redis server
+test meta::stores::redis::tests::test_chmod_nonexistent_inode ... ignored
+test meta::stores::redis::tests::test_chmod_updates_mode ... ignored
+test meta::stores::redis::tests::test_cleanup_orphan_uncommitted_slice_fallback ... ignored
+test meta::stores::redis::tests::test_concurrent_read_write_locks ... ignored
+test meta::stores::redis::tests::test_concurrent_write_lock_three_tasks_50_iterations ... ignored
+test meta::stores::redis::tests::test_counter_operations_fallback ... ignored
+test meta::stores::redis::tests::test_create_entry_lua_already_exists ... ignored
+test meta::stores::redis::tests::test_create_entry_lua_concurrent ... ignored
+test meta::stores::redis::tests::test_create_entry_lua_parent_not_directory ... ignored
+test meta::stores::redis::tests::test_create_entry_lua_parent_not_found ... ignored
+test meta::stores::redis::tests::test_create_entry_updates_parent_node_cache ... ignored
+test meta::stores::redis::tests::test_create_entry_uses_lua_parent_lookup_without_rust_prelookup ... ignored
+test meta::stores::redis::tests::test_create_file_in_non_directory_fallback ... ignored
+test meta::stores::redis::tests::test_cross_session_lock_visibility ... ignored
+test meta::stores::redis::tests::test_dangling_dentry_lookup_returns_not_found_and_fuse_enoent ... ignored
+test meta::stores::redis::tests::test_delayed_slice_workflow_consistency ... ignored
+test meta::stores::redis::tests::test_deleted_node_query_behavior ... ignored
+test meta::stores::redis::tests::test_deserialize_i64_from_number ... ok
+test meta::stores::redis::tests::test_deserialize_stored_attr_size_from_lua_float ... ok
+test meta::stores::redis::tests::test_directory_default_mode ... ignored
+test meta::stores::redis::tests::test_directory_full_lifecycle_flow ... ignored
+test meta::stores::redis::tests::test_directory_nlink_state_machine ... ignored
+test meta::stores::redis::tests::test_extend_file_size_lua_concurrent ... ignored
+test meta::stores::redis::tests::test_extend_file_size_lua_idempotent ... ignored
+test meta::stores::redis::tests::test_extend_file_size_lua_missing_node ... ignored
+test meta::stores::redis::tests::test_extend_file_size_on_directory_fallback ... ignored
+test meta::stores::redis::tests::test_file_default_mode ... ignored
+test meta::stores::etcd::txn::tests::local_lock_serializes_same_primary_key ... ok
+test meta::stores::redis::tests::test_file_full_lifecycle_flow ... ignored
+test meta::stores::redis::tests::test_fuse_flush_releases_known_posix_lock_owner ... ignored
+test meta::stores::redis::tests::test_fuse_flush_without_posix_locks_skips_unlock_metadata ... ignored
+test meta::stores::redis::tests::test_get_names_paths_deleted_inode_fallback ... ignored
+test meta::stores::redis::tests::test_get_names_paths_hardlink_consistency ... ignored
+test meta::stores::redis::tests::test_get_node_cache_expires_after_ttl ... ignored
+test meta::stores::redis::tests::test_global_lock_ttl_and_reacquire_fallback ... ignored
+test meta::stores::redis::tests::test_hardlink_dentry_binding_cross_dir_move_rename ... ignored
+test meta::stores::redis::tests::test_hardlink_dentry_binding_cross_dir_rename_unlink ... ignored
+test meta::stores::redis::tests::test_hardlink_state_machine_full_transition ... ignored
+test meta::stores::redis::tests::test_init_root_idempotent_fallback ... ignored
+test meta::stores::redis::tests::test_link_root_inode_rejected_fallback ... ignored
+test meta::stores::redis::tests::test_link_unlink_lua_atomicity ... ignored
+test meta::stores::redis::tests::test_list_chunk_ids_empty_and_zero_limit_fallback ... ignored
+test meta::stores::redis::tests::test_lock_release ... ignored
+test meta::stores::redis::tests::test_lookup_path_empty_and_invalid_fallback ... ignored
+test meta::stores::redis::tests::test_lookup_path_resolution_flow ... ignored
+test meta::stores::redis::tests::test_lookup_with_attr_returns_inode_attr_and_warms_node_cache ... ignored
+test meta::stores::redis::tests::test_meta_client_create_file_avoids_parent_stat_after_lua_create ... ignored
+test meta::stores::redis::tests::test_meta_client_lookup_uses_fused_store_path ... ignored
+test meta::stores::redis::tests::test_meta_client_mkdir_avoids_parent_stat_after_lua_create ... ignored
+test meta::stores::redis::tests::test_meta_client_new_directory_negative_lookup_stays_local ... ignored
+test meta::stores::database::tests::concurrent_directory_moves_cannot_commit_a_parent_cycle ... ok
+test meta::stores::redis::tests::test_meta_client_rename_avoids_redundant_prelookups ... ignored
+test meta::stores::redis::tests::test_meta_client_stat_fresh_uses_warm_store_node_cache ... ignored
+test meta::stores::redis::tests::test_mkdir_in_file_rejected_fallback ... ignored
+test meta::stores::redis::tests::test_multiple_read_locks ... ignored
+test meta::stores::redis::tests::test_non_overlapping_locks ... ignored
+test meta::stores::redis::tests::test_read_lock_shared ... ignored
+test meta::stores::redis::tests::test_read_symlink_on_non_symlink_fallback ... ignored
+test meta::stores::redis::tests::test_readdir_basic_flow ... ignored
+test meta::stores::redis::tests::test_readdir_non_directory_fallback ... ignored
+test meta::stores::redis::tests::test_readdir_nonexistent_inode_fallback ... ignored
+test meta::stores::redis::tests::test_redis_xattr_create_is_atomic_across_store_instances ... ignored
+test meta::stores::redis::tests::test_redis_xattr_crud_flags_and_binary_values ... ignored
+test meta::stores::redis::tests::test_redis_xattr_inode_cleanup ... ignored
+test meta::stores::redis::tests::test_remove_file_metadata_is_idempotent ... ignored
+test meta::stores::redis::tests::test_rename_exchange_lua_concurrent ... ignored
+test meta::stores::redis::tests::test_rename_exchange_lua_hardlinks ... ignored
+test meta::stores::redis::tests::test_rename_exchange_lua_new_not_found ... ignored
+test meta::stores::redis::tests::test_rename_exchange_lua_old_not_found ... ignored
+test meta::stores::redis::tests::test_rename_exchange_lua_same_entry ... ignored
+test meta::stores::redis::tests::test_rename_exchange_rejects_corrupt_ancestry_without_writes ... ignored
+test meta::stores::redis::tests::test_rename_hardlink_cross_dir_consistency ... ignored
+test meta::stores::redis::tests::test_rename_lua_concurrent ... ignored
+test meta::stores::redis::tests::test_rename_lua_cross_dir_directory_preserves_parent_nlink_after_cleanup ... ignored
+test chunk::cache::tests::test_access_stats_time_window ... ok
+test meta::stores::redis::tests::test_rename_lua_dir_over_dir_removes_destination_xattrs ... ignored
+test meta::stores::database::tests::test_next_id_unique_across_store_instances ... ok
+test meta::stores::redis::tests::test_rename_lua_directory_rejects_file_target ... ignored
+test meta::stores::redis::tests::test_rename_lua_directory_rejects_non_empty_directory_target ... ignored
+test meta::stores::redis::tests::test_rename_lua_directory_replaces_empty_directory ... ignored
+test meta::stores::redis::tests::test_rename_lua_directory_to_missing_target_updates_parent_name ... ignored
+test meta::stores::redis::tests::test_rename_lua_existing_file_target_is_replaced ... ignored
+test meta::stores::redis::tests::test_rename_lua_file_over_file_preserves_destination_xattrs ... ignored
+test meta::stores::redis::tests::test_rename_lua_file_rejects_directory_target ... ignored
+test meta::stores::redis::tests::test_rename_lua_hardlink ... ignored
+test meta::stores::redis::tests::test_rename_lua_hardlink_same_inode_target_is_noop ... ignored
+test meta::stores::redis::tests::test_rename_lua_overwrite_file ... ignored
+test meta::stores::redis::tests::test_rename_lua_same_name ... ignored
+test meta::stores::redis::tests::test_rename_lua_source_not_found ... ignored
+test meta::stores::redis::tests::test_rename_same_dir_skips_redundant_parent_get_set ... ignored
+test meta::stores::redis::tests::test_rename_scripts_prevent_concurrent_parent_cycle ... ignored
+test meta::stores::redis::tests::test_rename_uses_lua_dentry_lookup_without_rust_prelookups ... ignored
+test meta::stores::redis::tests::test_rmdir_lua_concurrent ... ignored
+test meta::stores::redis::tests::test_rmdir_lua_not_directory ... ignored
+test meta::stores::redis::tests::test_rmdir_lua_not_empty ... ignored
+test meta::stores::redis::tests::test_rmdir_lua_not_found ... ignored
+test meta::stores::redis::tests::test_set_attr_flags_state_transitions ... ignored
+test meta::stores::redis::tests::test_set_attr_mode_preserves_special_bits ... ignored
+test meta::stores::redis::tests::test_set_attr_nonexistent_inode_fallback ... ignored
+test meta::stores::redis::tests::test_set_file_size_on_directory_fallback ... ignored
+test meta::stores::redis::tests::test_set_plock_succeeds_on_deleted_inode_via_unlink ... ignored, requires Redis server
+test meta::stores::redis::tests::test_set_plock_succeeds_on_nonexistent_inode ... ignored, requires Redis server
+test meta::stores::redis::tests::test_stat_fs_accounting_fallback ... ignored
+test meta::stores::redis::tests::test_stat_fs_batches_node_fetches_with_mget ... ignored
+test meta::stores::redis::tests::test_stat_fs_bounds_each_mget_batch ... ignored
+test meta::stores::redis::tests::test_stat_fs_cache_staleness_is_bounded_by_ttl ... ignored
+test meta::stores::redis::tests::test_stat_fs_cold_cache_is_single_flight ... ignored
+test meta::stores::redis::tests::test_stat_nonexistent_inode_fallback ... ignored
+test meta::stores::redis::tests::test_stored_attr_blocks_compat_and_sparse_zero ... ok
+test meta::stores::redis::tests::test_symlink_lookup_path_flow ... ignored
+test meta::stores::redis::tests::test_symlink_roundtrip_and_unlink ... ignored
+test meta::stores::redis::tests::test_truncate_consistency ... ignored
+test meta::stores::redis::tests::test_truncate_nonexistent_inode_fallback ... ignored
+test meta::stores::redis::tests::test_truncate_rewrite_is_atomic_for_partial_chunk ... ignored
+test meta::stores::redis::tests::test_truncate_rewrite_never_exposes_empty_chunk_list ... ignored
+test meta::stores::redis::tests::test_uncommitted_slice_workflow_consistency ... ignored
+test meta::stores::redis::tests::test_unlink_directory_rejected_fallback ... ignored
+test meta::stores::redis::tests::test_unlink_last_reference_updates_parent_and_deleted_child_atomically ... ignored
+test meta::stores::redis::tests::test_vfs_close_without_write_skips_timestamp_metadata_update ... ignored
+test meta::stores::redis::tests::test_vfs_deleted_inode_timestamp_setattr_stays_local ... ignored
+test meta::stores::redis::tests::test_vfs_flush_without_write_skips_timestamp_metadata_update ... ignored
+test meta::stores::redis::tests::test_write_consistency ... ignored
+test meta::stores::redis::tests::test_write_lock_acquire_release_getlk ... ignored
+test meta::stores::redis::tests::test_write_lock_conflict ... ignored
+test meta::stores::redis::tests::test_write_lock_mutual_exclusion ... ignored
+test meta::stores::tikv::tests::gc_record_values_round_trip ... ok
+test meta::stores::tikv::tests::key_schema_uses_namespace_prefixes ... ok
+test meta::stores::tikv::tests::link_parent_values_round_trip ... ok
+test meta::stores::tikv::tests::nlink_delta_saturates ... ok
+test meta::stores::tikv::tests::parses_tikv_database_config_from_yaml ... ok
+test meta::stores::tikv::tests::plock_update_detects_conflicts_and_unlocks_ranges ... ok
+test meta::stores::tikv::tests::plock_values_round_trip ... ok
+test meta::stores::tikv::tests::prefix_range_end_bounds_namespace_scans ... ok
+test meta::stores::tikv::tests::rejects_empty_pd_endpoints ... ok
+test meta::stores::tikv::tests::relatime_updates_after_metadata_change_or_one_day ... ok
+test meta::stores::tikv::tests::special_node_round_trip_preserves_kind_mode_and_rdev ... ok
+test meta::stores::tikv::tests::stored_node_decodes_legacy_json_defaults ... ok
+test meta::stores::tikv::tests::stored_values_round_trip_through_json ... ok
+test meta::stores::tikv::tests::tikv_allocates_generic_counters_transactionally ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_compaction_gc_workflow ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_factory_initializes_root ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_link_and_symlink_extensions ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_rejects_non_empty_rmdir ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_rename_exchange_swaps_entries ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_rename_overwrites_file_and_tombstones_destination ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_rename_transactions_prevent_concurrent_parent_cycle ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_serializes_hot_inode_and_parent_transactions ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_transactional_file_data_schema ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test meta::stores::tikv::tests::tikv_transactional_namespace_schema ... ignored, requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS
+test native_base::cache::tests::different_namespace_keys_do_not_collide ... ok
+test native_base::cache::tests::in_process_cache_bounded ... ok
+test native_base::cache::tests::in_process_cache_hit_and_miss ... ok
+test native_base::cache::tests::shared_cache_probe_is_unavailable_in_preview ... ok
+test native_base::counterexamples::capture::tests::gated_capture_never_mixes_generations ... ok
+test native_base::counterexamples::capture::tests::token_revalidation_retries_mixed_candidate ... ok
+test native_base::counterexamples::capture::tests::weak_capture_reads_accepted_tail_as_hole ... ok
+test native_base::counterexamples::capture::tests::weak_capture_serves_stale_content_after_handoff ... ok
+test native_base::counterexamples::ordered_commit::tests::handoff_releases_only_its_own_dirty ... ok
+test native_base::counterexamples::ordered_commit::tests::late_write_cannot_undo_truncate ... ok
+test native_base::counterexamples::ordered_commit::tests::overlapping_writes_commit_in_acceptance_order ... ok
+test native_base::counterexamples::retention::tests::atomic_publish_shields_exactly_the_needed_objects ... ok
+test native_base::counterexamples::retention::tests::close_wins_over_late_publication ... ok
+test native_base::counterexamples::retention::tests::weak_publish_leaves_published_objects_deletable ... ok
+test native_base::frozen::tests::corrupted_frozen_page_fails_closed ... ok
+test native_base::frozen::tests::directory_cookie_survives_page_replay ... ok
+test native_base::frozen::tests::directory_rename_keeps_inode_and_descendant_identity ... ok
+test native_base::frozen::tests::fixed_revision_reader_lookup_and_negative_proof ... ok
+test native_base::frozen::tests::fixed_revision_reader_traverses_multi_level_index ... ok
+test native_base::frozen::tests::hardlinked_names_across_pages_share_one_inode_record ... ok
+test native_base::frozen::tests::manifest_roundtrip_and_mode_shape_are_fail_closed ... ok
+test native_base::frozen::tests::non_utf8_dentry_names_preserve_original_bytes ... ok
+test native_base::frozen::tests::partial_namespace_arrival_fails_closed ... ok
+test native_base::frozen::tests::predecessor_query_is_prefix_scoped ... ok
+test native_base::ingest::backend::tests::create_only_put_is_idempotent_for_identical_content ... ok
+test native_base::ingest::backend::tests::create_only_put_unsupported_is_refused ... ok
+test native_base::ingest::backend::tests::http200_with_embedded_error_is_a_failed_complete ... ok
+test native_base::ingest::backend::tests::lost_complete_response_is_resolvable_by_status ... ok
+test native_base::ingest::backend::tests::multipart_happy_path_verifies_composite ... ok
+test native_base::ingest::backend::tests::no_such_upload_after_completion_is_resolvable_by_object ... ok
+test native_base::ingest::backend::tests::part_checksum_mismatch_is_refused_server_side ... ok
+test native_base::ingest::backend::tests::range_get_exact_never_pads ... ok
+test native_base::ingest::build::tests::disk_budget_stops_the_build_before_anything_is_uploaded ... ok
+test native_base::ingest::plan::tests::digest_changes_when_the_plan_changes ... ok
+test native_base::ingest::build::tests::source_change_after_inventory_stops_publication ... ok
+test native_base::ingest::plan::tests::plan_roundtrip_and_digest_stability ... ok
+test native_base::ingest::plan::tests::unknown_algorithm_version_is_refused ... ok
+test native_base::ingest::plan::tests::plan_file_roundtrip ... ok
+test native_base::ingest::session::tests::fresh_session_starts_new_with_journal_generation ... ok
+test native_base::ingest::build::tests::changed_plan_on_resume_is_refused ... ok
+test native_base::ingest::build::tests::without_create_only_the_build_is_refused_not_simulated ... ok
+test native_base::ingest::session::tests::damaged_middle_record_stops_the_resume ... ok
+test native_base::ingest::session::tests::second_builder_is_refused_while_the_first_holds_the_lock ... ok
+test native_base::ingest::build::tests::build_to_unpublished_stops_unpublished_and_uploads_every_object ... ok
+test native_base::ingest::source::tests::inventory_encoding_roundtrip ... ok
+test native_base::ingest::build::tests::resume_after_clean_close_finishes_the_upload ... ok
+test native_base::ingest::source::tests::local_source_inventory_hardlinks_and_no_symlink_follow ... ok
+test native_base::ingest::source::tests::member_path_validation_rejects_escapes ... ok
+test native_base::ingest::source::tests::local_source_rejects_devices ... ok
+test native_base::ingest::build::tests::resume_mid_upload_skips_the_verified_object ... ok
+test native_base::ingest::source::tests::tar_source_hardlinks_share_identity_and_compressed_is_refused ... ok
+test native_base::ingest::source::tests::tar_source_reads_members_and_detects_change ... ok
+test native_base::ingest::source::tests::tar_source_rejects_escapes_and_duplicates ... ok
+test native_base::ingest::source::tests::tar_sparse_member_reads_holes_as_zeros ... ok
+test native_base::ingest::upload::tests::corrupted_payload_fails_exact_readback ... ok
+test native_base::ingest::upload::tests::create_only_upload_and_readback_verification ... ok
+test native_base::ingest::session::tests::invalid_transitions_are_refused ... ok
+test native_base::ingest::upload::tests::http200_embedded_error_never_becomes_verified ... ok
+test native_base::ingest::upload::tests::lost_complete_response_resumes_by_status ... ok
+test native_base::ingest::upload::tests::lost_part_response_is_resolved_by_query_not_resend ... ok
+test native_base::ingest::upload::tests::multipart_part_layout_covers_the_object_exactly ... ok
+test native_base::ingest::session::tests::transitions_are_journaled_and_replayed ... ok
+test native_base::ingest::upload::tests::no_such_upload_after_completion_is_resolved_by_final_object ... ok
+test native_base::ingest::session::tests::truncated_journal_tail_recovers_to_the_last_durable_state ... ok
+test native_base::ingest::upload::tests::part_timeout_without_landing_retries_the_same_part_number ... ok
+test native_base::ingest::upload::tests::plan_length_or_hash_mismatch_is_refused_before_upload ... ok
+test native_base::ingest::upload::tests::precondition_412_same_content_is_idempotent_and_different_is_rejected ... ok
+test native_base::ingest::upload::tests::service_validated_profile_uses_service_facts_not_readback ... ok
+test native_base::ingest::wal::tests::bad_magic_or_length_in_the_middle_is_corrupt_journal ... ok
+test native_base::ingest::wal::tests::crc_bad_final_record_is_dropped_but_middle_corruption_stops ... ok
+test native_base::ingest::wal::tests::garbage_at_the_tail_is_not_droppable ... ok
+test native_base::ingest::wal::tests::record_format_bounds_and_crc ... ok
+test native_base::ingest::wal::tests::replay_accepts_full_journal_with_strict_sequences ... ok
+test native_base::ingest::wal::tests::checkpoint_roundtrip_and_durability_dance ... ok
+test native_base::ingest::wal::tests::sequence_gap_is_corrupt_journal ... ok
+test native_base::ingest::wal::tests::truncated_final_record_is_dropped ... ok
+test native_base::ingest::session::tests::unpublished_sessions_have_no_artifact_view ... ok
+test native_base::lifecycle::cleanup::tests::blocked_delete_stays_pending_and_same_operation_retries ... ok
+test native_base::lifecycle::cleanup::tests::cleanup_batches_are_bounded ... ok
+test native_base::lifecycle::cleanup::tests::close_freezes_domain_and_cleanup_protects_retained_object ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_003_empty_domain_expresses_the_empty_set_as_option_none ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_004_authority_swap_after_plan_stops_cleanup ... ok
+test native_base::lifecycle::cleanup::tests::ctrl_004_close_copy_hash_mismatch_is_rejected_before_write ... ok
+test native_base::lifecycle::cleanup::tests::lease_expiry_or_unresolved_proof_is_not_delete_authority ... ok
+test native_base::ingest::wal::tests::writer_assigns_sequences_and_recovers_damaged_tail ... ok
+test native_base::lifecycle::cleanup::tests::missing_or_rollback_evidence_enters_retain_all ... ok
+test native_base::lifecycle::cleanup::tests::multiple_retention_batches_form_exact_union_and_survive_cleaned ... ok
+test native_base::lifecycle::cleanup::tests::replan_after_partial_delete_preserves_digest_and_skips_deleted_rows ... ok
+test native_base::lifecycle::cleanup::tests::cleanup_reuses_operation_across_batches_and_cleans_after_last_batch ... ok
+test native_base::lifecycle::cleanup::tests::two_cleaners_cannot_own_the_same_deleting_batch ... ok
+test native_base::lifecycle::cleanup::tests::unknown_attempt_quarantines_domain_and_prevents_cleanup ... ok
+test native_base::lifecycle::cleanup::tests::versioned_or_locked_namespace_is_rejected_before_delete ... ok
+test native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers ... ok
+test native_base::lifecycle::tests::drain_batches_enforce_entry_and_payload_limits_before_persistence ... ok
+test native_base::lifecycle::tests::every_persisted_seal_phase_has_a_defined_recovery_action ... ok
+test native_base::lifecycle::tests::exact_retention_partitions_owned_domains_and_rejects_siblings ... ok
+test native_base::lifecycle::tests::manifest_and_object_inventory_roundtrip_without_self_reference ... ok
+test native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring ... ok
+test native_base::lifecycle::variant::tests::semantic_change_budget_overrun_and_busy_apply_fail_closed ... ok
+test native_base::lifecycle::tests::two_domain_publication_is_atomic_exact_and_idempotent ... ok
+test native_base::lifecycle::tests::one_hundred_forks_are_control_records_and_modified_target_will_not_fast_forward ... ok
+test native_base::lifecycle::variant::tests::variant_retains_old_and_new_dependencies ... ok
+test native_base::runtime::header::tests::admission_rejects_control_wire_and_required_feature_mismatches ... ok
+test native_base::runtime::header::tests::initialization_is_create_only_and_load_revalidates ... ok
+test native_base::runtime::header::tests::namespace_cannot_escape_the_locator_prefix ... ok
+test native_base::runtime::header::tests::volume_header_round_trips_and_checksum_is_fail_closed ... ok
+test native_base::runtime::io::tests::cache_clear_and_restart_preserve_fsynced_patch ... ok
+test native_base::runtime::io::tests::cross_block_partial_write_roundtrips_byte_exact ... ok
+test native_base::runtime::io::tests::mixed_baseline_loose_and_hole_read_matches_byte_oracle ... ok
+test native_base::runtime::io::tests::multi_extent_non_contiguous_writes_read_back_correctly ... ok
+test native_base::runtime::io::tests::overlapping_dirty_writes_keep_acceptance_order_and_discard_is_private ... ok
+test native_base::runtime::io::tests::overlapping_write_hole_write_last_writer_wins ... ok
+test native_base::runtime::io::tests::patch_is_dirty_visible_and_fsync_reads_only_the_touched_block ... ok
+test native_base::runtime::io::tests::punch_hole_on_fresh_inode_preserves_baseline_size_and_tail ... ok
+test native_base::runtime::io::tests::size_consistency_after_write_truncate_and_punch ... ok
+test native_base::runtime::io::tests::truncate_down_then_extend_does_not_resurrect_baseline_tail ... ok
+test native_base::runtime::io::tests::truncate_then_far_write_keeps_the_truncated_gap_zeroed ... ok
+test native_base::runtime::migration::tests::only_new_namespace_and_quiesced_offline_copy_are_admitted ... ok
+test native_base::runtime::planner::tests::coalesce_deduplicates_and_obeys_amplification ... ok
+test native_base::runtime::planner::tests::prefetch_cannot_consume_demand_reserve ... ok
+test native_base::seal::binding::tests::binding_is_exactly_36_bytes_and_roundtrips ... ok
+test native_base::seal::binding::tests::hash_covers_leading_zeros_of_decoded_domain ... ok
+test native_base::seal::binding::tests::zero_length_binding_rejected_and_truncated_rejected ... ok
+test native_base::seal::descriptor::tests::descriptor_is_exactly_96_bytes_and_roundtrips ... ok
+test native_base::seal::descriptor::tests::header_mismatch_detected_on_every_field ... ok
+test native_base::seal::descriptor::tests::range_get_covers_header_and_payload ... ok
+test native_base::seal::descriptor::tests::reserved_must_be_zero ... ok
+test native_base::seal::placement::tests::loose_roundtrip_and_rejects_unknown_layout_and_reserved ... ok
+test native_base::seal::placement::tests::native_single_span_rule ... ok
+test native_base::seal::placement::tests::packed_roundtrip ... ok
+test native_base::seal::placement::tests::span_validation_counterexamples ... ok
+test native_base::seal::placement::tests::unknown_tag_and_zero_span_count_rejected ... ok
+test native_base::seal::tables::tests::keys_are_big_endian_so_numeric_order_equals_byte_order ... ok
+test native_base::seal::tables::tests::root_rejects_wrong_version_count_unsorted_ids_and_trailing_bytes ... ok
+test native_base::seal::tables::tests::root_roundtrip_with_empty_and_present_tables ... ok
+test native_base::seal::tests::binding_without_placement_is_an_error ... ok
+test native_base::seal::tests::budget_that_fits_only_some_units_rejects_the_whole_plan ... ok
+test native_base::seal::tests::builder_add_packed_block_rejects_short_span_coverage ... ok
+test native_base::runtime::planner::tests::singleflight_cancelled_waiter_does_not_cancel_loader ... ok
+test native_base::seal::tests::builder_validate_rejects_missing_frame_and_kind_mismatch ... ok
+test native_base::seal::tests::cancellation_between_units_stops_fetching ... ok
+test native_base::seal::tests::corrupted_frame_payload_is_an_error_not_zeros ... ok
+test native_base::seal::tests::cross_block_read_over_full_size_blocks ... ok
+test native_base::seal::tests::descriptor_pointing_at_a_non_frame_offset_is_an_error ... ok
+test native_base::seal::tests::empty_table_reports_missing_table_on_query ... ok
+test native_base::seal::tests::external_frames_table_reuse_reads_through_the_old_seal ... ok
+test native_base::seal::tests::frame_descriptor_mismatch_with_actual_header_is_an_error ... ok
+test native_base::frozen::tests::one_million_directory_entries_page_in_order ... ok
+test native_base::seal::tests::loose_object_corruption_is_an_error ... ok
+test native_base::seal::tests::metrics_report_each_component_separately ... ok
+test native_base::seal::tests::missing_frame_descriptor_is_an_error_not_zeros ... ok
+test native_base::seal::tests::mixed_pack_and_loose_blocks_read_back_exactly ... ok
+test native_base::seal::tests::native_multi_span_placement_rejected_at_read_time ... ok
+test native_base::seal::tests::multi_level_index_lookup_hits_and_absent_keys_miss ... ok
+test native_base::seal::tests::native_span_length_must_not_borrow_frame_raw_len ... ok
+test native_base::seal::tests::plain_bytes_starting_with_the_sf_magic_stay_raw ... ok
+test native_base::seal::tests::pre_cancelled_read_does_no_io ... ok
+test native_base::seal::tests::read_beyond_decoded_len_is_an_error_not_zeros ... ok
+test native_base::seal::tests::resolved_placements_and_descriptors_roundtrip_through_the_seal ... ok
+test native_base::seal::tests::seal_root_table_directory_shape_is_preserved_end_to_end ... ok
+test native_base::seal::tests::seal_bytes_are_unchanged_by_the_shared_index_builder ... ok
+test native_base::seal::tests::sf_framed_native_block_roundtrips_through_the_native_path ... ok
+test native_base::seal::tests::shared_frame_is_fetched_once_per_read ... ok
+test native_base::seal::tests::short_read_is_an_error_not_zeros ... ok
+test native_base::seal::tests::source_not_found_is_an_error_not_zeros ... ok
+test native_base::seal::tests::table_override_rejects_local_entries ... ok
+test native_base::seal::tests::undersized_budget_rejects_before_any_io ... ok
+test native_base::wire::bnct::tests::all_kinds_roundtrip_through_envelope ... ok
+test native_base::wire::bnct::tests::envelope_rejects_crc_and_length_mismatch ... ok
+test native_base::wire::bnct::tests::envelope_rejects_oversized_payload ... ok
+test native_base::wire::bnct::tests::envelope_rejects_unknown_kind ... ok
+test native_base::wire::bnct::tests::envelope_rejects_wrong_version ... ok
+test native_base::wire::bnct::tests::kind7_golden_byte_exact ... ok
+test native_base::wire::bnct::tests::other_unknown_enums_rejected ... ok
+test native_base::wire::bnct::tests::payload_trailing_bytes_rejected ... ok
+test native_base::wire::bnct::tests::plan_entries_roundtrip ... ok
+test native_base::wire::bnct::tests::unknown_enum_values_rejected ... ok
+test native_base::wire::container::tests::crc32c_standard_vector ... ok
+test native_base::wire::container::tests::footer_roundtrip_and_validation ... ok
+test native_base::wire::container::tests::header_rejects_crc_mismatch ... ok
+test native_base::wire::container::tests::header_rejects_nonzero_reserved_and_short_object ... ok
+test native_base::wire::container::tests::header_rejects_unknown_magic_codec_and_hash ... ok
+test native_base::wire::container::tests::header_rejects_unknown_major ... ok
+test native_base::wire::container::tests::header_roundtrip_all_kinds ... ok
+test native_base::wire::container::tests::parse_footer_checks_object_len ... ok
+test native_base::wire::container::tests::unsupported_required_features_rejected ... ok
+test native_base::wire::datapack::tests::builder_rejects_oversized_payloads ... ok
+test native_base::wire::datapack::tests::golden_empty_pack_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::golden_native_none_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::golden_plain_magic_prefix_keeps_raw_bytes ... ok
+test native_base::wire::datapack::tests::golden_two_plain_frames_scrubs_and_rebuilds_byte_identical ... ok
+test native_base::wire::datapack::tests::scrub_rejects_corrupt_raw_digest ... ok
+test native_base::wire::datapack::tests::scrub_rejects_header_crc_error ... ok
+test native_base::wire::datapack::tests::scrub_rejects_nonzero_padding ... ok
+test native_base::wire::datapack::tests::scrub_rejects_ordinal_gap ... ok
+test native_base::wire::datapack::tests::scrub_rejects_truncated_object ... ok
+test native_base::wire::datapack::tests::scrub_rejects_unsupported_required_features ... ok
+test native_base::wire::datapack::tests::zero_length_payloads_are_never_frames ... ok
+test native_base::wire::frame::tests::codec_none_requires_stored_eq_raw ... ok
+test native_base::wire::frame::tests::frame_header_enforces_payload_limits ... ok
+test native_base::wire::datapack::tests::zstd_frames_roundtrip_through_scrub ... ok
+test native_base::wire::frame::tests::frame_header_rejects_crc_and_reserved ... ok
+test native_base::wire::frame::tests::frame_header_rejects_unknown_version_format_codec_flags ... ok
+test native_base::wire::frame::tests::frame_header_roundtrip ... ok
+test native_base::wire::frame::tests::frame_span_pads_to_alignment ... ok
+test native_base::wire::frame::tests::native_block_v1_requires_outer_codec_none ... ok
+test native_base::wire::frame::tests::zstd_roundtrip_and_exact_length_enforced ... ok
+test native_base::wire::index_build::tests::every_reachable_page_is_aligned_and_digest_authenticated ... ok
+test native_base::wire::index_build::tests::oversized_page_is_rejected_by_the_leaf_target_cap ... ok
+test native_base::wire::page::tests::empty_leaf_page_is_valid ... ok
+test native_base::wire::index_build::tests::single_leaf_and_multi_level_shapes ... ok
+test native_base::wire::page::tests::internal_page_roundtrip_and_range_validation ... ok
+test native_base::wire::page::tests::internal_rejects_child_level_not_descending ... ok
+test native_base::wire::page::tests::leaf_page_roundtrip_with_prefix_compression ... ok
+test native_base::wire::page::tests::leaf_rejects_duplicate_and_unsorted_keys ... ok
+test native_base::wire::page::tests::leaf_rejects_nonzero_first_shared_prefix_and_overlong_shared ... ok
+test native_base::wire::page::tests::page_rejects_oversized_raw_page_and_entries ... ok
+test native_base::wire::page::tests::page_rejects_trailing_bytes_and_count_mismatch ... ok
+test native_base::wire::page::tests::page_rejects_unknown_kind_and_flags ... ok
+test native_base::wire::refs::tests::child_must_descend_exactly_one_level ... ok
+test native_base::wire::refs::tests::child_ref_both_tags_roundtrip_and_rejects_unknown ... ok
+test native_base::wire::refs::tests::object_kind_page_kind_matrix ... ok
+test native_base::wire::refs::tests::object_ref_roundtrip_and_key_validation ... ok
+test native_base::wire::refs::tests::page_address_is_exactly_56_bytes_and_roundtrips ... ok
+test native_base::wire::refs::tests::page_address_rejects_unknown_codec_kind_and_reserved ... ok
+test native_base::wire::refs::tests::root_ref_roundtrip ... ok
+test native_base::wire::tests::all_brfdp_fixtures_scrub_clean ... ok
+test native_base::wire::tests::packaged_fixture_hashes_match_spec_vectors ... ok
+test native_base::wire::uvarint::tests::negative_vectors_rejected ... ok
+test native_base::wire::uvarint::tests::positive_vectors_match_goldens ... ok
+test native_base::wire::uvarint::tests::reader_bytes_validates_length_before_use ... ok
+test native_base::wire::uvarint::tests::reader_rejects_invalid_bool_and_option_tags ... ok
+test native_base::wire::uvarint::tests::roundtrip_boundaries ... ok
+test native_base::write::keys::tests::keys_are_volume_scoped_and_lexicographic ... ok
+test native_base::write::receipts::tests::receipt_set_roundtrip_and_rejects_trailing ... ok
+test native_base::write::receipts::tests::receipts_container_is_a_valid_single_value_frozen_metadata_object ... ok
+test native_base::write::records::tests::extent_roundtrip_and_invariants ... ok
+test native_base::write::records::tests::head_placement_roundtrip_and_closed_tags ... ok
+test native_base::write::records::tests::head_state_roundtrip_and_next_commit ... ok
+test native_base::write::records::tests::inode_data_roundtrip ... ok
+test native_base::write::redis::tests::glob_escape_quotes_metacharacters ... ok
+test native_base::write::tests::hole_splits_and_replacement ... ok
+test native_base::write::tests::memory_backend::commit_with_tampered_registration_fails_atomically ... ok
+test native_base::write::tests::memory_backend::commit_writes_extent_binding_placement_inode_and_head_together ... ok
+test native_base::write::tests::memory_backend::cross_inode_mutations_do_not_block_each_other ... ok
+test native_base::write::tests::memory_backend::failed_predecessor_blocks_successors_instead_of_skipping_them ... ok
+test native_base::write::tests::memory_backend::failed_transaction_applies_no_subset_of_its_writes ... ok
+test native_base::write::tests::memory_backend::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ok
+test native_base::write::tests::memory_backend::independent_stores_racing_same_head_commit_once ... ok
+test native_base::write::tests::memory_backend::mutation_order_continues_from_the_durable_watermark ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_commit ... ok
+test native_base::write::tests::memory_backend::non_active_domain_rejects_registration ... ok
+test native_base::write::tests::memory_backend::ordering_gate_rejects_late_and_early_slots_permanently ... ok
+test native_base::write::tests::memory_backend::registry_binds_one_object_key_to_one_identity ... ok
+test native_base::write::tests::memory_backend::reordered_upload_cannot_overtake_its_predecessor ... ok
+test native_base::write::tests::memory_backend::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ok
+test native_base::write::tests::memory_backend::stale_head_guard_fails_and_writes_nothing ... ok
+test native_base::write::tests::memory_backend::truncate_down_and_extend_and_punch_produce_holes ... ok
+test native_base::write::tests::memory_backend::unaligned_writes_are_refused_at_admission ... ok
+test native_base::write::tests::partial_overlap_splits_data_extents_block_aligned ... ok
+test native_base::write::tests::unaligned_cut_keeps_partial_tail_block ... ok
+test native_base::write::tests_redis::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::non_active_domain_rejects_commit ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::non_active_domain_rejects_registration ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_redis::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_REDIS_TEST_URL pointing at a scratch Redis
+test native_base::write::tests_tikv::commit_with_tampered_registration_fails_atomically ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::commit_writes_extent_binding_placement_inode_and_head_together ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::cross_inode_mutations_do_not_block_each_other ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_predecessor_blocks_successors_instead_of_skipping_them ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::failed_transaction_applies_no_subset_of_its_writes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::handoff_removes_only_committed_dirty_and_captures_keep_theirs ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::independent_stores_racing_same_head_commit_once ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::mutation_order_continues_from_the_durable_watermark ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_commit ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::non_active_domain_rejects_registration ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::ordering_gate_rejects_late_and_early_slots_permanently ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::registry_binds_one_object_key_to_one_identity ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::reordered_upload_cannot_overtake_its_predecessor ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::same_operation_id_is_idempotent_and_payload_mismatch_is_rejected ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::stale_head_guard_fails_and_writes_nothing ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::truncate_down_and_extend_and_punch_produce_holes ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tests_tikv::unaligned_writes_are_refused_at_admission ... ignored, requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster
+test native_base::write::tikv::tests::prefix_range_end_increments_the_last_free_byte ... ok
+test sdk_fs::tests::async_read_buffers_partial_data_across_polls ... ok
+test sdk_fs::tests::append_writes_to_end ... ok
+test sdk_fs::tests::seek_and_read_to_end ... ok
+test sdk_fs::tests::dir_ops_and_error_kinds ... ok
+test sdk_fs::tests::permission_denied_on_wrong_mode ... ok
+test sdk_fs::tests::open_truncate_zeros_file ... ok
+test sdk_fs::tests::open_create_new_fails_if_exists ... ok
+test sdk_fs::tests::sync_after_delete_is_success ... ok
+test sdk_fs::tests::sync_on_read_only_file_is_noop ... ok
+test vfs::cache::config::tests::cache_config_defaults_preserve_hot_path_settings ... ok
+test vfs::cache::config::tests::cache_config_defaults_raise_prefetch_concurrency ... ok
+test vfs::cache::keys::tests::dirty_slice_paths_are_bucketed_by_local_sequence ... ok
+test sdk_fs::tests::test_create_dir_already_exists ... ok
+test vfs::cache::keys::tests::dirty_slice_sealed_file_name_round_trips_record_fields ... ok
+test vfs::cache::page::tests::test_append_multiple_calls ... ok
+test vfs::cache::page::tests::test_append_single_page ... ok
+test vfs::cache::page::tests::test_append_spans_blocks ... ok
+test vfs::cache::page::tests::test_append_spans_pages ... ok
+test vfs::cache::page::tests::test_append_then_write_at_overwrite_full ... ok
+test vfs::cache::page::tests::test_can_write_at_disallows_append_or_extend ... ok
+test vfs::cache::page::tests::test_copy_written_into_skips_sparse_zero_hole ... ok
+test vfs::cache::page::tests::test_gap_append_extends_logical_len_with_zero_hole ... ok
+test vfs::cache::page::tests::test_truncate_releases_tail_pages_and_keeps_prefix ... ok
+test vfs::cache::page::tests::test_write_at ... ok
+test vfs::cache::page::tests::test_write_at_crosses_block_boundary ... ok
+test vfs::cache::page::tests::test_write_at_overwrite_middle ... ok
+test vfs::cache::page::tests::test_written_overlap_ignores_sparse_zero_hole_until_backfilled ... ok
+test vfs::cache::prefetch::tests::cancelled_handle_skips_queued_task_behind_other_prefetches ... ok
+test sdk_fs::tests::test_exists ... ok
+test vfs::cache::prefetch::tests::demand_priority_runs_before_background_tasks_in_same_batch ... ok
+test vfs::cache::write_back::tests::overlay_dirty_range_reads_bucketed_record ... ok
+test vfs::cache::write_back::tests::persist_reuses_created_dirty_directory_for_slice_and_meta ... ok
+test sdk_fs::tests::test_hard_link_operations ... ok
+test vfs::cache::write_back::tests::persist_slice_merges_batches_by_chunk_offset ... ok
+test vfs::cache::write_back::tests::persisted_data_is_recoverable_only_after_record_is_sealed ... ok
+test vfs::cache::write_back::tests::promoted_slice_survives_dirty_record_cleanup ... ok
+test vfs::cache::write_back::tests::read_dirty_range_requires_full_local_coverage ... ok
+test sdk_fs::tests::test_metadata_extended ... ok
+test vfs::cache::write_back::tests::recoverable_key_index_tracks_seal_recovery_and_remove ... ok
+test vfs::cache::write_back::tests::recovery_rejects_compact_record_from_another_volume_scope ... ok
+test vfs::cache::write_back::tests::remove_keeps_shared_chunk_directory_for_concurrent_slices ... ok
+test vfs::cache::write_back::tests::unsynced_persist_writes_compact_sealed_record ... ok
+test vfs::config::tests::vfs_config_applies_cache_budget_knobs ... ok
+test vfs::cache::write_back::tests::synced_persist_keeps_legacy_json_record ... ok
+test vfs::cache::write_back::tests::recovery_rejects_json_record_from_another_volume_scope ... ok
+test vfs::config::tests::vfs_config_default_uses_ten_upload_workers ... ok
+test vfs::config::tests::write_config_defaults_and_sets_recent_pending_backpressure_limits ... ok
+test vfs::config::tests::write_config_parses_cached_block_assembler_env ... ok
+test vfs::error::tests::from_meta_preserves_directory_not_empty_semantics ... ok
+test vfs::error::tests::from_meta_preserves_filename_too_long_semantics ... ok
+test vfs::error::tests::from_meta_preserves_not_directory_semantics ... ok
+test vfs::cache::write_back::tests::volume_scopes_isolate_overlapping_dirty_slice_ids ... ok
+test sdk_fs::tests::test_symlink_operations ... ok
+test sdk_fs::tests::test_remove_dir_all_refuses_root ... ok
+test vfs::fs::tests::basic_tests::test_mkdir_at_create_new_reports_existing_entries ... ok
+test sdk_fs::tests::test_remove_dir_all ... ok
+test vfs::cache::prefetch::tests::deduplicates_identical_in_flight_ranges ... ok
+test vfs::fs::tests::basic_tests::test_fs_unlink_rmdir_rename_truncate ... ok
+test vfs::fs::tests::basic_tests::test_open_defers_reader_until_first_read ... ok
+test vfs::fs::tests::basic_tests::test_open_fresh_by_ino_checks_current_attr_once ... ok
+test vfs::fs::tests::basic_tests::test_open_with_cached_attr_records_open_cache ... ok
+test vfs::fs::tests::basic_tests::test_optimistic_create_fallback_preserves_existing_semantics ... ok
+test vfs::fs::tests::basic_tests::test_parent_ancestry_walk_rejects_existing_cycle ... ok
+test vfs::fs::tests::basic_tests::test_rename_exchange_atomic ... ok
+test vfs::fs::tests::basic_tests::test_rename_exchange_cross_directory ... ok
+test vfs::fs::tests::basic_tests::test_rename_exchange_fails_if_missing ... ok
+test vfs::fs::tests::basic_tests::test_rename_exchange_rejects_descendants_in_both_directions ... ok
+test vfs::fs::tests::basic_tests::test_write_close_warms_readonly_open_cache_with_final_attr ... ok
+test vfs::fs::tests::io_tests::test_close_of_unrelated_handle_does_not_flush_cached_writer ... ok
+test vfs::fs::tests::io_tests::test_fallocate_space_guard_uses_short_lived_statfs_cache ... ok
+test vfs::fs::tests::io_tests::test_fs_append_handles_use_fresh_size_concurrently ... ok
+test vfs::fs::tests::basic_tests::test_rename_preserves_create_time ... ok
+test vfs::fs::tests::io_tests::test_fs_close_last_unlinked_handle_discards_writer_and_inode ... ok
+test vfs::fs::tests::io_tests::test_fs_copy_file_range_reports_efbig_only_after_source_data_exists ... ok
+test vfs::fs::tests::io_tests::test_fs_copy_file_range_same_file_preserves_recent_write_tail ... ok
+test vfs::fs::tests::io_tests::test_fs_fallocate_handle_persists_metadata_immediately ... ok
+test vfs::fs::tests::io_tests::test_fs_fallocate_handle_returns_enospc_when_growth_exceeds_statfs ... ok
+test vfs::fs::tests::io_tests::test_fs_fallocate_ino_extends_file_and_zero_fills ... ok
+test vfs::fs::tests::io_tests::test_fs_fallocate_ino_preserves_pending_cached_write ... ok
+test vfs::fs::tests::io_tests::test_fs_fallocate_ino_returns_enospc_when_growth_exceeds_statfs ... ok
+test vfs::fs::tests::io_tests::test_fs_parallel_writes_to_distinct_files ... ok
+test vfs::fs::tests::io_tests::test_fs_interior_fallocate_does_not_shrink_dirty_handle_attr ... ok
+test vfs::fs::tests::io_tests::test_fs_normal_write_overwrite_is_visible_to_existing_reader ... ok
+test vfs::fs::tests::io_tests::test_fs_read_after_tiny_overlapping_writes_uses_latest_dirty_bytes ... ok
+test vfs::fs::tests::io_tests::test_fs_read_fully_covered_by_dirty_write_skips_backend_read ... ok
+test vfs::fs::tests::io_tests::test_fs_mkdir_create_write_read_readdir ... ok
+test vfs::fs::tests::io_tests::test_fs_read_only_handle_uses_fully_covered_dirty_overlay_before_backend_read ... ok
+test vfs::fs::tests::io_tests::test_fs_read_write_handle_read_does_not_flush_unrelated_dirty_write ... ok
+test vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset ... ok
+test vfs::fs::tests::io_tests::test_fs_shrink_then_fallocate_extend_keeps_old_tail_zeroed ... ok
+test vfs::fs::tests::io_tests::test_fs_shrink_then_far_rewrite_keeps_gap_zeroed ... ok
+test vfs::fs::tests::io_tests::test_fs_sparse_fallocate_cached_mixed_zero_bytes_overwrite_old_data ... ok
+test vfs::fs::tests::io_tests::test_fs_sparse_fallocate_cached_page_zero_tail_beyond_growth_is_not_materialized ... ok
+test vfs::fs::tests::io_tests::test_fs_sparse_fallocate_cached_zero_tail_does_not_overwrite_data ... ok
+test vfs::fs::tests::io_tests::test_fs_truncate_extend_does_not_return_stale_reader_cache ... ok
+test vfs::fs::tests::io_tests::test_fs_truncate_keeps_prefix_of_overlapping_slice ... ok
+test vfs::fs::tests::io_tests::test_fs_truncate_prunes_chunks_and_zero_fills ... ok
+test vfs::fs::tests::io_tests::test_fs_truncate_rewrite_tail_read_sees_dirty_extension ... ok
+test vfs::fs::tests::io_tests::test_fs_truncate_then_rewrite_range_stays_visible ... ok
+test vfs::fs::tests::io_tests::test_fs_unlink_without_handles_discards_writer_and_inode ... ok
+test vfs::fs::tests::io_tests::test_fs_sparse_pwrite_close_reopen_preserves_written_blocks ... ok
+test vfs::fs::tests::io_tests::test_fs_write_cached_ino_defers_flush_until_reader_needs_data ... ok
+test vfs::fs::tests::io_tests::test_fuse_statfs_uses_short_lived_cache ... ok
+test vfs::fs::tests::io_tests::test_set_attr_truncate_flushes_cached_write_without_hanging ... ok
+test vfs::fs::tests::io_tests::test_write_handle_initializes_writer_on_first_write ... ok
+test vfs::fs::tests::permission_tests::test_chmod_directory ... ok
+test vfs::fs::tests::permission_tests::test_chmod_file_basic ... ok
+test vfs::fs::tests::permission_tests::test_chmod_nonexistent_inode_returns_error ... ok
+test vfs::fs::tests::permission_tests::test_chmod_preserves_file_type_bits ... ok
+test vfs::fs::tests::permission_tests::test_chmod_preserves_setuid_setgid_sticky ... ok
+test vfs::fs::tests::permission_tests::test_chown_directory ... ok
+test vfs::fs::tests::permission_tests::test_chown_file_uid_and_gid ... ok
+test vfs::fs::tests::permission_tests::test_chown_gid_only ... ok
+test vfs::fs::tests::permission_tests::test_chown_nonexistent_inode_returns_error ... ok
+test vfs::fs::tests::permission_tests::test_chown_preserves_mode ... ok
+test vfs::fs::tests::permission_tests::test_chown_uid_only ... ok
+test vfs::fs::tests::permission_tests::test_directory_default_permission ... ok
+test vfs::fs::tests::permission_tests::test_file_default_permission ... ok
+test vfs::fs::tests::io_tests::test_fs_fuzz_parallel_read_write ... ok
+test vfs::fs::tests::permission_tests::test_set_attr_chown_via_request ... ok
+test vfs::fs::tests::permission_tests::test_set_attr_mode_change ... ok
+test vfs::fs::tests::test_child_attr_of_rejects_name_longer_than_name_max ... ok
+test vfs::fs::tests::rename_tests::rename_noreplace_preserves_concurrently_created_destination ... ok
+test vfs::fs::tests::permission_tests::test_set_attr_mode_preserves_special_bits_via_chmod_path ... ok
+test vfs::fs::tests::test_fuse_write_order_waits_for_earlier_unique ... ok
+test vfs::fs::tests::test_recently_unlinked_cleanup_is_not_run_on_every_threshold_insert ... ok
+test vfs::fs::tests::truncate_flush_tests::test_cached_write_fsync_invalidates_prior_reader_cache ... ok
+test vfs::fs::tests::test_child_attr_of_returns_child_inode_and_attr ... ok
+test vfs::fs::tests::truncate_flush_tests::test_fuse_lock_owner_fast_path_tracks_handle_owners ... ok
+test vfs::fs::tests::rename_tests::test_rename_error_cases_vfs ... ok
+test vfs::fs::tests::rename_tests::test_rename_boundary_conditions_vfs ... ok
+test vfs::fs::tests::truncate_flush_tests::test_cached_write_then_set_attr_truncate ... ok
+test vfs::fs::tests::truncate_flush_tests::test_set_attr_truncate_with_pending_writes ... ok
+test vfs::fs::tests::truncate_flush_tests::test_truncate_after_write_with_pending_dirty_data ... ok
+test vfs::fs::tests::truncate_flush_tests::test_large_write_then_truncate_to_zero ... ok
+test vfs::handles::tests::write_dirty_state_merge_keeps_timestamp_requirement ... ok
+test vfs::fs::tests::truncate_flush_tests::test_split_write_barrier_waits_for_aligned_tail ... ok
+test vfs::handles::tests::write_dirty_state_tracks_extending_writes_without_timestamp_update ... ok
+test vfs::io::cached_block_assembler::tests::assembler_emits_full_block_after_page_writes ... ok
+test vfs::io::cached_block_assembler::tests::assembler_keeps_last_writer_for_overlap ... ok
+test vfs::io::cached_block_assembler::tests::assembler_rejects_older_overlap_after_newer_unique ... ok
+test vfs::io::cached_block_assembler::tests::assembler_truncate_drops_tail_pages ... ok
+test vfs::io::reader::tests::test_demand_read_does_not_double_fetch_current_slice ... ok
+test vfs::fs::tests::truncate_flush_tests::test_write_truncate_write_truncate_cycles ... ok
+test vfs::io::reader::tests::test_file_reader_cross_chunks ... ok
+test vfs::io::reader::tests::test_first_nonzero_read_does_not_start_readahead ... ok
+test vfs::io::reader::tests::test_cross_chunk_read_fetches_chunks_concurrently ... ok
+test vfs::io::reader::tests::test_read_while_write_eventually_sees_data ... ok
+test vfs::io::reader::tests::test_reader_invalidate_refresh ... ok
+test vfs::io::reader::tests::test_readahead_starts_after_current_read ... ok
+test vfs::io::reader::tests::test_repeated_slice_read_goes_through_block_store ... ok
+test vfs::io::reader::tests::workspace_reader_executes_read_plan_without_flat_slice_metadata ... ok
+test vfs::io::writer::tests::dirty_slice_key_preserves_the_mount_writer_epoch ... ok
+test vfs::io::writer::tests::test_auto_flush_age_partial_tail_is_attributed ... ok
+test vfs::io::reader::tests::test_submit_prefetch_requires_confirmed_stream_and_aligns_to_next_block ... ok
+test vfs::io::reader::tests::test_slice_read_retries_transient_failures ... ok
+test vfs::fs::tests::truncate_flush_tests::test_truncfile_style_rapid_truncate_cycles ... ok
+test vfs::io::writer::tests::test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch ... ok
+test vfs::io::writer::tests::test_auto_flush_defers_cached_sub_block_idle_freeze_with_bounded_grace ... ok
+test vfs::fs::tests::truncate_flush_tests::test_concurrent_write_and_truncate ... ok
+test vfs::io::writer::tests::test_background_cleanup_removes_inactive_released_writer ... ok
+test vfs::io::writer::tests::test_background_flush_all_commits ... ok
+test vfs::io::writer::tests::test_background_flush_does_not_force_active_cached_sub_block ... ok
+test vfs::io::writer::tests::test_best_effort_persist_runs_concurrently_with_upload ... ok
+test vfs::io::writer::tests::test_cached_gap_writes_commit_as_separate_dense_slices ... ok
+test vfs::io::writer::tests::test_cached_out_of_order_gap_backfill_commits_dense_slices ... ok
+test vfs::io::writer::tests::test_cached_unique_watermark_drops_late_older_overlap ... ok
+test vfs::io::writer::tests::test_cached_write_does_not_extend_inode_size ... ok
+test vfs::io::writer::tests::test_commit_before_upload_can_skip_stage_when_configured ... ok
+test vfs::io::writer::tests::test_commit_before_upload_commits_on_stage_notify_without_wait_timeout ... ok
+test vfs::io::writer::tests::test_commit_before_upload_extends_write_buffer_wait_budget ... ok
+test vfs::io::writer::tests::test_auto_flush_too_many_defers_cached_sub_block_slices_during_grace ... ok
+test vfs::io::writer::tests::test_commit_before_upload_failed_upload_clears_recent_pending ... ok
+test vfs::io::writer::tests::test_commit_before_upload_removes_writeback_record_after_upload ... ok
+test vfs::io::writer::tests::test_commit_before_upload_keeps_overlay_until_upload_finishes ... ok
+test vfs::io::writer::tests::test_commit_before_upload_requires_writeback_stage_success ... ok
+test vfs::io::writer::tests::test_commit_before_upload_waits_source_range_until_upload_finishes ... ok
+test control::tests::uds_server_times_out_stalled_requests ... ok
+test vfs::io::writer::tests::test_dirty_breakdown_reports_live_write_origin_mix ... ok
+test vfs::io::writer::tests::test_dirty_breakdown_reports_slice_lifecycle_metrics ... ok
+test vfs::io::writer::tests::test_dirty_overlay_does_not_reuse_old_slice_behind_newer_overlap ... ok
+test vfs::io::writer::tests::test_dirty_overlay_prefers_later_overlapping_normal_write ... ok
+test vfs::io::writer::tests::test_data_writer_release_keeps_writeback_overlay_until_upload_finishes ... ok
+test vfs::io::writer::tests::test_dirty_overlay_snapshot_captures_unaligned_tail ... ok
+test vfs::io::writer::tests::test_dirty_overlay_prefers_latest_tiny_tail_overlap ... ok
+test vfs::io::writer::tests::test_explicit_flush_coalesces_adjacent_cached_slices ... ok
+test vfs::io::writer::tests::test_file_writer_cross_chunks ... ok
+test vfs::io::writer::tests::test_file_writer_appends_slices_for_overwrite ... ok
+test vfs::io::writer::tests::test_file_writer_flush_commits_and_reads ... ok
+test vfs::io::writer::tests::test_flush_commits_empty_slice_without_waiting ... ok
+test vfs::io::writer::tests::test_flush_blocks_write_until_upload_done ... ok
+test vfs::io::writer::tests::test_flush_fragmentation_metrics_track_cached_sub_block_slices ... ok
+test vfs::io::writer::tests::test_flush_reports_non_retryable_meta_failure ... ok
+test vfs::io::writer::tests::test_auto_flush_defers_cached_sub_block_age_freeze_until_explicit_flush ... ok
+test vfs::io::writer::tests::test_gap_append_requires_uncommitted_tail_range ... ok
+test vfs::io::writer::tests::test_idx_need_upload_committed_writeback_includes_partial_block ... ok
+test vfs::io::writer::tests::test_idx_need_upload_readonly_includes_partial_block ... ok
+test vfs::io::writer::tests::test_idx_need_upload_writable_only_full_blocks ... ok
+test vfs::io::writer::tests::test_idx_need_upload_writable_stops_before_sparse_gap ... ok
+test vfs::io::writer::tests::test_late_older_cached_write_does_not_overwrite_newer_committed_page ... ok
+test vfs::io::writer::tests::test_max_unflushed_keeps_sub_block_slices_writable ... ok
+test vfs::io::writer::tests::test_overlay_dirty_prefers_live_slice_over_recently_committed ... ok
+test vfs::io::writer::tests::test_normal_write_waits_for_freeze_min_before_pipeline_upload ... ok
+test vfs::io::writer::tests::test_reader_cache_sees_overwrite_after_flush ... ok
+test vfs::io::writer::tests::test_flush_reports_upload_failure ... ok
+test vfs::io::writer::tests::test_release_keeps_writer_until_background_cleanup ... ok
+test vfs::io::writer::tests::test_should_retry_meta_write_classifies_errors_correctly ... ok
+test vfs::io::writer::tests::test_slice_writeback_stage_completion_requires_all_bytes ... ok
+test vfs::io::writer::tests::test_stage_first_upload_is_limited_to_cached_writeback ... ok
+test vfs::io::writer::tests::test_recent_pending_upload_accounting_tracks_commit_and_upload_completion ... ok
+test vfs::io::writer::tests::test_stage_ready_commit_before_upload_helper_requires_front_slice ... ok
+test vfs::io::writer::tests::test_recent_pending_upload_accounting_uses_stable_logical_bytes ... ok
+test vfs::io::writer::tests::test_upload_before_commit_discards_uploaded_recently_committed_slices ... ok
+test vfs::io::writer::tests::test_upload_before_commit_skips_local_writeback_stage ... ok
+test vfs::io::writer::tests::test_upload_before_commit_splits_uploaded_prefix_and_keeps_tail_writable ... ok
+test vfs::io::writer::tests::test_upload_before_commit_uploaded_slices_do_not_keep_overlay_state_after_flush ... ok
+test vfs::io::writer::tests::test_uploaded_blocks_reject_overwrite ... ok
+test vfs::io::writer::tests::test_writeback_backpressure_decision_uses_soft_sleep_before_hard_wait ... ok
+test vfs::io::writer::tests::test_writeback_backpressure_soft_sleep_reaches_max_for_large_ranges ... ok
+test vfs::io::writer::tests::test_upload_partial_tail_metrics_are_attributed_by_write_origin ... ok
+test vfs::io::writer::tests::test_auto_flush_too_many_prefers_block_sized_backlog_over_cached_sub_block_tails ... ok
+test vfs::io::writer::tests::test_writeback_phase_metrics_track_stage_and_remote_upload ... ok
+test vfs::io::writer::tests::test_upload_before_commit_does_not_publish_uploaded_prefix_by_default ... ok
+test vfs::memory::tests::test_free_reduces_pressure ... ok
+test vfs::memory::tests::test_pressure_levels ... ok
+test vfs::memory::tests::test_readahead_factor ... ok
+test vfs::io::writer::tests::test_writeback_backpressure_waits_for_pending_upload_to_drain ... ok
+test vfs::memory::tests::test_reader_alloc_rejected_at_critical ... ok
+test vfs::memory::tests::test_should_force_flush ... ok
+test vfs::memory::tests::test_usage_guard_tracks_and_frees_reader_bytes ... ok
+test vfs::memory::tests::test_usage_guard_tracks_and_frees_writer_bytes ... ok
+test vfs::io::writer::tests::test_writeback_stage_completes_before_upload_starts ... ok
+test vfs::sdk::tests::test_sdk_local_links ... ok
+test vfs::stats::tests::op_timer_records_latency ... ok
+test vfs::stats::tests::render_contains_all_metrics ... ok
+test vfs::stats::tests::snapshot_exposes_derived_values_without_divide_by_zero ... ok
+test vfs::io::writer::tests::test_writeback_commit_wait_upload_ignores_unflushable_slice ... ok
+test workspace_overlay::cache_scope::tests::writeback_path_contains_the_complete_workspace_scope ... ok
+test vfs::sdk::tests::test_sdk_local_basic ... ok
+test vfs::sdk::tests::test_sdk_local_ops_extras ... ok
+test workspace_overlay::control::tests::inspect_reports_private_rows_and_active_lease ... ok
+test workspace_overlay::gc::tests::legacy_gc_rejects_native_v2_volumes ... ok
+test workspace_overlay::gc::tests::persisted_upload_orphan_is_deleted_end_to_end ... ok
+test workspace_overlay::compaction::tests::compaction_preserves_namespace_attributes_and_extent_plan ... ok
+test workspace_overlay::gc::tests::reachable_child_prevents_shared_slice_collection ... ok
+test workspace_overlay::lifecycle::tests::failed_durable_barrier_restores_active_old_view ... ok
+test vfs::io::writer::tests::test_commit_before_upload_watchdog_fails_stale_background_upload ... ok
+test workspace_overlay::lifecycle::tests::recovery_aborts_pre_hash_journal_to_the_old_view ... ok
+test workspace_overlay::lifecycle::tests::fork_snapshot_discard_and_fast_forward_are_revision_checked ... ok
+test workspace_overlay::lifecycle::tests::recovery_skips_journals_with_a_live_workspace_lease ... ok
+test workspace_overlay::cache::tests::read_plan_cache_bounds_unique_ranges_and_preserves_invalidation ... ok
+test workspace_overlay::lifecycle::tests::recovery_completes_data_drained_and_hashed_journals_exactly_once ... ok
+test workspace_overlay::lifecycle::tests::seal_installs_a_flat_base_and_fences_the_old_view ... ok
+test workspace_overlay::meta_layer::tests::aligned_physical_slice_is_clipped_to_logical_eof ... ok
+test workspace_overlay::meta_layer::tests::create_unlink_recreate_and_rmdir_follow_effective_view ... ok
+test workspace_overlay::meta_layer::tests::locks_conflict_within_a_workspace_but_not_across_workspace_instances ... ok
+test workspace_overlay::meta_layer::tests::open_unlink_keeps_inode_alive_until_last_close ... ok
+test workspace_overlay::meta_layer::tests::concurrent_directory_creates_do_not_lose_parent_updates ... ok
+test workspace_overlay::meta_layer::tests::punch_hole_and_zero_range_replace_data_without_lower_byte_revival ... ok
+test workspace_overlay::gc::tests::deleting_ninety_nine_children_keeps_the_shared_base ... ok
+test workspace_overlay::meta_layer::tests::concurrent_open_before_final_close_keeps_unlinked_inode_alive ... ok
+test vfs::io::writer::tests::test_auto_flush_does_not_freeze_empty_slice ... ok
+test workspace_overlay::meta_layer::tests::final_close_before_concurrent_open_rejects_stale_inode ... ok
+test workspace_overlay::meta_layer::tests::rename_exchange_rejects_descendants ... ok
+test workspace_overlay::meta_layer::tests::rename_onto_same_inode_keeps_both_hard_links ... ok
+test workspace_overlay::meta_layer::tests::rename_exchange_and_hardlink_update_dentries_and_nlink_atomically ... ok
+test workspace_overlay::meta_layer::tests::setattr_timestamps_round_trip_as_nanoseconds ... ok
+test workspace_overlay::metrics::tests::metrics_are_feature_local_and_render_all_stable_names ... ok
+test workspace_overlay::model::revision_tests::external_revision_encoding_round_trips_exact_precondition ... ok
+test workspace_overlay::model::revision_tests::external_revision_rejects_layer_id_only ... ok
+test workspace_overlay::meta_layer::tests::statfs_rejects_unbounded_layer_scans_until_usage_counters_exist ... ok
+test workspace_overlay::stores::kv_store::tests::independent_kv_store_instances_use_backend_cas ... ok
+test workspace_overlay::stores::kv_store::tests::kv_catalog_round_trips_mutations_and_full_seal ... ok
+test workspace_overlay::stores::kv_store::tests::lease_heartbeat_and_allocators_do_not_cas_control ... ok
+test workspace_overlay::meta_layer::tests::stale_open_paths_do_not_allocate_a_handle_or_increment_open_count ... ok
+test workspace_overlay::stores::kv_store::tests::missing_snapshot_is_a_typed_point_lookup_without_scan ... ok
+test workspace_overlay::stores::kv_store::tests::named_lookup_and_layer_pair_loading_never_scan ... ok
+test workspace_overlay::stores::kv_store::tests::redis_backend_passes_distributed_catalog_contract ... ignored, requires BREWFS_TEST_REDIS_URL
+test workspace_overlay::stores::kv_store::tests::tikv_backend_passes_distributed_catalog_contract ... ignored, requires BREWFS_TEST_TIKV_PD_ENDPOINTS
+test workspace_overlay::meta_layer::tests::writes_build_read_plans_and_truncate_holes_prevent_data_revival ... ok
+test workspace_overlay::meta_layer::tests::symlink_setattr_and_xattr_mutations_round_trip ... ok
+test workspace_overlay::stores::tests::expired_lease_is_reaped_before_a_new_generation_mounts ... ok
+test workspace_overlay::stores::tests::guarded_extent_and_xattr_mutations_round_trip_with_store_sequences ... ok
+test workspace_overlay::meta_layer::tests::sibling_workspaces_share_the_base_but_isolate_namespace_and_data_changes ... ok
+test workspace_overlay::stores::tests::head_guard_fences_stale_epoch_and_generation_without_partial_writes ... ok
+test workspace_overlay::stores::tests::injected_failure_before_commit_rolls_back_the_entire_namespace_mutation ... ok
+test workspace_overlay::stores::tests::schema_initialization_is_idempotent_and_does_not_create_a_marker ... ok
+test workspace_overlay::stores::tests::lease_singleton_renewal_and_release_are_generation_fenced ... ok
+test workspace_overlay::stores::tikv::tests::pd_tso_physical_milliseconds_are_converted_to_nanoseconds ... ok
+test workspace_overlay::stores::tests::uploaded_orphan_is_persisted_as_an_unreachable_gc_layer ... ok
+test workspace_overlay::stores::tests::volume_root_creation_is_atomic_and_builds_a_valid_two_layer_chain ... ok
+test workspace_overlay::publish::diff::tests::diff_detects_rename_metadata_and_changed_data_ranges ... ok
+test workspace_overlay::stores::tests::workspace_allocators_are_monotonic_and_reject_unknown_names ... ok
+test workspace_overlay::stores::tests::independent_store_instances_serialize_concurrent_workspace_writers ... ok
+test vfs::fs::tests::io_tests::test_fs_close_releases_writer_and_inode ... ok
+test meta::stores::database::tests::sqlite_file_store_waits_for_transient_write_locks ... ok
+test vfs::fs::tests::io_tests::test_last_idle_write_handle_releases_writer_created_by_another_handle ... ok
+test meta::stores::database::tests::sqlite_file_store_serializes_size_updates_with_truncate ... ok
+test meta::stores::database::tests::sqlite_file_store_serializes_concurrent_writes ... ok
+test vfs::fs::tests::fsstress_013_native_tests::test_native_fsstress_013_inode_ops ... ok
+
+test result: ok. 962 passed; 0 failed; 221 ignored; 0 measured; 0 filtered out; finished in 25.71s
+
+=== CTRL-004: native clippy ===
+    Checking brewfs v0.1.2 (/mnt/d/code/brewfs/.claude/worktrees/vigorous-solomon-7caff5)
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> src/native_base/frozen/mod.rs:578:47
+    |
+578 |     fn lower_bound_data(&self, key: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, FrozenReadError> {
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: struct `ReadUnit` has a public `len` method, but no `is_empty` method
+  --> src/native_base/runtime/planner.rs:21:5
+   |
+21 |     pub fn len(&self) -> u64 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#len_without_is_empty
+   = note: `#[warn(clippy::len_without_is_empty)]` on by default
+
+warning: `brewfs` (lib) generated 2 warnings
+    Finished `dev` profile [unoptimized] target(s) in 32.92s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+=== CTRL-004 focused gate: ALL PASSED ===

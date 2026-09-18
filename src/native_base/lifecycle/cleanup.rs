@@ -21,7 +21,7 @@ use crate::native_base::write::domain::decode_domain;
 use crate::native_base::write::keys::Keys;
 use crate::native_base::write::store::{ControlStore, Txn};
 
-use super::index::{BuiltObjectIndex, open_object_index};
+use super::index::{BuiltObjectIndex, build_single_value_record, open_object_index};
 use super::{LifecycleError, LifecycleResult, map_conflict};
 
 /// Hard limits keep cleanup transactions and object-delete loops bounded.
@@ -120,7 +120,9 @@ pub struct CloseCommitRequest {
     pub final_retention_seq: u64,
     pub artifacts: CloseArtifacts,
     /// Reference to the separately persisted type-3 close-certificate
-    /// evidence object, copied into OwnershipDomain.close_ref.
+    /// evidence object, copied into OwnershipDomain.close_ref.  When present
+    /// it is an assertion that must hash-match the authoritative certificate;
+    /// when absent the authority derives the canonical reference itself.
     pub certificate_ref: Option<RootRef>,
     pub owner_terminal_proof_hash: Hash32,
     pub attempts_resolved: bool,
@@ -128,10 +130,65 @@ pub struct CloseCommitRequest {
     pub closed_at_ns: i64,
 }
 
+/// The canonical close-certificate evidence object: one type-3 single-value
+/// container holding the authoritative certificate record.
+///
+/// `close_ref` is the only durable pointer to the close evidence, so it must
+/// be reproducible from the KV certificate alone.  Rebuilding the container
+/// lets the authority (and every later reader) recompute the expected
+/// `full_hash`/`stored_digest` instead of trusting a copy.
+fn close_evidence_root(
+    volume_id: [u8; 16],
+    object_id: [u8; 16],
+    certificate: &DomainCloseCertificate,
+) -> LifecycleResult<RootRef> {
+    let record = ControlRecord::DomainCloseCertificate(certificate.clone()).encode();
+    let mut built = build_single_value_record(object_id, Vec::new(), record)?;
+    built.root.object.key = crate::native_base::write::receipts::object_key(
+        &volume_id,
+        "frozen",
+        &object_id,
+        &built.root.object.full_hash,
+    );
+    Ok(built.root)
+}
+
+/// Resolve the close evidence root for a certificate.
+///
+/// A caller-supplied reference is verified against the canonical container
+/// derived from the authoritative certificate: a copy whose object id or
+/// content hash disagrees is rejected before anything is written, so a close
+/// can never publish an evidence pointer that does not describe the
+/// certificate in the KV authority.
+fn resolve_certificate_root(
+    volume_id: [u8; 16],
+    supplied: &Option<RootRef>,
+    certificate: &DomainCloseCertificate,
+) -> LifecycleResult<RootRef> {
+    let derived = match supplied {
+        Some(supplied) => {
+            let derived = close_evidence_root(volume_id, supplied.object.object_id, certificate)?;
+            if derived != *supplied {
+                return Err(LifecycleError::Durability(
+                    "close copy hash disagrees with the authoritative KV certificate".into(),
+                ));
+            }
+            derived
+        }
+        None => {
+            let object_id = *uuid::Uuid::now_v7().as_bytes();
+            close_evidence_root(volume_id, object_id, certificate)?
+        }
+    };
+    Ok(derived)
+}
+
 fn validate_certificate_root(root: &Option<RootRef>) -> LifecycleResult<()> {
-    let root = root.as_ref().ok_or_else(|| {
-        LifecycleError::Durability("close certificate evidence root is required".into())
-    })?;
+    let Some(root) = root.as_ref() else {
+        // The authority derives the canonical evidence root itself when the
+        // caller has not published a copy yet.
+        return Ok(());
+    };
     if root.object.kind != 3 || root.address.page_kind != PageKind::GenericKeyValue {
         return Err(LifecycleError::Record(
             "certificate_ref must be a type-3 single-value root".into(),
@@ -504,6 +561,11 @@ pub async fn close_domain_commit(
         operations_drained: request.operations_drained,
         closed_at_ns: request.closed_at_ns,
     };
+    // Fix the evidence pointer from the authoritative certificate before any
+    // write: a caller-supplied copy that does not hash-match is rejected here,
+    // so no close ever publishes a pointer that disagrees with the KV record.
+    let certificate_ref =
+        resolve_certificate_root(keys.volume_id(), &request.certificate_ref, &certificate)?;
     let certificate_key = keys.close_certificate(&request.domain_id);
     if let Some(existing_bytes) = store.get(&certificate_key).await? {
         let existing = match ControlRecord::decode(&existing_bytes)? {
@@ -524,7 +586,7 @@ pub async fn close_domain_commit(
 
     let mut closed = domain.clone();
     closed.state = DomainState::Closed;
-    closed.close_ref = request.certificate_ref.clone();
+    closed.close_ref = Some(certificate_ref);
     closed.entity_version = closed
         .entity_version
         .checked_add(1)
@@ -1047,6 +1109,20 @@ async fn load_cleanup_authority(
     {
         return Err(LifecycleError::Durability(
             "cleanup plan no longer matches the fixed close certificate".into(),
+        ));
+    }
+    // The plan carries the published close copy.  Rebuild the canonical
+    // container from the authoritative KV certificate and require an exact
+    // hash-level match: a swapped/rolled-back certificate stops cleanup
+    // before any delete instead of silently cleaning under stale evidence.
+    let rebuilt = close_evidence_root(
+        keys.volume_id(),
+        plan.close_ref.object.object_id,
+        &certificate,
+    )?;
+    if rebuilt != plan.close_ref {
+        return Err(LifecycleError::Durability(
+            "close copy hash disagrees with the authoritative KV certificate".into(),
         ));
     }
     let domain_key = keys.domain(&plan.domain_id);
@@ -1652,6 +1728,43 @@ mod tests {
         domain_id: [u8; 16],
         objects: &[ObjectRef],
     ) -> CloseArtifacts {
+        seed_draining_domain(store, keys, domain_id, objects).await;
+        let artifacts = CloseArtifacts {
+            inventory: (!objects.is_empty()).then(|| object_index(objects, 221)),
+            retention_batches: Vec::new(),
+            retained_union: None,
+            control_evidence: None,
+        };
+        close_domain_commit(
+            store,
+            keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: objects.len() as u64,
+                final_retention_seq: 0,
+                artifacts: artifacts.clone(),
+                certificate_ref: None,
+                owner_terminal_proof_hash: [225; 32],
+                attempts_resolved: true,
+                operations_drained: true,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap();
+        artifacts
+    }
+
+    /// Seed a domain with `objects` registered and an admitted drain
+    /// boundary, leaving it DRAINING and ready for a close commit.
+    async fn seed_draining_domain(
+        store: &MemoryControlStore,
+        keys: &Keys,
+        domain_id: [u8; 16],
+        objects: &[ObjectRef],
+    ) {
         let mut seeded_domain = domain(keys.volume_id(), domain_id);
         seeded_domain.inventory_seq = objects.len() as u64;
         put(
@@ -1686,32 +1799,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(draining.state, DomainState::Draining);
-        let artifacts = CloseArtifacts {
-            inventory: (!objects.is_empty()).then(|| object_index(objects, 221)),
-            retention_batches: Vec::new(),
-            retained_union: None,
-            control_evidence: None,
-        };
-        close_domain_commit(
-            store,
-            keys,
-            &CloseCommitRequest {
-                domain_id,
-                expected_owner_generation: 7,
-                close_generation: 1,
-                final_inventory_seq: objects.len() as u64,
-                final_retention_seq: 0,
-                artifacts: artifacts.clone(),
-                certificate_ref: Some(certificate_root(224)),
-                owner_terminal_proof_hash: [225; 32],
-                attempts_resolved: true,
-                operations_drained: true,
-                closed_at_ns: 1,
-            },
-        )
-        .await
-        .unwrap();
-        artifacts
     }
 
     async fn read_domain(
@@ -1791,6 +1878,126 @@ mod tests {
         );
     }
 
+    /// CTRL-004: a published close copy that does not hash-match the
+    /// authoritative KV certificate stops the close before any write.
+    #[tokio::test]
+    async fn ctrl_004_close_copy_hash_mismatch_is_rejected_before_write() {
+        let volume = [71; 16];
+        let domain_id = [72; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let doomed = object(73, "private/ctrl004");
+        seed_draining_domain(&store, &keys, domain_id, std::slice::from_ref(&doomed)).await;
+
+        let request = CloseCommitRequest {
+            domain_id,
+            expected_owner_generation: 7,
+            close_generation: 1,
+            final_inventory_seq: 1,
+            final_retention_seq: 0,
+            artifacts: CloseArtifacts {
+                inventory: Some(object_index(std::slice::from_ref(&doomed), 221)),
+                retention_batches: Vec::new(),
+                retained_union: None,
+                control_evidence: None,
+            },
+            certificate_ref: Some(certificate_root(224)),
+            owner_terminal_proof_hash: [225; 32],
+            attempts_resolved: true,
+            operations_drained: true,
+            closed_at_ns: 1,
+        };
+        let error = close_domain_commit(&store, &keys, &request)
+            .await
+            .expect_err("a mismatched close copy must be rejected");
+        assert!(matches!(error, LifecycleError::Durability(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("disagrees with the authoritative KV certificate")
+        );
+
+        // Nothing was published: the domain is still Draining and the
+        // authority holds no certificate row.
+        assert_eq!(
+            read_domain(&store, &keys, &domain_id).await.state,
+            DomainState::Draining
+        );
+        assert!(
+            store
+                .get(&keys.close_certificate(&domain_id))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// CTRL-004: after a valid close, replacing the authoritative KV
+    /// certificate stops cleanup before a single delete.
+    #[tokio::test]
+    async fn ctrl_004_authority_swap_after_plan_stops_cleanup() {
+        let volume = [81; 16];
+        let domain_id = [82; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let doomed = object(83, "private/ctrl004-swap");
+        let artifacts =
+            seed_closed_domain(&store, &keys, domain_id, std::slice::from_ref(&doomed)).await;
+
+        // The authority-derived pointer is exactly the canonical container of
+        // the KV certificate that was just written.
+        let certificate_bytes = store
+            .get(&keys.close_certificate(&domain_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let certificate = match ControlRecord::decode(&certificate_bytes).unwrap() {
+            ControlRecord::DomainCloseCertificate(certificate) => certificate,
+            other => panic!("unexpected close certificate record: {other:?}"),
+        };
+        let close_ref = read_domain(&store, &keys, &domain_id)
+            .await
+            .close_ref
+            .expect("a closed domain must hold its close evidence root");
+        assert_eq!(
+            close_ref,
+            close_evidence_root(keys.volume_id(), close_ref.object.object_id, &certificate)
+                .unwrap()
+        );
+
+        let plan = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+
+        // Roll the KV authority forward with different evidence.
+        let mut tampered = certificate;
+        tampered.closed_at_ns += 1;
+        store
+            .run(Txn::new().put(
+                keys.close_certificate(&domain_id),
+                ControlRecord::DomainCloseCertificate(tampered).encode(),
+            ))
+            .await
+            .unwrap();
+
+        let deleter = FakeDeleter::default();
+        let error = apply_private_cleanup(
+            &store,
+            &keys,
+            &deleter,
+            &apply_request(plan, [84; 16], 0, 85),
+        )
+        .await
+        .expect_err("a rolled-forward authority must stop cleanup");
+        assert!(matches!(error, LifecycleError::Durability(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("disagrees with the authoritative KV certificate")
+        );
+        assert!(deleter.deleted.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn close_freezes_domain_and_cleanup_protects_retained_object() {
         let volume = [1; 16];
@@ -1865,7 +2072,7 @@ mod tests {
                 final_inventory_seq: inventory_objects.len() as u64,
                 final_retention_seq: 1,
                 artifacts: artifacts.clone(),
-                certificate_ref: Some(certificate_root(24)),
+                certificate_ref: None,
                 owner_terminal_proof_hash: [25; 32],
                 attempts_resolved: true,
                 operations_drained: true,
@@ -2039,7 +2246,7 @@ mod tests {
                     retained_union: None,
                     control_evidence: None,
                 },
-                certificate_ref: Some(certificate_root(65)),
+                certificate_ref: None,
                 owner_terminal_proof_hash: [66; 32],
                 attempts_resolved: true,
                 operations_drained: true,
@@ -2114,7 +2321,7 @@ mod tests {
                     retained_union: None,
                     control_evidence: None,
                 },
-                certificate_ref: Some(certificate_root(71)),
+                certificate_ref: None,
                 owner_terminal_proof_hash: [72; 32],
                 attempts_resolved: false,
                 operations_drained: true,
@@ -2223,7 +2430,7 @@ mod tests {
                 final_inventory_seq: inventory.len() as u64,
                 final_retention_seq: 2,
                 artifacts: artifacts.clone(),
-                certificate_ref: Some(certificate_root(87)),
+                certificate_ref: None,
                 owner_terminal_proof_hash: [88; 32],
                 attempts_resolved: true,
                 operations_drained: true,

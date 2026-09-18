@@ -464,6 +464,8 @@ registration、连续 RetentionReceipt 和认证索引根；未知 attempt 会�
 | PR06B-CLIPPY | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace` | 0 | PASS（无 PR06B 新警告；仅 feature 组合下存量 `CacheTtl` warning 已知） | 同上 |
 | PR06B-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS（提交后工作树仅保留用户 `.claude/`） | 本报告更新前复核 |
 | PR06C-CTRL003 | `bash doc/native-base/logs/pr06c-ctrl003.sh` | 0 | PASS（lifecycle 22 passed/0 failed；native lib 960 passed, 221 ignored, 0 failed；clippy 无新增 warning）：空域不构造 RetainBatch、空对象索引不可构建、close 证书三个可选 root 均为 `None`、对空集携带 artifact 与非空集缺失 artifact 均报错 | [pr06c-ctrl003.log](logs/pr06c-ctrl003.log) |
+| PR06D-CTRL004 | `bash doc/native-base/logs/pr06d-ctrl004.sh` | 0 | PASS（ctrl_004 2 passed/0 failed；lifecycle 24 passed/0 failed；native lib 962 passed, 221 ignored, 0 failed；clippy 无新增 warning）：close 副本 hash 与权威 KV 证书不一致时拒绝写入；权威证书被置换时删除前停删 | [pr06d-ctrl004.log](logs/pr06d-ctrl004.log) |
+| PR06D-CI-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（fmt、workspace check/build、feature checks、workspace lib+bins 907+726 passed/0 failed、clippy 全 `exit=0`） | [pr06d-ci-gate.log](logs/pr06d-ci-gate.log) |
 
 补充（PR06C）：CTRL-003 的空域语义已在组件级闭环。`build_retain_batch` 拒绝
 空候选集，`build_object_index` 拒绝空对象列表，close 证书的 `inventory` /
@@ -471,10 +473,24 @@ registration、连续 RetentionReceipt 和认证索引根；未知 attempt 会�
 （`option_tag` 只写 1 字节标签，不会产生零长度 `RootRef`），
 `require_optional_artifact` 对"空集带 artifact"与"非空集缺 artifact"都报错。
 
+补充（PR06D）：CTRL-004 的副本/权威一致性已在组件级闭环。
+`build_single_value_record` 按 `(object_id, key, record_bytes)` 生成规范的 type-3
+单值容器，因此 close 证据对象可被任意一方重算并与权威证书比对：
+
+- close 阶段：`close_domain_commit` 从权威证书重建规范副本，要求调用方提供的
+  `certificate_ref` 完全相等（`full_hash` / `stored_digest` / `object_len` /
+  `key` / 页地址）；不一致直接返回 `Durability` 错误，且不写证书行、不改域状态
+  （域仍为 `Draining`）。未提供副本时由权威派生，`close_ref` 永不为 `None`。
+- cleanup 阶段：`load_cleanup_authority` 在任何删除前用 KV 权威证书重建副本并
+  要求等于 `plan.close_ref`；权威证书被置换/回滚时立即停删并报
+  authority/evidence 错误，deleter 不会收到一次调用。
+
 聚焦反例覆盖：publish-before-close 与 close-before-publish、UNKNOWN/quarantine、
 lease 不足、多个 RetainBatch 并集、I/K/C 精确差集、证据缺失与 authority
 rollback retain-all、版本化/ObjectLock 能力拒绝、两个 cleaner 竞争、部分删除
-重试与 CLEANED 后 retained 可读。验收矩阵从 65 项 PASS 增至 80 项 PASS。
+重试与 CLEANED 后 retained 可读；PR06C 追加空域 `Option::None` 语义，PR06D
+追加 close 副本与权威 KV 证书的 hash 一致性（close 拒绝写入 + cleanup 停删）。
+验收矩阵从 65 项 PASS 增至 80 项 PASS，PR06C/PR06D 后为 97 项 PASS。
 
 仍如实保留的范围：cleanup 目前在内存 `ControlStore`/故障注入 deleter 上验证，
 Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 runtime/FUSE
