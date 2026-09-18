@@ -1239,8 +1239,8 @@
     "expected": "旧PublishedRevision保留事实不撤销",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07j-retention-locality.sh (exit 0; native_base::lifecycle:: 32 passed/0 failed): replacing_the_latest_alias_keeps_the_old_published_revision —— native 模型里 \"latest/alias\" 是 workspace 的 head+view 指针。fork 出 workspace（base 指向旧 PublishedRevision）后，新 revision 经 fast_forward 接管 base 指针（advanced.view.base.manifest.full_hash == newer.storage_view_id）；随后删除 head/view（alias 消失），两条 PublishedRevision 行仍逐字节不变，decode 后 retention_policy 均为 Forever、storage_view_id/publication_id 各自保持——取代与删除 alias 都不撤销旧 revision 的保存事实。log: doc/native-base/logs/pr07j-retention-locality.log"
   },
   {
     "test_id": "RET-003",
@@ -1437,8 +1437,8 @@
     "expected": "私有cleaner不扫描全局历史基线",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07j-retention-locality.sh (exit 0; native_base::lifecycle:: 32 passed/0 failed): cleanup_never_scans_the_published_history —— 先写入 100 组无关 workspace 的 fork_base/head/writer_lease 与 100 条 PublishedRevision（共 400 行），再用 RecordingStore 审计 plan_private_cleanup 的全部控制面触达：writes 为空（计划是只读的），scans 恰好只有 keys.objects_prefix(domain) 一项，gets 去重后恰好是 close_certificate(domain) 与 domain(domain) 两条，且没有任何键落在 pub/ 前缀——私有 cleaner 不扫描全局历史基线。log: doc/native-base/logs/pr07j-retention-locality.log"
   },
   {
     "test_id": "RET-021",
@@ -1536,8 +1536,8 @@
     "expected": "Busy或有deadline排空，不提前删私有数据",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07j-retention-locality.sh (exit 0; native_base::lifecycle:: 32 passed/0 failed): an_open_operation_blocks_the_close_before_any_private_delete —— discard 期间域内仍有 open operation 时close_domain_commit 返回 Durability（domain still has outstanding attempts or operations）且域停在 Draining；即使 open_operations=0，缺少 terminal drain proof（operations_drained=false）同样被 Durability 拒绝（close certificate lacks terminal operation drain proof）；两种情况下都不存在 close 证书，plan_private_cleanup 返回 InvalidState，对象的 registration 仍是 Verified——不提前删私有数据。log: doc/native-base/logs/pr07j-retention-locality.log"
   },
   {
     "test_id": "CLN-008",
@@ -1866,8 +1866,8 @@
     "expected": "各域receipt.evidence_root可局部枚举属于自己的控制对象，不扫描全局PublishedRevision；证据不会被私有清理删除",
     "invariants": "INV-11;INV-18;INV-21",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07j-retention-locality.sh (exit 0; native_base::lifecycle:: 32 passed/0 failed): each_domain_receipt_enumerates_only_its_own_evidence —— 两个 origin 域各自 build_retain_batch 并取 receipt：receipt.evidence_root == 该域 batch.index.root，且只用本域 bytes 就能 open_object_index 精确枚举出本域对象（A 的枚举里不含 B 的对象、反之亦然），batch 自己的 index 对象不在 leaf 列表中（无 self-hash），receipt.verified_subset_digest 等于 retained_subset_digest(该域, 该域条目)——证据局部可枚举且绑定本域子集，不需要扫描全局 PublishedRevision。证据对象不被私有清理删除由同一日志内close_freezes_domain_and_cleanup_protects_retained_object 覆盖（control_evidence 中的 RetainBatch 根对象不在候选集）。log: doc/native-base/logs/pr07j-retention-locality.log"
   },
   {
     "test_id": "CLN-025",

@@ -36,12 +36,13 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07G | 读取摊薄与元数据专用路径：100 并发共享一次 fetch/decode、stat/readdir 不拉 data（OPT-002/OPT-004） | 完成（[pr07g-read-amortization.log](logs/pr07g-read-amortization.log)） |
 | 07H | 能力闭包：required_features 必须覆盖内容真实依赖，谎报一律拒绝（GATE-002/GATE-003） | 完成（[pr07h-feature-closure.log](logs/pr07h-feature-closure.log)） |
 | 07I | 私有清理判定与记账：ACTIVE 域无候选、冻结库存、丢失回包只释放一次、逐对象核对（CLN-001/004/014/015） | 完成（[pr07i-private-cleanup.log](logs/pr07i-private-cleanup.log)） |
+| 07J | 保留/清理局部性：drain 未完成不关闭、alias 删除不撤销旧版本、cleaner 不扫全局历史、证据局部可枚举（CLN-007/RET-002/020/023） | 完成（[pr07j-retention-locality.log](logs/pr07j-retention-locality.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-18）：173 项矩阵中 **119 PASS**、54
+当前验收进度（2026-09-18）：173 项矩阵中 **123 PASS**、50
 `SPECIFIED_NOT_IMPLEMENTED`（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
 真实 FUSE 挂载 + Redis/TiKV + S3 的 READ/WRITE/fsync 端到端集成、P2 Frozen

@@ -1523,10 +1523,13 @@ mod tests {
     use super::*;
     use crate::native_base::lifecycle::index::build_object_index;
     use crate::native_base::lifecycle::retention::build_retain_batch;
-    use crate::native_base::wire::bnct::{DomainKind, ObjectRegistration};
+    use crate::native_base::wire::bnct::{
+        DomainKind, ObjectRegistration, PublishedRevision, RetentionPolicy,
+    };
     use crate::native_base::wire::container::{Codec, ObjectKind};
     use crate::native_base::wire::refs::{PageAddress, RootRef};
     use crate::native_base::write::memory::MemoryControlStore;
+    use crate::native_base::write::store::StoreError;
 
     #[derive(Default)]
     struct FakeDeleter {
@@ -1594,6 +1597,54 @@ mod tests {
             } else {
                 PrivateDeleteResult::AlreadyAbsent
             })
+        }
+    }
+
+    /// Records every control-plane touch, so a test can assert what a code
+    /// path did *not* read. The cleanup planner's whole contract is that it
+    /// stays inside one domain's frozen inventory.
+    #[derive(Default)]
+    struct StoreAudit {
+        gets: Mutex<Vec<Vec<u8>>>,
+        scans: Mutex<Vec<Vec<u8>>>,
+        writes: Mutex<Vec<Vec<u8>>>,
+    }
+
+    struct RecordingStore {
+        inner: MemoryControlStore,
+        audit: Arc<StoreAudit>,
+    }
+
+    impl RecordingStore {
+        fn new() -> Self {
+            Self {
+                inner: MemoryControlStore::new(),
+                audit: Arc::new(StoreAudit::default()),
+            }
+        }
+
+        fn audit(&self) -> &StoreAudit {
+            &self.audit
+        }
+    }
+
+    #[async_trait]
+    impl ControlStore for RecordingStore {
+        async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.audit.gets.lock().unwrap().push(key.to_vec());
+            self.inner.get(key).await
+        }
+
+        async fn run(&self, txn: Txn) -> Result<(), StoreError> {
+            for (key, _) in &txn.writes {
+                self.audit.writes.lock().unwrap().push(key.clone());
+            }
+            self.inner.run(txn).await
+        }
+
+        async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+            self.audit.scans.lock().unwrap().push(prefix.to_vec());
+            self.inner.scan(prefix).await
         }
     }
 
@@ -1723,7 +1774,7 @@ mod tests {
     }
 
     async fn seed_closed_domain(
-        store: &MemoryControlStore,
+        store: &dyn ControlStore,
         keys: &Keys,
         domain_id: [u8; 16],
         objects: &[ObjectRef],
@@ -1760,7 +1811,7 @@ mod tests {
     /// Seed a domain with `objects` registered and an admitted drain
     /// boundary, leaving it DRAINING and ready for a close commit.
     async fn seed_draining_domain(
-        store: &MemoryControlStore,
+        store: &dyn ControlStore,
         keys: &Keys,
         domain_id: [u8; 16],
         objects: &[ObjectRef],
@@ -2308,6 +2359,214 @@ mod tests {
         );
     }
 
+    /// CLN-007: while a normal discard still has an open/read/decoder task,
+    /// the domain cannot freeze. The close refuses (no terminal drain proof,
+    /// and no CLOSED state), so no cleanup plan exists and the private data
+    /// is untouched - the objects stay Verified and the deleter is never
+    /// called.
+    #[tokio::test]
+    async fn an_open_operation_blocks_the_close_before_any_private_delete() {
+        let volume = [140; 16];
+        let domain_id = [141; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let busy = object(142, "private/still-open");
+        let objects = std::slice::from_ref(&busy);
+        seed_draining_domain(&store, &keys, domain_id, objects).await;
+
+        // A read/decoder task is still open inside the draining domain.
+        let mut open = read_domain(&store, &keys, &domain_id).await;
+        open.open_operations = 1;
+        store
+            .run(Txn::new().put(
+                keys.domain(&domain_id),
+                ControlRecord::OwnershipDomain(open).encode(),
+            ))
+            .await
+            .unwrap();
+
+        let error = close_domain_commit(
+            &store,
+            &keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: 1,
+                final_retention_seq: 0,
+                artifacts: CloseArtifacts {
+                    inventory: Some(object_index(objects, 143)),
+                    retention_batches: Vec::new(),
+                    retained_union: None,
+                    control_evidence: None,
+                },
+                certificate_ref: None,
+                owner_terminal_proof_hash: [144; 32],
+                attempts_resolved: true,
+                operations_drained: true,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, LifecycleError::Durability(_)), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("outstanding attempts or operations"),
+            "{error}"
+        );
+        assert_eq!(
+            read_domain(&store, &keys, &domain_id).await.state,
+            DomainState::Draining,
+            "the domain never reaches CLOSED"
+        );
+
+        // A missing drain proof is refused even with no open operation.
+        let mut drained = read_domain(&store, &keys, &domain_id).await;
+        drained.open_operations = 0;
+        store
+            .run(Txn::new().put(
+                keys.domain(&domain_id),
+                ControlRecord::OwnershipDomain(drained).encode(),
+            ))
+            .await
+            .unwrap();
+        let error = close_domain_commit(
+            &store,
+            &keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: 1,
+                final_retention_seq: 0,
+                artifacts: CloseArtifacts {
+                    inventory: Some(object_index(objects, 143)),
+                    retention_batches: Vec::new(),
+                    retained_union: None,
+                    control_evidence: None,
+                },
+                certificate_ref: None,
+                owner_terminal_proof_hash: [144; 32],
+                attempts_resolved: true,
+                operations_drained: false,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, LifecycleError::Durability(_)), "{error}");
+        assert!(error.to_string().contains("drain proof"), "{error}");
+
+        // No certificate exists, so there is no plan and nothing is deleted.
+        let artifacts = CloseArtifacts {
+            inventory: Some(object_index(objects, 143)),
+            retention_batches: Vec::new(),
+            retained_union: None,
+            control_evidence: None,
+        };
+        let error = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LifecycleError::InvalidState(_)), "{error}");
+        let registration = store
+            .get(&keys.object(&domain_id, &busy.object_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let ControlRecord::ObjectRegistration(registration) =
+            ControlRecord::decode(&registration).unwrap()
+        else {
+            panic!("object key holds another record kind");
+        };
+        assert_eq!(
+            registration.state,
+            RegistrationState::Verified,
+            "the private object was not touched"
+        );
+    }
+
+    /// RET-020: a hundred unrelated fork/PublishedRevision rows exist in the
+    /// store, and the cleanup plan still touches only the domain's own
+    /// certificate, domain row, and object prefix - no global history scan.
+    #[tokio::test]
+    async fn cleanup_never_scans_the_published_history() {
+        let volume = [150; 16];
+        let domain_id = [151; 16];
+        let keys = Keys::new(&volume);
+        let store = RecordingStore::new();
+        let doomed = object(152, "private/history-blind");
+        let objects = std::slice::from_ref(&doomed);
+        let artifacts = seed_closed_domain(&store, &keys, domain_id, objects).await;
+
+        // Unrelated history: other workspaces' forks, heads, leases, and a
+        // hundred permanently retained PublishedRevisions.
+        let mut seeds = Vec::new();
+        for i in 1..=100u8 {
+            seeds.push(keys.published_revision(&[i; 32]));
+            seeds.push(keys.writer_lease(&[i; 16]));
+            seeds.push(keys.head(&[i; 16]));
+            seeds.push(keys.fork_base(&[i; 16]));
+            let revision = PublishedRevision {
+                volume_id: keys.volume_id(),
+                storage_view_id: [i; 32],
+                logical_revision: [i; 32],
+                manifest: object(i, "published/manifest"),
+                publication_id: [i; 16],
+                retained_at_ns: i64::from(i),
+                retention_policy: RetentionPolicy::Forever,
+                evidence_root: certificate_root(i),
+            };
+            put(
+                &store,
+                keys.published_revision(&[i; 32]),
+                ControlRecord::PublishedRevision(revision).encode(),
+            )
+            .await;
+            put(&store, keys.writer_lease(&[i; 16]), vec![i; 8]).await;
+            put(&store, keys.head(&[i; 16]), vec![i; 8]).await;
+            put(&store, keys.fork_base(&[i; 16]), vec![i; 8]).await;
+        }
+        assert_eq!(seeds.len(), 400);
+
+        // Reset the audit so the assertion covers the planner alone.
+        store.audit().gets.lock().unwrap().clear();
+        store.audit().scans.lock().unwrap().clear();
+        store.audit().writes.lock().unwrap().clear();
+
+        let plan = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+        assert_eq!(plan.candidate_objects, vec![doomed.clone()]);
+        assert_eq!(plan.total_batches, 1);
+
+        let audit = store.audit();
+        let gets = audit.gets.lock().unwrap().clone();
+        let scans = audit.scans.lock().unwrap().clone();
+        assert!(
+            audit.writes.lock().unwrap().is_empty(),
+            "a plan is read-only"
+        );
+        assert_eq!(
+            scans,
+            vec![keys.objects_prefix(&domain_id)],
+            "the only scan is this domain's object prefix"
+        );
+        let mut allowed = vec![keys.close_certificate(&domain_id), keys.domain(&domain_id)];
+        allowed.sort();
+        let mut seen = gets.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen, allowed, "only the domain's own authority rows");
+        assert!(
+            !gets
+                .iter()
+                .any(|key| key.windows(4).any(|window| window == b"pub/")),
+            "no PublishedRevision row is read"
+        );
+    }
+
     #[test]
     fn cleanup_batches_are_bounded() {
         assert_eq!(CleanupPlan::batch_count(0), 0);
@@ -2745,8 +3004,13 @@ mod tests {
         let keys = Keys::new(&volume);
         let store = Arc::new(MemoryControlStore::new());
         let doomed = object(103, "private/raced");
-        let artifacts =
-            seed_closed_domain(&store, &keys, domain_id, std::slice::from_ref(&doomed)).await;
+        let artifacts = seed_closed_domain(
+            store.as_ref(),
+            &keys,
+            domain_id,
+            std::slice::from_ref(&doomed),
+        )
+        .await;
         let plan = plan_private_cleanup(store.as_ref(), &keys, &domain_id, &artifacts)
             .await
             .unwrap();

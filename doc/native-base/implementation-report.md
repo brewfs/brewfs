@@ -744,6 +744,39 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 仍待补；CLN-022/023 属 repack/变体记账，见 PR12 相关条目。
 
 
+### PR07J · 保留/清理局部性（CLN-007/RET-002/RET-020/RET-023）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。这一组把"cleaner 只在自己的域内
+工作"和"永久保留不因 alias 消失而撤销"钉成可执行断言：
+
+- `CLN-007`：discard 期间域内仍有 open operation 时 close 被 `Durability` 拒绝且域停在
+  Draining；缺少 terminal drain proof 同样被拒。没有 close 证书就没有 plan，
+  私有对象保持 `Verified`。
+- `RET-002`：新 revision 经 `fast_forward` 接管 workspace base 指针后，删除 head/view
+  （native 模型中的 alias）不改变任何一条 PublishedRevision 行：两条都逐字节不变且
+  仍是 `Forever`。
+- `RET-020`：新增 `RecordingStore` 审计夹具。在 400 行无关 fork/head/lease/PublishedRevision
+  存在时，`plan_private_cleanup` 的触达恰好是 `close_certificate(domain)`、
+  `domain(domain)` 两次 get 与 `objects_prefix(domain)` 一次 scan，零写入、零 `pub/` 读取。
+- `RET-023`：两个 origin 域的 receipt.evidence_root 各自等于本域 RetainBatch 根，
+  只用本域字节即可枚举本域对象，不含对方的对象，也不含自身索引对象；verified_subset_digest
+  绑定本域子集。证据对象不被删除由同一日志内的
+  `close_freezes_domain_and_cleanup_protects_retained_object` 覆盖。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07J-FOCUSED | `bash doc/native-base/logs/pr07j-retention-locality.sh` | 0 | PASS（native_base::lifecycle:: 32 passed/0 failed） | [pr07j-retention-locality.log](logs/pr07j-retention-locality.log) |
+| PR07J-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07J-CLN007 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::` | 0 | PASS：`an_open_operation_blocks_the_close_before_any_private_delete` | 同上 |
+| PR07J-RET002 | 同上 | 0 | PASS：`replacing_the_latest_alias_keeps_the_old_published_revision` | 同上 |
+| PR07J-RET020 | 同上 | 0 | PASS：`cleanup_never_scans_the_published_history` | 同上 |
+| PR07J-RET023 | 同上 | 0 | PASS：`each_domain_receipt_enumerates_only_its_own_evidence` | 同上 |
+
+范围说明（不虚标）：native 模型没有旧版 `latest`/`alias` KV 行，RET-002 的
+"latest/alias" 落在 workspace 的 head+view 指针上，测试以删除该指针模拟 alias
+消失；CLN-022/023 的 repack 记账仍待 PR12 侧补齐。
+
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

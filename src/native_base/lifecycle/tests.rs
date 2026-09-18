@@ -9,9 +9,11 @@ use super::manifest::{KvNamespace, SnapshotManifest, open_manifest};
 use super::options::{LegacyRetentionOptions, reject_legacy_retention_options};
 use super::publish::{
     DomainRetentionInput, PublicationOutcome, PublicationRequest, abort_publication,
-    complete_publication, publish_candidate,
+    complete_publication, decode_published_revision, publish_candidate,
 };
-use super::retention::{CandidateClosure, ObjectOrigin, build_retain_batch, prepare_retention};
+use super::retention::{
+    CandidateClosure, ObjectOrigin, build_retain_batch, prepare_retention, retained_subset_digest,
+};
 use super::seal::{
     DrainPlanBatch, RecoveryAction, RemoteDurability, begin_seal, commit_drain_batch,
     drain_plan_digest, finish_data_drain, mark_candidate_verified, mark_retention_prepared,
@@ -1125,6 +1127,220 @@ async fn one_hundred_forks_are_control_records_and_modified_target_will_not_fast
             .await
             .unwrap(),
         advanced
+    );
+}
+
+/// RET-002: a newer PublishedRevision takes over the workspace's base
+/// pointer, and the superseded revision keeps its facts. Removing the alias
+/// (the head/view pointer) cannot revoke the permanently retained revision
+/// rows - they are separate control records, not sub-keys of the alias.
+///
+/// In the native model "latest/alias" is the workspace head + view pointer;
+/// there is no legacy `latest`/`alias` KV row.
+#[tokio::test]
+async fn replacing_the_latest_alias_keeps_the_old_published_revision() {
+    let store = MemoryControlStore::new();
+    let volume = [90; 16];
+    let keys = Keys::new(&volume);
+
+    let mut old_manifest = object(91, 4, "manifest/old");
+    old_manifest.full_hash = [92; 32];
+    let old = PublishedRevision {
+        volume_id: volume,
+        storage_view_id: [92; 32],
+        logical_revision: [93; 32],
+        manifest: old_manifest,
+        publication_id: [94; 16],
+        retained_at_ns: 1,
+        retention_policy: RetentionPolicy::Forever,
+        evidence_root: root(95),
+    };
+    put(
+        &store,
+        keys.published_revision(&old.storage_view_id),
+        ControlRecord::PublishedRevision(old.clone()).encode(),
+    )
+    .await;
+
+    let forked = fork_from_published(
+        &store,
+        &keys,
+        &ForkRequest {
+            operation_id: [96; 16],
+            workspace_id: [97; 16],
+            owner_id: [98; 16],
+            owner_generation: 1,
+            new_head_id: [99; 16],
+            new_domain_id: [100; 16],
+            namespace_id: [101; 16],
+            source: old.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(forked.view.base.manifest.full_hash, old.storage_view_id);
+
+    let mut new_manifest = object(102, 4, "manifest/new");
+    new_manifest.full_hash = [103; 32];
+    let newer = PublishedRevision {
+        storage_view_id: [103; 32],
+        logical_revision: [104; 32],
+        manifest: new_manifest,
+        publication_id: [105; 16],
+        retained_at_ns: 2,
+        ..old.clone()
+    };
+    put(
+        &store,
+        keys.published_revision(&newer.storage_view_id),
+        ControlRecord::PublishedRevision(newer.clone()).encode(),
+    )
+    .await;
+
+    let advanced = fast_forward(
+        &store,
+        &keys,
+        &FastForwardRequest {
+            operation_id: [106; 16],
+            workspace_id: forked.workspace_id,
+            expected_head: forked.head.clone(),
+            expected_view: forked.view.clone(),
+            expected_fork_base: forked.view.base.clone(),
+            source: newer.clone(),
+            new_head_id: [107; 16],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        advanced.view.base.manifest.full_hash, newer.storage_view_id,
+        "the workspace now aliases the newer revision"
+    );
+    assert_eq!(advanced.view.base.logical_revision, newer.logical_revision);
+
+    let old_bytes = store
+        .get(&keys.published_revision(&old.storage_view_id))
+        .await
+        .unwrap()
+        .unwrap();
+    let new_bytes = store
+        .get(&keys.published_revision(&newer.storage_view_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(old_bytes, new_bytes);
+
+    // The alias disappears (the workspace is unbound); the revision facts
+    // must survive byte for byte.
+    store
+        .run(
+            Txn::new()
+                .delete(keys.head(&forked.workspace_id))
+                .delete(keys.workspace_view(&forked.workspace_id)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get(&keys.head(&forked.workspace_id)).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .get(&keys.published_revision(&old.storage_view_id))
+            .await
+            .unwrap()
+            .unwrap(),
+        old_bytes,
+        "the superseded revision is not deleted or rewritten"
+    );
+    assert_eq!(
+        store
+            .get(&keys.published_revision(&newer.storage_view_id))
+            .await
+            .unwrap()
+            .unwrap(),
+        new_bytes
+    );
+    let decoded_old = decode_published_revision(&old_bytes).unwrap();
+    let decoded_new = decode_published_revision(&new_bytes).unwrap();
+    assert_eq!(decoded_old, old);
+    assert_eq!(decoded_new, newer);
+    assert_eq!(decoded_old.retention_policy, RetentionPolicy::Forever);
+    assert_eq!(decoded_new.retention_policy, RetentionPolicy::Forever);
+    assert_ne!(decoded_old.storage_view_id, decoded_new.storage_view_id);
+    assert_ne!(decoded_old.publication_id, decoded_new.publication_id);
+}
+
+/// RET-023: each origin domain gets its own RetainBatch, and its receipt's
+/// evidence root enumerates exactly the objects that domain retained. No
+/// global PublishedRevision scan is involved, and one domain's evidence
+/// never exposes the other domain's control objects. The evidence root
+/// object itself is never inside its own list (no self-hash).
+#[test]
+fn each_domain_receipt_enumerates_only_its_own_evidence() {
+    let domain_a = [110; 16];
+    let domain_b = [111; 16];
+    let a_objects = vec![object(112, 6, "a/one"), object(113, 6, "a/two")];
+    let b_objects = vec![object(114, 6, "b/one")];
+
+    let a_batch =
+        build_retain_batch(domain_a, &a_objects, [115; 16], b"retain/a".to_vec()).unwrap();
+    let b_batch =
+        build_retain_batch(domain_b, &b_objects, [116; 16], b"retain/b".to_vec()).unwrap();
+    let a_receipt = a_batch.receipt(1, [117; 16], [118; 32]);
+    let b_receipt = b_batch.receipt(1, [119; 16], [120; 32]);
+
+    assert_eq!(a_receipt.domain_id, domain_a);
+    assert_eq!(b_receipt.domain_id, domain_b);
+    assert_eq!(a_receipt.evidence_root, a_batch.index.root);
+    assert_eq!(b_receipt.evidence_root, b_batch.index.root);
+    assert_ne!(a_receipt.evidence_root, b_receipt.evidence_root);
+    assert_eq!(a_receipt.retained_objects, a_batch.index.root);
+    assert_eq!(b_receipt.retained_objects, b_batch.index.root);
+
+    // Every receipt is enumerable from its domain-local batch bytes alone.
+    let a_entries = open_object_index(&a_receipt.evidence_root, &a_batch.index.bytes).unwrap();
+    let b_entries = open_object_index(&b_receipt.evidence_root, &b_batch.index.bytes).unwrap();
+    assert_eq!(a_entries, a_objects);
+    assert_eq!(b_entries, b_objects);
+    assert!(
+        a_entries
+            .iter()
+            .all(|object| !b_objects.iter().any(|other| other == object)),
+        "domain A's evidence never exposes domain B's objects"
+    );
+    assert!(
+        b_entries
+            .iter()
+            .all(|object| !a_objects.iter().any(|other| other == object)),
+        "domain B's evidence never exposes domain A's objects"
+    );
+
+    // The index container is protected by the receipt's outer RootRef; it is
+    // deliberately absent from its own leaf list.
+    for batch in [&a_batch, &b_batch] {
+        assert!(
+            batch
+                .index
+                .entries
+                .iter()
+                .all(|object| object.object_id != batch.index.root.object.object_id),
+            "a RetainBatch never lists its own index object"
+        );
+    }
+
+    // The receipt's verified digest binds exactly this domain's subset.
+    assert_eq!(
+        a_receipt.verified_subset_digest,
+        retained_subset_digest(&domain_a, &a_entries)
+    );
+    assert_eq!(
+        b_receipt.verified_subset_digest,
+        retained_subset_digest(&domain_b, &b_entries)
+    );
+    assert_ne!(
+        a_receipt.verified_subset_digest,
+        b_receipt.verified_subset_digest
     );
 }
 
