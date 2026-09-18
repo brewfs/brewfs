@@ -572,6 +572,40 @@ required_features 拒绝、namespace 路径逃逸拒绝、create-only 幂等性�
 个场景逐字节验证，但没有真实 FUSE/Redis/TiKV/S3 参与，因此这些条目在验收矩阵
 中保持 `SPECIFIED_NOT_IMPLEMENTED`，待接入真实后端后补测。
 
+### PR07D · 发布/准入门：不可发布配置的明确拒绝
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。实现分布：
+
+- `src/config.rs`：`NativeBaseFileConfig::validate_p1` 是 native 卷的配置准入门
+  （release_profile / format_version / namespace_mode / packing / reader /
+  cache / prefetch / durability / retention / cleanup / repack / limits），
+  配合 `#[serde(deny_unknown_fields)]` 让旧选项与隐藏开关直接失败关闭。
+- `src/native_base/lifecycle/options.rs`：`reject_legacy_retention_options`
+  对 `retention_ttl_seconds` / `published_gc` / `read_retention_leases`
+  返回 `InvalidState`。
+- `src/native_base/lifecycle/seal.rs`：`mark_candidate_verified` 在
+  `contains_new_remote_writes=true` 时拒绝 `RemoteDurability::NoopTestBarrier`。
+- `src/native_base/lifecycle/cleanup.rs`：`CleanupCapabilities::validate`
+  要求已验证的 unversioned / 未上锁 delete 能力（私有清理准入）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07D-FOCUSED | `bash doc/native-base/logs/pr07d-admission-gates.sh` | 0 | PASS（config::tests::native 7 passed/0 failed；bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed；retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed） | [pr07d-admission-gates.log](logs/pr07d-admission-gates.log) |
+| PR07D-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07D-WRITE013 | `cargo test -p brewfs --bins config::tests::native` | 0 | PASS：`native_volume_rejects_commit_before_upload_even_for_s3` —— 即使 `data.backend=s3`，native 卷的 `cache.writeback_mode=commit_before_upload` 在挂载配置校验即被拒 | 同上 |
+| PR07D-GATE001 | 同上 | 0 | PASS：`native_release_profile_gate_admits_only_the_shipped_p1_profiles` —— 未发布 profile 被拒；`p1-retained-trial` 打开 cleanup 被拒；limits 层级不一致被拒；合法 retained-trial 配置仍可解析 | 同上 |
+| PR07D-GATE004 | 同上 + `cargo test -p brewfs --features native-packed-base --lib native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers` | 0 | PASS：`native_durability_profile_must_be_an_explicit_verified_contract` 覆盖 4 类非 verified 耐久性声明；发布路径对 Noop barrier 返回 Durability 错误 | 同上 |
+| PR07D-RET021 | 同上 + `cargo test -p brewfs --features native-packed-base --lib native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring` | 0 | PASS：`native_retention_rejects_retired_ttl_gc_and_lease_options` 证明 `published_gc`/`read_retention_leases`/`retention_ttl_seconds` 均失败关闭 | 同上 |
+| PR07D-CLN024 | `cargo test -p brewfs --bins config::tests::native` | 0 | PASS：`native_cleanup_rejects_purge_force_and_age_rules` —— `purge`/`force`/`by-age` 与隐藏的 `by_age_days` 字段全部被拒 | 同上 |
+
+反例覆盖要点：这一组不是"实现了功能"而是"拒绝了未实现的功能"，因此每项都必须
+证明拒绝确实发生且不可绕过——`deny_unknown_fields` 让隐藏开关变成硬错误，
+`validate_p1` 让品牌式耐久性声明（`trust-the-brand`）与 Noop barrier 无法蒙混，
+cleanup 只接受 close 证书 + 已验证 unversioned delete 能力。
+
+仍如实 NOT_RUN：GATE-002/GATE-003 需要的 `required_features` 依赖闭包汇总尚未实现
+（当前只拒绝未知位与运行时不支持的位）；真实后端 durability 仍需 compose 环境实测。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -359,8 +359,8 @@
     "expected": "启动/配置明确拒绝",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_volume_rejects_commit_before_upload_even_for_s3 —— 即使 data.backend=s3，workspace-native-v2 卷在 cache.writeback_mode=commit_before_upload 时于挂载配置校验即被拒（requires cache.writeback_mode=upload_before_commit），与 native_base.durability.write_mode 必须为 upload-before-commit 构成双门；没有任何绕过开关。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "KV-001",
@@ -1184,8 +1184,8 @@
     "expected": "cleanup disabled和容量限制，不冒称完整P1私有清理",
     "invariants": "INV-20",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_release_profile_gate_admits_only_the_shipped_p1_profiles —— release_profile=p2-frozen-read 被拒（unsupported native_base.release_profile）；p1-retained-trial 将 cleanup.mode 改为 apply 被拒（p1-retained-trial requires native_base.cleanup.mode=disabled）；private_domain_hard_bytes 超过 namespace_hard_bytes 被拒（native_base.limits are invalid）；合法 p1-retained-trial 配置仍可解析。该门只准入 retained-trial 配置与容量上限，不认证完整 P1 私有清理交付。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "GATE-002",
@@ -1217,8 +1217,8 @@
     "expected": "拒绝对应写/私有清理准入，不以品牌猜",
     "invariants": "INV-07 INV-19",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_durability_profile_must_be_an_explicit_verified_contract 与 native_base::lifecycle::tests::bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers —— 配置准入拒绝 write_mode!=upload-before-commit、remote_verification!=exact-readback（含品牌式 trust-the-brand）、require_atomic_create_only=false、coordinator_profile 为空；发布路径 mark_candidate_verified 在 contains_new_remote_writes=true 时对 RemoteDurability::NoopTestBarrier 返回 Durability 错误，认证只能来自精确回读，私有清理准入另有 CleanupCapabilities 校验。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "RET-001",
@@ -1448,8 +1448,8 @@
     "expected": "配置明确拒绝，不静默忽略",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_retention_rejects_retired_ttl_gc_and_lease_options 与 native_base::lifecycle::tests::retired_retention_options_fail_closed_without_claiming_runtime_wiring —— published_gc:true / read_retention_leases:true 被 retention 校验拒绝（native_base.retention violates permanent published retention）；retention_ttl_seconds 因 deny_unknown_fields 报 unknown field `retention_ttl_seconds`；纯校验器 reject_legacy_retention_options 对任一旧选项返回错误。旧选项不会被静默忽略。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "RET-022",
@@ -1723,8 +1723,8 @@
     "expected": "本版明确拒绝，不存在隐藏开关",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_cleanup_rejects_purge_force_and_age_rules —— cleanup.mode 只允许 disabled/dry-run/apply；purge、force、by-age 在 p1-private-cleanup profile 下均报（native_base.cleanup violates the private-domain cleanup contract）；隐藏的 by_age_days 字段报 unknown field `by_age_days`，本版不存在隐藏开关。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "ORD-001",

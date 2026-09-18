@@ -2260,13 +2260,25 @@ native_base:
     on_hard_limit: reject-new-admissions-not-accepted-drain
 "#;
 
+    const NATIVE_PREFIX: &str = "mount_point: /mnt/native\nworkspace: 00000000-0000-0000-0000-000000000077\nmeta:\n  backend: redis";
+
     fn native_mount_config(prefix: &str) -> anyhow::Result<MountConfig> {
+        mount_config_from_yaml(&format!("{prefix}\n{NATIVE_P1_CONFIG}"))
+    }
+
+    /// Parse a mount config whose native_base block is `native_block`, so a
+    /// test can mutate exactly one shipped field and assert the gate refuses it.
+    fn native_mount_config_from(native_block: &str) -> anyhow::Result<MountConfig> {
+        mount_config_from_yaml(&format!("{NATIVE_PREFIX}\n{native_block}"))
+    }
+
+    fn mount_config_from_yaml(yaml: &str) -> anyhow::Result<MountConfig> {
         let path = std::env::temp_dir().join(format!(
             "brewfs-native-mount-config-{}-{}.yaml",
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        std::fs::write(&path, format!("{prefix}\n{NATIVE_P1_CONFIG}")).unwrap();
+        std::fs::write(&path, yaml).unwrap();
         let result = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None));
         let _ = std::fs::remove_file(path);
         result
@@ -2310,6 +2322,149 @@ native_base:
             error
                 .to_string()
                 .contains("requires cache.writeback_mode=upload_before_commit")
+        );
+    }
+
+    /// GATE-001: only the shipped P1 release profiles are admissible, the
+    /// retained-trial profile must not claim private cleanup, and the P1
+    /// capacity limits must stay coherent.  This admits the retained-trial
+    /// profile only; it does not certify the full P1 private-cleanup delivery.
+    #[test]
+    fn native_release_profile_gate_admits_only_the_shipped_p1_profiles() {
+        let unshipped = native_mount_config_from(&NATIVE_P1_CONFIG.replace(
+            "release_profile: p1-retained-trial",
+            "release_profile: p2-frozen-read",
+        ))
+        .unwrap_err();
+        assert!(
+            unshipped
+                .to_string()
+                .contains("unsupported native_base.release_profile p2-frozen-read"),
+            "{unshipped}"
+        );
+
+        let cleanup_claimed = native_mount_config_from(
+            &NATIVE_P1_CONFIG.replace("    mode: disabled", "    mode: apply"),
+        )
+        .unwrap_err();
+        assert!(
+            cleanup_claimed
+                .to_string()
+                .contains("p1-retained-trial requires native_base.cleanup.mode=disabled"),
+            "{cleanup_claimed}"
+        );
+
+        let incoherent_limits = native_mount_config_from(&NATIVE_P1_CONFIG.replace(
+            "    private_domain_hard_bytes: 17179869184",
+            "    private_domain_hard_bytes: 137438953472",
+        ))
+        .unwrap_err();
+        assert!(
+            incoherent_limits
+                .to_string()
+                .contains("native_base.limits are invalid"),
+            "{incoherent_limits}"
+        );
+
+        native_mount_config_from(NATIVE_P1_CONFIG).unwrap();
+    }
+
+    /// GATE-004: durability is an explicit verified contract.  A brand-name
+    /// or no-op claim never admits a native volume.
+    #[test]
+    fn native_durability_profile_must_be_an_explicit_verified_contract() {
+        for (from, to) in [
+            (
+                "write_mode: upload-before-commit",
+                "write_mode: commit-before-upload",
+            ),
+            (
+                "remote_verification: exact-readback",
+                "remote_verification: trust-the-brand",
+            ),
+            (
+                "require_atomic_create_only: true",
+                "require_atomic_create_only: false",
+            ),
+            (
+                "coordinator_profile: test-profile",
+                "coordinator_profile: \"  \"",
+            ),
+        ] {
+            let error = native_mount_config_from(&NATIVE_P1_CONFIG.replace(from, to))
+                .expect_err(&format!("{from} must be refused"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("native_base.durability does not satisfy the PR07 P1 contract"),
+                "{from} produced {error}"
+            );
+        }
+    }
+
+    /// RET-021: the retired TTL / published_gc / read-retention-lease options
+    /// fail closed instead of being silently ignored.
+    #[test]
+    fn native_retention_rejects_retired_ttl_gc_and_lease_options() {
+        for (from, to) in [
+            ("    published_gc: false", "    published_gc: true"),
+            (
+                "    read_retention_leases: false",
+                "    read_retention_leases: true",
+            ),
+        ] {
+            let error = native_mount_config_from(&NATIVE_P1_CONFIG.replace(from, to))
+                .expect_err(&format!("{from} must be refused"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("native_base.retention violates permanent published retention"),
+                "{from} produced {error}"
+            );
+        }
+
+        let retired = NATIVE_P1_CONFIG.replace(
+            "  retention:\n    published: forever",
+            "  retention:\n    retention_ttl_seconds: 60\n    published: forever",
+        );
+        let error = native_mount_config_from(&retired).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `retention_ttl_seconds`"),
+            "{error}"
+        );
+    }
+
+    /// CLN-024: purge / force / age-based cleanup rules are not part of this
+    /// release, and there is no hidden switch that silently enables them.
+    #[test]
+    fn native_cleanup_rejects_purge_force_and_age_rules() {
+        for mode in ["purge", "force", "by-age"] {
+            let block = NATIVE_P1_CONFIG
+                .replace(
+                    "release_profile: p1-retained-trial",
+                    "release_profile: p1-private-cleanup",
+                )
+                .replace("    mode: disabled", &format!("    mode: {mode}"));
+            let error = native_mount_config_from(&block)
+                .expect_err(&format!("cleanup mode {mode} must be refused"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("native_base.cleanup violates the private-domain cleanup contract"),
+                "cleanup mode {mode} produced {error}"
+            );
+        }
+
+        let hidden = NATIVE_P1_CONFIG.replace(
+            "    mode: disabled",
+            "    mode: disabled\n    by_age_days: 30",
+        );
+        let error = native_mount_config_from(&hidden).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `by_age_days`"),
+            "{error}"
         );
     }
 
