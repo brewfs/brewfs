@@ -923,6 +923,34 @@ volume 级 used/reserved 字节的采集与 runtime 常量接入属于后续集�
 的默认值是可配置常量，接入运维配置（spec 15 的运行时常量面）属于后续工作；
 close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑。
 
+### PR07P · Frozen 冷属性驱逐、COW 页复用与摘要扫描计数（FROZEN-005/006/008）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。实现位于
+`src/native_base/frozen/mod.rs`。
+
+- `FrozenAttributeCache`：有界 LRU 属性缓存，可观测 hits/misses/evictions；
+  冷条目被驱逐后从已认证页重载，结果与驱逐前逐字段一致（含 mode/uid/gid
+  与权限位），负查询不缓存，capacity=0 时不缓存但答案不变（FROZEN-005）。
+- `PageSlot` + `plan_page_reuse` + `ensure_page_overwrite_is_safe`：把 COW
+  元数据重写拆成"复用页 / 必须新写页 / 仅旧快照仍引用页"三组，新快照的页
+  闭包必须被"复用 ∪ 新写"完整覆盖；对仍被旧快照引用的页做原地覆盖直接拒绝
+  （FROZEN-006）。
+- `MetaScanCounters` + `account_meta_scan`：摘要扫描分别统计扫描量与重写量
+  （页数与字节数），重写必须是扫描过的页的子集，否则失败关闭（FROZEN-008）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07P-FOCUSED | `bash doc/native-base/logs/pr07p-frozen-cold-cow-scan.sh` | 0 | PASS（frozen 15 passed/0 failed，含 3 个新增测试） | [pr07p-frozen-cold-cow-scan.log](logs/pr07p-frozen-cold-cow-scan.log) |
+| PR07P-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07P-FROZEN005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::cold_attribute_eviction` | 0 | PASS：`cold_attribute_eviction_reloads_identical_attributes_and_permissions` | 同上 |
+| PR07P-FROZEN006 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::cow_page_reuse` | 0 | PASS：`cow_page_reuse_keeps_the_old_snapshot_readable_and_the_new_closure_complete` | 同上 |
+| PR07P-FROZEN008 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::summary_meta_scan` | 0 | PASS：`summary_meta_scan_counts_scanned_and_rewritten_volume_separately` | 同上 |
+
+范围说明（不虚标）：`FrozenAttributeCache` 是进程内 LRU，未接入真实内存
+预算/全局缓存服务；`plan_page_reuse` 的页槽由调用方枚举（测试里从真实
+BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
+纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

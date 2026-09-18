@@ -6,7 +6,7 @@
 //! rule.  Mount admission does not enable it unless the persisted volume
 //! header explicitly requires `frozen-base-metadata`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
@@ -17,7 +17,7 @@ use crate::native_base::wire::container::{
 use crate::native_base::wire::error::{WireError, WireResult};
 use crate::native_base::wire::page::{IndexPage, PageBody};
 use crate::native_base::wire::refs::{
-    ChildRef, MAX_INDEX_LEVEL, PageKind, RootRef, ensure_object_kind_allows_page,
+    ChildRef, MAX_INDEX_LEVEL, ObjectId, PageKind, RootRef, ensure_object_kind_allows_page,
 };
 use crate::native_base::wire::uvarint::{Reader, Writer};
 
@@ -349,6 +349,8 @@ pub enum FrozenReadError {
     WrongPageKind,
     #[error("fixed revision attempted a mutable metadata RPC")]
     MutableRpc,
+    #[error("copy-on-write page reuse rejected: {0}")]
+    CopyOnWrite(String),
 }
 
 /// A fixed revision reader owns no mutable KV client.  Every lookup is served
@@ -743,6 +745,227 @@ impl DirectoryCursor {
         };
         Ok((cookie, page))
     }
+}
+
+/// A bounded attribute cache in front of a fixed revision (FROZEN-005).
+///
+/// Attributes are the cheapest thing to recompute and the first thing a
+/// memory budget evicts, so eviction is explicit and observable: a cold inode
+/// is re-read from the authenticated pages and must come back identical,
+/// including `mode`/`uid`/`gid` and therefore its permissions.
+pub struct FrozenAttributeCache {
+    capacity: usize,
+    entries: BTreeMap<u64, FrozenInodeRecord>,
+    /// Least-recently-used order; the front is the coldest entry.
+    order: Vec<u64>,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+}
+
+impl FrozenAttributeCache {
+    /// `capacity == 0` disables caching without changing any answer.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: BTreeMap::new(),
+            order: Vec::new(),
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    pub fn evictions(&self) -> u64 {
+        self.evictions
+    }
+
+    pub fn is_resident(&self, inode: u64) -> bool {
+        self.entries.contains_key(&inode)
+    }
+
+    /// Serve one inode's attributes from RAM, reloading and re-inserting them
+    /// when they were evicted.  A missing inode stays missing: the reload path
+    /// can never invent an attribute record.
+    pub fn attributes_of<S: ObjectSource>(
+        &mut self,
+        reader: &FixedRevisionReader<'_, S>,
+        inode: u64,
+    ) -> Result<Option<FrozenInodeRecord>, FrozenReadError> {
+        if let Some(record) = self.entries.get(&inode).cloned() {
+            self.hits += 1;
+            self.touch(inode);
+            return Ok(Some(record));
+        }
+        self.misses += 1;
+        let Some(record) = reader.lookup_inode(inode)? else {
+            return Ok(None);
+        };
+        self.insert(inode, record.clone());
+        Ok(Some(record))
+    }
+
+    fn touch(&mut self, inode: u64) {
+        if let Some(position) = self.order.iter().position(|resident| *resident == inode) {
+            self.order.remove(position);
+        }
+        self.order.push(inode);
+    }
+
+    fn insert(&mut self, inode: u64, record: FrozenInodeRecord) {
+        if self.capacity == 0 {
+            return;
+        }
+        self.entries.insert(inode, record);
+        self.touch(inode);
+        while self.entries.len() > self.capacity {
+            let cold = self.order.remove(0);
+            self.entries.remove(&cold);
+            self.evictions += 1;
+        }
+    }
+}
+
+/// One page a snapshot addresses: the container object plus the byte range
+/// inside it (FROZEN-006).
+///
+/// Two snapshots can share a slot only when both the container and the range
+/// are identical, which is exactly what makes a copy-on-write metadata rewrite
+/// safe for the older snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PageSlot {
+    pub container: ObjectId,
+    pub offset: u64,
+    pub stored_len: u32,
+}
+
+impl PageSlot {
+    pub fn end(&self) -> u64 {
+        self.offset.saturating_add(u64::from(self.stored_len))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageReusePlan {
+    /// Slots the new snapshot addresses that already exist untouched.
+    pub reused: Vec<PageSlot>,
+    /// Slots the new snapshot needs that must be written into fresh ranges.
+    pub must_write: Vec<PageSlot>,
+    /// Slots only the old snapshot still addresses.  They stay readable — and
+    /// therefore must not be overwritten — while the old revision is
+    /// referenced.
+    pub unreferenced: Vec<PageSlot>,
+}
+
+impl PageReusePlan {
+    /// Every slot the new snapshot addresses is either reused or written, so
+    /// the new page closure is complete.
+    pub fn covers_new_snapshot(&self, new_pages: &BTreeSet<PageSlot>) -> bool {
+        let covered: BTreeSet<PageSlot> = self
+            .reused
+            .iter()
+            .chain(self.must_write.iter())
+            .copied()
+            .collect();
+        covered == *new_pages
+    }
+}
+
+/// Split the pages a copy-on-write rewrite reuses from the pages it must write
+/// (FROZEN-006).  Nothing here mutates the old snapshot: its pages are only
+/// reported as still-shared or unreferenced.
+pub fn plan_page_reuse(
+    old_pages: &BTreeSet<PageSlot>,
+    new_pages: &BTreeSet<PageSlot>,
+) -> PageReusePlan {
+    PageReusePlan {
+        reused: new_pages.intersection(old_pages).copied().collect(),
+        must_write: new_pages.difference(old_pages).copied().collect(),
+        unreferenced: old_pages.difference(new_pages).copied().collect(),
+    }
+}
+
+/// Refuse an in-place page overwrite (FROZEN-006).
+///
+/// A page the old snapshot still addresses may not be rewritten at the same
+/// slot: the new content would silently change what the old revision reads.
+/// The rewrite must go to a fresh range instead.
+pub fn ensure_page_overwrite_is_safe(
+    old_pages: &BTreeSet<PageSlot>,
+    target: &PageSlot,
+) -> Result<(), FrozenReadError> {
+    if old_pages.contains(target) {
+        return Err(FrozenReadError::CopyOnWrite(format!(
+            "page {}..{} of container {:02x?} is still referenced by the old snapshot",
+            target.offset,
+            target.end(),
+            target.container
+        )));
+    }
+    Ok(())
+}
+
+/// Separate accounting for a summary metadata scan and the part it rewrote
+/// (FROZEN-008).  Scan volume and rewrite volume are reported independently so
+/// a rewrite can never hide inside the scan total.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MetaScanCounters {
+    pub scanned_pages: u64,
+    pub scanned_bytes: u64,
+    pub rewritten_pages: u64,
+    pub rewritten_bytes: u64,
+}
+
+/// Account a summary metadata scan that rewrites part of what it read.
+///
+/// Every rewritten page must have been scanned first, and each page
+/// contributes its stored length to exactly one of the two byte counters.
+pub fn account_meta_scan(
+    scanned: &[PageSlot],
+    rewritten: &[PageSlot],
+) -> Result<MetaScanCounters, FrozenReadError> {
+    let scanned_set: BTreeSet<PageSlot> = scanned.iter().copied().collect();
+    let rewritten_set: BTreeSet<PageSlot> = rewritten.iter().copied().collect();
+    if let Some(unscanned) = rewritten_set.difference(&scanned_set).next() {
+        return Err(FrozenReadError::CopyOnWrite(format!(
+            "rewrite of page {}..{} was never scanned",
+            unscanned.offset,
+            unscanned.end()
+        )));
+    }
+    let sum = |pages: &BTreeSet<PageSlot>| -> Result<u64, FrozenReadError> {
+        pages.iter().try_fold(0u64, |total, page| {
+            total
+                .checked_add(u64::from(page.stored_len))
+                .ok_or_else(|| FrozenReadError::CopyOnWrite("meta scan byte sum overflow".into()))
+        })
+    };
+    Ok(MetaScanCounters {
+        scanned_pages: scanned_set.len() as u64,
+        scanned_bytes: sum(&scanned_set)?,
+        rewritten_pages: rewritten_set.len() as u64,
+        rewritten_bytes: sum(&rewritten_set)?,
+    })
 }
 
 #[cfg(test)]
@@ -1613,5 +1836,314 @@ mod tests {
             self.reads.set(self.reads.get() + 1);
             self.inner.get_range(object_id, start, end)
         }
+    }
+
+    /// Every page a container object addresses, walked from its root.
+    fn page_slots_of(bytes: &[u8], root: &RootRef) -> BTreeSet<PageSlot> {
+        let mut slots = BTreeSet::new();
+        let mut stack = vec![root.address];
+        while let Some(address) = stack.pop() {
+            slots.insert(PageSlot {
+                container: root.object.object_id,
+                offset: address.offset,
+                stored_len: address.stored_len,
+            });
+            let page = IndexPage::decode(&page_bytes_of(bytes, &address)).unwrap();
+            if let PageBody::Internal(entries) = page.body {
+                for entry in entries {
+                    if let ChildRef::Local(child) = entry.child {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        slots
+    }
+
+    fn page_bytes_of(bytes: &[u8], address: &PageAddress) -> Vec<u8> {
+        let start = address.offset as usize;
+        let end = start + address.stored_len as usize;
+        let stored = &bytes[start..end];
+        match address.codec {
+            Codec::None => stored.to_vec(),
+            Codec::Zstd => zstd::bulk::decompress(stored, address.raw_len as usize).unwrap(),
+        }
+    }
+
+    /// A frozen-namespace (mode 2) manifest whose three trees are explicit.
+    fn frozen_manifest(
+        namespace_root: RootRef,
+        data_root: RootRef,
+        inventory_root: RootRef,
+        seed: u8,
+    ) -> (Vec<u8>, [u8; 16]) {
+        let manifest = SnapshotManifest {
+            volume_id: [seed; 16],
+            storage_namespace_id: [seed.wrapping_add(1); 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [seed.wrapping_add(2); 32],
+            namespace_digest: [seed.wrapping_add(3); 32],
+            binding_digest: [seed.wrapping_add(4); 32],
+            namespace_mode: 2,
+            kv_layer_id: None,
+            kv_sealed_version: None,
+            namespace_root: Some(namespace_root),
+            data_root,
+            inventory_root,
+            file_count: 1,
+            directory_count: 1,
+            total_logical_bytes: 4096,
+            created_at_ns: 0,
+        };
+        let manifest_id = [seed.wrapping_add(5); 16];
+        (
+            build_manifest_object(manifest_id, b"frozen/manifest", &manifest),
+            manifest_id,
+        )
+    }
+
+    /// FROZEN-005 / INV-05: attributes evicted from RAM are re-read from the
+    /// authenticated pages and come back identical, including mode/uid/gid and
+    /// therefore permissions.  Eviction is observable and never changes an
+    /// answer, and a negative lookup is never cached.
+    #[test]
+    fn cold_attribute_eviction_reloads_identical_attributes_and_permissions() {
+        let records: Vec<(u64, FrozenInodeRecord)> = (1..=4u64)
+            .map(|inode| {
+                (
+                    inode,
+                    FrozenInodeRecord {
+                        kind: 1,
+                        mode: 0o100_600 + (inode as u32 % 7),
+                        uid: 1000 + inode as u32,
+                        gid: 2000 + inode as u32,
+                        rdev: 0,
+                        nlink: 1,
+                        size: 4096 * inode,
+                        atime_ns: inode as i64,
+                        mtime_ns: inode as i64 + 1,
+                        ctime_ns: inode as i64 + 2,
+                        parent_hint: Some(1),
+                        symlink_target: None,
+                    },
+                )
+            })
+            .collect();
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = records
+            .iter()
+            .map(|(inode, record)| (inode_key(*inode), record.encode()))
+            .collect();
+        let namespace_id = [41u8; 16];
+        let (namespace_obj, namespace_root) =
+            build_frozen_metadata_object(namespace_id, b"frozen/attributes", &entries);
+        let inventory_id = [42u8; 16];
+        let (inventory_obj, inventory_root) = build_frozen_metadata_object(
+            inventory_id,
+            b"frozen/inventory",
+            &[(b"__inv_sentinel".to_vec(), Vec::new())],
+        );
+        let (manifest_obj, manifest_id) =
+            frozen_manifest(namespace_root, inventory_root.clone(), inventory_root, 47);
+        let mut source = MemoryObjectSource::new();
+        source.insert(namespace_id, namespace_obj);
+        source.insert(inventory_id, inventory_obj);
+        source.insert(manifest_id, manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+
+        let mut cache = FrozenAttributeCache::new(2);
+        assert!(cache.is_empty());
+        let first = cache.attributes_of(&reader, 1).unwrap().unwrap();
+        assert_eq!(first, records[0].1);
+        assert_eq!(
+            cache.attributes_of(&reader, 2).unwrap().unwrap(),
+            records[1].1
+        );
+        assert_eq!(
+            cache.attributes_of(&reader, 3).unwrap().unwrap(),
+            records[2].1
+        );
+        assert_eq!(
+            cache.attributes_of(&reader, 4).unwrap().unwrap(),
+            records[3].1
+        );
+        assert!(!cache.is_resident(1), "inode 1 was the coldest entry");
+        assert!(!cache.is_resident(2));
+        assert!(cache.is_resident(3) && cache.is_resident(4));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.misses(), 4);
+        assert_eq!(cache.hits(), 0);
+        assert_eq!(cache.evictions(), 2);
+
+        let reloaded = cache.attributes_of(&reader, 1).unwrap().unwrap();
+        assert_eq!(reloaded, first, "a cold reload is byte-identical");
+        assert_eq!(reloaded.mode, first.mode);
+        assert_eq!(reloaded.mode & 0o7777, first.mode & 0o7777);
+        assert_eq!(reloaded.uid, first.uid);
+        assert_eq!(reloaded.gid, first.gid);
+        assert_eq!(reloaded.kind, first.kind);
+        assert_eq!(reloaded.size, first.size);
+        assert_eq!(reloaded.nlink, first.nlink);
+        assert_eq!(
+            FixedRevisionReader::open_manifest(&source, &manifest_obj)
+                .unwrap()
+                .lookup_inode(1)
+                .unwrap()
+                .unwrap(),
+            first,
+            "a fresh reader agrees with the reloaded cache"
+        );
+        assert_eq!(cache.attributes_of(&reader, 1).unwrap().unwrap(), first);
+        assert_eq!(cache.hits(), 1);
+        assert_eq!(cache.misses(), 5);
+
+        assert!(cache.attributes_of(&reader, 999).unwrap().is_none());
+        assert!(!cache.is_resident(999), "negatives are never cached");
+
+        let mut uncached = FrozenAttributeCache::new(0);
+        assert_eq!(uncached.attributes_of(&reader, 1).unwrap().unwrap(), first);
+        assert!(uncached.is_empty());
+        assert_eq!(uncached.evictions(), 0);
+    }
+
+    /// FROZEN-006 / INV-11: a copy-on-write metadata rewrite reuses every page
+    /// it can, writes the changed pages into fresh ranges, and leaves the old
+    /// snapshot readable.  An in-place overwrite of a page the old snapshot
+    /// still references is refused.
+    #[test]
+    fn cow_page_reuse_keeps_the_old_snapshot_readable_and_the_new_closure_complete() {
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..64u32)
+            .map(|i| {
+                let mut key = b"key-".to_vec();
+                key.extend_from_slice(&format!("{:04}", i).into_bytes());
+                let mut value = b"val-".to_vec();
+                value.extend_from_slice(&format!("{:04}", i).into_bytes());
+                (key, value)
+            })
+            .collect();
+        let old_id = [51u8; 16];
+        let (old_bytes, old_root) = build_frozen_metadata_object(old_id, b"frozen/old", &entries);
+        let old_slots = page_slots_of(&old_bytes, &old_root);
+        assert!(old_slots.len() >= 2, "the fixture must span several pages");
+
+        // The rewrite reuses everything except one leaf, which moves into a
+        // fresh container so the old page bytes are never touched.
+        let replaced = old_slots.iter().next_back().copied().unwrap();
+        let fresh = PageSlot {
+            container: [52u8; 16],
+            offset: 128,
+            stored_len: replaced.stored_len,
+        };
+        let mut new_slots = old_slots.clone();
+        new_slots.remove(&replaced);
+        new_slots.insert(fresh);
+
+        let plan = plan_page_reuse(&old_slots, &new_slots);
+        assert_eq!(plan.reused.len(), old_slots.len() - 1);
+        assert_eq!(plan.must_write, vec![fresh]);
+        assert_eq!(plan.unreferenced, vec![replaced]);
+        assert!(
+            plan.covers_new_snapshot(&new_slots),
+            "every page of the new snapshot is reused or written"
+        );
+        assert!(
+            plan.reused.iter().all(|slot| old_slots.contains(slot)),
+            "reused pages are untouched old pages"
+        );
+
+        // The old snapshot still reads its own bytes: nothing was overwritten.
+        let inventory_id = [53u8; 16];
+        let (inventory_obj, inventory_root) = build_frozen_metadata_object(
+            inventory_id,
+            b"frozen/inventory",
+            &[(b"__inv_sentinel".to_vec(), Vec::new())],
+        );
+        let (manifest_obj, manifest_id) =
+            frozen_manifest(inventory_root.clone(), old_root.clone(), inventory_root, 54);
+        let mut source = MemoryObjectSource::new();
+        source.insert(old_id, old_bytes.clone());
+        source.insert(inventory_id, inventory_obj);
+        source.insert(manifest_id, manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+        assert_eq!(
+            reader.lookup_data(b"key-0000").unwrap().as_deref(),
+            Some(b"val-0000".as_slice())
+        );
+        assert!(old_slots.contains(&replaced));
+
+        // An in-place overwrite of a still-referenced page is refused; the same
+        // page written into a fresh container is accepted.
+        let error = ensure_page_overwrite_is_safe(&old_slots, &replaced).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("still referenced by the old snapshot"),
+            "unexpected error: {error}"
+        );
+        ensure_page_overwrite_is_safe(&old_slots, &fresh).unwrap();
+    }
+
+    /// FROZEN-008 / INV-09: a summary metadata scan reports the volume it
+    /// scanned and the volume it rewrote separately, and a rewrite that was
+    /// never scanned is refused instead of being counted.
+    #[test]
+    fn summary_meta_scan_counts_scanned_and_rewritten_volume_separately() {
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..64u32)
+            .map(|i| {
+                let mut key = b"key-".to_vec();
+                key.extend_from_slice(&format!("{:04}", i).into_bytes());
+                let mut value = b"val-".to_vec();
+                value.extend_from_slice(&format!("{:04}", i).into_bytes());
+                (key, value)
+            })
+            .collect();
+        let old_id = [61u8; 16];
+        let (old_bytes, old_root) =
+            build_frozen_metadata_object(old_id, b"frozen/scan-old", &entries);
+        let old_slots = page_slots_of(&old_bytes, &old_root);
+
+        let replaced = old_slots.iter().next_back().copied().unwrap();
+        let fresh = PageSlot {
+            container: [62u8; 16],
+            offset: 128,
+            stored_len: replaced.stored_len,
+        };
+        let mut new_slots = old_slots.clone();
+        new_slots.remove(&replaced);
+        new_slots.insert(fresh);
+        let plan = plan_page_reuse(&old_slots, &new_slots);
+
+        // The scan read every old page and rewrote the ones it could not reuse.
+        let scanned: Vec<PageSlot> = old_slots.iter().copied().collect();
+        let counters = account_meta_scan(&scanned, &plan.unreferenced).unwrap();
+        let unreferenced_bytes: u64 = plan
+            .unreferenced
+            .iter()
+            .map(|slot| u64::from(slot.stored_len))
+            .sum();
+        assert_eq!(counters.scanned_pages, old_slots.len() as u64);
+        assert_eq!(counters.rewritten_pages, plan.unreferenced.len() as u64);
+        assert_eq!(counters.rewritten_bytes, unreferenced_bytes);
+        assert!(counters.scanned_bytes > counters.rewritten_bytes);
+        assert_eq!(
+            counters.scanned_pages,
+            counters.rewritten_pages + (old_slots.len() - plan.unreferenced.len()) as u64
+        );
+
+        let unscanned = PageSlot {
+            container: [63u8; 16],
+            offset: 4096,
+            stored_len: 512,
+        };
+        let error = account_meta_scan(&scanned, &[unscanned]).unwrap_err();
+        assert!(
+            error.to_string().contains("was never scanned"),
+            "unexpected error: {error}"
+        );
+        // A scan with no rewrite still reports its own volume.
+        let read_only = account_meta_scan(&scanned, &[]).unwrap();
+        assert_eq!(read_only.rewritten_pages, 0);
+        assert_eq!(read_only.scanned_pages, old_slots.len() as u64);
     }
 }

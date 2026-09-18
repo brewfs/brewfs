@@ -678,8 +678,8 @@
     "expected": "重载后结果和权限相同",
     "invariants": "INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07p-frozen-cold-cow-scan.sh (exit 0; native_base::frozen 15 passed/0 failed): cold_attribute_eviction_reloads_identical_attributes_and_permissions —— 新增 FrozenAttributeCache（LRU、可观测 hits/misses/evictions）。capacity=2 时顺序读 inode 1..4：1/2 成为最冷条目被驱逐（evictions=2、len=2、misses=4、hits=0），随后重读 inode 1 从已认证页重载，返回记录与驱逐前逐字段相同（mode/uid/gid 及 mode&0o7777 权限位、kind/size/nlink 全部相等），并与全新 reader 的结果一致（不会混入陈旧属性）；再读一次为命中（hits=1、misses=5）；不存在的 inode 返回 None 且不缓存（negatives are never cached）；capacity=0 时不缓存但答案不变。log: doc/native-base/logs/pr07p-frozen-cold-cow-scan.log"
   },
   {
     "test_id": "FROZEN-006",
@@ -689,8 +689,8 @@
     "expected": "旧snapshot可读，新页闭包完整",
     "invariants": "INV-11",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07p-frozen-cold-cow-scan.sh (exit 0; native_base::frozen 15 passed/0 failed): cow_page_reuse_keeps_the_old_snapshot_readable_and_the_new_closure_complete —— 新增 PageSlot（container+offset+stored_len）与 plan_page_reuse/ensure_page_overwrite_is_safe。真实多页 FrozenMetadata 容器（64 条目、页集合由 BNPG 树实际遍历得到）上把最后一个叶子改写到新容器：plan.reused = 旧页集合 − 1、must_write = {新容器页}、unreferenced = {被替换的旧叶子}，covers_new_snapshot()==true（新快照每个页要么复用要么新写，闭包完整），且 reused 全部来自旧页（未被改写）；旧快照用同一字节仍可 lookup_data(\"key-0000\")==\"val-0000\"（旧 snapshot 可读、页未被动过）；对仍被旧快照引用的页做原地覆盖被拒（\"still referenced by the old snapshot\"），写入新容器的同一页则通过。log: doc/native-base/logs/pr07p-frozen-cold-cow-scan.log"
   },
   {
     "test_id": "FROZEN-007",
@@ -711,8 +711,8 @@
     "expected": "扫描量与重写量分别计数",
     "invariants": "INV-09",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07p-frozen-cold-cow-scan.sh (exit 0; native_base::frozen 15 passed/0 failed): summary_meta_scan_counts_scanned_and_rewritten_volume_separately —— 新增 MetaScanCounters 与 account_meta_scan：在真实页集合上扫描全部旧页、只重写不可复用的页（plan.unreferenced），得到 scanned_pages/scanned_bytes 与 rewritten_pages/rewritten_bytes 两组独立计数（rewritten ⊆ scanned，scanned_bytes > rewritten_bytes，且 scanned_pages == rewritten_pages + 复用页数）；对扫描中从未读过的页（不同容器/offset）声称重写会被拒（\"was never scanned\"），而不是被计进重写量；只读扫描（rewritten=[]）仍单独报告扫描量。log: doc/native-base/logs/pr07p-frozen-cold-cow-scan.log"
   },
   {
     "test_id": "OPT-001",
