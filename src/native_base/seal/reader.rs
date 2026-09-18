@@ -15,6 +15,9 @@
 //! `plan.rs`. The async singleflight executor and Range GET coalescing are
 //! PR10.
 
+use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard};
+
 use sha2::{Digest, Sha256};
 
 use super::binding::BlockBinding;
@@ -30,7 +33,7 @@ use crate::native_base::wire::container::{
 use crate::native_base::wire::error::WireError;
 use crate::native_base::wire::page::{IndexPage, PageBody};
 use crate::native_base::wire::refs::{
-    ChildRef, MAX_INDEX_LEVEL, ObjectRef, PageAddress, PageKind, RootRef,
+    ChildRef, Hash32, MAX_INDEX_LEVEL, ObjectId, ObjectRef, PageAddress, PageKind, RootRef,
     ensure_object_kind_allows_page,
 };
 use crate::native_base::wire::uvarint::Reader;
@@ -176,15 +179,55 @@ pub struct ResolvedBlock {
     pub placement: BlockPlacement,
 }
 
+/// Digest-keyed identity of one authenticated index page.
+///
+/// `object` is `None` for a page inside the reader's own pinned seal and
+/// `Some` for a page located in an external container, either directly
+/// (`ChildRef::External`) or as a local child addressed inside one.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PageKey {
+    object: Option<ObjectId>,
+    offset: u64,
+    stored_len: u32,
+    stored_digest: Hash32,
+}
+
+fn page_key(object: Option<ObjectId>, addr: &PageAddress) -> PageKey {
+    PageKey {
+        object,
+        offset: addr.offset,
+        stored_len: addr.stored_len,
+        stored_digest: addr.stored_digest,
+    }
+}
+
 /// Reads a pinned seal snapshot through an object backend.
 pub struct SealReader<'a> {
     snapshot: &'a SealSnapshot,
     pub(super) source: &'a dyn ObjectSource,
+    /// Index pages already authenticated by this reader, keyed by the exact
+    /// stored bytes they were authenticated against.  A reader is created per
+    /// read, so this is a read-scoped cache: one fetch per distinct page per
+    /// read.  Because the key carries the stored digest, a container whose
+    /// bytes change underneath the reader can never contribute a second
+    /// revision to the same read ? every lookup either resolves to the page
+    /// the pinned view was opened with or fails authentication.
+    pages: Mutex<BTreeMap<PageKey, (IndexPage, Option<ObjectRef>)>>,
 }
 
 impl<'a> SealReader<'a> {
     pub fn new(snapshot: &'a SealSnapshot, source: &'a dyn ObjectSource) -> SealReader<'a> {
-        SealReader { snapshot, source }
+        SealReader {
+            snapshot,
+            source,
+            pages: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn pages(&self) -> MutexGuard<'_, BTreeMap<PageKey, (IndexPage, Option<ObjectRef>)>> {
+        self.pages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn snapshot(&self) -> &SealSnapshot {
@@ -266,24 +309,57 @@ impl<'a> SealReader<'a> {
     }
 
     /// Fetch, authenticate and parse one index page, local or external.
-    fn read_page(&self, child: &ChildRef) -> Result<IndexPage, SealError> {
-        match child {
-            ChildRef::Local(addr) => {
-                let start = addr.offset as usize;
-                let end = start
-                    .checked_add(addr.stored_len as usize)
-                    .ok_or_else(|| WireError::invalid("index page", "page end overflow"))?;
-                if addr.offset < HEADER_LEN as u64 || end > self.snapshot.object.len() - FOOTER_LEN
-                {
-                    return Err(WireError::invalid(
-                        "index page",
-                        "local page outside the container's page region",
-                    )
-                    .into());
+    ///
+    /// Returns the page plus the container its own local children are
+    /// addressed in: `None` for the reader's pinned seal, `Some` for the
+    /// external container the page was located in.  `ChildRef::Local` is
+    /// therefore resolved against the *current* container ? the pinned seal
+    /// or the external object a parent page pointed at ? never against
+    /// whichever container happens to belong to the reader.  A page that is
+    /// not in memory yet is fetched through its locator; a page that cannot
+    /// be read or authenticated stays an error.
+    ///
+    /// The location is resolved (and bounds-checked) before the cache is
+    /// consulted, so an already-authenticated page is never fetched twice
+    /// inside one view.
+    fn read_page(
+        &self,
+        child: &ChildRef,
+        container: Option<&ObjectRef>,
+    ) -> Result<(IndexPage, Option<ObjectRef>), SealError> {
+        let (addr, owner) = match child {
+            ChildRef::Local(addr) => match container {
+                None => {
+                    let end = addr
+                        .offset
+                        .checked_add(addr.stored_len as u64)
+                        .ok_or_else(|| WireError::invalid("index page", "page end overflow"))?;
+                    if addr.offset < HEADER_LEN as u64
+                        || end > (self.snapshot.object.len() - FOOTER_LEN) as u64
+                    {
+                        return Err(WireError::invalid(
+                            "index page",
+                            "local page outside the container's page region",
+                        )
+                        .into());
+                    }
+                    (addr, None)
                 }
-                let stored = self.snapshot.object[start..end].to_vec();
-                self.decode_page_payload(addr, &stored)
-            }
+                Some(object) => {
+                    let end = addr
+                        .offset
+                        .checked_add(addr.stored_len as u64)
+                        .ok_or_else(|| WireError::invalid("index page", "page end overflow"))?;
+                    if addr.offset < HEADER_LEN as u64 || end > object.object_len {
+                        return Err(WireError::invalid(
+                            "index page",
+                            "local page outside the external container's page region",
+                        )
+                        .into());
+                    }
+                    (addr, Some(object.clone()))
+                }
+            },
             ChildRef::External(root_ref) => {
                 let addr = &root_ref.address;
                 let kind = object_kind_from_u8(root_ref.object.kind).ok_or_else(|| {
@@ -307,9 +383,21 @@ impl<'a> SealReader<'a> {
                     )
                     .into());
                 }
-                let stored = self
-                    .source
-                    .get_range(&root_ref.object.object_id, addr.offset, end)?;
+                (addr, Some(root_ref.object.clone()))
+            }
+        };
+        let key = page_key(owner.as_ref().map(|object| object.object_id), addr);
+        if let Some(cached) = self.pages().get(&key).cloned() {
+            return Ok(cached);
+        }
+        let stored = match &owner {
+            None => {
+                let start = addr.offset as usize;
+                self.snapshot.object[start..start + addr.stored_len as usize].to_vec()
+            }
+            Some(object) => {
+                let end = addr.offset + addr.stored_len as u64;
+                let stored = self.source.get_range(&object.object_id, addr.offset, end)?;
                 if stored.len() as u64 != addr.stored_len as u64 {
                     return Err(SealError::Source(
                         super::source::ObjectSourceError::ShortRead {
@@ -318,15 +406,21 @@ impl<'a> SealReader<'a> {
                         },
                     ));
                 }
-                self.decode_page_payload(addr, &stored)
+                stored
             }
-        }
+        };
+        let page = self.decode_page_payload(addr, &stored)?;
+        let entry = (page, owner);
+        self.pages().insert(key, entry.clone());
+        Ok(entry)
     }
 
     /// Exact-key lookup in one table, descending the index page by page.
-    /// Returns `Ok(None)` only when the key is genuinely absent; page read
-    /// or parse failures return errors and must never be cached as absence
-    /// (spec 04 §7).
+    /// Returns `Ok(None)` only when the owning page was actually loaded and
+    /// the key was not in it: a page still absent from memory is fetched
+    /// through its locator first, and a page read or parse failure is an
+    /// error ? never ENOENT, never a hole, and never cached as absence
+    /// (spec 04 ?7).
     pub fn lookup(&self, table: TableId, key: &[u8]) -> Result<Option<Vec<u8>>, SealError> {
         let child = self
             .snapshot
@@ -334,6 +428,7 @@ impl<'a> SealReader<'a> {
             .table(table)
             .ok_or(SealError::MissingTable(table))?;
         let mut current = child.clone();
+        let mut container: Option<ObjectRef> = None;
         let mut depth = 0usize;
         loop {
             depth += 1;
@@ -342,7 +437,8 @@ impl<'a> SealReader<'a> {
                     "index walk exceeded the maximum height",
                 ));
             }
-            let page = self.read_page(&current)?;
+            let (page, next_container) = self.read_page(&current, container.as_ref())?;
+            container = next_container;
             match page.body {
                 PageBody::Leaf(entries) => {
                     let at = entries.partition_point(|e| e.key.as_slice() < key);
@@ -382,9 +478,9 @@ impl<'a> SealReader<'a> {
             .root
             .table(table)
             .ok_or(SealError::MissingTable(table))?;
-        let mut stack: Vec<ChildRef> = vec![child.clone()];
-        while let Some(child) = stack.pop() {
-            let page = self.read_page(&child)?;
+        let mut stack: Vec<(ChildRef, Option<ObjectRef>)> = vec![(child.clone(), None)];
+        while let Some((child, container)) = stack.pop() {
+            let (page, next_container) = self.read_page(&child, container.as_ref())?;
             match page.body {
                 PageBody::Leaf(entries) => {
                     for entry in entries {
@@ -393,7 +489,7 @@ impl<'a> SealReader<'a> {
                 }
                 PageBody::Internal(entries) => {
                     for entry in entries.iter().rev() {
-                        stack.push(entry.child.clone());
+                        stack.push((entry.child.clone(), next_container.clone()));
                     }
                 }
             }

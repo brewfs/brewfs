@@ -19,7 +19,9 @@ use super::{
 use crate::chunk::compress::{Compression, decompress_framed, encode_persisted_block};
 use crate::native_base::wire::container::{Codec, ObjectKind, features, set_declared_features};
 use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
+use crate::native_base::wire::error::WireError;
 use crate::native_base::wire::frame::PayloadFormat;
+use crate::native_base::wire::page::IndexPage;
 use crate::native_base::wire::refs::{
     ChildRef, ObjectId, ObjectRef, PageAddress, PageKind, RootRef,
 };
@@ -46,6 +48,9 @@ struct CountingSource {
     /// Cancel this token after the first GET (tests that later units are
     /// never fetched once cancellation is observed).
     cancel_after_first_get: Option<CancelToken>,
+    /// Serve these replacement bytes from the Nth GET of this object onwards:
+    /// a container that changes underneath a reader ("root switch").
+    swap_after: RefCell<Option<(ObjectId, usize, Vec<u8>)>>,
 }
 
 impl CountingSource {
@@ -58,6 +63,7 @@ impl CountingSource {
             corrupt_at: RefCell::new(None),
             short_reads: false,
             cancel_after_first_get: None,
+            swap_after: RefCell::new(None),
         }
     }
 
@@ -101,6 +107,12 @@ impl ObjectSource for CountingSource {
             )));
         }
         let mut out = object[start as usize..end as usize].to_vec();
+        if let Some((id, after, replacement)) = self.swap_after.borrow().as_ref() {
+            let served = *self.gets_per_object.borrow().get(object_id).unwrap_or(&0);
+            if *id == *object_id && served >= *after && replacement.len() == object.len() {
+                out = replacement[start as usize..end as usize].to_vec();
+            }
+        }
         if self.short_reads && !out.is_empty() {
             out.pop();
         }
@@ -1030,6 +1042,7 @@ fn cancellation_between_units_stops_fetching() {
         corrupt_at: RefCell::new(None),
         short_reads: false,
         cancel_after_first_get: Some(cancel.clone()),
+        swap_after: RefCell::new(None),
     };
     let opened = Opened::new(fx.seal_bytes.clone(), &source);
     // Three units planned (loose object first in unit order); the first GET
@@ -1099,6 +1112,7 @@ fn budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel() {
         corrupt_at: RefCell::new(None),
         short_reads: true,
         cancel_after_first_get: None,
+        swap_after: RefCell::new(None),
     };
     let opened = Opened::new(fx.seal_bytes.clone(), &source);
     let mut budget = ReadBudget::recommended();
@@ -1135,6 +1149,7 @@ fn budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel() {
         corrupt_at: RefCell::new(None),
         short_reads: false,
         cancel_after_first_get: Some(cancel.clone()),
+        swap_after: RefCell::new(None),
     };
     let opened = Opened::new(fx.seal_bytes.clone(), &source);
     let mut budget = ReadBudget::recommended();
@@ -1576,5 +1591,233 @@ fn seal_bytes_are_unchanged_by_the_shared_index_builder() {
     assert_eq!(
         hex::encode(sha2::Sha256::digest(&bytes)),
         "a0723bc338b23c90c44641c68c937ab84228e7ea2e482e774b50609be03ef298"
+    );
+}
+
+const REMOTE_SEAL_ID: ObjectId = [0x77; 16];
+const NESTED_PACK_ID: ObjectId = [0x66; 16];
+const REUSED_SLICE: u64 = 0x21;
+
+/// READ-005/READ-006 fixture: a remote seal whose Frames table needs more
+/// than one index level, plus a local seal that re-uses remote frame slots
+/// through external table roots.  Reading the local seal therefore has to
+/// locate the remote root page *and* resolve a local child of that external
+/// page inside the remote container.
+struct NestedExternalFixture {
+    remote_bytes: Vec<u8>,
+    local_bytes: Vec<u8>,
+    pack_bytes: Vec<u8>,
+    blocks: Vec<Vec<u8>>,
+    /// `(offset, stored_len)` of the remote Frames root page.
+    frames_root_page: (u64, u32),
+    /// Height of the remote Frames tree (root level + 1).
+    frames_tree_levels: usize,
+}
+
+fn nested_external_fixture() -> NestedExternalFixture {
+    let blocks: Vec<Vec<u8>> = (0..96u32)
+        .map(|index| {
+            let mut block = vec![0x5A; BLOCK_SIZE as usize];
+            block[..4].copy_from_slice(&index.to_be_bytes());
+            block
+        })
+        .collect();
+    let (pack_bytes, scrubbed) = build_pack(
+        blocks
+            .iter()
+            .map(|block| PackFrame::plain_bytes(block).unwrap())
+            .collect(),
+    );
+
+    // A leaf target of 1024 bytes over 96 descriptors of 96 bytes each gives
+    // a two-level Frames tree: one internal root page and its local leaves.
+    let mut remote = SealBuilder::new(BLOCK_SIZE).with_leaf_target(1024);
+    let pack_ordinal = remote.next_object_ordinal();
+    remote.add_object(
+        pack_ordinal,
+        object_ref(
+            NESTED_PACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &pack_bytes,
+            b"nested/pack",
+        ),
+    );
+    let slots = register_frames(&mut remote, &scrubbed, pack_ordinal);
+    for (index, block) in blocks.iter().enumerate() {
+        remote
+            .add_packed_block(
+                SLICE,
+                index as u32,
+                block,
+                vec![span(0, block.len() as u32, slots[index], 0)],
+            )
+            .unwrap();
+    }
+    remote.validate().unwrap();
+    let remote_bytes = remote.build().unwrap();
+
+    let snapshot = SealSnapshot::open(remote_bytes.clone()).unwrap();
+    let frames_root = snapshot.table(TableId::Frames).unwrap().clone();
+    let ChildRef::Local(frames_addr) = frames_root.clone() else {
+        panic!("the remote seal builds local roots");
+    };
+    // Prove the fixture is what it claims to be: the remote Frames root is an
+    // internal page, so its children are local pages of the remote container.
+    let stored = &remote_bytes[frames_addr.offset as usize
+        ..(frames_addr.offset + frames_addr.stored_len as u64) as usize];
+    assert_eq!(
+        <[u8; 32]>::from(Sha256::digest(stored)),
+        frames_addr.stored_digest
+    );
+    let root_page = IndexPage::decode(stored).unwrap();
+    assert!(
+        root_page.level >= 1,
+        "the remote Frames table must be multi-level, got level {}",
+        root_page.level
+    );
+    // One page per level, plus the single Objects page.
+    let frames_tree_levels = root_page.level as usize + 1;
+
+    let remote_ref = object_ref(
+        REMOTE_SEAL_ID,
+        ObjectKind::DataSeal.as_u8(),
+        &remote_bytes,
+        b"nested/remote-seal",
+    );
+    let external = |root: ChildRef| match root {
+        ChildRef::Local(addr) => ChildRef::External(RootRef {
+            object: remote_ref.clone(),
+            address: addr,
+        }),
+        ChildRef::External(_) => unreachable!("the remote seal builds local roots"),
+    };
+    let objects_root = snapshot.table(TableId::Objects).unwrap().clone();
+    let mut local = SealBuilder::new(BLOCK_SIZE);
+    local.set_table_override(TableId::Frames, Some(external(frames_root)));
+    local.set_table_override(TableId::Objects, Some(external(objects_root)));
+    for block_index in 0..3u32 {
+        local
+            .add_packed_block(
+                REUSED_SLICE,
+                block_index,
+                &blocks[block_index as usize],
+                vec![span(0, BLOCK_SIZE, slots[block_index as usize], 0)],
+            )
+            .unwrap();
+    }
+    let local_bytes = local.build().unwrap();
+
+    NestedExternalFixture {
+        remote_bytes,
+        local_bytes,
+        pack_bytes,
+        blocks,
+        frames_root_page: (frames_addr.offset, frames_addr.stored_len),
+        frames_tree_levels,
+    }
+}
+
+/// READ-005: a page that is not loaded yet is fetched through its locator ?
+/// including the local children of an external page, which are addressed
+/// inside the external container.  One fetch per distinct page per read; a
+/// page that cannot be loaded at all is an error, never an inferred absence.
+#[test]
+fn nested_external_index_pages_are_located_and_loaded() {
+    let fx = nested_external_fixture();
+    let source = CountingSource::new(vec![
+        (NESTED_PACK_ID, fx.pack_bytes.clone()),
+        (REMOTE_SEAL_ID, fx.remote_bytes.clone()),
+    ]);
+    let opened = Opened::new(fx.local_bytes.clone(), &source);
+    let reader = opened.reader();
+
+    // The key is present in the remote table but its page is not loaded: the
+    // read must locate and load it instead of reporting ENOENT or a hole.
+    assert_eq!(
+        reader.read_block(REUSED_SLICE, 0, BLOCK_SIZE).unwrap(),
+        fx.blocks[0]
+    );
+    assert_eq!(
+        source.gets_for(&REMOTE_SEAL_ID),
+        fx.frames_tree_levels + 1,
+        "one fetch per distinct remote page: the whole Frames path plus Objects"
+    );
+
+    // The same pages serve the whole range: they are never fetched twice.
+    let oracle: Vec<u8> = fx.blocks[..3].concat();
+    assert_eq!(
+        reader
+            .read_range(REUSED_SLICE, 0, 3 * BLOCK_SIZE as u64, BLOCK_SIZE)
+            .unwrap(),
+        oracle
+    );
+    assert_eq!(
+        source.gets_for(&REMOTE_SEAL_ID),
+        fx.frames_tree_levels + 1,
+        "no page is fetched twice"
+    );
+
+    // A page that cannot be loaded is an error, never an inferred absence and
+    // never zeros.
+    let empty = CountingSource::new(Vec::new());
+    let unloadable = Opened::new(fx.local_bytes.clone(), &empty);
+    let error = unloadable
+        .reader()
+        .read_block(REUSED_SLICE, 0, BLOCK_SIZE)
+        .unwrap_err();
+    assert!(matches!(error, SealError::Source(_)), "{error:?}");
+}
+
+/// READ-006: a pinned view never mixes revisions.  Once the remote container
+/// changes underneath the reader, the already-pinned reader keeps serving the
+/// revision its pages were authenticated against, and a view opened after the
+/// switch fails closed instead of combining old and new bytes.
+#[test]
+fn a_pinned_view_never_mixes_revisions_across_a_root_switch() {
+    let fx = nested_external_fixture();
+    let (offset, stored_len) = fx.frames_root_page;
+    let mut switched = fx.remote_bytes.clone();
+    // Flip a byte inside the remote Frames root page: the same offsets, a
+    // different revision behind the very same locator.
+    switched[offset as usize + stored_len as usize / 2] ^= 0xff;
+
+    let source = CountingSource::new(vec![
+        (NESTED_PACK_ID, fx.pack_bytes.clone()),
+        (REMOTE_SEAL_ID, fx.remote_bytes.clone()),
+    ]);
+    *source.swap_after.borrow_mut() = Some((REMOTE_SEAL_ID, 3, switched));
+    let opened = Opened::new(fx.local_bytes.clone(), &source);
+    let reader = opened.reader();
+
+    assert_eq!(
+        reader.read_block(REUSED_SLICE, 0, BLOCK_SIZE).unwrap(),
+        fx.blocks[0]
+    );
+    assert_eq!(source.gets_for(&REMOTE_SEAL_ID), fx.frames_tree_levels + 1);
+
+    let oracle: Vec<u8> = fx.blocks[..3].concat();
+    assert_eq!(
+        reader
+            .read_range(REUSED_SLICE, 0, 3 * BLOCK_SIZE as u64, BLOCK_SIZE)
+            .unwrap(),
+        oracle,
+        "the pinned view keeps the revision it was opened with"
+    );
+    assert_eq!(
+        source.gets_for(&REMOTE_SEAL_ID),
+        fx.frames_tree_levels + 1,
+        "the pinned view fetches no page from the switched container"
+    );
+
+    // A view opened after the switch fails closed: it never mixes the two
+    // revisions and never silently reads a short or zero-filled range.
+    let after = Opened::new(fx.local_bytes.clone(), &source);
+    let error = after
+        .reader()
+        .read_block(REUSED_SLICE, 0, BLOCK_SIZE)
+        .unwrap_err();
+    assert!(
+        matches!(error, SealError::Wire(WireError::HashMismatch { .. })),
+        "{error:?}"
     );
 }

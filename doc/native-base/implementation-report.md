@@ -804,6 +804,33 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 本项冒充。`MemoryUploadBackend::corrupt_keys` 仍然只有写入点、没有读取点（存量缺口）。
 
 
+### PR07L · 密封读视图的 locator 解析与固定（READ-005/READ-006）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。此前 seal reader 有两个真实缺口：
+`ChildRef::Local` 一律按"当前 seal 自己的字节"解析，因此**外部页的 local child**
+（多级外部索引）会被错误地按本地容器寻址；同时每次 lookup 都重新取页，同一个读视图
+在容器字节变化后可能把两个 revision 混进一次读。
+
+- `src/native_base/seal/reader.rs`：`read_page` 现在返回"该页 local child 所在容器"
+  （`None` = 本 seal，`Some(ObjectRef)` = 经 locator 到达的外部容器），`lookup` 与
+  `for_each_entry` 逐级传递该上下文；寻址与边界检查在查缓存之前完成，以 stored digest
+  为键的 `PageKey` 缓存保证同一视图内**每页只取一次**，容器被替换时要么命中已认证的旧页、
+  要么在 digest 处失败关闭。
+- `src/native_base/seal/tests.rs`：新增 2 层外部 Frames 表 fixture（96 个 block、
+  `with_leaf_target(1024)`），并给计数后端加"第 N 次 GET 起换成另一份字节"的容器切换钩子。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07L-FOCUSED | `bash doc/native-base/logs/pr07l-seal-view-pinning.sh` | 0 | PASS（native_base::seal::tests 35 passed/0 failed） | [pr07l-seal-view-pinning.log](logs/pr07l-seal-view-pinning.log) |
+| PR07L-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07L-READ005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests` | 0 | PASS：`nested_external_index_pages_are_located_and_loaded`（外部页 local child 按 locator 解析；每页只取一次；不可加载的页是错误而非 Ok(None)/零填充） | 同上 |
+| PR07L-READ006 | 同上 | 0 | PASS：`a_pinned_view_never_mixes_revisions_across_a_root_switch`（切换后固定视图仍返回全旧字节且不再取页；切换后新开的视图以 HashMismatch 失败关闭） | 同上 |
+
+范围说明（不虚标）：页缓存是**读视图级**的（`SealReader` 每次读新建），不是跨请求缓存；
+跨请求 shared cache 仍是 PR11 preview（`probe_shared_cache()` 恒为 `None`）。READ-005/006
+的验收是组件级（seal reader + 进程内对象源），真实对象后端的分片/延迟 GET 等价性仍需 P3 集成门。
+
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

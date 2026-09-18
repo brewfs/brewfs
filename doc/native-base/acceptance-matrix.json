@@ -183,8 +183,8 @@
     "expected": "按locator取页不直接ENOENT/Hole",
     "invariants": "INV-05",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR07L: seal/reader.rs 现在按 locator 解析 local child（外部页的 local child 在外部容器内寻址），并以 digest 为键缓存已认证页：未加载的页先经 locator 取回再判断存在性。cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests (exit 0, 35 passed/0 failed): nested_external_index_pages_are_located_and_loaded（2 层外部 Frames 表：read_block 成功且逐字节一致；远端 GET 次数 = 树高+1，无重复取页；同一批页复用于整个 range read；远端对象不可用时返回 Source 错误而非 Ok(None)/零填充）。doc/native-base/logs/pr07l-seal-view-pinning.{sh,log}"
   },
   {
     "test_id": "READ-006",
@@ -194,8 +194,8 @@
     "expected": "全旧或全新固定view，不混用",
     "invariants": "INV-03",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "PR07L: SealReader 的读视图在打开时固定（SealSnapshot 持有 seal 字节），页缓存以 digest 为键，同一读视图内不会混用两个 revision。cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests (exit 0, 35 passed/0 failed): a_pinned_view_never_mixes_revisions_across_a_root_switch（容器切换后固定视图仍返回全旧字节且不再取页；切换后新开的视图以 HashMismatch 失败关闭，绝不混用旧/新字节）。doc/native-base/logs/pr07l-seal-view-pinning.{sh,log}"
   },
   {
     "test_id": "READ-007",
