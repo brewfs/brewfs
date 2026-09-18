@@ -16,6 +16,7 @@ use crate::native_base::wire::bnct::{
     CleanupBatch, CleanupState, ControlRecord, DomainCloseCertificate, DomainState,
     OwnershipDomain, RegistrationState,
 };
+use crate::native_base::wire::container::ObjectKind;
 use crate::native_base::wire::refs::{Hash32, ObjectRef, PageKind, RootRef};
 use crate::native_base::write::domain::decode_domain;
 use crate::native_base::write::keys::Keys;
@@ -77,6 +78,69 @@ impl PrivateQuota {
             headroom_bytes: headroom,
         })
     }
+}
+
+/// Bounds for C(d), the control-evidence set of one close (CLN-025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseEvidenceBudget {
+    pub max_objects: u64,
+    pub max_bytes: u64,
+}
+
+impl CloseEvidenceBudget {
+    pub const DEFAULT: Self = Self {
+        max_objects: 4096,
+        max_bytes: 64 * 1024 * 1024,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CloseEvidenceUsage {
+    pub objects: u64,
+    pub bytes: u64,
+}
+
+/// Account C(d) before the close certificate is written (CLN-025).
+///
+/// Evidence is permanently registered by the authority, so it is quota'd and
+/// kind-checked: every evidence object must be a container (`FrozenMetadata`,
+/// `SnapshotManifest` or `PagedInventory`).  A data pack or data seal can never
+/// masquerade as evidence, and an oversized evidence set fails the close
+/// instead of being published.
+pub fn account_close_evidence(
+    objects: &[ObjectRef],
+    budget: &CloseEvidenceBudget,
+) -> LifecycleResult<CloseEvidenceUsage> {
+    let mut usage = CloseEvidenceUsage::default();
+    for object in objects {
+        if !(ObjectKind::FrozenMetadata.as_u8()..=ObjectKind::PagedInventory.as_u8())
+            .contains(&object.kind)
+        {
+            return Err(LifecycleError::Retention(format!(
+                "data object {:02x?} (kind {}) cannot be registered as control evidence",
+                object.object_id, object.kind
+            )));
+        }
+        usage.objects = usage.objects.checked_add(1).ok_or_else(|| {
+            LifecycleError::LimitExceeded("control evidence object count overflow".into())
+        })?;
+        usage.bytes = usage.bytes.checked_add(object.object_len).ok_or_else(|| {
+            LifecycleError::LimitExceeded("control evidence byte sum overflow".into())
+        })?;
+    }
+    if usage.objects > budget.max_objects {
+        return Err(LifecycleError::LimitExceeded(format!(
+            "control evidence has {} objects, quota is {}",
+            usage.objects, budget.max_objects
+        )));
+    }
+    if usage.bytes > budget.max_bytes {
+        return Err(LifecycleError::LimitExceeded(format!(
+            "control evidence is {} bytes, quota is {}",
+            usage.bytes, budget.max_bytes
+        )));
+    }
+    Ok(usage)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,6 +652,10 @@ pub async fn close_domain_commit(
     }
     let retained_objects = retained.into_values().collect::<Vec<_>>();
     let control_objects = control.into_values().collect::<Vec<_>>();
+    // C(d) is registered permanently by the authority: quota it and refuse any
+    // data object that tries to masquerade as evidence before the certificate
+    // is fixed or written (CLN-025).
+    account_close_evidence(&control_objects, &CloseEvidenceBudget::DEFAULT)?;
     let retained_union_root = require_optional_artifact(
         &request.artifacts.retained_union,
         &retained_objects,
@@ -3452,6 +3520,204 @@ mod tests {
         assert_eq!(
             read_domain(&store, &keys, &domain_id).await.state,
             DomainState::Closed
+        );
+    }
+
+    /// CLN-025 / INV-13, INV-21, INV-24: after I(d) is frozen the close builds
+    /// an independent control-evidence inventory and certificate.  C(d) is
+    /// accounted against an evidence quota, every evidence object must be a
+    /// container (data cannot masquerade as evidence), the inventory has no
+    /// self-hash and cannot recurse into its own root, and a rejected C(d)
+    /// leaves the domain DRAINING with no certificate written.
+    #[tokio::test]
+    async fn close_evidence_is_independent_quota_checked_and_never_data() {
+        let certificate_object = ObjectRef {
+            kind: ObjectKind::FrozenMetadata.as_u8(),
+            ..object(150, "control/cert-150.brfcl")
+        };
+        let manifest = ObjectRef {
+            kind: ObjectKind::SnapshotManifest.as_u8(),
+            ..object(151, "manifest/151.brfsm")
+        };
+        let usage = account_close_evidence(
+            &[certificate_object.clone(), manifest.clone()],
+            &CloseEvidenceBudget::DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(
+            usage,
+            CloseEvidenceUsage {
+                objects: 2,
+                bytes: certificate_object.object_len + manifest.object_len,
+            }
+        );
+        for data_object in [
+            object(152, "private/pack-152"),
+            ObjectRef {
+                kind: ObjectKind::DataSeal.as_u8(),
+                ..object(153, "seal/153")
+            },
+        ] {
+            let error =
+                account_close_evidence(&[data_object], &CloseEvidenceBudget::DEFAULT).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot be registered as control evidence"),
+                "unexpected error: {error}"
+            );
+        }
+        let too_many = CloseEvidenceBudget {
+            max_objects: 1,
+            max_bytes: u64::MAX,
+        };
+        assert!(
+            account_close_evidence(&[certificate_object.clone(), manifest.clone()], &too_many)
+                .unwrap_err()
+                .to_string()
+                .contains("objects, quota is 1")
+        );
+        let too_small = CloseEvidenceBudget {
+            max_objects: 10,
+            max_bytes: certificate_object.object_len - 1,
+        };
+        assert!(
+            account_close_evidence(std::slice::from_ref(&certificate_object), &too_small)
+                .unwrap_err()
+                .to_string()
+                .contains("bytes, quota is")
+        );
+
+        // The evidence inventory is independent: it never lists its own root,
+        // so opening it cannot recurse, and an index that tried to contain
+        // itself is refused outright.
+        let evidence_index = object_index(std::slice::from_ref(&certificate_object), 162);
+        let evidence_objects =
+            open_object_index(&evidence_index.root, &evidence_index.bytes).unwrap();
+        assert_eq!(evidence_objects, vec![certificate_object.clone()]);
+        assert!(
+            evidence_objects
+                .iter()
+                .all(|object| object.object_id != evidence_index.root.object.object_id)
+        );
+        assert!(
+            build_object_index(
+                &[object(162, "control/self-162.brfcl")],
+                [162; 16],
+                b"control/self-162.brfin".to_vec(),
+                64,
+            )
+            .is_err()
+        );
+
+        // End to end: a data pack claiming to be receipt evidence fails the
+        // close before any certificate exists.
+        let volume = [163; 16];
+        let domain_id = [164; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let doomed = object(165, "private/doomed");
+        let counterfeit = object(166, "private/counterfeit-pack");
+        let batch = build_retain_batch(
+            domain_id,
+            std::slice::from_ref(&manifest),
+            [167; 16],
+            b"control/retain-167.brfin".to_vec(),
+        )
+        .unwrap();
+        let inventory_objects = vec![
+            doomed.clone(),
+            counterfeit.clone(),
+            batch.index.root.object.clone(),
+            manifest.clone(),
+        ];
+        let mut seeded_domain = domain(volume, domain_id);
+        seeded_domain.inventory_seq = inventory_objects.len() as u64;
+        seeded_domain.retention_seq = 1;
+        put(
+            &store,
+            keys.domain(&domain_id),
+            ControlRecord::OwnershipDomain(seeded_domain).encode(),
+        )
+        .await;
+        for (index, item) in inventory_objects.iter().enumerate() {
+            put_registration(
+                &store,
+                &keys,
+                domain_id,
+                index as u64 + 1,
+                item,
+                RegistrationState::Verified,
+            )
+            .await;
+        }
+        let mut receipt = batch.receipt(1, [168; 16], [169; 32]);
+        receipt.evidence_root = RootRef {
+            object: counterfeit.clone(),
+            address: root(170).address,
+        };
+        put(
+            &store,
+            keys.retention_receipt(&domain_id, 1),
+            ControlRecord::RetentionReceipt(receipt).encode(),
+        )
+        .await;
+        close_domain_start(
+            &store,
+            &keys,
+            &CloseStartRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                expected_entity_version: 1,
+                expected_inventory_seq: inventory_objects.len() as u64,
+                expected_retention_seq: 1,
+                accepted_ticket_end: 9,
+            },
+        )
+        .await
+        .unwrap();
+        let artifacts = CloseArtifacts {
+            inventory: Some(object_index(&inventory_objects, 222)),
+            retention_batches: vec![batch.index.clone()],
+            retained_union: Some(object_index(std::slice::from_ref(&manifest), 223)),
+            control_evidence: None,
+        };
+        let error = close_domain_commit(
+            &store,
+            &keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: inventory_objects.len() as u64,
+                final_retention_seq: 1,
+                artifacts,
+                certificate_ref: None,
+                owner_terminal_proof_hash: [171; 32],
+                attempts_resolved: true,
+                operations_drained: true,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be registered as control evidence"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            read_domain(&store, &keys, &domain_id).await.state,
+            DomainState::Draining
+        );
+        assert!(
+            store
+                .get(&keys.close_certificate(&domain_id))
+                .await
+                .unwrap()
+                .is_none(),
+            "no certificate may exist for a rejected C(d)"
         );
     }
 }

@@ -895,6 +895,34 @@ volume 级 used/reserved 字节的采集与 runtime 常量接入属于后续集�
 在本地测试中是 workspace head + view 记录，真实 KV 命名空间（Redis/TiKV）上的 alias
 删除走同一 `plan_private_cleanup` 入口，但未在本机多后端复跑。
 
+### PR07O · 显式变体记账与 close 证据证书（CLN-022/CLN-023/CLN-025）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。
+
+- `src/native_base/lifecycle/variant.rs`：`LayoutVariantRequest` 新增 `source_bytes`，
+  `LayoutVariantPlan` 新增 `source_bytes`/`permanent_bytes`，使新增空间与旧正式 Pack
+  足迹分开列账（`permanent_bytes = source_bytes + added_bytes`，溢出即
+  `LimitExceeded`）；新增 `abandoned_variant_outputs`，把"未发布变体的 build 域
+  只能清自身未保留输出"编码为集合运算（CLN-022/CLN-023）。
+- `src/native_base/lifecycle/cleanup.rs`：新增 `CloseEvidenceBudget` /
+  `CloseEvidenceUsage` / `account_close_evidence`，并在 `close_domain_commit`
+  计算完 C(d) 后、写证书前调用：证据对象必须是容器 kind（3..=5），
+  DataPack/DataSeal 一律拒绝，objects/bytes 逐项累计并施加证据 quota
+  （默认 4096 objects / 64 MiB）（CLN-025）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07O-FOCUSED | `bash doc/native-base/logs/pr07o-variant-evidence-close.sh` | 0 | PASS（variant 4 passed/0 failed、close_evidence 1 passed/0 failed） | [pr07o-variant-evidence-close.log](logs/pr07o-variant-evidence-close.log) |
+| PR07O-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07O-CLN022 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::variant` | 0 | PASS：`explicit_variant_books_new_space_separately_and_keeps_old_packs` | 同上 |
+| PR07O-CLN023 | 同上 | 0 | PASS：`an_unpublished_variant_cleans_only_its_unretained_outputs` | 同上 |
+| PR07O-CLN025 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::cleanup::tests::close_evidence` | 0 | PASS：`close_evidence_is_independent_quota_checked_and_never_data` | 同上 |
+
+范围说明（不虚标）：`source_bytes` 由调用方提供（尚无真实字节统计接入），
+`abandoned_variant_outputs` 是纯函数，未接入真实 build 域终结事务；证据 quota
+的默认值是可配置常量，接入运维配置（spec 15 的运行时常量面）属于后续工作；
+close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

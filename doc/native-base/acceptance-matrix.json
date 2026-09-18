@@ -1701,8 +1701,8 @@
     "expected": "新增空间单列，旧正式Pack永久保留",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07o-variant-evidence-close.sh (exit 0; native_base::lifecycle::variant 4 passed/0 failed): explicit_variant_books_new_space_separately_and_keeps_old_packs —— 显式 repack 变体（apply=true，head 干净、无 orphan、无有效 writer、view 匹配）只在“加法”意义上成立：LayoutVariantPlan 现在单列 source_bytes(4096)/added_bytes(100)/permanent_bytes(4196)，added_bytes 只包含本变体新增空间而不含旧 Pack 足迹；permanent_objects = source ∪ candidate = {3,4,5}，两个旧正式 Pack 仍在永久集合内且不出现在 added_objects；source_bytes + candidate_new_bytes 溢出即 LimitExceeded（variant footprint overflow）。log: doc/native-base/logs/pr07o-variant-evidence-close.log"
   },
   {
     "test_id": "CLN-023",
@@ -1712,8 +1712,8 @@
     "expected": "build域终结后只清理其未保留输出",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07o-variant-evidence-close.sh (exit 0; native_base::lifecycle::variant 4 passed/0 failed): an_unpublished_variant_cleans_only_its_unretained_outputs —— repack 未发布时（语义变更 candidate.binding_digest 不同即被拒，未写入任何发布记录），build 域终结后的可清理集合 = 域内对象 − 已发布源保留对象：build 域 {4,5,6} 减去源保留 {3,4} 只剩 {5,6}，已发布源对象（3）与共享对象（4）绝不在候选集内；已应用变体的 permanent_objects 走同一函数则只剩未保留的 {6}。log: doc/native-base/logs/pr07o-variant-evidence-close.log"
   },
   {
     "test_id": "CLN-024",
@@ -1877,8 +1877,8 @@
     "expected": "独立ControlEvidence永久登记、无self-hash和递归库存；证据quota计数，数据不能伪装成证据",
     "invariants": "INV-13;INV-21;INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07o-variant-evidence-close.sh (exit 0; cleanup::close_evidence 1 passed/0 failed): close_evidence_is_independent_quota_checked_and_never_data —— I(d) 冻结后 C(d) 由独立 ControlEvidence 索引与 close 证书登记：account_close_evidence 逐对象累计 objects/bytes 并施加证据 quota（4096 objects / 64MiB，超限分别报 \"objects, quota is 1\" 与 \"bytes, quota is ...\"）；kind 检查拒绝数据伪装证据（DataPack/DataSeal 一律 \"cannot be registered as control evidence\"，端到端构造 receipt.evidence_root 指向 data pack 时 close_domain_commit 直接失败、域停在 Draining 且 close_certificate 键不存在，绝不发布自相矛盾的证书）；证据索引自身不含自己的 ObjectId（open_object_index 只回原集合、无 self-hash、无递归），把自身 ObjectId 放进索引则构造期即被拒。log: doc/native-base/logs/pr07o-variant-evidence-close.log"
   },
   {
     "test_id": "ORD-009",
