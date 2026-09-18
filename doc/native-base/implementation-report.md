@@ -606,6 +606,35 @@ cleanup 只接受 close 证书 + 已验证 unversioned delete 能力。
 仍如实 NOT_RUN：GATE-002/GATE-003 需要的 `required_features` 依赖闭包汇总尚未实现
 （当前只拒绝未知位与运行时不支持的位）；真实后端 durability 仍需 compose 环境实测。
 
+### PR07E · 读取资源边界（RES-001…RES-005）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。这一组证明的是"边界先于
+分配/IO 生效"，而不是吞吐优化：
+
+- `src/native_base/seal/plan.rs`：`ReadBudget::reserve` 对单个 unit 的
+  encoded/decoded 峰值超出硬上限立即返回 `SealError::BudgetUnitTooLarge`；
+  `MAX_PLAN_BLOCKS = 65_536` 在解析任何 unit 之前用 `PlanLimit` 拒绝；
+  `BudgetReservation` 的 `Drop` 是唯一的释放路径（成功、失败、取消三条
+  路径都走它）。
+- `src/native_base/runtime/planner.rs`：`ReadBudget` 的 demand reserve 与
+  `FrameSingleflight`（waiter 取消不取消共享 loader）。
+- `src/native_base/wire/frame.rs`：`MAX_PLAIN_PAYLOAD = 64 MiB`（decoded）与
+  `MAX_NATIVE_OUTER_PAYLOAD = 65 MiB`（encoded 外壳，含 4B persisted header）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07E-FOCUSED | `bash doc/native-base/logs/pr07e-resource-bounds.sh` | 0 | PASS（seal::tests 32 passed/0 failed；planner::tests 3 passed/0 failed；frame::tests 9 passed/0 failed） | [pr07e-resource-bounds.log](logs/pr07e-resource-bounds.log) |
+| PR07E-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07E-RES001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests` | 0 | PASS：`undersized_budget_rejects_before_any_io`（单 unit 超预算 → `BudgetUnitTooLarge{needed,cap}`，0 次 GET） | 同上 |
+| PR07E-RES002 | 同上 | 0 | PASS：`a_plan_beyond_the_segment_bound_is_refused_before_any_io`（`MAX_PLAN_BLOCKS+1` 个 block → `PlanLimit`，0 次 GET、0 令牌占用） | 同上 |
+| PR07E-RES003 | 同上 + `-- native_base::runtime::planner::tests` | 0 | PASS：`budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel` 与 `singleflight_cancelled_waiter_does_not_cancel_loader` | 同上 |
+| PR07E-RES004 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::planner::tests` | 0 | PASS：`prefetch_cannot_consume_demand_reserve` | 同上 |
+| PR07E-RES005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::wire::frame::tests` | 0 | PASS：`native_block_envelope_carries_64mib_decoded_plus_the_persisted_header` | 同上 |
+
+范围说明：这些是同步执行器（PR03/PR10 核心算法）上的组件级证据。PR10 的异步
+执行器、Range GET 合并与预取尚未接入真实 reader，因此矩阵中与"真实 FUSE
+读取"绑定的条目（READ-001/005/006/007/008、CONS-003 等）仍保持未实现。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -417,4 +417,40 @@ mod tests {
         };
         assert_eq!(h.frame_span(), 80 + 16); // already aligned
     }
+
+    /// RES-005: the 65 MiB encoded envelope must carry a full 64 MiB native
+    /// block plus its 4-byte persisted header, while the decoded ceiling
+    /// stays at 64 MiB.
+    #[test]
+    fn native_block_envelope_carries_64mib_decoded_plus_the_persisted_header() {
+        use crate::chunk::compress::{Compression, PERSISTED_HEADER_LEN, encode_persisted_block};
+        use crate::native_base::wire::datapack::PackFrame;
+
+        let decoded = vec![0x5Au8; MAX_PLAIN_PAYLOAD as usize];
+        let encoded = encode_persisted_block(&decoded, Compression::None);
+        assert_eq!(encoded.len(), decoded.len() + PERSISTED_HEADER_LEN);
+        assert!(
+            encoded.len() as u64 <= MAX_NATIVE_OUTER_PAYLOAD as u64,
+            "encoded {} exceeds {MAX_NATIVE_OUTER_PAYLOAD}",
+            encoded.len()
+        );
+
+        // The frame accepts the full block, and the inner bytes decode back
+        // to exactly 64 MiB.
+        let frame = PackFrame::native_block_v1(&encoded).unwrap();
+        assert_eq!(frame.raw_len as usize, encoded.len());
+        assert_eq!(
+            crate::chunk::compress::decompress_framed(&frame.stored)
+                .unwrap()
+                .len(),
+            MAX_PLAIN_PAYLOAD as usize
+        );
+
+        // Neither ceiling moved: the encoded envelope stops at 65 MiB and the
+        // decoded payload limit is still 64 MiB.
+        assert!(
+            PackFrame::native_block_v1(&vec![0u8; MAX_NATIVE_OUTER_PAYLOAD as usize + 1]).is_err()
+        );
+        assert!(PackFrame::plain_bytes(&vec![0u8; MAX_PLAIN_PAYLOAD as usize + 1]).is_err());
+    }
 }

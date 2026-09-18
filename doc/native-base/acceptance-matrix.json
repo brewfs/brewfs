@@ -1063,8 +1063,8 @@
     "expected": "立即BudgetUnitTooLarge，不无穷排队",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07e-resource-bounds.sh (exit 0; seal::tests 32 passed/0 failed, runtime::planner::tests 3 passed/0 failed, wire::frame::tests 9 passed/0 failed): undersized_budget_rejects_before_any_io —— budget 上限为 (1,1) 的单个认证 unit 立即返回 SealError::BudgetUnitTooLarge{needed,cap}（不是 Exhausted、不入队不退化为无限等待），失败时 source.gets()==0 且 budget.inflight()==(0,0)。seal/plan.rs 的 reserve() 对 encoded/decoded 任一超过硬上限都直接拒绝，符合 spec 06 §7「never queues forever」。log: doc/native-base/logs/pr07e-resource-bounds.log"
   },
   {
     "test_id": "RES-002",
@@ -1074,8 +1074,8 @@
     "expected": "先限plan/任务数量，不无界分配future",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07e-resource-bounds.sh (exit 0; seal::tests 32 passed/0 failed, runtime::planner::tests 3 passed/0 failed, wire::frame::tests 9 passed/0 failed): a_plan_beyond_the_segment_bound_is_refused_before_any_io —— 请求 (MAX_PLAN_BLOCKS=65536)+1 个 block 的读取在解析/构造任何 unit 之前就返回 SealError::PlanLimit（seal/plan.rs 在 block_count > MAX_PLAN_BLOCKS 处先拒绝），source.gets()==0、budget.inflight()==(0,0)，因此不存在按百万 segment 无界分配 future 的路径。log: doc/native-base/logs/pr07e-resource-bounds.log"
   },
   {
     "test_id": "RES-003",
@@ -1085,8 +1085,8 @@
     "expected": "令牌跟随真实buffer生命周期、不双算漏算",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07e-resource-bounds.sh (exit 0; seal::tests 32 passed/0 failed, runtime::planner::tests 3 passed/0 failed, wire::frame::tests 9 passed/0 failed): budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel —— 同一 plan 在成功、short-read 失败、首 GET 后取消三条路径下 inflight 都回到 (0,0)，令牌随真实 buffer/reservation 生命周期释放（BudgetReservation 的 Drop），既不双算也不漏算；runtime::planner::tests::singleflight_cancelled_waiter_does_not_cancel_loader 证明 waiter 取消不取消共享 loader、loader 只被调度一次（无 waiter 泄漏、无重复解码）。log: doc/native-base/logs/pr07e-resource-bounds.log"
   },
   {
     "test_id": "RES-004",
@@ -1096,8 +1096,8 @@
     "expected": "demand保留额度，不被prefetch饿死",
     "invariants": "INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07e-resource-bounds.sh (exit 0; seal::tests 32 passed/0 failed, runtime::planner::tests 3 passed/0 failed, wire::frame::tests 9 passed/0 failed): prefetch_cannot_consume_demand_reserve —— 预算 encoded=100、demand_reserve=40：prefetch 先占 60 后，第二个 prefetch 得到 Exhausted，而 demand 仍能拿到保留的 40；demand 额度不会被 prefetch 饿死。log: doc/native-base/logs/pr07e-resource-bounds.log"
   },
   {
     "test_id": "RES-005",
@@ -1107,8 +1107,8 @@
     "expected": "65MiB编码上限可承载，decoded仍≤64MiB",
     "invariants": "INV-12 INV-13",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07e-resource-bounds.sh (exit 0; seal::tests 32 passed/0 failed, runtime::planner::tests 3 passed/0 failed, wire::frame::tests 9 passed/0 failed): native_block_envelope_carries_64mib_decoded_plus_the_persisted_header —— 64MiB decoded 经 encode_persisted_block(Compression::None) 变为 64MiB+4B（PERSISTED_HEADER_LEN=4），PackFrame::native_block_v1 接受（≤MAX_NATIVE_OUTER_PAYLOAD=65MiB），decompress_framed 还原恰好 64MiB；65MiB+1 的 encoded 与 64MiB+1 的 decoded 分别被 MAX_NATIVE_OUTER_PAYLOAD / MAX_PLAIN_PAYLOAD 拒绝，说明 4B header 由 65MiB 外壳承载而没有抬高 decoded 上限。log: doc/native-base/logs/pr07e-resource-bounds.log"
   },
   {
     "test_id": "IDX-001",

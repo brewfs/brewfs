@@ -953,6 +953,37 @@ fn budget_that_fits_only_some_units_rejects_the_whole_plan() {
     assert_eq!(budget.inflight(), (0, 0));
 }
 
+/// RES-002: the plan's segment count is bounded before any unit is resolved
+/// or any task/future is constructed, so a million-segment request cannot
+/// allocate an unbounded plan.
+#[test]
+fn a_plan_beyond_the_segment_bound_is_refused_before_any_io() {
+    let fx = mixed_fixture();
+    let source = CountingSource::new(vec![
+        (PACK_ID, fx.pack_bytes.clone()),
+        (LOOSE_ID, fx.loose_bytes.clone()),
+    ]);
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+    let mut budget = ReadBudget::recommended();
+    let cancel = CancelToken::new();
+    let mut metrics = ReadMetrics::default();
+    let err = opened
+        .reader()
+        .read_range_with(
+            SLICE,
+            0,
+            (super::MAX_PLAN_BLOCKS + 1) * BLOCK_SIZE as u64,
+            BLOCK_SIZE,
+            &mut budget,
+            &cancel,
+            &mut metrics,
+        )
+        .unwrap_err();
+    assert!(matches!(err, SealError::PlanLimit(_)), "{err:?}");
+    assert_eq!(source.gets(), 0, "the bound is checked before any fetch");
+    assert_eq!(budget.inflight(), (0, 0));
+}
+
 #[test]
 fn pre_cancelled_read_does_no_io() {
     let fx = mixed_fixture();
@@ -1020,6 +1051,109 @@ fn cancellation_between_units_stops_fetching() {
         .unwrap_err();
     assert!(matches!(err, SealError::Cancelled), "{err:?}");
     assert_eq!(source.gets(), 1, "only the in-flight unit was fetched");
+}
+
+/// RES-003: every budget token follows the real buffer lifetime. A completed
+/// read, a failed read and a cancelled read must each release exactly what
+/// they reserved: no double release and no leak.
+#[test]
+fn budget_tokens_follow_the_buffer_lifetime_on_success_error_and_cancel() {
+    let fx = full_blocks_fixture();
+    let plan_len = 5 * BLOCK_SIZE as u64;
+
+    // Success.
+    let source = CountingSource::new(vec![
+        (PACK_ID, fx.pack_bytes.clone()),
+        (LOOSE_ID, fx.loose_bytes.clone()),
+    ]);
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+    let mut budget = ReadBudget::recommended();
+    let cancel = CancelToken::new();
+    let mut metrics = ReadMetrics::default();
+    opened
+        .reader()
+        .read_range_with(
+            SLICE,
+            0,
+            plan_len,
+            BLOCK_SIZE,
+            &mut budget,
+            &cancel,
+            &mut metrics,
+        )
+        .unwrap();
+    assert_eq!(budget.inflight(), (0, 0), "a completed read leaks nothing");
+
+    // Error: a short read fails the plan and must still release the whole
+    // reservation before the error is returned.
+    let source = CountingSource {
+        objects: vec![
+            (PACK_ID, fx.pack_bytes.clone()),
+            (LOOSE_ID, fx.loose_bytes.clone()),
+        ]
+        .into_iter()
+        .collect(),
+        gets: RefCell::new(0),
+        gets_per_object: RefCell::new(BTreeMap::new()),
+        bytes_fetched: RefCell::new(0),
+        corrupt_at: RefCell::new(None),
+        short_reads: true,
+        cancel_after_first_get: None,
+    };
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+    let mut budget = ReadBudget::recommended();
+    let mut metrics = ReadMetrics::default();
+    assert!(
+        opened
+            .reader()
+            .read_range_with(
+                SLICE,
+                0,
+                plan_len,
+                BLOCK_SIZE,
+                &mut budget,
+                &cancel,
+                &mut metrics,
+            )
+            .is_err()
+    );
+    assert_eq!(budget.inflight(), (0, 0), "a failed read leaks nothing");
+
+    // Cancellation: the in-flight unit's tokens are released with its buffer
+    // even though the plan stops early.
+    let cancel = CancelToken::new();
+    let source = CountingSource {
+        objects: vec![
+            (PACK_ID, fx.pack_bytes.clone()),
+            (LOOSE_ID, fx.loose_bytes.clone()),
+        ]
+        .into_iter()
+        .collect(),
+        gets: RefCell::new(0),
+        gets_per_object: RefCell::new(BTreeMap::new()),
+        bytes_fetched: RefCell::new(0),
+        corrupt_at: RefCell::new(None),
+        short_reads: false,
+        cancel_after_first_get: Some(cancel.clone()),
+    };
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+    let mut budget = ReadBudget::recommended();
+    let mut metrics = ReadMetrics::default();
+    assert!(
+        opened
+            .reader()
+            .read_range_with(
+                SLICE,
+                0,
+                plan_len,
+                BLOCK_SIZE,
+                &mut budget,
+                &cancel,
+                &mut metrics,
+            )
+            .is_err()
+    );
+    assert_eq!(budget.inflight(), (0, 0), "a cancelled read leaks nothing");
 }
 
 // ---------------------------------------------------------------------------
