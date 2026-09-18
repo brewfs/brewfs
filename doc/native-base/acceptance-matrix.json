@@ -337,8 +337,8 @@
     "expected": "同workspace写域保持，内容正确且不进入fork可见基线",
     "invariants": "INV-11",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh (exit 0; focused 1 passed/0 failed): open_unlinked_inode_survives_seal_and_never_enters_the_visible_baseline —— open-unlink 句柄跨 seal 后 write_domain_id 与 base 均保持不变（同 workspace 写域），verify_read 逐内容核对已携带 placement（不改写、不 copy-up），append_write 只在同私有 head 追加且重叠写被拒绝，fork 可见基线始终不含该 inode。log: doc/native-base/logs/pr07r-orphan-carry-seal-fork.log"
   },
   {
     "test_id": "WRITE-012",
@@ -480,8 +480,8 @@
     "expected": "新base可完整读取Loose和Packed",
     "invariants": "INV-06",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh (exit 0; focused 1 passed/0 failed): a_fork_after_seal_reads_loose_and_packed_and_never_sees_the_carry —— seal 后立即 fork 的可读集合 = 全部 Loose ∪ 全部 Packed（5 个对象齐全），manifest 必须在基座内否则拒绝，同一对象同时被 Loose/Packed 认领即拒绝。log: doc/native-base/logs/pr07r-orphan-carry-seal-fork.log"
   },
   {
     "test_id": "LIFE-007",
@@ -1173,8 +1173,8 @@
     "expected": "fork看不到无名inode，旧句柄数据单独保留",
     "invariants": "INV-02 INV-11",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh (exit 0; focused 1 passed/0 failed): a_fork_after_seal_reads_loose_and_packed_and_never_sees_the_carry —— seal 后 fork：fork listing 里不得出现无名 inode（ensure_fork_invisible 对泄漏 inode 报错），fork view 若仍带 open_orphan_count/orphan_carry_digest 即拒绝；旧句柄数据只留在封印域的 carry 里。log: doc/native-base/logs/pr07r-orphan-carry-seal-fork.log"
   },
   {
     "test_id": "GATE-001",
@@ -1888,8 +1888,8 @@
     "expected": "新私有head包含完整orphan属性/extent/placement，基线和fork不含无名inode，内容不copy-up",
     "invariants": "INV-02;INV-03;INV-09",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh (exit 0; focused 1 passed/0 failed): open_unlinked_inode_survives_seal_and_never_enters_the_visible_baseline —— seal 的新私有 head 携带无名 inode 的 canonical attrs 与全部 extent/placement（orphan_carry_digest/open_orphan_count 覆盖），基线与 fork listing 都不含它；句柄读用内容 hash 核对原 placement、写只追加同域 placement（不 copy-up）；close 释放 placement 并离开 carry，该私有 inode 号不再复用；carry 编码逐字节 round-trip，magic 损坏即拒绝。log: doc/native-base/logs/pr07r-orphan-carry-seal-fork.log"
   },
   {
     "test_id": "ORD-010",
@@ -1899,7 +1899,7 @@
     "expected": "按OperationId恢复唯一head切换，无名inode不丢失；visible_delta_count和open_orphan_count禁止错误fast-forward",
     "invariants": "INV-08;INV-16;INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh (exit 0; focused 1 passed/0 failed): a_lost_seal_reply_is_recovered_by_operation_id_without_wrong_fast_forward —— 同 OperationId 重放返回同一 head switch（幂等）；换 head（43）→ 拒绝 fast-forward，同 OperationId 异 payload → OperationIdMismatch，陈旧前态 → stale；visible_delta_count≠0 时 seal 直接拒绝（不隐藏可见 delta）；记录存在但 head 已前移到其它 switch → 拒绝重放。log: doc/native-base/logs/pr07r-orphan-carry-seal-fork.log"
   }
 ]

@@ -212,6 +212,11 @@ impl Keys {
         self.join(&[b"forkop/", operation_id.as_slice()])
     }
 
+    /// Orphan-carry operation record (ORD-010), keyed by OperationId.
+    pub fn orphan_carry(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"oc/", operation_id.as_slice()])
+    }
+
     /// Presence means the target workspace currently has a valid writer.
     pub fn writer_lease(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
         self.join(&[b"writer/", workspace_id.as_slice()])

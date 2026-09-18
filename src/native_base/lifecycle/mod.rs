@@ -11,6 +11,7 @@ pub mod fork;
 pub mod index;
 pub mod manifest;
 pub mod options;
+pub mod orphan;
 pub mod publish;
 pub mod retention;
 pub mod seal;

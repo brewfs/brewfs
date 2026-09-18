@@ -951,6 +951,37 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07R · 无名 inode 跨 seal/fork 携带与回包丢失恢复
+
+工具链同 PR07P。新增实现位于 `src/native_base/lifecycle/orphan.rs`（`lifecycle/mod.rs` 导出，`write/keys.rs` 增加 `oc/<operation_id>` 记录键）。
+
+核心组件：
+- `OrphanExtent` / `OrphanInode` / `OrphanCarry`：无名 inode 的 placement（chunk/offset/length + payload hash）与必须 canonical 的属性字节。
+  `validate()` 要求私有 inode 号非零、inode 按号严格升序、extent 按 (chunk, offset) 严格升序且长度非零，属性必须被
+  `frozen::decode_canonical_attributes` 逐字节还原——carry 不得有损重建它声称保存的 inode 身份。`encode`/`decode` 带 magic、
+  计数上限（4096 inode / 1<<20 extent / 64 KiB attrs）与尾随字节检查，`digest()` 覆盖整段编码并写进 workspace head。
+- `OrphanLedger`：`open_unlinked`（重复或已关闭的私有 inode 号拒绝）、`verify_read`（读必须命中已携带 placement 且内容 hash 一致，
+  缺一即拒绝，且不产生 copy-up）、`append_write`（只在同私有 head 追加 placement，与既有 placement 重叠即冲突）、
+  `close`（最后一个句柄关闭后释放 placement、离开 carry，inode 号不复用）、`carry`（空集合不产生 carry）、
+  `ensure_fork_invisible`（fork listing 出现无名 inode 即报错）。
+- `seal_head_with_orphans`：只允许 Running head，`visible_delta_count` 必须为 0（seal 不能隐藏可见 delta），workspace/domain 必须匹配；
+  保持 base 与 `write_domain_id` 不变，写入 `open_orphan_count` 与 `orphan_carry_digest`，`entity_version` +1。
+- `ensure_fork_view_has_no_carry` + `plan_fork_readable_base`：fork view 带私有 orphan 状态即拒绝；fork 立即可读集合 = Loose ∪ Packed
+  （manifest 必须在基座内，同一对象不得同时被 Loose/Packed 认领）。
+- `resume_orphan_carry`：lost-reply 恢复以 OperationId 为键；记录存在时要求记录字节逐字节相同，并重新计算「唯一那次 head switch」的
+  结果 head/view 做比较——不同 head、不同 payload、陈旧前态、非零 `visible_delta_count` 全部拒绝，不会 fast-forward 到别的 head。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07R-FOCUSED | `bash doc/native-base/logs/pr07r-orphan-carry-seal-fork.sh` | 0 | PASS（orphan 3 passed/0 failed，每 ID 1 passed） | [pr07r-orphan-carry-seal-fork.log](logs/pr07r-orphan-carry-seal-fork.log) |
+| PR07R-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07R-ORD009 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::orphan::tests::open_unlinked_inode_survives_seal` | 0 | PASS（`open_unlinked_inode_survives_seal_and_never_enters_the_visible_baseline`） | 同上 |
+| PR07R-ORD010 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::orphan::tests::a_lost_seal_reply` | 0 | PASS（`a_lost_seal_reply_is_recovered_by_operation_id_without_wrong_fast_forward`） | 同上 |
+| PR07R-IDX006-LIFE006 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::orphan::tests::a_fork_after_seal` | 0 | PASS（`a_fork_after_seal_reads_loose_and_packed_and_never_sees_the_carry`） | 同上 |
+
+范围说明（诚实）：本轮交的是生命周期 seam。`OrphanLedger` 是进程内状态机，尚未接到真实 VFS open/unlink 路径；
+`resume_orphan_carry` 走真实 `ControlStore` 事务（与 Redis/TiKV 共用同一 trait），但真实 seal 调用点仍在 PR07 运行时；
+carry 只记录 placement 与 payload hash，不复制数据本体。
 ### PR07Q · Frozen 索引三缝：属性搬迁、ordinal 剪除、cookie 驱逐
 
 工具链同 PR07P。实现位于 `src/native_base/frozen/mod.rs`。
