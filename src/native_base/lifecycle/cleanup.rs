@@ -1723,6 +1723,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ctrl_003_empty_domain_expresses_the_empty_set_as_option_none() {
+        // CTRL-003 / INV-12, INV-21: an empty candidate closure is expressed
+        // as Option::None end to end. A fabricated (even empty) index artifact
+        // must be rejected instead of being turned into a random zero-length
+        // RootRef inside the close certificate.
+        let volume = [61; 16];
+        let domain_id = [62; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+
+        let artifacts = seed_closed_domain(&store, &keys, domain_id, &[]).await;
+        assert!(artifacts.inventory.is_none());
+        assert!(artifacts.retained_union.is_none());
+        assert_eq!(
+            require_optional_artifact(&artifacts.retained_union, &[], "retained_union").unwrap(),
+            None
+        );
+
+        let closed = read_domain(&store, &keys, &domain_id).await;
+        assert_eq!(closed.state, DomainState::Closed);
+        assert_eq!(closed.retention_seq, 0);
+
+        let certificate_bytes = store
+            .get(&keys.close_certificate(&domain_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let certificate = match ControlRecord::decode(&certificate_bytes).unwrap() {
+            ControlRecord::DomainCloseCertificate(certificate) => certificate,
+            other => panic!("unexpected close certificate record: {other:?}"),
+        };
+        assert_eq!(certificate.domain_id, domain_id);
+        assert!(certificate.inventory.is_none());
+        assert!(certificate.retained_union.is_none());
+        assert!(certificate.control_evidence.is_none());
+
+        // An empty domain never produces a RetainBatch record.
+        let error = build_retain_batch(domain_id, &[], [63; 16], b"retain/empty".to_vec())
+            .expect_err("empty domains must not build a RetainBatch");
+        assert!(
+            error
+                .to_string()
+                .contains("empty domains do not need RetainBatch records")
+        );
+
+        // An empty object index cannot even be constructed, so a zero-length
+        // RootRef has no way to enter the certificate ...
+        let empty_index = build_object_index(&[], [64; 16], b"control/empty.brfin".to_vec(), 256);
+        assert!(empty_index.is_err());
+
+        // ... and a fabricated artifact is rejected for an empty set.
+        let stray = object(66, "private/stray");
+        let fabricated = object_index(std::slice::from_ref(&stray), 64);
+        let error = require_optional_artifact(&Some(fabricated), &[], "retained_union")
+            .expect_err("an empty set must not carry an artifact");
+        assert!(error.to_string().contains("must be None for an empty set"));
+
+        // ... and a missing artifact for a non-empty set is rejected too.
+        let kept = object(65, "private/kept");
+        let error = require_optional_artifact(&None, std::slice::from_ref(&kept), "retained_union")
+            .expect_err("a non-empty set requires an artifact");
+        assert!(
+            error
+                .to_string()
+                .contains("is required for a non-empty set")
+        );
+    }
+
+    #[tokio::test]
     async fn close_freezes_domain_and_cleanup_protects_retained_object() {
         let volume = [1; 16];
         let domain_id = [4; 16];

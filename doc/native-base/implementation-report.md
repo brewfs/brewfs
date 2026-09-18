@@ -463,6 +463,13 @@ registration、连续 RetentionReceipt 和认证索引根；未知 attempt 会�
 | PR06B-WORKSPACE-TEST | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins` | 0 | PASS（869 + 722 passed；0 failed；219 + 185 ignored） | 同上 |
 | PR06B-CLIPPY | `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo clippy --workspace` | 0 | PASS（无 PR06B 新警告；仅 feature 组合下存量 `CacheTtl` warning 已知） | 同上 |
 | PR06B-GITDIFF | `git diff --check`（Windows 侧） | 0 | PASS（提交后工作树仅保留用户 `.claude/`） | 本报告更新前复核 |
+| PR06C-CTRL003 | `bash doc/native-base/logs/pr06c-ctrl003.sh` | 0 | PASS（lifecycle 22 passed/0 failed；native lib 960 passed, 221 ignored, 0 failed；clippy 无新增 warning）：空域不构造 RetainBatch、空对象索引不可构建、close 证书三个可选 root 均为 `None`、对空集携带 artifact 与非空集缺失 artifact 均报错 | [pr06c-ctrl003.log](logs/pr06c-ctrl003.log) |
+
+补充（PR06C）：CTRL-003 的空域语义已在组件级闭环。`build_retain_batch` 拒绝
+空候选集，`build_object_index` 拒绝空对象列表，close 证书的 `inventory` /
+`retained_union` / `control_evidence` 用 `Option::None` 表达空集
+（`option_tag` 只写 1 字节标签，不会产生零长度 `RootRef`），
+`require_optional_artifact` 对"空集带 artifact"与"非空集缺 artifact"都报错。
 
 聚焦反例覆盖：publish-before-close 与 close-before-publish、UNKNOWN/quarantine、
 lease 不足、多个 RetainBatch 并集、I/K/C 精确差集、证据缺失与 authority

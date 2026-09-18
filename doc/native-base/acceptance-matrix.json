@@ -1844,8 +1844,8 @@
     "expected": "Option None完整表达空集，不构造随机零长度RootRef",
     "invariants": "INV-12 INV-21",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr06c-ctrl003.sh (exit 0; lifecycle 22 passed/0 failed, native lib 960 passed/0 failed): ctrl_003_empty_domain_expresses_the_empty_set_as_option_none 验证空域 build_retain_batch 拒绝空集、空对象索引无法构建、close 证书 inventory/retained_union/control_evidence 全为 Option None（不构造零长度 RootRef），且对空集携带 artifact、非空集缺失 artifact 两种情况都报错。log: doc/native-base/logs/pr06c-ctrl003.log"
   },
   {
     "test_id": "CTRL-004",
