@@ -1140,8 +1140,8 @@
     "expected": "精确canonical bytes保持revision一致",
     "invariants": "INV-10",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07q-index-relocation-prune-cookies.sh (exit 0; focused 1 passed/0 failed): attribute_relocation_from_inline_to_external_keeps_the_canonical_bytes —— attrs 从 namespace 行内联改为外部 ValueRef 时必须逐字节等同 canonical bytes：resolve 后 encode() 与 canonical_table_digest 完全一致（revision 不变），仅该行从 canonical bytes 变为引用；payload 缩短、追加非 canonical 字节、指向异对象均 fail-closed。log: doc/native-base/logs/pr07q-index-relocation-prune-cookies.log"
   },
   {
     "test_id": "IDX-004",
@@ -1151,8 +1151,8 @@
     "expected": "不重解释旧slot，剪除死映射、不误留其他Pack",
     "invariants": "INV-01 INV-11",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07q-index-relocation-prune-cookies.sh (exit 0; focused 1 passed/0 failed): inventory_prune_removes_only_dead_slots_of_the_repacked_pack —— repack 后稀疏 ordinal 只剪除本 Pack 的死映射并返回 BE32(key) 删除列表；pinned 未 live 仍保留，外 Pack 行既不删也不计为本 Pack 映射；未映射 ordinal、跨 Pack ordinal、重复 ordinal 一律拒绝（不重解释旧 slot）。log: doc/native-base/logs/pr07q-index-relocation-prune-cookies.log"
   },
   {
     "test_id": "IDX-005",
@@ -1162,8 +1162,8 @@
     "expected": "spool可重放，配额满先失败不发坏cookie",
     "invariants": "INV-05 INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07q-index-relocation-prune-cookies.sh (exit 0; focused 1 passed/0 failed): issued_directory_cookies_survive_spool_eviction_and_the_table_fails_first —— cookie 锚定最后返回条目而非 RAM index：spool evict 后 respool 重放续在同一 successor；cookie 表满时先失败（不返回页、不发坏 cookie）；锚点消失或同名换 inode 均失败。log: doc/native-base/logs/pr07q-index-relocation-prune-cookies.log"
   },
   {
     "test_id": "IDX-006",

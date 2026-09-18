@@ -25,6 +25,10 @@ pub const MANIFEST_MAGIC: &[u8; 4] = b"BNSM";
 pub const MANIFEST_VERSION: u16 = 1;
 pub const MAX_MANIFEST_RAW: usize = 1024 * 1024;
 pub const MAX_DIRECTORY_COOKIE_SPOOL: usize = 64 * 1024 * 1024;
+/// Hard cap on the number of live directory continuation cookies.  The cookie
+/// table is the only directory state that must stay resident while the entry
+/// spool is evictable, so it is bounded on its own (IDX-005).
+pub const MAX_DIRECTORY_COOKIES: usize = 1 << 20;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenInodeRecord {
@@ -111,6 +115,153 @@ impl FrozenInodeRecord {
         }
         Ok(record)
     }
+}
+
+/// Canonical attributes of an inode live either inline in the namespace row or
+/// in an external `FrozenMetadata` object addressed by a [`ValueRef`].
+/// Relocating them is only allowed to be a *move*: the bytes stay exactly
+/// canonical, so `logical_revision` cannot change for a pure relocation.
+///
+/// The tag cannot collide with an inline record because a `FrozenInodeRecord`
+/// starts with an inode kind in `1..=7` (IDX-003).
+pub const EXTERNAL_ATTRIBUTE_TAG: u8 = 0xff;
+
+/// A reference to `stored_len` canonical attribute bytes of an object at
+/// `[offset, offset + stored_len)`.  The bytes are authenticated by the
+/// enclosing page chain; this reference only names them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValueRef {
+    pub object_id: ObjectId,
+    pub offset: u64,
+    pub stored_len: u32,
+}
+
+impl ValueRef {
+    pub const ENCODED_LEN: usize = 1 + 16 + 8 + 4;
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u8(EXTERNAL_ATTRIBUTE_TAG);
+        w.put(&self.object_id);
+        w.u64(self.offset);
+        w.u32(self.stored_len);
+        w.into_bytes()
+    }
+
+    /// Decode a namespace row value that carries an external reference.
+    /// Untagged canonical attribute bytes are deliberately *not* accepted
+    /// here: the caller has to decide which shape it is looking at.
+    pub fn decode(bytes: &[u8]) -> WireResult<Self> {
+        let what = "frozen inode value ref";
+        let mut r = Reader::new(bytes);
+        if r.u8(what)? != EXTERNAL_ATTRIBUTE_TAG {
+            return Err(WireError::invalid(what, "missing external attribute tag"));
+        }
+        let object_id: ObjectId = r.take(16, what)?.try_into().unwrap();
+        let offset = r.u64(what)?;
+        let stored_len = r.u32(what)?;
+        if !r.is_empty() {
+            return Err(WireError::invalid(what, "trailing bytes"));
+        }
+        Ok(Self {
+            object_id,
+            offset,
+            stored_len,
+        })
+    }
+
+    pub fn end(&self) -> u64 {
+        self.offset.saturating_add(u64::from(self.stored_len))
+    }
+}
+
+/// The canonical inline encoding of an inode record.  This is also the shape
+/// namespace rows already use, so untouched revisions stay byte-identical.
+pub fn encode_inline_attributes(record: &FrozenInodeRecord) -> Vec<u8> {
+    record.encode()
+}
+
+/// Decode *exactly* canonical attribute bytes.  A payload that decodes to a
+/// record but does not re-encode to the same bytes is refused instead of being
+/// normalized, because normalizing it would silently move the revision the
+/// caller claimed to be reading.
+pub fn decode_canonical_attributes(bytes: &[u8]) -> WireResult<FrozenInodeRecord> {
+    let record = FrozenInodeRecord::decode(bytes)?;
+    if record.encode() != bytes {
+        return Err(WireError::invalid(
+            "frozen inode",
+            "attribute bytes are not canonical",
+        ));
+    }
+    Ok(record)
+}
+
+/// A namespace row value: the canonical inline bytes, or a `ValueRef` to them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttributePlacement {
+    Inline(Vec<u8>),
+    External(ValueRef),
+}
+
+impl AttributePlacement {
+    pub fn encode_row(&self) -> Vec<u8> {
+        match self {
+            Self::Inline(bytes) => bytes.clone(),
+            Self::External(reference) => reference.encode(),
+        }
+    }
+
+    pub fn decode_row(bytes: &[u8]) -> WireResult<Self> {
+        if bytes.first().copied() == Some(EXTERNAL_ATTRIBUTE_TAG) {
+            return Ok(Self::External(ValueRef::decode(bytes)?));
+        }
+        decode_canonical_attributes(bytes)?;
+        Ok(Self::Inline(bytes.to_vec()))
+    }
+}
+
+/// Move canonical inline attribute bytes into an external object without
+/// changing a single byte.  The caller stores the returned payload verbatim.
+pub fn relocate_attributes(
+    record: &FrozenInodeRecord,
+    object_id: ObjectId,
+    offset: u64,
+) -> (AttributePlacement, Vec<u8>) {
+    let canonical = encode_inline_attributes(record);
+    let reference = ValueRef {
+        object_id,
+        offset,
+        stored_len: canonical.len() as u32,
+    };
+    (AttributePlacement::External(reference), canonical)
+}
+
+/// Fail-closed proof that a relocation kept the revision: byte-identical
+/// payloads mean the revision digest cannot move.
+pub fn ensure_relocation_keeps_revision(inline: &[u8], external: &[u8]) -> WireResult<()> {
+    if inline != external {
+        return Err(WireError::invalid(
+            "frozen inode",
+            "relocated attributes are not byte-identical to the inline canonical encoding",
+        ));
+    }
+    Ok(())
+}
+
+/// Read the canonical attributes of an external placement.
+pub fn resolve_external_attributes<S: ObjectSource>(
+    source: &S,
+    reference: &ValueRef,
+) -> Result<FrozenInodeRecord, FrozenReadError> {
+    let bytes = source.get_range(&reference.object_id, reference.offset, reference.end())?;
+    if bytes.len() != reference.stored_len as usize {
+        return Err(WireError::invalid(
+            "frozen inode value ref",
+            "external attribute length mismatch",
+        )
+        .into());
+    }
+    Ok(decode_canonical_attributes(&bytes)?)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -333,6 +484,88 @@ pub fn extent_key(inode: u64, chunk_index: u64, offset: u64) -> Vec<u8> {
     key
 }
 
+/// `BE32(ordinal)` key of the frozen inventory ordinal map.  Big-endian so
+/// numeric ordinal order equals the byte order of the inventory pages.
+pub fn inventory_ordinal_key(ordinal: u32) -> [u8; 4] {
+    ordinal.to_be_bytes()
+}
+
+/// One decoded inventory row: which pack object an ordinal resolves into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InventoryOrdinal {
+    pub ordinal: u32,
+    pub pack: ObjectId,
+    pub offset: u64,
+    pub stored_len: u32,
+}
+
+/// Outcome of a repack-time ordinal map prune (IDX-004).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InventoryPrunePlan {
+    /// Rows of the repacked pack that stay verbatim.  A pinned row is kept even
+    /// when it is not live: dropping it would have to reinterpret its slot.
+    pub retained: Vec<InventoryOrdinal>,
+    /// `BE32(ordinal)` keys of this pack whose mapping is dead and must be
+    /// removed from the inventory page.  Dead mappings are deleted, never
+    /// re-pointed at a new slot.
+    pub pruned_keys: Vec<[u8; 4]>,
+    /// Rows owned by another pack.  They are neither pruned nor reported as
+    /// this pack's own mappings, so a repack cannot absorb a foreign slot.
+    pub foreign: Vec<InventoryOrdinal>,
+}
+
+/// Prune a sparse ordinal map after a repack.
+///
+/// `old` is the map as it exists *before* the repack, in strictly ascending
+/// ordinal order; `pinned` ordinals must survive untouched and `live` ordinals
+/// are the ones the repacked layout still references.  Both sets are validated
+/// against the old map first: an ordinal that is not mapped inside `pack`
+/// cannot be retained, because accepting it would either reinterpret an
+/// existing slot or steal another pack's row.
+pub fn plan_inventory_prune(
+    old: &[InventoryOrdinal],
+    pack: &ObjectId,
+    pinned: &BTreeSet<u32>,
+    live: &BTreeSet<u32>,
+) -> WireResult<InventoryPrunePlan> {
+    for pair in old.windows(2) {
+        if pair[0].ordinal >= pair[1].ordinal {
+            return Err(WireError::invalid(
+                "frozen inventory ordinal map",
+                format!(
+                    "ordinals must strictly ascend, got {} then {}",
+                    pair[0].ordinal, pair[1].ordinal
+                ),
+            ));
+        }
+    }
+    for ordinal in pinned.iter().chain(live.iter()) {
+        let Some(row) = old.iter().find(|row| row.ordinal == *ordinal) else {
+            return Err(WireError::invalid(
+                "frozen inventory ordinal map",
+                format!("ordinal {ordinal} is not mapped and cannot be retained"),
+            ));
+        };
+        if &row.pack != pack {
+            return Err(WireError::invalid(
+                "frozen inventory ordinal map",
+                format!("ordinal {ordinal} maps into another pack"),
+            ));
+        }
+    }
+    let mut plan = InventoryPrunePlan::default();
+    for row in old {
+        if &row.pack != pack {
+            plan.foreign.push(*row);
+        } else if pinned.contains(&row.ordinal) || live.contains(&row.ordinal) {
+            plan.retained.push(*row);
+        } else {
+            plan.pruned_keys.push(inventory_ordinal_key(row.ordinal));
+        }
+    }
+    Ok(plan)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FrozenReadError {
     #[error(transparent)]
@@ -447,10 +680,27 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
     }
 
     pub fn lookup_inode(&self, inode: u64) -> Result<Option<FrozenInodeRecord>, FrozenReadError> {
+        self.resolve_inode_attributes(inode)
+    }
+
+    /// Resolve an inode's attributes from the namespace tree, accepting both
+    /// the inline canonical bytes and an external [`ValueRef`] (IDX-003).  The
+    /// external form is reached through the same authenticated page chain and
+    /// must still decode to exactly canonical bytes, so moving attributes out
+    /// of the row is invisible to the revision.
+    pub fn resolve_inode_attributes(
+        &self,
+        inode: u64,
+    ) -> Result<Option<FrozenInodeRecord>, FrozenReadError> {
         let Some(bytes) = self.lookup_namespace(&inode_key(inode))? else {
             return Ok(None);
         };
-        Ok(Some(FrozenInodeRecord::decode(&bytes)?))
+        match AttributePlacement::decode_row(&bytes)? {
+            AttributePlacement::Inline(bytes) => Ok(Some(decode_canonical_attributes(&bytes)?)),
+            AttributePlacement::External(reference) => {
+                Ok(Some(resolve_external_attributes(self.source, &reference)?))
+            }
+        }
     }
 
     pub fn lookup_dentry(
@@ -688,16 +938,83 @@ pub struct DirectoryEntry {
     pub kind: u8,
 }
 
+/// The resume point of a continuation cookie: the last entry that was handed
+/// to the caller.  Anchoring a cookie on an entry instead of on a RAM index is
+/// what lets the entry spool be evicted and replayed without changing the
+/// continuation the cookie promises (IDX-005).
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct DirectoryAnchor {
+    pub name: Vec<u8>,
+    pub inode: u64,
+}
+
 #[derive(Debug)]
 pub struct DirectoryCursor {
     entries: Vec<DirectoryEntry>,
+    anchors: BTreeMap<u64, DirectoryAnchor>,
+    cookie_by_anchor: BTreeMap<DirectoryAnchor, u64>,
     next_cookie: u64,
-    cookies: BTreeMap<u64, usize>,
-    cookie_by_index: BTreeMap<usize, u64>,
+    max_cookies: usize,
 }
 
 impl DirectoryCursor {
-    pub fn new(mut entries: Vec<DirectoryEntry>, max_spool_bytes: usize) -> WireResult<Self> {
+    pub fn new(entries: Vec<DirectoryEntry>, max_spool_bytes: usize) -> WireResult<Self> {
+        Self::with_cookie_budget(entries, max_spool_bytes, MAX_DIRECTORY_COOKIES)
+    }
+
+    /// A cursor whose cookie table is bounded independently of the spool.  A
+    /// page that would have to issue a *new* cookie beyond the budget fails
+    /// before any cookie is returned, so a caller can never be handed a cookie
+    /// the cursor cannot replay.
+    pub fn with_cookie_budget(
+        entries: Vec<DirectoryEntry>,
+        max_spool_bytes: usize,
+        max_cookies: usize,
+    ) -> WireResult<Self> {
+        let mut cursor = Self {
+            entries: Vec::new(),
+            anchors: BTreeMap::new(),
+            cookie_by_anchor: BTreeMap::new(),
+            next_cookie: 1,
+            max_cookies,
+        };
+        cursor.respool(entries, max_spool_bytes)?;
+        Ok(cursor)
+    }
+
+    /// Whether the entry payloads are still resident in RAM.
+    pub fn entries_resident(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    pub fn resident_entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Live continuation cookies.  The anchor table is the only directory
+    /// state that survives eviction.
+    pub fn cookie_count(&self) -> usize {
+        self.anchors.len()
+    }
+
+    /// Drop the entry payloads and return the bytes that were freed.  Issued
+    /// cookies stay resolvable against a later [`Self::respool`] of the same
+    /// directory.
+    pub fn evict_entries(&mut self) -> usize {
+        let freed: usize = self.entries.iter().map(|entry| entry.name.len() + 24).sum();
+        self.entries = Vec::new();
+        freed
+    }
+
+    /// Replace the entry spool.  Cookie numbering and issued anchors survive,
+    /// so a cookie issued before an eviction resumes at the same successor
+    /// entry after the replay; if its anchor entry is gone it fails instead of
+    /// resuming at a guessed position.
+    pub fn respool(
+        &mut self,
+        mut entries: Vec<DirectoryEntry>,
+        max_spool_bytes: usize,
+    ) -> WireResult<()> {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         if entries.windows(2).any(|pair| pair[0].name == pair[1].name) {
             return Err(WireError::invalid("directory", "duplicate names"));
@@ -708,12 +1025,8 @@ impl DirectoryCursor {
                 "directory cookie spool budget".into(),
             ));
         }
-        Ok(Self {
-            entries,
-            next_cookie: 1,
-            cookies: BTreeMap::new(),
-            cookie_by_index: BTreeMap::new(),
-        })
+        self.entries = entries;
+        Ok(())
     }
 
     pub fn page(&mut self, after: u64, limit: usize) -> WireResult<(u64, Vec<DirectoryEntry>)> {
@@ -723,25 +1036,54 @@ impl DirectoryCursor {
                 "page limit must be non-zero",
             ));
         }
-        if after != 0 && !self.cookies.contains_key(&after) {
-            return Err(WireError::invalid("directory cursor", "unknown cookie"));
-        }
-        let index = self.cookies.get(&after).copied().unwrap_or(0);
-        let end = index.saturating_add(limit).min(self.entries.len());
-        let page = self.entries[index..end].to_vec();
-        let cookie = if end == self.entries.len() {
+        let start = if after == 0 {
             0
-        } else if let Some(cookie) = self.cookie_by_index.get(&end).copied() {
-            cookie
         } else {
-            let cookie = self.next_cookie;
-            self.next_cookie = self
-                .next_cookie
-                .checked_add(1)
-                .ok_or_else(|| WireError::LimitExceeded("directory cookie overflow".into()))?;
-            self.cookies.insert(cookie, end);
-            self.cookie_by_index.insert(end, cookie);
-            cookie
+            let anchor = self
+                .anchors
+                .get(&after)
+                .ok_or_else(|| WireError::invalid("directory cursor", "unknown cookie"))?
+                .clone();
+            let found = self
+                .entries
+                .binary_search_by(|entry| entry.name.as_slice().cmp(anchor.name.as_slice()))
+                .map_err(|_| {
+                    WireError::invalid("directory cursor", "cookie anchor is not in the spool")
+                })?;
+            if self.entries[found].inode != anchor.inode {
+                return Err(WireError::invalid(
+                    "directory cursor",
+                    "cookie anchor was replaced by another inode",
+                ));
+            }
+            found + 1
+        };
+        let end = start.saturating_add(limit).min(self.entries.len());
+        let page = self.entries[start..end].to_vec();
+        if end == self.entries.len() {
+            return Ok((0, page));
+        }
+        let anchor = DirectoryAnchor {
+            name: self.entries[end - 1].name.clone(),
+            inode: self.entries[end - 1].inode,
+        };
+        let cookie = match self.cookie_by_anchor.get(&anchor).copied() {
+            Some(cookie) => cookie,
+            None => {
+                if self.anchors.len() >= self.max_cookies {
+                    return Err(WireError::LimitExceeded(
+                        "directory cookie table budget".into(),
+                    ));
+                }
+                let cookie = self.next_cookie;
+                self.next_cookie = self
+                    .next_cookie
+                    .checked_add(1)
+                    .ok_or_else(|| WireError::LimitExceeded("directory cookie overflow".into()))?;
+                self.anchors.insert(cookie, anchor.clone());
+                self.cookie_by_anchor.insert(anchor, cookie);
+                cookie
+            }
         };
         Ok((cookie, page))
     }
@@ -2145,5 +2487,259 @@ mod tests {
         let read_only = account_meta_scan(&scanned, &[]).unwrap();
         assert_eq!(read_only.rewritten_pages, 0);
         assert_eq!(read_only.scanned_pages, old_slots.len() as u64);
+    }
+
+    /// IDX-003 / INV-10: attributes may move from the namespace row into an
+    /// external object, but the move is byte-exact, so the resolved canonical
+    /// bytes -- and therefore the revision digest -- cannot change.
+    /// Non-canonical payloads, wrong lengths and foreign objects are refused
+    /// instead of being repaired or silently resolved elsewhere.
+    #[test]
+    fn attribute_relocation_from_inline_to_external_keeps_the_canonical_bytes() {
+        let inode = 7u64;
+        let record = FrozenInodeRecord {
+            kind: 1,
+            mode: 0o100_644,
+            uid: 1000,
+            gid: 1001,
+            rdev: 0,
+            nlink: 3,
+            size: 4096,
+            atime_ns: 11,
+            mtime_ns: 12,
+            ctime_ns: 13,
+            parent_hint: Some(1),
+            symlink_target: None,
+        };
+        let inline = encode_inline_attributes(&record);
+        assert_eq!(inline, record.encode());
+        let inline_row = AttributePlacement::Inline(inline.clone());
+        assert_eq!(inline_row.encode_row(), inline);
+
+        // The external payload is stored verbatim in a FrozenMetadata object;
+        // the reference names the offset the encoder chose for it.
+        let external_id = [77u8; 16];
+        let (object, _root) = build_frozen_metadata_object(
+            external_id,
+            b"frozen/inline-external",
+            &[(inode_key(inode), inline.clone())],
+        );
+        let offset = object
+            .windows(inline.len())
+            .position(|window| window == inline.as_slice())
+            .expect("the canonical payload is stored verbatim") as u64;
+        let (placement, payload) = relocate_attributes(&record, external_id, offset);
+        let reference = match &placement {
+            AttributePlacement::External(reference) => *reference,
+            AttributePlacement::Inline(_) => unreachable!(),
+        };
+        assert_ne!(
+            placement.encode_row(),
+            inline,
+            "the namespace row is a reference now"
+        );
+        assert_eq!(reference.offset, offset);
+        assert_eq!(reference.stored_len as usize, inline.len());
+        assert_eq!(reference.end(), offset + inline.len() as u64);
+        assert_eq!(payload, inline);
+        ensure_relocation_keeps_revision(&inline, &payload).unwrap();
+
+        let mut source = MemoryObjectSource::new();
+        source.insert(external_id, object);
+        let resolved = resolve_external_attributes(&source, &reference).unwrap();
+        assert_eq!(resolved, record);
+        assert_eq!(resolved.encode(), inline, "canonical bytes survived");
+        assert_eq!(
+            AttributePlacement::decode_row(&placement.encode_row()).unwrap(),
+            placement
+        );
+
+        // Revision proof: the digest is taken over the resolved canonical
+        // bytes and both placements produce exactly the same bytes.
+        let resolved_inline =
+            match AttributePlacement::decode_row(&inline_row.encode_row()).unwrap() {
+                AttributePlacement::Inline(bytes) => {
+                    decode_canonical_attributes(&bytes).unwrap().encode()
+                }
+                AttributePlacement::External(_) => unreachable!(),
+            };
+        let resolved_external =
+            match AttributePlacement::decode_row(&placement.encode_row()).unwrap() {
+                AttributePlacement::External(reference) => {
+                    resolve_external_attributes(&source, &reference)
+                        .unwrap()
+                        .encode()
+                }
+                AttributePlacement::Inline(_) => unreachable!(),
+            };
+        let rows = |value: Vec<u8>| {
+            vec![FrozenRow {
+                key: inode_key(inode),
+                value,
+            }]
+        };
+        assert_eq!(
+            canonical_table_digest(1, &rows(resolved_inline)),
+            canonical_table_digest(1, &rows(resolved_external)),
+        );
+
+        // Negatives: a shortened payload, a non-canonical payload and a
+        // foreign object are refused rather than reinterpreted.
+        assert!(ensure_relocation_keeps_revision(&inline, &payload[..payload.len() - 1]).is_err());
+        let mut non_canonical = payload.clone();
+        non_canonical.push(0);
+        assert!(decode_canonical_attributes(&non_canonical).is_err());
+        let mut short = reference;
+        short.stored_len -= 1;
+        assert!(resolve_external_attributes(&source, &short).is_err());
+        let foreign = ValueRef {
+            object_id: [99u8; 16],
+            ..reference
+        };
+        assert!(resolve_external_attributes(&source, &foreign).is_err());
+    }
+
+    /// IDX-004 / INV-01 / INV-11: a repack leaves gaps in the ordinal map and
+    /// historical Objects rows behind.  Pruning removes exactly this pack's
+    /// dead mappings, keeps pinned rows, and never touches or claims another
+    /// pack's rows.  An ordinal that is not already mapped inside the pack
+    /// cannot be retained, because accepting it would reinterpret the slot.
+    #[test]
+    fn inventory_prune_removes_only_dead_slots_of_the_repacked_pack() {
+        let pack = [0xAAu8; 16];
+        let other = [0xBBu8; 16];
+        let row = |ordinal: u32, pack: ObjectId, offset: u64| InventoryOrdinal {
+            ordinal,
+            pack,
+            offset,
+            stored_len: 4096,
+        };
+        let old = vec![
+            row(0, pack, 0),
+            row(1, pack, 4096),
+            row(2, pack, 8192),
+            row(5, pack, 20480),
+            row(7, other, 28672),
+        ];
+        let pinned: BTreeSet<u32> = [1].into_iter().collect();
+        let live: BTreeSet<u32> = [0, 5].into_iter().collect();
+        let plan = plan_inventory_prune(&old, &pack, &pinned, &live).unwrap();
+        assert_eq!(
+            plan.retained
+                .iter()
+                .map(|row| row.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 5],
+            "pinned survives even though it is not live yet"
+        );
+        assert_eq!(plan.pruned_keys, vec![inventory_ordinal_key(2)]);
+        assert_eq!(plan.foreign, vec![row(7, other, 28672)]);
+        assert!(!plan.pruned_keys.contains(&inventory_ordinal_key(1)));
+        assert!(
+            !plan.pruned_keys.contains(&inventory_ordinal_key(7)),
+            "a foreign row is never deleted by this pack"
+        );
+        assert!(
+            plan.retained.iter().all(|row| row.pack == pack),
+            "a foreign row is never retained as this pack's mapping"
+        );
+
+        let unmapped: BTreeSet<u32> = [3].into_iter().collect();
+        let error = plan_inventory_prune(&old, &pack, &unmapped, &BTreeSet::new()).unwrap_err();
+        assert!(error.to_string().contains("is not mapped"), "{error}");
+        let stolen: BTreeSet<u32> = [7].into_iter().collect();
+        let error = plan_inventory_prune(&old, &pack, &BTreeSet::new(), &stolen).unwrap_err();
+        assert!(
+            error.to_string().contains("maps into another pack"),
+            "{error}"
+        );
+        let reinterpreted = vec![row(2, pack, 0), row(2, pack, 4096)];
+        let error = plan_inventory_prune(&reinterpreted, &pack, &BTreeSet::new(), &BTreeSet::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("strictly ascend"), "{error}");
+    }
+
+    /// IDX-005 / INV-05 / INV-13: an issued readdir cookie survives RAM
+    /// eviction of the entry spool because it names its anchor entry instead of
+    /// a spool index.  A full cookie table fails *before* a cookie is handed
+    /// out, so a caller can never receive a cookie the cursor cannot replay,
+    /// and a cookie whose anchor is gone or was replaced fails instead of
+    /// resuming at a guessed position.
+    #[test]
+    fn issued_directory_cookies_survive_spool_eviction_and_the_table_fails_first() {
+        let entries: Vec<DirectoryEntry> = (0..8u32)
+            .map(|index| DirectoryEntry {
+                name: format!("name-{index}").into_bytes(),
+                inode: u64::from(index) + 1,
+                kind: 1,
+            })
+            .collect();
+        let names = |page: &[DirectoryEntry]| {
+            page.iter()
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut cursor = DirectoryCursor::with_cookie_budget(entries.clone(), 4096, 2).unwrap();
+        let (first_cookie, first_page) = cursor.page(0, 2).unwrap();
+        assert_eq!(
+            names(&first_page),
+            vec![b"name-0".to_vec(), b"name-1".to_vec()]
+        );
+        assert!(cursor.entries_resident());
+        assert_eq!(cursor.cookie_count(), 1);
+
+        // The spool is evicted; the issued cookie still resolves after the
+        // replay and resumes at exactly the same successor entry.
+        let freed = cursor.evict_entries();
+        assert!(freed > 0);
+        assert!(!cursor.entries_resident());
+        assert_eq!(cursor.resident_entry_count(), 0);
+        let error = cursor.page(first_cookie, 2).unwrap_err();
+        assert!(error.to_string().contains("not in the spool"), "{error}");
+        cursor.respool(entries.clone(), 4096).unwrap();
+        let (second_cookie, second_page) = cursor.page(first_cookie, 2).unwrap();
+        assert_eq!(
+            names(&second_page),
+            vec![b"name-2".to_vec(), b"name-3".to_vec()]
+        );
+        assert_eq!(cursor.page(first_cookie, 2).unwrap().0, second_cookie);
+        assert_eq!(cursor.cookie_count(), 2);
+
+        // The cookie table is full: the next new cookie fails closed and the
+        // caller gets no page at all, but replaying a known anchor still works.
+        let error = cursor.page(second_cookie, 2).unwrap_err();
+        assert!(error.to_string().contains("cookie table budget"), "{error}");
+        assert_eq!(cursor.page(first_cookie, 2).unwrap().0, second_cookie);
+        assert_eq!(cursor.cookie_count(), 2);
+
+        // A stale anchor is refused instead of resuming at a guessed position.
+        cursor
+            .respool(
+                vec![DirectoryEntry {
+                    name: b"name-1".to_vec(),
+                    inode: 999,
+                    kind: 1,
+                }],
+                4096,
+            )
+            .unwrap();
+        let error = cursor.page(first_cookie, 2).unwrap_err();
+        assert!(
+            error.to_string().contains("replaced by another inode"),
+            "{error}"
+        );
+        cursor
+            .respool(
+                vec![DirectoryEntry {
+                    name: b"other".to_vec(),
+                    inode: 1,
+                    kind: 1,
+                }],
+                4096,
+            )
+            .unwrap();
+        let error = cursor.page(first_cookie, 2).unwrap_err();
+        assert!(error.to_string().contains("not in the spool"), "{error}");
+        assert!(cursor.page(u64::MAX, 1).is_err());
     }
 }

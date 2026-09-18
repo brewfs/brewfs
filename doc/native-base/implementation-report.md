@@ -951,6 +951,37 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07Q · Frozen 索引三缝：属性搬迁、ordinal 剪除、cookie 驱逐
+
+工具链同 PR07P。实现位于 `src/native_base/frozen/mod.rs`。
+
+核心组件：
+- `AttributePlacement` + `ValueRef` + `relocate_attributes` / `resolve_external_attributes`：命名空间行值仍是
+  「内联 canonical bytes」（首字节是 inode kind 1..=7），搬到外部对象时改为 `0xff` 标记 +
+  `object_id/offset/stored_len`；`decode_row` 对两种形态都要求「decode 后再 encode 必须与入参逐字节相同」，
+  否则拒绝（`attribute bytes are not canonical`），所以搬迁只能是移动，
+  `logical_revision`/`canonical_table_digest` 不会变化。`FixedRevisionReader::resolve_inode_attributes`
+  （`lookup_inode` 直接复用）走同一条认证页链读取外部字节。
+- `InventoryOrdinal` + `plan_inventory_prune`：repack 前的 ordinal 映射必须严格升序；`pinned`/`live` 里的 ordinal
+  必须已映射在**本 Pack** 内，否则报 `is not mapped` / `maps into another pack`；本 Pack 且既不 pinned
+  也不 live 的行输出为 `pruned_keys`（`BE32(ordinal)` 删除列表），外 Pack 行原样列入 `foreign`——既不删也不当作本 Pack 映射。
+- `DirectoryCursor`（锚点化）：cookie 从 `cookie -> spool index` 改为 `cookie -> DirectoryAnchor`（最后返回条目的 name+inode），
+  新增 `evict_entries`/`respool`/`cookie_count`/`entries_resident`；`with_cookie_budget` 让 cookie 表独立受限：
+  需要新锚点而表已满时整次 `page` 失败（`directory cookie table budget`），不返回页也不发坏 cookie；
+  锚点条目消失或同名换成别的 inode 时失败而不是猜位置。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07Q-FOCUSED | `bash doc/native-base/logs/pr07q-index-relocation-prune-cookies.sh` | 0 | PASS（frozen 18 passed/0 failed，3 项各 1 passed） | [pr07q-index-relocation-prune-cookies.log](logs/pr07q-index-relocation-prune-cookies.log) |
+| PR07Q-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07Q-IDX003 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::attribute_relocation` | 0 | PASS（`attribute_relocation_from_inline_to_external_keeps_the_canonical_bytes`） | 同上 |
+| PR07Q-IDX004 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::inventory_prune` | 0 | PASS（`inventory_prune_removes_only_dead_slots_of_the_repacked_pack`） | 同上 |
+| PR07Q-IDX005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::issued_directory_cookies` | 0 | PASS（`issued_directory_cookies_survive_spool_eviction_and_the_table_fails_first`） | 同上 |
+
+范围说明（诚实）：本轮交的是纯索引/游标 seam。`plan_inventory_prune` 是纯函数，尚未接到真实 repack 的
+inventory 页重写；外部 attrs 的 ValueRef 解析已由 reader 走通，但没有真实 ingest/发布路径写入这种行；
+`DirectoryCursor` 的驱逐/重放由调用方触发，尚未接入 VFS readdir 的 RAM 预算回收器；
+`MAX_DIRECTORY_COOKIES` 默认 `1 << 20` 是进程内硬上限。P2 完整交付仍需与 published revision 流程打通。
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行
