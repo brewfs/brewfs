@@ -19,8 +19,8 @@ use sha2::{Digest, Sha256};
 use crate::native_base::wire::refs::ObjectId;
 
 use super::backend::{
-    CompleteOutcome, MultipartSpec, MultipartStatus, PartPlan, PartReceipt, UploadBackend,
-    UploadError,
+    ChecksumValidation, CompleteOutcome, MultipartSpec, MultipartStatus, PartPlan, PartReceipt,
+    UploadBackend, UploadError,
 };
 use super::error::IngestError;
 
@@ -157,11 +157,43 @@ const MAX_UPLOAD_RESTARTS: usize = 3;
 pub struct UploadExecutor<'a> {
     backend: &'a dyn UploadBackend,
     profile: RemoteVerificationProfile,
+    /// The capability probe result, memoized per executor: one probe covers
+    /// every object this executor uploads (spec 08 §8, E06).
+    checksum_validation: tokio::sync::OnceCell<ChecksumValidation>,
 }
 
 impl<'a> UploadExecutor<'a> {
     pub fn new(backend: &'a dyn UploadBackend, profile: RemoteVerificationProfile) -> Self {
-        UploadExecutor { backend, profile }
+        UploadExecutor {
+            backend,
+            profile,
+            checksum_validation: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Prove — once per executor — that the backend really validates the
+    /// checksums the service-validated profile depends on. Only a definitive
+    /// outcome is memoized; an inconclusive probe is retried per object.
+    async fn require_checksum_validation(&self, key: &[u8]) -> Result<(), IngestError> {
+        if let Some(proven) = self.checksum_validation.get() {
+            return match proven {
+                ChecksumValidation::Verified => Ok(()),
+                other => Err(IngestError::UnprovableChecksum(format!(
+                    "backend checksum probe is {other:?}; use ExactReadback or refuse"
+                ))),
+            };
+        }
+        let probe_key = checksum_probe_key(key);
+        let proven = self.backend.probe_checksum_validation(&probe_key).await?;
+        if proven != ChecksumValidation::Inconclusive {
+            let _ = self.checksum_validation.set(proven);
+        }
+        match proven {
+            ChecksumValidation::Verified => Ok(()),
+            other => Err(IngestError::UnprovableChecksum(format!(
+                "backend checksum probe is {other:?}; use ExactReadback or refuse"
+            ))),
+        }
     }
 
     /// Upload and verify one object. `bytes` must be the locally sealed
@@ -185,6 +217,9 @@ impl<'a> UploadExecutor<'a> {
                 "object {} content does not match its planned hash",
                 hex(&planned.object_id)
             )));
+        }
+        if self.profile == RemoteVerificationProfile::ServiceValidatedChecksums {
+            self.require_checksum_validation(&planned.key).await?;
         }
 
         let receipts = match planned.mode {
@@ -445,6 +480,14 @@ fn receipts_for(parts: &[PartPlan]) -> Vec<PartReceipt> {
         .collect()
 }
 
+/// The scratch identity a capability probe may create and abandon. It can
+/// never collide with a planned object key, which is a content identity.
+fn checksum_probe_key(key: &[u8]) -> Vec<u8> {
+    let mut probe = key.to_vec();
+    probe.extend_from_slice(b"\0brewfs-checksum-probe");
+    probe
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -454,7 +497,8 @@ mod tests {
     use async_trait::async_trait;
 
     use super::super::backend::{
-        InjectedCompleteFault, InjectedPartFailure, MemoryUploadBackend, ObjectStat, UploadId,
+        ChecksumValidation, CompleteOutcome, InjectedCompleteFault, InjectedPartFailure,
+        MemoryUploadBackend, MultipartSpec, ObjectStat, UploadId,
     };
     use super::*;
 
@@ -466,6 +510,13 @@ mod tests {
 
     #[async_trait]
     impl UploadBackend for MismatchingFactsBackend {
+        async fn probe_checksum_validation(
+            &self,
+            key: &[u8],
+        ) -> Result<ChecksumValidation, UploadError> {
+            self.inner.probe_checksum_validation(key).await
+        }
+
         async fn create_only_put(&self, key: &[u8], bytes: &[u8]) -> Result<(), UploadError> {
             self.inner.create_only_put(key, bytes).await
         }
@@ -706,6 +757,151 @@ mod tests {
         // full hash; the mismatching service composite produced no evidence.
         let local_full_hash: [u8; 32] = Sha256::digest(&bytes).into();
         assert_eq!(planned.full_hash, local_full_hash);
+    }
+
+    /// VFY-003: a service that accepted an upload it never checksummed cannot
+    /// make the client mark the object REMOTE_VERIFIED. The capability probe
+    /// runs before the object's own bytes are sent, and the profile is
+    /// refused with `UnprovableChecksum` (the caller may instead choose
+    /// ExactReadback).
+    #[tokio::test]
+    async fn service_validated_profile_is_refused_without_checksum_validation() {
+        let backend = MemoryUploadBackend::new().without_checksum_validation();
+        assert_eq!(
+            backend
+                .probe_checksum_validation(b"probe/silent")
+                .await
+                .unwrap(),
+            ChecksumValidation::Unverified,
+            "an unvalidated service accepts the deliberately corrupt probe"
+        );
+        let executor = UploadExecutor::new(
+            &backend,
+            RemoteVerificationProfile::ServiceValidatedChecksums,
+        );
+        let (planned, bytes) = multipart_object(b"mp", &[7u8; 3000], 2000);
+        let error = executor.upload_object(&planned, &bytes).await.unwrap_err();
+        assert!(
+            matches!(error, IngestError::UnprovableChecksum(_)),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("Unverified"),
+            "the refusal names the probe outcome: {error}"
+        );
+        // The object's own identity was never written: only the scratch
+        // probe identity exists, and it holds the probe payload.
+        assert!(backend.stored_bytes(&planned.key).is_none());
+        assert!(
+            backend
+                .object_keys()
+                .iter()
+                .all(|key| backend.stored_bytes(key).as_deref() != Some(bytes.as_slice())),
+            "the sealed object bytes were never uploaded"
+        );
+
+        // The same backend is still usable through the profile that does not
+        // depend on service-side checksums: a full readback compares the
+        // stored bytes with the sealed hash.
+        let readback = UploadExecutor::new(&backend, RemoteVerificationProfile::ExactReadback);
+        let uploaded = readback.upload_object(&planned, &bytes).await.unwrap();
+        assert_eq!(uploaded.evidence, VerificationEvidence::ExactReadback);
+    }
+
+    /// VFY-002: a backend that only echoes the hash it was told (a "metadata
+    /// hash" backend) is detected by the probe, and even a full readback
+    /// cannot bless the service's own fact — the readback profile compares
+    /// the bytes locally.
+    #[tokio::test]
+    async fn echoing_metadata_hash_is_detected_and_never_becomes_remote_verified() {
+        let backend = MemoryUploadBackend::new().without_checksum_validation();
+        let executor = UploadExecutor::new(
+            &backend,
+            RemoteVerificationProfile::ServiceValidatedChecksums,
+        );
+        let (planned, bytes) = multipart_object(b"mp", &[5u8; 4000], 4000);
+        let error = executor.upload_object(&planned, &bytes).await.unwrap_err();
+        assert!(
+            matches!(error, IngestError::UnprovableChecksum(_)),
+            "{error}"
+        );
+
+        // A service that echoes the declared hash reports the plan's hash for
+        // an object it never computed, which is exactly why the probe (and
+        // not the reported fact) decides.
+        let (other_plan, other_bytes) = multipart_object(b"echo", &[6u8; 4000], 4000);
+        let upload = backend
+            .multipart_create(
+                &other_plan.key,
+                &MultipartSpec {
+                    sha256: [9u8; 32],
+                    part_count: 1,
+                    total_len: other_bytes.len() as u64,
+                },
+            )
+            .await
+            .unwrap();
+        let part = PartPlan {
+            part_number: 1,
+            offset: 0,
+            len: other_bytes.len() as u64,
+            sha256: [9u8; 32],
+        };
+        let receipt = backend
+            .multipart_upload_part(&upload, &part, &other_bytes)
+            .await
+            .unwrap();
+        let outcome = backend
+            .multipart_complete(&upload, &[receipt])
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            CompleteOutcome::Completed {
+                composite_sha256: [9u8; 32],
+                part_count: 1,
+                total_len: other_bytes.len() as u64,
+            },
+            "the service reports the declared hash, not the content hash"
+        );
+        let stat = backend.inspect(&other_plan.key).await.unwrap().unwrap();
+        assert_eq!(stat.sha256, [9u8; 32]);
+        let computed: [u8; 32] = Sha256::digest(&other_bytes).into();
+        assert_ne!(stat.sha256, computed);
+
+        // And a local sealed hash is still the only identity the client uses.
+        let sealed: [u8; 32] = Sha256::digest(&bytes).into();
+        assert_eq!(planned.full_hash, sealed);
+    }
+
+    /// A backend that really validates is proven once and admitted.
+    #[tokio::test]
+    async fn honest_backend_probe_is_verified_and_memoized() {
+        let backend = MemoryUploadBackend::new();
+        assert_eq!(
+            backend
+                .probe_checksum_validation(b"probe/honest")
+                .await
+                .unwrap(),
+            ChecksumValidation::Verified
+        );
+        let executor = UploadExecutor::new(
+            &backend,
+            RemoteVerificationProfile::ServiceValidatedChecksums,
+        );
+        let (planned, bytes) = multipart_object(b"mp", &[8u8; 6000], 3000);
+        let first = executor.upload_object(&planned, &bytes).await.unwrap();
+        assert!(matches!(
+            first.evidence,
+            VerificationEvidence::ServiceValidated { .. }
+        ));
+        // A second object through the same executor reuses the memoized probe.
+        let (planned_2, bytes_2) = multipart_object(b"mp2", &[9u8; 6000], 3000);
+        let second = executor.upload_object(&planned_2, &bytes_2).await.unwrap();
+        assert!(matches!(
+            second.evidence,
+            VerificationEvidence::ServiceValidated { .. }
+        ));
     }
 
     #[tokio::test]

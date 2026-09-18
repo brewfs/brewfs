@@ -81,6 +81,28 @@ pub enum CompleteOutcome {
     Failed(String),
 }
 
+/// What a capability probe proved about a backend's checksum handling
+/// (spec 08 §8, VFY-002/VFY-003).
+///
+/// The service-validated profile is only sound when the service really
+/// verifies the checksums it was given. A backend that accepts a part whose
+/// bytes do not match the planned digest — or that reports back a hash it
+/// never computed — must never be trusted with
+/// [`crate::native_base::ingest::upload::RemoteVerificationProfile::ServiceValidatedChecksums`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumValidation {
+    /// The probe upload was refused (a corrupt part, or a complete that
+    /// reported failure): the backend really validates.
+    Verified,
+    /// The probe upload was accepted and reported complete although its
+    /// bytes did not match the declared checksums: the backend is echoing
+    /// metadata, not verifying content.
+    Unverified,
+    /// The probe could not reach a conclusion (unsupported multipart,
+    /// transport failure). Callers must fail closed.
+    Inconclusive,
+}
+
 /// The state of an upload identity, used to resolve ambiguous results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultipartStatus {
@@ -179,6 +201,20 @@ pub trait UploadBackend: Send + Sync {
 
     /// Query the state of an upload identity for ambiguity resolution.
     async fn multipart_status(&self, upload: &UploadId) -> Result<MultipartStatus, UploadError>;
+
+    /// Prove whether this backend really validates checksums (spec 08 §8).
+    ///
+    /// `key` names a scratch identity the probe may create and abandon; no
+    /// object may be left at a key the data plan owns. The default is
+    /// [`ChecksumValidation::Inconclusive`]: a backend has to opt in only
+    /// after it demonstrates that a deliberately corrupt part (or a
+    /// complete whose bytes do not match the declared hash) is refused.
+    async fn probe_checksum_validation(
+        &self,
+        _key: &[u8],
+    ) -> Result<ChecksumValidation, UploadError> {
+        Ok(ChecksumValidation::Inconclusive)
+    }
 }
 
 /// A part failure to inject: which part number, and whether the part
@@ -207,6 +243,9 @@ pub enum InjectedCompleteFault {
 struct MemoryInner {
     objects: BTreeMap<Vec<u8>, Vec<u8>>,
     uploads: BTreeMap<u64, MemoryUpload>,
+    /// For a backend that never computes a digest: the hash it was told to
+    /// report for a key (the "metadata hash" of VFY-002).
+    declared_hashes: BTreeMap<Vec<u8>, [u8; 32]>,
 }
 
 struct MemoryUpload {
@@ -237,6 +276,10 @@ pub struct MemoryUploadBackend {
     corrupt_keys: Mutex<Vec<Vec<u8>>>,
     /// Whether create-only PUT is supported at all (E02).
     supports_create_only: bool,
+    /// Model a service that was never told which checksum algorithm to use:
+    /// it accepts any part bytes and echoes the declared hash back
+    /// (VFY-002/VFY-003).
+    accepts_any_checksum: bool,
 }
 
 impl Default for MemoryUploadBackend {
@@ -256,7 +299,16 @@ impl MemoryUploadBackend {
             complete_fault: Mutex::new(None),
             corrupt_keys: Mutex::new(Vec::new()),
             supports_create_only: true,
+            accepts_any_checksum: false,
         }
+    }
+
+    /// Model a service that does not verify the checksums it is given: it
+    /// accepts a part whose bytes contradict the planned digest and reports
+    /// the *declared* hash at complete/inspect time (VFY-002/VFY-003).
+    pub fn without_checksum_validation(mut self) -> MemoryUploadBackend {
+        self.accepts_any_checksum = true;
+        self
     }
 
     /// Disable create-only PUT: the backend cannot support atomic
@@ -373,7 +425,11 @@ impl UploadBackend for MemoryUploadBackend {
         let inner = self.inner.lock().unwrap();
         Ok(inner.objects.get(key).map(|bytes| ObjectStat {
             len: bytes.len() as u64,
-            sha256: sha256(bytes),
+            sha256: inner
+                .declared_hashes
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| sha256(bytes)),
         }))
     }
 
@@ -414,7 +470,7 @@ impl UploadBackend for MemoryUploadBackend {
             )));
         }
         let digest = sha256(bytes);
-        if digest != part.sha256 {
+        if !self.accepts_any_checksum && digest != part.sha256 {
             return Err(UploadError::Backend(format!(
                 "part {} checksum mismatch",
                 part.part_number
@@ -529,11 +585,24 @@ impl UploadBackend for MemoryUploadBackend {
                 spec.part_count
             )));
         }
-        let composite = sha256(&assembled);
-        if composite != spec.sha256 {
-            return Ok(CompleteOutcome::Failed(
-                "composite checksum mismatch".into(),
-            ));
+        let computed = sha256(&assembled);
+        let composite = if self.accepts_any_checksum {
+            // No algorithm was specified: the service reports back the hash
+            // it was handed, whatever the bytes really are.
+            spec.sha256
+        } else {
+            if computed != spec.sha256 {
+                return Ok(CompleteOutcome::Failed(
+                    "composite checksum mismatch".into(),
+                ));
+            }
+            computed
+        };
+
+        if self.accepts_any_checksum {
+            // Whatever happens next, this backend's *reported* fact for the
+            // key is the hash it was told, never a computed one.
+            inner.declared_hashes.insert(key.clone(), spec.sha256);
         }
 
         // The assembly succeeded server-side. Apply the injected fault.
@@ -568,6 +637,42 @@ impl UploadBackend for MemoryUploadBackend {
             part_count,
             total_len,
         })
+    }
+
+    /// Probe with one deliberately corrupt part: the bytes never hash to
+    /// the declared digest. A backend that verifies refuses the part or the
+    /// complete; one that only echoes metadata reports success.
+    async fn probe_checksum_validation(
+        &self,
+        key: &[u8],
+    ) -> Result<ChecksumValidation, UploadError> {
+        let payload = b"brewfs-checksum-capability-probe";
+        let part = PartPlan {
+            part_number: 1,
+            offset: 0,
+            len: payload.len() as u64,
+            // Deliberately not the digest of `payload`.
+            sha256: [0u8; 32],
+        };
+        let spec = MultipartSpec {
+            sha256: [0u8; 32],
+            part_count: 1,
+            total_len: payload.len() as u64,
+        };
+        let upload = match self.multipart_create(key, &spec).await {
+            Ok(upload) => upload,
+            Err(_) => return Ok(ChecksumValidation::Inconclusive),
+        };
+        let receipt = match self.multipart_upload_part(&upload, &part, payload).await {
+            // The service refused a part whose bytes contradict the plan.
+            Err(_) => return Ok(ChecksumValidation::Verified),
+            Ok(receipt) => receipt,
+        };
+        match self.multipart_complete(&upload, &[receipt]).await {
+            Ok(CompleteOutcome::Failed(_)) => Ok(ChecksumValidation::Verified),
+            Ok(CompleteOutcome::Completed { .. }) => Ok(ChecksumValidation::Unverified),
+            Err(_) => Ok(ChecksumValidation::Inconclusive),
+        }
     }
 
     async fn multipart_status(&self, upload: &UploadId) -> Result<MultipartStatus, UploadError> {

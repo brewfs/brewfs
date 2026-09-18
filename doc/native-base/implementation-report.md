@@ -777,6 +777,33 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 消失；CLN-022/023 的 repack 记账仍待 PR12 侧补齐。
 
 
+### PR07K · 上传校验能力探测（VFY-002/VFY-003）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。此前
+`RemoteVerificationProfile::ServiceValidatedChecksums` 的正确性完全依赖调用方自觉：
+没有运行时门证明后端**真的**校验过校验和。
+
+- `src/native_base/ingest/backend.rs`：新增 `ChecksumValidation{Verified,Unverified,Inconclusive}`
+  与 `UploadBackend::probe_checksum_validation`（默认 `Inconclusive`，即 fail closed）。
+  `MemoryUploadBackend::without_checksum_validation()` 模拟"Create 未指定算法/不校验 part"
+  且回显声明 hash 的后端（part 校验被跳过、complete 报告 `spec.sha256`、inspect 返回声明值）。
+- `src/native_base/ingest/upload.rs`：`UploadExecutor` 在 service-validated profile 下先探测
+  （探测用 `key + "\0brewfs-checksum-probe"` 的 scratch 身份，永不占用真实对象键），
+  非 `Verified` 一律返回既有的 `IngestError::UnprovableChecksum`；结果按 executor 记忆化，
+  一个 executor 只探测一次。`ExactReadback` 不受影响。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07K-FOCUSED | `bash doc/native-base/logs/pr07k-checksum-capability.sh` | 0 | PASS（native_base::ingest 59 passed/0 failed） | [pr07k-checksum-capability.log](logs/pr07k-checksum-capability.log) |
+| PR07K-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07K-VFY002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::ingest` | 0 | PASS：`echoing_metadata_hash_is_detected_and_never_becomes_remote_verified` | 同上 |
+| PR07K-VFY003 | 同上 | 0 | PASS：`service_validated_profile_is_refused_without_checksum_validation`、`honest_backend_probe_is_verified_and_memoized` | 同上 |
+
+范围说明（不虚标）：这是组件级的能力门；真实 S3/RustFS 的能力探测（例如对 S3 的
+`x-amz-checksum-*` 与 CreateMultipartUpload 算法的实测）仍需真实对象后端，未在
+本项冒充。`MemoryUploadBackend::corrupt_keys` 仍然只有写入点、没有读取点（存量缺口）。
+
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

@@ -1030,8 +1030,8 @@
     "expected": "能力探测失败，full readback或拒绝",
     "invariants": "INV-07 INV-19",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07k-checksum-capability.sh (exit 0; native_base::ingest 59 passed/0 failed): echoing_metadata_hash_is_detected_and_never_becomes_remote_verified —— 新增 backend::ChecksumValidation 与 UploadBackend::probe_checksum_validation（默认 Inconclusive，必须显式证明后才可声明 Verified）。MemoryUploadBackend::without_checksum_validation() 模拟只会回显 metadata hash 的后端：探测用一条与声明摘要不符的 part，该后端接受并返回 CompleteOutcome::Completed{composite_sha256: 声明值}，probe 因此判定 Unverified；UploadExecutor 在 ServiceValidatedChecksums 下先探测，Unverified 直接返回 IngestError::UnprovableChecksum（报文含 Unverified），对象自身身份下没有任何字节被上传（stored_bytes(planned.key).is_none()）；另外单独验证 inspect 返回的是被声明的 [9u8;32] 而非内容摘要，客户端仍只用本地 sealed hash 作身份。log: doc/native-base/logs/pr07k-checksum-capability.log"
   },
   {
     "test_id": "VFY-003",
@@ -1041,8 +1041,8 @@
     "expected": "探测应检测未校验，不按200标REMOTE_VERIFIED",
     "invariants": "INV-19",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07k-checksum-capability.sh (exit 0; native_base::ingest 59 passed/0 failed): service_validated_profile_is_refused_without_checksum_validation —— 后端在 part 摘要与计划不符时不再拒绝（Create 未指定算法/未做 part 校验）：probe_checksum_validation 返回 Unverified，ServiceValidatedChecksums 的 upload_object 在任何真实对象字节上传前即返回 UnprovableChecksum，因此不会按 HTTP 200 标 REMOTE_VERIFIED；同一后端的 ExactReadback profile 仍然成功（uploaded.evidence == ExactReadback，逐字节回读与本地 sealed hash 比较）——即\"full readback 或拒绝\"两条路都在测试中体现。honest_backend_probe_is_verified_and_memoized 另证诚实后端探测为 Verified 且一次探测按 executor 记忆化（两个对象只探测一次）。log: doc/native-base/logs/pr07k-checksum-capability.log"
   },
   {
     "test_id": "VFY-004",
