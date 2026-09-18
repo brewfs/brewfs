@@ -25,7 +25,7 @@ use super::placement::BlockPlacement;
 use super::source::ObjectSource;
 use super::tables::{SealRoot, TableId, binding_key, frame_key, object_key};
 use crate::native_base::wire::container::{
-    Codec, ContainerHeader, FOOTER_LEN, HEADER_LEN, ObjectKind,
+    Codec, ContainerHeader, FOOTER_LEN, FeatureClosure, HEADER_LEN, ObjectKind, features,
 };
 use crate::native_base::wire::error::WireError;
 use crate::native_base::wire::page::{IndexPage, PageBody};
@@ -43,6 +43,9 @@ pub struct SealSnapshot {
     object: Vec<u8>,
     header: ContainerHeader,
     root: SealRoot,
+    /// Capability closure of the seal's own container bytes (root codec,
+    /// external index children), spec 02 §3 / INV-20.
+    feature_closure: FeatureClosure,
 }
 
 impl SealSnapshot {
@@ -118,10 +121,26 @@ impl SealSnapshot {
             }
         };
         let root = SealRoot::decode(&raw)?;
+        // The seal's own content: a Zstd root payload needs the Zstd
+        // capability, and an external table root needs the external-index
+        // capability, whatever the header claims (spec 02 §3, INV-20).
+        let mut content_features = 0u64;
+        if header.root_codec == Codec::Zstd {
+            content_features |= features::ZSTD_FRAME_OR_PAGE;
+        }
+        if TableId::ALL
+            .iter()
+            .any(|id| matches!(root.table(*id), Some(ChildRef::External(_))))
+        {
+            content_features |= features::EXTERNAL_INDEX_CHILDREN;
+        }
+        let feature_closure = FeatureClosure::of(header.required_features, content_features);
+        feature_closure.ensure_declared()?;
         Ok(SealSnapshot {
             object,
             header,
             root,
+            feature_closure,
         })
     }
 
@@ -131,6 +150,12 @@ impl SealSnapshot {
 
     pub fn root(&self) -> &SealRoot {
         &self.root
+    }
+
+    /// The capability closure of this seal container: the declared bits
+    /// unioned with what its own bytes require (spec 02 §3, INV-20).
+    pub fn feature_closure(&self) -> FeatureClosure {
+        self.feature_closure
     }
 
     pub fn table(&self, id: TableId) -> Option<&ChildRef> {

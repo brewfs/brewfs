@@ -87,6 +87,50 @@ pub mod features {
         PLAIN_BYTES_FRAMES | ZSTD_FRAME_OR_PAGE | EXTERNAL_INDEX_CHILDREN | NATIVE_BLOCK_V1_INNER;
 }
 
+/// The capability closure of a container's `required_features`
+/// (spec 02 §3, INV-12/INV-20).
+///
+/// `declared` is what the container header promises; `content` is what the
+/// bytes actually need — the frame formats and codecs a DataPack carries,
+/// the root codec and external index children a Data Seal carries. A
+/// writer must declare the closure. A reader that trusted a declaration
+/// which omits a content requirement would honour an object whose real
+/// dependencies it was told not to expect, so every full verify refuses
+/// such an object instead of probing deeper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureClosure {
+    pub declared: u64,
+    pub content: u64,
+}
+
+impl FeatureClosure {
+    pub fn of(declared: u64, content: u64) -> Self {
+        Self { declared, content }
+    }
+
+    /// `declared ∪ content`: everything a reader of this object needs.
+    pub fn closure(self) -> u64 {
+        self.declared | self.content
+    }
+
+    /// The content requirements the header does not declare.
+    pub fn undeclared(self) -> u64 {
+        self.content & !self.declared
+    }
+
+    /// Refuse a declaration that does not cover the content (fail closed).
+    pub fn ensure_declared(self) -> WireResult<()> {
+        let missing = self.undeclared();
+        if missing != 0 {
+            return Err(WireError::UnsupportedFormat(format!(
+                "content requires feature bits {missing:#x} that required_features {:#x} does not declare",
+                self.declared
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Compression codec identifiers shared by header/root, frames, and pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
@@ -316,6 +360,16 @@ pub fn parse_footer(object: &[u8]) -> WireResult<ContainerFooter> {
     Ok(footer)
 }
 
+/// Rewrite a container header's declared `required_features` and repair the
+/// header CRC. Test-only: it exists so a lying producer can be simulated
+/// byte for byte (the frames/footer stay valid).
+#[cfg(test)]
+pub(crate) fn set_declared_features(object: &mut [u8], bits: u64) {
+    object[16..24].copy_from_slice(&bits.to_le_bytes());
+    let crc = crc32c(&object[0..60]);
+    object[60..64].copy_from_slice(&crc.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +498,49 @@ mod tests {
             ContainerHeader::parse(&enc),
             Err(WireError::UnsupportedFormat(_))
         ));
+    }
+
+    #[test]
+    fn feature_closure_requires_the_declaration_to_cover_the_content() {
+        // A declaration that already covers the content is admitted and
+        // summarizes as the union (GATE-003).
+        let covered = FeatureClosure::of(
+            features::PLAIN_BYTES_FRAMES | features::ZSTD_FRAME_OR_PAGE,
+            features::PLAIN_BYTES_FRAMES,
+        );
+        assert_eq!(
+            covered.closure(),
+            features::PLAIN_BYTES_FRAMES | features::ZSTD_FRAME_OR_PAGE
+        );
+        assert_eq!(covered.undeclared(), 0);
+        assert!(covered.ensure_declared().is_ok());
+
+        // A None-only declaration that hides a Zstd dependency is refused
+        // with the exact missing bits (GATE-002).
+        let lying = FeatureClosure::of(features::PLAIN_BYTES_FRAMES, features::ZSTD_FRAME_OR_PAGE);
+        assert_eq!(lying.undeclared(), features::ZSTD_FRAME_OR_PAGE);
+        let err = lying.ensure_declared().unwrap_err();
+        assert!(matches!(err, WireError::UnsupportedFormat(_)));
+        assert!(err.to_string().contains("0x2"), "{err}");
+    }
+
+    #[test]
+    fn set_declared_features_rewrites_the_header_and_repairs_its_crc() {
+        let mut object = ContainerHeader {
+            kind: ObjectKind::DataPack,
+            required_features: features::PLAIN_BYTES_FRAMES | features::ZSTD_FRAME_OR_PAGE,
+            object_len: 4096,
+            root_offset: 0,
+            root_stored_len: 0,
+            root_raw_len: 0,
+            hash_id: 1,
+            root_codec: Codec::None,
+        }
+        .encode()
+        .to_vec();
+        set_declared_features(&mut object, features::PLAIN_BYTES_FRAMES);
+        let reparsed = ContainerHeader::parse(&object).unwrap();
+        assert_eq!(reparsed.required_features, features::PLAIN_BYTES_FRAMES);
     }
 
     #[test]

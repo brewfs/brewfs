@@ -9,7 +9,7 @@
 use sha2::{Digest, Sha256};
 
 use super::container::{
-    Codec, ContainerFooter, ContainerHeader, MIN_OBJECT_LEN, ObjectKind, features,
+    Codec, ContainerFooter, ContainerHeader, FeatureClosure, MIN_OBJECT_LEN, ObjectKind, features,
 };
 use super::error::{WireError, WireResult};
 use super::frame::{
@@ -36,12 +36,19 @@ pub struct ScrubbedPack {
     pub footer: ContainerFooter,
     /// SHA-256 of the entire object (header through footer).
     pub full_hash: [u8; 32],
+    /// The capability closure of this pack: the declared
+    /// `required_features` unioned with what the frames actually require
+    /// (spec 02 §3, INV-12/INV-20). A pack only scrubs when the header
+    /// already declares everything the content needs.
+    pub feature_closure: FeatureClosure,
 }
 
 impl ScrubbedPack {
     /// Full scrub: parse header, walk frames verifying CRCs, ordinals,
     /// padding, digests and limits, then parse the footer. Rejects
-    /// unsupported required features up front (fail closed, spec 02 §3).
+    /// unsupported required features up front, and rejects a header whose
+    /// declaration does not cover what the frames actually require (fail
+    /// closed, spec 02 §3).
     pub fn scrub(object: &[u8]) -> WireResult<ScrubbedPack> {
         let header = ContainerHeader::parse(object)?;
         if header.kind != ObjectKind::DataPack {
@@ -94,6 +101,7 @@ impl ScrubbedPack {
         let mut frames = Vec::new();
         let mut offset = super::container::HEADER_LEN;
         let mut expected_ordinal: u64 = 0;
+        let mut content_features: u64 = 0;
         while offset < body_end {
             let (fh, stored) = read_frame_at(object, offset, body_end)?;
             if fh.ordinal != expected_ordinal {
@@ -105,6 +113,10 @@ impl ScrubbedPack {
                         fh.ordinal
                     ),
                 ));
+            }
+            content_features |= fh.payload_format.feature_bit();
+            if fh.codec == Codec::Zstd {
+                content_features |= features::ZSTD_FRAME_OR_PAGE;
             }
             let raw = fh.decode_payload(stored)?;
             frames.push(ScrubbedFrame {
@@ -122,12 +134,15 @@ impl ScrubbedPack {
                 format!("frame region ends at {offset}, footer starts at {body_end}"),
             ));
         }
+        let feature_closure = FeatureClosure::of(header.required_features, content_features);
+        feature_closure.ensure_declared()?;
         let full_hash: [u8; 32] = Sha256::digest(object).into();
         Ok(ScrubbedPack {
             header,
             frames,
             footer,
             full_hash,
+            feature_closure,
         })
     }
 }
@@ -329,6 +344,62 @@ mod tests {
     const TWO_PLAIN: &[u8] = include_bytes!("../testdata/two_plain_frames.brfdp");
     const NATIVE_NONE: &[u8] = include_bytes!("../testdata/native_none.brfdp");
     const PLAIN_MAGIC: &[u8] = include_bytes!("../testdata/plain_magic_prefix.brfdp");
+
+    /// GATE-002: a producer that only claims None/plain capabilities cannot
+    /// smuggle a Zstd frame past capability admission — the header CRC and
+    /// the frame digests are all valid, the declaration is what lies.
+    #[test]
+    fn declared_plain_header_cannot_hide_a_zstd_frame() {
+        let mut builder = PackBuilder::new();
+        builder.push(PackFrame::plain_bytes_zstd(b"capability smoke payload", 3).unwrap());
+        let honest = builder.build().unwrap();
+        let scrubbed = ScrubbedPack::scrub(&honest).unwrap();
+        assert_eq!(
+            scrubbed.feature_closure.declared,
+            features::PLAIN_BYTES_FRAMES | features::ZSTD_FRAME_OR_PAGE
+        );
+        assert_eq!(scrubbed.feature_closure.undeclared(), 0);
+
+        // Same bytes, header rewritten to a None-only declaration with a
+        // repaired CRC: capability admission must refuse it.
+        let mut lying = honest.clone();
+        crate::native_base::wire::container::set_declared_features(
+            &mut lying,
+            features::PLAIN_BYTES_FRAMES,
+        );
+        let err = ScrubbedPack::scrub(&lying).unwrap_err();
+        assert!(matches!(err, WireError::UnsupportedFormat(_)), "{err}");
+        assert!(err.to_string().contains("0x2"), "{err}");
+    }
+
+    /// GATE-003: the closure is summarized and every shipped golden still
+    /// declares exactly what its content requires.
+    #[test]
+    fn shipped_goldens_declare_their_content_feature_closure() {
+        let cases: [(&[u8], u64, &str); 4] = [
+            (EMPTY, 0, "empty"),
+            (TWO_PLAIN, features::PLAIN_BYTES_FRAMES, "two plain frames"),
+            (
+                PLAIN_MAGIC,
+                features::PLAIN_BYTES_FRAMES,
+                "plain magic prefix",
+            ),
+            (
+                NATIVE_NONE,
+                features::NATIVE_BLOCK_V1_INNER,
+                "native block v1",
+            ),
+        ];
+        for (bytes, expected, what) in cases {
+            let pack = ScrubbedPack::scrub(bytes).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(pack.feature_closure.declared, expected, "{what}");
+            assert_eq!(pack.feature_closure.content, expected, "{what}");
+            assert_eq!(pack.feature_closure.closure(), expected, "{what}");
+            assert_eq!(pack.feature_closure.undeclared(), 0, "{what}");
+        }
+        // A pack with no frames needs no capability at all.
+        assert_eq!(ScrubbedPack::scrub(EMPTY).unwrap().frames.len(), 0);
+    }
 
     #[test]
     fn golden_empty_pack_scrubs_and_rebuilds_byte_identical() {

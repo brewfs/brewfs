@@ -17,7 +17,7 @@ use super::{
     ReadMetrics, SealReader, SealSnapshot,
 };
 use crate::chunk::compress::{Compression, decompress_framed, encode_persisted_block};
-use crate::native_base::wire::container::{Codec, ObjectKind, features};
+use crate::native_base::wire::container::{Codec, ObjectKind, features, set_declared_features};
 use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
 use crate::native_base::wire::frame::PayloadFormat;
 use crate::native_base::wire::refs::{
@@ -1317,6 +1317,89 @@ fn external_frames_table_reuse_reads_through_the_old_seal() {
     assert!(source.gets_for(&SEAL_A_ID) >= 2, "B must read A's tables");
     // And the data itself from the pack.
     assert_eq!(source.gets_for(&PACK_ID), 1);
+}
+
+/// GATE-002/GATE-003 on the seal side: a seal whose header stops declaring
+/// the external index children it actually points at is refused by the full
+/// verify, before any page or block is read. The unpatched object opens and
+/// reports a closure whose content bits are already declared.
+#[test]
+fn undeclared_external_child_is_refused_before_the_seal_is_opened() {
+    let block = b"closure smoke block".to_vec();
+    let (pack_bytes, scrubbed) = build_pack(vec![PackFrame::plain_bytes(&block).unwrap()]);
+
+    let mut seal_a = SealBuilder::new(BLOCK_SIZE);
+    let ordinal = seal_a.next_object_ordinal();
+    seal_a.add_object(
+        ordinal,
+        object_ref(
+            PACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &pack_bytes,
+            b"closure/pack",
+        ),
+    );
+    let slots = register_frames(&mut seal_a, &scrubbed, ordinal);
+    seal_a
+        .add_packed_block(
+            SLICE,
+            0,
+            &block,
+            vec![span(0, block.len() as u32, slots[0], 0)],
+        )
+        .unwrap();
+    seal_a.validate().unwrap();
+    let seal_a_bytes = seal_a.build().unwrap();
+
+    let snapshot_a = SealSnapshot::open(seal_a_bytes.clone()).unwrap();
+    let frames_root = snapshot_a.table(TableId::Frames).unwrap().clone();
+    let seal_a_ref = object_ref(
+        SEAL_A_ID,
+        ObjectKind::DataSeal.as_u8(),
+        &seal_a_bytes,
+        b"closure/seal-a",
+    );
+    let external = |root: ChildRef| match root {
+        ChildRef::Local(addr) => ChildRef::External(RootRef {
+            object: seal_a_ref.clone(),
+            address: addr,
+        }),
+        ChildRef::External(_) => unreachable!("A builds local roots"),
+    };
+    let mut seal_b = SealBuilder::new(BLOCK_SIZE);
+    seal_b.set_table_override(TableId::Frames, Some(external(frames_root)));
+    seal_b
+        .add_packed_block(
+            SLICE + 1,
+            0,
+            &block,
+            vec![span(0, block.len() as u32, slots[0], 0)],
+        )
+        .unwrap();
+    let honest = seal_b.build().unwrap();
+
+    let snapshot_b = SealSnapshot::open(honest.clone()).unwrap();
+    let closure = snapshot_b.feature_closure();
+    assert_eq!(closure.undeclared(), 0);
+    assert!(
+        closure.closure() & features::EXTERNAL_INDEX_CHILDREN != 0,
+        "the external root is part of the closure"
+    );
+
+    let mut lying = honest;
+    set_declared_features(
+        &mut lying,
+        closure.declared & !features::EXTERNAL_INDEX_CHILDREN,
+    );
+    let err = SealSnapshot::open(lying).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SealError::Wire(crate::native_base::wire::error::WireError::UnsupportedFormat(_))
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("0x4"), "{err}");
 }
 
 #[test]

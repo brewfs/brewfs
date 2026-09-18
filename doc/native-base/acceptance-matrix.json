@@ -1195,8 +1195,8 @@
     "expected": "能力准入拒绝；现有4个golden保持不变",
     "invariants": "INV-12 INV-20",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07h-feature-closure.sh (exit 0; native_base::wire::container::tests 11 passed/0 failed, native_base::wire::datapack::tests 15 passed/0 failed, native_base::seal:: 48 passed/0 failed): declared_plain_header_cannot_hide_a_zstd_frame —— 由 PackBuilder 产出的诚实 pack（declared=PLAIN|ZSTD）scrub 通过；把同一份字节的 header required_features 改写成仅 PLAIN 并修复 header CRC 后，ScrubbedPack::scrub 返回 WireError::UnsupportedFormat 且报文含缺失位 0x2（ZSTD_FRAME_OR_PAGE）——帧 digest、CRC、footer 全部合法，拒绝来自能力闭包而非校验和。shipped_goldens_declare_their_content_feature_closure 用仓库内 4 个 golden （empty/two_plain_frames/plain_magic_prefix/native_none）断言 declared == content == closure、undeclared()==0，即现有 4 个 golden 保持不变。seal 侧 undeclared_external_child_is_refused_before_the_seal_is_opened 对带 external table root 的 seal 做同样改写（去掉 EXTERNAL_INDEX_CHILDREN）后 SealSnapshot::open 拒绝，报文含 0x4。log: doc/native-base/logs/pr07h-feature-closure.log"
   },
   {
     "test_id": "GATE-003",
@@ -1206,8 +1206,8 @@
     "expected": "公开可读前full verify拒绝",
     "invariants": "INV-20",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07h-feature-closure.sh (exit 0; native_base::wire::container::tests 11 passed/0 failed, native_base::wire::datapack::tests 15 passed/0 failed, native_base::seal:: 48 passed/0 failed): feature_closure_requires_the_declaration_to_cover_the_content —— 新增 wire::container::FeatureClosure{declared,content} 统一汇总依赖闭包：closure()=declared|content、undeclared()=content&!declared、ensure_declared() 在未声明时返回 UnsupportedFormat。DataPack 全量 scrub 逐帧累计 content（payload_format.feature_bit() 与 Codec::Zstd）并调用 ensure_declared()；DataSeal 的 SealSnapshot::open 按 root_codec 与 external table roots 累计 content 并调用 ensure_declared()，两者都在任何数据被读出之前完成（ScrubbedPack.feature_closure 与 SealSnapshot::feature_closure() 暴露汇总值）。log: doc/native-base/logs/pr07h-feature-closure.log"
   },
   {
     "test_id": "GATE-004",

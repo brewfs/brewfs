@@ -685,6 +685,37 @@ Create 未指定算法或错误 part 校验）尚未实现——当前 `RemoteVe
 Unix-socket 共享服务仍是 PR11 preview 骨架（`probe_shared_cache()` 恒为 `None`），
 因此本项只覆盖"同一消费者进程内的并发读只调度一次 fetch/decode"。
 
+### PR07H · 能力闭包：required_features 必须覆盖内容真实依赖（GATE-002/GATE-003）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。此前 reader 只拒绝
+"本构建不认识的位"，从不校验声明是否覆盖内容：一个 CRC/digest 全部合法、
+但 header 只声明 None/plain 的对象，仍会被读出它实际依赖的能力。
+
+- `src/native_base/wire/container.rs`：新增 `FeatureClosure { declared, content }`
+  统一汇总依赖闭包——`closure() = declared | content`、`undeclared() = content & !declared`、
+  `ensure_declared()` 在未声明时 fail closed。
+- `src/native_base/wire/datapack.rs`：`ScrubbedPack::scrub` 在逐帧走查时累计
+  content（`payload_format.feature_bit()`、`Codec::Zstd`），走查结束后
+  `ensure_declared()`；汇总值挂在 `ScrubbedPack::feature_closure`。
+- `src/native_base/seal/reader.rs`：`SealSnapshot::open` 按 `root_codec`（Zstd）与
+  external table roots 累计 content 并 `ensure_declared()`，汇总值由
+  `SealSnapshot::feature_closure()` 暴露。两者都在任何字节被读出前完成。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07H-FOCUSED | `bash doc/native-base/logs/pr07h-feature-closure.sh` | 0 | PASS（container 11 / datapack 15 / seal 48 passed，0 failed） | [pr07h-feature-closure.log](logs/pr07h-feature-closure.log) |
+| PR07H-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07H-GATE002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::wire::datapack::tests` | 0 | PASS：`declared_plain_header_cannot_hide_a_zstd_frame`（合法 CRC/digest 但声明仅 PLAIN 的 Zstd pack 被 UnsupportedFormat 拒绝，报文含 0x2）、`shipped_goldens_declare_their_content_feature_closure`（4 个 golden 的 declared==content==closure、undeclared==0） | 同上 |
+| PR07H-GATE002-SEAL | 同上（seal 套件） | 0 | PASS：`undeclared_external_child_is_refused_before_the_seal_is_opened`（去掉 EXTERNAL_INDEX_CHILDREN 声明的 external-root seal 在 `SealSnapshot::open` 处被拒，去掉的位 0x4 出现在报文里） | 同上 |
+| PR07H-GATE003 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::wire::container::tests` | 0 | PASS：`feature_closure_requires_the_declaration_to_cover_the_content`（覆盖即放行并汇总为并集；未覆盖时报缺失位）、`set_declared_features_rewrites_the_header_and_repairs_its_crc` | 同上 |
+
+仍未覆盖（不虚标）：`FixedRevisionReader::open_manifest`（Frozen Metadata）与
+SnapshotManifest 的 reader 目前只做 `ensure_supported_features()`；其中
+SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
+`required_features == 0`，闭包是平凡成立的，而 Frozen Metadata 的 Zstd root
+尚未走到 `FeatureClosure` 校验（当前测试夹具只产出 None root）。此缺口留待
+后续增量补齐，不并入本项 PASS。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行
