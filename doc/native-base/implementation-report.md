@@ -859,6 +859,42 @@ SnapshotManifest 强制 `root_codec == None`、PagedInventory 强制
 FUSE 层 request 级取消（D-state/teardown）不在本项证据内。
 
 
+### PR07N · 保留闭包、固定只读基线与私有配额（RET-008/RET-011/CLN-017/CLN-021）
+
+工具链：同 PR01（WSL Ubuntu-24.04，rustc 1.98.1）。本组把"谁被永久保留、只读基线花了
+多少次读写、alias 消失后还能删谁、配额到顶后还能准入什么"四件事变成可执行断言：
+
+- `src/native_base/lifecycle/retention.rs`：`CandidateClosure` 新增
+  `transitive_containers`，`prepare_retention` 新增四类 fail-closed 校验（容器必须声明、
+  必须属于 I(d)、必须是容器 kind、manifest 不得重复声明），并把 manifest、inventory 容器、
+  外部 meta 索引页、嵌套 inventory 容器一起计入 RetainBatch（RET-008）。
+- `src/native_base/frozen/mod.rs`：`FixedRevisionReader` 新增真实
+  `object_read_count()`（每层恰好 1 页；每页 = header + stored 两次 range 读），
+  测试用计数 `ObjectSource` 证明三个独立 reader 的计数完全相同且 `metadata_rpc_count()==0`；
+  P1 侧用计数 `ControlStore` 证明固定只读基线每次 head 解析恰好 1 次 KV namespace 读、
+  0 事务、0 租约 RPC，legacy `read_retention_leases` 在任何 RPC 构造前被拒（RET-011）。
+- `src/native_base/lifecycle/cleanup.rs`：新增 `PrivateQuota`/`QuotaFence::plan_fence`
+  纯函数；测试证明 hard limit 附近 headroom=0 立即 fenced、边界不前移、已接受 ticket 仍通过
+  `seal::validate_plan`（`pub(crate)`）而超界 ticket 被拒、已接受 publish 仍能完成 close
+  commit（CLN-021）；同模块新增 alias 删除测试，删除 workspace head/view 前后
+  `plan_digest` 与候选集逐字节相同（CLN-017）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07N-FOCUSED | `bash doc/native-base/logs/pr07n-retention-quota.sh` | 0 | PASS（5 个聚焦测试各 1 passed/0 failed） | [pr07n-retention-quota.log](logs/pr07n-retention-quota.log) |
+| PR07N-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07N-RET008 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::tests::retention_keeps` | 0 | PASS：`retention_keeps_the_manifest_and_every_transitive_container_permanently` | 同上 |
+| PR07N-RET011 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::frozen::tests::fixed_readonly_baseline` | 0 | PASS：`fixed_readonly_baseline_page_counts_are_fixed_and_lease_free` | 同上 |
+| PR07N-RET011-P1 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::tests::fixed_readonly_baseline` | 0 | PASS：`fixed_readonly_baseline_counters_are_fixed_and_lease_free` | 同上 |
+| PR07N-CLN017 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::cleanup::tests::a_deleted_alias` | 0 | PASS：`a_deleted_alias_never_widens_the_cleanup_candidate_set` | 同上 |
+| PR07N-CLN021 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::lifecycle::cleanup::tests::quota_fence` | 0 | PASS：`quota_fence_stops_new_admission_and_keeps_the_accepted_allowance` | 同上 |
+
+范围说明（不虚标）：`transitive_containers` 目前由调用方（未来的 build/ingest 侧）
+声明，`prepare_retention` 尚未接入真实 publish 事务；`PrivateQuota::plan_fence` 是纯函数，
+volume 级 used/reserved 字节的采集与 runtime 常量接入属于后续集成；CLN-017 的 "alias"
+在本地测试中是 workspace head + view 记录，真实 KV 命名空间（Redis/TiKV）上的 alias
+删除走同一 `plan_private_cleanup` 入口，但未在本机多后端复跑。
+
 ### PR08 · Frozen Metadata 格式、索引与目录游标
 
 工具链：同上。实现位于 `src/native_base/frozen/mod.rs`（单文件，约 380 行

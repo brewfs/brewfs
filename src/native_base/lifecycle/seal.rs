@@ -130,7 +130,10 @@ pub fn drain_plan_digest(entries: &[PlanEntry]) -> LifecycleResult<Hash32> {
     Ok(Sha256::digest(encode_plan(entries)?).into())
 }
 
-fn validate_plan(entries: &[PlanEntry], accepted_ticket_end: u64) -> LifecycleResult<Hash32> {
+pub(crate) fn validate_plan(
+    entries: &[PlanEntry],
+    accepted_ticket_end: u64,
+) -> LifecycleResult<Hash32> {
     let mut operations = BTreeSet::new();
     let mut inode_orders: BTreeMap<u64, u64> = BTreeMap::new();
     for entry in entries {

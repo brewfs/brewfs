@@ -359,6 +359,7 @@ pub struct FixedRevisionReader<'a, S: ObjectSource> {
     source: &'a S,
     manifest: SnapshotManifest,
     metadata_rpc_count: std::sync::atomic::AtomicU64,
+    object_reads: std::sync::atomic::AtomicU64,
 }
 
 impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
@@ -407,6 +408,7 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
             source,
             manifest: SnapshotManifest::decode(&raw)?,
             metadata_rpc_count: std::sync::atomic::AtomicU64::new(0),
+            object_reads: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -417,6 +419,17 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
     pub fn metadata_rpc_count(&self) -> u64 {
         self.metadata_rpc_count
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Authenticated pages this reader has consumed so far (RET-011).
+    ///
+    /// A fixed readonly baseline is *fixed*: the same logical lookups always
+    /// load the same pages, so this counter is reproducible across runs and
+    /// independent of source latency or cache warmth.  The reader has no KV
+    /// and no GC/retention-lease client, so a baseline can never issue a
+    /// write or a lease RPC.
+    pub fn object_read_count(&self) -> u64 {
+        self.object_reads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn lookup_namespace(&self, key: &[u8]) -> Result<Option<Vec<u8>>, FrozenReadError> {
@@ -572,6 +585,8 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
         if page.level != address.level || page.entry_count() != address.entry_count {
             return Err(WireError::invalid("frozen metadata page", "address mismatch").into());
         }
+        self.object_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok((page, object.clone()))
     }
 
@@ -1496,5 +1511,107 @@ mod tests {
             "corrupted page must fail, got {:?}",
             result
         );
+    }
+
+    /// RET-011 / INV-11, INV-18: a fixed readonly baseline loads exactly one
+    /// authenticated page per index level and nothing else.  The counters are
+    /// fixed across readers and cache states, and the reader owns no KV and no
+    /// GC/retention-lease client, so a baseline can never write or lease.
+    #[test]
+    fn fixed_readonly_baseline_page_counts_are_fixed_and_lease_free() {
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..64u32)
+            .map(|i| {
+                let mut key = b"key-".to_vec();
+                key.extend_from_slice(&format!("{:04}", i).into_bytes());
+                let mut val = b"val-".to_vec();
+                val.extend_from_slice(&format!("{:04}", i).into_bytes());
+                (key, val)
+            })
+            .collect();
+        let data_id = [31u8; 16];
+        let (data_obj, data_root) =
+            build_frozen_metadata_object(data_id, b"frozen/data-031", &entries);
+        let inv_id = [32u8; 16];
+        let (inv_obj, inv_root) = build_frozen_metadata_object(
+            inv_id,
+            b"frozen/inventory",
+            &[(b"__inv_sentinel".to_vec(), Vec::new())],
+        );
+        let manifest = SnapshotManifest {
+            volume_id: [30; 16],
+            storage_namespace_id: [29; 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [28; 32],
+            namespace_digest: [27; 32],
+            binding_digest: [26; 32],
+            namespace_mode: 1,
+            kv_layer_id: Some([25; 16]),
+            kv_sealed_version: Some(3),
+            namespace_root: None,
+            data_root,
+            inventory_root: inv_root,
+            file_count: 64,
+            directory_count: 1,
+            total_logical_bytes: 64 * 64,
+            created_at_ns: 7,
+        };
+        let manifest_id = [33u8; 16];
+        let manifest_obj = build_manifest_object(manifest_id, b"frozen/manifest", &manifest);
+        let mut counted = CountingSource {
+            inner: MemoryObjectSource::new(),
+            reads: std::cell::Cell::new(0),
+        };
+        counted.inner.insert(data_id, data_obj);
+        counted.inner.insert(inv_id, inv_obj);
+        counted.inner.insert(manifest_id, manifest_obj.clone());
+
+        // A root-to-leaf walk crosses one page per index level, and every page
+        // costs exactly one header range plus one stored-page range.
+        let levels = u64::from(manifest.data_root.address.level) + 1;
+        let keys = [
+            b"key-0000".to_vec(),
+            b"key-0031".to_vec(),
+            b"key-0063".to_vec(),
+        ];
+        let mut counts = Vec::new();
+        for _ in 0..3 {
+            counted.reads.set(0);
+            let reader = FixedRevisionReader::open_manifest(&counted, &manifest_obj).unwrap();
+            for key in &keys {
+                assert!(reader.lookup_data(key).unwrap().is_some());
+            }
+            assert_eq!(reader.metadata_rpc_count(), 0, "no KV or lease RPC");
+            counts.push((reader.object_read_count(), counted.reads.get()));
+        }
+        assert_eq!(counts[0], counts[1], "the read counters are fixed");
+        assert_eq!(counts[1], counts[2], "the read counters are fixed");
+        assert_eq!(counts[0].0, levels * keys.len() as u64);
+        assert_eq!(
+            counts[0].1,
+            2 * counts[0].0,
+            "one header and one page range per level, nothing else"
+        );
+    }
+
+    /// Wraps the in-memory source so the fixed baseline's range reads are
+    /// observable.  `ObjectSource` only exposes `get_range`, so a readonly
+    /// baseline cannot write even in principle.
+    struct CountingSource {
+        inner: MemoryObjectSource,
+        reads: std::cell::Cell<u64>,
+    }
+
+    impl ObjectSource for CountingSource {
+        fn get_range(
+            &self,
+            object_id: &[u8; 16],
+            start: u64,
+            end: u64,
+        ) -> Result<Vec<u8>, ObjectSourceError> {
+            self.reads.set(self.reads.get() + 1);
+            self.inner.get_range(object_id, start, end)
+        }
     }
 }

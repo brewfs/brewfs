@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use crate::native_base::wire::bnct::{Id16, RetentionReceipt};
+use crate::native_base::wire::container::ObjectKind;
 use crate::native_base::wire::refs::{Hash32, ObjectId, ObjectRef};
 use crate::native_base::wire::uvarint::Writer;
 
@@ -24,6 +25,15 @@ pub enum ObjectOrigin {
 pub struct CandidateClosure {
     pub manifest: ObjectRef,
     pub physical_inventory: BuiltObjectIndex,
+    /// Every container the revision walks besides the manifest and the
+    /// physical inventory itself: external metadata index pages
+    /// (`FrozenMetadata`) and nested paged inventory containers.
+    ///
+    /// The manifest is retained implicitly because nothing inside the closure
+    /// points at it (RET-008).  Containers are declared explicitly so that a
+    /// closure that forgot one is rejected instead of silently treating it as
+    /// an ordinary target of the private cleaner.
+    pub transitive_containers: Vec<ObjectRef>,
     /// Exact origin for the manifest, inventory container, and every target
     /// listed by the physical inventory.
     pub origins: BTreeMap<ObjectId, ObjectOrigin>,
@@ -61,6 +71,12 @@ fn insert_exact(
     Ok(())
 }
 
+/// A container is retained transitively: it addresses other objects and can
+/// never be released while the revision that walks it is permanent.
+fn is_transitive_container_kind(kind: u8) -> bool {
+    kind == ObjectKind::FrozenMetadata.as_u8() || kind == ObjectKind::PagedInventory.as_u8()
+}
+
 /// Partition the verified physical closure by origin domain. Dependencies
 /// coming from authorized PublishedRevisions are already permanent and are
 /// intentionally omitted from new batches.
@@ -89,6 +105,55 @@ pub fn prepare_retention(
             "physical inventory must exclude the manifest itself".into(),
         ));
     }
+    if closure.manifest.kind != ObjectKind::SnapshotManifest.as_u8() {
+        return Err(LifecycleError::Retention(
+            "candidate manifest is not a SnapshotManifest container".into(),
+        ));
+    }
+    if closure.physical_inventory.root.object.kind != ObjectKind::PagedInventory.as_u8() {
+        return Err(LifecycleError::Retention(
+            "physical inventory root is not a PagedInventory container".into(),
+        ));
+    }
+    let inventory_targets: BTreeSet<ObjectId> = closure
+        .physical_inventory
+        .entries
+        .iter()
+        .map(|object| object.object_id)
+        .collect();
+    let mut declared_containers: BTreeMap<ObjectId, ObjectRef> = BTreeMap::new();
+    for container in &closure.transitive_containers {
+        if container.object_id == closure.manifest.object_id {
+            return Err(LifecycleError::Retention(
+                "the manifest is retained implicitly and cannot be declared twice".into(),
+            ));
+        }
+        if !is_transitive_container_kind(container.kind) {
+            return Err(LifecycleError::Retention(format!(
+                "declared transitive container {:02x?} has non-container kind {}",
+                container.object_id, container.kind
+            )));
+        }
+        if container.object_id != closure.physical_inventory.root.object.object_id
+            && !inventory_targets.contains(&container.object_id)
+        {
+            return Err(LifecycleError::Retention(format!(
+                "declared transitive container {:02x?} is not part of the physical inventory",
+                container.object_id
+            )));
+        }
+        insert_exact(&mut declared_containers, container.clone())?;
+    }
+    for entry in &closure.physical_inventory.entries {
+        if is_transitive_container_kind(entry.kind)
+            && !declared_containers.contains_key(&entry.object_id)
+        {
+            return Err(LifecycleError::Retention(format!(
+                "container {:02x?} of the physical inventory is not declared transitive",
+                entry.object_id
+            )));
+        }
+    }
 
     let mut required = BTreeMap::new();
     insert_exact(&mut required, closure.manifest.clone())?;
@@ -98,6 +163,9 @@ pub fn prepare_retention(
     )?;
     for object in &closure.physical_inventory.entries {
         insert_exact(&mut required, object.clone())?;
+    }
+    for container in declared_containers.values() {
+        insert_exact(&mut required, container.clone())?;
     }
     let required_ids: BTreeSet<_> = required.keys().copied().collect();
     let origin_ids: BTreeSet<_> = closure.origins.keys().copied().collect();

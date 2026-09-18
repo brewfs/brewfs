@@ -28,6 +28,57 @@ use super::{LifecycleError, LifecycleResult, map_conflict};
 pub const MAX_CLEANUP_BATCH_OBJECTS: usize = 128;
 pub const MAX_CLEANUP_BATCH_BYTES: u64 = 1024 * 1024;
 
+/// Volume-level private byte quota (CLN-021).
+///
+/// Near the hard limit new admission stops.  The fence only moves the
+/// admission boundary: every ticket that was already accepted keeps the
+/// drain/publish allowance it was admitted with, so accepted work finishes
+/// instead of being revoked or leaked by an over-quota volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrivateQuota {
+    /// Hard limit on private bytes in the volume.
+    pub hard_limit_bytes: u64,
+    /// Bytes of already-accepted drains/publishes that must still land.  This
+    /// allowance is reserved out of the hard limit before anything new is
+    /// admitted.
+    pub accepted_reserved_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotaFence {
+    /// True when the incoming request cannot be admitted.
+    pub fenced: bool,
+    /// Last ticket that may still drain or publish.  New admission stops
+    /// above this boundary; it never moves backwards.
+    pub accepted_ticket_end: u64,
+    /// Bytes still available for new admission at this point.
+    pub headroom_bytes: u64,
+}
+
+impl PrivateQuota {
+    /// Decide whether `incoming_bytes` may be admitted while `used_bytes` are
+    /// already accounted and `admitted_ticket_end` is the current boundary.
+    pub fn plan_fence(
+        &self,
+        used_bytes: u64,
+        admitted_ticket_end: u64,
+        incoming_bytes: u64,
+    ) -> LifecycleResult<QuotaFence> {
+        if self.accepted_reserved_bytes > self.hard_limit_bytes {
+            return Err(LifecycleError::InvalidState(
+                "reserved drain/publish allowance exceeds the hard limit".into(),
+            ));
+        }
+        let available = self.hard_limit_bytes - self.accepted_reserved_bytes;
+        let headroom = available.saturating_sub(used_bytes);
+        Ok(QuotaFence {
+            fenced: headroom < incoming_bytes,
+            accepted_ticket_end: admitted_ticket_end,
+            headroom_bytes: headroom,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseStartRequest {
     pub domain_id: [u8; 16],
@@ -1524,11 +1575,13 @@ mod tests {
     use crate::native_base::lifecycle::index::build_object_index;
     use crate::native_base::lifecycle::retention::build_retain_batch;
     use crate::native_base::wire::bnct::{
-        DomainKind, ObjectRegistration, PublishedRevision, RetentionPolicy,
+        DomainKind, HeadRef, NativeWorkspaceHead, ObjectRegistration, PlanEntry, PublishedRevision,
+        RetentionPolicy, SnapshotRef, WorkspaceHeadState,
     };
     use crate::native_base::wire::container::{Codec, ObjectKind};
     use crate::native_base::wire::refs::{PageAddress, RootRef};
     use crate::native_base::write::memory::MemoryControlStore;
+    use crate::native_base::write::records::HeadState;
     use crate::native_base::write::store::StoreError;
 
     #[derive(Default)]
@@ -3086,6 +3139,319 @@ mod tests {
         assert_eq!(
             deleter.deleted.lock().unwrap().as_slice(),
             ["private/partial-first", "private/partial-second"]
+        );
+    }
+
+    /// CLN-017 / INV-11, INV-17, INV-18, INV-21, INV-24: protection comes from
+    /// the frozen close certificate, never from a live alias.  Deleting the
+    /// workspace view alias of a published source must not widen the private
+    /// candidate set, and every source object (data pack, external metadata
+    /// container, manifest) must survive the cleanup unchanged.
+    #[tokio::test]
+    async fn a_deleted_alias_never_widens_the_cleanup_candidate_set() {
+        let volume = [120; 16];
+        let domain_id = [121; 16];
+        let workspace = [122; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let doomed = object(123, "private/doomed");
+        let source_pack = object(124, "private/source-pack");
+        let source_index = ObjectRef {
+            kind: ObjectKind::FrozenMetadata.as_u8(),
+            ..object(125, "index/source-125.brfcl")
+        };
+        let source_manifest = ObjectRef {
+            kind: ObjectKind::SnapshotManifest.as_u8(),
+            ..object(126, "manifest/source-126.brfsm")
+        };
+        let retention_objects = vec![
+            source_pack.clone(),
+            source_index.clone(),
+            source_manifest.clone(),
+        ];
+        let retain_batch = build_retain_batch(
+            domain_id,
+            &retention_objects,
+            [127; 16],
+            b"control/retain-127.brfin".to_vec(),
+        )
+        .unwrap();
+        let control_object = retain_batch.index.root.object.clone();
+        let mut inventory_objects = vec![doomed.clone()];
+        inventory_objects.extend(retention_objects.iter().cloned());
+        inventory_objects.push(control_object.clone());
+        let mut seeded_domain = domain(volume, domain_id);
+        seeded_domain.inventory_seq = inventory_objects.len() as u64;
+        seeded_domain.retention_seq = 1;
+        put(
+            &store,
+            keys.domain(&domain_id),
+            ControlRecord::OwnershipDomain(seeded_domain).encode(),
+        )
+        .await;
+        for (index, item) in inventory_objects.iter().enumerate() {
+            put_registration(
+                &store,
+                &keys,
+                domain_id,
+                index as u64 + 1,
+                item,
+                RegistrationState::Verified,
+            )
+            .await;
+        }
+        put(
+            &store,
+            keys.retention_receipt(&domain_id, 1),
+            ControlRecord::RetentionReceipt(retain_batch.receipt(1, [128; 16], [129; 32])).encode(),
+        )
+        .await;
+        // The source's permanent record plus the workspace alias that names it.
+        put(
+            &store,
+            keys.published_revision(&[130; 32]),
+            ControlRecord::PublishedRevision(PublishedRevision {
+                volume_id: volume,
+                storage_view_id: [130; 32],
+                logical_revision: [131; 32],
+                manifest: source_manifest.clone(),
+                publication_id: [132; 16],
+                retained_at_ns: 1,
+                retention_policy: RetentionPolicy::Forever,
+                evidence_root: certificate_root(133),
+            })
+            .encode(),
+        )
+        .await;
+        let head = HeadState {
+            head: HeadRef {
+                head_id: [134; 16],
+                epoch: 1,
+                commit_seq: 1,
+            },
+            writer_generation: 7,
+            write_domain_id: domain_id,
+        };
+        put(&store, keys.head(&workspace), head.encode()).await;
+        put(
+            &store,
+            keys.workspace_view(&workspace),
+            ControlRecord::NativeWorkspaceHead(NativeWorkspaceHead {
+                workspace_id: workspace,
+                head: head.head.clone(),
+                base: SnapshotRef {
+                    volume_id: volume,
+                    logical_revision: [131; 32],
+                    manifest: source_manifest.clone(),
+                },
+                writer_generation: 7,
+                write_domain_id: domain_id,
+                visible_delta_count: 0,
+                open_orphan_count: 0,
+                orphan_carry_digest: None,
+                state: WorkspaceHeadState::Running,
+                entity_version: 1,
+            })
+            .encode(),
+        )
+        .await;
+        let artifacts = CloseArtifacts {
+            inventory: Some(object_index(&inventory_objects, 221)),
+            retention_batches: vec![retain_batch.index.clone()],
+            retained_union: Some(object_index(&retention_objects, 222)),
+            control_evidence: Some(object_index(std::slice::from_ref(&control_object), 223)),
+        };
+        close_domain_start(
+            &store,
+            &keys,
+            &CloseStartRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                expected_entity_version: 1,
+                expected_inventory_seq: inventory_objects.len() as u64,
+                expected_retention_seq: 1,
+                accepted_ticket_end: 9,
+            },
+        )
+        .await
+        .unwrap();
+        close_domain_commit(
+            &store,
+            &keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: inventory_objects.len() as u64,
+                final_retention_seq: 1,
+                artifacts: artifacts.clone(),
+                certificate_ref: None,
+                owner_terminal_proof_hash: [135; 32],
+                attempts_resolved: true,
+                operations_drained: true,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        let planned = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+        assert_eq!(planned.candidate_objects, vec![doomed.clone()]);
+        for kept in &retention_objects {
+            assert!(
+                !planned.candidate_objects.contains(kept),
+                "source object {:02x?} must never be a candidate",
+                kept.object_id
+            );
+        }
+
+        // The alias is deleted: the certificate, not the alias, is what keeps
+        // the source alive.
+        store
+            .run(
+                Txn::new()
+                    .delete(keys.workspace_view(&workspace))
+                    .delete(keys.head(&workspace)),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .get(&keys.workspace_view(&workspace))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let replanned = plan_private_cleanup(&store, &keys, &domain_id, &artifacts)
+            .await
+            .unwrap();
+        assert_eq!(replanned.plan_digest, planned.plan_digest);
+        assert_eq!(replanned.candidate_objects, planned.candidate_objects);
+
+        let deleter = FakeDeleter::default();
+        let applied = apply_private_cleanup(
+            &store,
+            &keys,
+            &deleter,
+            &apply_request(replanned, [136; 16], 0, 137),
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.status, CleanupApplyStatus::Complete);
+        assert_eq!(applied.deleted_objects, 1);
+        assert_eq!(
+            deleter.deleted.lock().unwrap().as_slice(),
+            ["private/doomed"]
+        );
+        // The source's permanent record is untouched by the cleanup.
+        assert!(
+            store
+                .get(&keys.published_revision(&[130; 32]))
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// CLN-021 / INV-11, INV-17, INV-18, INV-21, INV-24: close to the hard
+    /// limit stops new admission while every ticket already accepted keeps its
+    /// drain/publish allowance.  The fence moves the acceptance boundary; it
+    /// never revokes accepted work and never moves the boundary backwards.
+    #[tokio::test]
+    async fn quota_fence_stops_new_admission_and_keeps_the_accepted_allowance() {
+        let volume = [140; 16];
+        let domain_id = [141; 16];
+        let keys = Keys::new(&volume);
+        let store = MemoryControlStore::new();
+        let objects = vec![object(142, "private/quota")];
+        seed_draining_domain(&store, &keys, domain_id, &objects).await;
+
+        let quota = PrivateQuota {
+            hard_limit_bytes: 1000,
+            accepted_reserved_bytes: 200,
+        };
+        let roomy = quota.plan_fence(400, 9, 100).unwrap();
+        assert!(!roomy.fenced);
+        assert_eq!(roomy.headroom_bytes, 400);
+        assert_eq!(roomy.accepted_ticket_end, 9);
+
+        let tight = quota.plan_fence(800, 9, 1).unwrap();
+        assert!(tight.fenced, "no headroom left for new admission");
+        assert_eq!(tight.headroom_bytes, 0);
+        assert_eq!(tight.accepted_ticket_end, 9);
+        assert!(!quota.plan_fence(10, 9, 1).unwrap().fenced);
+
+        let broken = PrivateQuota {
+            hard_limit_bytes: 100,
+            accepted_reserved_bytes: 101,
+        };
+        assert!(broken.plan_fence(0, 9, 0).is_err());
+
+        let accepted = PlanEntry {
+            admission_ticket: 9,
+            inode: 1,
+            mutation_order: 1,
+            logical_offset: 0,
+            logical_len: 1,
+            operation_id: [1; 16],
+            payload_digest: [2; 32],
+            source_token: Vec::new(),
+        };
+        assert!(
+            crate::native_base::lifecycle::seal::validate_plan(
+                std::slice::from_ref(&accepted),
+                tight.accepted_ticket_end
+            )
+            .is_ok(),
+            "accepted drain keeps its allowance after the fence"
+        );
+        let mut refused = accepted;
+        refused.admission_ticket = 10;
+        refused.operation_id = [3; 16];
+        let error = crate::native_base::lifecycle::seal::validate_plan(
+            &[refused],
+            tight.accepted_ticket_end,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("outside frozen acceptance boundary"),
+            "unexpected error: {error}"
+        );
+
+        // The already-accepted publish still completes at the frozen boundary.
+        let artifacts = CloseArtifacts {
+            inventory: Some(object_index(&objects, 224)),
+            retention_batches: Vec::new(),
+            retained_union: None,
+            control_evidence: None,
+        };
+        close_domain_commit(
+            &store,
+            &keys,
+            &CloseCommitRequest {
+                domain_id,
+                expected_owner_generation: 7,
+                close_generation: 1,
+                final_inventory_seq: objects.len() as u64,
+                final_retention_seq: 0,
+                artifacts,
+                certificate_ref: None,
+                owner_terminal_proof_hash: [143; 32],
+                attempts_resolved: true,
+                operations_drained: true,
+                closed_at_ns: 1,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_domain(&store, &keys, &domain_id).await.state,
+            DomainState::Closed
         );
     }
 }

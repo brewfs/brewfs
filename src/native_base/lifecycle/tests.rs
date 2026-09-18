@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use super::cleanup::{CloseStartRequest, close_domain_start};
@@ -31,7 +32,7 @@ use crate::native_base::write::domain::decode_domain;
 use crate::native_base::write::keys::Keys;
 use crate::native_base::write::memory::MemoryControlStore;
 use crate::native_base::write::records::HeadState;
-use crate::native_base::write::store::{ControlStore, Txn};
+use crate::native_base::write::store::{ControlStore, StoreError, Txn};
 
 fn object(id: u8, kind: u8, key: &str) -> ObjectRef {
     ObjectRef {
@@ -40,6 +41,63 @@ fn object(id: u8, kind: u8, key: &str) -> ObjectRef {
         object_len: 128 + u64::from(id),
         full_hash: Sha256::digest([id; 7]).into(),
         key: key.as_bytes().to_vec(),
+    }
+}
+
+/// KV namespace read/write counters for a fixed readonly baseline (RET-011).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BaselineCounters {
+    kv_namespace_reads: u64,
+    kv_transactions: u64,
+    retention_lease_rpcs: u64,
+}
+
+impl BaselineCounters {
+    fn delta(&self, earlier: &Self) -> Self {
+        Self {
+            kv_namespace_reads: self.kv_namespace_reads - earlier.kv_namespace_reads,
+            kv_transactions: self.kv_transactions - earlier.kv_transactions,
+            retention_lease_rpcs: self.retention_lease_rpcs - earlier.retention_lease_rpcs,
+        }
+    }
+}
+
+/// P1 reads the KV namespace: every head/view resolution is a real KV read and
+/// must be counted.  There is no GC retention-lease client at all, so the
+/// lease counter can never move.
+struct CountingStore {
+    inner: MemoryControlStore,
+    counters: std::sync::Mutex<BaselineCounters>,
+}
+
+impl CountingStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryControlStore::new(),
+            counters: std::sync::Mutex::new(BaselineCounters::default()),
+        }
+    }
+
+    fn snapshot(&self) -> BaselineCounters {
+        *self.counters.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl ControlStore for CountingStore {
+    async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.counters.lock().unwrap().kv_namespace_reads += 1;
+        self.inner.get(key).await
+    }
+
+    async fn run(&self, txn: Txn) -> Result<(), StoreError> {
+        self.counters.lock().unwrap().kv_transactions += 1;
+        self.inner.run(txn).await
+    }
+
+    async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        self.counters.lock().unwrap().kv_namespace_reads += 1;
+        self.inner.scan(prefix).await
     }
 }
 
@@ -219,6 +277,7 @@ fn exact_retention_partitions_owned_domains_and_rejects_siblings() {
     let closure = CandidateClosure {
         manifest,
         physical_inventory: inventory,
+        transitive_containers: Vec::new(),
         origins,
         authorized_sources: BTreeSet::from([[77; 32]]),
         scanned_metadata_bytes: 999,
@@ -233,6 +292,166 @@ fn exact_retention_partitions_owned_domains_and_rejects_siblings() {
     bad.origins
         .insert(bad.manifest.object_id, ObjectOrigin::Owned(sibling));
     assert!(prepare_retention(&bad, &[workspace, build]).is_err());
+}
+
+/// RET-008 / INV-11, INV-18: the manifest is retained although nothing inside
+/// the closure points at it, and every container the revision walks (external
+/// metadata index pages and nested paged inventory containers) is retained
+/// transitively.  A closure that forgets a container, or that declares a
+/// container the physical inventory does not contain, fails closed instead of
+/// handing the object to the private cleaner.
+#[test]
+fn retention_keeps_the_manifest_and_every_transitive_container_permanently() {
+    let workspace = [40; 16];
+    let build = [41; 16];
+    let pack = object(1, 1, "pack/p");
+    let meta_page = object(2, 3, "index/meta-2.brfcl");
+    let nested_inventory = object(3, 5, "index/nested-3.brfin");
+    let inventory = build_object_index(
+        &[pack.clone(), meta_page.clone(), nested_inventory.clone()],
+        [4; 16],
+        b"inventory/i".to_vec(),
+        64,
+    )
+    .unwrap();
+    let manifest = object(5, 4, "manifest/m");
+    let mut origins = BTreeMap::new();
+    origins.insert(pack.object_id, ObjectOrigin::Owned(build));
+    origins.insert(meta_page.object_id, ObjectOrigin::Owned(build));
+    origins.insert(nested_inventory.object_id, ObjectOrigin::Owned(build));
+    origins.insert(inventory.root.object.object_id, ObjectOrigin::Owned(build));
+    origins.insert(manifest.object_id, ObjectOrigin::Owned(build));
+    let closure = CandidateClosure {
+        manifest: manifest.clone(),
+        physical_inventory: inventory.clone(),
+        transitive_containers: vec![meta_page.clone(), nested_inventory.clone()],
+        origins: origins.clone(),
+        authorized_sources: BTreeSet::new(),
+        scanned_metadata_bytes: 0,
+    };
+    let plan = prepare_retention(&closure, &[workspace, build]).unwrap();
+    let retained = &plan.by_domain[&build];
+    assert_eq!(
+        retained.len(),
+        5,
+        "manifest + inventory + pack + 2 containers"
+    );
+    for kept in [
+        &manifest,
+        &inventory.root.object,
+        &pack,
+        &meta_page,
+        &nested_inventory,
+    ] {
+        assert!(
+            retained.contains(kept),
+            "object {:02x?} must stay retained",
+            kept.object_id
+        );
+    }
+    assert_eq!(plan.metrics.new_retained_objects, 5);
+    assert!(plan.by_domain.get(&workspace).is_none());
+
+    let mut undeclared = closure.clone();
+    undeclared.transitive_containers = vec![meta_page.clone()];
+    let error = prepare_retention(&undeclared, &[workspace, build]).unwrap_err();
+    assert!(
+        error.to_string().contains("is not declared transitive"),
+        "unexpected error: {error}"
+    );
+
+    let mut foreign = closure.clone();
+    foreign.transitive_containers = vec![object(6, 3, "index/foreign-6.brfcl")];
+    assert!(
+        prepare_retention(&foreign, &[workspace, build])
+            .unwrap_err()
+            .to_string()
+            .contains("is not part of the physical inventory")
+    );
+
+    let mut not_a_container = closure.clone();
+    not_a_container.transitive_containers = vec![pack.clone()];
+    assert!(
+        prepare_retention(&not_a_container, &[workspace, build])
+            .unwrap_err()
+            .to_string()
+            .contains("has non-container kind")
+    );
+
+    let mut self_declared = closure.clone();
+    self_declared.transitive_containers = vec![
+        manifest.clone(),
+        meta_page.clone(),
+        nested_inventory.clone(),
+    ];
+    assert!(
+        prepare_retention(&self_declared, &[workspace, build])
+            .unwrap_err()
+            .to_string()
+            .contains("retained implicitly")
+    );
+
+    let mut wrong_manifest = closure;
+    wrong_manifest.manifest = object(7, 5, "manifest/not-a-manifest");
+    assert!(
+        prepare_retention(&wrong_manifest, &[workspace, build])
+            .unwrap_err()
+            .to_string()
+            .contains("not a SnapshotManifest container")
+    );
+}
+
+/// RET-011 / INV-11, INV-18: a fixed readonly baseline has fixed read/write
+/// counters.  P1 still reads the KV namespace (a head/view resolution is a
+/// real KV read, counted once), the baseline never writes, and it can never
+/// issue a GC retention-lease RPC: the legacy read-lease option is refused
+/// before any RPC could be built.
+#[tokio::test]
+async fn fixed_readonly_baseline_counters_are_fixed_and_lease_free() {
+    let volume = [150; 16];
+    let workspace = [151; 16];
+    let keys = Keys::new(&volume);
+    let store = CountingStore::new();
+    let head = HeadState {
+        head: HeadRef {
+            head_id: [152; 16],
+            epoch: 1,
+            commit_seq: 1,
+        },
+        writer_generation: 7,
+        write_domain_id: [153; 16],
+    };
+    put(&store, keys.head(&workspace), head.encode()).await;
+
+    let mut deltas = Vec::new();
+    for _ in 0..2 {
+        let before = store.snapshot();
+        for _ in 0..2 {
+            let bytes = store.get(&keys.head(&workspace)).await.unwrap().unwrap();
+            assert_eq!(HeadState::decode(&bytes).unwrap(), head);
+        }
+        deltas.push(store.snapshot().delta(&before));
+    }
+    assert_eq!(deltas[0], deltas[1], "the baseline counters are fixed");
+    assert_eq!(
+        deltas[0],
+        BaselineCounters {
+            kv_namespace_reads: 2,
+            kv_transactions: 0,
+            retention_lease_rpcs: 0,
+        },
+        "P1 resolves each readonly baseline with exactly one KV namespace read"
+    );
+
+    assert!(
+        reject_legacy_retention_options(&LegacyRetentionOptions {
+            retention_ttl_seconds: None,
+            published_gc: None,
+            read_retention_leases: Some(true),
+        })
+        .is_err(),
+        "a GC retention lease RPC is refused, never issued"
+    );
 }
 
 #[test]
@@ -638,6 +857,7 @@ async fn two_domain_publication_is_atomic_exact_and_idempotent() {
         &CandidateClosure {
             manifest: manifest.object.clone(),
             physical_inventory: inventory.clone(),
+            transitive_containers: Vec::new(),
             origins,
             authorized_sources: BTreeSet::new(),
             scanned_metadata_bytes: 8080,

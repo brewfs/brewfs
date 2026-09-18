@@ -1305,8 +1305,8 @@
     "expected": "全部传递容器与manifest自身被永久保留",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07n-retention-quota.sh (exit 0; native_base::lifecycle::tests::retention_keeps 1 passed/0 failed): retention_keeps_the_manifest_and_every_transitive_container_permanently —— candidate closure 的 manifest 自身不在 I(d) 内也不被任何条目指涉，仍被隐式永久保留（manifest + 外部 meta 索引页 FrozenMetadata(kind 3) + 嵌套 PagedInventory(kind 5) + inventory 容器 + 数据 pack 全部进入 RetainBatch，new_retained_objects=5，没有任何一项落入候选集）。漏声明某个 inventory 容器（\"is not declared transitive\"）、声明 I(d) 之外的容器（\"is not part of the physical inventory\"）、把普通数据对象当容器声明（\"has non-container kind\"）、重复声明 manifest（\"retained implicitly\"）、把 kind!=4 的对象当 manifest（\"not a SnapshotManifest container\"）全部 fail-closed，退出码 0。log: doc/native-base/logs/pr07n-retention-quota.log"
   },
   {
     "test_id": "RET-009",
@@ -1338,8 +1338,8 @@
     "expected": "无GC保留租约RPC，P1仍有KV namespace读取",
     "invariants": "INV-11 INV-18",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07n-retention-quota.sh (exit 0; frozen::fixed_readonly_baseline 1 passed/0 failed, lifecycle::fixed_readonly_baseline 1 passed/0 failed): fixed_readonly_baseline_page_counts_are_fixed_and_lease_free —— 固定 readonly 基线每个索引层级恰好读 1 个已认证页（root-to-leaf = data_root.address.level+1 页，即 2×(level+1) 次 range 读：header + stored 页），三个独立 reader/缓存状态计数完全一致且 metadata_rpc_count()==0（reader 不持有 KV 与租约客户端，ObjectSource 只暴露 get_range，结构上无法写）；fixed_readonly_baseline_counters_are_fixed_and_lease_free —— P1 基线每次 head 解析恰好 1 次 KV namespace 读（两次解析 delta {kv_namespace_reads:2, kv_transactions:0, retention_lease_rpcs:0} 两次运行完全相同），且 legacy read_retention_leases=true 在任何 RPC 构造前即被拒绝。log: doc/native-base/logs/pr07n-retention-quota.log"
   },
   {
     "test_id": "RET-012",
@@ -1646,8 +1646,8 @@
     "expected": "cleaner仍不得删该对象",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07n-retention-quota.sh (exit 0; cleanup::a_deleted_alias 1 passed/0 failed): a_deleted_alias_never_widens_the_cleanup_candidate_set —— source 的正式记录（PublishedRevision, retention_policy=Forever）+ RetainBatch 登记后，删除 workspace 的 head 与 view alias（alias 消失），重新规划得到的 plan_digest 与 candidate_objects 与删除前逐字节相同，候选集仍然只有 private/doomed；实际 apply 只删除 1 个对象（private/doomed），source pack、外部 meta 容器、manifest 与正式记录全部留存——删除 alias 不产生任何新的可删对象，保护完全来自冻结证书 K(d)/C(d)。log: doc/native-base/logs/pr07n-retention-quota.log"
   },
   {
     "test_id": "CLN-018",
@@ -1690,8 +1690,8 @@
     "expected": "停止新准入，保留已接受drain/publish完成额度",
     "invariants": "INV-11 INV-17 INV-18 INV-21 INV-24",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07n-retention-quota.sh (exit 0; cleanup::quota_fence 1 passed/0 failed): quota_fence_stops_new_admission_and_keeps_the_accepted_allowance —— hard_limit=1000、accepted_reserved=200 时，used=400 的新准入仍可放行（headroom=400），used=800 时 headroom=0 立即 fenced（新准入停止），已接受边界 accepted_ticket_end 不前移；fence 之后 admission_ticket<=边界 的 drain entry 仍通过 seal::validate_plan（已接受 drain/publish 额度保留），>边界的 ticket 被拒（outside frozen acceptance boundary）；已接受的 publish 仍能 close_domain_commit 完成（域进入 Closed）；reserved>hard_limit 的配置被直接拒绝。log: doc/native-base/logs/pr07n-retention-quota.log"
   },
   {
     "test_id": "CLN-022",
