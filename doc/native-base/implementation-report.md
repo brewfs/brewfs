@@ -951,6 +951,37 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07U · 单次请求一致且有界的读捕获（CONS-001/002/003/006）
+
+工具链同 PR07P。改动集中在 `src/native_base/runtime/io.rs`（PR07 的 component-level 读写运行时）。
+
+核心改动：
+- `NativeDataRuntime::snapshot_metadata`：一次请求只做一次 metadata 捕获，且顺序固定为先取 `pending_through(boundary)` 快照、
+  再读已提交视图。顺序是正确性的一部分：先读 committed 再读 pending 时，落在两步之间的提交既已 handoff（不在 pending）
+  又未被第一步看到（committed 视图早于事务），read 会把已返回给客户端的写入读成陈旧内容/空洞；反过来该提交的 extent
+  已在 store 里，第二步必定读到（CONS-001/CONS-002）。
+- token 复核：`capture_stable_view` 在 extent 扫描**前后**各读一次 inode 行并要求逐字节相同（每次提交都会推进该行，
+  因此行相同即窗口内没有提交落地）。不一致即判定为跨代视图并重读；`read_at_boundary` 的 size、committed extents 与
+  pending overlay 现在全部来自同一个 `MetadataSnapshot`，size 与 extent 不可能来自两代（CONS-001）。
+- `MetadataCapturePolicy { max_attempts, attempt_timeout }` + `NativeIoError::MetadataUnstable`：重试只发生在
+  token 变化与 metadata 读超时两种可重试情形，且既有次数上限又有单次墙钟上限，超限后请求失败而不是无限重试或给出跨代结果。
+  整个捕获与重试都在 runtime 状态门之外进行（读不会阻塞并发提交）（CONS-006）。
+- 观测：`capture_count()`（每请求一次）与 `capture_attempt_count()`（含复核重试），用于证明「一次读 = 一次捕获」与
+  「重试有界」；`size()` 也走同一捕获路径，因此 size 与数据一致。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07U-FOCUSED | `bash doc/native-base/logs/pr07u-capture-consistency.sh` | 0 | PASS（runtime::io 19 passed/0 failed，每 ID 1 passed，CONS-006 2 passed） | [pr07u-capture-consistency.log](logs/pr07u-capture-consistency.log) |
+| PR07U-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07U-CONS001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_commit_inside_a_read_capture_is_never_served_stale` | 0 | PASS（故障注入 store 在 extent 扫描中提交并 handoff） | 同上 |
+| PR07U-CONS002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_lost_commit_reply_hands_off_without_a_gap` | 0 | PASS（事务已应用但回包丢失 → 重试回答 AlreadyCommitted） | 同上 |
+| PR07U-CONS003 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::one_read_request_reuses_a_single_bounded_capture` | 0 | PASS（3 chunk 跨读 = 1 capture / 1 scan） | 同上 |
+| PR07U-CONS006 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::an_inode_row_that_never_settles_fails_within_the_bounded_budget native_base::runtime::io::tests::a_metadata_read_beyond_the_attempt_timeout_is_bounded` | 0 | PASS（2 passed：不稳定行与超时均按 max_attempts 有界失败） | 同上 |
+
+范围说明（诚实）：本项是 **component-level** 运行时（`NativeDataRuntime`）而非真实 FUSE 挂载路径上的证据；
+一次 read 的边界是「一个内部请求」，不是内核 syscall 级原子（跨 syscall 复用同一 capture 仍属未实现）；
+CRITICAL/`attempt_timeout` 的默认值（4 次 / 2s）是策略默认，不是压测结论；metadata plane 的真实超时（Redis/TiKV 客户端级）
+仍由后端自身超时与本文的有界预算叠加，未做端到端超时归因。
 ### PR07T · 上传回执保护、chmod 元数据专用路径与 rename 覆盖（WRITE-006/010/012）
 
 工具链同 PR07P。新增实现位于 `src/native_base/write/orphan_receipt.rs` 与 `src/native_base/write/replace.rs`

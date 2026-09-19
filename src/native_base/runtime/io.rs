@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -10,13 +12,14 @@ use crate::native_base::seal::{BlockBinding, NATIVE_LAYOUT_VERSIONED_FRAMED};
 use crate::native_base::wire::bnct::ObjectRegistration;
 use crate::native_base::wire::refs::ObjectId;
 use crate::native_base::wire::uvarint::Reader;
-use crate::native_base::write::commit::read_inode_view;
+use crate::native_base::write::commit::{InodeView, read_inode_view};
 use crate::native_base::write::domain::decode_registration;
 use crate::native_base::write::error::WriteError;
 use crate::native_base::write::overlay::{
     DrainReport, MutationSpec, Ticket, WriteOverlay, ensure_workspace_head,
 };
 use crate::native_base::write::records::{ExtentKind, HeadPlacement};
+use crate::native_base::write::store::ControlStore;
 
 #[async_trait]
 pub trait BaseDataSource: Send + Sync {
@@ -108,6 +111,11 @@ pub enum NativeIoError {
     Integrity(String),
     #[error("native fsync failed: {0}")]
     Fsync(String),
+    /// The read metadata could not be pinned to one generation within the
+    /// request's bounded budget (CONS-001/CONS-006).  The caller retries with
+    /// a fresh request rather than serving a mixed or stale view.
+    #[error("native read metadata is unstable: {0}")]
+    MetadataUnstable(String),
     #[error(transparent)]
     Write(#[from] WriteError),
     #[error(transparent)]
@@ -123,21 +131,81 @@ struct RuntimeState {
     pending: BTreeMap<u64, VecDeque<PendingMutation>>,
 }
 
+/// How one read request bounds its metadata capture (CONS-006).
+///
+/// A capture re-reads the inode row before and after the extent scan and
+/// retries while the two disagree, so a request never mixes an inode row from
+/// one commit with extents from another.  The retry is bounded in attempts and
+/// in wall-clock time per attempt: a metadata plane that never settles costs a
+/// failed request, not a hung caller.
+#[derive(Clone, Copy, Debug)]
+pub struct MetadataCapturePolicy {
+    /// Attempts per request, including the first.
+    pub max_attempts: u32,
+    /// Wall-clock bound on one attempt's metadata reads.
+    pub attempt_timeout: Duration,
+}
+
+impl Default for MetadataCapturePolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 4,
+            attempt_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
+/// One consistent metadata generation for a single request (CONS-001,
+/// CONS-002): everything the request serves comes from this snapshot.
+struct MetadataSnapshot {
+    pending: Vec<PendingMutation>,
+    committed: InodeView,
+}
+
 pub struct NativeDataRuntime {
     overlay: Arc<WriteOverlay>,
     base: Arc<dyn BaseDataSource>,
     state: Mutex<RuntimeState>,
     decoded_cache: Mutex<BTreeMap<ObjectId, Arc<Vec<u8>>>>,
+    capture_policy: MetadataCapturePolicy,
+    /// Completed metadata captures: one per read/size/fsync request.
+    captures: AtomicU64,
+    /// Capture attempts, including the revalidated retries (CONS-006).
+    capture_attempts: AtomicU64,
 }
 
 impl NativeDataRuntime {
     pub fn new(overlay: Arc<WriteOverlay>, base: Arc<dyn BaseDataSource>) -> Self {
+        Self::with_capture_policy(overlay, base, MetadataCapturePolicy::default())
+    }
+
+    pub fn with_capture_policy(
+        overlay: Arc<WriteOverlay>,
+        base: Arc<dyn BaseDataSource>,
+        capture_policy: MetadataCapturePolicy,
+    ) -> Self {
         Self {
             overlay,
             base,
             state: Mutex::new(RuntimeState::default()),
             decoded_cache: Mutex::new(BTreeMap::new()),
+            capture_policy,
+            captures: AtomicU64::new(0),
+            capture_attempts: AtomicU64::new(0),
         }
+    }
+
+    /// Completed metadata captures.  One read request -- however many blocks
+    /// or extents it spans -- consumes exactly one capture (CONS-003).
+    pub fn capture_count(&self) -> u64 {
+        self.captures.load(Ordering::Relaxed)
+    }
+
+    /// Capture attempts, including revalidated retries.  A request whose
+    /// metadata never settles stops after [`MetadataCapturePolicy::max_attempts`]
+    /// (CONS-006).
+    pub fn capture_attempt_count(&self) -> u64 {
+        self.capture_attempts.load(Ordering::Relaxed)
     }
 
     pub async fn initialize(&self, owner_id: [u8; 16], epoch: u64) -> Result<(), NativeIoError> {
@@ -277,12 +345,12 @@ impl NativeDataRuntime {
         offset: u64,
         len: usize,
     ) -> Result<Vec<u8>, NativeIoError> {
-        let boundary = self.state.lock().await.next_ticket;
+        let boundary = self.capture_boundary().await;
         self.read_at_boundary(inode, offset, len, boundary).await
     }
 
     pub async fn size(&self, inode: u64) -> Result<u64, NativeIoError> {
-        let boundary = self.state.lock().await.next_ticket;
+        let boundary = self.capture_boundary().await;
         self.effective_size_at(inode, boundary).await
     }
 
@@ -301,35 +369,114 @@ impl NativeDataRuntime {
 
     async fn effective_size_at(&self, inode: u64, boundary: u64) -> Result<u64, NativeIoError> {
         let base_size = self.base.size(inode).await?;
-        let committed = read_inode_view(
-            self.overlay.control_store(),
-            self.overlay.keys(),
-            &self.overlay.params().workspace_id,
-            inode,
-        )
-        .await?;
-        let mut size = if committed.had_record {
-            committed.data.size
-        } else {
-            base_size
-        };
-        for mutation in self.pending_through(inode, boundary).await {
-            match mutation {
-                PendingMutation::Write(write) => {
-                    size = size.max(
-                        write
-                            .offset
-                            .checked_add(write.data.len() as u64)
-                            .ok_or(NativeIoError::RangeOverflow)?,
-                    );
+        let snapshot = self.snapshot_metadata(inode, boundary).await?;
+        effective_size(&snapshot, base_size)
+    }
+
+    /// Pin the request's generation: every mutation with a ticket up to this
+    /// watermark belongs to the view the request serves, and everything after
+    /// it is invisible to the request (CONS-001).
+    async fn capture_boundary(&self) -> u64 {
+        self.state.lock().await.next_ticket
+    }
+
+    /// Snapshot one metadata generation for `inode` (CONS-001/CONS-002).
+    ///
+    /// Order matters.  The pending set is taken **before** the committed view
+    /// is read: a commit that lands after that point has already written its
+    /// extents to the control plane, so the committed view read afterwards
+    /// still serves its bytes.  The opposite order has a gap -- a commit
+    /// landing between the two steps is neither pending (it was handed off)
+    /// nor committed (the view was read before the transaction) -- and would
+    /// serve stale bytes for a write that already returned to the client.
+    ///
+    /// The committed view itself is validated: the inode row is read before
+    /// and after the extent scan and must be byte-identical, because every
+    /// commit bumps it.  A difference means a commit landed inside the scan,
+    /// so the pair would mix two generations; the request re-reads instead,
+    /// bounded by [`MetadataCapturePolicy`].  The runtime's state lock is not
+    /// held across these metadata reads, so a concurrent commit is never
+    /// blocked behind a reader (CONS-006).
+    async fn snapshot_metadata(
+        &self,
+        inode: u64,
+        boundary: u64,
+    ) -> Result<MetadataSnapshot, NativeIoError> {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            self.capture_attempts.fetch_add(1, Ordering::Relaxed);
+            let pending = self.pending_through(inode, boundary).await;
+            match self.capture_stable_view(inode).await {
+                Ok(Some(committed)) => {
+                    self.captures.fetch_add(1, Ordering::Relaxed);
+                    return Ok(MetadataSnapshot { pending, committed });
                 }
-                PendingMutation::Truncate { new_size, .. } => size = new_size,
-                PendingMutation::PunchHole { resulting_size, .. } => {
-                    size = size.max(resulting_size)
+                Ok(None) => {
+                    if attempt >= self.capture_policy.max_attempts {
+                        return Err(NativeIoError::MetadataUnstable(format!(
+                            "inode {inode} changed while its view was captured, {attempt} attempts"
+                        )));
+                    }
+                }
+                Err(error) => {
+                    // A timeout is retried; any other store failure is real and
+                    // returned as-is.  Either way the retry budget is bounded.
+                    let retryable = matches!(error, NativeIoError::MetadataUnstable(_));
+                    if !retryable || attempt >= self.capture_policy.max_attempts {
+                        return Err(error);
+                    }
                 }
             }
         }
-        Ok(size)
+    }
+
+    /// Read `inode`'s committed view once, returning `None` when the inode row
+    /// moved while the extents were scanned (a torn generation).
+    async fn capture_stable_view(&self, inode: u64) -> Result<Option<InodeView>, NativeIoError> {
+        let store = self.overlay.control_store();
+        let keys = self.overlay.keys();
+        let workspace = self.overlay.params().workspace_id;
+        let ino_key = keys.inode(&workspace, inode);
+        let before = self.timed_get(store, &ino_key, inode).await?;
+        let view = self.timed_view(store, inode).await?;
+        let after = self.timed_get(store, &ino_key, inode).await?;
+        Ok((before == after).then_some(view))
+    }
+
+    async fn timed_get(
+        &self,
+        store: &dyn ControlStore,
+        key: &[u8],
+        inode: u64,
+    ) -> Result<Option<Vec<u8>>, NativeIoError> {
+        tokio::time::timeout(self.capture_policy.attempt_timeout, store.get(key))
+            .await
+            .map_err(|_| {
+                NativeIoError::MetadataUnstable(format!("reading inode {inode} metadata timed out"))
+            })?
+            .map_err(NativeIoError::from)
+    }
+
+    async fn timed_view(
+        &self,
+        store: &dyn ControlStore,
+        inode: u64,
+    ) -> Result<InodeView, NativeIoError> {
+        tokio::time::timeout(
+            self.capture_policy.attempt_timeout,
+            read_inode_view(
+                store,
+                self.overlay.keys(),
+                &self.overlay.params().workspace_id,
+                inode,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            NativeIoError::MetadataUnstable(format!("reading inode {inode} extents timed out"))
+        })?
+        .map_err(NativeIoError::from)
     }
 
     async fn read_at_boundary(
@@ -342,7 +489,13 @@ impl NativeDataRuntime {
         let requested_end = offset
             .checked_add(len as u64)
             .ok_or(NativeIoError::RangeOverflow)?;
-        let size = self.effective_size_at(inode, boundary).await?;
+        let base_size = self.base.size(inode).await?;
+        // One capture for the whole request: the size, the committed extents
+        // and the pending overlay below all come from this generation
+        // (CONS-001/CONS-003).
+        let snapshot = self.snapshot_metadata(inode, boundary).await?;
+        let committed = &snapshot.committed;
+        let size = effective_size(&snapshot, base_size)?;
         if len == 0 || offset >= size {
             return Ok(Vec::new());
         }
@@ -354,14 +507,6 @@ impl NativeDataRuntime {
             })?
         ];
 
-        let base_size = self.base.size(inode).await?;
-        let committed = read_inode_view(
-            self.overlay.control_store(),
-            self.overlay.keys(),
-            &self.overlay.params().workspace_id,
-            inode,
-        )
-        .await?;
         let baseline_visible_end = if committed.had_record {
             committed.data.size.min(base_size)
         } else {
@@ -400,7 +545,7 @@ impl NativeDataRuntime {
             .await?;
         }
 
-        for mutation in self.pending_through(inode, boundary).await {
+        for mutation in &snapshot.pending {
             match mutation {
                 PendingMutation::Write(write) => {
                     let write_end = write
@@ -420,6 +565,7 @@ impl NativeDataRuntime {
                         .copy_from_slice(&write.data[source_start..source_end]);
                 }
                 PendingMutation::Truncate { new_size, .. } => {
+                    let new_size = *new_size;
                     if new_size < end {
                         let start = new_size.max(offset);
                         let output_start = usize::try_from(start - offset).unwrap();
@@ -431,6 +577,8 @@ impl NativeDataRuntime {
                     len,
                     ..
                 } => {
+                    let hole_start = *hole_start;
+                    let len = *len;
                     let hole_end = hole_start
                         .checked_add(len)
                         .ok_or(NativeIoError::RangeOverflow)?;
@@ -764,6 +912,34 @@ impl NativeDataRuntime {
     }
 }
 
+/// The logical size one metadata snapshot implies: the committed size (or the
+/// immutable baseline size when no native inode row exists yet) with every
+/// pending mutation up to the request's boundary applied in acceptance order.
+/// Size and extents therefore come from the same generation (CONS-001).
+fn effective_size(snapshot: &MetadataSnapshot, base_size: u64) -> Result<u64, NativeIoError> {
+    let committed = &snapshot.committed;
+    let mut size = if committed.had_record {
+        committed.data.size
+    } else {
+        base_size
+    };
+    for mutation in &snapshot.pending {
+        match mutation {
+            PendingMutation::Write(write) => {
+                size = size.max(
+                    write
+                        .offset
+                        .checked_add(write.data.len() as u64)
+                        .ok_or(NativeIoError::RangeOverflow)?,
+                );
+            }
+            PendingMutation::Truncate { new_size, .. } => size = *new_size,
+            PendingMutation::PunchHole { resulting_size, .. } => size = size.max(*resulting_size),
+        }
+    }
+    Ok(size)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -785,6 +961,7 @@ mod tests {
     use crate::native_base::write::overlay::OverlayParams;
     use crate::native_base::write::receipts::MemorySink;
     use crate::native_base::write::receipts::ObjectSink;
+    use crate::native_base::write::store::{StoreError, Txn};
 
     /// A sink whose uploads can be failed on demand, to model an incomplete
     /// predecessor at an fsync boundary.
@@ -875,9 +1052,18 @@ mod tests {
     }
 
     async fn runtime(
-        store: Arc<MemoryControlStore>,
+        store: Arc<dyn ControlStore>,
         sink: Arc<dyn ObjectSink>,
         base: Arc<dyn BaseDataSource>,
+    ) -> NativeDataRuntime {
+        runtime_with_policy(store, sink, base, MetadataCapturePolicy::default()).await
+    }
+
+    async fn runtime_with_policy(
+        store: Arc<dyn ControlStore>,
+        sink: Arc<dyn ObjectSink>,
+        base: Arc<dyn BaseDataSource>,
+        policy: MetadataCapturePolicy,
     ) -> NativeDataRuntime {
         let overlay = Arc::new(WriteOverlay::new(
             store,
@@ -890,9 +1076,101 @@ mod tests {
                 block_size: 64,
             },
         ));
-        let runtime = NativeDataRuntime::new(overlay, base);
+        let runtime = NativeDataRuntime::with_capture_policy(overlay, base, policy);
         runtime.initialize([4; 16], 1).await.unwrap();
         runtime
+    }
+
+    /// A store wrapper that observes and can interleave metadata traffic: it
+    /// counts reads, can delay them beyond a capture attempt's timeout, can run
+    /// a one-shot action *inside* an extent scan (so a test can land a
+    /// concurrent commit between a capture's steps), and can keep an inode row
+    /// moving to model a metadata plane that never settles.
+    #[derive(Default)]
+    struct ObservedStore {
+        inner: MemoryControlStore,
+        gets: AtomicU64,
+        scans: AtomicU64,
+        delay: tokio::sync::Mutex<Option<std::time::Duration>>,
+        on_scan: tokio::sync::Mutex<Option<ScanHook>>,
+        bump_inode_on_scan: tokio::sync::Mutex<Option<Vec<u8>>>,
+    }
+
+    struct ScanHook {
+        reached: tokio::sync::mpsc::UnboundedSender<()>,
+        proceed: tokio::sync::oneshot::Receiver<()>,
+    }
+
+    impl ObservedStore {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn gets(&self) -> u64 {
+            self.gets.load(Ordering::Relaxed)
+        }
+
+        fn scans(&self) -> u64 {
+            self.scans.load(Ordering::Relaxed)
+        }
+
+        async fn set_delay(&self, delay: std::time::Duration) {
+            *self.delay.lock().await = Some(delay);
+        }
+
+        async fn hook_next_scan(
+            &self,
+        ) -> (
+            tokio::sync::mpsc::UnboundedReceiver<()>,
+            tokio::sync::oneshot::Sender<()>,
+        ) {
+            let (reached_tx, reached_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (proceed_tx, proceed_rx) = tokio::sync::oneshot::channel();
+            *self.on_scan.lock().await = Some(ScanHook {
+                reached: reached_tx,
+                proceed: proceed_rx,
+            });
+            (reached_rx, proceed_tx)
+        }
+
+        async fn bump_inode_row_on_scan(&self, key: Vec<u8>) {
+            *self.bump_inode_on_scan.lock().await = Some(key);
+        }
+    }
+
+    #[async_trait]
+    impl ControlStore for ObservedStore {
+        async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.gets.fetch_add(1, Ordering::Relaxed);
+            if let Some(delay) = *self.delay.lock().await {
+                tokio::time::sleep(delay).await;
+            }
+            self.inner.get(key).await
+        }
+
+        async fn run(&self, txn: Txn) -> Result<(), StoreError> {
+            self.inner.run(txn).await
+        }
+
+        async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            let hook = self.on_scan.lock().await.take();
+            if let Some(hook) = hook {
+                let _ = hook.reached.send(());
+                let _ = hook.proceed.await;
+            }
+            let rows = self.inner.scan(prefix).await?;
+            let bump = self.bump_inode_on_scan.lock().await.clone();
+            if let Some(key) = bump {
+                if let Some(bytes) = self.inner.get(&key).await? {
+                    let mut data = crate::native_base::write::records::InodeData::decode(&bytes)
+                        .map_err(|error| StoreError::Backend(error.to_string()))?;
+                    data.data_version += 1;
+                    self.inner.run(Txn::new().put(key, data.encode())).await?;
+                }
+            }
+            Ok(rows)
+        }
     }
 
     #[tokio::test]
@@ -1433,5 +1711,285 @@ mod tests {
             runtime.read(9, 198, 20).await.unwrap(),
             oracle[198..218].to_vec()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // CONS-001/002/003/006: one request, one bounded and coherent capture.
+    // -----------------------------------------------------------------------
+
+    /// CONS-003: one read request reuses a single capture however many blocks
+    /// or extents it spans, and the metadata cost does not grow with the chunk
+    /// count.  A second syscall is a second capture: the runtime never claims
+    /// more than one request's worth of atomicity.
+    #[tokio::test]
+    async fn one_read_request_reuses_a_single_bounded_capture() {
+        let store = Arc::new(ObservedStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: Vec::new(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store.clone(), sink, base).await;
+
+        // Three separate blocks committed as three data extents, so a
+        // three-block read crosses chunk, block and extent boundaries.
+        for block in 0..3u64 {
+            let data = vec![0x40 + block as u8; 64];
+            runtime.write(9, block * 64, &data).await.unwrap();
+        }
+        runtime.fsync(9).await.unwrap();
+        assert_eq!(runtime.pending_count(9).await, 0);
+
+        let captures = runtime.capture_count();
+        let attempts = runtime.capture_attempt_count();
+        let scans = store.scans();
+        let gets = store.gets();
+        let mut oracle = Vec::new();
+        for block in 0..3u8 {
+            oracle.extend(vec![0x40 + block; 64]);
+        }
+        assert_eq!(runtime.read(9, 0, 192).await.unwrap(), oracle);
+        assert_eq!(
+            runtime.capture_count(),
+            captures + 1,
+            "one capture serves the whole request"
+        );
+        assert_eq!(
+            runtime.capture_attempt_count(),
+            attempts + 1,
+            "a settled metadata plane costs one attempt"
+        );
+        let request_scans = store.scans() - scans;
+        // The capture's own metadata reads are a fixed three gets (inode row,
+        // view, inode row again); the remaining gets are per-block object
+        // reads, which the decoded cache amortizes across requests.
+        assert_eq!(
+            store.gets() - gets,
+            3 + 3 * 3,
+            "one block's object read each"
+        );
+
+        // The same metadata cost for a one-block read: the capture is bounded
+        // by the request, not by the bytes the request spans.
+        let scans = store.scans();
+        runtime.read(9, 0, 64).await.unwrap();
+        assert_eq!(store.scans() - scans, request_scans);
+        assert_eq!(request_scans, 1, "{request_scans} extent scans per request");
+
+        // Two requests are two captures: nothing here claims that two system
+        // calls observe one generation.
+        let captures = runtime.capture_count();
+        runtime.read(9, 0, 64).await.unwrap();
+        runtime.read(9, 0, 64).await.unwrap();
+        assert_eq!(runtime.capture_count(), captures + 2);
+    }
+
+    /// CONS-001/CONS-002: a commit that lands *inside* a request's capture --
+    /// while its extent scan is in flight -- is absorbed without a stale read
+    /// and without a gap.  The commit also proves the reader holds no gate
+    /// across metadata I/O: a lock held across the scan would block the commit
+    /// and hang this test instead of failing it.
+    #[tokio::test]
+    async fn a_commit_inside_a_read_capture_is_never_served_stale() {
+        let store = Arc::new(ObservedStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: Vec::new(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = Arc::new(runtime(store.clone(), sink, base).await);
+
+        let (mut reached, proceed) = store.hook_next_scan().await;
+        let writer = runtime.clone();
+        let commit = tokio::spawn(async move {
+            // Wait until the reader is inside its extent scan, then commit the
+            // accepted write: the store rows the reader is about to receive
+            // already contain it.
+            reached
+                .recv()
+                .await
+                .expect("the reader reaches its extent scan");
+            writer.fsync(9).await.unwrap();
+            let _ = proceed.send(());
+        });
+
+        let attempts = runtime.capture_attempt_count();
+        let captured = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            runtime.write(9, 0, &vec![0xaa; 64]).await.unwrap();
+            runtime.read(9, 0, 64).await.unwrap()
+        })
+        .await
+        .expect("the reader completes with the commit interleaved");
+        commit.await.unwrap();
+
+        assert_eq!(
+            captured,
+            vec![0xaa; 64],
+            "the write's bytes are never hidden by the handoff"
+        );
+        assert!(
+            runtime.capture_attempt_count() - attempts >= 2,
+            "the capture revalidated the generation the commit moved"
+        );
+        assert_eq!(runtime.pending_count(9).await, 0);
+        // A later request sees the same content.
+        assert_eq!(runtime.read(9, 0, 64).await.unwrap(), vec![0xaa; 64]);
+    }
+
+    /// CONS-006: a metadata plane whose inode row keeps moving is retried only
+    /// within the request's bounded budget and then fails, instead of serving
+    /// a torn view or looping forever.
+    #[tokio::test]
+    async fn an_inode_row_that_never_settles_fails_within_the_bounded_budget() {
+        let store = Arc::new(ObservedStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: Vec::new(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let policy = MetadataCapturePolicy {
+            max_attempts: 3,
+            attempt_timeout: std::time::Duration::from_secs(2),
+        };
+        let runtime = runtime_with_policy(store.clone(), sink, base.clone(), policy).await;
+
+        // Create the inode row, then make every extent scan move it.
+        runtime.write(9, 0, &vec![1u8; 64]).await.unwrap();
+        runtime.fsync(9).await.unwrap();
+        store
+            .bump_inode_row_on_scan(runtime64_key(&runtime, 9))
+            .await;
+
+        let attempts = runtime.capture_attempt_count();
+        let captures = runtime.capture_count();
+        let error = runtime.read(9, 0, 64).await.expect_err("unstable metadata");
+        assert!(
+            matches!(error, NativeIoError::MetadataUnstable(_)),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            runtime.capture_attempt_count() - attempts,
+            3,
+            "the retry budget is attempts, not time"
+        );
+        assert_eq!(
+            runtime.capture_count(),
+            captures,
+            "no capture completes without a stable generation"
+        );
+    }
+
+    /// CONS-006: a metadata read that exceeds the attempt timeout is retried
+    /// within the same bounded budget and then fails; a slow metadata plane
+    /// never turns into an unbounded wait.
+    #[tokio::test]
+    async fn a_metadata_read_beyond_the_attempt_timeout_is_bounded() {
+        let store = Arc::new(ObservedStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: Vec::new(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let policy = MetadataCapturePolicy {
+            max_attempts: 2,
+            attempt_timeout: std::time::Duration::from_millis(20),
+        };
+        let runtime = runtime_with_policy(store.clone(), sink, base, policy).await;
+        store.set_delay(std::time::Duration::from_millis(200)).await;
+
+        let started = std::time::Instant::now();
+        let error = runtime
+            .read(9, 0, 64)
+            .await
+            .expect_err("a slow metadata plane fails the request");
+        assert!(
+            matches!(error, NativeIoError::MetadataUnstable(_)),
+            "unexpected error: {error}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the request is bounded by the attempt budget, not by the backend"
+        );
+    }
+
+    fn runtime64_key(runtime: &NativeDataRuntime, inode: u64) -> Vec<u8> {
+        runtime
+            .overlay
+            .keys()
+            .inode(&runtime.overlay.params().workspace_id, inode)
+    }
+
+    /// A store that can apply a commit transaction and then report the reply as
+    /// lost, which is the only failure mode a commit may legitimately retry.
+    #[derive(Default)]
+    struct LostReplyStore {
+        inner: MemoryControlStore,
+        lose_next_commit: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl ControlStore for LostReplyStore {
+        async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.get(key).await
+        }
+
+        async fn run(&self, txn: Txn) -> Result<(), StoreError> {
+            let is_commit = txn
+                .writes
+                .iter()
+                .any(|(key, _)| key.windows(4).any(|w| w == b"mut/"));
+            let outcome = self.inner.run(txn).await;
+            if outcome.is_ok() && is_commit && self.lose_next_commit.swap(false, Ordering::SeqCst) {
+                // The transaction applied; the caller just never saw the reply.
+                return Err(StoreError::Conflict);
+            }
+            outcome
+        }
+
+        async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+            self.inner.scan(prefix).await
+        }
+    }
+
+    /// CONS-002: the dirty->committed handoff is confirmed before it happens.
+    /// When the commit transaction applies but its reply is lost, the retry
+    /// answers from the recorded result (`AlreadyCommitted`), the pending
+    /// overlay is released exactly then, and the bytes a reader sees never
+    /// vanish in the window between the two.
+    #[tokio::test]
+    async fn a_lost_commit_reply_hands_off_without_a_gap() {
+        let store = Arc::new(LostReplyStore::default());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: Vec::new(),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime(store.clone(), sink, base).await;
+        let written = vec![0xaa; 64];
+
+        runtime.write(9, 0, &written).await.unwrap();
+        assert_eq!(
+            runtime.pending_count(9).await,
+            1,
+            "the write is still dirty"
+        );
+        store
+            .lose_next_commit
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let report = runtime
+            .fsync(9)
+            .await
+            .expect("a lost reply is retried, not surfaced as a failure");
+        assert_eq!(report.committed.len(), 1);
+        assert_eq!(
+            runtime.pending_count(9).await,
+            0,
+            "the handoff happens only once the commit is confirmed"
+        );
+        // The reader saw the dirty bytes before the handoff and the committed
+        // bytes after it: the same content, with no window in between.
+        assert_eq!(runtime.read(9, 0, 64).await.unwrap(), written);
+        assert_eq!(runtime.size(9).await.unwrap(), 64);
     }
 }

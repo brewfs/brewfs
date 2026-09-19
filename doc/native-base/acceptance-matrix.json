@@ -898,8 +898,8 @@
     "expected": "整个请求旧或新一致视图，不混generation",
     "invariants": "INV-03 INV-16",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07u-capture-consistency.sh (exit 0; focused 1 passed/0 failed): a_commit_inside_a_read_capture_is_never_served_stale —— 读请求把 (pending, committed) 作为一个 metadata generation 捕获：先取 pending 快照（含 boundary 内全部 mutation）再读已提交视图，并对视图做 token 复核（extent 扫描前后 inode 行必须逐字节相同，任何提交都会推进该行）。测试用故障注入 store 在 extent 扫描进行中让另一任务 fsync 提交并 handoff：读仍逐字节返回已写入数据（既不是陈旧内容也不是空洞），捕获因 token 变化重试（attempts ≥ 2），随后 size/extent 同代一致；若读把状态门持到 metadata IO 上，该提交会被阻塞、读将超时失败，因此该测试同时证明门在 IO 之外释放。log: doc/native-base/logs/pr07u-capture-consistency.log"
   },
   {
     "test_id": "CONS-002",
@@ -909,8 +909,8 @@
     "expected": "确认提交后handoff，旧reader保留Arc",
     "invariants": "INV-03 INV-06",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07u-capture-consistency.sh (exit 0; focused 1 passed/0 failed): a_lost_commit_reply_hands_off_without_a_gap —— 提交事务已落盘但回包丢失时：重试从已记录结果回答（AlreadyCommitted），pending overlay 只在提交被确认的那一刻释放（fsync 后 pending_count 1→0），前后 reader 看到的内容一致（handoff 窗口内字节不消失）。overlay 侧 handoff_removes_only_committed_dirty_and_captures_keep_theirs 另外证明只交接本次提交的 dirty 且旧 capture 仍持有自己的 Arc 克隆。log: doc/native-base/logs/pr07u-capture-consistency.log"
   },
   {
     "test_id": "CONS-003",
@@ -920,8 +920,8 @@
     "expected": "复用同一bounded capture；不冒称多syscall原子",
     "invariants": "INV-03",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07u-capture-consistency.sh (exit 0; focused 1 passed/0 failed): one_read_request_reuses_a_single_bounded_capture —— 一次读 192B 跨 3 个 chunk/block/extent 只消耗 1 次 capture 与 1 次 capture attempt，且 extent 扫描次数恒为 1（与请求跨多少个 chunk 无关；逐块对象读取按请求块数计并由解码缓存摊薄）；两个 syscall 是两次 capture（capture_count 各 +1），因此不冒称跨 syscall 原子。log: doc/native-base/logs/pr07u-capture-consistency.log"
   },
   {
     "test_id": "CONS-004",
@@ -953,8 +953,8 @@
     "expected": "有界重试释放门，不持门做S3数据IO",
     "invariants": "INV-13 INV-16",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07u-capture-consistency.sh (exit 0; focused 2 passed/0 failed): an_inode_row_that_never_settles_fails_within_the_bounded_budget + a_metadata_read_beyond_the_attempt_timeout_is_bounded —— （1）每次 extent 扫描都改写 inode 行的 store 下，读只重试到策略上限（max_attempts=3 时 attempts 恰好 +3）后以 MetadataUnstable 失败，capture 不完成、不循环；（2）metadata 读超过 attempt_timeout（20ms，注入 200ms 延迟）时同样只重试到上限（2 次）即失败且整体耗时 < 2s，请求不被后端拖住；重试循环在状态门之外进行，故并发提交不会被读阻塞。log: doc/native-base/logs/pr07u-capture-consistency.log"
   },
   {
     "test_id": "DRAIN-001",

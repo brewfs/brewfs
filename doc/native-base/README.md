@@ -47,12 +47,13 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07R | 无名 inode 跨 seal/fork 携带与回包丢失恢复：open-unlink 句柄跨 seal、fork 看不到无名 inode、lost-reply 按 OperationId 恢复唯一 head switch（ORD-009/ORD-010/IDX-006/LIFE-006/WRITE-011） | 完成（[pr07r-orphan-carry-seal-fork.log](logs/pr07r-orphan-carry-seal-fork.log)） |
 | 07S | writer lease fence / backend lease time / durability 边界：过期或被顶替的 lease 不产生 guard 且不落部分 metadata、lease 只按 backend 时间判定、四种 profile 报告 confirmed 与 may_be_lost 切分（WRITE-007/KV-004/KV-005） | 完成（[pr07s-lease-fence-durability.log](logs/pr07s-lease-fence-durability.log)） |
 | 07T | 上传回执保护、chmod 元数据专用路径与 rename 覆盖的应用完整写语义：上传成功但 KV 失败的对象与 receipts 进入受保护 orphan（WRITE-006）、GiB 文件 chmod 只写属性行且不产生任何数据对象或数据路径行、裸权限位在准入即拒绝（WRITE-010）、rename 覆盖发布源文件完整 extent 集（含 hole）、同事务删除目标全部旧 extent、receipts 覆盖全部被携带 block，缺段/重叠/短覆盖与手写部分替换在提交边界一律拒绝（WRITE-012） | 完成（[pr07t-write-receipts-attributes-replace.log](logs/pr07t-write-receipts-attributes-replace.log)） |
+| 07U | 单次请求一次有界且同代的 metadata 捕获：capture 中落入的提交不服务陈旧字节、dirty→committed 交接在提交确认后且回包丢失可重试、一次读跨多 chunk 复用同一 capture、metadata 持续变化/超时只在有界预算内重试（CONS-001/CONS-002/CONS-003/CONS-006） | 完成（[pr07u-capture-consistency.log](logs/pr07u-capture-consistency.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-19）：173 项矩阵中 **154 PASS**、19
+当前验收进度（2026-09-19）：173 项矩阵中 **158 PASS**、15
 `SPECIFIED_NOT_IMPLEMENTED`（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
 真实 FUSE 挂载 + Redis/TiKV + S3 的 READ/WRITE/fsync 端到端集成、P2 Frozen
@@ -66,6 +67,8 @@ RET-021/CLN-024）；GATE-002/GATE-003 的 required_features 依赖闭包已由 
 COW 页复用与摘要扫描/重写计数已由 PR07P 收口（FROZEN-005/FROZEN-006/FROZEN-008）。writer lease 的 fence 语义、backend 时间判定与 durability 丢失边界已由 PR07S 收口（WRITE-007/KV-004/KV-005）：过期或被顶替的 lease 不签发 commit guard，fenced 写入前后整个卷命名空间快照相同（无部分 metadata），lease 有效性只认 backend 时钟（客户端时钟一律拒绝）、generation 先于时钟判定，四种 durability profile 分别报告 confirmed 与 may_be_lost 且 confirmed 必须是阶段前缀、未知持久化 code 拒绝。
 
 上传回执保护、chmod 与 rename 覆盖的写语义已由 PR07T 收口（WRITE-006/WRITE-010/WRITE-012）：数据对象与 receipts 已上传而 commit 事务失败时，operation 折叠为受保护 orphan receipt 并保持本域注册，cleaner 不能回收、resolve 后恰好释放一次；对 1 GiB 文件的 chmod 只写 attr/ 行且新增对象仅 receipts 控制容器，无文件类型位的裸权限位在准入即拒绝（不占用该 inode 的 mutation_order），内容提交对 attr 行做 check_bytes；rename 覆盖把源文件完整 extent 集（含 Hole）发布为目标内容，同一事务删除目标全部旧 extent，commit 的 durable_receipts 恰好覆盖全部被携带 block，同尺寸覆盖仍是整文件重发与版本 +1，缺段/重叠/短覆盖或手写的部分 ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。
+
+读捕获的一致性已由 PR07U 收口（CONS-001/CONS-002/CONS-003/CONS-006）：一次请求先取 boundary 内的 pending 快照、再读已提交视图，并用 inode 行 token 复核（扫描前后逐字节相同），因此既不会把已接受但未提交的尾部读成 0，也不会把一代的 size 与另一代的 extent 混在一起；提交事务落盘但回包丢失时按已记录结果重试，pending overlay 只在确认后释放（字节在交接窗口内不消失）；一次读跨 3 个 chunk/extent 只消耗 1 次 capture 与 1 次 extent 扫描，两个 syscall 明确是两次捕获；metadata 持续变化或超过 attempt_timeout 时只在 max_attempts 内有界重试后以 MetadataUnstable 失败，重试与捕获都在状态门之外进行（并发提交不会被读阻塞）。
 
 open-unlink 无名 inode 的跨 seal/fork 携带与回包丢失恢复已由 PR07R 收口（ORD-009/ORD-010/IDX-006/LIFE-006/WRITE-011）：seal 的新私有 head 携带完整 attrs/extent（不 copy-up、不改写域），fork listing 与 fork view 都不得出现无名 inode 或私有 carry 状态，seal 后立即 fork 可完整读取 Loose+Packed，lost-reply 只能按 OperationId 重放唯一 head switch（换 head/异 payload/陈旧前态/非零 visible_delta_count 一律拒绝）。
 
