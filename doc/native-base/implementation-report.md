@@ -951,6 +951,41 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR08B · Plain 共享 frame：切片逐文件正确、decoded 预算按 frame 只算一次（OPT-001/INV-04）
+
+工具链同 PR07P。本步**没有改动产品代码**：spec 03 §3 的“两个小文件共享 frame”与 spec 06 §7 的
+“已解码 Bytes 由 inflight 转入 cache 时转移同一份 accounting，不可漏算或双算”已由既有 seal 计划器
+（`UnitKey::Frame` 去重、`decoded_payload_bytes` 记账）实现，缺的是把它放到“一个小文件聚合 frame
+真的被多个**文件**共享”的形状上验证。新增 `src/native_base/seal/tests.rs` 的
+`shared_plain_frame_fixture()` 与两个用例。
+
+核心改动（测试）：
+- `shared_plain_frame_fixture()`：一个 PlainBytes frame 的 raw 把两个小文件的字节**交错**排列
+  （`A0|B0|A1|B1`）；file A（slice `0x31`）用两个 span 指向该 frame 的 `[0,|A0|)` 与
+  `|A0|+|B0|` 起的区间，file B（slice `0x32`）用另外两个 span 指向剩下两段。span 在 frame 内的
+  raw offset 刻意不相邻，所以“把 block offset 当 raw offset”的实现必然读出错误字节。
+- `one_plain_frame_serves_two_files_without_mixing_their_slices`：file A 的整块读逐字节等于
+  `A0||A1`（不含 B 的字节），file B 同理；file A 内偏移 3/长度 6 的部分读落在第一个 span 内、
+  偏移 11/长度 12 的读跨越 span 边界，都与文件字节逐字节一致；4 次读共 7 个 span，只有 4 次
+  Range GET（每次读 1 次，从不按 span 计）。
+- `decoded_budget_for_a_shared_plain_frame_counts_the_frame_once`：`decoded_payload_bytes` 每次读
+  恰好等于该 frame 的 `raw_len`（不按 span 累加、不按引用文件重复计入）；`ReadBudget::new(
+  FRAME_HEADER_LEN + stored_len, raw_len)` 恰好放行且读后 `inflight() == (0, 0)`；decoded 上限
+  少 1 字节时在任何 I/O 之前 `BudgetUnitTooLarge`，`source.gets()` 不变、令牌不泄漏。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR08B-FOCUSED | `bash doc/native-base/logs/pr08b-plain-shared-frame.sh` | 0 | PASS（两个用例各 1 passed/0 failed） | [pr08b-plain-shared-frame.log](logs/pr08b-plain-shared-frame.log) |
+| PR08B-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR08B-OPT001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests` | 0 | PASS（seal 38 passed/0 failed） | 同上 |
+| PR08B-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 988 + 730 passed；clippy/fmt/feature checks 全绿） | [pr08b-ci-gate.log](logs/pr08b-ci-gate.log) |
+
+范围说明（诚实）：本步验证的是 **read plan 的切片与解码记账**（fake counting backend，无真实
+S3/网络），不是 spec 06 §5 里“跨进程共享缓存服务”的端到端启用：`cache::probe_shared_cache` 仍是
+preview-only 占位（返回 `None`），`shared-host-cache` feature 未启用。因此本项**不**声称同机
+Unix-socket 共享服务已上线；它证明的是 P3 “Plain shared frame”本身——一个 frame 被多个文件共享时
+切片正确、解码字节按 frame 只计一次，也就是那个服务将来要复用的同一份 plan 语义。
+
 ### PR08A · 训练模式 sampler hints 保持样本集合与顺序契约（OPT-006/INV-02）
 
 工具链同 PR07P。新增 `src/native_base/runtime/sampler.rs`（约 370 行，含 5 个测试）并在

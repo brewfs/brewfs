@@ -23,7 +23,7 @@ use crate::native_base::lifecycle::variant::{
 use crate::native_base::wire::container::{Codec, ObjectKind, features, set_declared_features};
 use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
 use crate::native_base::wire::error::WireError;
-use crate::native_base::wire::frame::PayloadFormat;
+use crate::native_base::wire::frame::{FRAME_HEADER_LEN, PayloadFormat};
 use crate::native_base::wire::page::IndexPage;
 use crate::native_base::wire::refs::{
     ChildRef, ObjectId, ObjectRef, PageAddress, PageKind, RootRef,
@@ -490,6 +490,226 @@ fn shared_frame_is_fetched_once_per_read() {
     assert_eq!(source.gets_for(&PACK_ID), 2);
 }
 
+/// OPT-001 (spec 03 section 3: "two small files share a frame"): one plain
+/// frame packed for access locality holds two files' bytes interleaved, and
+/// each file is placed as two spans into that one frame.
+struct SharedFrameFixture {
+    seal_bytes: Vec<u8>,
+    pack_bytes: Vec<u8>,
+    file_a: Vec<u8>,
+    file_b: Vec<u8>,
+    /// Encoded footprint of the one frame: header + stored payload.
+    unit_encoded: u64,
+    /// Decoded footprint of the one frame: its raw length.
+    unit_decoded: u64,
+}
+
+const SLICE_A: u64 = 0x31;
+const SLICE_B: u64 = 0x32;
+
+fn shared_plain_frame_fixture() -> SharedFrameFixture {
+    let a0 = b"file A part 0: ".to_vec();
+    let a1 = b"file A part 1".to_vec();
+    let b0 = b"file B part 0: ".to_vec();
+    let b1 = b"file B part 1".to_vec();
+    let file_a = [a0.clone(), a1.clone()].concat();
+    let file_b = [b0.clone(), b1.clone()].concat();
+    // The frame's raw bytes interleave the two files, so a span list that
+    // is correct only by accident (raw offsets treated as block offsets)
+    // would return the wrong bytes.
+    let shared_raw = [a0.clone(), b0.clone(), a1.clone(), b1.clone()].concat();
+
+    let (pack_bytes, scrubbed) = build_pack(vec![PackFrame::plain_bytes(&shared_raw).unwrap()]);
+
+    let mut seal = SealBuilder::new(BLOCK_SIZE);
+    let pack_ordinal = seal.next_object_ordinal();
+    seal.add_object(
+        pack_ordinal,
+        object_ref(
+            PACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &pack_bytes,
+            b"fixture/shared-frame",
+        ),
+    );
+    let slots = register_frames(&mut seal, &scrubbed, pack_ordinal);
+    let shared_slot = slots[0];
+
+    // File A: a0 then a1, which sits after file B's first range.
+    seal.add_packed_block(
+        SLICE_A,
+        0,
+        &file_a,
+        vec![
+            span(0, a0.len() as u32, shared_slot, 0),
+            span(
+                a0.len() as u32,
+                a1.len() as u32,
+                shared_slot,
+                (a0.len() + b0.len()) as u32,
+            ),
+        ],
+    )
+    .unwrap();
+    // File B: the other two ranges of the same frame.
+    seal.add_packed_block(
+        SLICE_B,
+        0,
+        &file_b,
+        vec![
+            span(0, b0.len() as u32, shared_slot, a0.len() as u32),
+            span(
+                b0.len() as u32,
+                b1.len() as u32,
+                shared_slot,
+                (a0.len() + b0.len() + a1.len()) as u32,
+            ),
+        ],
+    )
+    .unwrap();
+
+    seal.validate().unwrap();
+    let seal_bytes = seal.build().unwrap();
+
+    let descriptor = FrameDescriptor::from_scrubbed(&scrubbed.frames[0], pack_ordinal);
+    SharedFrameFixture {
+        seal_bytes,
+        pack_bytes,
+        file_a,
+        file_b,
+        unit_encoded: FRAME_HEADER_LEN as u64 + descriptor.stored_len as u64,
+        unit_decoded: descriptor.raw_len as u64,
+    }
+}
+
+/// OPT-001: one plain frame serves two files without mixing their slices.
+/// Each read returns exactly that file's bytes -- a partial read inside one
+/// span and a read straddling the span boundary included -- and the shared
+/// frame is still exactly one Range GET per read.
+#[test]
+fn one_plain_frame_serves_two_files_without_mixing_their_slices() {
+    let fx = shared_plain_frame_fixture();
+    let source = CountingSource::new(vec![(PACK_ID, fx.pack_bytes.clone())]);
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+
+    let got_a = opened.reader().read_block(SLICE_A, 0, BLOCK_SIZE).unwrap();
+    assert_eq!(got_a, fx.file_a, "file A must not see file B's bytes");
+    assert_eq!(
+        source.gets(),
+        1,
+        "the shared frame is one GET, not one per span"
+    );
+
+    let got_b = opened.reader().read_block(SLICE_B, 0, BLOCK_SIZE).unwrap();
+    assert_eq!(got_b, fx.file_b, "file B must not see file A's bytes");
+    assert_eq!(source.gets(), 2, "file B's two spans reuse the one fetch");
+
+    // Partial read inside file A's first span, then one that straddles the
+    // span boundary: the scatter stitches the two non-adjacent frame ranges
+    // at the right coordinates.
+    let inside_len = 6u64;
+    let inside_start = 3u64;
+    let got_inside = opened
+        .reader()
+        .read_range(SLICE_A, inside_start, inside_len, BLOCK_SIZE)
+        .unwrap();
+    assert_eq!(
+        got_inside,
+        fx.file_a[inside_start as usize..(inside_start + inside_len) as usize]
+    );
+
+    let boundary_start = 11u64;
+    let boundary_len = 12u64;
+    let got_boundary = opened
+        .reader()
+        .read_range(SLICE_A, boundary_start, boundary_len, BLOCK_SIZE)
+        .unwrap();
+    assert_eq!(
+        got_boundary,
+        fx.file_a[boundary_start as usize..(boundary_start + boundary_len) as usize]
+    );
+    // Four reads over seven spans: one GET each, never one per span.
+    assert_eq!(source.gets(), 4, "one GET per read, never one per span");
+    assert_eq!(source.gets_for(&PACK_ID), 4);
+}
+
+/// OPT-001 (spec 06 section 7): the decoded budget a plan needs for a shared
+/// plain frame is the frame, not the number of spans or files that reference
+/// it.  Exactly `raw_len` of decoded capacity suffices, the shared frame is
+/// decoded once per read (`decoded_payload_bytes` is not summed per span),
+/// and a cap one byte short is refused before any I/O.
+#[test]
+fn decoded_budget_for_a_shared_plain_frame_counts_the_frame_once() {
+    let fx = shared_plain_frame_fixture();
+    let source = CountingSource::new(vec![(PACK_ID, fx.pack_bytes.clone())]);
+    let opened = Opened::new(fx.seal_bytes.clone(), &source);
+
+    let cancel = CancelToken::new();
+    let mut metrics = ReadMetrics::default();
+    let mut budget = ReadBudget::new(fx.unit_encoded, fx.unit_decoded);
+    let got = opened
+        .reader()
+        .read_range_with(
+            SLICE_A,
+            0,
+            fx.file_a.len() as u64,
+            BLOCK_SIZE,
+            &mut budget,
+            &cancel,
+            &mut metrics,
+        )
+        .unwrap();
+    assert_eq!(got, fx.file_a);
+    assert_eq!(metrics.range_gets, 1);
+    assert_eq!(metrics.frames_fetched, 1);
+    assert_eq!(
+        metrics.decoded_payload_bytes, fx.unit_decoded,
+        "file A's two spans share one frame: decoded bytes are the frame, once"
+    );
+    assert_eq!(budget.inflight(), (0, 0), "tokens return after the read");
+
+    // File B references the same frame from its own two spans; the decoded
+    // peak is unchanged.
+    let mut metrics_b = ReadMetrics::default();
+    let mut budget_b = ReadBudget::new(fx.unit_encoded, fx.unit_decoded);
+    let got_b = opened
+        .reader()
+        .read_range_with(
+            SLICE_B,
+            0,
+            fx.file_b.len() as u64,
+            BLOCK_SIZE,
+            &mut budget_b,
+            &cancel,
+            &mut metrics_b,
+        )
+        .unwrap();
+    assert_eq!(got_b, fx.file_b);
+    assert_eq!(metrics_b.decoded_payload_bytes, fx.unit_decoded);
+
+    // One decoded byte short of the frame is refused before any fetch.
+    let before = source.gets();
+    let mut tight = ReadBudget::new(fx.unit_encoded, fx.unit_decoded - 1);
+    let mut metrics_tight = ReadMetrics::default();
+    let err = opened
+        .reader()
+        .read_range_with(
+            SLICE_A,
+            0,
+            fx.file_a.len() as u64,
+            BLOCK_SIZE,
+            &mut tight,
+            &cancel,
+            &mut metrics_tight,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, SealError::BudgetUnitTooLarge { .. }),
+        "{err:?}"
+    );
+    assert_eq!(source.gets(), before, "budget rejection happens before I/O");
+    assert_eq!(tight.inflight(), (0, 0), "failed reservation leaks nothing");
+}
 #[test]
 fn metrics_report_each_component_separately() {
     let fx = full_blocks_fixture();

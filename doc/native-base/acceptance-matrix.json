@@ -722,8 +722,8 @@
     "expected": "多文件切片正确，decoded预算有界",
     "invariants": "INV-04",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": "in-process fallback cache available; shared Unix-socket service is preview-only (probe returns None)"
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr08b-plain-shared-frame.sh (exit 0; seal 2 passed/0 failed) —— 新增 src/native_base/seal/tests.rs 的 shared_plain_frame_fixture() 与两个用例：一个 PlainBytes frame 的 raw 按访问局部性聚合两个小文件、字节交错排列（A0|B0|A1|B1），file A（slice 0x31）用两个 span 指向该 frame 的 [0,|A0|) 与 |A0|+|B0| 起的区间，file B（slice 0x32）用另外两个 span 指向剩下两段，span 在 frame 内的 raw offset 刻意不相邻。切片正确：file A 的整块读逐字节等于 A0||A1 且完全不含 B 的字节，file B 同理；file A 内偏移 3/长度 6 的部分读落在第一个 span 内、偏移 11/长度 12 的读跨越 span 边界，两者都与文件字节逐字节一致（scatter 用的是 frame_raw_offset 而不是 block 偏移）。decoded 预算有界：plan 以 UnitKey::Frame(slot) 经 or_insert 去重，同一 frame 被 2 个文件共 4 个 span 引用时仍只是一个调度 unit——4 次读共 7 个 span 只有 4 次 Range GET（每次读 1 次），decoded_payload_bytes 每次读都恰好等于该 frame 的 raw_len（一次解码，既不按 span 累加也不按引用文件重复计入）；ReadBudget::new(FRAME_HEADER_LEN+stored_len, raw_len) 恰好放行且读后 inflight()==(0,0)，decoded 上限少 1 字节时在任何 I/O 之前以 BudgetUnitTooLarge 拒绝（source.gets() 不变、令牌不泄漏）。范围：验证的是 plan 的切片与解码记账（fake counting backend，无真实 S3/网络）；cache::probe_shared_cache 仍是 preview-only 占位（返回 None）、shared-host-cache 未启用，因此本项不声称同机 Unix-socket 共享缓存服务已上线，只声称 Plain shared frame 本身的这两条性质，即该服务将来复用的同一份 plan 语义。log: doc/native-base/logs/pr08b-plain-shared-frame.log, doc/native-base/logs/pr08b-ci-gate.log"
   },
   {
     "test_id": "OPT-002",

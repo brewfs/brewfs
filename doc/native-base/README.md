@@ -54,12 +54,13 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07Y | 逻辑迁移 roundtrip：离线拷贝模式下一次条件事务把源卷全部控制行原样搬到新 volume id 下并安装目标 locator header——源卷逐行逐字节保留、属性与布局在目标侧都有 payload 完全相同的孪生行、从未 initialize 过的目标 reader 读回相同 size 与同样的字节（数据对象按 content-addressed 身份共享，copy 函数不持有 ObjectSink 故结构上不可能上传/重读任何数据字节）；复用源 id、不搬行的模式、已占用目标（locator header 或同形状控制行）与越出被扫描前缀的 store 全部按名拒绝（REGRESS-003） | 完成（[pr07y-logical-migration-roundtrip.log](logs/pr07y-logical-migration-roundtrip.log)） |
 | 07Z | lossless repack 保持逻辑身份：把同一逻辑块从旧 Pack 搬到新 Pack 的不同 frame 切分后，Bindings 表（每个 BlockKey 的 decoded_len/content_hash，即该 seal 的逻辑 revision）逐字节不变，而 Placements/Objects/Frames 三张表全部改变（所以它确实是一次 repack 而不是空操作）；两个视图都读出同样字节，repack 既不重读也不改写旧对象，变体按“在未改动的源之上新增空间”记账；反向用例里刻意声明**未篡改**的 binding 却让 placement 解码出不同字节——结构校验与 build 全部通过、每个 frame 都完好，读时仍被“解码块对 binding content_hash 的完整校验”拒绝（OPT-007） | 完成（[pr07z-lossless-repack.log](logs/pr07z-lossless-repack.log)） |
 | 08A | 训练模式 sampler hints：新增 `runtime::plan_sample_issue_order`——hints 只能重排“底层请求发出顺序”，sampler 的样本集合与分布（含重复抽样的重数）以及“应用看到的语义顺序”逐项不变；字节区间 hint 必须与某个抽样完全一致（三个坐标差一个即 `HintNotASample`），越界 draw 即 `HintOutOfRange`，因此为顺序 I/O 做优化不可能增删、合并或改写样本集合（OPT-006） | 完成（[pr08a-training-sampler-hints.log](logs/pr08a-training-sampler-hints.log)） |
+| 08B | Plain 共享 frame（小文件聚合）：同一个 PlainBytes frame 被两个文件各以两个「frame 内 raw offset 不相邻」的 span 引用时，两文件切片逐字节正确（整块读与跨 span 边界的部分读都不串数据），plan 仍按 `UnitKey::Frame` 去重——7 个 span 只有 4 次 Range GET、`decoded_payload_bytes` 每次读恰好等于该 frame 的 `raw_len`（一次解码，不按 span 或引用文件重复计入），预算恰好等于 frame 时放行、少 1 字节则在任何 I/O 前 `BudgetUnitTooLarge`（OPT-001/INV-04） | 完成（[pr08b-plain-shared-frame.log](logs/pr08b-plain-shared-frame.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-19）：173 项矩阵中 **169 PASS**、3
+当前验收进度（2026-09-19）：173 项矩阵中 **170 PASS**、2
 `SPECIFIED_NOT_IMPLEMENTED` 与 1 项 `NOT_RUN`（REGRESS-005 的 buffered/direct/mmap 形态按该项要求记录为
 KnownGap，见 [known-gaps.md](known-gaps.md)）（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
@@ -74,6 +75,8 @@ RET-021/CLN-024）；GATE-002/GATE-003 的 required_features 依赖闭包已由 
 COW 页复用与摘要扫描/重写计数已由 PR07P 收口（FROZEN-005/FROZEN-006/FROZEN-008）。writer lease 的 fence 语义、backend 时间判定与 durability 丢失边界已由 PR07S 收口（WRITE-007/KV-004/KV-005）：过期或被顶替的 lease 不签发 commit guard，fenced 写入前后整个卷命名空间快照相同（无部分 metadata），lease 有效性只认 backend 时钟（客户端时钟一律拒绝）、generation 先于时钟判定，四种 durability profile 分别报告 confirmed 与 may_be_lost 且 confirmed 必须是阶段前缀、未知持久化 code 拒绝。
 
 上传回执保护、chmod 与 rename 覆盖的写语义已由 PR07T 收口（WRITE-006/WRITE-010/WRITE-012）：数据对象与 receipts 已上传而 commit 事务失败时，operation 折叠为受保护 orphan receipt 并保持本域注册，cleaner 不能回收、resolve 后恰好释放一次；对 1 GiB 文件的 chmod 只写 attr/ 行且新增对象仅 receipts 控制容器，无文件类型位的裸权限位在准入即拒绝（不占用该 inode 的 mutation_order），内容提交对 attr 行做 check_bytes；rename 覆盖把源文件完整 extent 集（含 Hole）发布为目标内容，同一事务删除目标全部旧 extent，commit 的 durable_receipts 恰好覆盖全部被携带 block，同尺寸覆盖仍是整文件重发与版本 +1，缺段/重叠/短覆盖或手写的部分 ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。
+
+Plain 共享 frame 的切片与 decoded 预算已由 PR08B 收口（OPT-001/INV-04）：验收造了一个按访问局部性聚合的 PlainBytes frame，其 raw 把两个小文件的字节**交错**排列（A0|B0|A1|B1），file A（slice `0x31`）用两个 span 指向这同一个 frame 的 `[0,|A0|)` 与 `|A0|+|B0|` 起的区间，file B（slice `0x32`）用另外两个 span 指向剩下两段——span 在 frame 内的 raw offset 刻意不相邻，任何“把 block offset 当 raw offset”的实现都会读出错误字节。切片正确性：file A 的整块读逐字节等于 A0||A1、完全不含 B 的字节，file B 同理；file A 内偏移 3 长度 6 的部分读落在第一个 span 内、偏移 11 长度 12 的读跨越 span 边界，两次都与文件字节逐字节一致。decoded 预算有界：plan 以 `UnitKey::Frame(slot)` 经 `or_insert` 去重，因此同一 frame 被 2 个文件共 4 个 span 引用时仍只是一个调度 unit（4 次读共 7 个 span = 4 次 Range GET），`decoded_payload_bytes` 每次读都恰好等于该 frame 的 `raw_len`——一次解码，既不按 span 累加也不按引用文件重复计入；`ReadBudget::new(FRAME_HEADER_LEN+stored_len, raw_len)` 恰好放行且读后 inflight 归零，decoded 上限少 1 字节则在任何 I/O 之前以 `BudgetUnitTooLarge` 拒绝（`source.gets()` 不变、令牌不泄漏）。
 
 训练模式的 sampler hints 已由 PR08A 收口（OPT-006/INV-02）：新增 `src/native_base/runtime/sampler.rs`（`Sample`/`SampleHint`/`SampleIssuePlan`/`plan_sample_issue_order`）。契约是hints 只能重排“底层请求发出顺序”，其余一律是输入：`semantic_order` 恒为 `0..n`（应用看到的就是 sampler 的顺序），`issue_order` 是它的排列（`covers_every_draw` 在每个用例里都成立），`SampleHint::ByteRange` 必须与某个抽样在三个坐标上完全一致（否则 `HintNotASample`，绝不会被当成一个新样本），`Prioritise`/`SequentialFile` 只改次序且对重复 hint 幂等。验收用例特意用了一个“file 1 逆序抽样 + file 2 同一 range 抽到两次”的批次：`SequentialFile{file:1}` 只把 file 1 占用的槽位按字节序重排（其他文件不动），随后 `applied_samples()` 仍逐项等于 sampler 的 draws、发出与应用的样本多重集合完全相同、`issued_bytes` 不变，重复抽样仍是两个独立槽位（不被合并），越界 draw 与任何坐标对不上的 range 都被拒绝——这正是规范“不得为了顺序 I/O 改变样本集合或分布”，同时保留“应用最终读取顺序与底层请求发出顺序可不同”的自由。
 
