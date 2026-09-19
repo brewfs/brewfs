@@ -21,7 +21,10 @@ pub use io::{
     AcceptedWrite, BaseDataSource, NativeDataRuntime, NativeIoError, RuntimeWriteReceipt,
     ZeroBaseDataSource,
 };
-pub use migration::{MigrationError, MigrationMode, MigrationRequest, validate_migration};
+pub use migration::{
+    MigrationError, MigrationMode, MigrationReport, MigrationRequest, copy_volume_logically,
+    validate_migration,
+};
 pub use object::BackendObjectRepository;
 #[cfg(feature = "workspace-overlay")]
 pub use workspace::WorkspaceBaseDataSource;

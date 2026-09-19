@@ -951,6 +951,39 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07Y · 逻辑迁移 roundtrip：源卷保留、属性与内容一致（REGRESS-003）
+
+工具链同 PR07P。改动集中在 `src/native_base/runtime/migration.rs`（新增 `MigrationReport` 与
+`copy_volume_logically`，以及 4 个测试）、`src/native_base/runtime/mod.rs`（导出新 API）与
+`src/native_base/write/keys.rs`（新增 `Keys::volume_prefix` 并让 `Keys::new` 复用它，使卷前缀只有一处定义）。
+
+核心改动：
+- `copy_volume_logically(store, request)`：先跑既有的 `validate_migration` 准入，再要求 `OfflineCopy`
+  模式与显式源 namespace；读取源卷 locator header 得到源 volume id，并拒绝「目标 volume id 等于源 id」
+  （否则目标行会与正在被读取的行重叠）。随后 `scan(source_prefix)` 取源卷全部控制行，把每行后缀原样接到
+  `target_prefix` 上，与目标 locator header 一起放进**同一个**条件事务（每行 `check_absent`），所以目标
+  命名空间要么完整出现、要么完全不出现。函数不持有 `ObjectSink`：逻辑迁移不上传、不重读、不重校验任何
+  数据字节，数据对象靠 content-addressed 身份共享。
+- `MigrationReport`：源/目标 namespace 与 volume id、`copied_rows`、`copied_bytes`（仅控制面字节）。
+- 新增错误：`CopyRequiresOfflineCopy`、`VolumeIdReuse`、`ScanOutsideVolumePrefix`、`TargetVolumeNotEmpty`
+  （`StoreError` 直接 `#[from]`；事务里的 `Conflict` 映射为 `TargetVolumeNotEmpty`）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07Y-FOCUSED | `bash doc/native-base/logs/pr07y-logical-migration-roundtrip.sh` | 0 | PASS（migration 4 passed/0 failed） | [pr07y-logical-migration-roundtrip.log](logs/pr07y-logical-migration-roundtrip.log) |
+| PR07Y-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07Y-ROUNDTRIP | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::migration::tests::a_logical_copy_retains_the_source_and_reproduces_attributes_and_content` | 0 | PASS（源保留 + 属性/布局孪生行 + 目标 reader 同 size/字节） | 同上 |
+| PR07Y-REFUSALS | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::migration::tests::a_logical_copy_refuses_a_reused_id_a_moving_mode_and_a_taken_target` | 0 | PASS（VolumeIdReuse / CopyRequiresOfflineCopy / NamespaceExists / TargetVolumeNotEmpty） | 同上 |
+| PR07Y-FAILCLOSED | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::migration::tests::a_logical_copy_fails_closed_on_a_store_that_leaves_the_volume_prefix` | 0 | PASS（ScanOutsideVolumePrefix，且不安装目标 header） | 同上 |
+| PR07Y-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 980 + 730 passed；clippy/fmt/feature checks 全绿） | [pr07y-ci-gate.log](logs/pr07y-ci-gate.log) |
+
+范围说明（诚实）：这是 **component-level** 的逻辑迁移，不是挂载级迁移工具：`copy_volume_logically` 在
+一个事务里重发全部控制行，因此大卷的批处理/续传、迁移进度与限流不在本步范围内；数据对象不搬，所以
+「迁移后源与目标共享同一批对象」是本设计的语义而不是缺陷（spec 10 §9：lossless 变体不改旧对象、新旧
+依赖永久保留，且不承诺净空间节省）。拷贝不改变 on-disk 格式：两侧 header 都过同一个准入门
+（format/schema/control/wire 被钉在编译期常量上），版本前进会在读任何一行之前按 REGRESS-002 拒绝。
+测试使用内存控制存储（`MemoryControlStore`），Redis/TiKV 上的同一事务形状未在本环境验证。
+
 ### PR07X · feature 关闭的旧路径回归、版本准入拒绝与 KnownGap 记录（REGRESS-001/002/005）
 
 工具链同 PR07P。本步只新增一个测试、一份 KnownGap 记录与一个证据脚本，**没有改动产品代码**：

@@ -45,9 +45,18 @@ fn hex(bytes: &[u8]) -> String {
 impl Keys {
     pub fn new(volume_id: &[u8; 16]) -> Self {
         Keys {
-            prefix: format!("nb2/{}/", hex(volume_id)).into_bytes(),
+            prefix: Self::volume_prefix(volume_id),
             volume_id: *volume_id,
         }
+    }
+
+    /// The key prefix every control row of one volume shares.
+    ///
+    /// The locator header is deliberately outside it: the header is what
+    /// supplies the volume id the other keys are built from, so it lives
+    /// under `nb2/header/{namespace}` instead.
+    pub fn volume_prefix(volume_id: &[u8; 16]) -> Vec<u8> {
+        format!("nb2/{}/", hex(volume_id)).into_bytes()
     }
 
     /// The volume every key built by this instance belongs to.

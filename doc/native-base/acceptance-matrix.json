@@ -854,8 +854,8 @@
     "expected": "source保留，属性和内容一致",
     "invariants": "INV-01",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07y-logical-migration-roundtrip.sh (exit 0; migration 4 passed/0 failed) —— 新增 src/native_base/runtime/migration.rs::copy_volume_logically（配套 Keys::volume_prefix 作为卷前缀的唯一来源）：离线拷贝模式把源卷的全部控制行在一个条件事务里原样重发到目标 volume id 下，并安装目标的 locator header（每行都带 check_absent，故目标要么完整出现要么完全不出现）。roundtrip 测试先用真实写入（write+fsync，pending_count 归零）建立含 inode 属性行、extent、head、registry、binding 的源卷，再逐字节断言：① 源卷在拷贝前后每一行（含 locator header）payload 都不变，即 source 保留；② 源卷每一行在目标前缀下都有一份 payload 完全相同的孪生行，即属性与布局两侧一致；③ 一个从未 initialize 过的目标 reader（没有自己的 domain/head）读回相同 size 与相同字节，而那些对象就是源卷上传的 content-addressed 对象——copy 函数不持有 ObjectSink，所以“不上传、不重读、不重校验任何数据字节”是结构性质。反向用例全部按名拒绝且不留半个目标卷：复用源 volume id → VolumeIdReuse；把不搬行的 NewNamespace 模式交给拷贝 → CopyRequiresOfflineCopy；目标 namespace 已有 locator header → NamespaceExists；目标 volume id 下已有同形状控制行 → 事务 check_absent 触发 TargetVolumeNotEmpty（且目标前缀行数不变）；store 返回越出被扫描前缀的行 → ScanOutsideVolumePrefix（且不安装目标 header）。log: doc/native-base/logs/pr07y-logical-migration-roundtrip.log, doc/native-base/logs/pr07y-ci-gate.log"
   },
   {
     "test_id": "REGRESS-004",
