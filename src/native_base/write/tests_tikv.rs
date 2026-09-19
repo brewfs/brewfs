@@ -39,6 +39,7 @@ run_scenarios_on_tikv! {
     ordering_gate_rejects_late_and_early_slots_permanently,
     cross_inode_mutations_do_not_block_each_other,
     stale_head_guard_fails_and_writes_nothing,
+    an_expired_or_superseded_lease_is_fenced_without_partial_metadata,
     failed_transaction_applies_no_subset_of_its_writes,
     same_operation_id_is_idempotent_and_payload_mismatch_is_rejected,
     registry_binds_one_object_key_to_one_identity,

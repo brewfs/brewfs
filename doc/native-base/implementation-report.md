@@ -951,6 +951,31 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07S · writer lease fence、backend lease time 与 durability 边界
+
+工具链同 PR07P。新增实现位于 `src/native_base/write/lease.rs`（`write/mod.rs` 导出），`write/error.rs` 增加 `LeaseFence` 变体，
+`write/tests.rs` 增加 store-agnostic 场景并登记到 memory/redis/tikv 三个 lists。
+
+核心组件：
+- `LeaseClock` / `TimeSource` / `FixedClock`：lease 判定必须读取声明为 `Backend` 的时钟；`skewed_client()` 用来表达任意客户端偏差。
+  `LeaseGrant::evaluate` 先判 generation（不等即 `Superseded`，不被时钟掩盖），再按 backend 时间判 `now >= deadline`；
+  传入非 backend 时钟直接 `LeaseFence` 拒绝（KV-004）。
+- `LeaseGrant::guard`：只有 `Held` 才签发 `HeadGuard`；`Superseded`/`Expired` 不产生 guard，因此被 fence 的写入根本进不到 commit（WRITE-007）。
+  集成测试走真实 `commit_uploaded_slice` 路径，并断言失败前后整卷快照逐字节相同（无 extent/inode/registration/mutation/head 残留）。
+- `DurabilityProfile` + `DurabilityBoundary`：四种 profile 报告 confirmed / may_be_lost 的精确切分；
+  `verify()` 要求两半恰好划分全部阶段且 confirmed 必须是阶段前缀（越级确认即拒绝），`durability_boundary_for_code` 对未知持久化 code 拒绝（KV-005）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07S-FOCUSED | `bash doc/native-base/logs/pr07s-lease-fence-durability.sh` | 0 | PASS（write 23 passed/0 failed，每 ID 1 passed） | [pr07s-lease-fence-durability.log](logs/pr07s-lease-fence-durability.log) |
+| PR07S-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07S-WRITE007 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests::memory_backend::an_expired_or_superseded_lease_is_fenced_without_partial_metadata` | 0 | PASS（场景与 memory/redis/tikv 共享） | 同上 |
+| PR07S-KV004 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::lease::tests::lease_validity_comes_from_the_backend_clock` | 0 | PASS（`lease_validity_comes_from_the_backend_clock_and_ignores_client_skew`） | 同上 |
+| PR07S-KV005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::lease::tests::durability_profiles_report_their_lossy_boundary` | 0 | PASS（`durability_profiles_report_their_lossy_boundary_and_verify`） | 同上 |
+
+范围说明（诚实）：`LeaseGrant` 目前是调用方持有的结构，生产 lease 获取/续租（Redis `TIME`、TiKV TSO）尚未接入；
+`DurabilityProfile` 是报告与校验层，真实后端 profile 的探测（fsync/TiKV 持久化语义）仍未实现；
+WRITE-007 的 fence 由 PR04 的原子事务保证，本轮把它与 lease 语义显式绑定并加了整卷快照断言。
 ### PR07R · 无名 inode 跨 seal/fork 携带与回包丢失恢复
 
 工具链同 PR07P。新增实现位于 `src/native_base/lifecycle/orphan.rs`（`lifecycle/mod.rs` 导出，`write/keys.rs` 增加 `oc/<operation_id>` 记录键）。

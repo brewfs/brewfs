@@ -24,6 +24,7 @@ use super::commit::{
 use super::domain::{HeadGuard, mark_dispatched, register_upload};
 use super::error::WriteError;
 use super::keys::Keys;
+use super::lease::{FixedClock, LeaseFence, LeaseGrant};
 use super::memory::MemoryControlStore;
 use super::overlay::{MutationSpec, OverlayParams, WriteOverlay, ensure_workspace_head};
 use super::receipts::{ReceiptSet, build_receipts_container};
@@ -394,6 +395,80 @@ pub(crate) async fn stale_head_guard_fails_and_writes_nothing(store: Arc<dyn Con
         .unwrap_err();
     assert!(matches!(err, WriteError::StaleHeadGuard(_)));
     assert_eq!(snapshot(&env).await, before);
+}
+
+/// WRITE-007 / KV-004: a lease guards the commit that follows it.  A lease
+/// that expired on backend time, that was superseded by another generation, or
+/// whose verdict would have to come from a client clock yields no guard, and
+/// the write it would have driven leaves no metadata behind.
+pub(crate) async fn an_expired_or_superseded_lease_is_fenced_without_partial_metadata(
+    store: Arc<dyn ControlStore>,
+) {
+    let env = env_on(store, 64).await;
+    let head = read_head(&env).await;
+    let grant = LeaseGrant {
+        workspace_id: env.params.workspace_id,
+        owner_generation: head.writer_generation,
+        granted_at_ns: 1_000_000,
+        ttl_ns: 5_000_000,
+    };
+    let backend = FixedClock::backend(1_200_000);
+
+    // While the lease is held the guard is issued and the commit lands.
+    let guard = grant.guard(&head, &backend).unwrap();
+    assert_eq!(guard.expected_head, head);
+    let first = truncate_request(&env, &[1u8; 16], 1, 512).await;
+    assert!(matches!(
+        commit_uploaded_slice(&*env.store, &env.keys, &guard, &first)
+            .await
+            .unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+
+    // A skewed client clock cannot authorise anything, not even a reading that
+    // would look valid.
+    let error = grant
+        .guard(&head, &FixedClock::skewed_client(1_200_000))
+        .unwrap_err();
+    assert!(matches!(error, WriteError::LeaseFence(_)));
+    assert!(!error.is_retryable());
+
+    // Backend time passes the deadline: the lease reports Expired and issues
+    // no guard at all.
+    let expired = FixedClock::backend(6_000_000);
+    assert!(matches!(
+        grant.evaluate(&expired, head.writer_generation).unwrap(),
+        LeaseFence::Expired { .. }
+    ));
+
+    // The fenced write is refused and the volume namespace is untouched: no
+    // extent, inode, registration, mutation result or head row may appear.
+    let stale = HeadGuard {
+        workspace_id: env.params.workspace_id,
+        expected_head: head.clone(),
+    };
+    let second = truncate_request(&env, &[2u8; 16], 2, 512).await;
+    let before = snapshot(&env).await;
+    let error = commit_uploaded_slice(&*env.store, &env.keys, &stale, &second)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, WriteError::StaleHeadGuard(_)));
+    assert_eq!(
+        snapshot(&env).await,
+        before,
+        "a fenced write lands no partial metadata"
+    );
+
+    // Another writer owning the generation is fenced the same way.
+    let superseded = HeadState {
+        writer_generation: head.writer_generation + 1,
+        ..head.clone()
+    };
+    let error = grant
+        .guard(&superseded, &FixedClock::backend(1_300_000))
+        .unwrap_err();
+    assert!(matches!(error, WriteError::LeaseFence(_)));
+    assert!(error.to_string().contains("superseded"), "{error}");
 }
 
 pub(crate) async fn failed_transaction_applies_no_subset_of_its_writes(
@@ -944,6 +1019,7 @@ run_scenarios_on_memory! {
     ordering_gate_rejects_late_and_early_slots_permanently,
     cross_inode_mutations_do_not_block_each_other,
     stale_head_guard_fails_and_writes_nothing,
+    an_expired_or_superseded_lease_is_fenced_without_partial_metadata,
     failed_transaction_applies_no_subset_of_its_writes,
     same_operation_id_is_idempotent_and_payload_mismatch_is_rejected,
     registry_binds_one_object_key_to_one_identity,

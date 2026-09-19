@@ -15,6 +15,11 @@ pub enum WriteError {
     /// sequence moved — the lease is stale (spec 07 §2).
     #[error("stale head guard: {0}")]
     StaleHeadGuard(String),
+    /// The writer lease itself is not usable: it expired on backend time, was
+    /// superseded, or was evaluated against a clock that is not the backend's
+    /// (KV-004).  Re-acquire the lease; this is never retried as-is.
+    #[error("lease fence: {0}")]
+    LeaseFence(String),
     /// The mutation order is not the next one for its inode; the operation
     /// arrived out of order and must not land (spec 18 §10).
     #[error("out of order: {0}")]

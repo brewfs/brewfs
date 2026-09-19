@@ -27,6 +27,7 @@ pub mod commit;
 pub mod domain;
 pub mod error;
 pub mod keys;
+pub mod lease;
 pub mod memory;
 pub mod overlay;
 pub mod receipts;

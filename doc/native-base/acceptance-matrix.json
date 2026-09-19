@@ -293,8 +293,8 @@
     "expected": "fence且不产生部分metadata提交",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07s-lease-fence-durability.sh (exit 0; focused 1 passed/0 failed): an_expired_or_superseded_lease_is_fenced_without_partial_metadata —— 过期/被顶替的 lease 不产生 commit guard：fenced 写入被 StaleHeadGuard 拒绝，且整个卷命名空间前后快照逐字节相同（无 extent/inode/registration/mutation/head 任一残留），不产生部分 metadata 提交。log: doc/native-base/logs/pr07s-lease-fence-durability.log"
   },
   {
     "test_id": "WRITE-008",
@@ -403,8 +403,8 @@
     "expected": "lease依据backend时间",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07s-lease-fence-durability.sh (exit 0; focused 1 passed/0 failed): lease_validity_comes_from_the_backend_clock_and_ignores_client_skew —— 有效性只由 backend 时钟判定：客户端时钟（含任意偏差读数）一律 LeaseFence 拒绝且不可重试；未过期/已过期边界按 backend 时间判定；generation 不匹配先于时钟判定为 Superseded。log: doc/native-base/logs/pr07s-lease-fence-durability.log"
   },
   {
     "test_id": "KV-005",
@@ -414,8 +414,8 @@
     "expected": "报告实际确认写可能丢失边界",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07s-lease-fence-durability.sh (exit 0; focused 1 passed/0 failed): durability_profiles_report_their_lossy_boundary_and_verify —— 四种 profile 各自报告 confirmed 与 may_be_lost 的精确切分（VolatileOnly 全丢、BackendAck 只确认 UploadVerified、BackendAckWithReceipt 再加 ReceiptDurable、FsyncConfirmed 全确认），confirmed 必须是阶段前缀（越级确认即拒绝），未知持久化 code=9 拒绝而不近似。log: doc/native-base/logs/pr07s-lease-fence-durability.log"
   },
   {
     "test_id": "LIFE-001",
