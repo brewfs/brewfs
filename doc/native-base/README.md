@@ -53,12 +53,13 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07X | feature 关闭时的旧路径回归与版本准入拒绝：native 特性关闭配置下旧（flat/chunk）路径的整个 lib 套件在同一提交上通过（934 passed/0 failed/225 ignored），native 开/关两种配置的 check/build 由同一 gate 覆盖（REGRESS-001）；未编译 native 支持的旧二进制与 schema/wire/volume_format 前进的新卷都按名拒绝，且不存在把 native 卷当 flat 卷读的回退（REGRESS-002）；buffered/direct/mmap 三形态在 doc/native-base/known-gaps.md 记录为 KnownGap 而非 PASS（REGRESS-005） | 完成（REGRESS-001/002 PASS；REGRESS-005 记为 KnownGap，状态 NOT_RUN；[pr07x-compat-known-gaps.log](logs/pr07x-compat-known-gaps.log)） |
 | 07Y | 逻辑迁移 roundtrip：离线拷贝模式下一次条件事务把源卷全部控制行原样搬到新 volume id 下并安装目标 locator header——源卷逐行逐字节保留、属性与布局在目标侧都有 payload 完全相同的孪生行、从未 initialize 过的目标 reader 读回相同 size 与同样的字节（数据对象按 content-addressed 身份共享，copy 函数不持有 ObjectSink 故结构上不可能上传/重读任何数据字节）；复用源 id、不搬行的模式、已占用目标（locator header 或同形状控制行）与越出被扫描前缀的 store 全部按名拒绝（REGRESS-003） | 完成（[pr07y-logical-migration-roundtrip.log](logs/pr07y-logical-migration-roundtrip.log)） |
 | 07Z | lossless repack 保持逻辑身份：把同一逻辑块从旧 Pack 搬到新 Pack 的不同 frame 切分后，Bindings 表（每个 BlockKey 的 decoded_len/content_hash，即该 seal 的逻辑 revision）逐字节不变，而 Placements/Objects/Frames 三张表全部改变（所以它确实是一次 repack 而不是空操作）；两个视图都读出同样字节，repack 既不重读也不改写旧对象，变体按“在未改动的源之上新增空间”记账；反向用例里刻意声明**未篡改**的 binding 却让 placement 解码出不同字节——结构校验与 build 全部通过、每个 frame 都完好，读时仍被“解码块对 binding content_hash 的完整校验”拒绝（OPT-007） | 完成（[pr07z-lossless-repack.log](logs/pr07z-lossless-repack.log)） |
+| 08A | 训练模式 sampler hints：新增 `runtime::plan_sample_issue_order`——hints 只能重排“底层请求发出顺序”，sampler 的样本集合与分布（含重复抽样的重数）以及“应用看到的语义顺序”逐项不变；字节区间 hint 必须与某个抽样完全一致（三个坐标差一个即 `HintNotASample`），越界 draw 即 `HintOutOfRange`，因此为顺序 I/O 做优化不可能增删、合并或改写样本集合（OPT-006） | 完成（[pr08a-training-sampler-hints.log](logs/pr08a-training-sampler-hints.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-19）：173 项矩阵中 **168 PASS**、4
+当前验收进度（2026-09-19）：173 项矩阵中 **169 PASS**、3
 `SPECIFIED_NOT_IMPLEMENTED` 与 1 项 `NOT_RUN`（REGRESS-005 的 buffered/direct/mmap 形态按该项要求记录为
 KnownGap，见 [known-gaps.md](known-gaps.md)）（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
@@ -73,6 +74,8 @@ RET-021/CLN-024）；GATE-002/GATE-003 的 required_features 依赖闭包已由 
 COW 页复用与摘要扫描/重写计数已由 PR07P 收口（FROZEN-005/FROZEN-006/FROZEN-008）。writer lease 的 fence 语义、backend 时间判定与 durability 丢失边界已由 PR07S 收口（WRITE-007/KV-004/KV-005）：过期或被顶替的 lease 不签发 commit guard，fenced 写入前后整个卷命名空间快照相同（无部分 metadata），lease 有效性只认 backend 时钟（客户端时钟一律拒绝）、generation 先于时钟判定，四种 durability profile 分别报告 confirmed 与 may_be_lost 且 confirmed 必须是阶段前缀、未知持久化 code 拒绝。
 
 上传回执保护、chmod 与 rename 覆盖的写语义已由 PR07T 收口（WRITE-006/WRITE-010/WRITE-012）：数据对象与 receipts 已上传而 commit 事务失败时，operation 折叠为受保护 orphan receipt 并保持本域注册，cleaner 不能回收、resolve 后恰好释放一次；对 1 GiB 文件的 chmod 只写 attr/ 行且新增对象仅 receipts 控制容器，无文件类型位的裸权限位在准入即拒绝（不占用该 inode 的 mutation_order），内容提交对 attr 行做 check_bytes；rename 覆盖把源文件完整 extent 集（含 Hole）发布为目标内容，同一事务删除目标全部旧 extent，commit 的 durable_receipts 恰好覆盖全部被携带 block，同尺寸覆盖仍是整文件重发与版本 +1，缺段/重叠/短覆盖或手写的部分 ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。
+
+训练模式的 sampler hints 已由 PR08A 收口（OPT-006/INV-02）：新增 `src/native_base/runtime/sampler.rs`（`Sample`/`SampleHint`/`SampleIssuePlan`/`plan_sample_issue_order`）。契约是hints 只能重排“底层请求发出顺序”，其余一律是输入：`semantic_order` 恒为 `0..n`（应用看到的就是 sampler 的顺序），`issue_order` 是它的排列（`covers_every_draw` 在每个用例里都成立），`SampleHint::ByteRange` 必须与某个抽样在三个坐标上完全一致（否则 `HintNotASample`，绝不会被当成一个新样本），`Prioritise`/`SequentialFile` 只改次序且对重复 hint 幂等。验收用例特意用了一个“file 1 逆序抽样 + file 2 同一 range 抽到两次”的批次：`SequentialFile{file:1}` 只把 file 1 占用的槽位按字节序重排（其他文件不动），随后 `applied_samples()` 仍逐项等于 sampler 的 draws、发出与应用的样本多重集合完全相同、`issued_bytes` 不变，重复抽样仍是两个独立槽位（不被合并），越界 draw 与任何坐标对不上的 range 都被拒绝——这正是规范“不得为了顺序 I/O 改变样本集合或分布”，同时保留“应用最终读取顺序与底层请求发出顺序可不同”的自由。
 
 lossless repack 的逻辑身份保持已由 PR07Z 收口（OPT-007/INV-10）：验收把同一个逻辑块从旧 Pack 搬到一个**新** Pack 的不同 frame 切分里（源是单帧单 span，候选是两帧两 span），然后逐表比 digest——Bindings 表（每个 BlockKey 的 `decoded_len`/`content_hash`，也就是这个 seal 的逻辑 revision）在两侧逐字节相同，而 Placements/Objects/Frames 三张表全部不同，seal 对象本身也是新的，所以这确实是一次 repack 而不是空操作；两个视图（源视图读旧对象、候选视图读新对象）读出的字节完全相同，且候选视图只对新 Pack 做按 frame 的 2 次 range 取读、完全不碰旧对象，源视图随后仍能从自己的对象读出同样字节——旧对象既没被重读也没被改写。变体校验器与 seal 结论一致：同一逻辑身份被接受，新空间按“叠加在未改动的源之上”记账（`permanent_bytes == source_bytes + added_bytes`，不报告净回收），新对象进 `added_objects`、旧对象仍在 `permanent_objects`。反向用例正是规范里“不能只比较 frame checksum”那一条：刻意声明**未篡改**的 binding、却把 placement 指向解码出不同字节的 frame——seal 结构校验与 build 全部通过、每个 frame 自身完好，读取时仍然失败，失败点是“解码块对 binding `content_hash` 的完整校验”（`Integrity("block (...) content hash mismatch")`）。
 

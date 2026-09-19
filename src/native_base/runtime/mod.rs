@@ -9,6 +9,7 @@ mod io;
 mod migration;
 mod object;
 pub mod planner;
+mod sampler;
 #[cfg(feature = "workspace-overlay")]
 mod workspace;
 
@@ -26,5 +27,6 @@ pub use migration::{
     validate_migration,
 };
 pub use object::BackendObjectRepository;
+pub use sampler::{Sample, SampleHint, SampleIssuePlan, SamplerError, plan_sample_issue_order};
 #[cfg(feature = "workspace-overlay")]
 pub use workspace::WorkspaceBaseDataSource;

@@ -951,6 +951,39 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR08A · 训练模式 sampler hints 保持样本集合与顺序契约（OPT-006/INV-02）
+
+工具链同 PR07P。新增 `src/native_base/runtime/sampler.rs`（约 370 行，含 5 个测试）并在
+`src/native_base/runtime/mod.rs` 导出 `Sample`、`SampleHint`、`SampleIssuePlan`、`SamplerError`、
+`plan_sample_issue_order`。规范依据是 spec 06 §8：训练模式可接受显式 sample/byte-range hints，
+但必须保持 sampler 的语义顺序，不得为了顺序 I/O 改变样本集合或分布；应用最终读取顺序与底层请求
+发出顺序可以不同。
+
+核心改动：
+- `Sample { file, offset, len }` 是一次抽样；`plan_sample_issue_order(draws, hints)` 返回
+  `SampleIssuePlan { samples, semantic_order, issue_order, hinted_draws }`，其中 `semantic_order`
+  **恒为 `0..n`**（应用看到的就是 sampler 的顺序），`issue_order` 是它的一个排列。hints 只能重排。
+- `SampleHint::SequentialFile { file }`：只重排该文件占用的那些槽位（按 `(offset, len)` 升序），
+  其他文件的槽位不动；同一文件的重复 hint 幂等。
+- `SampleHint::Prioritise { draw }`：把指定抽样按 hint 顺序提到队首，其余保持相对顺序；重复 hint 幂等；
+  `draw >= n` 直接 `SamplerError::HintOutOfRange`。
+- `SampleHint::ByteRange { file, offset, len }`：对样本集合的**断言**——必须与某个抽样在三个坐标上
+  完全一致，否则 `SamplerError::HintNotASample`；它不会新增、裁剪或替换任何样本。
+- `SampleIssuePlan::covers_every_draw()`（每个抽样恰好在 issue order 里出现一次）在构造处
+  `debug_assert!`，并在全部用例中显式断言；`issued_bytes()` 统计发出字节。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR08A-FOCUSED | `bash doc/native-base/logs/pr08a-training-sampler-hints.sh` | 0 | PASS（sampler 5 passed/0 failed） | [pr08a-training-sampler-hints.log](logs/pr08a-training-sampler-hints.log) |
+| PR08A-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR08A-OPT006 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::sampler::tests` | 0 | PASS（重排/幂等/多重集不变/重复抽样不合并/两类拒绝） | 同上 |
+| PR08A-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 986 + 730 passed；clippy/fmt/feature checks 全绿） | [pr08a-ci-gate.log](logs/pr08a-ci-gate.log) |
+
+范围说明（诚实）：本步交付的是**计划器**，不是端到端的训练读取模式：`plan_sample_issue_order` 只决定
+“哪些抽样以什么次序发出”，没有接入真实 FUSE/后端的预取执行器，也没有测量顺序化带来的吞吐收益（那属于
+性能 A–F / PR13，仍未开始）。`Semaphore`/字节预算与“预取只能用剩余额度”的背压（spec 06 §7）由既有
+planner 预算记账覆盖，本步不重复实现；`hotset` 提示（绑定 LogicalRevision/StorageView）仍未实现。
+
 ### PR07Z · lossless repack 保持逻辑身份（OPT-007/INV-10）
 
 工具链同 PR07P。本步**没有改动产品代码**：spec 10 §9 的“保持 BlockKey、decoded_len/content_hash、LogicalRevision”

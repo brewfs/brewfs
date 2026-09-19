@@ -777,8 +777,8 @@
     "expected": "保持样本集合/顺序契约",
     "invariants": "INV-02",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr08a-training-sampler-hints.sh (exit 0; sampler 5 passed/0 failed) —— 新增 src/native_base/runtime/sampler.rs（Sample/SampleHint/SampleIssuePlan/plan_sample_issue_order，5 个用例）：契约是 hints 只能重排“底层请求发出顺序”，其余都是输入——SampleIssuePlan.semantic_order 恒为 0..n（应用看到的仍是 sampler 的顺序），issue_order 是它的排列（covers_every_draw 在每个用例里都成立），唯一被允许的自由是“应用最终读取顺序与底层请求发出顺序不同”。顺化用一条真实批次验证：draws 含 file 1 的逆序抽样与 file 2 同一 range 的两次抽样；SampleHint::SequentialFile{file:1} 只把 file 1 占用的槽位按 (offset,len) 升序重排（其他文件槽位不动），随后 applied_samples() 逐项等于 sampler 的 draws、发出与应用的样本多重集合完全相同、issued_bytes 仍是 24576、hinted_draws==2；Prioritise{draw:3} 把该抽样提到队首且重复 hint 幂等（hinted_draws==1）；重复抽样在 SequentialFile+Prioritise 下仍是两个独立槽位（不被合并），因此分布未被改变。拒绝路径：draw>=n 以 HintOutOfRange{draw,draws} 拒绝；ByteRange hint 必须与某个抽样在 file/offset/len 三个坐标上完全一致，任何坐标的近似（(3,4096,+8192)/(3,0,+4096)/(4,4096,+4096)）与空批次上的任何 hint 都以 HintNotASample 拒绝——即顺序 I/O 优化不可能新增、裁剪、合并或替换样本。log: doc/native-base/logs/pr08a-training-sampler-hints.log, doc/native-base/logs/pr08a-ci-gate.log"
   },
   {
     "test_id": "OPT-007",
