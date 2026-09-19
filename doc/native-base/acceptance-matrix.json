@@ -865,8 +865,8 @@
     "expected": "无未解释回退或cost shift",
     "invariants": "INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=64m PERF_FIO_RUNTIME=20 bash docker/compose-xfstests/run_redis_perf.sh --s3 --tools \"fio-randwrite fio-randrw metaperf\" (exit 0；三次匹配对照各 3/3 工具 pass、0 fail) —— 真实挂载级匹配对照（AGENTS.md 指定的 compose runner）。control（默认 feature，二进制 68,530,696 B）→ artifacts/perf-run-1789804357-86；control2（同一个二进制、同样的设置，用来量出 run-to-run 噪声带）→ perf-run-1789805052-2568；candidate（默认 feature 再加 --features native-packed-base，二进制 103,740,488 B）→ perf-run-1789803051-11108。三次都写了 perf.complete，每个工具 pass、0 fail，runner warning summary 的 WARNING/timeout/slow request/slow operation 全部为 0，writeback 债务（buffer_dirty/live_dirty/recent_pending_upload）在最后一次采样都回到 0。candidate 相对 control：fio-randrw read_bw 1111.156→1072.785 MiB/s（−3.5%）、write_bw 492.803→478.104（−3.0%）、read_p99 +6.8%、write_p99 +182.0%、write_p999 2231.370→74.973 ms（−96.6%）；fio-randwrite write_bw 729.216→879.876（+20.7%）；metaperf tool_wall 225→257 s（+14.2%）。而 control 相对 control2 的 run-to-run 噪声是 fio-randrw read_bw −22.4%、write_bw −21.3%、read_p99 +24.9%、write_mean +30.3%、write_p999 +784.4%，metaperf wall −8.4% —— candidate 的每一项差值都落在同一对 control 自己重跑时出现的噪声带之内。也没有 cost shift：write_effective_wall_bw_mib_s 与 active 带宽同向（randrw +1.8%、read +1.4%），wall_active_tail_s 没有新增，partial_tail_ratio、upload_byte_amp、put_ops_per_gib_written（256.124→256.037）、s3_put_avg_object_mib（3.998→3.999）全部持平，成本没有从 fio 运行期搬进 close/flush/drain。因此本项判定为“无未解释回退或 cost shift”，而不是宣称 candidate 更快。范围说明（诚实）：AGENTS.md 的严格画像 --writeback-throughput-profile + PERF_FIO_SIZE=512m 在本机未能跑完——WSL2 的 vhdx（D:\\WSL\\Ubuntu-24.04\\ext4.vhdx）在运行中把宿主卷撑到 0 字节可用，fio 容器被杀（exit 135），WSL VM 一起掉线；该次尝试的产物 artifacts/perf-run-1789800955-17525（fio-randwrite fail(135)）保留未删、未重试。所以本节是 64m/20s 的单次匹配对，它的作用是证明“无回退、无 cost shift”，不构成有统计效力的性能结论（噪声带本身就有 −22%），也正因如此本轮没有更新 README 的任何性能表、没有记录任何“提速 x%”的结论。log: doc/native-base/logs/pr08c-compose-perf-and-teardown.log, doc/native-base/logs/pr08c-compare-control-vs-candidate.log, doc/native-base/logs/pr08c-compare-control-vs-control.log"
   },
   {
     "test_id": "REGRESS-005",
@@ -887,8 +887,8 @@
     "expected": "不得新增挂死或后台buffer任务",
     "invariants": "INV-13",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr08c-compose-perf-and-teardown.sh (exit 0, 结尾 `=== PR08C compose perf pair and teardown: ALL CHECKS PASSED ===`) —— 四次真实 docker/compose-xfstests 运行（三次成功 + 一次 512m 严格画像失败运行）结束后逐项复核 teardown：容器 0（docker ps -a 中无 brewfs-perf）、volume 0（compose-xfstests）、FUSE mount 0、/sys/fs/fuse/connections 0、brewfs 进程 0、D-state 任务 0 —— 没有新增挂死，也没有残留挂载或后台任务；三次成功运行的最后一次 writeback 采样 buffer_dirty/live_dirty/recent_pending_upload 全为 0，没有遗留 drain 尾巴（更详细的失败运行记录见 REGRESS-004 的范围说明）。静态证据同向：默认 feature 集 default = [\"fuse-io-uring-runtime\", \"gateway-s3\", \"gateway-webdav\"] 不含 native-packed-base，src/native_base 下全部非测试 tokio::spawn/thread::spawn/spawn_blocking 只有 2 处，都在 P3 runtime/planner.rs（240 行 fn drop 的预算归还、298 行 get_or_load 的 singleflight leader），挂载路径根本编译不到它们，所以本轮改动不可能给挂载进程新增后台 buffer 任务。AGENTS.md 的挂死清单保持不变：generic/075 与 generic/014 仍排除在默认 xfstests 之外，LTP iogen01 仍在默认 skip list，树中没有任何 post-reply FUSE_NOTIFY_INVAL_INODE 顺序改动。log: doc/native-base/logs/pr08c-compose-perf-and-teardown.log, doc/native-base/logs/pr08c-compose-perf-and-teardown.sh"
   },
   {
     "test_id": "CONS-001",

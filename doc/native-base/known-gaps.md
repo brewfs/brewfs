@@ -25,8 +25,15 @@ unit test.
   D-state task and a bounded performance delta, run through
   `docker/compose-xfstests/`, plus the LTP `iogen01` un-skip in the same
   harness.
-- A teardown check that proves no new hung task or background buffer task
-  (REGRESS-006) before any invalidation-ordering change is considered.
+- The teardown half of that gate is already satisfied: PR08C
+  (`doc/native-base/logs/pr08c-compose-perf-and-teardown.log`) ran four
+  `docker/compose-xfstests/` runs and re-checked afterwards, finding zero
+  containers, volumes, FUSE mounts, FUSE connections, `brewfs` processes and
+  D-state tasks, plus a static proof that the mount feature set cannot reach
+  the only two production spawn sites under `src/native_base`.  That closes
+  REGRESS-006.  What is still open here is the mount-level
+  `generic/075 generic/014` re-enable itself, which stays out of the default
+  set until those runs are clean.
 
 Until then these rows stay KnownGaps: they are recorded here, they are not
 listed as PASS anywhere, and no native-base evidence log claims them.

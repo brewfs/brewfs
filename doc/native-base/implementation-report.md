@@ -951,6 +951,69 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR08C · randrw/metadata 匹配对照与 FUSE teardown 无挂死（REGRESS-004/REGRESS-006/INV-13）
+
+工具链同 PR07P。这是本轮唯一一次真实挂载级验收：用 AGENTS.md 指定的 compose runner
+（`docker/compose-xfstests/run_redis_perf.sh --s3`）在同一主机上跑了三次设置完全匹配的对照
+（`PERF_FIO_SIZE=64m PERF_FIO_RUNTIME=20`，`--tools "fio-randwrite fio-randrw metaperf"`）：
+control（默认 feature，二进制 68,530,696 B）→ `artifacts/perf-run-1789804357-86`；
+control2（**同一个二进制、同样的设置**，用来量出 run-to-run 噪声带）→
+`perf-run-1789805052-2568`；candidate（默认 feature 再加 `--features native-packed-base`，
+二进制 103,740,488 B）→ `perf-run-1789803051-11108`。三次都写了 `perf.complete`、每个工具
+`pass`、0 fail，runner warning summary 的 WARNING / timeout / slow request / slow operation 全为 0，
+writeback 债务（`buffer_dirty` / `live_dirty` / `recent_pending_upload`）在最后一次采样都回到 0。
+
+对照数字（candidate 相对 control；括号列是 control 相对 control2 的 run-to-run 噪声）：
+
+| 指标 | control | candidate | Δ | 噪声带 |
+|---|---:|---:|---:|---:|
+| fio-randrw read_bw_mib_s | 1111.156 | 1072.785 | −3.5% | −22.4% |
+| fio-randrw write_bw_mib_s | 492.803 | 478.104 | −3.0% | −21.3% |
+| fio-randrw read_p99_ms | 23.200 | 24.773 | +6.8% | +24.9% |
+| fio-randrw write_p99_ms | 11.993 | 33.817 | +182.0% | +14.2%（write_p999 抖到 +784.4%） |
+| fio-randrw write_p999_ms | 2231.370 | 74.973 | −96.6% | +784.4% |
+| fio-randwrite write_bw_mib_s | 729.216 | 879.876 | +20.7% | −1.6% |
+| metaperf tool_wall_s | 225 | 257 | +14.2% | −8.4% |
+
+结论：**没有未解释的回退，也没有 cost shift**。candidate 的每一项都落在同一对 control
+自己重跑时出现的噪声带之内（最坏 −3.5% 对应 −22.4% 的噪声；被怀疑的 write_p99 +182%
+对应 control 自身 write_p999 抖到 +784.4%，而 candidate 的 write_p999 反而从 2231 ms
+降到 75 ms）；“隐藏 win”也不存在——`write_effective_wall_bw_mib_s` 与 active 带宽同向
+（randrw +1.8%、read +1.4%），`wall_active_tail_s` 没有新增，`partial_tail_ratio`、
+`upload_byte_amp`、`put_ops_per_gib_written`（256.124 → 256.037）、
+`s3_put_avg_object_mib`（3.998 → 3.999）全部持平，即成本没有从 fio 运行期搬进
+close/flush/drain。因此本项在“无未解释回退或 cost shift”这一判定上给出 PASS，
+而不是把“candidate 更快”当成结论。
+
+teardown（REGRESS-006）：四次 compose 运行（含下面那次失败的）结束后逐项复核——
+容器 0 / volume 0 / FUSE mount 0（`mount | grep brewfs`）/ `/sys/fs/fuse/connections` 0 /
+`brewfs` 进程 0 / D-state 任务 0。另有一条静态证据：默认 feature 集
+（`default = ["fuse-io-uring-runtime", "gateway-s3", "gateway-webdav"]`）不含
+`native-packed-base`，`src/native_base` 下全部非测试
+`tokio::spawn` / `thread::spawn` / `spawn_blocking` 只有 2 处，都在 P3
+`runtime/planner.rs`（`fn drop` 的预算归还与 `get_or_load` 的 singleflight leader），
+挂载路径根本编译不到它们——所以本轮改动不可能给挂载进程新增后台 buffer 任务。
+`generic/075` / `generic/014` 仍按 AGENTS.md 排除，`iogen01` 仍在默认 skip list，
+树里也没有任何 post-reply invalidation 顺序改动。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR08C-CONTROL | `PERF_LOG_TO_CONSOLE=false PERF_FIO_SIZE=64m PERF_FIO_RUNTIME=20 bash docker/compose-xfstests/run_redis_perf.sh --s3 --tools "fio-randwrite fio-randrw metaperf"` | 0 | PASS（3/3 工具 pass，0 warning） | [pr08c-control64-run.raw.log](logs/pr08c-control64-run.raw.log) → `artifacts/perf-run-1789804357-86` |
+| PR08C-CONTROL2 | 同上（同一二进制，量噪声带） | 0 | PASS（3/3 工具 pass，0 warning） | [pr08c-control64-run2.raw.log](logs/pr08c-control64-run2.raw.log) → `artifacts/perf-run-1789805052-2568` |
+| PR08C-CANDIDATE | 同上（二进制由 `--features native-packed-base` 构建） | 0 | PASS（3/3 工具 pass，0 warning） | [pr08c-native-run.raw.log](logs/pr08c-native-run.raw.log) → `artifacts/perf-run-1789803051-11108` |
+| PR08C-COMPARE | `python3 tools/perf/compare_artifacts.py <control> <candidate>` | 0 | PASS（无未解释回退/cost shift，见上表） | [pr08c-compare-control-vs-candidate.log](logs/pr08c-compare-control-vs-candidate.log) |
+| PR08C-NOISE | `python3 tools/perf/compare_artifacts.py <control> <control2>` | 0 | PASS（给出 run-to-run 噪声带） | [pr08c-compare-control-vs-control.log](logs/pr08c-compare-control-vs-control.log) |
+| PR08C-TEARDOWN | `bash doc/native-base/logs/pr08c-compose-perf-and-teardown.sh` | 0 | PASS（`ALL CHECKS PASSED`；容器/volume/mount/连接/进程/D-state 全 0） | [pr08c-compose-perf-and-teardown.log](logs/pr08c-compose-perf-and-teardown.log) |
+| PR08C-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 988 + 730 passed；clippy/fmt/feature checks 全绿） | [pr08c-ci-gate.log](logs/pr08c-ci-gate.log) |
+
+范围说明（诚实）：AGENTS.md 的严格画像 `--writeback-throughput-profile` +
+`PERF_FIO_SIZE=512m` 在本机**没有跑完**——WSL2 的 vhdx（`D:\WSL\Ubuntu-24.04\ext4.vhdx`）
+在运行中把宿主卷撑到 0 字节可用，fio 容器被杀（exit 135），WSL VM 一起掉线；这次尝试的产物
+`artifacts/perf-run-1789800955-17525`（fio-randwrite `fail(135)`）保留未删、未重试，作为失败记录。
+因此本节的对照是 **64m/20s 的单次匹配对**，它的作用是证明“没有回退、没有 cost shift”，
+不是一份有统计效力的性能结论（噪声带本身就有 −22%）；也正因如此，本轮**没有**更新 README 的
+任何性能表，也没有记录任何“提速 x%”的结论。
+
 ### PR08B · Plain 共享 frame：切片逐文件正确、decoded 预算按 frame 只算一次（OPT-001/INV-04）
 
 工具链同 PR07P。本步**没有改动产品代码**：spec 03 §3 的“两个小文件共享 frame”与 spec 06 §7 的
