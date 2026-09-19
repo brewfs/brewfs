@@ -227,8 +227,8 @@
     "expected": "不前置复制整个文件",
     "invariants": "INV-09",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07w-write-path-durability.sh (exit 0; focused 1 passed/0 failed): a_first_4k_overwrite_of_a_gib_file_touches_one_block_and_no_more —— 基线是 1 GiB 稀疏不可变快照（SparseBase：size=1 GiB、字节全零、按请求长度记账），首次 4096B 覆盖（block_size=4096）后：fsync 从基线只读 4096B（前置复制会读满 1 GiB），对象后端只有 2 次 put（1 个数据块 + 1 个 receipts 容器）、0 次 get，卷命名空间只出现 1 条 extent 行；文件长度仍为 1 GiB，头部读回写入的 4096B，尾部（1 GiB-4096B 处）仍读回基线零字节，因此没有前置 copy-up。log: doc/native-base/logs/pr07w-write-path-durability.log"
   },
   {
     "test_id": "WRITE-002",
@@ -238,8 +238,8 @@
     "expected": "fresh slice正确且不重写基线",
     "invariants": "INV-01",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07w-write-path-durability.sh (exit 0; focused 1 passed/0 failed): a_write_straddling_a_block_boundary_rewrites_only_those_two_blocks —— 1 MiB 稀疏基线、block_size=4096 下在 100*4096-5 处写 10B（跨 block 99/100 边界）：提交从基线只读 2 个块（8192B，恰为被覆盖的两块）、4 次 put（2 个 fresh slice + 各自的 receipts 容器）、0 次 get，只发布 2 条 extent 行；write 返回后的 dirty 读与 fsync 后的 committed 读都逐字节等于补丁，3 块范围的字节 oracle 逐字节匹配，覆盖范围之外的块（101 块）仍读回基线零字节，即没有重写未被触碰的基线块。log: doc/native-base/logs/pr07w-write-path-durability.log"
   },
   {
     "test_id": "WRITE-003",
@@ -260,8 +260,8 @@
     "expected": "dirty与committed交接无gap",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07w-write-path-durability.sh (exit 0; focused 3 passed/0 failed): a_local_read_sees_the_dirty_bytes_and_then_the_committed_ones + patch_is_dirty_visible_and_fsync_reads_only_the_touched_block + a_lost_commit_reply_hands_off_without_a_gap —— 两轮 write→read→fsync→read：write 返回后 pending_count=1 且本地读立即返回 dirty 字节，fsync 后 pending_count=0 且读回同一字节，第二轮交接完成后第一轮的字节仍在（0xD0/0xD1 各自就位），因此 dirty→committed 的交接点就是提交确认点、前后不存在空洞或陈旧窗口；单块补丁场景同时证明 fsync 只读取被改写的块（64B），掉包场景证明 pending overlay 只在确认后释放且窗口内字节不消失。log: doc/native-base/logs/pr07w-write-path-durability.log"
   },
   {
     "test_id": "WRITE-005",
@@ -271,8 +271,8 @@
     "expected": "字节内容完整持久化",
     "invariants": "INV-07",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07w-write-path-durability.sh (exit 0; focused 1 passed/0 failed): fsync_then_cache_clear_and_remount_serves_the_same_bytes_and_sizes —— 4 块基线上写 16B 补丁（0x10..0x1F），另一 inode truncate 到 3 块，各自 fsync 后 clear_cache，再用同一 store/sink/baseline 构造一个全新 runtime（重挂类比重建）：补丁逐字节一致、两个 inode 的 size 分别为 4 块与 3 块、truncate 后范围读回零；整个重挂过程 sink.puts 仍为 3（只重新读取卷，不新上传）。log: doc/native-base/logs/pr07w-write-path-durability.log"
   },
   {
     "test_id": "WRITE-006",

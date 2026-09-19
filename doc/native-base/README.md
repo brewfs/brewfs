@@ -49,12 +49,13 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07T | 上传回执保护、chmod 元数据专用路径与 rename 覆盖的应用完整写语义：上传成功但 KV 失败的对象与 receipts 进入受保护 orphan（WRITE-006）、GiB 文件 chmod 只写属性行且不产生任何数据对象或数据路径行、裸权限位在准入即拒绝（WRITE-010）、rename 覆盖发布源文件完整 extent 集（含 hole）、同事务删除目标全部旧 extent、receipts 覆盖全部被携带 block，缺段/重叠/短覆盖与手写部分替换在提交边界一律拒绝（WRITE-012） | 完成（[pr07t-write-receipts-attributes-replace.log](logs/pr07t-write-receipts-attributes-replace.log)） |
 | 07U | 单次请求一次有界且同代的 metadata 捕获：capture 中落入的提交不服务陈旧字节、dirty→committed 交接在提交确认后且回包丢失可重试、一次读跨多 chunk 复用同一 capture、metadata 持续变化/超时只在有界预算内重试（CONS-001/CONS-002/CONS-003/CONS-006） | 完成（[pr07u-capture-consistency.log](logs/pr07u-capture-consistency.log)） |
 | 07V | 失效租约与 authority 回滚下的私有状态收口：过期/被顶替的 lease 在注册与提交前 fence 且不写任何行、dispatch 中途失效时保护已落盘块、rollback 停止发布并清空 dirty/pending/inode 本地镜像、运行时 fsync 返回 LeaseFence 且 head 不动（CONS-004）；绕过本地门的另一写者被持久 head guard 拒绝、其上传受保护、重新派生 head 的写者仍可发布（CONS-005） | 完成（[pr07v-fenced-writer-rollback.log](logs/pr07v-fenced-writer-rollback.log)） |
+| 07W | 写路径的 copy-up 与持久化验收：GiB 文件首次 4096B 覆盖只读/写它替换的一个块（无前置复制）、跨 native block 的局部写只发布被覆盖两块的 fresh slice 且不重写其余基线、write 返回后的本地读与提交后读到同一字节（交接无 gap）、fsync 后清 cache 重挂（同 store/sink/baseline 新建 runtime）字节与 size 均一致且不新上传（WRITE-001/002/004/005） | 完成（[pr07w-write-path-durability.log](logs/pr07w-write-path-durability.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-19）：173 项矩阵中 **160 PASS**、13
+当前验收进度（2026-09-19）：173 项矩阵中 **164 PASS**、9
 `SPECIFIED_NOT_IMPLEMENTED`（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
 真实 FUSE 挂载 + Redis/TiKV + S3 的 READ/WRITE/fsync 端到端集成、P2 Frozen
@@ -68,6 +69,8 @@ RET-021/CLN-024）；GATE-002/GATE-003 的 required_features 依赖闭包已由 
 COW 页复用与摘要扫描/重写计数已由 PR07P 收口（FROZEN-005/FROZEN-006/FROZEN-008）。writer lease 的 fence 语义、backend 时间判定与 durability 丢失边界已由 PR07S 收口（WRITE-007/KV-004/KV-005）：过期或被顶替的 lease 不签发 commit guard，fenced 写入前后整个卷命名空间快照相同（无部分 metadata），lease 有效性只认 backend 时钟（客户端时钟一律拒绝）、generation 先于时钟判定，四种 durability profile 分别报告 confirmed 与 may_be_lost 且 confirmed 必须是阶段前缀、未知持久化 code 拒绝。
 
 上传回执保护、chmod 与 rename 覆盖的写语义已由 PR07T 收口（WRITE-006/WRITE-010/WRITE-012）：数据对象与 receipts 已上传而 commit 事务失败时，operation 折叠为受保护 orphan receipt 并保持本域注册，cleaner 不能回收、resolve 后恰好释放一次；对 1 GiB 文件的 chmod 只写 attr/ 行且新增对象仅 receipts 控制容器，无文件类型位的裸权限位在准入即拒绝（不占用该 inode 的 mutation_order），内容提交对 attr 行做 check_bytes；rename 覆盖把源文件完整 extent 集（含 Hole）发布为目标内容，同一事务删除目标全部旧 extent，commit 的 durable_receipts 恰好覆盖全部被携带 block，同尺寸覆盖仍是整文件重发与版本 +1，缺段/重叠/短覆盖或手写的部分 ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。
+
+写路径的 copy-up 边界与持久化已由 PR07W 收口（WRITE-001/WRITE-002/WRITE-004/WRITE-005）：1 GiB 稀疏基线（不可变快照）上的首次 4096B 覆盖只从基线读取它替换的那一个块、只上传一个数据对象与其 receipts 容器并只发布一条 extent，文件长度与尾部基线都不动，因此没有前置 copy-up；跨 block 边界的 10B 局部写只读/只写被覆盖的两个 block（fresh slice 各自成 mutation），其余基线既不被读也不被重写；write 返回后 pending_count=1 且本地读立即返回 dirty 字节，fsync 后 pending_count=0 且读回同一字节，两轮交接后前一轮字节仍在，说明 dirty→committed 的交接点就是提交确认点；fsync 后清 cache 并用同一 store/sink/baseline 重建 runtime（重挂类比）时补丁、size 与 truncate 结果逐字节一致，且重挂过程中没有任何新上传。
 
 失效租约与 authority 回滚的私有状态已由 PR07V 收口（CONS-004/CONS-005）：overlay 现在按 WriterLease 发布，租约在 backend 时间过期或被顶替时注册与提交都在事务之前被拒（整个卷命名空间逐字节不变），dispatch 中途失效时已落盘的块被折成一条 step=DataUploaded 的 orphan receipt 精确覆盖，rollback 停止发布（published_rows==0）并清空 pending/dirty 与 inode 本地镜像；authority 把域置为 Quarantined 后同样收口，运行时的 fsync 在租约失效时返回 LeaseFence 且 head/extent 行不动。绕过本地门的另一写者由其不可见的持久 head guard 拒绝：先写者提交推进 head 后，旁路写者的提交报告 stale head guard、head 与 extent 行不变、上传对象受保护，而重新从 store 派生 head 的写者仍能用相同字节提交成功——本地 Mutex 只是同进程优化，跨写者的栅栏是 store 事务里的 head 比较。
 

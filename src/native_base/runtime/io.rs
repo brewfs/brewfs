@@ -2112,4 +2112,254 @@ mod tests {
         assert_eq!(runtime.read(9, 0, 64).await.unwrap(), written);
         assert_eq!(runtime.size(9).await.unwrap(), 64);
     }
+
+    /// A sparse immutable baseline of a chosen size: the bytes are all zero,
+    /// so a partial write can be proven not to copy the file up front.
+    struct SparseBase {
+        len: u64,
+        bytes_read: AtomicU64,
+    }
+
+    #[async_trait]
+    impl BaseDataSource for SparseBase {
+        async fn size(&self, _inode: u64) -> Result<u64, NativeIoError> {
+            Ok(self.len)
+        }
+
+        async fn read_exact(
+            &self,
+            _inode: u64,
+            _offset: u64,
+            output: &mut [u8],
+        ) -> Result<(), NativeIoError> {
+            output.fill(0);
+            self.bytes_read
+                .fetch_add(output.len() as u64, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    async fn runtime_with_block_size(
+        store: Arc<dyn ControlStore>,
+        sink: Arc<dyn ObjectSink>,
+        base: Arc<dyn BaseDataSource>,
+        block_size: u64,
+    ) -> NativeDataRuntime {
+        let overlay = Arc::new(WriteOverlay::new(
+            store,
+            sink,
+            OverlayParams {
+                volume_id: [1; 16],
+                workspace_id: [2; 16],
+                domain_id: [3; 16],
+                writer_generation: 1,
+                block_size,
+            },
+        ));
+        let runtime = NativeDataRuntime::new(overlay, base);
+        runtime.initialize([4; 16], 1).await.unwrap();
+        runtime
+    }
+
+    /// WRITE-001: the first overwrite of a GiB file must not copy the file.
+    #[tokio::test]
+    async fn a_first_4k_overwrite_of_a_gib_file_touches_one_block_and_no_more() {
+        const GIB: u64 = 1 << 30;
+        const BLOCK: u64 = 4096;
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(CountingSink::default());
+        let base = Arc::new(SparseBase {
+            len: GIB,
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime =
+            runtime_with_block_size(store.clone(), sink.clone(), base.clone(), BLOCK).await;
+
+        // The baseline is a GiB long and the write is exactly one block.
+        assert_eq!(runtime.size(31).await.unwrap(), GIB);
+        let patch = vec![0xAB; BLOCK as usize];
+        runtime.write(31, 0, &patch).await.unwrap();
+        let report = runtime.fsync(31).await.unwrap();
+        assert_eq!(report.committed.len(), 1);
+
+        // A copy-up would have read the whole GiB; the patch reads exactly the
+        // block it replaces and uploads exactly one data object plus its
+        // receipts container.
+        assert_eq!(
+            base.bytes_read.load(Ordering::Relaxed),
+            BLOCK,
+            "a first partial write must not copy the baseline up front"
+        );
+        assert_eq!(
+            sink.puts.load(Ordering::Relaxed),
+            2,
+            "one data block plus the receipts container"
+        );
+        assert_eq!(sink.gets.load(Ordering::Relaxed), 0);
+
+        // The file keeps its length, its head reads back the patch and its
+        // tail is still the baseline.
+        assert_eq!(runtime.size(31).await.unwrap(), GIB);
+        assert_eq!(runtime.read(31, 0, BLOCK as usize).await.unwrap(), patch);
+        assert_eq!(
+            runtime.read(31, GIB - BLOCK, BLOCK as usize).await.unwrap(),
+            vec![0u8; BLOCK as usize]
+        );
+        let extent_rows = store
+            .scan(&Keys::new(&[1; 16]).extents_prefix(&[2; 16], 31))
+            .await
+            .unwrap();
+        assert_eq!(extent_rows.len(), 1, "exactly one extent was published");
+    }
+
+    /// WRITE-002: a write that straddles a native block boundary publishes a
+    /// fresh slice for the two blocks it touches and rewrites no other block.
+    #[tokio::test]
+    async fn a_write_straddling_a_block_boundary_rewrites_only_those_two_blocks() {
+        const BLOCK: u64 = 4096;
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(CountingSink::default());
+        let base = Arc::new(SparseBase {
+            len: 1 << 20,
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime =
+            runtime_with_block_size(store.clone(), sink.clone(), base.clone(), BLOCK).await;
+
+        // 10 bytes covering the last 5 bytes of block 99 and the first 5 of
+        // block 100.
+        let offset = 100 * BLOCK - 5;
+        let patch: Vec<u8> = (0xC0..=0xC9).collect();
+        runtime.write(32, offset, &patch).await.unwrap();
+        assert_eq!(
+            runtime.read(32, offset, patch.len()).await.unwrap(),
+            patch,
+            "the dirty read already sees the fresh slice"
+        );
+        let baseline_reads_before_fsync = base.bytes_read.load(Ordering::Relaxed);
+        runtime.fsync(32).await.unwrap();
+
+        // The commit reads the two blocks it has to preserve and publishes a
+        // fresh slice for them (plus the receipts container): the untouched
+        // blocks of the baseline are neither read nor rewritten.
+        assert_eq!(
+            base.bytes_read.load(Ordering::Relaxed) - baseline_reads_before_fsync,
+            2 * BLOCK,
+            "the commit reads exactly the two blocks the write covers"
+        );
+        assert_eq!(
+            sink.puts.load(Ordering::Relaxed),
+            4,
+            "two fresh block slices plus one receipts container each"
+        );
+        assert_eq!(sink.gets.load(Ordering::Relaxed), 0);
+        let extent_rows = store
+            .scan(&Keys::new(&[1; 16]).extents_prefix(&[2; 16], 32))
+            .await
+            .unwrap();
+        assert_eq!(
+            extent_rows.len(),
+            2,
+            "only the two covered blocks are published"
+        );
+        assert_eq!(runtime.read(32, offset, patch.len()).await.unwrap(), patch);
+        let mut expected = vec![0u8; 3 * BLOCK as usize];
+        expected[BLOCK as usize - 5..BLOCK as usize + 5].copy_from_slice(&patch);
+        assert_eq!(
+            runtime
+                .read(32, offset - (BLOCK - 5), 3 * BLOCK as usize)
+                .await
+                .unwrap(),
+            expected
+        );
+        // A block outside the write still reads the baseline.
+        assert_eq!(
+            runtime.read(32, 101 * BLOCK, BLOCK as usize).await.unwrap(),
+            vec![0u8; BLOCK as usize]
+        );
+    }
+
+    /// WRITE-004: between the write returning and the commit, a local read
+    /// must see the dirty bytes, and after the commit the same bytes -- the
+    /// handoff happens at the commit acknowledgement, not before or after it.
+    #[tokio::test]
+    async fn a_local_read_sees_the_dirty_bytes_and_then_the_committed_ones() {
+        const BLOCK: u64 = 4096;
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(CountingSink::default());
+        let base = Arc::new(SparseBase {
+            len: 1 << 20,
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime_with_block_size(store, sink, base, BLOCK).await;
+
+        for round in 0..2u8 {
+            let offset = BLOCK * (10 + round as u64);
+            let patch = vec![0xD0 + round; 8];
+            runtime.write(33, offset, &patch).await.unwrap();
+            assert_eq!(runtime.pending_count(33).await, 1);
+            assert_eq!(
+                runtime.read(33, offset, patch.len()).await.unwrap(),
+                patch,
+                "the returned write is readable before it is committed"
+            );
+
+            runtime.fsync(33).await.unwrap();
+            assert_eq!(runtime.pending_count(33).await, 0);
+            assert_eq!(
+                runtime.read(33, offset, patch.len()).await.unwrap(),
+                patch,
+                "the committed bytes are the same bytes"
+            );
+        }
+        // The first round's bytes are still there after the second handoff.
+        assert_eq!(
+            runtime.read(33, BLOCK * 10, 8).await.unwrap(),
+            vec![0xD0; 8]
+        );
+        assert_eq!(
+            runtime.read(33, BLOCK * 11, 8).await.unwrap(),
+            vec![0xD1; 8]
+        );
+    }
+
+    /// WRITE-005: after fsync, clearing the cache and remounting the volume
+    /// (a fresh runtime over the same store, sink and baseline) serves the
+    /// same bytes and sizes.
+    #[tokio::test]
+    async fn fsync_then_cache_clear_and_remount_serves_the_same_bytes_and_sizes() {
+        const BLOCK: u64 = 4096;
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(CountingSink::default());
+        let base = Arc::new(SparseBase {
+            len: 4 * BLOCK,
+            bytes_read: AtomicU64::new(0),
+        });
+        let first = runtime_with_block_size(store.clone(), sink.clone(), base.clone(), BLOCK).await;
+
+        // A patch in the middle of the baseline, a truncate below it, and a
+        // hole punched next to it: three shapes that must survive a remount.
+        let patch: Vec<u8> = (0x10..=0x1F).collect();
+        first.write(41, 100, &patch).await.unwrap();
+        first.truncate(42, 3 * BLOCK).await.unwrap();
+        first.fsync(41).await.unwrap();
+        first.fsync(42).await.unwrap();
+        first.clear_cache().await;
+
+        let remounted =
+            runtime_with_block_size(store.clone(), sink.clone(), base.clone(), BLOCK).await;
+        assert_eq!(remounted.read(41, 100, patch.len()).await.unwrap(), patch);
+        assert_eq!(remounted.size(41).await.unwrap(), 4 * BLOCK);
+        assert_eq!(remounted.size(42).await.unwrap(), 3 * BLOCK);
+        assert_eq!(
+            remounted.read(42, 0, 3 * BLOCK as usize).await.unwrap(),
+            vec![0u8; 3 * BLOCK as usize]
+        );
+        assert_eq!(remounted.pending_count(41).await, 0);
+        assert_eq!(
+            sink.puts.load(Ordering::Relaxed),
+            3,
+            "a remount re-reads the volume; it uploads nothing new"
+        );
+    }
 }

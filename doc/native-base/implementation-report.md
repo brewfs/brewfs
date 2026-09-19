@@ -951,6 +951,37 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07W · 写路径 copy-up 边界、跨块 fresh slice 与重挂持久化（WRITE-001/002/004/005）
+
+工具链同 PR07P。本步**没有改动产品代码**：这四项的语义在 PR07J/PR07U 的运行时与 overlay 里已经成立，缺的是它们各自的显式验收证据。
+因此在 `src/native_base/runtime/io.rs` 的测试模块新增 4 个场景（并复用两个既有场景），把它们钉在可复现的断言上。
+
+核心证据：
+- WRITE-001：新增 `SparseBase`（size 可设、字节全零、按请求长度记账的不可变稀疏基线）与 `runtime_with_block_size`，在 1 GiB 基线上
+  写 4096B 后断言：fsync 只从基线读 4096B、只 put 2 次（1 数据块 + 1 receipts 容器）、get 0 次、只发布 1 条 extent，且 1 GiB 长度、
+  头块与尾块都正确。若实现前置复制整文件，读数会接近 1 GiB，测试立即失败。
+- WRITE-002：1 MiB 基线上在 block 边界处写 10B，断言提交只读 2 个块、只发布 2 条 extent（runtime 目前按被覆盖块逐个 materialize，
+  每块一个 mutation + 各自 receipts 容器，故 put 为 4）、覆盖范围外的块仍读回基线，并做 3 块范围的字节 oracle 比对。
+- WRITE-004：两轮 write→read→fsync→read，断言 `pending_count` 1→0 与读回字节在交接前后完全相同；配合既有的
+  `patch_is_dirty_visible_and_fsync_reads_only_the_touched_block` 与 PR07U 的 `a_lost_commit_reply_hands_off_without_a_gap`
+  （掉包只在确认后释放 pending）。
+- WRITE-005：写补丁 + truncate 后各自 fsync、clear_cache，再用同一 store/sink/baseline 构造新 runtime（重挂类比），断言补丁字节、
+  两个 size 与 truncate 结果一致，且重挂期间 sink.puts 不增加（只是重新读取卷）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07W-FOCUSED | `bash doc/native-base/logs/pr07w-write-path-durability.sh` | 0 | PASS（focused 6 passed/0 failed；runtime::io 24 passed） | [pr07w-write-path-durability.log](logs/pr07w-write-path-durability.log) |
+| PR07W-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07W-WRITE001 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_first_4k_overwrite_of_a_gib_file_touches_one_block_and_no_more` | 0 | PASS（1 GiB 基线首写只读/写 1 块，无 copy-up） | 同上 |
+| PR07W-WRITE002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_write_straddling_a_block_boundary_rewrites_only_those_two_blocks` | 0 | PASS（只读 2 块、只发布 2 条 extent、范围外仍读基线） | 同上 |
+| PR07W-WRITE004 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_local_read_sees_the_dirty_bytes_and_then_the_committed_ones` | 0 | PASS（两轮交接 pending 1→0，字节不变） | 同上 |
+| PR07W-WRITE005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::fsync_then_cache_clear_and_remount_serves_the_same_bytes_and_sizes` | 0 | PASS（重挂后字节/size 一致，重挂不新上传） | 同上 |
+
+范围说明（诚实）：本项仍是 **component-level** 运行时证据。「重挂」是新建 `NativeDataRuntime`（同一 store/sink/baseline），
+不是内核 FUSE unmount/mount；「GiB 文件」是 1 GiB 稀疏基线而不是真实 1 GiB 已填充对象（copy-up 结论只依赖读/写字节数，与基线内容无关）；
+WRITE-001 的 4096B 与 WRITE-002 的跨块 10B 都是 block_size=4096 下的单请求形状，没有覆盖多请求并发或 fio 级吞吐验证；
+本步未新增产品代码，矩阵状态变化来自「语义已存在 + 本步补上显式证据」，不是新实现。
+
 ### PR07V · 失效租约与 authority 回滚下的私有状态收口（CONS-004/005）
 
 工具链同 PR07P。改动集中在 `src/native_base/write/overlay.rs`（发布路径与 `RollbackReport`）、
