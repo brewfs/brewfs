@@ -788,8 +788,8 @@
     "expected": "bindings/logical_revision不变",
     "invariants": "INV-10",
     "priority": "P1",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07z-lossless-repack.sh (exit 0; seal lossless_repack 1 passed/0 failed) —— 新增 src/native_base/seal/tests.rs::lossless_repack_keeps_bindings_and_logical_revision（辅助 table_digest）：把同一个逻辑块从旧 Pack（单 frame 单 span）搬到新 Pack（两个 frame、两个 span）后，① 逻辑身份不变：TableId::Bindings 的 digest 两侧逐字节相同，即每个 (slice_id, block_index) 的 decoded_len/content_hash 未动（这是该 seal 的逻辑 revision 面）；② 物理身份确实改变：Placements/Objects/Frames 三张表 digest 全部不同，seal 对象本身也是新的（所以这确实是一次 repack，不是空操作）；③ 内容一致且旧对象不受影响：候选视图按 frame 对新 Pack 各取一次 range（共 2 次）读出与源视图完全相同的字节，对旧对象的 GET 为 0，源视图随后仍从自己的对象读出同样字节——旧对象既没被重读也没被改写；④ 变体校验器与 seal 一致：以真实 Bindings digest 作为 LayoutIdentity 提交 validate_layout_variant，同一身份被接受，permanent_objects 含旧 Pack、added_objects 含新 Pack、permanent_bytes == source_bytes + added_bytes（新空间叠加在未改动的源之上，不报告净回收）；⑤ 反向用例对应规范“不能只比较 frame checksum”：刻意声明未篡改块的 binding 但让 placement 解码出被篡改的字节，seal 的 validate()/build() 全部通过且每个 frame 自身完好，读取仍在 SealError::Integrity(\"block (7,0) content hash mismatch\") 处失败。log: doc/native-base/logs/pr07z-lossless-repack.log, doc/native-base/logs/pr07z-ci-gate.log"
   },
   {
     "test_id": "OPT-008",

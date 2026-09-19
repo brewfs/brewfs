@@ -3,7 +3,7 @@
 //! boundary.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
@@ -17,6 +17,9 @@ use super::{
     ReadMetrics, SealReader, SealSnapshot,
 };
 use crate::chunk::compress::{Compression, decompress_framed, encode_persisted_block};
+use crate::native_base::lifecycle::variant::{
+    LayoutIdentity, LayoutVariantRequest, validate_layout_variant,
+};
 use crate::native_base::wire::container::{Codec, ObjectKind, features, set_declared_features};
 use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
 use crate::native_base::wire::error::WireError;
@@ -32,6 +35,8 @@ const SLICE: u64 = 7;
 const PACK_ID: ObjectId = [0x11; 16];
 const LOOSE_ID: ObjectId = [0x33; 16];
 const SEAL_A_ID: ObjectId = [0x44; 16];
+/// The pack a lossless repack publishes; the source pack stays untouched.
+const REPACK_ID: ObjectId = [0x55; 16];
 
 /// Object backend that counts every Range GET. The whole point of PR03's
 /// evidence requirements is that these counts are exact: one GET per
@@ -1818,6 +1823,246 @@ fn a_pinned_view_never_mixes_revisions_across_a_root_switch() {
         .unwrap_err();
     assert!(
         matches!(error, SealError::Wire(WireError::HashMismatch { .. })),
+        "{error:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OPT-007 / INV-10: a lossless repack keeps the logical identity.
+// ---------------------------------------------------------------------------
+
+/// The canonical digest of one seal table.  A repack that leaves the Bindings
+/// table byte-identical has not moved the logical revision, while new
+/// Placements/Objects/Frames tables are exactly what makes it a repack.
+fn table_digest(snapshot: &SealSnapshot, id: TableId) -> [u8; 32] {
+    match snapshot.table(id) {
+        Some(ChildRef::Local(address)) => address.stored_digest,
+        other => panic!("{id:?} is not a local table: {other:?}"),
+    }
+}
+
+/// OPT-007 / INV-10: a lossless repack moves one logical block from a pack
+/// into a NEW pack with a different frame split.  The Bindings table -- the
+/// seal's logical revision: every BlockKey, `decoded_len` and `content_hash`
+/// -- is byte-identical, both views serve the same bytes, the old object is
+/// neither read nor rewritten by the repack, and the variant is booked as new
+/// space on top of the untouched source instead of replacing it.
+///
+/// The negative half is the point of the spec's "not only compare frame
+/// checksums": a placement that keeps the declared binding but decodes to
+/// different bytes passes every structural and frame-level check (the seal
+/// validates and builds), and the read is still refused because the decoded
+/// block does not hash to the binding's `content_hash`.
+#[test]
+fn lossless_repack_keeps_bindings_and_logical_revision() {
+    let block: Vec<u8> = (0..BLOCK_SIZE).map(|i| (i % 251) as u8).collect();
+    let (first, second) = block.split_at(BLOCK_SIZE as usize / 2);
+
+    // Source layout: the whole block is one frame of one pack object.
+    let (source_pack, source_scrubbed) = build_pack(vec![PackFrame::plain_bytes(&block).unwrap()]);
+    let mut source_builder = SealBuilder::new(BLOCK_SIZE);
+    let source_ordinal = source_builder.next_object_ordinal();
+    source_builder.add_object(
+        source_ordinal,
+        object_ref(
+            PACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &source_pack,
+            b"repack/source",
+        ),
+    );
+    let source_slots = register_frames(&mut source_builder, &source_scrubbed, source_ordinal);
+    source_builder
+        .add_packed_block(
+            SLICE,
+            0,
+            &block,
+            vec![span(0, block.len() as u32, source_slots[0], 0)],
+        )
+        .unwrap();
+    source_builder.validate().unwrap();
+    let source_seal = source_builder.build().unwrap();
+
+    // Repacked layout: the same block, split over two frames of a NEW pack.
+    let (repacked_pack, repacked_scrubbed) = build_pack(vec![
+        PackFrame::plain_bytes(first).unwrap(),
+        PackFrame::plain_bytes(second).unwrap(),
+    ]);
+    let mut repacked_builder = SealBuilder::new(BLOCK_SIZE);
+    let repacked_ordinal = repacked_builder.next_object_ordinal();
+    repacked_builder.add_object(
+        repacked_ordinal,
+        object_ref(
+            REPACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &repacked_pack,
+            b"repack/candidate",
+        ),
+    );
+    let repacked_slots =
+        register_frames(&mut repacked_builder, &repacked_scrubbed, repacked_ordinal);
+    repacked_builder
+        .add_packed_block(
+            SLICE,
+            0,
+            &block,
+            vec![
+                span(0, first.len() as u32, repacked_slots[0], 0),
+                span(
+                    first.len() as u32,
+                    second.len() as u32,
+                    repacked_slots[1],
+                    0,
+                ),
+            ],
+        )
+        .unwrap();
+    repacked_builder.validate().unwrap();
+    let repacked_seal = repacked_builder.build().unwrap();
+
+    let source_view = SealSnapshot::open(source_seal.clone()).unwrap();
+    let repacked_view = SealSnapshot::open(repacked_seal.clone()).unwrap();
+
+    // Logical identity: the Bindings table -- and with it every BlockKey,
+    // decoded_len and content_hash -- is byte-identical across the repack.
+    assert_eq!(
+        table_digest(&source_view, TableId::Bindings),
+        table_digest(&repacked_view, TableId::Bindings),
+        "a lossless repack must not move the bindings"
+    );
+    // Physical identity: everything that says *where* the bytes live moved,
+    // which is what makes this a repack instead of a no-op.
+    for physical in [TableId::Placements, TableId::Objects, TableId::Frames] {
+        assert_ne!(
+            table_digest(&source_view, physical),
+            table_digest(&repacked_view, physical),
+            "{physical:?} must describe the new layout"
+        );
+    }
+    assert_ne!(source_seal, repacked_seal, "the seal object itself is new");
+
+    // Both views serve the same bytes, each verified against the same
+    // binding: the source from its own pack, the repack from the new one.
+    let objects = CountingSource::new(vec![
+        (PACK_ID, source_pack.clone()),
+        (REPACK_ID, repacked_pack.clone()),
+    ]);
+    let source_reader = SealReader::new(&source_view, &objects);
+    let repacked_reader = SealReader::new(&repacked_view, &objects);
+    // The repacked view first: it fetches one range per frame of the NEW pack
+    // and never touches the object the source view reads.
+    assert_eq!(
+        repacked_reader.read_block(SLICE, 0, BLOCK_SIZE).unwrap(),
+        block
+    );
+    assert_eq!(
+        objects.gets_for(&REPACK_ID),
+        2,
+        "one fetch per frame of the repacked object"
+    );
+    assert_eq!(
+        objects.gets_for(&PACK_ID),
+        0,
+        "the repacked view never re-reads the old object"
+    );
+    // The source view still reads its own object and serves the same bytes,
+    // so the repack left the published layout intact.
+    assert_eq!(
+        source_reader.read_block(SLICE, 0, BLOCK_SIZE).unwrap(),
+        block
+    );
+    assert_eq!(
+        objects.gets_for(&PACK_ID),
+        1,
+        "the source view still reads its own object"
+    );
+    assert_eq!(
+        objects.gets(),
+        3,
+        "two new-pack frames plus one old-object read, nothing else"
+    );
+
+    // The variant validator agrees with the seal: same logical identity, and
+    // the new space is booked on top of the untouched source rather than
+    // replacing it (spec 10 §9: no in-place repack, no net-space claim).
+    let logical = table_digest(&source_view, TableId::Bindings);
+    let candidate = table_digest(&repacked_view, TableId::Bindings);
+    let plan = validate_layout_variant(&LayoutVariantRequest {
+        source: LayoutIdentity {
+            logical_revision: logical,
+            binding_digest: logical,
+        },
+        candidate: LayoutIdentity {
+            logical_revision: candidate,
+            binding_digest: candidate,
+        },
+        source_objects: BTreeSet::from([PACK_ID]),
+        candidate_objects: BTreeSet::from([PACK_ID, REPACK_ID]),
+        source_bytes: source_seal.len() as u64,
+        candidate_new_bytes: repacked_seal.len() as u64,
+        max_extra_bytes: repacked_seal.len() as u64,
+        apply: true,
+        expected_view_matches: true,
+        head_has_visible_delta: false,
+        open_orphan_count: 0,
+        valid_writer_present: false,
+    })
+    .unwrap();
+    assert!(plan.permanent_objects.contains(&PACK_ID));
+    assert!(plan.added_objects.contains(&REPACK_ID));
+    assert_eq!(plan.permanent_bytes, plan.source_bytes + plan.added_bytes);
+
+    // The negative half: the declared binding is the real one, the placement
+    // decodes to different bytes.  Every frame is intact and the seal builds,
+    // so only a full decode can catch this -- and it does, on the content
+    // hash rather than on a frame checksum.
+    let mut tampered = block.clone();
+    tampered[0] ^= 0x5A;
+    let (tampered_first, tampered_second) = tampered.split_at(BLOCK_SIZE as usize / 2);
+    let (tampered_pack, tampered_scrubbed) = build_pack(vec![
+        PackFrame::plain_bytes(tampered_first).unwrap(),
+        PackFrame::plain_bytes(tampered_second).unwrap(),
+    ]);
+    let mut tampered_builder = SealBuilder::new(BLOCK_SIZE);
+    let tampered_ordinal = tampered_builder.next_object_ordinal();
+    tampered_builder.add_object(
+        tampered_ordinal,
+        object_ref(
+            REPACK_ID,
+            ObjectKind::DataPack.as_u8(),
+            &tampered_pack,
+            b"repack/tampered",
+        ),
+    );
+    let tampered_slots =
+        register_frames(&mut tampered_builder, &tampered_scrubbed, tampered_ordinal);
+    // The builder never re-reads the frames, so declaring the untampered
+    // binding here is exactly the "same binding, other bytes" case.
+    tampered_builder.add_binding(SLICE, 0, BlockBinding::of_decoded(&block));
+    tampered_builder.add_placement(
+        SLICE,
+        0,
+        BlockPlacement::Packed {
+            spans: vec![
+                span(0, tampered_first.len() as u32, tampered_slots[0], 0),
+                span(
+                    tampered_first.len() as u32,
+                    tampered_second.len() as u32,
+                    tampered_slots[1],
+                    0,
+                ),
+            ],
+        },
+    );
+    tampered_builder.validate().unwrap();
+    let tampered_seal = tampered_builder.build().unwrap();
+    let tampered_view = SealSnapshot::open(tampered_seal).unwrap();
+    let tampered_objects = CountingSource::new(vec![(REPACK_ID, tampered_pack)]);
+    let error = SealReader::new(&tampered_view, &tampered_objects)
+        .read_block(SLICE, 0, BLOCK_SIZE)
+        .unwrap_err();
+    assert!(
+        matches!(&error, SealError::Integrity(detail) if detail.contains("content hash mismatch")),
         "{error:?}"
     );
 }

@@ -951,6 +951,41 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07Z · lossless repack 保持逻辑身份（OPT-007/INV-10）
+
+工具链同 PR07P。本步**没有改动产品代码**：spec 10 §9 的“保持 BlockKey、decoded_len/content_hash、LogicalRevision”
+在 `lifecycle::variant::validate_layout_variant`（身份不等即拒绝）与 seal reader（整块读校验 binding 的 content_hash）
+里已经成立，缺的是把这两端钉在一次真实 repack 上的显式证据。因此在 `src/native_base/seal/tests.rs` 新增
+`lossless_repack_keeps_bindings_and_logical_revision`（含 `table_digest` 辅助函数）。
+
+核心证据：
+- 物理上真的是 repack：源布局是“整块 = 一个 Pack 的一个 frame、一个 span”，候选布局是“同一个块 = **新** Pack 的两个
+  frame、两个 span”。`TableId::Placements/Objects/Frames` 三张表在两侧的 digest 全部不同，seal 对象本身也不同。
+- 逻辑身份不变：`TableId::Bindings` 的 digest 两侧逐字节相同，即每个 `(slice_id, block_index)` 的
+  `decoded_len`/`content_hash` 未动——这是 seal 逻辑 revision 的定义面。
+- 内容一致且旧对象不受影响：候选视图读新 Pack（按 frame 各一次 range 取读，共 2 次），同一块字节与源视图一致；
+  候选视图对旧对象的 GET 计数为 0（既不重读也不改写），源视图随后仍能从自己的对象读出同样字节。
+- 变体记账一致（spec 10 §9）：用真实的 Bindings digest 作为 `LayoutIdentity` 交给 `validate_layout_variant`，
+  同一身份被接受，`permanent_objects` 含旧 Pack、`added_objects` 含新 Pack，`permanent_bytes == source_bytes +
+  added_bytes`，即新空间叠加在未改动的源之上、不报告净回收。
+- 反向用例（规范“不能只比较 frame checksum”）：故意 `add_binding` 声明**未篡改**块的 binding，却把 placement 指向
+  解码出**篡改后**字节的 frame。seal 的 `validate()`/`build()` 全部通过（结构、span 覆盖、frame/object 闭包都没问题，
+  且每个 frame 自身完好），读取仍在 `SealError::Integrity("block (7,0) content hash mismatch")` 处失败——证明校验是
+  对“解码后的整块”做的，而不是对 frame checksum 做的。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07Z-FOCUSED | `bash doc/native-base/logs/pr07z-lossless-repack.sh` | 0 | PASS（seal lossless_repack 1 passed/0 failed） | [pr07z-lossless-repack.log](logs/pr07z-lossless-repack.log) |
+| PR07Z-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07Z-OPT007 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::seal::tests::lossless_repack_keeps_bindings_and_logical_revision` | 0 | PASS（Bindings 不变、物理三表改变、旧对象 0 GET、变体记账、content-hash 反向拒绝） | 同上 |
+| PR07Z-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 981 + 730 passed；clippy/fmt/feature checks 全绿） | [pr07z-ci-gate.log](logs/pr07z-ci-gate.log) |
+
+范围说明（诚实）：本步是 **component-level** 的证据，不是一次真实的多 Pack 离线 repack 作业：测试里源/候选两个 seal 都是
+由 `SealBuilder` 在内存中构造的（块很小、单块、无压缩策略变化），没有覆盖多块/大 Pack 的构建成本、`--max-extra-bytes`
+预算下的真实构建、以及“显式 apply 与 expected StorageView 冲突”的并发路径（后者见 OPT-010 的既有条目）。
+按 spec 10 §9，本步只是证明“lossless 变体的逻辑身份不变、旧对象不被改写、校验靠完整解码”这一组契约；真实空间回收
+从来不是本版承诺（新旧依赖永久保留）。
+
 ### PR07Y · 逻辑迁移 roundtrip：源卷保留、属性与内容一致（REGRESS-003）
 
 工具链同 PR07P。改动集中在 `src/native_base/runtime/migration.rs`（新增 `MigrationReport` 与
