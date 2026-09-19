@@ -345,6 +345,60 @@ mod tests {
         ));
     }
 
+    /// REGRESS-002: a binary that cannot understand the volume refuses it
+    /// outright.  There is no fallback that reads a native volume as a flat
+    /// one, and every version a newer volume can move is refused per field.
+    #[tokio::test]
+    async fn an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback() {
+        let store = Arc::new(MemoryControlStore::new());
+        let header = NativeVolumeHeader::p1([1; 16], [2; 16]);
+        initialize_volume(&*store, "native", &header, all_capabilities())
+            .await
+            .unwrap();
+
+        // The older generation: a binary compiled without native support can
+        // read the header row, and admission still refuses the volume.
+        let older = NativeRuntimeCapabilities {
+            native_packed_base: false,
+            frozen_base_metadata: false,
+        };
+        assert!(matches!(
+            load_volume_header(&*store, "native", older).await,
+            Err(RuntimeAdmissionError::FeatureNotCompiled(
+                "native-packed-base"
+            ))
+        ));
+
+        // A capable binary meeting a newer volume: each moved field is
+        // refused by name instead of being interpreted loosely.
+        let mut newer = header.clone();
+        newer.schema_version += 1;
+        assert!(matches!(
+            newer.validate(all_capabilities()),
+            Err(RuntimeAdmissionError::UnsupportedSchemaVersion(_))
+        ));
+        let mut newer = header.clone();
+        newer.wire_major += 1;
+        assert!(matches!(
+            newer.validate(all_capabilities()),
+            Err(RuntimeAdmissionError::UnsupportedWireVersion { .. })
+        ));
+
+        // A volume that is not this format at all is refused as a foreign
+        // format -- never reinterpreted as a flat volume.
+        let mut foreign = header.clone();
+        foreign.volume_format = "workspace-flat-v1".into();
+        assert!(matches!(
+            foreign.validate(all_capabilities()),
+            Err(RuntimeAdmissionError::UnsupportedVolumeFormat(_))
+        ));
+
+        // The very same record is admitted by the matching binary, so the
+        // refusals above are about the reader and the version, not about a
+        // damaged header.
+        header.validate(all_capabilities()).unwrap();
+    }
+
     #[tokio::test]
     async fn namespace_cannot_escape_the_locator_prefix() {
         let store = MemoryControlStore::new();

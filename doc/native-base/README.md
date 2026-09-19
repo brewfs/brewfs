@@ -50,13 +50,15 @@ spec15 的 13 组 PR（06 拆 06A/06B，共 14 步）推进，每步工作流：
 | 07U | 单次请求一次有界且同代的 metadata 捕获：capture 中落入的提交不服务陈旧字节、dirty→committed 交接在提交确认后且回包丢失可重试、一次读跨多 chunk 复用同一 capture、metadata 持续变化/超时只在有界预算内重试（CONS-001/CONS-002/CONS-003/CONS-006） | 完成（[pr07u-capture-consistency.log](logs/pr07u-capture-consistency.log)） |
 | 07V | 失效租约与 authority 回滚下的私有状态收口：过期/被顶替的 lease 在注册与提交前 fence 且不写任何行、dispatch 中途失效时保护已落盘块、rollback 停止发布并清空 dirty/pending/inode 本地镜像、运行时 fsync 返回 LeaseFence 且 head 不动（CONS-004）；绕过本地门的另一写者被持久 head guard 拒绝、其上传受保护、重新派生 head 的写者仍可发布（CONS-005） | 完成（[pr07v-fenced-writer-rollback.log](logs/pr07v-fenced-writer-rollback.log)） |
 | 07W | 写路径的 copy-up 与持久化验收：GiB 文件首次 4096B 覆盖只读/写它替换的一个块（无前置复制）、跨 native block 的局部写只发布被覆盖两块的 fresh slice 且不重写其余基线、write 返回后的本地读与提交后读到同一字节（交接无 gap）、fsync 后清 cache 重挂（同 store/sink/baseline 新建 runtime）字节与 size 均一致且不新上传（WRITE-001/002/004/005） | 完成（[pr07w-write-path-durability.log](logs/pr07w-write-path-durability.log)） |
+| 07X | feature 关闭时的旧路径回归与版本准入拒绝：native 特性关闭配置下旧（flat/chunk）路径的整个 lib 套件在同一提交上通过（934 passed/0 failed/225 ignored），native 开/关两种配置的 check/build 由同一 gate 覆盖（REGRESS-001）；未编译 native 支持的旧二进制与 schema/wire/volume_format 前进的新卷都按名拒绝，且不存在把 native 卷当 flat 卷读的回退（REGRESS-002）；buffered/direct/mmap 三形态在 doc/native-base/known-gaps.md 记录为 KnownGap 而非 PASS（REGRESS-005） | 完成（REGRESS-001/002 PASS；REGRESS-005 记为 KnownGap，状态 NOT_RUN；[pr07x-compat-known-gaps.log](logs/pr07x-compat-known-gaps.log)） |
 | 07 | P1 FUSE 接入、初始化命令与运行时准入 | 组件级完成（`762aa76`；[pr07-focused.log](logs/pr07-focused.log)） |
 | 08/09 | Frozen reader、固定 revision 零 KV 读取 | 组件级完成（11 项聚焦测试；[pr07b-baseline-overlay.log](logs/pr07b-baseline-overlay.log)） |
 | 10/11/12 | 读取 planner、共享缓存 preview、布局变体 | 组件级完成（`762aa76`/`8bcb106`） |
 | 13 | 性能实验、能力发布与运维文档 | 未开始（A-F 全部 NOT_RUN） |
 
-当前验收进度（2026-09-19）：173 项矩阵中 **164 PASS**、9
-`SPECIFIED_NOT_IMPLEMENTED`（截至本提交）。每个 PASS 都附仓库内命令、
+当前验收进度（2026-09-19）：173 项矩阵中 **166 PASS**、6
+`SPECIFIED_NOT_IMPLEMENTED` 与 1 项 `NOT_RUN`（REGRESS-005 的 buffered/direct/mmap 形态按该项要求记录为
+KnownGap，见 [known-gaps.md](known-gaps.md)）（截至本提交）。每个 PASS 都附仓库内命令、
 exit code 与日志；缺环境或只做到组件级的项不虚标为完成。队列中的主要工作：
 真实 FUSE 挂载 + Redis/TiKV + S3 的 READ/WRITE/fsync 端到端集成、P2 Frozen
 COW/驱逐、P3 cache/repack 与性能 A-F，以及 cleanup/retention/ordered-commit
@@ -69,6 +71,8 @@ RET-021/CLN-024）；GATE-002/GATE-003 的 required_features 依赖闭包已由 
 COW 页复用与摘要扫描/重写计数已由 PR07P 收口（FROZEN-005/FROZEN-006/FROZEN-008）。writer lease 的 fence 语义、backend 时间判定与 durability 丢失边界已由 PR07S 收口（WRITE-007/KV-004/KV-005）：过期或被顶替的 lease 不签发 commit guard，fenced 写入前后整个卷命名空间快照相同（无部分 metadata），lease 有效性只认 backend 时钟（客户端时钟一律拒绝）、generation 先于时钟判定，四种 durability profile 分别报告 confirmed 与 may_be_lost 且 confirmed 必须是阶段前缀、未知持久化 code 拒绝。
 
 上传回执保护、chmod 与 rename 覆盖的写语义已由 PR07T 收口（WRITE-006/WRITE-010/WRITE-012）：数据对象与 receipts 已上传而 commit 事务失败时，operation 折叠为受保护 orphan receipt 并保持本域注册，cleaner 不能回收、resolve 后恰好释放一次；对 1 GiB 文件的 chmod 只写 attr/ 行且新增对象仅 receipts 控制容器，无文件类型位的裸权限位在准入即拒绝（不占用该 inode 的 mutation_order），内容提交对 attr 行做 check_bytes；rename 覆盖把源文件完整 extent 集（含 Hole）发布为目标内容，同一事务删除目标全部旧 extent，commit 的 durable_receipts 恰好覆盖全部被携带 block，同尺寸覆盖仍是整文件重发与版本 +1，缺段/重叠/短覆盖或手写的部分 ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。
+
+feature 关闭时的旧路径回归与版本准入拒绝已由 PR07X 收口（REGRESS-001/REGRESS-002）：把 brewfs 的整个 lib 套件放在 `--no-default-features --features fuse-tokio-runtime`（不含 native 代码的“旧二进制”配置）下运行，同一提交上仍是 934 passed/0 failed/225 ignored，说明 native 特性是纯增量、旧 flat/chunk 路径无回归，且 native 开/关两种配置的 `cargo check` 在同一 CI gate 内各自 exit 0。版本准入侧新增 `src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback`：未编译 native 支持的读者拿到 header 行后仍被 `FeatureNotCompiled("native-packed-base")` 拒绝；`schema_version` 与 `wire_major` 各前进一格分别以 `UnsupportedSchemaVersion` / `UnsupportedWireVersion` 按名拒绝；`volume_format` 不是本格式（`workspace-flat-v1`）以 `UnsupportedVolumeFormat` 拒绝——三者都发生在任何字节被读出之前，且没有任何“按 flat 卷解释”的回退；同一记录在能力匹配的二进制下 `validate` 通过，说明拒绝来自读者与版本而不是损坏的 header，并且该测试在 native 开启与关闭两种配置下都通过。buffered/direct/mmap 三种 FUSE 访问形态未在本环境验证（无真实挂载 + xfstests/LTP harness），因此按 REGRESS-005 的要求只在 `doc/native-base/known-gaps.md` 逐形态记录为 KnownGap（表现、为什么不是 PASS、记录位置、关闭条件），矩阵中没有任何一行把它们标成 PASS，REGRESS-005 保持 `NOT_RUN`。
 
 写路径的 copy-up 边界与持久化已由 PR07W 收口（WRITE-001/WRITE-002/WRITE-004/WRITE-005）：1 GiB 稀疏基线（不可变快照）上的首次 4096B 覆盖只从基线读取它替换的那一个块、只上传一个数据对象与其 receipts 容器并只发布一条 extent，文件长度与尾部基线都不动，因此没有前置 copy-up；跨 block 边界的 10B 局部写只读/只写被覆盖的两个 block（fresh slice 各自成 mutation），其余基线既不被读也不被重写；write 返回后 pending_count=1 且本地读立即返回 dirty 字节，fsync 后 pending_count=0 且读回同一字节，两轮交接后前一轮字节仍在，说明 dirty→committed 的交接点就是提交确认点；fsync 后清 cache 并用同一 store/sink/baseline 重建 runtime（重挂类比）时补丁、size 与 truncate 结果逐字节一致，且重挂过程中没有任何新上传。
 

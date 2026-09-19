@@ -951,6 +951,45 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07X · feature 关闭的旧路径回归、版本准入拒绝与 KnownGap 记录（REGRESS-001/002/005）
+
+工具链同 PR07P。本步只新增一个测试、一份 KnownGap 记录与一个证据脚本，**没有改动产品代码**：
+REGRESS-001 断言的是“native 特性关闭时旧路径不变”，REGRESS-002 断言的是既有准入拒绝
+（`RuntimeAdmissionError::FeatureNotCompiled` / `UnsupportedSchemaVersion` / `UnsupportedWireVersion` /
+`UnsupportedVolumeFormat`）已经覆盖“旧二进制读新卷”的形状，REGRESS-005 要求的是把 buffered/direct/mmap
+记录为 KnownGap 而不是标成 PASS。
+
+核心证据：
+- REGRESS-001：`cargo test -p brewfs --no-default-features --features fuse-tokio-runtime --lib` 在同一提交上
+  934 passed / 0 failed / 225 ignored，即旧（flat/chunk）路径可独立编译并通过自己的整套 lib 测试；native 开/关
+  两种配置的 `cargo check` 由同一 CI gate 覆盖（均 exit 0），因此 native 特性是纯增量而不是替换。
+- REGRESS-002：新增 `src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback`
+  （`NativeVolumeHeader::p1` + `MemoryControlStore`）：① 旧二进制（`native_packed_base: false`）读到 header 行后仍被
+  `FeatureNotCompiled("native-packed-base")` 拒绝；② `schema_version += 1` 与 `wire_major += 1` 分别以
+  `UnsupportedSchemaVersion(_)` / `UnsupportedWireVersion { .. }` 拒绝；③ `volume_format = "workspace-flat-v1"` 以
+  `UnsupportedVolumeFormat(_)` 拒绝，而不是被当作 flat 卷解释；④ 同一记录在 `all_capabilities()` 下 `validate` 通过，
+  证明上述拒绝来自读者与版本而不是损坏的 header。该测试在 native 开启与关闭两种配置下都通过。
+- REGRESS-005：新增 `doc/native-base/known-gaps.md`，逐形态（buffered page cache / direct O_DIRECT / mmap）给出表现、
+  为什么不是 PASS、记录位置与关闭条件，并明确本仓库没有任何一行把它们标为 PASS；形态本身的事实依据是 `AGENTS.md` 的
+  Known POSIX And FUSE Limitations（`generic/075` 默认排除、mmap 形状在 direct I/O 下 `ENODEV`、`iogen01` 留在 skip
+  list、post-reply invalidation 顺序实验会阻塞 `fsx`）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07X-FOCUSED | `bash doc/native-base/logs/pr07x-compat-known-gaps.sh` | 0 | PASS（focused 1 passed；feature-off header 5 passed；feature-off lib 934 passed/0 failed） | [pr07x-compat-known-gaps.log](logs/pr07x-compat-known-gaps.log) |
+| PR07X-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07X-REGRESS001 | `cargo test -p brewfs --no-default-features --features fuse-tokio-runtime --lib` | 0 | PASS（934 passed；0 failed；225 ignored） | 同上 |
+| PR07X-REGRESS002 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::header::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback` | 0 | PASS（1 passed；1261 filtered out） | 同上 |
+| PR07X-REGRESS002-OFF | `cargo test -p brewfs --no-default-features --features fuse-tokio-runtime --lib -- native_base::runtime::header::tests::` | 0 | PASS（5 passed；1154 filtered out） | 同上 |
+| PR07X-REGRESS005 | `grep -n 'generic/075\|iogen01\|ENODEV' AGENTS.md; grep -n 'KnownGap' doc/native-base/known-gaps.md` | 0 | PASS（KnownGap 记录存在且注明非 PASS） | [known-gaps.md](known-gaps.md) / 同上 |
+| PR07X-GATE | `bash doc/native-base/logs/ci-gate.sh` | 0 | PASS（workspace 980 + 730 passed；clippy/fmt/feature checks 全绿） | [pr07x-ci-gate.log](logs/pr07x-ci-gate.log) |
+
+范围说明（诚实）：REGRESS-005 在矩阵中保持 **`NOT_RUN`**，不是 PASS——本步交付的是“如实记录为 KnownGap”这件事，
+而不是 buffered/direct/mmap 形态本身通过：这三种形状需要真实 FUSE 挂载加 xfstests/LTP harness
+（`docker/compose-xfstests/`），本环境无法运行，关闭条件写在 `known-gaps.md`。REGRESS-001 的“无回归”是**测试套件
+层面**的证据（旧配置整套 lib 测试通过 + 两种配置 check 通过），不是字节级 dump 对比；REGRESS-002 是 component-level
+的准入证据，没有跑真实挂载下的跨版本卷。
+
 ### PR07W · 写路径 copy-up 边界、跨块 fresh slice 与重挂持久化（WRITE-001/002/004/005）
 
 工具链同 PR07P。本步**没有改动产品代码**：这四项的语义在 PR07J/PR07U 的运行时与 overlay 里已经成立，缺的是它们各自的显式验收证据。

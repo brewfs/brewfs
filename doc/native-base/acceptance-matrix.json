@@ -832,8 +832,8 @@
     "expected": "原格式字节/行为与CI无回归",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07x-compat-known-gaps.sh (exit 0) 与 ci-gate.sh (exit 0) —— 把 brewfs 的整个 lib 测试套件放在 feature 关闭配置下运行（cargo test -p brewfs --no-default-features --features fuse-tokio-runtime --lib）：934 passed / 0 failed / 225 ignored，即不含 native 代码的“旧二进制”配置下 flat/chunk 旧路径可独立编译并通过自己的整套测试；同一提交的 CI gate 另外对 native 开/关两种配置各跑一次 cargo check（-p brewfs --no-default-features --features fuse-tokio-runtime 与 --features native-packed-base 均 exit 0），并对 workspace 跑 build/test/clippy（980 + 730 passed）。因此 native 特性是纯增量的编译期开关，旧格式的字节与行为无回归。log: doc/native-base/logs/pr07x-compat-known-gaps.log, doc/native-base/logs/pr07x-ci-gate.log"
   },
   {
     "test_id": "REGRESS-002",
@@ -843,8 +843,8 @@
     "expected": "明确拒绝，不隐式flat解释",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07x-compat-known-gaps.sh (exit 0; focused 1 passed/0 failed) —— 新增 src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback：① 旧二进制（NativeRuntimeCapabilities { native_packed_base: false }）读取 header 行后仍被准入拒绝（RuntimeAdmissionError::FeatureNotCompiled(\"native-packed-base\")），不会退化成按 flat 卷读；② 新卷的 schema_version 前进一格以 UnsupportedSchemaVersion(_) 按名拒绝，wire_major 前进一格以 UnsupportedWireVersion { .. } 按名拒绝；③ volume_format 被改成 \"workspace-flat-v1\"（非本格式）以 UnsupportedVolumeFormat(_) 拒绝——三处都在任何字节被读出之前，不存在“隐式 flat 解释”的回退路径；④ 同一份记录在 all_capabilities() 下 validate() 通过，说明拒绝来自读者/版本而不是损坏的 header。该测试在 native 开启（--features native-packed-base）与关闭（--no-default-features --features fuse-tokio-runtime，header 模块 5 passed）两种配置下都通过。log: doc/native-base/logs/pr07x-compat-known-gaps.log, doc/native-base/logs/pr07x-ci-gate.log"
   },
   {
     "test_id": "REGRESS-003",
@@ -876,8 +876,8 @@
     "expected": "分别记录KnownGap不伪装PASS",
     "invariants": "INV-12",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "NOT_RUN",
+    "evidence": "NOT_RUN（不标 PASS）：buffered / direct(O_DIRECT) / mmap 三种 FUSE 访问形态需要真实 FUSE 挂载加 xfstests/LTP harness（docker/compose-xfstests/），本环境无法运行，因此三项形态本身没有被验证。本项要求的“分别记录为 KnownGap、不伪装 PASS”已如实落地：新增 doc/native-base/known-gaps.md，逐形态给出表现（generic/075 的 buffered mmap 在 truncate/extend 后暴露陈旧页缓存；direct I/O 无法运行 mmap 形状，返回 ENODEV，且 iogen01 仍留在默认 skip list；post-reply FUSE_NOTIFY_INVAL_INODE 顺序实验会让 fsx 永久阻塞在 request_wait_answer）、为什么不是 PASS、记录位置与关闭条件（重复的 generic/075 generic/014 无 D-state 且性能回归 <5%，以及 REGRESS-006 的 teardown 检查），并明确矩阵中没有任何一行把这三形态标成 PASS。证据文本由 pr07x-compat-known-gaps.sh 的 grep 段（AGENTS.md 的 generic/075 / iogen01 / ENODEV 与 known-gaps.md 的 KnownGap 行）验证。log: doc/native-base/logs/pr07x-compat-known-gaps.log"
   },
   {
     "test_id": "REGRESS-006",
