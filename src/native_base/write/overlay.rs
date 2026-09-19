@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use crate::chunk::compress::{Compression, encode_persisted_block};
 use crate::native_base::seal::{BlockBinding, NATIVE_LOOSE_KIND};
 use crate::native_base::wire::bnct::{
-    DomainKind, DomainState, HeadRef, NativeMutationResult, ObjectRegistration, OwnershipDomain,
+    DomainKind, DomainState, HeadRef, NativeMutationResult, OwnershipDomain,
 };
 use crate::native_base::wire::refs::{Hash32, ObjectId, ObjectRef, RootRef};
 
@@ -42,10 +42,12 @@ use super::domain::{
 };
 use super::error::WriteError;
 use super::keys::Keys;
+use super::orphan_receipt::{KvStep, MAX_ORPHAN_REASON, OrphanReceipt, record_orphan_receipt};
 use super::receipts::{
     MemorySink, ObjectSink, ReceiptEntry, ReceiptSet, build_receipts_container, object_key,
 };
-use super::records::{HeadPlacement, HeadState, InodeData, NativeExtent};
+use super::records::{HeadPlacement, HeadState, InodeAttributes, InodeData, NativeExtent};
+use super::replace::{Replacement, plan_rename_over};
 use super::store::{ControlStore, Txn};
 
 /// Fixed parameters of one overlay instance.
@@ -74,6 +76,30 @@ pub enum MutationSpec {
         offset: u64,
         len: u64,
     },
+    /// Metadata-only mutation (WRITE-010): no data object is created, no
+    /// extent row changes.
+    SetAttributes {
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        ctime_ns: i64,
+    },
+    /// WRITE-012: publish another inode's complete content as this inode's new
+    /// content (a temp file renamed over the destination).  The plan is built
+    /// at admission from the source's durable view and carries every one of
+    /// its blocks, so the replacement is application-complete and is never
+    /// reported as a minimal patch.
+    ReplaceInode {
+        source_inode: u64,
+    },
+}
+
+impl MutationSpec {
+    /// Whether accepting this mutation dirties a data range.  A metadata-only
+    /// mutation dirties nothing: a reader is never told to re-read bytes.
+    pub fn touches_data(&self) -> bool {
+        !matches!(self, MutationSpec::SetAttributes { .. })
+    }
 }
 
 /// The admission receipt handed back by [`WriteOverlay::accept`].
@@ -114,6 +140,10 @@ pub struct DrainReport {
     pub committed: Vec<NativeMutationResult>,
     pub failed: Vec<(Ticket, String)>,
     pub blocked: Vec<(Ticket, String)>,
+    /// Uploads that are durable but could not be committed: their receipt was
+    /// recorded in the protected orphan set so the cleaner cannot collect
+    /// objects no head references yet (WRITE-006).
+    pub orphaned: Vec<OrphanReceipt>,
 }
 
 /// Per-inode overlay state.
@@ -133,6 +163,8 @@ struct PendingOp {
     operation_id: [u8; 16],
     payload_digest: Hash32,
     spec: MutationSpec,
+    /// The plan of a rename-over, built at admission (WRITE-012).
+    replacement: Option<Arc<Replacement>>,
     state: OpState,
 }
 
@@ -149,17 +181,10 @@ enum OpState {
 
 #[derive(Debug)]
 struct UploadedState {
-    blocks: Vec<PreparedBlock>,
+    blocks: Vec<CommittedBlock>,
     receipts: Option<(RootRef, VerifiedObject)>,
-}
-
-#[derive(Debug, Clone)]
-struct PreparedBlock {
-    block_index: u64,
-    binding: BlockBinding,
-    placement: HeadPlacement,
-    object_ref: ObjectRef,
-    registration: ObjectRegistration,
+    /// Set for a rename-over: the carried extents the commit publishes.
+    replacement: Option<Arc<Replacement>>,
 }
 
 /// The write overlay.
@@ -178,6 +203,10 @@ struct OverlayState {
     next_dirty_generation: u64,
     baseline_sizes: HashMap<u64, u64>,
     inodes: HashMap<u64, InodeOverlay>,
+    /// Every object this overlay put to the sink, in upload order.  Upload
+    /// observability: a metadata-only mutation must add only its control
+    /// object, never a data block (WRITE-010).
+    uploaded_objects: Vec<ObjectId>,
 }
 
 /// Create the head row for a fresh workspace (absent-else-validate) and
@@ -324,6 +353,40 @@ impl WriteOverlay {
                 )));
             }
         }
+        // WRITE-010: a chmod carries a full `st_mode`.  A bare permission mask
+        // is refused here, before it takes a mutation order: a rejected input
+        // must not poison the inode's ordering watermark for every successor.
+        if let MutationSpec::SetAttributes { mode, .. } = &spec {
+            InodeAttributes {
+                mode: *mode,
+                uid: 0,
+                gid: 0,
+                rdev: 0,
+                ctime_ns: 0,
+            }
+            .validate()
+            .map_err(|error| WriteError::Record(format!("invalid inode attributes: {error}")))?;
+        }
+
+        // WRITE-012: a rename-over is planned before it takes a mutation order.
+        // A source that cannot be published completely (missing binding,
+        // placement or registration) must be refused here, not after it has
+        // consumed a slot the inode's successors depend on.
+        let replacement = match &spec {
+            MutationSpec::ReplaceInode { source_inode } => Some(Arc::new(
+                plan_rename_over(
+                    &*self.store,
+                    &self.keys,
+                    &self.params.workspace_id,
+                    &self.params.domain_id,
+                    *source_inode,
+                    inode,
+                    self.params.block_size,
+                )
+                .await?,
+            )),
+            _ => None,
+        };
 
         // Load the durable view before locking (first touch of an inode
         // must continue the committed ordering watermark).
@@ -362,20 +425,29 @@ impl WriteOverlay {
         entry.next_mutation_order += 1;
         let mutation_order = entry.next_mutation_order;
 
-        let (offset, len) = dirty_range(&spec, entry.data.size);
-        entry.dirty.push(Arc::new(DirtyExtent {
-            ticket: ticket_no,
-            inode,
-            offset,
-            len,
-            generation,
-        }));
+        let (offset, len) = match &replacement {
+            // A replacement republishes the whole file: every byte the
+            // destination can currently read is stale afterwards, so the dirty
+            // range is the union of both versions, never a delta.
+            Some(plan) => (0, plan.size.max(entry.data.size)),
+            None => dirty_range(&spec, entry.data.size),
+        };
+        if spec.touches_data() {
+            entry.dirty.push(Arc::new(DirtyExtent {
+                ticket: ticket_no,
+                inode,
+                offset,
+                len,
+                generation,
+            }));
+        }
         entry.pending.push_back(PendingOp {
             ticket: ticket_no,
             mutation_order,
             operation_id,
-            payload_digest: payload_digest(&spec),
+            payload_digest: payload_digest(&spec, replacement.as_deref()),
             spec,
+            replacement,
             state: OpState::Accepted,
         });
 
@@ -443,9 +515,30 @@ impl WriteOverlay {
                     ticket.admission_ticket
                 )));
             }
+            // WRITE-012: a rename-over uploads nothing — its blocks are already
+            // durable under the source's slice.  The plan built at admission is
+            // the complete payload, and the receipts completion step still has
+            // to attest every one of its blocks.
+            if matches!(op.spec, MutationSpec::ReplaceInode { .. }) {
+                let Some(plan) = op.replacement.clone() else {
+                    return Err(WriteError::Record(format!(
+                        "ticket {} is a rename-over without a plan",
+                        ticket.admission_ticket
+                    )));
+                };
+                op.state = OpState::Uploaded(Box::new(UploadedState {
+                    blocks: plan.flattened_blocks(),
+                    receipts: None,
+                    replacement: Some(plan),
+                }));
+                return Ok(());
+            }
             match &op.spec {
                 MutationSpec::Write { data, .. } => Some(data.clone()),
-                MutationSpec::Truncate { .. } | MutationSpec::PunchHole { .. } => None,
+                MutationSpec::Truncate { .. }
+                | MutationSpec::PunchHole { .. }
+                | MutationSpec::SetAttributes { .. }
+                | MutationSpec::ReplaceInode { .. } => None,
             }
         };
 
@@ -462,6 +555,7 @@ impl WriteOverlay {
             op.state = OpState::Uploaded(Box::new(UploadedState {
                 blocks: Vec::new(),
                 receipts: None,
+                replacement: None,
             }));
             return Ok(());
         };
@@ -492,7 +586,8 @@ impl WriteOverlay {
                 .put(&object_ref, &framed)
                 .await
                 .map_err(|error| WriteError::Object(error.to_string()))?;
-            prepared.push(PreparedBlock {
+            self.record_upload(object_ref.object_id).await;
+            prepared.push(CommittedBlock {
                 block_index: block_index as u64,
                 binding: BlockBinding::of_decoded(content),
                 placement: HeadPlacement::loose(object_id),
@@ -511,6 +606,7 @@ impl WriteOverlay {
         op.state = OpState::Uploaded(Box::new(UploadedState {
             blocks: prepared,
             receipts: None,
+            replacement: None,
         }));
         Ok(())
     }
@@ -574,6 +670,7 @@ impl WriteOverlay {
             .put(&built.root.object, &built.bytes)
             .await
             .map_err(|error| WriteError::Object(error.to_string()))?;
+        self.record_upload(built.root.object.object_id).await;
 
         let mut state = self.state.lock().await;
         let inode_state = state.inodes.get_mut(&ticket.inode).unwrap();
@@ -671,17 +768,7 @@ impl WriteOverlay {
                             logical_offset: *offset,
                             logical_len: data.len() as u64,
                             slice_id: slice_id_for(&front.operation_id),
-                            blocks: uploaded
-                                .blocks
-                                .iter()
-                                .map(|b| CommittedBlock {
-                                    block_index: b.block_index,
-                                    binding: b.binding.clone(),
-                                    placement: b.placement.clone(),
-                                    object_ref: b.object_ref.clone(),
-                                    registration: b.registration.clone(),
-                                })
-                                .collect(),
+                            blocks: uploaded.blocks.clone(),
                         },
                         MutationSpec::Truncate { new_size } => Mutation::Truncate {
                             new_size: *new_size,
@@ -690,6 +777,30 @@ impl WriteOverlay {
                             offset: *offset,
                             len: *len,
                         },
+                        MutationSpec::SetAttributes {
+                            mode,
+                            uid,
+                            gid,
+                            ctime_ns,
+                        } => Mutation::SetAttributes {
+                            mode: *mode,
+                            uid: *uid,
+                            gid: *gid,
+                            ctime_ns: *ctime_ns,
+                        },
+                        MutationSpec::ReplaceInode { source_inode } => {
+                            let Some(plan) = &uploaded.replacement else {
+                                return Err(WriteError::Record(format!(
+                                    "rename-over operation {:02x?} lost its plan",
+                                    front.operation_id
+                                )));
+                            };
+                            Mutation::ReplaceInode {
+                                source_inode: *source_inode,
+                                logical_size: plan.size,
+                                carried: plan.carried.clone(),
+                            }
+                        }
                     };
                     CommitRequest {
                         operation_id: front.operation_id,
@@ -746,17 +857,66 @@ impl WriteOverlay {
                                 state = self.refresh_state(inode).await?;
                             }
                             Err(err) => {
+                                let err = self
+                                    .protect_failed_upload(
+                                        &state,
+                                        inode,
+                                        ticket_no,
+                                        err,
+                                        &mut report,
+                                    )
+                                    .await;
                                 self.mark_failed(&mut state, inode, ticket_no, err);
                             }
                         }
                     }
                     Err(err) => {
+                        let err = self
+                            .protect_failed_upload(&state, inode, ticket_no, err, &mut report)
+                            .await;
                         self.mark_failed(&mut state, inode, ticket_no, err);
                     }
                 }
             }
         }
         Ok(report)
+    }
+
+    /// Protect a failed operation's durable upload, folding a protection
+    /// failure into the reported reason: a failure to protect must never be
+    /// silent, because it would leave live objects collectable.
+    async fn protect_failed_upload(
+        &self,
+        state: &OverlayState,
+        inode: u64,
+        ticket_no: u64,
+        err: WriteError,
+        report: &mut DrainReport,
+    ) -> WriteError {
+        match self
+            .protect_uncommitted_upload(state, inode, ticket_no, &err)
+            .await
+        {
+            Ok(Some(receipt)) => {
+                report.orphaned.push(receipt);
+                err
+            }
+            Ok(None) => err,
+            Err(protection) => WriteError::Record(format!(
+                "{err}; protecting the uploaded objects failed: {protection}"
+            )),
+        }
+    }
+
+    async fn record_upload(&self, object_id: ObjectId) {
+        self.state.lock().await.uploaded_objects.push(object_id);
+    }
+
+    /// Every object this overlay has uploaded, in upload order.  A
+    /// metadata-only mutation adds exactly one control object here and no data
+    /// block (WRITE-010).
+    pub async fn uploaded_object_ids(&self) -> Vec<ObjectId> {
+        self.state.lock().await.uploaded_objects.clone()
     }
 
     /// Hand off exactly this operation's dirty references — never a range
@@ -787,6 +947,67 @@ impl WriteOverlay {
                     OpState::Blocked(format!("predecessor ticket {ticket_no} failed: {reason}"));
             }
         }
+    }
+
+    /// WRITE-006: a durable upload whose commit failed has objects that no head
+    /// references yet.  Record their receipt in the protected orphan set
+    /// before the failure is reported, so a cleaner cannot collect live data
+    /// and the upload stays auditable until it is resolved.
+    async fn protect_uncommitted_upload(
+        &self,
+        state: &OverlayState,
+        inode: u64,
+        ticket_no: u64,
+        err: &WriteError,
+    ) -> Result<Option<OrphanReceipt>, WriteError> {
+        // The upload itself failed: nothing durable exists to protect.
+        if matches!(err, WriteError::Object(_)) {
+            return Ok(None);
+        }
+        let Some(inode_state) = state.inodes.get(&inode) else {
+            return Ok(None);
+        };
+        let Some(op) = inode_state.pending.iter().find(|op| op.ticket == ticket_no) else {
+            return Ok(None);
+        };
+        let OpState::Uploaded(uploaded) = &op.state else {
+            return Ok(None);
+        };
+        // The receipts container is what makes the upload auditable; without it
+        // the data blocks are still durable, so both cases are protected.
+        let (step, receipts_root, receipts_object) = match &uploaded.receipts {
+            Some((root, registration)) => (
+                KvStep::Commit,
+                Some(root.clone()),
+                Some(registration.object_ref.clone()),
+            ),
+            None if !uploaded.blocks.is_empty() => (KvStep::DataUploaded, None, None),
+            None => return Ok(None),
+        };
+        let mut objects: Vec<ObjectRef> = uploaded
+            .blocks
+            .iter()
+            .map(|block| block.object_ref.clone())
+            .collect();
+        if let Some(object) = receipts_object {
+            objects.push(object);
+        }
+        let mut reason = err.to_string();
+        reason.truncate(MAX_ORPHAN_REASON);
+        let receipt = OrphanReceipt::after_kv_failure(
+            op.operation_id,
+            self.params.workspace_id,
+            self.params.domain_id,
+            step,
+            reason,
+            receipts_root,
+            objects,
+        )?;
+        let Some(receipt) = receipt else {
+            return Ok(None);
+        };
+        record_orphan_receipt(&*self.store, &self.keys, &receipt).await?;
+        Ok(Some(receipt))
     }
 
     /// Number of operations for `inode` that have not reached a terminal
@@ -967,10 +1188,15 @@ fn dirty_range(spec: &MutationSpec, committed_size: u64) -> (u64, u64) {
             }
         }
         MutationSpec::PunchHole { offset, len } => (*offset, *len),
+        // Metadata only: nothing to hand off to a reader.
+        MutationSpec::SetAttributes { .. } => (0, 0),
+        // A replacement invalidates the whole current file; the caller widens
+        // this to the published size, which it knows from the plan.
+        MutationSpec::ReplaceInode { .. } => (0, committed_size),
     }
 }
 
-fn payload_digest(spec: &MutationSpec) -> Hash32 {
+fn payload_digest(spec: &MutationSpec, replacement: Option<&Replacement>) -> Hash32 {
     let mut hasher = Sha256::new();
     match spec {
         MutationSpec::Write { offset, data } => {
@@ -987,6 +1213,38 @@ fn payload_digest(spec: &MutationSpec) -> Hash32 {
             hasher.update(b"punch");
             hasher.update(offset.to_be_bytes());
             hasher.update(len.to_be_bytes());
+        }
+        MutationSpec::SetAttributes {
+            mode,
+            uid,
+            gid,
+            ctime_ns,
+        } => {
+            hasher.update(b"attributes");
+            hasher.update(mode.to_be_bytes());
+            hasher.update(uid.to_be_bytes());
+            hasher.update(gid.to_be_bytes());
+            hasher.update(ctime_ns.to_be_bytes());
+        }
+        // The digest names the published content, not just the intent: two
+        // rename-overs of the same source at different head states must not
+        // collide with the same payload (WRITE-012).
+        MutationSpec::ReplaceInode { source_inode } => {
+            hasher.update(b"replace");
+            hasher.update(source_inode.to_be_bytes());
+            if let Some(plan) = replacement {
+                hasher.update(plan.size.to_be_bytes());
+                for item in &plan.carried {
+                    hasher.update(item.logical_offset.to_be_bytes());
+                    hasher.update(item.extent.logical_len.to_be_bytes());
+                    hasher.update(item.extent.slice_id);
+                    hasher.update(item.extent.first_block.to_be_bytes());
+                    hasher.update(item.extent.block_count.to_be_bytes());
+                    for block in &item.blocks {
+                        hasher.update(block.object_ref.object_id);
+                    }
+                }
+            }
         }
     }
     hasher.finalize().into()

@@ -282,8 +282,8 @@
     "expected": "receipt进入受保护orphan",
     "invariants": "INV-11",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07t-write-receipts-attributes-replace.sh (exit 0; focused 1 passed/0 failed): a_kv_failure_after_a_successful_upload_protects_the_receipt —— 数据对象与 receipts 容器已上传、commit 事务失败时，该 operation 被折叠成受保护 orphan receipt（step=Commit，成败前后 objects=2 数据块 + 1 receipts 根，reason 记录 KV 失败原因），每个受保护对象仍在本域注册且状态为 Dispatched/Verified，因此 cleaner 无法回收；receipt 可编码/解码/校验并按 digest 幂等写入、resolve 后恰好移出受保护集合一次；上传之前就失败的 KV 步骤不保护任何对象。log: doc/native-base/logs/pr07t-write-receipts-attributes-replace.log"
   },
   {
     "test_id": "WRITE-007",
@@ -326,8 +326,8 @@
     "expected": "仅metadata变化，无dataPUT",
     "invariants": "INV-09",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07t-write-receipts-attributes-replace.sh (exit 0; focused 1 passed/0 failed): chmod_on_a_large_file_changes_metadata_and_uploads_no_data —— 对 1 GiB 文件 chmod 只写 attr/ 行：前后快照中新增 key 全部不是数据路径（ext/bnd/plc 计数为 0），size、data_version+1 之外的 extent 行逐条相同，slice/placement 未变；新增对象只有 receipts 控制容器（kind=FrozenMetadata，非 loose 数据对象），uploaded_object_ids 增量恰为 1；time 与 uid/gid 按请求字节写入且 rdev 归零；无文件类型位的裸权限位在准入即被拒（不占用该 inode 的 mutation_order），内容变更提交会对 attr 行做 check_bytes，不会覆盖并发 chmod。log: doc/native-base/logs/pr07t-write-receipts-attributes-replace.log"
   },
   {
     "test_id": "WRITE-011",
@@ -348,8 +348,8 @@
     "expected": "遵循应用完整写语义，不虚称最小patch",
     "invariants": "INV-02",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07t-write-receipts-attributes-replace.sh (exit 0; focused 1 passed/0 failed): rename_over_publishes_the_complete_file_and_never_a_patch —— rename 覆盖后目标 inode 的 extent 集合与源逐条相同（含 Hole），size=data 与 hole 合计，data_version/committed_order 各 +1，原 offset=64 的数据 extent 行被同事务删除（不残留旧字节），目标引用对象集合等于源、与自身旧对象不相交；commit 的 durable_receipts 容器解出条目恰好覆盖全部被携带 block（含 domain 归属），证明是应用完整发布；同尺寸（内容相同）再次覆盖仍整体重发并再次 +1 data_version，changed_ranges 恒为整文件 (0,size)，手写的“缺一段”ReplaceInode 在提交边界被拒且卷命名空间逐字节不变。同时 replace::tests 覆盖覆盖律（gap/overlap/短覆盖/零长一律拒绝）。log: doc/native-base/logs/pr07t-write-receipts-attributes-replace.log"
   },
   {
     "test_id": "WRITE-013",

@@ -951,6 +951,50 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07T · 上传回执保护、chmod 元数据专用路径与 rename 覆盖（WRITE-006/010/012）
+
+工具链同 PR07P。新增实现位于 `src/native_base/write/orphan_receipt.rs` 与 `src/native_base/write/replace.rs`
+（`write/mod.rs` 导出），`write/records.rs` 增加 `InodeAttributes`，`write/keys.rs` 增加 `attr/` 与 `ufo/` 记录键，
+`write/commit.rs`/`write/overlay.rs` 扩展 `Mutation`/`MutationSpec`，`write/tests.rs` 增加 store-agnostic 场景并登记到
+memory/redis/tikv 三个 lists。
+
+核心组件：
+- `OrphanReceipt`（`orphan_receipt.rs`）：`after_kv_failure` 只在确有持久化对象（数据块或 receipts 根）时产出 receipt，
+  记录 OperationId / workspace / domain / `KvStep` / 截断后的原因 / receipts 根 / 全部对象；`plan_collection` +
+  `ensure_not_collected` 让 cleaner 无法回收未提交对象的任何字节，`resolve_orphan_receipt` 只在状态允许时把它移出受保护集合
+  且恰好一次，`record_orphan_receipt` 按 digest 幂等写入 `ufo/<operation_id>`（WRITE-006）。
+- `WriteOverlay` 的 drain 失败路径：commit 事务失败或重试后仍失败时，`protect_uncommitted_upload` 把该 operation 折叠为受保护
+  orphan receipt（`DrainReport.orphaned`），并保证“保护失败”不会被静默吞掉。回归测试用故障注入 store（拦截含 `mut/`
+  写入的事务）走真实 overlay 路径（WRITE-006）。
+- `InodeAttributes`（`records.rs`）：`mode/uid/gid/rdev/ctime_ns` 独立成 `attr/<workspace>/<inode>` 行，`validate()` 要求
+  `mode` 必须带文件类型位，`permissions()` 只取低 12 位；`Mutation::SetAttributes` 不携带任何 block、`planned_size` 返回
+  `None`（不是 0），因此 metadata-only 变更不可能顺手改 size 或 extent（WRITE-010）。
+- commit 侧：属性行与内容变更的并发冲突用 `check_bytes`/`check_absent` 显式表达（内容提交会锁住 attr 行），
+  非法 mode 在 `plan_mutation` 再次校验；准入侧在分配 `mutation_order` 之前就拒绝裸权限位，
+  避免一个被拒输入毒化该 inode 的后续顺序槽（WRITE-010）。
+- `Replacement`（`replace.rs`）：`plan_rename_over` 读源/目标两个 view，要求源有持久记录、每个 data extent 的
+  `block_count` 与长度自洽，并把每个 block 通过 `bnd/`、`plc/`、`obj/` 解析成携带用的 `CommittedBlock`；
+  `cover_whole_file` 要求新 extent 集合无缝隙、无重叠、无零长且恰好铺满 `[0, size)`——缺一段就会让目标残留旧字节，
+  因此一律拒绝。`changed_ranges()` 恒为整文件 `(0, size)`，`is_application_complete()` 恒真：rename 覆盖没有
+  “最小 patch” 形式，即使两侧同尺寸同内容也一样（WRITE-012）。
+- commit 侧 `Mutation::ReplaceInode`：同一事务删除目标全部旧 extent 行（逐行 `check_bytes`）、写入完整携带集合、
+  对每个携带 block 的 `bnd/`/`plc/` 行做 compare-then-put、把所有携带 block 纳入 registration 校验与
+  `durable_receipts`；`planned_size` 返回完整新 size（对比 `SetAttributes` 的 `None`），因此同尺寸覆盖仍会 +1 `data_version`。
+  行为测试断言：目标 extent 集合与源逐条相同（含 Hole）、旧 `ext64` 行消失、目标引用对象 = 源对象且与自身旧对象不相交、
+  receipts 解出的条目恰好覆盖全部携带对象、源 inode 完全不变；手写的“缺一段”`ReplaceInode` 在提交边界被拒且整卷快照不变。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07T-FOCUSED | `bash doc/native-base/logs/pr07t-write-receipts-attributes-replace.sh` | 0 | PASS（write 41 passed/0 failed，每 ID 1 passed + replace 单测 4 passed） | [pr07t-write-receipts-attributes-replace.log](logs/pr07t-write-receipts-attributes-replace.log) |
+| PR07T-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07T-WRITE006 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests::orphan_protection::a_kv_failure_after_a_successful_upload_protects_the_receipt` | 0 | PASS（故障注入 store，走真实 overlay drain 路径） | 同上 |
+| PR07T-WRITE010 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests::memory_backend::chmod_on_a_large_file_changes_metadata_and_uploads_no_data` | 0 | PASS（场景与 memory/redis/tikv 共享） | 同上 |
+| PR07T-WRITE012 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests::memory_backend::rename_over_publishes_the_complete_file_and_never_a_patch` | 0 | PASS（场景与 memory/redis/tikv 共享） | 同上 |
+| PR07T-REPLACE-UNIT | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::replace::tests` | 0 | PASS（4 passed：覆盖律 gap/overlap/短覆盖/零长一律拒绝、patch 形式不存在） | 同上 |
+
+范围说明（诚实）：rename 覆盖目前发布的是**内容与大小**（extent 集合 + size + data_version），目标 inode 的属性行保持不变
+（POSIX rename 替换的是名字而不是 inode 归属）；源 inode 的删除仍由 VFS/lifecycle 侧负责，本轮没有把 unlink 与 replace 合并成一个事务。
+rename 覆盖不产生新的数据 PUT（对象已按内容寻址持久化在源 slice 下），但 receipts 会逐个证明这些对象，因此“零上传”不等于“空发布”。
 ### PR07S · writer lease fence、backend lease time 与 durability 边界
 
 工具链同 PR07P。新增实现位于 `src/native_base/write/lease.rs`（`write/mod.rs` 导出），`write/error.rs` 增加 `LeaseFence` 变体，

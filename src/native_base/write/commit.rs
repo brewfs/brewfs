@@ -40,7 +40,9 @@ use super::domain::{HeadGuard, decode_domain, decode_registration};
 use super::error::WriteError;
 use super::keys::Keys;
 use super::receipts::stable_error_text;
-use super::records::{ExtentKind, HeadPlacement, HeadState, InodeData, NativeExtent};
+use super::records::{
+    ExtentKind, HeadPlacement, HeadState, InodeAttributes, InodeData, NativeExtent,
+};
 use super::store::{ControlStore, Txn};
 
 /// One committed block of a data mutation.
@@ -74,6 +76,43 @@ pub enum Mutation {
         offset: u64,
         len: u64,
     },
+    /// Metadata-only mutation (WRITE-010): ownership/permission attributes
+    /// change while every extent row, the size and every data object stay
+    /// exactly as they were.  It carries no blocks by construction, so a
+    /// `chmod` on a GiB file cannot become a data rewrite.
+    SetAttributes {
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        ctime_ns: i64,
+    },
+    /// A complete replacement of this inode's content (WRITE-012: a temp file
+    /// renamed over the destination).  It names the *whole* new extent set and
+    /// removes every extent the destination had in the same transaction, so it
+    /// is not a delta and can never be reported as a minimal patch.
+    ReplaceInode {
+        source_inode: u64,
+        logical_size: u64,
+        carried: Vec<CarriedExtent>,
+    },
+}
+
+impl Mutation {
+    /// Whether this mutation can change file content.  A metadata-only
+    /// mutation must not allocate a slice, upload a block or dirty a range.
+    pub fn touches_data(&self) -> bool {
+        !matches!(self, Mutation::SetAttributes { .. })
+    }
+}
+
+/// One carried extent of a rename-over: the destination adopts the source's
+/// extent verbatim (same slice, same block indices, same objects) at the same
+/// logical offset.
+#[derive(Debug, Clone)]
+pub struct CarriedExtent {
+    pub logical_offset: u64,
+    pub extent: NativeExtent,
+    pub blocks: Vec<CommittedBlock>,
 }
 
 /// One object the commit verifies and flips to `Verified`, beyond the
@@ -332,6 +371,11 @@ pub async fn commit_uploaded_slice(
 
     let view = read_inode_view(store, keys, &guard.workspace_id, req.inode).await?;
 
+    // The attribute row this commit replaces (checked against its captured
+    // bytes below, so a concurrent chmod is a conflict, not a lost update).
+    let attributes_key = keys.inode_attributes(&guard.workspace_id, req.inode);
+    let previous_attributes = store.get(&attributes_key).await?;
+
     // --- The per-inode ordering gate (spec 18 §10).
     if req.mutation_order != view.data.committed_order + 1 {
         return Err(WriteError::OutOfOrder(format!(
@@ -378,8 +422,16 @@ pub async fn commit_uploaded_slice(
 
     // Verified objects: per-block registrations plus the receipts container.
     let mut block_objects: Vec<&CommittedBlock> = Vec::new();
-    if let Mutation::Write { blocks, .. } = &req.mutation {
-        block_objects.extend(blocks.iter());
+    match &req.mutation {
+        Mutation::Write { blocks, .. } => block_objects.extend(blocks.iter()),
+        // A rename-over carries the source's blocks: they are already durable,
+        // but the destination's commit depends on them just as a write does, so
+        // they are verified and attested exactly like an upload (WRITE-012).
+        Mutation::ReplaceInode { carried, .. } => {
+            block_objects.extend(carried.iter().flat_map(|extent| extent.blocks.iter()))
+        }
+        Mutation::Truncate { .. } | Mutation::PunchHole { .. } | Mutation::SetAttributes { .. } => {
+        }
     }
     let mut all_objects: Vec<(
         crate::native_base::wire::refs::ObjectRef,
@@ -453,34 +505,93 @@ pub async fn commit_uploaded_slice(
         );
     }
 
+    // WRITE-010: attributes are their own row.  A metadata-only mutation
+    // writes exactly this row (plus the head and the result), never an extent,
+    // a binding, a placement or a data object.
+    let attributes_key = keys.inode_attributes(&guard.workspace_id, req.inode);
+    match &req.mutation {
+        Mutation::SetAttributes {
+            mode,
+            uid,
+            gid,
+            ctime_ns,
+        } => {
+            let attributes = InodeAttributes {
+                mode: *mode,
+                uid: *uid,
+                gid: *gid,
+                rdev: 0,
+                ctime_ns: *ctime_ns,
+            };
+            attributes.validate()?;
+            txn = match previous_attributes.clone() {
+                Some(bytes) => txn.check_bytes(attributes_key.clone(), bytes),
+                None => txn.check_absent(attributes_key.clone()),
+            };
+            txn = txn.put(attributes_key, attributes.encode());
+        }
+        _ => {
+            // A content mutation leaves ownership/permission attributes alone.
+            if let Some(bytes) = previous_attributes.clone() {
+                txn = txn.check_bytes(attributes_key, bytes);
+            }
+        }
+    }
+
     // Bindings and placements.
-    if let Mutation::Write {
-        logical_offset,
-        logical_len,
-        slice_id,
-        blocks,
-    } = &req.mutation
-    {
-        if logical_len / req.block_size != blocks.len() as u64 {
-            return Err(WriteError::Record(format!(
-                "write of {logical_len} bytes at block size {} needs {} blocks, got {}",
-                req.block_size,
-                logical_len / req.block_size,
-                blocks.len()
-            )));
+    match &req.mutation {
+        Mutation::Write {
+            logical_offset,
+            logical_len,
+            slice_id,
+            blocks,
+        } => {
+            if logical_len / req.block_size != blocks.len() as u64 {
+                return Err(WriteError::Record(format!(
+                    "write of {logical_len} bytes at block size {} needs {} blocks, got {}",
+                    req.block_size,
+                    logical_len / req.block_size,
+                    blocks.len()
+                )));
+            }
+            for block in blocks {
+                txn = txn
+                    .put(
+                        keys.binding(slice_id, block.block_index),
+                        block.binding.encode(),
+                    )
+                    .put(
+                        keys.placement(slice_id, block.block_index),
+                        block.placement.encode(),
+                    );
+            }
+            let _ = logical_offset; // validated in plan_mutation
         }
-        for block in blocks {
-            txn = txn
-                .put(
-                    keys.binding(slice_id, block.block_index),
-                    block.binding.encode(),
-                )
-                .put(
-                    keys.placement(slice_id, block.block_index),
-                    block.placement.encode(),
-                );
+        Mutation::ReplaceInode { carried, .. } => {
+            // The carried rows already exist because the source committed
+            // them.  Re-asserting the identical bytes, each guarded by a
+            // compare against the value this commit was planned from, keeps
+            // the replacement self-contained: the destination never names a
+            // binding or placement the transaction did not confirm.
+            for item in carried {
+                if item.extent.kind != ExtentKind::Data {
+                    continue;
+                }
+                for block in &item.blocks {
+                    let binding_key = keys.binding(&item.extent.slice_id, block.block_index);
+                    let binding = block.binding.encode();
+                    let placement_key = keys.placement(&item.extent.slice_id, block.block_index);
+                    let placement = block.placement.encode();
+                    txn = txn
+                        .check_bytes(binding_key.clone(), binding.clone())
+                        .put(binding_key, binding)
+                        .check_bytes(placement_key.clone(), placement.clone())
+                        .put(placement_key, placement);
+                }
+            }
         }
-        let _ = logical_offset; // validated in plan_mutation
+        Mutation::Truncate { .. } | Mutation::PunchHole { .. } | Mutation::SetAttributes { .. } => {
+        }
     }
 
     // Inode row, mutation result, head advance.
@@ -582,6 +693,13 @@ fn planned_size(mutation: &Mutation, view: &InodeView, baseline_size: u64) -> Op
         } => Some(current_size.max(logical_offset + logical_len)),
         Mutation::Truncate { new_size } => Some(*new_size),
         Mutation::PunchHole { .. } => Some(current_size),
+        // A metadata-only mutation never changes the logical size.
+        Mutation::SetAttributes { .. } => None,
+        // A rename-over always states the full new size, even when it happens
+        // to equal the current one: a same-size replacement is still a new
+        // file version, never an "unchanged" (patch-shaped) claim
+        // (WRITE-012).
+        Mutation::ReplaceInode { logical_size, .. } => Some(*logical_size),
     }
 }
 
@@ -677,5 +795,69 @@ fn plan_mutation(
                 block_size,
             ))
         }
+        Mutation::SetAttributes { mode, .. } => {
+            // Validated here as well as at the record layer: a malformed mode
+            // must never be committed as an inode type.
+            InodeAttributes {
+                mode: *mode,
+                uid: 0,
+                gid: 0,
+                rdev: 0,
+                ctime_ns: 0,
+            }
+            .validate()?;
+            Ok(ExtentChange::default())
+        }
+        Mutation::ReplaceInode {
+            logical_size,
+            carried,
+            ..
+        } => plan_replacement(&view.extents, carried, *logical_size, block_size),
     }
+}
+
+/// The extent changes of a rename-over: remove **every** extent the
+/// destination has and write the complete carried set.  Fails closed unless
+/// the carried set tiles `[0, logical_size)` exactly, so a partial
+/// replacement cannot publish a mixture of old and new content while claiming
+/// to be application-complete (WRITE-012).
+fn plan_replacement(
+    extents: &BTreeMap<u64, NativeExtent>,
+    carried: &[CarriedExtent],
+    logical_size: u64,
+    block_size: u64,
+) -> Result<ExtentChange, WriteError> {
+    if block_size == 0 {
+        return Err(WriteError::Record("block size must be > 0".into()));
+    }
+    let mut added: Vec<(u64, NativeExtent)> = Vec::with_capacity(carried.len());
+    for item in carried {
+        if item.extent.kind == ExtentKind::Data {
+            let needed = blocks_spanning(item.extent.logical_len, block_size);
+            if item.extent.block_count != needed || item.blocks.len() as u64 != needed {
+                return Err(WriteError::Record(format!(
+                    "rename-over extent at {} is {} bytes with {} carried blocks ({}), expected {needed}",
+                    item.logical_offset,
+                    item.extent.logical_len,
+                    item.blocks.len(),
+                    item.extent.block_count
+                )));
+            }
+        } else if !item.blocks.is_empty() || item.extent.block_count != 0 {
+            return Err(WriteError::Record(format!(
+                "rename-over hole extent at {} carries {} blocks",
+                item.logical_offset,
+                item.blocks.len()
+            )));
+        }
+        added.push((item.logical_offset, item.extent.clone()));
+    }
+    super::replace::cover_whole_file(&added, logical_size)?;
+    Ok(ExtentChange {
+        removed: extents
+            .iter()
+            .map(|(offset, extent)| (*offset, extent.clone()))
+            .collect(),
+        added,
+    })
 }

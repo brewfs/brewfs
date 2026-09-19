@@ -135,6 +135,15 @@ impl Keys {
         key
     }
 
+    /// Ownership/permission attribute row of one inode.  Kept separate from
+    /// the inode data row so a metadata-only mutation never rides along with a
+    /// data commit (WRITE-010).
+    pub fn inode_attributes(&self, workspace_id: &[u8; 16], inode: u64) -> Vec<u8> {
+        let mut key = self.join(&[b"attr/", workspace_id.as_slice(), b"/"]);
+        key.extend_from_slice(&inode.to_be_bytes());
+        key
+    }
+
     /// One block binding row.
     pub fn binding(&self, slice_id: &[u8; 16], block: u64) -> Vec<u8> {
         let mut key = self.join(&[b"bnd/", slice_id.as_slice(), b"/"]);
@@ -220,6 +229,16 @@ impl Keys {
     /// Presence means the target workspace currently has a valid writer.
     pub fn writer_lease(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
         self.join(&[b"writer/", workspace_id.as_slice()])
+    }
+
+    /// Protected upload receipt of one uncommitted operation (WRITE-006).
+    pub fn orphan_receipt(&self, operation_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"ufo/", operation_id.as_slice()])
+    }
+
+    /// Prefix for every protected upload receipt of the volume.
+    pub fn orphan_receipts_prefix(&self) -> Vec<u8> {
+        self.join(&[b"ufo/"])
     }
 
     /// Prefix for all object registrations belonging to one ownership domain.

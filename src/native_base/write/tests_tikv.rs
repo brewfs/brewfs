@@ -50,6 +50,8 @@ run_scenarios_on_tikv! {
     truncate_down_and_extend_and_punch_produce_holes,
     unaligned_writes_are_refused_at_admission,
     mutation_order_continues_from_the_durable_watermark,
+    chmod_on_a_large_file_changes_metadata_and_uploads_no_data,
+    rename_over_publishes_the_complete_file_and_never_a_patch,
 }
 
 /// KV-002: two *independently connected* store clients racing the same head

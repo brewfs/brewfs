@@ -27,10 +27,12 @@ use super::keys::Keys;
 use super::lease::{FixedClock, LeaseFence, LeaseGrant};
 use super::memory::MemoryControlStore;
 use super::overlay::{MutationSpec, OverlayParams, WriteOverlay, ensure_workspace_head};
-use super::receipts::{ReceiptSet, build_receipts_container};
-use super::records::{ExtentKind, HeadState, NativeExtent};
+use super::receipts::{MemorySink, ReceiptEntry, ReceiptSet, build_receipts_container};
+use super::records::{ExtentKind, HeadPlacement, HeadState, NativeExtent};
+use super::replace::plan_rename_over;
 use super::store::ControlStore;
 use crate::native_base::wire::bnct::{ControlRecord, DomainState};
+use crate::native_base::wire::page::{IndexPage, PageBody};
 use crate::native_base::wire::refs::{Hash32, ObjectId, RootRef};
 
 const INODE: u64 = 7;
@@ -40,6 +42,9 @@ struct Env {
     keys: Keys,
     params: OverlayParams,
     overlay: WriteOverlay,
+    /// The overlay's object sink, readable so a test can read back what a
+    /// commit published (e.g. a receipts container).
+    sink: Arc<MemorySink>,
 }
 
 fn random_id() -> [u8; 16] {
@@ -61,13 +66,15 @@ async fn env_on(store: Arc<dyn ControlStore>, block_size: u64) -> Env {
     ensure_workspace_head(&*store, &keys, &params, 3)
         .await
         .unwrap();
-    let overlay = WriteOverlay::with_memory_sink(store.clone(), params.clone());
+    let sink = Arc::new(MemorySink::default());
+    let overlay = WriteOverlay::new(store.clone(), sink.clone(), params.clone());
     overlay.ensure_domain(random_id()).await.unwrap();
     Env {
         store,
         keys,
         params,
         overlay,
+        sink,
     }
 }
 
@@ -180,6 +187,66 @@ fn write_spec(offset: u64, len: usize) -> MutationSpec {
     MutationSpec::Write {
         offset,
         data: Arc::new(vec![0xa5; len]),
+    }
+}
+
+/// A block-aligned write of `len` copies of `byte`.
+fn write_spec_of(offset: u64, byte: u8, len: usize) -> MutationSpec {
+    MutationSpec::Write {
+        offset,
+        data: Arc::new(vec![byte; len]),
+    }
+}
+
+/// Every object an inode's data extents reference, followed through the
+/// placement rows exactly as a reader would.
+async fn extent_objects(env: &Env, inode: u64) -> std::collections::BTreeSet<ObjectId> {
+    let view =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, inode)
+            .await
+            .unwrap();
+    let mut objects = std::collections::BTreeSet::new();
+    for extent in view.extents.values() {
+        if extent.kind != ExtentKind::Data {
+            continue;
+        }
+        for index in 0..extent.block_count {
+            let bytes = env
+                .store
+                .get(
+                    &env.keys
+                        .placement(&extent.slice_id, extent.first_block + index),
+                )
+                .await
+                .unwrap()
+                .expect("a data extent's block has a placement row");
+            match HeadPlacement::decode(&bytes).unwrap() {
+                HeadPlacement::Loose { object_id, .. } => {
+                    objects.insert(object_id);
+                }
+            }
+        }
+    }
+    objects
+}
+
+/// Read back the receipt entries of the container a mutation result points at.
+fn receipts_of(sink: &MemorySink, root: &RootRef) -> Vec<ReceiptEntry> {
+    let objects = sink.0.lock().unwrap();
+    let bytes = objects
+        .get(&root.object.object_id)
+        .expect("the commit's receipts container is uploaded");
+    let start = root.address.offset as usize;
+    let end = start + root.address.stored_len as usize;
+    let page = IndexPage::decode(&bytes[start..end]).expect("the receipts root is a leaf page");
+    match page.body {
+        PageBody::Leaf(entries) => {
+            assert_eq!(entries.len(), 1);
+            ReceiptSet::decode(&entries[0].value)
+                .expect("the receipts set decodes")
+                .entries
+        }
+        _ => panic!("the receipts root must be a leaf"),
     }
 }
 
@@ -560,6 +627,7 @@ pub(crate) async fn independent_stores_racing_same_head_commit_once(
         keys,
         overlay: second_overlay,
         params,
+        sink: Arc::new(MemorySink::default()),
     };
 
     // Both independently connected writers register durable receipt objects,
@@ -960,6 +1028,463 @@ pub(crate) async fn unaligned_writes_are_refused_at_admission(store: Arc<dyn Con
     );
 }
 
+/// WRITE-010 / INV-09: a `chmod` on a GiB file is a metadata-only mutation.
+/// The extent rows, the size and every data object stay exactly as they were,
+/// no data object is uploaded, and the only new object is the control receipts
+/// container the protocol requires of every commit.  A malformed mode is
+/// refused instead of being committed as an inode type.
+pub(crate) async fn chmod_on_a_large_file_changes_metadata_and_uploads_no_data(
+    store: Arc<dyn ControlStore>,
+) {
+    let env = env_on(store, 64).await;
+    // A GiB-sized file with a data block at the front: the data path this
+    // mutation must not touch.
+    let ticket = env.overlay.accept(INODE, write_spec(0, 64)).await.unwrap();
+    env.overlay.dispatch(&ticket).await.unwrap();
+    env.overlay.complete_upload(&ticket).await.unwrap();
+    env.overlay.drain().await.unwrap();
+    let gigabyte = 1u64 << 30;
+    let grow = env
+        .overlay
+        .accept(INODE, MutationSpec::Truncate { new_size: gigabyte })
+        .await
+        .unwrap();
+    env.overlay.dispatch(&grow).await.unwrap();
+    env.overlay.complete_upload(&grow).await.unwrap();
+    env.overlay.drain().await.unwrap();
+
+    let before =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, INODE)
+            .await
+            .unwrap();
+    assert_eq!(before.data.size, gigabyte);
+    assert!(!before.extents.is_empty());
+    let uploads_before = env.overlay.uploaded_object_ids().await;
+    assert!(
+        !uploads_before.is_empty(),
+        "the data write really uploaded something"
+    );
+    assert!(
+        env.store
+            .get(&env.keys.inode_attributes(&env.params.workspace_id, INODE))
+            .await
+            .unwrap()
+            .is_none(),
+        "no attribute row exists yet"
+    );
+
+    // A malformed mode has no file-type bits: refused at admission, so it
+    // never takes a mutation order and cannot block the inode's queue.
+    let refused = env
+        .overlay
+        .accept(
+            INODE,
+            MutationSpec::SetAttributes {
+                mode: 0o644,
+                uid: 1000,
+                gid: 1000,
+                ctime_ns: 7,
+            },
+        )
+        .await
+        .expect_err("a bare permission mask is not an inode mode");
+    assert!(
+        refused.to_string().contains("file type"),
+        "unexpected refusal: {refused}"
+    );
+    assert!(
+        env.overlay.capture().await.dirty.is_empty(),
+        "a metadata-only mutation dirties no data range"
+    );
+
+    // The valid chmod commits.
+    let attributes = super::records::InodeAttributes {
+        mode: 0o100_400,
+        uid: 1000,
+        gid: 1001,
+        rdev: 0,
+        ctime_ns: 42,
+    };
+    let before_keys: std::collections::BTreeSet<Vec<u8>> = snapshot(&env)
+        .await
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let ticket = env
+        .overlay
+        .accept(
+            INODE,
+            MutationSpec::SetAttributes {
+                mode: attributes.mode,
+                uid: attributes.uid,
+                gid: attributes.gid,
+                ctime_ns: attributes.ctime_ns,
+            },
+        )
+        .await
+        .unwrap();
+    env.overlay.dispatch(&ticket).await.unwrap();
+    env.overlay.complete_upload(&ticket).await.unwrap();
+    let report = env.overlay.drain().await.unwrap();
+    assert_eq!(
+        report.committed.len(),
+        1,
+        "chmod must commit; failed={:?} blocked={:?}",
+        report.failed,
+        report.blocked
+    );
+    let added: Vec<Vec<u8>> = {
+        let after_keys: std::collections::BTreeSet<Vec<u8>> = snapshot(&env)
+            .await
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        after_keys.difference(&before_keys).cloned().collect()
+    };
+
+    // The data path is untouched: same extents, same size, same slices.
+    let after =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, INODE)
+            .await
+            .unwrap();
+    assert_eq!(after.extents, before.extents, "no extent row changed");
+    assert_eq!(after.data.size, gigabyte, "the size did not change");
+    assert_eq!(after.data.data_version, before.data.data_version + 1);
+
+    // The attribute row is written with exactly the requested bytes.
+    let row = env
+        .store
+        .get(&env.keys.inode_attributes(&env.params.workspace_id, INODE))
+        .await
+        .unwrap()
+        .expect("the attribute row exists");
+    assert_eq!(
+        super::records::InodeAttributes::decode(&row).unwrap(),
+        attributes
+    );
+    assert_eq!(attributes.permissions(), 0o400);
+
+    // Exactly one new object was uploaded and it is a control object, not a
+    // loose data object: a chmod never rewrites (or re-uploads) file content.
+    let uploads_after = env.overlay.uploaded_object_ids().await;
+    let new_uploads: Vec<ObjectId> = uploads_after[uploads_before.len()..].to_vec();
+    assert_eq!(new_uploads.len(), 1, "only the control receipts container");
+    let registration = super::domain::decode_registration(
+        &env.store
+            .get(&env.keys.object(&env.params.domain_id, &new_uploads[0]))
+            .await
+            .unwrap()
+            .expect("the control object is registered"),
+    )
+    .unwrap();
+    assert_eq!(
+        registration.object_ref.kind,
+        crate::native_base::wire::container::ObjectKind::FrozenMetadata.as_u8(),
+        "the new object is control metadata"
+    );
+    assert_ne!(
+        registration.object_ref.kind,
+        crate::native_base::seal::NATIVE_LOOSE_KIND,
+        "no data block was uploaded"
+    );
+    assert_eq!(
+        report.committed[0].durable_receipts.object.object_id, new_uploads[0],
+        "the new object is this mutation's receipt"
+    );
+    // No data-path row appeared: no extent, no binding, no placement.  The
+    // chmod added only control rows (attribute, registration, result).
+    assert!(
+        added.iter().all(|key| !is_data_path_key(key)),
+        "a metadata-only mutation must not add data-path rows: {:?}",
+        added
+            .iter()
+            .filter(|key| is_data_path_key(key))
+            .map(|key| String::from_utf8_lossy(key).into_owned())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        added
+            .iter()
+            .any(|key| key.windows(5).any(|w| w == b"attr/")),
+        "the attribute row is the one row this mutation adds"
+    );
+}
+
+/// Rows that describe file content: extents, block bindings, placements.
+fn is_data_path_key(key: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(key);
+    text.contains("/ext/") || text.contains("/bnd/") || text.contains("/plc/")
+}
+
+// ---------------------------------------------------------------------------
+// WRITE-012: a temp file renamed over an existing destination is an
+// application-complete write, never a minimal patch.
+// ---------------------------------------------------------------------------
+
+/// Commit one mutation through the overlay: accept, dispatch, complete, drain.
+async fn commit_mutation(env: &Env, inode: u64, spec: MutationSpec) {
+    let report = commit_mutation_report(env, inode, spec).await;
+    assert_eq!(report.committed.len(), 1, "failed={:?}", report.failed);
+}
+
+/// The same, returning the drain report to the caller.
+async fn commit_mutation_report(
+    env: &Env,
+    inode: u64,
+    spec: MutationSpec,
+) -> super::overlay::DrainReport {
+    let ticket = env.overlay.accept(inode, spec).await.unwrap();
+    env.overlay.dispatch(&ticket).await.unwrap();
+    env.overlay.complete_upload(&ticket).await.unwrap();
+    env.overlay.drain().await.unwrap()
+}
+
+/// WRITE-012 / INV-02: the destination's old content (its extents, its blocks
+/// and its data version) is replaced wholesale by the source's, every carried
+/// block is attested by the commit's receipts, and the plan has no
+/// patch-shaped form even when both files hold the same number of bytes.
+pub(crate) async fn rename_over_publishes_the_complete_file_and_never_a_patch(
+    store: Arc<dyn ControlStore>,
+) {
+    const SOURCE: u64 = 8;
+    let env = env_on(store, 64).await;
+
+    // The destination already holds its own content: two distinct blocks.
+    commit_mutation(&env, INODE, write_spec_of(0, 0x11, 64)).await;
+    commit_mutation(&env, INODE, write_spec_of(64, 0x22, 64)).await;
+    // The temporary source file: one data extent followed by a hole, so the
+    // replacement has to carry both kinds of extent.
+    commit_mutation(&env, SOURCE, write_spec_of(0, 0x33, 128)).await;
+    commit_mutation(&env, SOURCE, MutationSpec::Truncate { new_size: 256 }).await;
+
+    let source_before =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, SOURCE)
+            .await
+            .unwrap();
+    let dest_before =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, INODE)
+            .await
+            .unwrap();
+    assert_eq!(source_before.extents.len(), 2, "data extent + hole");
+    assert_eq!(source_before.data.size, 256);
+    assert_eq!(dest_before.extents.len(), 2);
+    assert_eq!(dest_before.data.size, 128);
+    let source_objects = extent_objects(&env, SOURCE).await;
+    let dest_objects_before = extent_objects(&env, INODE).await;
+    assert!(!source_objects.is_empty() && !dest_objects_before.is_empty());
+    assert!(
+        dest_objects_before.is_disjoint(&source_objects),
+        "the two files hold different content"
+    );
+
+    // The plan publishes the whole file -- holes included -- and has no
+    // byte-delta form: the changed range is the entire file.
+    let plan = plan_rename_over(
+        &*env.store,
+        &env.keys,
+        &env.params.workspace_id,
+        &env.params.domain_id,
+        SOURCE,
+        INODE,
+        env.params.block_size,
+    )
+    .await
+    .unwrap();
+    assert!(plan.is_application_complete());
+    assert_eq!(plan.changed_ranges(), vec![(0, 256)]);
+    assert_eq!(plan.carried.len(), 2);
+    assert_eq!(
+        plan.replaced.len(),
+        2,
+        "every destination extent is removed"
+    );
+    assert_eq!(
+        plan.carried_object_ids()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        source_objects
+    );
+
+    // A rename-over needs a real, durable source: itself and an absent inode
+    // are both refused before anything is admitted.
+    assert!(
+        plan_rename_over(
+            &*env.store,
+            &env.keys,
+            &env.params.workspace_id,
+            &env.params.domain_id,
+            SOURCE,
+            SOURCE,
+            env.params.block_size,
+        )
+        .await
+        .is_err(),
+        "an inode cannot be renamed over itself"
+    );
+    assert!(
+        plan_rename_over(
+            &*env.store,
+            &env.keys,
+            &env.params.workspace_id,
+            &env.params.domain_id,
+            4096,
+            INODE,
+            env.params.block_size,
+        )
+        .await
+        .is_err(),
+        "an absent source has nothing to publish"
+    );
+
+    // The rename-over: one commit, no data upload (the blocks are already
+    // durable), and a receipts container attesting every carried block.
+    let uploads_before = env.overlay.uploaded_object_ids().await;
+    let report = commit_mutation_report(
+        &env,
+        INODE,
+        MutationSpec::ReplaceInode {
+            source_inode: SOURCE,
+        },
+    )
+    .await;
+    assert_eq!(report.committed.len(), 1, "failed={:?}", report.failed);
+    assert!(report.failed.is_empty() && report.blocked.is_empty() && report.orphaned.is_empty());
+    let uploads_after = env.overlay.uploaded_object_ids().await;
+    assert_eq!(
+        uploads_after.len(),
+        uploads_before.len() + 1,
+        "a rename-over uploads only its receipts container"
+    );
+
+    // The destination *is* the source's content now: same extents, same size,
+    // a new data version, and no old byte left behind.
+    let dest_after =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, INODE)
+            .await
+            .unwrap();
+    assert_eq!(dest_after.extents, source_before.extents);
+    assert_eq!(dest_after.data.size, 256);
+    assert_eq!(
+        dest_after.data.data_version,
+        dest_before.data.data_version + 1
+    );
+    assert_eq!(
+        dest_after.data.committed_order,
+        dest_before.data.committed_order + 1
+    );
+    assert!(
+        env.store
+            .get(&env.keys.extent(&env.params.workspace_id, INODE, 64))
+            .await
+            .unwrap()
+            .is_none(),
+        "the destination's old data extent row is gone"
+    );
+    assert_eq!(dest_after.extents[&128].kind, ExtentKind::Hole);
+    let dest_objects_after = extent_objects(&env, INODE).await;
+    assert_eq!(dest_objects_after, source_objects);
+    assert!(dest_objects_before.is_disjoint(&dest_objects_after));
+
+    // The commit's durable receipts attest exactly the carried objects: the
+    // publication is complete, not a claim of a small delta.
+    let result = &report.committed[0];
+    let entries = receipts_of(&env.sink, &result.durable_receipts);
+    let attested: std::collections::BTreeSet<ObjectId> =
+        entries.iter().map(|entry| entry.object_id).collect();
+    assert_eq!(
+        attested, source_objects,
+        "every carried block is attested by the commit's receipts"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.domain_id == env.params.domain_id)
+    );
+
+    // The source inode is untouched: publishing content does not consume the
+    // source (the VFS unlinks it separately).
+    let source_after =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, SOURCE)
+            .await
+            .unwrap();
+    assert_eq!(source_after.extents, source_before.extents);
+    assert_eq!(source_after.data, source_before.data);
+
+    // A second rename-over of the same content has the same size on both
+    // sides.  That is still a whole-file publication: the version moves again
+    // and the receipts still name every block, so nothing here can be
+    // reported as an "unchanged" minimal patch.
+    let same_size = commit_mutation_report(
+        &env,
+        INODE,
+        MutationSpec::ReplaceInode {
+            source_inode: SOURCE,
+        },
+    )
+    .await;
+    assert_eq!(
+        same_size.committed.len(),
+        1,
+        "failed={:?}",
+        same_size.failed
+    );
+    let dest_after_second =
+        super::commit::read_inode_view(&*env.store, &env.keys, &env.params.workspace_id, INODE)
+            .await
+            .unwrap();
+    assert_eq!(dest_after_second.extents, source_before.extents);
+    assert_eq!(dest_after_second.data.size, dest_after.data.size);
+    assert_eq!(
+        dest_after_second.data.data_version,
+        dest_after.data.data_version + 1
+    );
+    let attested_again: std::collections::BTreeSet<ObjectId> =
+        receipts_of(&env.sink, &same_size.committed[0].durable_receipts)
+            .iter()
+            .map(|entry| entry.object_id)
+            .collect();
+    assert_eq!(attested_again, source_objects);
+
+    // A hand-built partial replacement -- one extent short of the whole file --
+    // is refused at the commit boundary.  Without that rule the transaction
+    // would keep the destination's old bytes at offset 0 while claiming an
+    // application-complete replacement.
+    let partial = {
+        let (receipts, receipts_registration) = receipts_for(&env, &[0x5a; 16]).await;
+        CommitRequest {
+            operation_id: [0x5a; 16],
+            payload_digest: digest(b"partial replacement"),
+            inode: 9,
+            mutation_order: 1,
+            mutation: Mutation::ReplaceInode {
+                source_inode: SOURCE,
+                logical_size: 256,
+                carried: vec![super::commit::CarriedExtent {
+                    logical_offset: 128,
+                    extent: source_before.extents[&128].clone(),
+                    blocks: Vec::new(),
+                }],
+            },
+            receipts,
+            receipts_registration,
+            block_size: env.params.block_size,
+            baseline_size: 0,
+            domain_id: env.params.domain_id,
+        }
+    };
+    let before_partial = snapshot(&env).await;
+    let guard = guard_for(&env).await;
+    let refused = commit_uploaded_slice(&*env.store, &env.keys, &guard, &partial)
+        .await
+        .expect_err("a partial replacement is not an application-complete write");
+    assert!(refused.to_string().contains("complete file"), "{refused}");
+    assert_eq!(
+        snapshot(&env).await,
+        before_partial,
+        "a refused replacement writes nothing"
+    );
+}
+
 pub(crate) async fn mutation_order_continues_from_the_durable_watermark(
     store: Arc<dyn ControlStore>,
 ) {
@@ -1030,4 +1555,272 @@ run_scenarios_on_memory! {
     truncate_down_and_extend_and_punch_produce_holes,
     unaligned_writes_are_refused_at_admission,
     mutation_order_continues_from_the_durable_watermark,
+    chmod_on_a_large_file_changes_metadata_and_uploads_no_data,
+    rename_over_publishes_the_complete_file_and_never_a_patch,
+}
+
+// ---------------------------------------------------------------------------
+// WRITE-006: a durable upload whose KV step fails is protected, never left
+// collectable.  This scenario needs fault injection, so it is not part of the
+// store-agnostic list above.
+// ---------------------------------------------------------------------------
+
+mod orphan_protection {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+
+    use super::super::orphan_receipt::{
+        CollectionPlan, KvStep, OrphanResolution, ensure_not_collected, plan_collection,
+        protected_object_ids, read_orphan_receipt, record_orphan_receipt, resolve_orphan_receipt,
+        scan_orphan_receipts,
+    };
+    use super::super::store::{StoreError, Txn};
+
+    /// A store that can fail the commit transaction (or every transaction)
+    /// while the object uploads in front of it still succeed.
+    #[derive(Default)]
+    struct FaultyStore {
+        inner: Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>,
+        fail_commits: AtomicBool,
+        fail_everything: AtomicBool,
+    }
+
+    fn is_mutation_result_key(key: &[u8]) -> bool {
+        String::from_utf8_lossy(key).contains("/mut/")
+    }
+
+    #[async_trait]
+    impl ControlStore for FaultyStore {
+        async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            Ok(self.inner.lock().await.get(key).cloned())
+        }
+
+        async fn run(&self, txn: Txn) -> Result<(), StoreError> {
+            if self.fail_everything.load(Ordering::SeqCst) {
+                return Err(StoreError::Backend("simulated KV outage".into()));
+            }
+            if self.fail_commits.load(Ordering::SeqCst)
+                && txn
+                    .writes
+                    .iter()
+                    .any(|(key, _)| is_mutation_result_key(key))
+            {
+                return Err(StoreError::Backend(
+                    "simulated KV failure after a successful upload".into(),
+                ));
+            }
+            let mut map = self.inner.lock().await;
+            for (key, expect) in &txn.checks {
+                if !crate::native_base::write::store::expect_matches(
+                    expect,
+                    map.get(key).map(|v| v.as_slice()),
+                ) {
+                    return Err(StoreError::Conflict);
+                }
+            }
+            for (key, value) in txn.writes {
+                match value {
+                    Some(bytes) => {
+                        map.insert(key, bytes);
+                    }
+                    None => {
+                        map.remove(&key);
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+            let map = self.inner.lock().await;
+            Ok(map
+                .range::<[u8], _>((
+                    std::ops::Bound::Included(prefix),
+                    std::ops::Bound::Unbounded,
+                ))
+                .take_while(|(key, _)| key.starts_with(prefix))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect())
+        }
+    }
+
+    /// WRITE-006 / INV-11: the object bytes and the receipts container are
+    /// uploaded, the commit transaction fails, and the receipt is recorded in
+    /// the protected orphan set.  The cleaner then cannot collect any of those
+    /// objects, the record is idempotent by digest, releasing it happens
+    /// exactly once, and a KV failure *before* the upload protects nothing.
+    #[tokio::test]
+    async fn a_kv_failure_after_a_successful_upload_protects_the_receipt() {
+        let store = Arc::new(FaultyStore::default());
+        let env = env_on(store.clone(), 64).await;
+        store.fail_commits.store(true, Ordering::SeqCst);
+
+        // Two *different* blocks: identical content dedups to one object, and
+        // this scenario counts the protected object set explicitly.
+        let mut data = vec![0x11u8; 64];
+        data.extend_from_slice(&[0x22u8; 64]);
+        let ticket = env
+            .overlay
+            .accept(
+                INODE,
+                MutationSpec::Write {
+                    offset: 0,
+                    data: Arc::new(data),
+                },
+            )
+            .await
+            .unwrap();
+        env.overlay.dispatch(&ticket).await.unwrap();
+        env.overlay.complete_upload(&ticket).await.unwrap();
+        assert_eq!(
+            env.overlay.incomplete_count(INODE).await,
+            1,
+            "the operation is still uncommitted at the failure point"
+        );
+
+        let report = env.overlay.drain().await.unwrap();
+        assert!(
+            report.committed.is_empty(),
+            "the commit transaction failed, so nothing committed"
+        );
+        assert_eq!(
+            report.failed.len(),
+            1,
+            "the failure is reported, not hidden"
+        );
+        assert!(report.blocked.is_empty());
+        assert_eq!(
+            report.orphaned.len(),
+            1,
+            "the upload is protected; reported failure was {:?}",
+            report.failed.first().map(|failure| &failure.1)
+        );
+        let record = report.orphaned[0].clone();
+        assert_eq!(record.operation_id, ticket.operation_id);
+        assert_eq!(record.step, KvStep::Commit);
+        assert_eq!(record.workspace_id, env.params.workspace_id);
+        assert_eq!(record.domain_id, env.params.domain_id);
+        assert!(
+            record.reason.contains("simulated KV failure"),
+            "the reason records why the commit failed: {}",
+            record.reason
+        );
+
+        // Two data blocks plus the receipts container; the receipts root is
+        // itself protected, so the audit trail cannot be collected.
+        assert_eq!(record.objects.len(), 3);
+        let receipts_root = record.receipts.clone().expect("receipts were uploaded");
+        assert!(
+            record
+                .objects
+                .iter()
+                .any(|object| object.object_id == receipts_root.object.object_id)
+        );
+        // Every protected object is registered as an upload this domain owns.
+        for object in &record.objects {
+            let row = env
+                .store
+                .get(&env.keys.object(&env.params.domain_id, &object.object_id))
+                .await
+                .unwrap()
+                .expect("the uploaded object is registered");
+            let registration = super::super::domain::decode_registration(&row).unwrap();
+            assert_eq!(registration.object_ref, *object);
+            assert!(
+                matches!(
+                    registration.state,
+                    crate::native_base::wire::bnct::RegistrationState::Dispatched
+                        | crate::native_base::wire::bnct::RegistrationState::Verified
+                ),
+                "the upload was dispatched before the KV step failed"
+            );
+        }
+
+        // The protection is durable and idempotent.
+        let stored = read_orphan_receipt(&*env.store, &env.keys, &ticket.operation_id)
+            .await
+            .unwrap()
+            .expect("the record is persisted");
+        assert_eq!(stored, record);
+        assert!(
+            !record_orphan_receipt(&*env.store, &env.keys, &record)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            scan_orphan_receipts(&*env.store, &env.keys)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Protection keeps every uploaded object out of the collectable set,
+        // and the delete guard refuses a plan that ignored it.
+        let protected = protected_object_ids(std::iter::once(&record));
+        assert_eq!(protected.len(), 3);
+        let candidates = protected.clone();
+        let plan = plan_collection(&candidates, &protected);
+        assert!(plan.collectable.is_empty());
+        assert_eq!(plan.blocked_by_protection, protected);
+        ensure_not_collected(&plan, &protected).unwrap();
+        let unsafe_plan = CollectionPlan {
+            collectable: protected.clone(),
+            blocked_by_protection: std::collections::BTreeSet::new(),
+        };
+        assert!(ensure_not_collected(&unsafe_plan, &protected).is_err());
+
+        // Abandoning the operation releases the protection exactly once, after
+        // which the objects are ordinary garbage.
+        let release = resolve_orphan_receipt(
+            &*env.store,
+            &env.keys,
+            &ticket.operation_id,
+            OrphanResolution::Abandoned,
+        )
+        .await
+        .unwrap();
+        assert_eq!(release.released_objects.len(), 3);
+        assert!(
+            read_orphan_receipt(&*env.store, &env.keys, &ticket.operation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            resolve_orphan_receipt(
+                &*env.store,
+                &env.keys,
+                &ticket.operation_id,
+                OrphanResolution::Committed,
+            )
+            .await
+            .is_err()
+        );
+        let after = plan_collection(&candidates, &std::collections::BTreeSet::new());
+        assert_eq!(after.collectable, candidates);
+
+        // A KV failure before anything was uploaded protects nothing: there is
+        // no receipt yet and no durable object.
+        let outage = Arc::new(FaultyStore::default());
+        let env = env_on(outage.clone(), 64).await;
+        outage.fail_everything.store(true, Ordering::SeqCst);
+        let ticket = env.overlay.accept(INODE, write_spec(0, 64)).await.unwrap();
+        assert!(env.overlay.dispatch(&ticket).await.is_err());
+        assert!(
+            scan_orphan_receipts(&*env.store, &env.keys)
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing was uploaded, so nothing needs protection"
+        );
+        assert_eq!(
+            env.overlay.incomplete_count(INODE).await,
+            1,
+            "the operation stayed un-uploaded; nothing was silently dropped"
+        );
+    }
 }

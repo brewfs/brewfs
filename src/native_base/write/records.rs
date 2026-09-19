@@ -11,6 +11,64 @@ use crate::native_base::wire::error::{WireError, WireResult};
 use crate::native_base::wire::refs::ObjectId;
 use crate::native_base::wire::uvarint::{Reader, Writer};
 
+/// Ownership/permission attributes of one inode (WRITE-010).
+///
+/// Attributes are metadata: `chmod`/`chown` change this row and nothing else.
+/// Keeping them in their own row is what makes a metadata-only mutation
+/// expressible without touching a single data object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InodeAttributes {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub rdev: u64,
+    pub ctime_ns: i64,
+}
+
+impl InodeAttributes {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u32(self.mode);
+        w.u32(self.uid);
+        w.u32(self.gid);
+        w.u64(self.rdev);
+        w.i64(self.ctime_ns);
+        w.into_bytes()
+    }
+
+    pub fn decode(bytes: &[u8]) -> WireResult<Self> {
+        let mut r = Reader::new(bytes);
+        let attributes = Self {
+            mode: r.u32("inode attributes")?,
+            uid: r.u32("inode attributes")?,
+            gid: r.u32("inode attributes")?,
+            rdev: r.u64("inode attributes")?,
+            ctime_ns: r.i64("inode attributes")?,
+        };
+        if !r.is_empty() {
+            return Err(WireError::invalid("inode attributes", "trailing bytes"));
+        }
+        Ok(attributes)
+    }
+
+    /// The file-type bits must name a real kind; a bare permission mask would
+    /// silently turn every inode into "unknown".
+    pub fn validate(&self) -> WireResult<()> {
+        const FILE_TYPE_MASK: u32 = 0o170_000;
+        if self.mode & FILE_TYPE_MASK == 0 {
+            return Err(WireError::invalid(
+                "inode attributes",
+                "mode has no file type bits",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn permissions(&self) -> u32 {
+        self.mode & 0o7777
+    }
+}
+
 /// The workspace head token guarding every commit (spec 18 §2: the
 /// authoritative `HeadCommitToken` — head id, epoch, commit sequence and
 /// writer generation). `write_domain_id` pins the origin domain of the head.

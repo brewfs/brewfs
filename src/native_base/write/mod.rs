@@ -29,10 +29,12 @@ pub mod error;
 pub mod keys;
 pub mod lease;
 pub mod memory;
+pub mod orphan_receipt;
 pub mod overlay;
 pub mod receipts;
 pub mod records;
 pub mod redis;
+pub mod replace;
 pub mod store;
 pub mod tikv;
 
