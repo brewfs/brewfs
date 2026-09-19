@@ -41,6 +41,8 @@ pub mod tikv;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_fence;
+#[cfg(test)]
 mod tests_redis;
 #[cfg(test)]
 mod tests_tikv;

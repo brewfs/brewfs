@@ -951,6 +951,46 @@ close 证据端到端路径在内存后端验证，未在 Redis/TiKV 上复跑�
 BNPG 树遍历得到），尚未接入真正的 COW 写入事务；`account_meta_scan` 是
 纯记账函数，摘要扫描的触发时机与重写决策属于后续 P2 集成。
 
+### PR07V · 失效租约与 authority 回滚下的私有状态收口（CONS-004/005）
+
+工具链同 PR07P。改动集中在 `src/native_base/write/overlay.rs`（发布路径与 `RollbackReport`）、
+`src/native_base/write/lease.rs`（`WriterLease`、`StepClock`）、`src/native_base/runtime/io.rs`（运行时栅栏入口），
+新增 `src/native_base/write/tests_fence.rs`（4 个显式场景）。
+
+核心改动：
+- `WriterLease { grant, clock }`：`WriteOverlay::with_writer_lease` 后，**每一个会发布的步骤**（`dispatch` 里的对象注册与
+  `complete_upload` 里的 receipts 容器注册、`drain` 里的提交）都改为 `publish_guard(head)` 取 guard，而不是直接用手上
+  的 head 造 guard。租约在 backend 时间过期、或被顶替（`owner_generation != head.writer_generation`）、或时钟源不是
+  backend 时，`LeaseFence` 在事务**之前**返回：没有 registry 行、没有 inventory 行、没有 domain 计数推进、没有 head 行。
+  无租约的调用方保持 PR04 行为（本地 head guard），因此既有调用点不受影响。
+- `RollbackReport` + `WriteOverlay::rollback(last_rollback())`：把写者的私有状态整体收口——在飞的 operation 全部停止、
+  它们的 dirty 引用被丢弃（已持有的 capture 仍持有自己的 `Arc` 克隆，因此不受影响）、已落盘但未发布的块折成
+  `OrphanReceipt`（`step=DataUploaded` 或 `step=Commit`，WRITE-006 的可回收保护）、inode 本地镜像被丢弃，
+  使下一次准入必须从 store 重新派生。`published_rows` 恒为 0：rollback 不写任何 head/inode/extent/binding/placement/mut 行。
+- dispatch 中途失效：`dispatch` 的每块上传路径记录已落盘块（`PendingOp.partial`），因此租约在两块之间失效时，第一块既不会
+  被重解释成部分提交（operation 仍是 `Accepted`，重试重新派生整块集），也不会失去保护（rollback 把它按 `DataUploaded` 保护）。
+- `fenced()`：只有栅栏类错误（`LeaseFence`/`StaleHeadGuard`/`DomainNotActive`）触发自动 rollback，返回的错误变体保持不变
+  （调用方仍可按变体分类，清理结果由 `last_rollback()` 观测）；清理本身失败会折进错误文本，因为把持久上传留在无保护状态
+  绝不能静默（WRITE-006）。`drain` 在 commit 被租约拒绝时同样收口其余在飞 operation（`DrainReport.rolled_back`）。
+- 运行时入口：`NativeDataRuntime::{writer_lease, rollback_writer, last_writer_rollback}` 把同一栅栏暴露给 FUSE 侧的协调器；
+  运行时 `fsync` 在租约失效时返回 `LeaseFence`、`head.commit_seq` 与 extent 行不变，失败的 pending 仍归调用方（可 discard）。
+
+| ID | 原样命令 | 退出码 | 结果 | raw日志/fixture路径 |
+|---|---|---:|---|---|
+| PR07V-FOCUSED | `bash doc/native-base/logs/pr07v-fenced-writer-rollback.sh` | 0 | PASS（focused 4 passed/0 failed；write 45 passed、runtime 31 passed） | [pr07v-fenced-writer-rollback.log](logs/pr07v-fenced-writer-rollback.log) |
+| PR07V-FMT | `cargo fmt --all --check` | 0 | PASS（同上） | 同上 |
+| PR07V-CONS004a | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests_fence::an_expired_or_superseded_lease_stops_a_dispatch_before_any_row_is_written` | 0 | PASS（过期与被顶替两种租约都整卷逐字节不变） | 同上 |
+| PR07V-CONS004b | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests_fence::a_fence_between_two_blocks_protects_the_uploads_that_already_landed` | 0 | PASS（落盘块 = 1 条 DataUploaded receipt，dirty 被清除） | 同上 |
+| PR07V-CONS004c | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests_fence::an_authority_rollback_stops_the_writer_and_cleans_all_private_state` | 0 | PASS（域 Quarantined + rollback：stopped_publishing、3 对象受保护、域行冻结后不再发布） | 同上 |
+| PR07V-CONS004d | `cargo test -p brewfs --features native-packed-base --lib -- native_base::runtime::io::tests::a_lapsed_writer_lease_fences_the_runtime_and_cleans_its_private_state` | 0 | PASS（运行时 fsync 返回 LeaseFence、head 不动、pending 归调用方） | 同上 |
+| PR07V-CONS005 | `cargo test -p brewfs --features native-packed-base --lib -- native_base::write::tests_fence::another_writer_bypassing_the_local_gate_is_refused_by_the_head_guard` | 0 | PASS（stale head guard 拒绝旁路写者；重新派生 head 的写者提交成功） | 同上 |
+
+范围说明（诚实）：本项同样是 **component-level**（真实 overlay + 真实控制平面 store），没有真实 FUSE 挂载、没有 Redis/TiKV
+真后端上的租约对象存储（`LeaseGrant` 目前由调用方构造，`StepClock` 是测试用的可控 backend 时钟，真实 fork 的
+`sleep`/续租循环未接入）；「另一个 writer」在测试里是同一进程内的第二个 overlay 实例，它证明的是**跨实例不可见的本地门
+不能替代持久栅栏**，分布式多进程写者的真实网络分区/时钟漂移仍未覆盖；`fenced` 的自动 rollback 只在栅栏类错误上触发，
+普通 `Conflict` 仍交由调用方重试。
+
 ### PR07U · 单次请求一致且有界的读捕获（CONS-001/002/003/006）
 
 工具链同 PR07P。改动集中在 `src/native_base/runtime/io.rs`（PR07 的 component-level 读写运行时）。

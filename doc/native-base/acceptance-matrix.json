@@ -931,8 +931,8 @@
     "expected": "fence；authority rollback停止发布和全部私有清理",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07v-fenced-writer-rollback.sh (exit 0; focused 4 passed/0 failed): an_expired_or_superseded_lease_stops_a_dispatch_before_any_row_is_written + a_fence_between_two_blocks_protects_the_uploads_that_already_landed + an_authority_rollback_stops_the_writer_and_cleans_all_private_state + runtime::io::a_lapsed_writer_lease_fences_the_runtime_and_cleans_its_private_state —— overlay 现在按 WriterLease（LeaseGrant + backend StepClock）发布：租约过期（backend 时间越过 deadline）或被顶替（owner_generation ≠ head writer_generation）时，注册与提交都在事务之前被拒绝，整个卷命名空间逐字节不变（无注册行、inventory 行、domain 计数、head 行）；dispatch 中途失效时已落盘的块记入该 operation 的 partial，rollback 折成一条 step=DataUploaded 的 orphan receipt 恰好覆盖这些块，pending 与 dirty 被清除、inode 本地镜像被丢弃（forgotten_inodes=1）以便下次准入从 store 重新派生；authority rollback（域置 Quarantined）后 rollback 报告 stopped_publishing()（published_rows==0）、保护 2 数据块 + receipts 容器，且调用方已持有的 capture 仍保有自己的 dirty 引用；运行时的 fsync 在租约失效时返回 LeaseFence、pending 仍归调用方（可 discard）、head commit_seq 与 extent 行均不出现。log: doc/native-base/logs/pr07v-fenced-writer-rollback.log"
   },
   {
     "test_id": "CONS-005",
@@ -942,8 +942,8 @@
     "expected": "HeadGuard拒绝，不以Mutex替代fencing",
     "invariants": "INV-08",
     "priority": "P0",
-    "implementation_status": "SPECIFIED_NOT_IMPLEMENTED",
-    "evidence": ""
+    "implementation_status": "PASS",
+    "evidence": "WSL: bash doc/native-base/logs/pr07v-fenced-writer-rollback.sh (exit 0; focused 1 passed/0 failed): another_writer_bypassing_the_local_gate_is_refused_by_the_head_guard —— 共享同一 control store 的两个独立 overlay 各自持有不可见的状态互斥量（本地 Mutex 因此不可能是本场景的栅栏）：旁路写者按它读到的 head 完成注册、上传与完成；先写者随后在另一 inode 提交并把 head 推进（commit_seq 0→1）；旁路写者的提交被 head guard 拒绝（stale head guard，store 事务内 check_bytes 比较失败），该次 drain 报告 committed=0、failed=1、head 与 extent 行不变、其已上传对象进入受保护 orphan 集合；随后一个从 store 重新派生 head 的写者用相同字节提交成功（commit_seq→2，extent 出现），证明拒绝来自持久 head 栅栏，而不是本地互斥或永久封禁。log: doc/native-base/logs/pr07v-fenced-writer-rollback.log"
   },
   {
     "test_id": "CONS-006",

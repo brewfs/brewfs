@@ -42,6 +42,7 @@ use super::domain::{
 };
 use super::error::WriteError;
 use super::keys::Keys;
+use super::lease::{LeaseClock, LeaseGrant, WriterLease};
 use super::orphan_receipt::{KvStep, MAX_ORPHAN_REASON, OrphanReceipt, record_orphan_receipt};
 use super::receipts::{
     MemorySink, ObjectSink, ReceiptEntry, ReceiptSet, build_receipts_container, object_key,
@@ -144,6 +145,10 @@ pub struct DrainReport {
     /// recorded in the protected orphan set so the cleaner cannot collect
     /// objects no head references yet (WRITE-006).
     pub orphaned: Vec<OrphanReceipt>,
+    /// Set when a commit was refused by the writer's lease: the lease is gone,
+    /// so the rest of this writer's private state was rolled back instead of
+    /// being left half-published (CONS-004).
+    pub rolled_back: Option<RollbackReport>,
 }
 
 /// Per-inode overlay state.
@@ -165,6 +170,10 @@ struct PendingOp {
     spec: MutationSpec,
     /// The plan of a rename-over, built at admission (WRITE-012).
     replacement: Option<Arc<Replacement>>,
+    /// Blocks this operation already dispatched whose upload never completed
+    /// the operation: a fence mid-dispatch leaves them durable but
+    /// unpublished, so the rollback has to protect them too.
+    partial: Vec<CommittedBlock>,
     state: OpState,
 }
 
@@ -193,7 +202,42 @@ pub struct WriteOverlay {
     sink: Arc<dyn ObjectSink>,
     keys: Keys,
     params: OverlayParams,
+    /// The lease this writer publishes under, when it holds one.  A writer
+    /// without a lease keeps the PR04 behaviour (guards derived from the head
+    /// it just read); a writer with one cannot publish a single row once the
+    /// lease is gone (CONS-004).
+    lease: Option<WriterLease>,
     state: Mutex<OverlayState>,
+}
+
+/// What a fence-and-rollback did to the writer's private state.
+///
+/// `published_rows` is zero by construction: a rollback never writes a head,
+/// extent, inode or mutation-result row, so the volume namespace it does not
+/// own is left exactly as the last committed writer left it.
+#[derive(Debug, Default, Clone)]
+pub struct RollbackReport {
+    /// Operations that were fenced out of the pipeline, in admission order.
+    pub stopped: Vec<(Ticket, String)>,
+    /// Dirty references dropped with those operations.  A capture taken
+    /// before the rollback keeps its own `Arc` clones and is unaffected.
+    pub dropped_dirty: usize,
+    /// Uploads that were durable but never published: each is protected by an
+    /// orphan receipt so a cleaner cannot collect it (WRITE-006).
+    pub protected: Vec<OrphanReceipt>,
+    /// Inodes whose local mirrors were discarded, so the next admission
+    /// re-derives them from the store instead of trusting a fenced view.
+    pub forgotten_inodes: usize,
+    /// Rows published outside the writer's private state: always zero.
+    pub published_rows: usize,
+}
+
+impl RollbackReport {
+    /// True when nothing this writer did can still be published: every
+    /// in-flight operation stopped and every durable upload is protected.
+    pub fn stopped_publishing(&self) -> bool {
+        self.published_rows == 0
+    }
 }
 
 #[derive(Debug, Default)]
@@ -207,6 +251,9 @@ struct OverlayState {
     /// observability: a metadata-only mutation must add only its control
     /// object, never a data block (WRITE-010).
     uploaded_objects: Vec<ObjectId>,
+    /// The last fence-and-rollback this writer performed, for the caller that
+    /// has to report what a lapsed lease or a rollback cleaned up (CONS-004).
+    last_rollback: Option<RollbackReport>,
 }
 
 /// Create the head row for a fresh workspace (absent-else-validate) and
@@ -285,7 +332,36 @@ impl WriteOverlay {
             sink,
             keys,
             params,
+            lease: None,
             state: Mutex::new(OverlayState::default()),
+        }
+    }
+
+    /// Publish under a writer lease decided on `clock` (a backend clock).
+    /// Every registration and every commit then asks the lease for its guard,
+    /// so an expired or superseded lease stops the write before any durable
+    /// row is written (CONS-004).
+    pub fn with_writer_lease(mut self, grant: LeaseGrant, clock: Arc<dyn LeaseClock>) -> Self {
+        self.lease = Some(WriterLease::new(grant, clock));
+        self
+    }
+
+    /// The lease this writer publishes under, if it holds one.
+    pub fn lease(&self) -> Option<&WriterLease> {
+        self.lease.as_ref()
+    }
+
+    /// The guard a publishing step may run under.  With a lease this is the
+    /// lease's decision on backend time; without one it is the head the
+    /// caller just read, which is the PR04 behaviour every existing caller
+    /// keeps.
+    fn publish_guard(&self, head: &HeadState) -> Result<HeadGuard, WriteError> {
+        match &self.lease {
+            Some(lease) => lease.guard(head),
+            None => Ok(HeadGuard {
+                workspace_id: self.params.workspace_id,
+                expected_head: head.clone(),
+            }),
         }
     }
 
@@ -448,6 +524,7 @@ impl WriteOverlay {
             payload_digest: payload_digest(&spec, replacement.as_deref()),
             spec,
             replacement,
+            partial: Vec::new(),
             state: OpState::Accepted,
         });
 
@@ -576,24 +653,37 @@ impl WriteOverlay {
                 key: object_key(&self.params.volume_id, "loose", &object_id, &full_hash),
             };
             // Register under the head guard, then dispatch, then upload
-            // (spec 20 §6 order).
-            self.register_under_current_head(&object_ref, full_hash)
-                .await?;
-            let registration =
-                mark_dispatched(&*self.store, &self.keys, &self.params.domain_id, &object_id)
+            // (spec 20 §6 order). A fence here stops the operation before it
+            // can publish, but the blocks that already landed are recorded so
+            // the rollback protects every durable upload.
+            let dispatched = async {
+                self.register_under_current_head(&object_ref, full_hash)
                     .await?;
-            self.sink
-                .put(&object_ref, &framed)
-                .await
-                .map_err(|error| WriteError::Object(error.to_string()))?;
-            self.record_upload(object_ref.object_id).await;
-            prepared.push(CommittedBlock {
-                block_index: block_index as u64,
-                binding: BlockBinding::of_decoded(content),
-                placement: HeadPlacement::loose(object_id),
-                object_ref,
-                registration,
-            });
+                let registration =
+                    mark_dispatched(&*self.store, &self.keys, &self.params.domain_id, &object_id)
+                        .await?;
+                self.sink
+                    .put(&object_ref, &framed)
+                    .await
+                    .map_err(|error| WriteError::Object(error.to_string()))?;
+                self.record_upload(object_ref.object_id).await;
+                Ok::<_, WriteError>(registration)
+            }
+            .await;
+            match dispatched {
+                Ok(registration) => prepared.push(CommittedBlock {
+                    block_index: block_index as u64,
+                    binding: BlockBinding::of_decoded(content),
+                    placement: HeadPlacement::loose(object_id),
+                    object_ref,
+                    registration,
+                }),
+                Err(err) => {
+                    let landed = std::mem::take(&mut prepared);
+                    self.stash_partial_dispatch(ticket, landed).await;
+                    return Err(self.fenced(err).await);
+                }
+            }
         }
 
         let mut state = self.state.lock().await;
@@ -657,20 +747,28 @@ impl WriteOverlay {
         hasher.update(b"receipts");
         let receipts_object_id: ObjectId = hasher.finalize().as_slice()[..16].try_into().unwrap();
         let built = build_receipts_container(&self.params.volume_id, &receipts_object_id, &set);
-        self.register_under_current_head(&built.root.object, built.root.object.full_hash)
+        let published = async {
+            self.register_under_current_head(&built.root.object, built.root.object.full_hash)
+                .await?;
+            let registration = mark_dispatched(
+                &*self.store,
+                &self.keys,
+                &self.params.domain_id,
+                &receipts_object_id,
+            )
             .await?;
-        let registration = mark_dispatched(
-            &*self.store,
-            &self.keys,
-            &self.params.domain_id,
-            &receipts_object_id,
-        )
-        .await?;
-        self.sink
-            .put(&built.root.object, &built.bytes)
-            .await
-            .map_err(|error| WriteError::Object(error.to_string()))?;
-        self.record_upload(built.root.object.object_id).await;
+            self.sink
+                .put(&built.root.object, &built.bytes)
+                .await
+                .map_err(|error| WriteError::Object(error.to_string()))?;
+            self.record_upload(built.root.object.object_id).await;
+            Ok::<_, WriteError>(registration)
+        }
+        .await;
+        let registration = match published {
+            Ok(registration) => registration,
+            Err(err) => return Err(self.fenced(err).await),
+        };
 
         let mut state = self.state.lock().await;
         let inode_state = state.inodes.get_mut(&ticket.inode).unwrap();
@@ -821,11 +919,15 @@ impl WriteOverlay {
                     inode_state.pending.front().unwrap().ticket
                 };
 
-                let guard = HeadGuard {
-                    workspace_id: self.params.workspace_id,
-                    expected_head: state.head.clone().unwrap(),
+                // The commit runs under the lease when the writer holds one: a
+                // fenced writer is refused here, before the transaction.
+                let outcome = match self.publish_guard(&state.head.clone().unwrap()) {
+                    Ok(guard) => {
+                        commit_uploaded_slice(&*self.store, &self.keys, &guard, &request).await
+                    }
+                    Err(err) => Err(err),
                 };
-                match commit_uploaded_slice(&*self.store, &self.keys, &guard, &request).await {
+                match outcome {
                     Ok(outcome) => {
                         let result = match outcome {
                             CommitOutcome::Committed(r) | CommitOutcome::AlreadyCommitted(r) => r,
@@ -839,13 +941,14 @@ impl WriteOverlay {
                         // One re-derivation with fresh state.
                         drop(state);
                         state = self.refresh_state(inode).await?;
-                        let guard = HeadGuard {
-                            workspace_id: self.params.workspace_id,
-                            expected_head: state.head.clone().unwrap(),
+                        let retry = match self.publish_guard(&state.head.clone().unwrap()) {
+                            Ok(guard) => {
+                                commit_uploaded_slice(&*self.store, &self.keys, &guard, &request)
+                                    .await
+                            }
+                            Err(err) => Err(err),
                         };
-                        match commit_uploaded_slice(&*self.store, &self.keys, &guard, &request)
-                            .await
-                        {
+                        match retry {
                             Ok(outcome) => {
                                 let result = match outcome {
                                     CommitOutcome::Committed(r)
@@ -871,10 +974,20 @@ impl WriteOverlay {
                         }
                     }
                     Err(err) => {
+                        let fenced = matches!(err, WriteError::LeaseFence(_));
                         let err = self
                             .protect_failed_upload(&state, inode, ticket_no, err, &mut report)
                             .await;
                         self.mark_failed(&mut state, inode, ticket_no, err);
+                        if fenced {
+                            // The lease is gone: stop publishing and clean the
+                            // rest of this writer's private state instead of
+                            // leaving it half-published (CONS-004).
+                            let cause =
+                                WriteError::LeaseFence("writer lease lapsed during drain".into());
+                            report.rolled_back =
+                                Some(self.rollback_locked(&mut state, &cause).await?);
+                        }
                     }
                 }
             }
@@ -906,6 +1019,124 @@ impl WriteOverlay {
                 "{err}; protecting the uploaded objects failed: {protection}"
             )),
         }
+    }
+
+    /// Record the blocks that landed before a dispatch was refused, so a
+    /// rollback can protect them. The operation stays `Accepted`: a retry
+    /// re-derives the upload instead of resuming a partial block set.
+    async fn stash_partial_dispatch(&self, ticket: &Ticket, landed: Vec<CommittedBlock>) {
+        if landed.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock().await;
+        if let Some(op) = state.inodes.get_mut(&ticket.inode).and_then(|inode_state| {
+            inode_state
+                .pending
+                .iter_mut()
+                .find(|op| op.ticket == ticket.admission_ticket)
+        }) {
+            op.partial.extend(landed);
+        }
+    }
+
+    /// Fold a publishing refusal into the private-state rollback the contract
+    /// requires: a writer that lost its lease or its head must not leave
+    /// half-published state behind (CONS-004/CONS-005). Only fence errors
+    /// roll back; an ordinary conflict is re-derived by the caller.
+    ///
+    /// The refusal is returned unchanged so callers keep classifying it by
+    /// variant; what the rollback cleaned up is reported by
+    /// [`Self::last_rollback`]. A rollback that itself fails is folded into
+    /// the error, because leaving durable uploads unprotected must never be
+    /// silent (WRITE-006).
+    async fn fenced(&self, err: WriteError) -> WriteError {
+        if !matches!(
+            err,
+            WriteError::LeaseFence(_)
+                | WriteError::StaleHeadGuard(_)
+                | WriteError::DomainNotActive(_)
+        ) {
+            return err;
+        }
+        match self.rollback(&err).await {
+            Ok(_) => err,
+            Err(cleanup) => WriteError::Record(format!(
+                "{err}; rolling back private state failed: {cleanup}"
+            )),
+        }
+    }
+
+    /// Fence this writer and clean every bit of its private state: stop the
+    /// in-flight operations, drop the dirty references they hold, protect the
+    /// objects they already uploaded, and forget the local mirrors so the
+    /// next admission re-derives them from the store.
+    ///
+    /// Nothing here publishes: no head, extent, inode or mutation-result row
+    /// is written, which is why [`RollbackReport::published_rows`] is always
+    /// zero. A caller that has to stop a writer (a lapsed lease, an authority
+    /// rollback) can therefore call this without a fence of its own.
+    pub async fn rollback(&self, cause: &WriteError) -> Result<RollbackReport, WriteError> {
+        let mut state = self.state.lock().await;
+        self.rollback_locked(&mut state, cause).await
+    }
+
+    /// The last rollback this writer performed, if any.  A caller whose
+    /// publish was refused inside [`Self::dispatch`] or
+    /// [`Self::complete_upload`] reads the cleanup it could not see from the
+    /// error alone (CONS-004).
+    pub async fn last_rollback(&self) -> Option<RollbackReport> {
+        self.state.lock().await.last_rollback.clone()
+    }
+
+    async fn rollback_locked(
+        &self,
+        state: &mut OverlayState,
+        cause: &WriteError,
+    ) -> Result<RollbackReport, WriteError> {
+        let mut report = RollbackReport::default();
+        let inode_ids: Vec<u64> = state.inodes.keys().copied().collect();
+        for inode in inode_ids {
+            let in_flight: Vec<(u64, u64, [u8; 16])> = state.inodes[&inode]
+                .pending
+                .iter()
+                .filter(|op| matches!(op.state, OpState::Accepted | OpState::Uploaded(_)))
+                .map(|op| (op.ticket, op.mutation_order, op.operation_id))
+                .collect();
+            for (ticket_no, mutation_order, operation_id) in in_flight {
+                if let Some(receipt) = self
+                    .protect_uncommitted_upload(&*state, inode, ticket_no, cause)
+                    .await?
+                {
+                    report.protected.push(receipt);
+                }
+                let inode_state = state.inodes.get_mut(&inode).unwrap();
+                inode_state.pending.retain(|op| op.ticket != ticket_no);
+                let before = inode_state.dirty.len();
+                inode_state.dirty.retain(|dirty| dirty.ticket != ticket_no);
+                report.dropped_dirty += before - inode_state.dirty.len();
+                report.stopped.push((
+                    Ticket {
+                        admission_ticket: ticket_no,
+                        inode,
+                        mutation_order,
+                        operation_id,
+                    },
+                    cause.to_string(),
+                ));
+            }
+            let drained = state
+                .inodes
+                .get(&inode)
+                .map(|inode_state| inode_state.pending.is_empty())
+                .unwrap_or(false);
+            if drained {
+                state.inodes.remove(&inode);
+                state.baseline_sizes.remove(&inode);
+                report.forgotten_inodes += 1;
+            }
+        }
+        state.last_rollback = Some(report.clone());
+        Ok(report)
     }
 
     async fn record_upload(&self, object_id: ObjectId) {
@@ -960,32 +1191,33 @@ impl WriteOverlay {
         ticket_no: u64,
         err: &WriteError,
     ) -> Result<Option<OrphanReceipt>, WriteError> {
-        // The upload itself failed: nothing durable exists to protect.
-        if matches!(err, WriteError::Object(_)) {
-            return Ok(None);
-        }
         let Some(inode_state) = state.inodes.get(&inode) else {
             return Ok(None);
         };
         let Some(op) = inode_state.pending.iter().find(|op| op.ticket == ticket_no) else {
             return Ok(None);
         };
-        let OpState::Uploaded(uploaded) = &op.state else {
-            return Ok(None);
-        };
         // The receipts container is what makes the upload auditable; without it
-        // the data blocks are still durable, so both cases are protected.
-        let (step, receipts_root, receipts_object) = match &uploaded.receipts {
-            Some((root, registration)) => (
-                KvStep::Commit,
-                Some(root.clone()),
-                Some(registration.object_ref.clone()),
-            ),
-            None if !uploaded.blocks.is_empty() => (KvStep::DataUploaded, None, None),
-            None => return Ok(None),
+        // the data blocks are still durable, so both cases are protected. A
+        // dispatch that was refused half-way has durable blocks but no
+        // `Uploaded` state, and they must be protected just the same.
+        let (step, blocks, receipts_root, receipts_object) = match &op.state {
+            OpState::Uploaded(uploaded) => match &uploaded.receipts {
+                Some((root, registration)) => (
+                    KvStep::Commit,
+                    uploaded.blocks.clone(),
+                    Some(root.clone()),
+                    Some(registration.object_ref.clone()),
+                ),
+                None if !uploaded.blocks.is_empty() => {
+                    (KvStep::DataUploaded, uploaded.blocks.clone(), None, None)
+                }
+                None => return Ok(None),
+            },
+            _ if !op.partial.is_empty() => (KvStep::DataUploaded, op.partial.clone(), None, None),
+            _ => return Ok(None),
         };
-        let mut objects: Vec<ObjectRef> = uploaded
-            .blocks
+        let mut objects: Vec<ObjectRef> = blocks
             .iter()
             .map(|block| block.object_ref.clone())
             .collect();
@@ -1111,10 +1343,10 @@ impl WriteOverlay {
         // only held to mirror the head that was registered under.
         for _ in 0..3 {
             let head = self.read_head().await?;
-            let guard = HeadGuard {
-                workspace_id: self.params.workspace_id,
-                expected_head: head.clone(),
-            };
+            // A fenced (expired or superseded) lease never reaches the
+            // transaction: no registry row, no inventory entry and no domain
+            // counter moves on behalf of a writer that lost its lease.
+            let guard = self.publish_guard(&head)?;
             match register_upload(
                 &*self.store,
                 &self.keys,

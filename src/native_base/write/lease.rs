@@ -14,6 +14,9 @@
 //! prefix of the write stages, so no profile can claim a later stage while
 //! leaving an earlier one lossy.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::native_base::wire::bnct::Id16;
 use crate::native_base::write::domain::HeadGuard;
 use crate::native_base::write::error::WriteError;
@@ -29,7 +32,7 @@ pub enum TimeSource {
 }
 
 /// The clock a coordinator reads lease time from.
-pub trait LeaseClock {
+pub trait LeaseClock: Send + Sync {
     fn source(&self) -> TimeSource;
     fn now_ns(&self) -> u64;
 }
@@ -69,6 +72,58 @@ impl LeaseClock for FixedClock {
     }
 }
 
+/// A backend clock whose reading advances under the test's (or the
+/// coordinator's) control, so a lease can expire *inside* one scenario
+/// without sleeping.  The reading is shared, so the same clock can be handed
+/// to several writer views and moved for all of them at once.
+#[derive(Debug)]
+pub struct StepClock {
+    source: TimeSource,
+    now_ns: AtomicU64,
+}
+
+impl StepClock {
+    pub fn backend(now_ns: u64) -> Self {
+        Self {
+            source: TimeSource::Backend,
+            now_ns: AtomicU64::new(now_ns),
+        }
+    }
+
+    pub fn skewed_client(now_ns: u64) -> Self {
+        Self {
+            source: TimeSource::Client,
+            now_ns: AtomicU64::new(now_ns),
+        }
+    }
+
+    /// Move the backend clock to an absolute reading and return it.
+    pub fn advance_to(&self, now_ns: u64) -> u64 {
+        self.now_ns.store(now_ns, Ordering::SeqCst);
+        now_ns
+    }
+
+    /// Move the backend clock forward by `delta_ns` and return the new
+    /// reading.
+    pub fn advance_by(&self, delta_ns: u64) -> u64 {
+        self.now_ns.fetch_add(delta_ns, Ordering::SeqCst) + delta_ns
+    }
+
+    pub fn reading(&self) -> u64 {
+        self.now_ns.load(Ordering::SeqCst)
+    }
+}
+
+impl LeaseClock for StepClock {
+    fn source(&self) -> TimeSource {
+        self.source
+    }
+
+    fn now_ns(&self) -> u64 {
+        self.now_ns.load(Ordering::SeqCst)
+    }
+}
+
 /// A granted writer lease: who owns which generation, from when, for how long
 /// — all in backend time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +132,45 @@ pub struct LeaseGrant {
     pub owner_generation: u64,
     pub granted_at_ns: u64,
     pub ttl_ns: u64,
+}
+
+/// A writer's lease together with the backend clock that decides it.
+///
+/// A writer attaches this to every publishing step, so a lease that expired
+/// or was superseded on backend time produces **no** metadata at all: the
+/// guard is not handed out and the step is refused before its transaction is
+/// built (spec 07 section 2).  Holding the in-process state lock proves
+/// nothing — only this durable decision does.
+#[derive(Clone)]
+pub struct WriterLease {
+    grant: LeaseGrant,
+    clock: Arc<dyn LeaseClock>,
+}
+
+impl WriterLease {
+    pub fn new(grant: LeaseGrant, clock: Arc<dyn LeaseClock>) -> Self {
+        Self { grant, clock }
+    }
+
+    pub fn grant(&self) -> &LeaseGrant {
+        &self.grant
+    }
+
+    pub fn clock(&self) -> &dyn LeaseClock {
+        &*self.clock
+    }
+
+    /// Decide this lease against the backend clock and the generation the
+    /// workspace is actually on.
+    pub fn evaluate(&self, current_generation: u64) -> Result<LeaseFence, WriteError> {
+        self.grant.evaluate(&*self.clock, current_generation)
+    }
+
+    /// The commit guard this lease authorises for `head`, or the fence error
+    /// that stops the write before it publishes anything.
+    pub fn guard(&self, head: &HeadState) -> Result<HeadGuard, WriteError> {
+        self.grant.guard(head, &*self.clock)
+    }
 }
 
 /// Why a lease is or is not usable.

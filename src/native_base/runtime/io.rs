@@ -15,8 +15,9 @@ use crate::native_base::wire::uvarint::Reader;
 use crate::native_base::write::commit::{InodeView, read_inode_view};
 use crate::native_base::write::domain::decode_registration;
 use crate::native_base::write::error::WriteError;
+use crate::native_base::write::lease::WriterLease;
 use crate::native_base::write::overlay::{
-    DrainReport, MutationSpec, Ticket, WriteOverlay, ensure_workspace_head,
+    DrainReport, MutationSpec, RollbackReport, Ticket, WriteOverlay, ensure_workspace_head,
 };
 use crate::native_base::write::records::{ExtentKind, HeadPlacement};
 use crate::native_base::write::store::ControlStore;
@@ -218,6 +219,34 @@ impl NativeDataRuntime {
         )
         .await?;
         Ok(())
+    }
+
+    /// The lease this runtime's writer publishes under, when the overlay was
+    /// built with one.  The FUSE-facing data path is then fenced exactly like
+    /// the overlay's own publishing steps: a lease that expired or was
+    /// superseded on backend time refuses the write instead of publishing it
+    /// (CONS-004).
+    pub fn writer_lease(&self) -> Option<&WriterLease> {
+        self.overlay.lease()
+    }
+
+    /// Fence this writer and clean every bit of its private state: the
+    /// coordinator's entry point for a lapsed lease or an authority rollback
+    /// (CONS-004).  The runtime keeps serving reads; what stops is publishing,
+    /// and every object an in-flight upload already put down is protected
+    /// before the report is returned.
+    pub async fn rollback_writer(
+        &self,
+        cause: &WriteError,
+    ) -> Result<RollbackReport, NativeIoError> {
+        Ok(self.overlay.rollback(cause).await?)
+    }
+
+    /// The writer rollback the last publishing attempt performed, if any.  A
+    /// fence reported as an error cleans the writer's private state in the
+    /// same step, so this is where the caller sees what it cleaned.
+    pub async fn last_writer_rollback(&self) -> Option<RollbackReport> {
+        self.overlay.last_rollback().await
     }
 
     async fn ensure_baseline_size(&self, inode: u64) -> Result<u64, NativeIoError> {
@@ -957,10 +986,13 @@ mod tests {
     use crate::native_base::wire::container::ObjectKind;
     use crate::native_base::wire::datapack::{PackBuilder, PackFrame, ScrubbedPack};
     use crate::native_base::wire::refs::ObjectRef;
+    use crate::native_base::write::keys::Keys;
+    use crate::native_base::write::lease::{LeaseGrant, StepClock};
     use crate::native_base::write::memory::MemoryControlStore;
     use crate::native_base::write::overlay::OverlayParams;
     use crate::native_base::write::receipts::MemorySink;
     use crate::native_base::write::receipts::ObjectSink;
+    use crate::native_base::write::records::HeadState;
     use crate::native_base::write::store::{StoreError, Txn};
 
     /// A sink whose uploads can be failed on demand, to model an incomplete
@@ -1240,6 +1272,94 @@ mod tests {
 
         let restarted = runtime(store, sink, base).await;
         assert_eq!(&restarted.read(9, 61, 7).await.unwrap(), b"xxABCxx");
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_writer_lease_fences_the_runtime_and_cleans_its_private_state() {
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(CountingBase {
+            data: vec![0; 128],
+            bytes_read: AtomicU64::new(0),
+        });
+        let clock = Arc::new(StepClock::backend(1_000_000));
+        let overlay = Arc::new(
+            WriteOverlay::new(
+                store.clone(),
+                sink,
+                OverlayParams {
+                    volume_id: [1; 16],
+                    workspace_id: [2; 16],
+                    domain_id: [3; 16],
+                    writer_generation: 1,
+                    block_size: 64,
+                },
+            )
+            .with_writer_lease(
+                LeaseGrant {
+                    workspace_id: [2; 16],
+                    owner_generation: 1,
+                    granted_at_ns: 1_000_000,
+                    ttl_ns: 5_000_000,
+                },
+                clock.clone(),
+            ),
+        );
+        let runtime = NativeDataRuntime::new(overlay, base);
+        runtime.initialize([4; 16], 1).await.unwrap();
+        assert!(runtime.writer_lease().is_some());
+
+        runtime.write(11, 0, &[0x5A; 64]).await.unwrap();
+        // Backend time passes the deadline before the write is flushed.
+        clock.advance_to(6_000_000);
+        let error = runtime.fsync(11).await.unwrap_err();
+        assert!(
+            matches!(error, NativeIoError::Write(WriteError::LeaseFence(_))),
+            "a lapsed lease must fence the flush, got {error}"
+        );
+
+        // The fence cleaned the writer's private state and published nothing.
+        let report = runtime
+            .last_writer_rollback()
+            .await
+            .expect("the fence cleaned the writer");
+        assert!(report.stopped_publishing());
+        assert_eq!(report.stopped.len(), 1);
+        assert_eq!(report.dropped_dirty, 1);
+        assert!(report.protected.is_empty(), "nothing was uploaded");
+        let keys = Keys::new(&[1; 16]);
+        assert!(
+            store
+                .scan(&keys.extents_prefix(&[2; 16], 11))
+                .await
+                .unwrap()
+                .is_empty(),
+            "a fenced flush publishes no extent"
+        );
+        assert_eq!(
+            HeadState::decode(&store.get(&keys.head(&[2; 16])).await.unwrap().unwrap())
+                .unwrap()
+                .head
+                .commit_seq,
+            0,
+            "a fenced flush does not move the head"
+        );
+
+        // The failed write is still the caller's to discard, and once it is,
+        // the inode reads exactly as before the attempt.
+        assert_eq!(runtime.pending_count(11).await, 1);
+        assert_eq!(runtime.discard_dirty(11).await, 1);
+        runtime.clear_cache().await;
+        assert_eq!(&runtime.read(11, 0, 64).await.unwrap(), &[0u8; 64]);
+
+        // A coordinator rollback on a writer with no private state left is
+        // idempotent and still publishes nothing.
+        let second = runtime
+            .rollback_writer(&WriteError::LeaseFence("lease was not renewed".into()))
+            .await
+            .unwrap();
+        assert_eq!(second.stopped.len(), 0);
+        assert!(second.stopped_publishing());
     }
 
     #[tokio::test]
