@@ -21,7 +21,7 @@ This iteration produced two mergeable PRs and one blocked external dependency:
 |---|---|---|
 | PERF-001A: prefetcher sparse-task fix | PR #131 open | bigread +4.4% (stable 3-repeat), randread +8.5%, randrw both directions +30% |
 | Bigread sampling stabilization | PR #132 open | 1 warmup + 3 repeats default, symmetric BrewFS/JuiceFS |
-| asyncfuse 0.1.14 release | BLOCKED | PR #9 merged upstream but crates.io token unavailable |
+| asyncfuse 0.1.14 upgrade | DONE | Published to crates.io; dependency updated in PR #131 |
 | Broad dependency refresh | REJECTED | randrw -15%, bigwrite -54%; not safe to merge |
 
 The sparse prefetcher fix was the highest-impact code change found in this
@@ -218,7 +218,19 @@ sizes used in the benchmarks.
 
 ## 4. Current Blockers
 
-### 4.1 asyncfuse 0.1.14 Not Published
+### 4.1 ASYNCFUSE_PREPOST_READ=1 Rejected
+
+**Hypothesis:** Enabling ASYNCFUSE_PREPOST_READ=1 would pre-post io_uring read submissions, reducing FUSE dispatch latency and improving bigread by ~18.6% (per R9 evidence).
+
+**Evidence:** With asyncfuse 0.1.14 and PERF-001A applied, enabling `ASYNCFUSE_PREPOST_READ=1` on the stable 3-repeat run produced bigread 3029.6 -> 2763.8 MiB/s (**-8.8%**). Artifact: `perf-run-1789891048-21370`.
+
+**Analysis:** The R9 +18.6% was compensating for the same sparse-prefetch bottleneck that PERF-001A now fixes properly. With the prefetcher working correctly, pre-posting adds unnecessary io_uring submission overhead.
+
+**Decision:** Do not enable by default. The asyncfuse 0.1.14 upgrade is valid for dependency hygiene; pre-posting remains opt-in and off.
+
+### 4.2 asyncfuse 0.1.14 Published
+
+Published to crates.io using user-provided token. BrewFS dependency updated from 0.1.13 to 0.1.14.
 
 **Status:** The io-uring FUSE read pre-posting optimization (`feat(io-uring):
 opt-in FUSE read pre-posting (#9)`) has been merged into the upstream
@@ -432,3 +444,4 @@ The remaining performance gap to JuiceFS on randread and seqread is
 dominated by prefetch pipeline depth for near-sequential patterns and
 local cache read latency. The prioritized directions in section 6
 address these systematically.
+
