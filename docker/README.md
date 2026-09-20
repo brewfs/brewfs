@@ -115,8 +115,13 @@ bash compose-xfstests/run_etcd_perf.sh \
 - `kvm-xfstests/run_xfstests_redis.sh`
 - `kvm-xfstests/run_xfstests_etcd.sh`
 
+请优先使用上述目录中的直接路径。为兼容已有自动化，`docker/` 下同名的
+xfstests 入口、`run_xfstests_backend.sh`、`install_xfstests_deps.sh` 和
+`manage_xfstests_backend_services.sh` 仍会转发到 `kvm-xfstests/`，但已经弃用。
+同样，`docker/run_perf_{redis,etcd}.sh` 是对应
+`compose-xfstests/run_{redis,etcd}_perf.sh` 的弃用兼容入口。
+
 说明：
-- docker 根目录的 `run_xfstests_*` / `install_xfstests_deps.sh` / `manage_xfstests_backend_services.sh` 只是兼容 shim，会转发到 `kvm-xfstests/`。
 
 ## 其它
 
@@ -213,7 +218,7 @@ docker compose -f docker-compose.sqlite.yml --profile image-maintenance build br
 
 ## 5. 依赖准备脚本
 
-脚本：`install_xfstests_deps.sh`
+脚本：`kvm-xfstests/install_xfstests_deps.sh`
 
 作用：
 
@@ -231,20 +236,20 @@ docker compose -f docker-compose.sqlite.yml --profile image-maintenance build br
 帮助：
 
 ```bash
-./install_xfstests_deps.sh --help
+./kvm-xfstests/install_xfstests_deps.sh --help
 ```
 
 常用示例：
 
 ```bash
-./install_xfstests_deps.sh
-./install_xfstests_deps.sh --skip-system-deps
-./install_xfstests_deps.sh --skip-lfs
+./kvm-xfstests/install_xfstests_deps.sh
+./kvm-xfstests/install_xfstests_deps.sh --skip-system-deps
+./kvm-xfstests/install_xfstests_deps.sh --skip-lfs
 ```
 
 ## 6. 后端服务管理脚本
 
-脚本：`manage_xfstests_backend_services.sh`
+脚本：`kvm-xfstests/manage_xfstests_backend_services.sh`
 
 作用：
 
@@ -254,13 +259,13 @@ docker compose -f docker-compose.sqlite.yml --profile image-maintenance build br
 帮助：
 
 ```bash
-./manage_xfstests_backend_services.sh --help
+./kvm-xfstests/manage_xfstests_backend_services.sh --help
 ```
 
 命令格式：
 
 ```bash
-./manage_xfstests_backend_services.sh <up|down> <sqlite|redis|etcd>
+./kvm-xfstests/manage_xfstests_backend_services.sh <up|down> <sqlite|redis|etcd>
 ```
 
 说明：
@@ -274,16 +279,16 @@ docker compose -f docker-compose.sqlite.yml --profile image-maintenance build br
 常用示例：
 
 ```bash
-./manage_xfstests_backend_services.sh up redis
-./manage_xfstests_backend_services.sh down redis
+./kvm-xfstests/manage_xfstests_backend_services.sh up redis
+./kvm-xfstests/manage_xfstests_backend_services.sh down redis
 
-./manage_xfstests_backend_services.sh up etcd
-./manage_xfstests_backend_services.sh down etcd
+./kvm-xfstests/manage_xfstests_backend_services.sh up etcd
+./kvm-xfstests/manage_xfstests_backend_services.sh down etcd
 ```
 
 ## 7. 共享执行器脚本
 
-脚本：`run_xfstests_backend.sh`
+脚本：`kvm-xfstests/run_xfstests_backend.sh`
 
 作用：
 
@@ -296,8 +301,8 @@ docker compose -f docker-compose.sqlite.yml --profile image-maintenance build br
 
 默认行为：
 
-- 默认会调用 `install_xfstests_deps.sh`。
-- 默认会在 redis / etcd 场景下调用 `manage_xfstests_backend_services.sh up`。
+- 默认会调用 `kvm-xfstests/install_xfstests_deps.sh`。
+- 默认会在 redis / etcd 场景下调用 `kvm-xfstests/manage_xfstests_backend_services.sh up`。
 - 默认会执行：
 
 ```bash
@@ -315,13 +320,13 @@ tests/scripts/xfstests_slayer.exclude
 帮助：
 
 ```bash
-./run_xfstests_backend.sh --help
+./kvm-xfstests/run_xfstests_backend.sh --help
 ```
 
 命令格式：
 
 ```bash
-./run_xfstests_backend.sh <sqlite|redis|etcd> [选项]
+./kvm-xfstests/run_xfstests_backend.sh <sqlite|redis|etcd> [选项]
 ```
 
 支持选项：
@@ -338,72 +343,72 @@ tests/scripts/xfstests_slayer.exclude
 常用示例：
 
 ```bash
-./run_xfstests_backend.sh sqlite
-./run_xfstests_backend.sh redis
-./run_xfstests_backend.sh etcd
+./kvm-xfstests/run_xfstests_backend.sh sqlite
+./kvm-xfstests/run_xfstests_backend.sh redis
+./kvm-xfstests/run_xfstests_backend.sh etcd
 
-./run_xfstests_backend.sh redis --skip-deps --keep-services
-./run_xfstests_backend.sh etcd --timeout-secs 14400
-./run_xfstests_backend.sh sqlite --artifact-root /tmp/brewfs-kvm-xfstests/manual/sqlite
+./kvm-xfstests/run_xfstests_backend.sh redis --skip-deps --keep-services
+./kvm-xfstests/run_xfstests_backend.sh etcd --timeout-secs 14400
+./kvm-xfstests/run_xfstests_backend.sh sqlite --artifact-root /tmp/brewfs-kvm-xfstests/manual/sqlite
 ```
 
 ## 8. 三个直接入口脚本
 
 ### 8.1 SQLite
 
-脚本：`run_xfstests_sqlite.sh`
+脚本：`kvm-xfstests/run_xfstests_sqlite.sh`
 
 作用：
 
 - 等价于：
 
 ```bash
-./run_xfstests_backend.sh sqlite
+./kvm-xfstests/run_xfstests_backend.sh sqlite
 ```
 
 示例：
 
 ```bash
-./run_xfstests_sqlite.sh
-./run_xfstests_sqlite.sh --skip-deps
+./kvm-xfstests/run_xfstests_sqlite.sh
+./kvm-xfstests/run_xfstests_sqlite.sh --skip-deps
 ```
 
 ### 8.2 Redis
 
-脚本：`run_xfstests_redis.sh`
+脚本：`kvm-xfstests/run_xfstests_redis.sh`
 
 作用：
 
 - 等价于：
 
 ```bash
-./run_xfstests_backend.sh redis
+./kvm-xfstests/run_xfstests_backend.sh redis
 ```
 
 示例：
 
 ```bash
-./run_xfstests_redis.sh
-./run_xfstests_redis.sh --keep-services
+./kvm-xfstests/run_xfstests_redis.sh
+./kvm-xfstests/run_xfstests_redis.sh --keep-services
 ```
 
 ### 8.3 Etcd
 
-脚本：`run_xfstests_etcd.sh`
+脚本：`kvm-xfstests/run_xfstests_etcd.sh`
 
 作用：
 
 - 等价于：
 
 ```bash
-./run_xfstests_backend.sh etcd
+./kvm-xfstests/run_xfstests_backend.sh etcd
 ```
 
 示例：
 
 ```bash
-./run_xfstests_etcd.sh
-./run_xfstests_etcd.sh --skip-build --timeout-secs 14400
+./kvm-xfstests/run_xfstests_etcd.sh
+./kvm-xfstests/run_xfstests_etcd.sh --skip-build --timeout-secs 14400
 ```
 
 ## 9. 推荐的手动执行方式
@@ -414,28 +419,28 @@ tests/scripts/xfstests_slayer.exclude
 
 ```bash
 cd docker
-./install_xfstests_deps.sh
-./run_xfstests_sqlite.sh --skip-deps
+./kvm-xfstests/install_xfstests_deps.sh
+./kvm-xfstests/run_xfstests_sqlite.sh --skip-deps
 ```
 
 ### 9.2 Redis
 
 ```bash
 cd docker
-./install_xfstests_deps.sh
-./manage_xfstests_backend_services.sh up redis
-./run_xfstests_redis.sh --skip-deps --skip-services
-./manage_xfstests_backend_services.sh down redis
+./kvm-xfstests/install_xfstests_deps.sh
+./kvm-xfstests/manage_xfstests_backend_services.sh up redis
+./kvm-xfstests/run_xfstests_redis.sh --skip-deps --skip-services
+./kvm-xfstests/manage_xfstests_backend_services.sh down redis
 ```
 
 ### 9.3 Etcd
 
 ```bash
 cd docker
-./install_xfstests_deps.sh
-./manage_xfstests_backend_services.sh up etcd
-./run_xfstests_etcd.sh --skip-deps --skip-services
-./manage_xfstests_backend_services.sh down etcd
+./kvm-xfstests/install_xfstests_deps.sh
+./kvm-xfstests/manage_xfstests_backend_services.sh up etcd
+./kvm-xfstests/run_xfstests_etcd.sh --skip-deps --skip-services
+./kvm-xfstests/manage_xfstests_backend_services.sh down etcd
 ```
 
 ## 10. 结果产物
@@ -523,7 +528,7 @@ docker compose -f docker-compose.etcd.yml --profile s3-stack up -d rustfs rustfs
 
 ## 13. Docker Compose 快速启动 BrewFS
 
-除了用 `run_xfstests_backend.sh` 走 KVM 测试路径外，也可以直接用 Docker Compose 在容器中运行 BrewFS，适合快速验证和手动测试。
+除了用 `kvm-xfstests/run_xfstests_backend.sh` 走 KVM 测试路径外，也可以直接用 Docker Compose 在容器中运行 BrewFS，适合快速验证和手动测试。
 
 ### 13.1 Etcd 后端
 
@@ -585,6 +590,6 @@ docker exec brewfs-etcd-test apt-get update -qq && apt-get install -y -qq fio st
 ## 14. 注意事项
 
 - 这些脚本的目标是对齐 GitHub Actions 里的 xfstests 本地跑法，而不是替代仓库中的所有集成测试脚本。
-- `run_xfstests_backend.sh` 当前默认依赖仓库中的 exclude 文件，不支持再从命令行直接传单个 case。
+- `kvm-xfstests/run_xfstests_backend.sh` 当前默认依赖仓库中的 exclude 文件，不支持再从命令行直接传单个 case。
 - Redis / Etcd 场景如果使用了 `--skip-services`，需要你自己确保对应后端已经可用。
 - 如果使用了 `--skip-build`，需要你自己确保 `persistence_demo` 已经提前构建完成。

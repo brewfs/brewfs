@@ -32,6 +32,7 @@ Run commands from the repository root.
 | Metadata performance smoke | `bash docker/compose-xfstests/run_redis_meta_perf.sh --quick` | 2-5 min plus build |
 | Validate metrics artifacts | `bash docker/compose-xfstests/run_redis_observability.sh` | 5-15 min |
 | Compare with JuiceFS | `bash docker/compose-xfstests/run_juicefs_perf.sh --tools "metaperf dirperf"` | workload-dependent |
+| S3 + Redis object-store smoke | `bash docker/compose-xfstests/run_s3_git_clone_smoke.sh` | a few min plus build |
 | Multi-node deployment | `bash tests/scripts/distributed-tests/run-distributed-tests.sh all` | environment-dependent |
 
 ## Common Requirements
@@ -337,9 +338,6 @@ Redis diagnostics, and BrewFS counters.
 implementation files. The fallback parser is used when a tool emits metadata
 output that the main report path cannot parse directly.
 
-The top-level `docker/run_perf_redis.sh` and `docker/run_perf_etcd.sh` files
-are compatibility aliases for the corresponding `compose-xfstests` wrappers.
-They add no configuration of their own.
 
 ### JuiceFS Comparison
 
@@ -456,23 +454,24 @@ There are two xfstests families. Prefer Compose for routine work.
 
 1. `docker/compose-xfstests/run_*_xfstests.sh` mounts BrewFS directly in a
    privileged container and is the current local/CI path.
-2. `docker/run_xfstests_{sqlite,redis,etcd}.sh` delegates to
-   `docker/kvm-xfstests/` and runs qlean/KVM integration targets. Use it when
-   VM isolation or kernel-level reproduction is required.
+2. `docker/kvm-xfstests/run_xfstests_{sqlite,redis,etcd}.sh` runs qlean/KVM
+   integration targets. Use it when VM isolation or kernel-level
+   reproduction is required.
 
 The KVM implementation consists of:
 
 | File | Role |
 | --- | --- |
 | `docker/kvm-xfstests/run_xfstests_backend.sh` | Main sqlite/Redis/etcd VM orchestrator. |
-| `run_xfstests_sqlite.sh`, `run_xfstests_redis.sh`, `run_xfstests_etcd.sh` | Backend aliases. |
-| `install_xfstests_deps.sh` | Host package and xfstests dependency setup. |
-| `manage_xfstests_backend_services.sh` | Redis/etcd service lifecycle. |
+| `docker/kvm-xfstests/run_xfstests_sqlite.sh`, `run_xfstests_redis.sh`, `run_xfstests_etcd.sh` | Backend aliases. |
+| `docker/kvm-xfstests/install_xfstests_deps.sh` | Host package and xfstests dependency setup. |
+| `docker/kvm-xfstests/manage_xfstests_backend_services.sh` | Redis/etcd service lifecycle. |
 
-The top-level `docker/run_xfstests_backend.sh` and backend-specific files are
-compatibility delegates to this KVM directory. The top-level
-`docker/install_xfstests_deps.sh` and
-`docker/manage_xfstests_backend_services.sh` are delegates as well.
+Use the direct paths above for new automation. The root-level `docker/`
+versions of those six entrypoints remain as deprecated compatibility aliases.
+The deprecated `docker/run_perf_redis.sh` and `docker/run_perf_etcd.sh` aliases
+likewise forward to `docker/compose-xfstests/run_{redis,etcd}_perf.sh`.
+
 
 `tests/scripts/xfstests_slayer.sh` and `xfstests_slayer_s3.sh` are destructive
 legacy host scripts: they install packages, recreate `/tmp/xfstests-dev`,
@@ -486,7 +485,8 @@ runs only `generic/001`; neither is the recommended regression runner.
 
 | CI job | Command |
 | --- | --- |
-| `rust` | fmt, harness shell checks, unit/bin tests, and clippy |
+| `rust` | fmt, harness shell checks (perf runners, S3 git-clone smoke, native
+  perf guards, artifact comparator), unit/bin tests, and clippy |
 | `docker-pjdfstest` | `run_redis_pjdfstest.sh` |
 | `docker-xfstests-smoke` | Redis `generic/001 generic/002 generic/100` |
 | `docker-stress-ng` | Redis stress-ng selected profile |
