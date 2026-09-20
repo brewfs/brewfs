@@ -18,8 +18,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::executor::block_on;
 use hex::encode;
-use moka::{Entry, future::Cache, ops::compute::Op};
+use moka::{Entry, future::Cache, ops::compute::Op, sync::Cache as SyncCache};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
 use std::{
     collections::HashMap,
     fs,
@@ -359,6 +361,11 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     /// to a single prefetch worker; foreground reads are still allowed to use
     /// read_flight directly and are not throttled by this semaphore.
     range_prefetch_limit: Arc<Semaphore>,
+    /// Immutable writeback slices are read repeatedly after a remount. Keep a
+    /// bounded shared descriptor cache per slice so the hot path can use
+    /// positional reads without an open+seek pair for every block request.
+    #[cfg(unix)]
+    persistent_slice_files: SyncCache<u64, Arc<fs::File>>,
     /// Configuration for read strategy
     config: BlockStoreConfig,
     /// Network bandwidth rate limiter for uploads/downloads
@@ -464,6 +471,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            #[cfg(unix)]
+            persistent_slice_files: SyncCache::new(1024),
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -513,6 +522,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            #[cfg(unix)]
+            persistent_slice_files: SyncCache::new(1024),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -540,6 +551,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            #[cfg(unix)]
+            persistent_slice_files: SyncCache::new(1024),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -800,21 +813,46 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     ) -> Option<usize> {
         let root = self.config.persistent_slice_cache_dir.as_ref()?;
         let path = persistent_slice_cache_path(root, key.0);
-        let mut file = tokio::fs::File::open(path).await.ok()?;
         let file_offset = (key.1 as u64)
             .checked_mul(self.config.block_size as u64)?
             .checked_add(offset)?;
-        file.seek(SeekFrom::Start(file_offset)).await.ok()?;
 
-        let mut read_len = 0;
-        while read_len < buf.len() {
-            match file.read(&mut buf[read_len..]).await {
-                Ok(0) => break,
-                Ok(n) => read_len += n,
-                Err(_) => return None,
+        #[cfg(unix)]
+        {
+            let file = if let Some(file) = self.persistent_slice_files.get(&key.0) {
+                file
+            } else {
+                let opened = Arc::new(fs::File::open(path).ok()?);
+                self.persistent_slice_files.insert(key.0, opened.clone());
+                opened
+            };
+
+            let mut read_len = 0;
+            while read_len < buf.len() {
+                match file.read_at(&mut buf[read_len..], file_offset + read_len as u64) {
+                    Ok(0) => break,
+                    Ok(n) => read_len += n,
+                    Err(_) => return None,
+                }
             }
+            return (read_len == buf.len()).then_some(read_len);
         }
-        (read_len == buf.len()).then_some(read_len)
+
+        #[cfg(not(unix))]
+        {
+            let mut file = tokio::fs::File::open(path).await.ok()?;
+            file.seek(SeekFrom::Start(file_offset)).await.ok()?;
+
+            let mut read_len = 0;
+            while read_len < buf.len() {
+                match file.read(&mut buf[read_len..]).await {
+                    Ok(0) => break,
+                    Ok(n) => read_len += n,
+                    Err(_) => return None,
+                }
+            }
+            (read_len == buf.len()).then_some(read_len)
+        }
     }
 
     async fn try_promote_page_cache_to_block_cache(&self, key: BlockKey) -> bool {

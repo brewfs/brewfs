@@ -817,6 +817,16 @@ where
 
         let mut data = vec![0; actual_len];
         let result = async {
+            // The common 4 MiB read stays within one chunk. Avoid building a
+            // FuturesUnordered stream and a raw-pointer wrapper for that hot
+            // path; the multi-span case still reads chunk spans concurrently.
+            if spans.len() == 1 {
+                let span = spans[0];
+                self.read_chunk_span_into(span.index, span.offset, &mut data)
+                    .await?;
+                return Ok::<_, anyhow::Error>(());
+            }
+
             let mut reads = FuturesUnordered::new();
             let mut cursor = 0;
             for span in spans {
