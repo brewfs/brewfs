@@ -273,6 +273,78 @@ worktree 就会失败。
 读侧差距仍在，且这轮没有针对它做任何改动：`fio-bigread` 2137.8 对 2343.2、`fio-seqread` 906.3 对 1186.8、
 `fio-randread` 896.4 对 1332.4 MiB/s。下一轮优化应该从这里入手，不要再拿内存预算解释。
 
+### 5.4 合并全部读路径 PR 后的完整两腿重测（2026-09-19 晚）
+
+第 5.3 节的 `4c0bae9` 只是遥测修复。之后用户把 PR 全部合并，`origin/main` 前进到 **`de551df`**，含三项与本轮
+相关的改动：#115 的 native managed harness、#121 cold-read v2 full-GET reuse、#122 readdirplus 批量属性。
+本轮在 `de551df` 上重跑完整两腿，确认这些改动在真实云端环境里的表现。
+
+二进制来自 `brewfs-aliyun-perf` 的干净检出（commit `de551df248f4927c714f7e844841d8c42d94b3b1`，`dirty=0`，
+68,277,064 B，`sha256 d2d7ef5de23851f705fd221ff7524c2c7e2b266a229a456c89e9d0fcc5646784`），由
+`target/build-commit.sh` 在 WSL 里 release 构建后上传；云端不编译。两腿规格、预算、11 项工具与第 5.2/5.3 节
+一致（`config-parity.txt` 可自证：BrewFS read 2 GiB + write 2 GiB 内存、read 4 GiB + write 4 GiB SSD、
+`BREWFS_MEMORY_BUDGET_BYTES=8589934592`；JuiceFS `JFS_BUFFER_SIZE_MIB=4096` + `JFS_CACHE_SIZE_MIB=8192`），
+同一个 Tair 实例上 BrewFS 用 db0、JuiceFS 用 db1，各自独立 bucket。
+
+归档：
+
+| 腿 | run 名 | Result Vault | 文件数 | 状态 |
+| --- | --- | --- | ---: | --- |
+| BrewFS `de551df` | `perf-run-1789790119-14469-brewfs-brewfs-main-de551df` | `run-20260919-120458-3e41c29a` | 193 | pass |
+| JuiceFS 1.4.1 | `perf-run-1789790756-6109-juicefs-juicefs-main-de551df` | `run-20260919-122228-f982b4a7` | 168 | pass |
+
+两腿 11 项全部 `pass`；日志里唯一的 ERROR 是既有的「当前 JuiceFS 不支持 `--max-downloads`」，属已知项。
+跑完 ECS/Tair/bucket 已删除，复查账号只剩用户自己的 ECS、Tair 0 个、bucket 0 个。
+
+与第 5.3 节（`4c0bae9`，同预算同规格）逐项对比：
+
+| 场景 | 4c0bae9 | de551df | 变化 |
+| --- | ---: | ---: | ---: |
+| fio-bigread | 2137.8 MiB/s（p99 21.4 ms） | 2240.7 MiB/s（p99 21.1 ms） | +4.8% |
+| fio-seqread | 906.3 MiB/s（p99 5.0 ms） | 984.3 MiB/s（p99 4.6 ms） | +8.6% |
+| fio-randread | 896.4 MiB/s（p99 98.0 ms） | 940.4 MiB/s（p99 80.2 ms） | +4.9% |
+| fio-bigwrite | 1267.3 MiB/s（p99 36.4 ms） | 1442.3 MiB/s（p99 29.8 ms） | +13.8% |
+| fio-seqwrite 前台 / drained | 320.2 / 320.2 MiB/s | 322.9 / 312.5 MiB/s | +0.8% / -2.4% |
+| fio-randwrite 前台 / drained | 324.7 / 314.2 MiB/s（p99 541 ms） | 324.1 / 313.6 MiB/s（p99 549 ms） | -0.2% / -0.2% |
+| fio-randrw 读/写 drained | 491.0 / 217.4 MiB/s | 517.4 / 229.9 MiB/s | +5.4% / +5.8% |
+
+#121 的效果有硬证据，不靠吞吐：`fio-randread`、`fio-randwrite`、`fio-randrw-prefill` 三条场景的
+`s3_get_ops` 从 **194 → 96（-50.5%）**，即每个 512 MiB 工作集的回源 GET 直接砍半。吞吐侧的 +4.8% ~ +13.8%
+则要和宿主机抖动一起看：本轮 `free` 最低点 173 MiB、`wa` 平均 33.8%，上一轮 149 MiB / 34.5%，两侧 swap 都是
+0，属同一噪声量级；`fio-randrw` 写 p99 从 64.8 ms 涨到 147.8 ms 是这里唯一的负面信号，绝对值基数小（写侧
+drained 仍 +5.8%），先记为待观察项。
+
+与同轮 JuiceFS 1.4.1 的对比（前台带宽 / p99）：
+
+| 场景 | JuiceFS 1.4.1 | BrewFS de551df | BrewFS 相对 |
+| --- | ---: | ---: | ---: |
+| fio-bigread | 3056.7 MiB/s（p99 32.6 ms） | 2240.7 MiB/s（p99 21.1 ms） | -26.7% |
+| fio-seqread | 1551.0 MiB/s（p99 2.6 ms） | 984.3 MiB/s（p99 4.6 ms） | -36.5% |
+| fio-randread | 1798.8 MiB/s（p99 12.0 ms） | 940.4 MiB/s（p99 80.2 ms） | -47.7% |
+| fio-bigwrite | 885.0 MiB/s（p99 31.6 ms） | 1442.3 MiB/s（p99 29.8 ms） | +63.0% |
+| fio-seqwrite | 554.5 MiB/s（p99 35.4 ms） | 322.9 MiB/s（p99 33.4 ms） | -41.8% |
+| fio-randwrite | 574.5 MiB/s（p99 99.1 ms） | 324.1 MiB/s（p99 549.5 ms） | -43.6% |
+| fio-randrw 读/写 | 343.6 / 153.3 MiB/s | 534.7 / 237.6 MiB/s | +55.6% / +55.0% |
+
+写侧必须按 drained 口径读，否则结论会反（数据来自 `fully-drained-throughput.tsv`）：
+
+| 场景 | BrewFS de551df | JuiceFS 1.4.1 | BrewFS 相对 |
+| --- | ---: | ---: | ---: |
+| fio-bigwrite drained | 217.4 MiB/s（drain 4 s） | 246.3 MiB/s（drain 3 s） | -11.7% |
+| fio-seqwrite drained | 312.5 MiB/s（drain 2 s） | 180.8 MiB/s（drain 124 s） | +72.8% |
+| fio-randwrite drained | 313.6 MiB/s（drain 2 s） | 188.4 MiB/s（drain 123 s） | +66.4% |
+| fio-randrw drained 读/写 | 517.4 / 229.9 MiB/s（drain 2 s） | 133.2 / 59.4 MiB/s（drain 95 s） | +288% / +287% |
+
+也就是说前台 JuiceFS 的写吞吐优势全部来自「写内存 + 慢慢回源」：它每条写场景要 95 ~ 124 s 才排空，BrewFS 只要
+2 ~ 4 s。按真正落地完成的口径，BrewFS 除 `fio-bigwrite` 外全面领先。读侧差距比第 5.3 节更大（JuiceFS 这轮读的
+绝对值显著高于上一轮：bigread 2343→3057、seqread 1187→1551、randread 1332→1799 MiB/s），且只有
+`fio-randread` 的 p99 是 BrewFS 明显更差（80.2 对 12.0 ms）。宿主机这边 JuiceFS 腿反而更宽裕（`free` 最低点
+186 MiB、`wa` 平均 14.8%，199 个采样是因为要等长 drain），所以读侧差距不能归因于宿主机被拖累，下一轮优化重点
+仍在这里。
+
+口径提醒：JuiceFS 每轮只跑一次，本节这组数字就是后续的 JuiceFS 基准；之后不再重复测 JuiceFS，常规迭代只跑
+BrewFS 单腿（第 3 节入口），需要刷新 JuiceFS 基准时再单独说明。
+
 ### 6. 成本控制
 
 默认策略是「用完即删」。2026-09-17 一轮结束后，账号里只应剩用户自己的 ECS、它的系统盘，以及一块长期 VM 镜像和它的快照。
