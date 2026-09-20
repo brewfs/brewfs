@@ -1025,13 +1025,78 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
 
         let key_str = Self::key_for(key);
 
-        // Try cache first — blocks are immutable once committed, so a cache
-        // hit is always valid regardless of read size or offset.
+        let range_size_threshold = self.config.range_size_threshold();
+        let can_try_object_ranges = offset > 0 && len > 0 && len <= range_size_threshold;
         let full_block_read = offset == 0 && len >= self.config.block_size;
+
+        // Preserve the read-after-write tier before consulting the page cache.
+        // Unlike the persistent block-cache fallback, this lookup is memory-only.
         if !full_block_read
             && let Some(read_len) = self
                 .block_cache
-                .get_range_into(&key_str, offset as usize, buf)
+                .get_range_into_memory(&key_str, offset as usize, buf)
+                .await
+        {
+            tracing::trace!(key = %key_str, len = read_len, "block_cache memory range HIT");
+            tracing::Span::current().record("strategy", "cache_range_memory_hit");
+            tracing::Span::current().record("read_len", read_len);
+            self.object_metrics.record_read_block_cache_hit();
+            return Ok(());
+        }
+
+        // A complete page-cache hit is pure memory. Check it before any block
+        // cache path that may fall through to disk, so hot small reads do not
+        // pay local I/O or wait for a broader cache operation.
+        if can_try_object_ranges {
+            let page_size = self.page_cache.page_size();
+            let start_page = offset as usize / page_size;
+            let end_page = (offset as usize + len - 1) / page_size;
+            let mut cached_pages = Vec::with_capacity(end_page - start_page + 1);
+            for page_idx in start_page..=end_page {
+                let cache_key: PageKey = (key.0, key.1, page_idx as u32);
+                let Some(page) = self.page_cache.get(&cache_key).await else {
+                    cached_pages.clear();
+                    break;
+                };
+                cached_pages.push(page);
+            }
+
+            if !cached_pages.is_empty() {
+                let mut total_read = 0;
+                for (page_idx, page_data) in (start_page..=end_page).zip(cached_pages) {
+                    let page_start = page_idx * page_size;
+                    let copy_start = if page_idx == start_page {
+                        offset as usize - page_start
+                    } else {
+                        0
+                    };
+                    let requested_end = if page_idx == end_page {
+                        (offset as usize + len).saturating_sub(page_start)
+                    } else {
+                        page_size
+                    };
+                    let copy_end = requested_end.min(page_data.len());
+                    if copy_end > copy_start {
+                        let copy_len = copy_end - copy_start;
+                        let output_start = page_start + copy_start - offset as usize;
+                        buf[output_start..output_start + copy_len]
+                            .copy_from_slice(&page_data[copy_start..copy_end]);
+                        total_read += copy_len;
+                    }
+                }
+                tracing::Span::current().record("strategy", "page_cache_hit");
+                tracing::Span::current().record("read_len", total_read);
+                self.object_metrics.record_read_page_cache_hit();
+                return require_complete_read(key, offset, len, total_read);
+            }
+        }
+
+        // Try cache first — blocks are immutable once committed, so a cache
+        // hit is always valid regardless of read size or offset.
+        if !full_block_read
+            && let Some(read_len) = self
+                .block_cache
+                .get_range_into_disk(&key_str, offset as usize, buf)
                 .await
         {
             tracing::trace!(key = %key_str, len = read_len, "block_cache range HIT");
@@ -1076,9 +1141,6 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             return Ok(());
         }
 
-        let range_size_threshold = self.config.range_size_threshold();
-        let can_try_object_ranges = offset > 0 && len > 0 && len <= range_size_threshold;
-
         if can_try_object_ranges
             && let Some(block_data) = self.read_flight.try_piggyback(&key).await
         {
@@ -1097,54 +1159,6 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             }
             tracing::Span::current().record("read_len", copy_len);
             return require_complete_read(key, offset, len, copy_len);
-        }
-
-        // Serve fully cached pages before resolving the remote object layout.
-        // The format cache has an independent eviction policy, so a page-cache
-        // hit must not become a network dependency when its format entry ages
-        // out.
-        if can_try_object_ranges {
-            let page_size = self.page_cache.page_size();
-            let start_page = offset as usize / page_size;
-            let end_page = (offset as usize + len - 1) / page_size;
-            let mut cached_pages = Vec::with_capacity(end_page - start_page + 1);
-            for page_idx in start_page..=end_page {
-                let cache_key: PageKey = (key.0, key.1, page_idx as u32);
-                let Some(page) = self.page_cache.get(&cache_key).await else {
-                    cached_pages.clear();
-                    break;
-                };
-                cached_pages.push(page);
-            }
-
-            if !cached_pages.is_empty() {
-                let mut total_read = 0;
-                for (page_idx, page_data) in (start_page..=end_page).zip(cached_pages) {
-                    let page_start = page_idx * page_size;
-                    let copy_start = if page_idx == start_page {
-                        offset as usize - page_start
-                    } else {
-                        0
-                    };
-                    let requested_end = if page_idx == end_page {
-                        (offset as usize + len).saturating_sub(page_start)
-                    } else {
-                        page_size
-                    };
-                    let copy_end = requested_end.min(page_data.len());
-                    if copy_end > copy_start {
-                        let copy_len = copy_end - copy_start;
-                        let output_start = page_start + copy_start - offset as usize;
-                        buf[output_start..output_start + copy_len]
-                            .copy_from_slice(&page_data[copy_start..copy_end]);
-                        total_read += copy_len;
-                    }
-                }
-                tracing::Span::current().record("strategy", "page_cache_hit");
-                tracing::Span::current().record("read_len", total_read);
-                self.object_metrics.record_read_page_cache_hit();
-                return require_complete_read(key, offset, len, total_read);
-            }
         }
 
         // Only small reads need a layout decision before joining the full-read
@@ -1638,6 +1652,49 @@ mod tests {
         let mut second = [0u8; 8];
         reader.read_range((315, 0), 4, &mut second).await.unwrap();
         assert_eq!(&second[..], &raw[4..12]);
+    }
+
+    #[tokio::test]
+    async fn hot_page_precedes_disk_cache_range_lookup() {
+        const BLOCK_SIZE: usize = 4096;
+        let object_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let key = (700, 0);
+        let key_str = ObjectBlockStore::<LocalFsBackend>::key_for(key);
+        let filename = hex::encode(Sha256::digest(key_str.as_bytes()));
+        let disk_cache_path = cache_dir.path().join(filename);
+        tokio::fs::write(&disk_cache_path, vec![7u8; BLOCK_SIZE])
+            .await
+            .unwrap();
+        let store = ObjectBlockStore::new_with_configs_async(
+            ObjectClient::new(LocalFsBackend::new(object_dir.path())),
+            ChunksCacheConfig::with_budgets(0, 1024 * 1024, cache_dir.path().to_path_buf())
+                .with_integrity_mode(crate::chunk::cache_integrity::CacheIntegrityMode::None),
+            BlockStoreConfig {
+                block_size: BLOCK_SIZE,
+                page_size: BLOCK_SIZE,
+                page_cache_capacity: 1,
+                range_read_threshold: 1.0,
+                compression: Compression::None,
+                range_background_prefetch: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .page_cache
+            .insert((key.0, key.1, 0), Bytes::from(vec![9u8; BLOCK_SIZE]))
+            .await;
+        assert!(store.page_cache.get(&(key.0, key.1, 0)).await.is_some());
+
+        let mut out = [0u8; 32];
+        store.read_range(key, 1024, &mut out).await.unwrap();
+
+        assert_eq!(out, [9u8; 32]);
+        let snapshot = store.object_metrics.snapshot();
+        assert_eq!(snapshot.read_page_cache_hits, 1);
+        assert_eq!(store.block_cache.cache_hits.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

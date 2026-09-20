@@ -100,16 +100,15 @@ impl GlobalPrefetcher {
     }
 
     fn decrement_pending(pending_by_handle: &DashMap<(i64, u64), usize>, key: (i64, u64)) {
-        let mut remove = false;
-        if let Some(mut entry) = pending_by_handle.get_mut(&key) {
-            if *entry <= 1 {
-                remove = true;
-            } else {
-                *entry -= 1;
+        match pending_by_handle.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if *entry.get() <= 1 {
+                    entry.remove();
+                } else {
+                    *entry.get_mut() -= 1;
+                }
             }
-        }
-        if remove {
-            pending_by_handle.remove(&key);
+            dashmap::mapref::entry::Entry::Vacant(_) => {}
         }
     }
 
@@ -193,6 +192,16 @@ impl GlobalPrefetcher {
                         break;
                     }
                 };
+
+                // Cancellation can happen while waiting for the semaphore.
+                // Re-check at the task-start boundary so a closed handle does
+                // not launch a private prefetch after it has been cancelled.
+                if cancelled.contains(&owner) {
+                    in_flight.remove(&key);
+                    Self::finish_pending(&pending_by_handle, &cancelled, owner);
+                    drop(permit);
+                    continue;
+                }
                 Self::finish_pending(&pending_by_handle, &cancelled, owner);
 
                 let in_flight_done = in_flight.clone();
@@ -376,6 +385,84 @@ mod tests {
             Some(999 * 4096),
             "demand prefetch should be scheduled ahead of background prefetch"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_while_waiting_for_permit_does_not_start() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (task_tx, task_rx) = mpsc::channel(1);
+        let in_flight = Arc::new(DashSet::new());
+        let cancelled = Arc::new(DashSet::new());
+        let pending_by_handle = Arc::new(DashMap::new());
+        let sem = Arc::new(Semaphore::new(1));
+        let held_permit = sem.clone().acquire_owned().await.unwrap();
+        let owner = (42, 7);
+        let range = RangeKey {
+            ino: owner.0,
+            start: 4096,
+            end: 8192,
+        };
+
+        let prefetcher = GlobalPrefetcher {
+            tx: task_tx,
+            cancelled: cancelled.clone(),
+            pending_by_handle: pending_by_handle.clone(),
+        };
+        GlobalPrefetcher::increment_pending(&pending_by_handle, owner);
+        prefetcher
+            .tx
+            .send(PrefetchTask {
+                ino: owner.0,
+                start: range.start,
+                len: range.end - range.start,
+                priority: PrefetchPriority::Sequential,
+                owner_fh: owner.1,
+            })
+            .await
+            .unwrap();
+
+        let worker_in_flight = in_flight.clone();
+        let worker = tokio::spawn(GlobalPrefetcher::worker_loop(
+            task_rx,
+            sem,
+            worker_in_flight,
+            cancelled,
+            pending_by_handle.clone(),
+            Arc::new(move |_ino, start, _len| {
+                let started_tx = started_tx.clone();
+                async move {
+                    let _ = started_tx.send(start);
+                }
+            }),
+        ));
+
+        timeout(Duration::from_secs(1), async {
+            while !in_flight.contains(&range) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("task should reach the permit wait");
+
+        prefetcher.cancel_for_handle(owner.0, owner.1).await;
+        drop(held_permit);
+
+        assert!(
+            timeout(Duration::from_millis(100), started_rx.recv())
+                .await
+                .is_err(),
+            "a task cancelled while waiting for a permit must not start"
+        );
+        timeout(Duration::from_secs(1), async {
+            while in_flight.contains(&range) || pending_by_handle.contains_key(&owner) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled task state should be reclaimed");
+
+        drop(prefetcher);
+        worker.await.unwrap();
     }
 
     #[tokio::test]

@@ -602,10 +602,13 @@ where
     fn check_session(&self, offset: u64, len: usize) -> u64 {
         let mut session = self.sessions.lock();
 
-        let selected = self
-            .select_forward_session_match(&session, offset)
-            .or_else(|| self.select_back_session_match(&session, offset))
-            .unwrap_or(self.select_session_fallback(&mut session, offset, len));
+        let selected = if let Some(selected) = self.select_forward_session_match(&session, offset) {
+            selected
+        } else if let Some(selected) = self.select_back_session_match(&session, offset) {
+            selected
+        } else {
+            self.select_session_fallback(&mut session, offset, len)
+        };
 
         session[selected].update(offset, len as u64);
         session[selected].update_ahead(
@@ -1382,6 +1385,45 @@ mod tests {
             second_ahead >= layout.block_size as u64,
             "the next contiguous read should enable readahead for the detected stream"
         );
+    }
+
+    #[tokio::test]
+    async fn matching_session_does_not_reset_other_session() {
+        let layout = small_layout();
+        let block_store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let backend = Arc::new(Backend::new(block_store, meta_handle.layer()));
+        let inode = Inode::new(79, layout.chunk_size * 32);
+        let reader = DataReader::new(
+            Arc::new(ReadConfig::new(layout).max_ahead(layout.block_size as u64 * 4)),
+            backend,
+        );
+        let file_reader = reader.open_for_handle(inode, 1);
+        let block_size = layout.block_size as u64;
+
+        for matched_offset in [20 * block_size, 20 * block_size - 512] {
+            let other = Session {
+                ahead: 2 * block_size,
+                last_off: 4 * block_size,
+                total: 4 * block_size,
+                atime: Instant::now() - Duration::from_secs(2),
+            };
+            let matched = Session {
+                ahead: 2 * block_size,
+                last_off: 20 * block_size,
+                total: 8 * block_size,
+                atime: Instant::now() - Duration::from_secs(1),
+            };
+            *file_reader.sessions.lock() = [other, matched];
+
+            file_reader.check_session(matched_offset, 512);
+
+            let sessions = file_reader.sessions.lock();
+            assert_eq!(sessions[0].ahead, other.ahead);
+            assert_eq!(sessions[0].last_off, other.last_off);
+            assert_eq!(sessions[0].total, other.total);
+            assert_eq!(sessions[0].atime, other.atime);
+        }
     }
 
     #[tokio::test]
