@@ -48,8 +48,18 @@ done
 
 grep -q 'git clone' "$inner" || fail "inner driver does not clone a git repo"
 grep -q 'git fsck' "$inner" || fail "inner driver does not run git fsck"
-grep -q 'rm -rf "${cache_root:?}"' "$inner" \
+grep -q 'if ! find "${cache_root:?}" -mindepth 1 -maxdepth 1 -exec rm -rf' "$inner" \
     || fail "inner driver must wipe the local cache before the remount check"
+grep -q 'failed to verify local cache' "$inner" \
+    || fail "inner driver must fail when local-cache verification fails"
+grep -q 'local cache is not empty after wipe' "$inner" \
+    || fail "inner driver must verify that the local cache is empty"
+grep -q 'if ! umount "$mount_dir"' "$inner" \
+    || fail "inner driver must fail when unmounting BrewFS fails"
+grep -q 'findmnt -rn --mountpoint "$mount_dir"' "$inner" \
+    || fail "inner driver must verify that the mount disappeared"
+grep -q -- '-e RUST_LOG=brewfs=warn' "$runner" \
+    || fail "runner must capture BrewFS WARN messages in the daemon log"
 
 grep -q 'compose down -v --remove-orphans' "$runner" \
     || fail "$runner must tear down services and volumes"

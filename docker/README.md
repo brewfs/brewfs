@@ -115,6 +115,12 @@ bash compose-xfstests/run_etcd_perf.sh \
 - `kvm-xfstests/run_xfstests_redis.sh`
 - `kvm-xfstests/run_xfstests_etcd.sh`
 
+请优先使用上述目录中的直接路径。为兼容已有自动化，`docker/` 下同名的
+xfstests 入口、`run_xfstests_backend.sh`、`install_xfstests_deps.sh` 和
+`manage_xfstests_backend_services.sh` 仍会转发到 `kvm-xfstests/`，但已经弃用。
+同样，`docker/run_perf_{redis,etcd}.sh` 是对应
+`compose-xfstests/run_{redis,etcd}_perf.sh` 的弃用兼容入口。
+
 说明：
 
 ## 其它

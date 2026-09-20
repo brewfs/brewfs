@@ -90,8 +90,6 @@ jobs:
           bash docker/compose-xfstests/test_native_perf_budget_parity.sh
           bash docker/compose-xfstests/test_native_perf_memory_guard.sh
           bash tools/perf/test_compare_artifacts.sh
-          bash docker/compose-xfstests/test_native_perf_budget_parity.sh
-          bash docker/compose-xfstests/test_native_perf_memory_guard.sh
           bash docker/compose-xfstests/test_native_perf_harness_payload.sh
 
       - name: Build workspace

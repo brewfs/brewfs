@@ -463,9 +463,14 @@ The KVM implementation consists of:
 | File | Role |
 | --- | --- |
 | `docker/kvm-xfstests/run_xfstests_backend.sh` | Main sqlite/Redis/etcd VM orchestrator. |
-| `run_xfstests_sqlite.sh`, `run_xfstests_redis.sh`, `run_xfstests_etcd.sh` | Backend aliases. |
-| `install_xfstests_deps.sh` | Host package and xfstests dependency setup. |
-| `manage_xfstests_backend_services.sh` | Redis/etcd service lifecycle. |
+| `docker/kvm-xfstests/run_xfstests_sqlite.sh`, `run_xfstests_redis.sh`, `run_xfstests_etcd.sh` | Backend aliases. |
+| `docker/kvm-xfstests/install_xfstests_deps.sh` | Host package and xfstests dependency setup. |
+| `docker/kvm-xfstests/manage_xfstests_backend_services.sh` | Redis/etcd service lifecycle. |
+
+Use the direct paths above for new automation. The root-level `docker/`
+versions of those six entrypoints remain as deprecated compatibility aliases.
+The deprecated `docker/run_perf_redis.sh` and `docker/run_perf_etcd.sh` aliases
+likewise forward to `docker/compose-xfstests/run_{redis,etcd}_perf.sh`.
 
 
 `tests/scripts/xfstests_slayer.sh` and `xfstests_slayer_s3.sh` are destructive

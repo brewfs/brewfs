@@ -179,7 +179,7 @@ brewfs_pid=""
 
 mount_brewfs() {
     local label="$1" i
-    export RUST_LOG="${RUST_LOG:-error}"
+    export RUST_LOG="${RUST_LOG:-brewfs=warn}"
     export BREWFS_LOG_FILE="$log_file"
     /usr/local/bin/brewfs mount --privileged --config "$config_path" "$mount_dir" \
         >>"$mount_stdout" 2>&1 &
@@ -202,14 +202,27 @@ mount_brewfs() {
 }
 
 unmount_brewfs() {
+    local i
     cd /
-    umount "$mount_dir" 2>/dev/null || true
+    if ! umount "$mount_dir"; then
+        smoke_fail "failed to unmount $mount_dir"
+    fi
+    for i in $(seq 1 10); do
+        if ! findmnt -rn --mountpoint "$mount_dir" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    if findmnt -rn --mountpoint "$mount_dir" >/dev/null 2>&1; then
+        smoke_fail "$mount_dir is still mounted after unmount"
+    fi
     if [[ -n "$brewfs_pid" ]]; then
-        kill "$brewfs_pid" 2>/dev/null || true
+        if kill -0 "$brewfs_pid" 2>/dev/null; then
+            kill "$brewfs_pid" 2>/dev/null || smoke_fail "failed to stop brewfs daemon"
+        fi
         wait "$brewfs_pid" 2>/dev/null || true
         brewfs_pid=""
     fi
-    sleep 1
 }
 
 checksum_tree() {
@@ -293,7 +306,14 @@ fi
 
 smoke_info "phase 2: unmount, wipe the local block cache, remount"
 unmount_brewfs
-rm -rf "${cache_root:?}"/*
+if ! find "${cache_root:?}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; then
+    smoke_fail "failed to wipe local cache"
+fi
+cache_entry="$(find "$cache_root" -mindepth 1 -maxdepth 1 -print -quit)" \
+    || smoke_fail "failed to verify local cache"
+if [[ -n "$cache_entry" ]]; then
+    smoke_fail "local cache is not empty after wipe: $cache_entry"
+fi
 mount_brewfs "phase-2"
 
 after_count="$(checksum_tree "$artifact_dir/after.md5")"
@@ -345,7 +365,7 @@ if ! compose run --rm \
     -e BREWFS_META_BACKEND=redis \
     -e SMOKE_ARTIFACT_DIR=/smoke-artifacts \
     -e SMOKE_GIT_REPO="$git_repo" \
-    -e RUST_LOG=error \
+    -e RUST_LOG=brewfs=warn \
     -v "$inner:/opt/smoke/git_clone_smoke_inner.sh:ro" \
     -v "$artifact_dir:/smoke-artifacts" \
     "$COMPOSE_SERVICE" /opt/smoke/git_clone_smoke_inner.sh; then
