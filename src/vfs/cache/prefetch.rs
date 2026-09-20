@@ -154,8 +154,16 @@ impl GlobalPrefetcher {
             let first = rx.recv().await;
             let Some(first) = first else { break };
             batch.push(first);
-            // recv_many fills up to capacity without blocking
-            let _ = rx.recv_many(&mut batch, 63).await;
+            // The sender remains alive for the lifetime of the prefetcher, so
+            // a second blocking receive could strand the first sparse task.
+            // Drain only what is already ready and schedule immediately.
+            while batch.len() < 64 {
+                match rx.try_recv() {
+                    Ok(task) => batch.push(task),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
             batch.sort_by_key(|task| task.priority);
 
             for task in batch.drain(..) {
@@ -407,6 +415,89 @@ mod tests {
                 .await
                 .is_err(),
             "duplicate in-flight ranges should piggyback on the first task"
+        );
+        hold.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn single_prefetch_starts_with_sender_alive() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let prefetcher = GlobalPrefetcher::new(8, 32, move |ino, start, _len| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send((ino, start));
+            }
+        });
+
+        prefetcher
+            .submit(PrefetchTask {
+                ino: 10,
+                start: 4096,
+                len: 4096,
+                priority: PrefetchPriority::Sequential,
+                owner_fh: 1,
+            })
+            .await;
+
+        assert_eq!(
+            timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .unwrap(),
+            Some((10, 4096)),
+            "a sparse prefetch task should not wait for another submit"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_sparse_prefetch_is_not_stranded() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let gate = Arc::new(Semaphore::new(1));
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let fetch_gate = gate.clone();
+        let fetch_hold = hold.clone();
+        let prefetcher = GlobalPrefetcher::new(1, 32, move |ino, start, _len| {
+            let tx = tx.clone();
+            let hold = fetch_hold.clone();
+            let fetch_gate = fetch_gate.clone();
+            async move {
+                let _ = fetch_gate.acquire().await;
+                let _ = tx.send((ino, start));
+                hold.notify_waiters();
+            }
+        });
+
+        prefetcher
+            .submit(PrefetchTask {
+                ino: 10,
+                start: 0,
+                len: 4096,
+                priority: PrefetchPriority::Sequential,
+                owner_fh: 1,
+            })
+            .await;
+
+        assert_eq!(
+            timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .unwrap(),
+            Some((10, 0))
+        );
+
+        prefetcher
+            .submit(PrefetchTask {
+                ino: 10,
+                start: 4096,
+                len: 4096,
+                priority: PrefetchPriority::Sequential,
+                owner_fh: 1,
+            })
+            .await;
+        gate.add_permits(1);
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), rx.recv()).await.unwrap(),
+            Some((10, 4096)),
+            "the final sparse prefetch task should run when the queue is empty"
         );
         hold.notify_waiters();
     }
