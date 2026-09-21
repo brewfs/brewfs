@@ -158,6 +158,12 @@ done
 git config --global --add safe.directory "$SOURCE"
 BASE_COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
 
+if [[ "${BREWFS_PERF_INSTALL_IO_PAGES_KERNEL:-0}" == 1 ]]; then
+    kernel_installer="$SOURCE/docker/compose-xfstests/aliyun/install_fuse_io_pages_kernel.sh"
+    [[ -x "$kernel_installer" ]] || fail "FUSE io_pages installer is missing: $kernel_installer"
+    "$kernel_installer"
+fi
+
 step 'extracting prebuilt xfstests'
 XFSTESTS_ARCHIVE="$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"
 if [[ -n "${XFSTESTS_ARCHIVE_URL:-}" ]]; then

@@ -13,6 +13,8 @@ param(
     [string]$Repository = 'https://github.com/brewfs/brewfs.git',
     [string]$Ref = 'main',
     [string]$DockerRegistryMirror = 'https://docker.m.daocloud.io',
+    [bool]$InstallIoPagesKernel = $true,
+    [string]$FuseKernelSourceUrl = 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.8.12.tar.xz',
     [ValidateRange(30, 1440)]
     [int]$AutoReleaseMinutes = 180
 )
@@ -22,6 +24,14 @@ Set-StrictMode -Version Latest
 
 $aliyunCandidates = @()
 if ($env:LOCALAPPDATA) { $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'AliyunCLI\aliyun.exe') }
+if ($env:ALIBABA_CLOUD_CLI_PATH) { $aliyunCandidates += $env:ALIBABA_CLOUD_CLI_PATH }
+if ($env:LOCALAPPDATA) {
+    $wingetPackages = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $wingetPackages) {
+        $aliyunCandidates += @(Get-ChildItem -LiteralPath $wingetPackages -Filter 'aliyun.exe' -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    }
+}
 $script:Aliyun = $null
 $script:BuilderInstanceId = $null
 
@@ -127,10 +137,30 @@ REGISTRY_MIRROR=$mirror
 ROOT=/opt/brewfs-perf
 SOURCE="`$ROOT/source/brewfs"
 
+wait_for_dpkg_lock() {
+  exec 9>/var/lib/dpkg/lock-frontend
+  for _ in `$(seq 1 180); do
+    if flock -n 9; then
+      flock -u 9
+      exec 9>&-
+      return 0
+    fi
+    echo 'waiting for another dpkg/apt process to release the package lock'
+    sleep 5
+  done
+  exec 9>&-
+  echo 'timed out waiting for the dpkg package lock' >&2
+  exit 1
+}
+
+wait_for_dpkg_lock
+dpkg --configure -a || true
+
 apt-get update -qq
 # Do not upgrade packages already present in the base image. In particular,
 # upgrading the Cloud Assistant/runtime dependency chain can restart the
 # agent that is executing this command and leave the image builder stranded.
+wait_for_dpkg_lock
 apt-get install --no-upgrade -y -qq git curl zip jq ca-certificates unzip tar gzip xz-utils \
   bash build-essential protobuf-compiler util-linux e2fsprogs fuse3 libfuse3-3 \
   xfsprogs fio stress-ng redis-tools \
@@ -177,6 +207,13 @@ done
 git -C "`$SOURCE" checkout --force --detach HEAD
 git config --global --add safe.directory "`$SOURCE"
 
+if [[ '__INSTALL_IO_PAGES_KERNEL__' == 1 ]]; then
+  kernel_installer="`$SOURCE/docker/compose-xfstests/aliyun/install_fuse_io_pages_kernel.sh"
+  [[ -x "`$kernel_installer" ]] || { echo "FUSE io_pages installer is missing: `$kernel_installer" >&2; exit 1; }
+  BREWFS_FUSE_KERNEL_SOURCE_URL='__FUSE_KERNEL_SOURCE_URL__' \
+    BREWFS_FUSE_KERNEL_JOBS="`$(nproc)" "`$kernel_installer"
+fi
+
 [[ -s "`$SOURCE/docker/compose-xfstests/run_redis_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: Redis runner missing' >&2; exit 1; }
 [[ -s "`$SOURCE/docker/compose-xfstests/run_juicefs_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: JuiceFS runner missing' >&2; exit 1; }
 if gzip -t "`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" >/dev/null 2>&1; then
@@ -203,7 +240,9 @@ cat > "`$ROOT/image-manifest.json" <<EOF
   "ref": "`$REF",
   "sourceCommit": "`$(git -C "`$SOURCE" rev-parse HEAD)",
   "preparedAt": "`$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "dockerRegistryMirror": "`$REGISTRY_MIRROR"
+  "dockerRegistryMirror": "`$REGISTRY_MIRROR",
+  "fuseIoPagesPatch": "__FUSE_IO_PAGES_PATCH__",
+  "fuseKernelSourceUrl": "__FUSE_KERNEL_SOURCE_URL__"
 }
 EOF
 chmod 0644 "`$ROOT/image-manifest.json" "`$ROOT/image-source-commit"
@@ -211,7 +250,11 @@ sync
 sleep 10
 echo 'BrewFS performance base image preparation complete.'
 "@
-    return $command.Replace('__NATIVE_RUNNER_B64__', $nativeRunnerB64)
+    $command = $command.Replace('__NATIVE_RUNNER_B64__', $nativeRunnerB64)
+    $command = $command.Replace('__INSTALL_IO_PAGES_KERNEL__', $(if ($InstallIoPagesKernel) { '1' } else { '0' }))
+    $command = $command.Replace('__FUSE_KERNEL_SOURCE_URL__', (Quote-Bash $FuseKernelSourceUrl).Trim("'"))
+    $command = $command.Replace('__FUSE_IO_PAGES_PATCH__', '98b4ca2378e1f6b6c06a74f699623ebecfb3549d')
+    return $command
 }
 
 function New-BuilderInstance {
