@@ -121,7 +121,9 @@ scripts/config --enable FUSE_FS 2>/dev/null || true
 case "$CONFIG_MODE" in
     localmodconfig)
         log 'reducing kernel configuration to modules used by the ECS base system'
-        yes '' | make localmodconfig
+        # With pipefail enabled, the answer stream naturally exits with SIGPIPE
+        # after Kconfig has consumed its input. Check make's status only.
+        (set +o pipefail; yes '' | make localmodconfig)
         scripts/config --enable FUSE_FS 2>/dev/null || true
         ;;
     olddefconfig)
