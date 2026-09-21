@@ -241,7 +241,7 @@ xfstests_archive="`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar
 if ! gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
   # GitHub clones without Git LFS leave a pointer file. Fetch the public LFS
   # object directly so image preparation does not depend on git-lfs on ECS.
-  repo_path="`$(printf '%s' "`$REPO" | sed -e 's#^https://github.com/##' -e 's#\\.git##')"
+  repo_path="`$(printf '%s' "`$REPO" | sed -e 's#^https://github.com/##' -e 's#\.git##')"
   source_commit="`$(git -C "`$SOURCE" rev-parse HEAD)"
   for archive_url in \
     "https://media.githubusercontent.com/media/`$repo_path/`$source_commit/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
