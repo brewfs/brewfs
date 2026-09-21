@@ -579,3 +579,78 @@ performance: BrewFS promotes the complete 2 GiB working set into its own memory
 cache, while the two filesystems have different cache-layer semantics. Cloud
 results with managed OSS/Tair remain the authoritative cold-backend comparison.
 
+### 10.7 Final Aliyun managed-backend matrix
+
+The final candidate was commit `3d0575c` (binary SHA-256
+`3fee18c3b4f59fba34bddc7704e45b6166fee6caadf7fa048ef69edcc1e670b6`).
+BrewFS and JuiceFS ran on matched temporary ECS instances with PL2 data disks,
+managed Tair, and same-region OSS. Both 11-tool legs passed, and all temporary
+ECS instances, data disks, buckets, binary runs, and Tair resources were deleted
+afterward.
+
+Result Vault runs:
+
+- BrewFS: `run-20260921-163938-673b15dc`
+- JuiceFS: `run-20260921-165717-d9261e32`
+
+Local extracted artifacts:
+
+- BrewFS: `docker/compose-xfstests/artifacts/aliyun-analysis/pr135-3d0575c-promotion-full/brewfs/perf-run-1789979359-17831-brewfs-brewfs-pr135-3d0575c-promotion-full`
+- JuiceFS: `docker/compose-xfstests/artifacts/aliyun-analysis/pr135-3d0575c-promotion-full/juicefs/perf-run-1789980030-29925-juicefs-juicefs-pr135-3d0575c-promotion-full`
+
+Foreground fio throughput:
+
+| Workload | BrewFS | JuiceFS | BrewFS relative |
+|---|---:|---:|---:|
+| fio-bigread | 322.6 MiB/s | 328.3 MiB/s | -1.7% |
+| fio-seqread | 2,371.8 MiB/s | 1,211.7 MiB/s | +95.7% |
+| fio-randread | 4,935.2 MiB/s | 1,337.2 MiB/s | +269.1% |
+| fio-bigwrite | 1,039.6 MiB/s | 688.6 MiB/s | +51.0% |
+| fio-seqwrite | 318.4 MiB/s | 530.4 MiB/s | -40.0% |
+| fio-randwrite | 303.6 MiB/s | 571.0 MiB/s | -46.8% |
+| fio-randrw read / write | 332.1 / 148.6 MiB/s | 328.2 / 146.0 MiB/s | +1.2% / +1.8% |
+
+Foreground write bandwidth includes queued writeback. Fully drained throughput,
+which includes the time needed to empty the filesystem queue, reverses the
+seqwrite and randwrite result:
+
+| Workload | BrewFS | JuiceFS | Drain seconds (BrewFS / JuiceFS) |
+|---|---:|---:|---:|
+| fio-bigwrite | 205.4 MiB/s | 186.6 MiB/s | 4 / 4 |
+| fio-seqwrite | 308.1 MiB/s | 181.9 MiB/s | 2 / 115 |
+| fio-randwrite | 293.8 MiB/s | 185.2 MiB/s | 2 / 125 |
+| fio-randrw total | 450.7 MiB/s | 190.3 MiB/s | 4 / 90 |
+
+Against the previous stable direct-read BrewFS cloud run
+(`perf-run-1789967854-12390`), the block-promotion candidate improved every
+target read workload under the same cold-read sampling contract:
+
+| Workload | Before promotion | After promotion | Delta |
+|---|---:|---:|---:|
+| fio-bigread | 309.1 MiB/s | 322.6 MiB/s | +4.4% |
+| fio-seqread | 1,564.7 MiB/s | 2,371.8 MiB/s | +51.6% |
+| fio-randread | 3,186.5 MiB/s | 4,935.2 MiB/s | +54.9% |
+
+The physical-read counters show why the long-running workloads improve more
+than the one-shot cold bigread:
+
+| Workload | Logical FUSE read | Persistent-slice reads | Physical bytes | Physical / logical |
+|---|---:|---:|---:|---:|
+| fio-bigread | 1,024 MiB / 1,280 ops | 256 ops | 1,024 MiB | 100.0% |
+| fio-seqread | 142,312 MiB | 256 ops | 1,024 MiB | 0.72% |
+| fio-randread | 296,124 MiB | 3,601 ops | 14,404 MiB | 4.86% |
+
+For bigread, promotion reduces five near-1 MiB FUSE requests per 4 MiB block to
+one 4 MiB persistent-slice operation without reading extra bytes. The remaining
+approximately 320 MiB/s ceiling is the cold PL2 data-disk bandwidth: JuiceFS is
+at the same ceiling. For seqread and randread, the promoted blocks are reused in
+BrewFS memory, so only 0.72% and 4.86% of logical bytes respectively reach the
+persistent slice.
+
+The three measured bigread samples were `7111.1 / 321.6 / 322.6 MiB/s` for
+BrewFS and `327.7 / 328.3 / 329.7 MiB/s` for JuiceFS. BrewFS's first measured
+sample inherited the promotion cache populated by the warmup; the later samples
+were remounted and cold. Median selection therefore chose the cold `322.6 MiB/s`
+sample. This explains the large reported BrewFS spread and prevents the hot
+sample from inflating the comparison.
+
