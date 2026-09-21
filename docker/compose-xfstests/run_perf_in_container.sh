@@ -1659,9 +1659,9 @@ run_fio_profile() {
     fi
 
     if [[ "$mode" == "bigread" ]]; then
-        repeat_count="${PERF_FIO_BIGREAD_REPEATS:-1}"
+        repeat_count="${PERF_FIO_BIGREAD_REPEATS:-3}"
         repeat_cooldown_secs="${PERF_FIO_BIGREAD_COOLDOWN_SECS:-10}"
-        warmup_count="${PERF_FIO_BIGREAD_WARMUP_PASSES:-0}"
+        warmup_count="${PERF_FIO_BIGREAD_WARMUP_PASSES:-1}"
         if [[ ! "$repeat_count" =~ ^(1|3|5)$ ]]; then
             err "PERF_FIO_BIGREAD_REPEATS 只支持 1、3 或 5，当前值: $repeat_count"
             return 1

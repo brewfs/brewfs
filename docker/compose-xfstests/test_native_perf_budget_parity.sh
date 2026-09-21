@@ -49,7 +49,7 @@ cat >> "$tmp/harness.sh" <<'FOOTER'
         # One line per leg: the unused leg's knobs stay unset in the environment,
         # so mixing them into a single line would only report which one a previous
         # iteration happened to export.
-        echo "BUDGET $MODE backend=$DATA_BACKEND_VALUE read=${BREWFS_READ_MEMORY_BYTES:-unset} write=${BREWFS_WRITE_MEMORY_BYTES:-unset} read_ssd=${BREWFS_READ_SSD_BYTES:-unset} write_ssd=${BREWFS_WRITE_SSD_BYTES:-unset} budget=${BREWFS_MEMORY_BUDGET_BYTES:-unset} buffer_mib=${JFS_BUFFER_SIZE_MIB:-unset} cache_mib=${JFS_CACHE_SIZE_MIB:-unset}"
+        echo "BUDGET $MODE backend=$DATA_BACKEND_VALUE read=${BREWFS_READ_MEMORY_BYTES:-unset} write=${BREWFS_WRITE_MEMORY_BYTES:-unset} read_ssd=${BREWFS_READ_SSD_BYTES:-unset} write_ssd=${BREWFS_WRITE_SSD_BYTES:-unset} budget=${BREWFS_MEMORY_BUDGET_BYTES:-unset} buffer_mib=${JFS_BUFFER_SIZE_MIB:-unset} cache_mib=${JFS_CACHE_SIZE_MIB:-unset} read_direct=${BREWFS_FUSE_READ_DIRECT_IO:-unset}"
     )
 }
 mode_report brewfs --tools "fio-bigread" --s3 --writeback-throughput-profile
@@ -100,6 +100,17 @@ if [[ "$brewfs_disk" != "$juicefs_disk" ]]; then
     status=1
 else
     echo "OK   disk tier aligned at $(( brewfs_disk / 1048576 ))MiB"
+fi
+
+# The local compose runner treats writeback-throughput as the complete tuned
+# profile and enables read-only FOPEN_DIRECT_IO. Keep the native cloud runner
+# aligned so old kernels do not split each large buffered read into 256 KiB
+# FUSE requests while the local comparison uses 1 MiB direct-I/O requests.
+if [[ "$(field "$brewfs_line" read_direct)" != 1 ]]; then
+    echo "FAIL: BrewFS cloud writeback profile did not enable read direct-I/O"
+    status=1
+else
+    echo "OK   BrewFS cloud writeback profile enables read direct-I/O"
 fi
 
 # The memory pre-check has to ask for the BrewFS caches plus the fio prefill, so

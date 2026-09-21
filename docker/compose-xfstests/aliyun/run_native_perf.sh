@@ -192,6 +192,11 @@ while [[ $# -gt 0 ]]; do
                 export BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD="${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-true}"
                 export BREWFS_COMPRESSION="${BREWFS_COMPRESSION:-none}"
                 export BREWFS_VERIFY_CACHE_CHECKSUM="${BREWFS_VERIFY_CACHE_CHECKSUM:-full}"
+                # Match the local compose profile. Linux kernels before the
+                # bdi->io_pages FUSE fix split buffered large reads into 256 KiB
+                # requests even after accepting FUSE_MAX_PAGES, while read-only
+                # FOPEN_DIRECT_IO reaches the negotiated 1 MiB kernel cap.
+                export BREWFS_FUSE_READ_DIRECT_IO="${BREWFS_FUSE_READ_DIRECT_IO:-1}"
                 # Match the JuiceFS comparison leg's 1 GiB max readahead.
                 export BREWFS_PREFETCH_MAX_BYTES="${BREWFS_PREFETCH_MAX_BYTES:-1073741824}"
                 export BREWFS_FUSE_WORKERS="${BREWFS_FUSE_WORKERS:-16}"
