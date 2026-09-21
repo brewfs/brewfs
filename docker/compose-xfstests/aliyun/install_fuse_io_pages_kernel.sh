@@ -14,6 +14,7 @@ DOWNLOAD_MAX_TIME="${BREWFS_FUSE_KERNEL_MAX_TIME:-300}"
 PATCH_ID="98b4ca2378e1f6b6c06a74f699623ebecfb3549d"
 LOCALVERSION="${BREWFS_FUSE_KERNEL_LOCALVERSION:--brewfs-io-pages}"
 JOBS="${BREWFS_FUSE_KERNEL_JOBS:-$(nproc)}"
+CONFIG_MODE="${BREWFS_FUSE_KERNEL_CONFIG_MODE:-localmodconfig}"
 MANIFEST="/var/lib/brewfs-perf/kernel-manifest.txt"
 
 log() { printf '[fuse-io-pages] %s\n' "$*"; }
@@ -116,6 +117,19 @@ scripts/config --set-str SYSTEM_REVOCATION_KEYS '' 2>/dev/null || true
 # large pahole dependency to the image builder.
 scripts/config --disable DEBUG_INFO_BTF 2>/dev/null || true
 scripts/config --disable DEBUG_INFO 2>/dev/null || true
+scripts/config --enable FUSE_FS 2>/dev/null || true
+case "$CONFIG_MODE" in
+    localmodconfig)
+        log 'reducing kernel configuration to modules used by the ECS base system'
+        yes '' | make localmodconfig
+        scripts/config --enable FUSE_FS 2>/dev/null || true
+        ;;
+    olddefconfig)
+        ;;
+    *)
+        fail "invalid kernel config mode: $CONFIG_MODE (expected localmodconfig or olddefconfig)"
+        ;;
+esac
 make olddefconfig
 
 log "building kernel (jobs=$JOBS)"
@@ -140,6 +154,7 @@ mkdir -p "$(dirname "$MANIFEST")"
     printf 'source_dir=%s\n' "$source_dir"
     printf 'base_release=%s\n' "$running_release"
     printf 'localversion=%s\n' "$LOCALVERSION"
+    printf 'config_mode=%s\n' "$CONFIG_MODE"
     printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'image_packages=%s\n' "$(printf '%s,' "${image_packages[@]}" | sed 's/,$//')"
     printf 'header_packages=%s\n' "$(printf '%s,' "${header_packages[@]}" | sed 's/,$//')"
