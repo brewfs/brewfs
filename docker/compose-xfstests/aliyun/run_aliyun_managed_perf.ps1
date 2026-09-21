@@ -19,6 +19,7 @@ param(
     [int]$DataDiskSize = 512,
     [string]$BinaryPath,
     [string]$ResultVaultUrl = $env:BREWFS_RESULTS_URL,
+    [string]$ResultVaultResolveIp = $env:BREWFS_RESULTS_RESOLVE_IP,
     [string]$OssEndpoint = 'https://oss-cn-hangzhou.aliyuncs.com',
     [string]$OssRegion = 'cn-hangzhou',
     [string]$OssAccessKey = $env:BREWFS_PERF_OSS_ACCESS_KEY_ID,
@@ -46,7 +47,15 @@ $script:Buckets = [System.Collections.Generic.List[string]]::new()
 $script:BackendsCreated = $false
 
 $aliyunCandidates = @()
-if ($env:LOCALAPPDATA) { $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'aliyun\aliyun.exe') }
+if ($env:LOCALAPPDATA) {
+    $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'AliyunCLI\aliyun.exe')
+    $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'aliyun\aliyun.exe')
+    $wingetRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    $aliyunCandidates += @(
+        Get-ChildItem -Path (Join-Path $wingetRoot 'Alibaba.AlibabaCloudCLI_*\aliyun.exe') -File -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+    )
+}
 
 function Resolve-Executable([string]$Name, [string[]]$Candidates = @()) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -266,6 +275,9 @@ function Invoke-Workload([string]$Workload, [string]$Bucket) {
         '-PerfTools', $PerfTools, '-MetaUrl', $metaUrl,
         '-AutoReleaseMinutes', $AutoReleaseMinutes, '-RunLabel', $RunLabel
     )
+    if ($ResultVaultResolveIp) {
+        $args += @('-ResultVaultResolveIp', $ResultVaultResolveIp)
+    }
     if ($DataBackend -eq 's3') {
         $args += @(
             '-S3Endpoint', $OssEndpoint, '-S3Bucket', $Bucket,

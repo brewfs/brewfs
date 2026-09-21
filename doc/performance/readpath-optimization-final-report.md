@@ -2,7 +2,7 @@
 
 ## Date
 
-2026-09-20
+2026-09-21
 
 ## Scope
 
@@ -10,6 +10,10 @@ End-to-end read-path performance improvement for BrewFS, measured against
 JuiceFS as the production reference. This report covers the optimization
 attempts made in this iteration, the evidence for accepted and rejected
 changes, current blockers, and prioritized next steps.
+
+> Update: section 10 records the PR #135 investigation completed on
+> 2026-09-21. It supersedes earlier claims in this document about page-cache
+> behavior, asyncfuse pre-posting, and the remaining read-path bottleneck.
 
 ---
 
@@ -444,4 +448,209 @@ The remaining performance gap to JuiceFS on randread and seqread is
 dominated by prefetch pipeline depth for near-sequential patterns and
 local cache read latency. The prioritized directions in section 6
 address these systematically.
+
+---
+
+## 10. PR #135 Read-Path Investigation (2026-09-21)
+
+### 10.1 Request size is a mode effect, not an 819.2 KiB negotiation
+
+The test host runs Linux
+`6.18.33.2-microsoft-standard-WSL2`. Two repeatable FUSE request shapes were
+observed:
+
+| BrewFS mount mode | Kernel FUSE reads for 4 GiB | Request shape | Average |
+|---|---:|---|---:|
+| Buffered (`READ_DIRECT_IO=0`, `KEEP_CACHE=1`) | 16,384 | 256 KiB each | 256 KiB |
+| Direct read (`READ_DIRECT_IO=1`) | 5 requests per 4 MiB fio I/O | 4 x (1,048,576 - 16) bytes + 64 bytes | 819.2 KiB |
+
+The `819.2 KiB` value is therefore only `4 MiB / 5`; it is not a value
+negotiated in FUSE INIT. Direct read avoids the buffered path's 16-way split,
+but it also bypasses the Linux page cache. BrewFS then relies on its own block
+cache. The buffered A/B proves that the kernel page cache works; the benchmark
+remounts and evicts cold pages between bigread repeats, so the first pass cannot
+benefit from retained kernel pages.
+
+### 10.2 asyncfuse INIT compatibility finding
+
+asyncfuse 0.1.14 correctly echoes `FUSE_MAX_PAGES` and writes
+`max_pages = u16::MAX`; Linux still caps observed direct-read requests near
+1 MiB. Raising `max_pages` further is therefore not the solution.
+
+There is a separate ABI correctness issue in asyncfuse:
+
+- its `fuse_init_out` defines `max_read: u32` after `flags2`;
+- current Linux `struct fuse_init_out` defines that same slot as part of
+  `unused[7]` and has no `max_read` field;
+- asyncfuse sets `flags2 = 0x1` and labels it `FUSE_HAS_MAX_READ`, but bit 0 of
+  `flags2` is protocol bit 32, which Linux defines as `FUSE_SECURITY_CTX`.
+
+This should be fixed in asyncfuse as a protocol/ABI cleanup. It does not
+explain the near-1 MiB Linux cap and should not be used to claim that a 4 MiB
+read limit was negotiated.
+
+### 10.3 Accepted PR #135 implementation
+
+The accepted implementation optimizes the physical read below FUSE rather
+than pretending that the kernel request split is gone:
+
+- a persistent-slice read within 4 KiB of the 1 MiB threshold promotes the
+  complete 4 MiB block into BrewFS's memory cache;
+- concurrent ranges for the same block share the existing
+  `SingleFlight<BlockKey, Bytes>`, so promotion performs one physical read;
+- genuinely small reads remain ranged and do not amplify to 4 MiB;
+- persistent-slice file descriptors are reused;
+- after a slice is opened, later blocks prefer it over repeated failed probes
+  of the ordinary disk cache;
+- new counters report physical persistent-slice operations and bytes.
+
+The rejected reader-session prefetch experiment must not be restored. It
+reduced bigread to about 2.28 GiB/s and amplified randread to 6,761 physical
+reads / 26.4 GiB for a 2 GiB dataset. After reverting it, randread returned to
+exactly 512 physical reads / 2 GiB.
+
+### 10.4 A/B evidence
+
+| Experiment | bigread result | Other evidence | Decision |
+|---|---:|---|---|
+| Full-block promotion, stable focused run (`perf-run-1789973330-21674`) | 4,271 MiB/s median (4,205-4,381; 4.1% spread) | randread 13.04 GiB/s | Keep |
+| Regression-fixed focused run (`perf-run-1789975061-15419`) | 3,897 MiB/s median | randread 12.78 GiB/s; 512 reads / 2 GiB | Keep |
+| Opened-slice priority enabled | about 4.00 GiB/s | about 64 ordinary cache misses | Keep |
+| Opened-slice priority disabled | about 3.72 GiB/s | 1,024 ordinary cache misses | Reject |
+| Buffered page cache (`perf-run-1789975826-23215`) | 4,068 MiB/s median; 0.4% spread | 16,384 FUSE reads at 256 KiB; 4 GiB physical | Valid control, not the default |
+| Reader-session prefetch | about 2.28 GiB/s | randread 6,761 reads / 26.4 GiB | Reject |
+
+### 10.5 CPU profile and remaining bottleneck
+
+The seqread profile at
+`tools/perf/results/20260921-154205` reached about 3.73 GiB/s. Its largest leaf
+costs are `__memmove_avx_unaligned_erms` (about 27%),
+`__memset_avx2_unaligned_erms` (about 12%), `__pi_memcpy`, and kernel
+`fuse_copy_fill` / `fuse_copy_folio`. The dominant application stack is:
+
+```text
+ChunksCache::get_range_into_memory
+  -> ObjectBlockStore::read_range
+  -> DataFetcher::read_at_into_from_slices
+  -> FileReader::read_at
+  -> VFS::read
+  -> asyncfuse reply writev
+```
+
+Crypto accounted for 0% in this profile. Redis, RustFS, compression, and
+encryption are not the limiting factors in this local cached-read case. The
+remaining gap is primarily buffer allocation/zeroing, repeated memory copies,
+and the unavoidable FUSE kernel copy. A future optimization should target an
+owned-buffer or vectored-reply path before adding more speculative prefetch.
+
+### 10.6 Final local Redis + RustFS matrix
+
+Artifacts:
+
+- BrewFS: `perf-run-1789977274-2588`
+- JuiceFS: `juicefs-perf-run-1789977506-26084`
+
+Both sides used the same fio workload parameters and all 11 tools passed.
+Read figures are fio foreground throughput; write figures show foreground and
+fully-drained throughput separately.
+
+| Workload | BrewFS | JuiceFS | Interpretation |
+|---|---:|---:|---|
+| fio-bigread | 4,214 MiB/s | 3,984 MiB/s | BrewFS +5.8%; BrewFS spread 11.8%, JuiceFS 0.1% |
+| fio-seqread | 3,723 MiB/s | 2,862 MiB/s | BrewFS +30.1% |
+| fio-randread | 12,789 MiB/s | 3,230 MiB/s | BrewFS 3.96x; hot-cache semantics dominate |
+| fio-bigwrite | 1,006 / 451 MiB/s | 532 / 63 MiB/s | BrewFS drains much faster |
+| fio-seqwrite | 694 / 579 MiB/s | 1,085 / 310 MiB/s | JuiceFS foreground faster; BrewFS durable faster |
+| fio-randwrite | 517 / 369 MiB/s | 956 / 343 MiB/s | Similar durable result after drain |
+| fio-randrw read/write | 743 / 338 MiB/s | 889 / 397 MiB/s | JuiceFS foreground faster; BrewFS drained total 601 vs 408 MiB/s |
+| dirstress | pass (1 s) | pass (<1 s) | Functional fallback workload |
+| dirperf | pass (1 s) | pass (2 s) | Functional fallback workload |
+| metaperf | pass (1 s) | pass (1 s) | Functional fallback workload |
+| looptest | pass (2 s) | pass (1 s) | Functional fallback workload |
+
+The full matrix takes several minutes even though individual reads are fast.
+The main wall-time cost is strict durability accounting: JuiceFS post-write
+drain took 57 s for bigwrite, 50 s for seqwrite, 36 s for randwrite, and 51 s
+for randrw. These waits are intentional and prevent background writeback from
+inflating the reported durable throughput.
+
+The local randread number should not be extrapolated to cloud cold-read
+performance: BrewFS promotes the complete 2 GiB working set into its own memory
+cache, while the two filesystems have different cache-layer semantics. Cloud
+results with managed OSS/Tair remain the authoritative cold-backend comparison.
+
+### 10.7 Final Aliyun managed-backend matrix
+
+The final candidate was commit `3d0575c` (binary SHA-256
+`3fee18c3b4f59fba34bddc7704e45b6166fee6caadf7fa048ef69edcc1e670b6`).
+BrewFS and JuiceFS ran on matched temporary ECS instances with PL2 data disks,
+managed Tair, and same-region OSS. Both 11-tool legs passed, and all temporary
+ECS instances, data disks, buckets, binary runs, and Tair resources were deleted
+afterward.
+
+Result Vault runs:
+
+- BrewFS: `run-20260921-163938-673b15dc`
+- JuiceFS: `run-20260921-165717-d9261e32`
+
+Local extracted artifacts:
+
+- BrewFS: `docker/compose-xfstests/artifacts/aliyun-analysis/pr135-3d0575c-promotion-full/brewfs/perf-run-1789979359-17831-brewfs-brewfs-pr135-3d0575c-promotion-full`
+- JuiceFS: `docker/compose-xfstests/artifacts/aliyun-analysis/pr135-3d0575c-promotion-full/juicefs/perf-run-1789980030-29925-juicefs-juicefs-pr135-3d0575c-promotion-full`
+
+Foreground fio throughput:
+
+| Workload | BrewFS | JuiceFS | BrewFS relative |
+|---|---:|---:|---:|
+| fio-bigread | 322.6 MiB/s | 328.3 MiB/s | -1.7% |
+| fio-seqread | 2,371.8 MiB/s | 1,211.7 MiB/s | +95.7% |
+| fio-randread | 4,935.2 MiB/s | 1,337.2 MiB/s | +269.1% |
+| fio-bigwrite | 1,039.6 MiB/s | 688.6 MiB/s | +51.0% |
+| fio-seqwrite | 318.4 MiB/s | 530.4 MiB/s | -40.0% |
+| fio-randwrite | 303.6 MiB/s | 571.0 MiB/s | -46.8% |
+| fio-randrw read / write | 332.1 / 148.6 MiB/s | 328.2 / 146.0 MiB/s | +1.2% / +1.8% |
+
+Foreground write bandwidth includes queued writeback. Fully drained throughput,
+which includes the time needed to empty the filesystem queue, reverses the
+seqwrite and randwrite result:
+
+| Workload | BrewFS | JuiceFS | Drain seconds (BrewFS / JuiceFS) |
+|---|---:|---:|---:|
+| fio-bigwrite | 205.4 MiB/s | 186.6 MiB/s | 4 / 4 |
+| fio-seqwrite | 308.1 MiB/s | 181.9 MiB/s | 2 / 115 |
+| fio-randwrite | 293.8 MiB/s | 185.2 MiB/s | 2 / 125 |
+| fio-randrw total | 450.7 MiB/s | 190.3 MiB/s | 4 / 90 |
+
+Against the previous stable direct-read BrewFS cloud run
+(`perf-run-1789967854-12390`), the block-promotion candidate improved every
+target read workload under the same cold-read sampling contract:
+
+| Workload | Before promotion | After promotion | Delta |
+|---|---:|---:|---:|
+| fio-bigread | 309.1 MiB/s | 322.6 MiB/s | +4.4% |
+| fio-seqread | 1,564.7 MiB/s | 2,371.8 MiB/s | +51.6% |
+| fio-randread | 3,186.5 MiB/s | 4,935.2 MiB/s | +54.9% |
+
+The physical-read counters show why the long-running workloads improve more
+than the one-shot cold bigread:
+
+| Workload | Logical FUSE read | Persistent-slice reads | Physical bytes | Physical / logical |
+|---|---:|---:|---:|---:|
+| fio-bigread | 1,024 MiB / 1,280 ops | 256 ops | 1,024 MiB | 100.0% |
+| fio-seqread | 142,312 MiB | 256 ops | 1,024 MiB | 0.72% |
+| fio-randread | 296,124 MiB | 3,601 ops | 14,404 MiB | 4.86% |
+
+For bigread, promotion reduces five near-1 MiB FUSE requests per 4 MiB block to
+one 4 MiB persistent-slice operation without reading extra bytes. The remaining
+approximately 320 MiB/s ceiling is the cold PL2 data-disk bandwidth: JuiceFS is
+at the same ceiling. For seqread and randread, the promoted blocks are reused in
+BrewFS memory, so only 0.72% and 4.86% of logical bytes respectively reach the
+persistent slice.
+
+The three measured bigread samples were `7111.1 / 321.6 / 322.6 MiB/s` for
+BrewFS and `327.7 / 328.3 / 329.7 MiB/s` for JuiceFS. BrewFS's first measured
+sample inherited the promotion cache populated by the warmup; the later samples
+were remounted and cold. Median selection therefore chose the cold `322.6 MiB/s`
+sample. This explains the large reported BrewFS spread and prevents the hot
+sample from inflating the comparison.
 

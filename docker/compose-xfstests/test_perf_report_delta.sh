@@ -52,6 +52,8 @@ brewfs_s3_get_lat_us_total 20000
 brewfs_s3_put_ops_total 3
 brewfs_s3_put_bytes_total 31457280
 brewfs_s3_put_lat_us_total 30000
+brewfs_persistent_slice_read_ops_total 4
+brewfs_persistent_slice_read_bytes_total 16777216
 brewfs_writeback_stage_ops_total 4
 brewfs_writeback_stage_bytes_total 41943040
 brewfs_writeback_stage_lat_us_total 40000
@@ -85,6 +87,8 @@ brewfs_s3_get_lat_us_total 120000
 brewfs_s3_put_ops_total 11
 brewfs_s3_put_bytes_total 115343360
 brewfs_s3_put_lat_us_total 230000
+brewfs_persistent_slice_read_ops_total 14
+brewfs_persistent_slice_read_bytes_total 58720256
 brewfs_writeback_dirty_bytes 1048576
 brewfs_writeback_live_dirty_bytes 2097152
 brewfs_writeback_live_slices 2
@@ -118,6 +122,7 @@ report="$artifact_dir/report.md"
 trap 'status=$?; if [[ $status -ne 0 && -f "$report" ]]; then cat "$report" >&2; fi; rm -rf "$tmpdir"' EXIT
 grep -Fq '| fio-test | 85.7% (30/35) | 20.0 MiB | 200.0 MiB |' "$report"
 grep -Fq 'GET=5, PUT=8' "$report"
+grep -Fq 'persistent_slice=10 ops/40.0 MiB' "$report"
 grep -Fq 'stage=10 ops/100.0 MiB/200.0 ms' "$report"
 grep -Fq 'flush_wait=3 ops/0.60s/6 slices' "$report"
 grep -Fq 'upload_batch=10 avg=10.0 MiB blocks=2.00/batch partial_tail=0.30' "$report"

@@ -2275,50 +2275,91 @@ impl ChunksCache {
         offset: usize,
         buf: &mut [u8],
     ) -> Option<usize> {
+        self.get_range_into_impl(key, offset, buf, true, true).await
+    }
+
+    /// Look up a range in memory-only tiers without opening or reading a disk
+    /// cache file.
+    pub async fn get_range_into_memory(
+        &self,
+        key: &String,
+        offset: usize,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        self.get_range_into_impl(key, offset, buf, true, false)
+            .await
+    }
+
+    /// Continue a range lookup at the persistent disk tier after independent
+    /// in-memory caches have been checked.
+    pub async fn get_range_into_disk(
+        &self,
+        key: &String,
+        offset: usize,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        self.get_range_into_impl(key, offset, buf, false, true)
+            .await
+    }
+
+    async fn get_range_into_impl(
+        &self,
+        key: &String,
+        offset: usize,
+        buf: &mut [u8],
+        check_memory: bool,
+        include_disk: bool,
+    ) -> Option<usize> {
         if buf.is_empty() {
             return Some(0);
         }
 
-        if let Some(value) = self.write_hot_cache.get(key) {
-            if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
-                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        if check_memory {
+            if let Some(value) = self.write_hot_cache.get(key) {
+                if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                    self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    trace!(
+                        "Recent-write hot cache range HIT: {} ({} bytes)",
+                        key,
+                        value.len()
+                    );
+                    self.policy.record_cache_request(true);
+                    return Some(read_len);
+                }
+
                 trace!(
-                    "Recent-write hot cache range HIT: {} ({} bytes)",
+                    "Recent-write hot cache range MISS: {} ({} bytes too short for offset={} len={})",
                     key,
-                    value.len()
+                    value.len(),
+                    offset,
+                    buf.len()
                 );
-                self.policy.record_cache_request(true);
-                return Some(read_len);
             }
 
-            trace!(
-                "Recent-write hot cache range MISS: {} ({} bytes too short for offset={} len={})",
-                key,
-                value.len(),
-                offset,
-                buf.len()
-            );
-        }
+            if let Some(value) = self.hot_cache.get(key).await {
+                if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                    self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
+                    self.policy.record_cache_request(true);
+                    return Some(read_len);
+                }
 
-        if let Some(value) = self.hot_cache.get(key).await {
-            if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
-                self.cache_hits.fetch_add(1, Ordering::Relaxed);
-                trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
-                self.policy.record_cache_request(true);
-                return Some(read_len);
+                trace!(
+                    "Hot cache range MISS: {} ({} bytes too short for offset={} len={})",
+                    key,
+                    value.len(),
+                    offset,
+                    buf.len()
+                );
             }
 
-            trace!(
-                "Hot cache range MISS: {} ({} bytes too short for offset={} len={})",
-                key,
-                value.len(),
-                offset,
-                buf.len()
-            );
+            trace!("Hot cache range MISS: {}", key);
+            self.policy.record_cache_request(false);
         }
 
-        trace!("Hot cache range MISS: {}", key);
-        self.policy.record_cache_request(false);
+        if !include_disk {
+            return None;
+        }
 
         let generation = self.disk_storage.store_generation(key);
         let mut disk_buf = vec![0u8; buf.len()];

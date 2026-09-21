@@ -345,6 +345,74 @@ drained 仍 +5.8%），先记为待观察项。
 口径提醒：JuiceFS 每轮只跑一次，本节这组数字就是后续的 JuiceFS 基准；之后不再重复测 JuiceFS，常规迭代只跑
 BrewFS 单腿（第 3 节入口），需要刷新 JuiceFS 基准时再单独说明。
 
+### 5.5 FUSE 大读上限与旧内核兼容性（2026-09-21）
+
+云端探针使用 Ubuntu 内核 `6.8.0-117-generic`。内核发起 FUSE 7.39 INIT，asyncfuse 0.1.14 返回
+`max_pages=65535`、`max_write=4194304`、`max_readahead=16777216`，挂载参数也包含
+`max_read=4194304`。这些值证明用户态已经声明了足够大的读取能力；BrewFS read 回调收到的长度就是内核
+`fuse_read_in.size`，没有再把请求截成 256 KiB。
+
+实际请求分布把限制定位到了内核 buffered FUSE 路径：
+
+- buffered 读取 64 MiB 时，BrewFS 收到 `256 x 262144` 字节请求；
+- 只读句柄返回 `FOPEN_DIRECT_IO` 后，同一工作负载变为 `48 x 1048576`、`16 x 1048560`、
+  `16 x 16` 字节，主体请求达到内核 256 pages（1 MiB）上限；
+- 所谓 `819.2 KiB` 是 `64 MiB / 80 requests` 的平均值，不是协商值。4 MiB fio I/O 因页边界通常
+  形成一个 16 字节头、三个 1 MiB 主体和一个 `(1 MiB - 16)` 字节尾，因此平均为 819.2 KiB。
+
+Linux 提交 [`98b4ca2378e1f6b6c06a74f699623ebecfb3549d`](https://github.com/torvalds/linux/commit/98b4ca2378e1f6b6c06a74f699623ebecfb3549d)
+把协商后的 `fc->max_pages` 写入 `fm->sb->s_bdi->io_pages`。云端 6.8 内核缺少这项行为，所以 buffered
+readahead 仍按 256 KiB 窗口下发。asyncfuse 当前对扩展 INIT flags 的命名/ABI 还有独立清理项，但它没有截断
+read size，也不是本问题根因；不要为了 256 KiB 在 asyncfuse 中人为拼接或放大请求。
+
+旧内核上的实用兼容方案是 `BREWFS_FUSE_READ_DIRECT_IO=1`。同机 512 MiB bigread A/B 从约
+`1.73 GiB/s` 提升到 `2.69 GiB/s`（约 +55%），因此 native `--writeback-throughput-profile` 现在与本地
+compose profile 一样启用该设置。代价是只读 fd 绕过内核 page cache 且不能 mmap，应用仍依赖 BrewFS 的内存/
+SSD block cache；长期方案是升级到包含上述内核修复的发行版内核或回移该提交。
+
+本地数字必须使用重复样本。单轮曾出现 BrewFS/JuiceFS bigread `4231/5044 MiB/s`，但三轮、每轮重挂载并
+驱逐底层 cache-file page cache 后，BrewFS buffered 中位数为 `4188 MiB/s`，JuiceFS buffered 为
+`4117 MiB/s`；BrewFS read-direct 中位数为 `5146 MiB/s`。前述单轮 19% 差距属于 WSL/宿主机缓存与调度
+噪声，不能当作稳定回归。
+
+### 5.6 PR #135 最终云端全量结果（2026-09-21）
+
+在 `8c1cd0e` 上用同规格 ECS、PL2 数据盘、托管 Tair 和同地域 OSS 各跑一条完整 11 项腿；两边均为
+`direct=0`，bigread 均执行 1 次 warmup + 3 次 measured、每轮重挂载并驱逐底层 cache-file page cache。
+BrewFS profile 启用 `BREWFS_FUSE_READ_DIRECT_IO=1`。两边 11/11 全部通过，测试结束后 ECS、Tair 和两个
+临时 bucket 均已删除。
+
+| 项目 | BrewFS | JuiceFS | BrewFS 相对值 |
+| --- | ---: | ---: | ---: |
+| bigread 冷读中位数 | 309.09 MiB/s | 328.84 MiB/s | -6.0% |
+| bigread 三轮 | 271.69 / 318.01 / 309.09 MiB/s | 328.94 / 328.84 / 328.21 MiB/s | spread 15.0% / 0.22% |
+| seqread | 1.53 GiB/s | 1.51 GiB/s | +1.0% |
+| randread | 3.11 GiB/s | 1.76 GiB/s | +76.8% |
+| randrw 前台读 / 写 | 513.85 / 228.63 MiB/s | 323.46 / 145.09 MiB/s | +58.9% / +57.6% |
+| seqwrite fully drained | 313.69 MiB/s | 188.04 MiB/s | +66.8% |
+| randwrite fully drained | 333.20 MiB/s | 189.51 MiB/s | +75.8% |
+| randrw fully drained 总吞吐 | 718.56 MiB/s | 185.09 MiB/s | +288.2% |
+| bigwrite fully drained | 196.77 MiB/s | 201.02 MiB/s | -2.1% |
+
+bigread 的绝对值再次只有约 300 MiB/s，不是 read-direct 优化失效。这个项目会显式丢弃 BrewFS/JuiceFS
+cache 文件的 Linux page cache，随后从 PL2 盘冷读本地块缓存；seqread 和 randread 只重挂载、不做这一步，
+因此仍能命中 cache 文件的 page cache。两组数字测的是不同层级，不能用 1.5--3.1 GiB/s 的热读带宽作为
+bigread 冷读基线。
+
+请求统计进一步说明剩余约 6% 差距在哪里：
+
+- BrewFS 用 1280 次 FUSE read 读完 1 GiB，平均 819.2 KiB/次；1280 次全部命中 BrewFS block cache，
+  OSS GET 为 0，但当前路径仍基本是每个 FUSE 请求对应一次同步 persistent-slice `pread`。
+- JuiceFS 虽收到 8192 次、平均 128 KiB 的 FUSE read，却只做了 266 次 block-cache read 来交付同一个
+  1 GiB，平均约 3.85 MiB/次，OSS GET 同样为 0。它在 FUSE 请求之下把读取合并到了接近 4 MiB block。
+- 所以 `FOPEN_DIRECT_IO` 已经解决旧内核把 BrewFS 请求限制在 256 KiB 的问题，但它本来就会绕过挂载文件的
+  内核 page cache；它没有、也不应该假装修复 page cache。当前冷读瓶颈是本地 PL2 加上 BrewFS 每请求一次
+  `pread` 的调度/系统调用开销，而不是 Redis、OSS 或 asyncfuse 再次截断请求。
+
+后续读优化应优先比较两条路径：在包含 Linux `98b4ca2378e1` 修复的内核上关闭 read-direct，验证大窗口
+buffered readahead；旧内核则在 BrewFS block-cache 层把相邻 FUSE read 合并/并行成 4 MiB 读取。不要在
+asyncfuse 层拼请求，因为那会破坏 FUSE 请求的取消、错误和短读语义。
+
 ### 6. 成本控制
 
 默认策略是「用完即删」。2026-09-17 一轮结束后，账号里只应剩用户自己的 ECS、它的系统盘，以及一块长期 VM 镜像和它的快照。

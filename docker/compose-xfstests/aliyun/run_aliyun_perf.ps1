@@ -40,6 +40,7 @@ param(
     [string]$BinaryPath,
     [switch]$UsePerfImage,
     [string]$ResultVaultUrl = $env:BREWFS_RESULTS_URL,
+    [string]$ResultVaultResolveIp = $env:BREWFS_RESULTS_RESOLVE_IP,
     [string]$AutoReleaseMinutes = '240',
     # Optional suffix appended to the Result Vault run name, for example "8g",
     # so an instance-size experiment stays distinguishable in the run list.
@@ -60,6 +61,7 @@ $script:BinaryUrl = $null
 $script:BinarySha256 = $null
 $script:BinaryRunId = $null
 $script:BinaryZipPath = $null
+$script:BinaryIsArchive = $false
 if ($env:BREWFS_PERF_IMAGE_ID -and $ImageId -eq 'ubuntu_24_04_x64_20G_alibase_20260522.vhd') {
     $ImageId = $env:BREWFS_PERF_IMAGE_ID
 }
@@ -74,7 +76,15 @@ function Resolve-Executable([string]$Name, [string[]]$Candidates = @()) {
 }
 
 $aliyunCandidates = @()
-if ($env:LOCALAPPDATA) { $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'AliyunCLI\aliyun.exe') }
+if ($env:LOCALAPPDATA) {
+    $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'AliyunCLI\aliyun.exe')
+    $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'aliyun\aliyun.exe')
+    $wingetRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    $aliyunCandidates += @(
+        Get-ChildItem -Path (Join-Path $wingetRoot 'Alibaba.AlibabaCloudCLI_*\aliyun.exe') -File -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+    )
+}
 $script:Aliyun = $null
 
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
@@ -111,6 +121,37 @@ function Invoke-AliyunJson([string[]]$Arguments) {
     return ($output -join [Environment]::NewLine | ConvertFrom-Json)
 }
 
+function Get-ResultVaultCurlArguments {
+    $arguments = @(
+        '--fail-with-body', '--silent', '--show-error', '--location',
+        '--retry', '5', '--retry-delay', '2', '--retry-all-errors'
+    )
+    # Schannel fails closed when the Windows host cannot reach the certificate
+    # revocation service (CRYPT_E_REVOCATION_OFFLINE). Keep certificate and
+    # hostname verification enabled, but allow Result Vault transfers to run
+    # while that separate revocation endpoint is unreachable.
+    if ($IsWindows) { $arguments += '--ssl-no-revoke' }
+    # TUN-mode VPNs commonly return an RFC 2544 fake IP (198.18.0.0/15). The
+    # proxy behind that address can truncate larger multipart uploads. Allow a
+    # caller to pin only Result Vault traffic to a real edge address without
+    # changing system DNS or disabling the VPN for the rest of the run.
+    if ($ResultVaultResolveIp) {
+        $parsedIp = $null
+        if (-not [Net.IPAddress]::TryParse($ResultVaultResolveIp, [ref]$parsedIp)) {
+            throw "ResultVaultResolveIp 不是有效 IP: $ResultVaultResolveIp"
+        }
+        if (-not $ResultVaultUrl) { throw 'ResultVaultResolveIp 需要 ResultVaultUrl。' }
+        $resultVaultUri = [Uri]$ResultVaultUrl
+        $resultVaultPort = if ($resultVaultUri.IsDefaultPort) {
+            if ($resultVaultUri.Scheme -eq 'https') { 443 } else { 80 }
+        } else {
+            $resultVaultUri.Port
+        }
+        $arguments += @('--resolve', "$($resultVaultUri.Host):${resultVaultPort}:$ResultVaultResolveIp")
+    }
+    return $arguments
+}
+
 function Wait-Until([scriptblock]$Condition, [string]$Description, [int]$TimeoutSeconds = 900) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $attempt = 0
@@ -142,6 +183,28 @@ function Wait-Until([scriptblock]$Condition, [string]$Description, [int]$Timeout
 function Quote-Bash([string]$Value) {
     $replacement = "'" + '"' + "'" + '"' + "'"
     return "'" + $Value.Replace("'", $replacement) + "'"
+}
+
+function Publish-BinaryArchiveToOss {
+    if (-not $S3Bucket -or -not $S3Region -or $S3Endpoint -notmatch 'aliyuncs\.com') {
+        throw 'Result Vault 上传失败，且当前配置不能使用 Aliyun OSS 中转二进制。'
+    }
+    if (-not $script:Aliyun) { $script:Aliyun = Resolve-Executable 'aliyun' $aliyunCandidates }
+    $objectKey = '_brewfs-perf/brewfs-upload-{0}.zip' -f ([Guid]::NewGuid().ToString('N'))
+    $objectUrl = "oss://$S3Bucket/$objectKey"
+    Write-Warning 'Result Vault 二进制上传失败，改用本轮私有 OSS bucket 中转。'
+    Invoke-Checked $script:Aliyun @(
+        'oss', 'cp', $script:BinaryZipPath, $objectUrl,
+        '-f', '--region', $S3Region, '--cli-non-interactive'
+    ) | Out-Null
+    $signedOutput = Invoke-Checked $script:Aliyun @(
+        'oss', 'sign', $objectUrl, '--timeout', '10800', '--region', $S3Region
+    )
+    $signedUrl = @($signedOutput -split "`r?`n" | Where-Object { $_ -match '^https?://' })[0]
+    if (-not $signedUrl) { throw 'Aliyun OSS 未返回二进制归档签名 URL。' }
+    $script:BinaryUrl = $signedUrl
+    $script:BinaryIsArchive = $true
+    Write-Host "BrewFS 临时 OSS 归档已就绪: $objectUrl"
 }
 
 function New-BinaryUpload {
@@ -192,16 +255,21 @@ function New-BinaryUpload {
     }
     Write-Host "通过 Result Vault 上传 BrewFS 二进制: $($binary.FullName) ($($binary.Length) bytes)"
     $curl = Resolve-Executable 'curl.exe'
-    $response = Invoke-Checked $curl @(
-        '--fail-with-body', '--silent', '--show-error', '--location',
-        '-F', "archive=@$($script:BinaryZipPath);filename=brewfs-upload.zip",
-        "$($ResultVaultUrl.TrimEnd('/'))/api/runs"
-    )
-    $run = ($response -join [Environment]::NewLine | ConvertFrom-Json)
-    $script:BinaryRunId = $run.id
-    if (-not $script:BinaryRunId) { throw 'Result Vault 二进制上传未返回 run id。' }
-    $script:BinaryUrl = "$($ResultVaultUrl.TrimEnd('/'))/api/runs/$($script:BinaryRunId)/files/brewfs"
     $script:BinarySha256 = $hash
+    try {
+        $response = Invoke-Checked $curl ((Get-ResultVaultCurlArguments) + @(
+            '-F', "archive=@$($script:BinaryZipPath);filename=brewfs-upload.zip",
+            "$($ResultVaultUrl.TrimEnd('/'))/api/runs"
+        ))
+        $run = ($response -join [Environment]::NewLine | ConvertFrom-Json)
+        $script:BinaryRunId = $run.id
+        if (-not $script:BinaryRunId) { throw 'Result Vault 二进制上传未返回 run id。' }
+        $script:BinaryUrl = "$($ResultVaultUrl.TrimEnd('/'))/api/runs/$($script:BinaryRunId)/files/brewfs"
+        $script:BinaryIsArchive = $false
+    } catch {
+        Write-Warning $_.Exception.Message
+        Publish-BinaryArchiveToOss
+    }
     try {
         $zipSize = (Get-Item -LiteralPath $script:BinaryZipPath).Length
         Write-Host "BrewFS 临时上传已就绪: run=$($script:BinaryRunId), zip=$zipSize bytes"
@@ -214,8 +282,8 @@ function Remove-BinaryUpload {
     if ($script:BinaryRunId) {
         try {
             $curl = Resolve-Executable 'curl.exe'
-            Invoke-Checked $curl @('--fail-with-body', '--silent', '--show-error', '--location', '-X', 'DELETE',
-                "$($ResultVaultUrl.TrimEnd('/'))/api/runs/$($script:BinaryRunId)") | Out-Null
+            Invoke-Checked $curl ((Get-ResultVaultCurlArguments) + @('-X', 'DELETE',
+                "$($ResultVaultUrl.TrimEnd('/'))/api/runs/$($script:BinaryRunId)")) | Out-Null
             Write-Host "Result Vault 临时二进制记录已删除: $($script:BinaryRunId)"
         } catch {
             Write-Warning "Result Vault 临时二进制记录清理失败，请手动删除 run $($script:BinaryRunId): $($_.Exception.Message)"
@@ -228,6 +296,33 @@ function Remove-BinaryUpload {
     $script:BinaryZipPath = $null
     $script:BinaryUrl = $null
     $script:BinarySha256 = $null
+    $script:BinaryIsArchive = $false
+}
+
+function Save-OssResultArchive([string]$RemoteOutput) {
+    $marker = [regex]::Match($RemoteOutput, '(?m)^OSS_RESULT_URI=(oss://[^\r\n]+)$')
+    if (-not $marker.Success) { return }
+    $objectUrl = $marker.Groups[1].Value.Trim()
+    if (-not $script:Aliyun) { $script:Aliyun = Resolve-Executable 'aliyun' $aliyunCandidates }
+    $artifactRoot = Join-Path (Split-Path -Path $PSScriptRoot -Parent) 'artifacts\aliyun-results'
+    New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+    $archiveName = ($objectUrl -split '/')[-1]
+    if (-not $archiveName.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "OSS 结果对象不是 zip: $objectUrl"
+    }
+    $localArchive = Join-Path $artifactRoot $archiveName
+    $temporaryArchive = Join-Path ([IO.Path]::GetTempPath()) "brewfs-result-$([Guid]::NewGuid().ToString('N')).zip"
+    try {
+        Invoke-Checked $script:Aliyun @(
+            'oss', 'cp', $objectUrl, $temporaryArchive,
+            '-f', '--region', $S3Region, '--cli-non-interactive'
+        ) | Out-Null
+        Copy-Item -LiteralPath $temporaryArchive -Destination $localArchive -Force
+    } finally {
+        Remove-Item -LiteralPath $temporaryArchive -Force -ErrorAction SilentlyContinue
+    }
+    Expand-Archive -LiteralPath $localArchive -DestinationPath $artifactRoot -Force
+    Write-Host "OSS 结果已保存到 WSL: $localArchive"
 }
 
 function New-EcsInstance {
@@ -301,6 +396,7 @@ function Get-RemoteCommand {
     $sourceSha = if ($SourceArchiveSha256) { (Quote-Bash $SourceArchiveSha256) } else { '' }
     $binaryUrl = if ($script:BinaryUrl) { (Quote-Bash $script:BinaryUrl) } else { '' }
     $binarySha = if ($script:BinarySha256) { (Quote-Bash $script:BinarySha256) } else { '' }
+    $binaryIsArchive = if ($script:BinaryIsArchive) { '1' } else { '' }
     $imageMode = if ($UsePerfImage) { '1' } else { '' }
     $resultVault = if ($ResultVaultUrl) { (Quote-Bash $ResultVaultUrl) } else { '' }
     $registryMirror = if ($DockerRegistryMirror) { (Quote-Bash $DockerRegistryMirror) } else { "''" }
@@ -330,6 +426,7 @@ BENCH_ARGS=__BENCH_ARGS__
  SOURCE_ARCHIVE_SHA256=__SOURCE_ARCHIVE_SHA256__
  BINARY_URL=__BINARY_URL__
  BINARY_SHA256=__BINARY_SHA256__
+ BINARY_IS_ARCHIVE=__BINARY_IS_ARCHIVE__
  IMAGE_MODE=__IMAGE_MODE__
  RESULT_VAULT_URL=__RESULT_VAULT_URL__
  RUN_LABEL=__RUN_LABEL__
@@ -420,7 +517,14 @@ pull_docker_image() {
  if [[ "$IMAGE_MODE" == "1" ]]; then
    [[ -d "$WORK/.git" ]] || { echo "预制镜像缺少 BrewFS 源码: $WORK" >&2; exit 1; }
    mkdir -p "$WORK/target/release"
-   curl --fail --location --retry 5 --retry-all-errors "$BINARY_URL" --output "$WORK/target/release/brewfs"
+   BINARY_ARCHIVE_PATH=
+   if [[ "$BINARY_IS_ARCHIVE" == "1" ]]; then
+     BINARY_ARCHIVE_PATH="$DATA_ROOT/source/brewfs-upload.zip"
+     curl --fail --location --retry 5 --retry-all-errors "$BINARY_URL" --output "$BINARY_ARCHIVE_PATH"
+     unzip -p "$BINARY_ARCHIVE_PATH" brewfs >"$WORK/target/release/brewfs"
+   else
+     curl --fail --location --retry 5 --retry-all-errors "$BINARY_URL" --output "$WORK/target/release/brewfs"
+   fi
    echo "$BINARY_SHA256  $WORK/target/release/brewfs" | sha256sum -c -
    chmod 755 "$WORK/target/release/brewfs"
    rm -f "$WORK/target/docker/brewfs"
@@ -432,7 +536,8 @@ pull_docker_image() {
     HARNESS_BASE="${BINARY_URL%/files/*}"
     refresh_harness() {
       local name="$1" dest="$2"
-      if curl --fail --location --retry 5 --retry-all-errors "$HARNESS_BASE/files/$name" --output "$dest"; then
+      if { [[ "$BINARY_IS_ARCHIVE" == "1" ]] && unzip -p "$BINARY_ARCHIVE_PATH" "$name" >"$dest"; } || \
+         { [[ "$BINARY_IS_ARCHIVE" != "1" ]] && curl --fail --location --retry 5 --retry-all-errors "$HARNESS_BASE/files/$name" --output "$dest"; }; then
         chmod 755 "$dest" 2>/dev/null || true
         echo "harness refreshed: $name"
         return 0
@@ -450,6 +555,7 @@ pull_docker_image() {
     if refresh_harness perf_manifest.py "$WORK/tools/perf/perf_manifest.py"; then
       install -m 0755 "$WORK/tools/perf/perf_manifest.py" /usr/local/bin/perf_manifest.py
     fi
+    [[ -z "$BINARY_ARCHIVE_PATH" ]] || rm -f "$BINARY_ARCHIVE_PATH"
   fi
  elif [[ -n "$SOURCE_ARCHIVE_URL" ]]; then
   archive="$DATA_ROOT/source/brewfs-source.tar.gz"
@@ -623,8 +729,22 @@ fi
 archive="$DATA_ROOT/artifacts/$(basename "$latest_dir").zip"
 (cd "$(dirname "$latest_dir")" && zip -qr "$archive" "$(basename "$latest_dir")")
 [[ -n "$RESULT_VAULT_URL" ]] || { echo 'RESULT_VAULT_URL is required; refusing to finish without upload target' >&2; exit 1; }
-curl --fail-with-body --silent --show-error --location --retry 5 --retry-all-errors \
-  -F "archive=@$archive" "${RESULT_VAULT_URL%/}/api/runs"
+if curl --fail-with-body --silent --show-error --location --retry 5 --retry-all-errors \
+    -F "archive=@$archive" "${RESULT_VAULT_URL%/}/api/runs"; then
+  echo 'Result Vault upload complete'
+elif [[ "$MANAGED_BACKEND" == "1" && -n "$S3_BUCKET" ]]; then
+  result_key="_brewfs-perf-results/$(basename "$archive")"
+  result_endpoint="${effective_endpoint:-$S3_ENDPOINT}"
+  aws configure set default.s3.addressing_style virtual
+  AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+  AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+  aws --endpoint-url "$result_endpoint" --region "$S3_REGION" \
+    s3 cp "$archive" "s3://$S3_BUCKET/$result_key" --only-show-errors
+  echo "OSS_RESULT_URI=oss://$S3_BUCKET/$result_key"
+else
+  echo 'Result Vault upload failed and no managed OSS fallback is available' >&2
+  exit 1
+fi
 
 echo '--- latest perf summary ---'
 find "${artifact_roots[@]}" -name perf-summary.tsv -type f -printf '%T@ %p\n' 2>/dev/null \
@@ -644,6 +764,7 @@ find "${artifact_roots[@]}" -name perf-summary.tsv -type f -printf '%T@ %p\n' 2>
     $remote = $remote.Replace('__SOURCE_ARCHIVE_SHA256__', $sourceSha)
     $remote = $remote.Replace('__BINARY_URL__', $binaryUrl)
     $remote = $remote.Replace('__BINARY_SHA256__', $binarySha)
+    $remote = $remote.Replace('__BINARY_IS_ARCHIVE__', $binaryIsArchive)
     $remote = $remote.Replace('__IMAGE_MODE__', (Quote-Bash $imageMode))
     $remote = $remote.Replace('__RESULT_VAULT_URL__', $resultVault)
     $remote = $remote.Replace('__RUN_LABEL__', (Quote-Bash $RunLabel))
@@ -678,6 +799,7 @@ function Invoke-PerfOnEcs {
         Write-Host "远程性能测试已提交: $invokeId (attempt $attempt/$maxAttempts)"
 
         $terminal = $null
+        $text = ''
         while ((Get-Date) -lt $deadline) {
             $result = Invoke-AliyunJson @('ecs', 'DescribeInvocationResults', '--region', $RegionId, '--InvokeId', $invokeId)
             $item = @($result.Invocation.InvocationResults.InvocationResult)[0]
@@ -695,7 +817,10 @@ function Invoke-PerfOnEcs {
             Start-Sleep -Seconds 5
         }
         if (-not $terminal) { throw '等待远程性能测试完成超时。' }
-        if ($terminal.InvocationStatus -eq 'Success') { return }
+        if ($terminal.InvocationStatus -eq 'Success') {
+            Save-OssResultArchive $text
+            return
+        }
 
         $agentRestarted = $terminal.InvocationStatus -eq 'Terminated' -and
             ($terminal.ErrorCode -eq 'ClientRestarted' -or $terminal.ErrorInfo -match 'service has been restarted')

@@ -1199,6 +1199,8 @@ where
                             object.read_range_gets,
                             object.read_full_gets,
                             object.read_piggyback_full,
+                            object.persistent_slice_read_ops,
+                            object.persistent_slice_read_bytes,
                             object.read_background_prefetches,
                             object.read_background_prefetch_dropped,
                         );

@@ -28,7 +28,12 @@ runners=(
 )
 for runner in "${runners[@]}"; do
     [[ -f "$runner" ]] || fail "missing perf runner: $runner"
+    grep -qF 'repeat_count="${PERF_FIO_BIGREAD_REPEATS:-3}"' "$runner" \
+        || fail "$(basename "$runner") reports three bigread repeats but does not execute three by default"
+    grep -qF 'warmup_count="${PERF_FIO_BIGREAD_WARMUP_PASSES:-1}"' "$runner" \
+        || fail "$(basename "$runner") reports one bigread warmup but does not execute one by default"
 done
+echo "OK bigread     : reported and executed repeat defaults agree"
 
 helpers="$(grep -rhoE '/usr/local/bin/[A-Za-z0-9_.-]+\.py' "${runners[@]}" | sort -u)"
 [[ -n "$helpers" ]] || fail 'no /usr/local/bin/*.py helper references found in the perf runners'
