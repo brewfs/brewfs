@@ -48,7 +48,7 @@ wait_for_dpkg_lock
 apt-get update -qq
 wait_for_dpkg_lock
 apt-get install --no-upgrade --no-install-recommends -y -qq \
-    bc bison build-essential ca-certificates cpio flex fakeroot \
+    bc bison build-essential ca-certificates cpio debhelper-compat flex fakeroot \
     kmod libelf-dev libssl-dev openssl pkg-config rsync xz-utils
 
 mkdir -p "$ROOT"
