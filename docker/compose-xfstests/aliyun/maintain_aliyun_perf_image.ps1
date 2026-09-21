@@ -244,7 +244,9 @@ if ! gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
   repo_path="`$REPO"
   repo_path="`$repo_path#https://github.com/"
   repo_path="`$repo_path%.git"
+  source_commit="`$(git -C "`$SOURCE" rev-parse HEAD)"
   for archive_url in \
+    "https://media.githubusercontent.com/media/`$repo_path/`$source_commit/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
     "https://media.githubusercontent.com/media/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
     "https://raw.githubusercontent.com/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"; do
     echo "fetching prebuilt xfstests archive from `$archive_url"
