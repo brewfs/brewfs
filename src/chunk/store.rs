@@ -835,7 +835,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                     Err(_) => return None,
                 }
             }
-            return (read_len == buf.len()).then_some(read_len);
+            (read_len == buf.len()).then_some(read_len)
         }
 
         #[cfg(not(unix))]
