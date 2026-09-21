@@ -2,7 +2,7 @@
 
 use super::layout::ChunkLayout;
 use super::slice::{ChunkOffset, SliceDesc, SliceOffset, block_span_iter_slice};
-use super::store::BlockStore;
+use super::store::{BlockReadHint, BlockStore};
 use crate::meta::MetaLayer;
 use crate::utils::Intervals;
 use crate::utils::NumCastExt;
@@ -63,7 +63,7 @@ pub(crate) struct DataFetcher<'a, B, M> {
 
 impl<'a, B, M> DataFetcher<'a, B, M>
 where
-    B: BlockStore,
+    B: BlockStore + Sync,
     M: MetaLayer,
 {
     pub(crate) fn new(layout: ChunkLayout, id: u64, backend: &'a Backend<B, M>) -> Self {
@@ -250,6 +250,27 @@ where
         offset: ChunkOffset,
         buf: &mut [u8],
     ) -> Result<()> {
+        Self::read_at_into_from_slices_with_hint(
+            layout,
+            chunk_id,
+            backend,
+            slices,
+            offset,
+            buf,
+            BlockReadHint::Normal,
+        )
+        .await
+    }
+
+    pub(crate) async fn read_at_into_from_slices_with_hint(
+        layout: ChunkLayout,
+        chunk_id: u64,
+        backend: &Backend<B, M>,
+        slices: &[SliceDesc],
+        offset: ChunkOffset,
+        buf: &mut [u8],
+        hint: BlockReadHint,
+    ) -> Result<()> {
         let offset = offset.get();
         let len = buf.len();
         if len == 0 {
@@ -257,6 +278,7 @@ where
         }
 
         let need_read = visible_reads(slices, offset, len);
+        let single_visible_read = hint == BlockReadHint::PromoteBlock && need_read.len() == 1;
         let mut cursor = 0;
         let mut tail = buf;
         let mut futures = FuturesUnordered::new();
@@ -274,6 +296,27 @@ where
             let slice_offset = SliceOffset::from(l - slice.offset);
             let slice_len = r - l;
             let slice_id = slice.slice_id;
+            let block_hint = if hint == BlockReadHint::AvoidPromotion {
+                hint
+            } else if single_visible_read {
+                let block_size = u64::from(layout.block_size);
+                let slice_end = slice_offset
+                    .get()
+                    .saturating_add(slice_len)
+                    .saturating_sub(1);
+                let one_block = slice_offset.get() / block_size == slice_end / block_size;
+                let full_physical_block = (slice_offset.get() / block_size)
+                    .checked_add(1)
+                    .and_then(|block| block.checked_mul(block_size))
+                    .is_some_and(|physical_block_end| physical_block_end <= slice.length);
+                if one_block && full_physical_block {
+                    hint
+                } else {
+                    BlockReadHint::Normal
+                }
+            } else {
+                BlockReadHint::Normal
+            };
             let mut pos = 0_usize;
             for block in block_span_iter_slice(slice_offset, slice_len, layout) {
                 let take = block.len.as_usize();
@@ -294,10 +337,24 @@ where
                 );
                 futures.push(
                     async move {
-                        backend
-                            .store()
-                            .read_range(block_key, block_offset, unsafe { send_buf.as_mut_slice() })
-                            .await
+                        if block_hint == BlockReadHint::PromoteBlock {
+                            backend.store().promote_read_block(block_key).await?;
+                        }
+                        if block_hint == BlockReadHint::AvoidPromotion {
+                            backend
+                                .store()
+                                .read_range_without_promotion(block_key, block_offset, unsafe {
+                                    send_buf.as_mut_slice()
+                                })
+                                .await
+                        } else {
+                            backend
+                                .store()
+                                .read_range(block_key, block_offset, unsafe {
+                                    send_buf.as_mut_slice()
+                                })
+                                .await
+                        }
                     }
                     .instrument(span),
                 );

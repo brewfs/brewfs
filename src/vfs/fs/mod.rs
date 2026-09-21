@@ -12,6 +12,7 @@ use crate::meta::store::{
 };
 use crate::posix::NAME_MAX;
 use asyncfuse::notify::Notify as FuseNotify;
+use bytes::Bytes;
 use dashmap::{DashMap, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -3409,15 +3410,24 @@ where
     }
 
     /// Read data by file handle and offset.
+    pub async fn read(&self, fh: u64, offset: u64, len: usize) -> Result<Vec<u8>, VfsError> {
+        Ok(self.read_bytes(fh, offset, len).await?.to_vec())
+    }
+
     #[tracing::instrument(
-        name = "VFS.read",
+        name = "VFS.read_bytes",
         level = "trace",
         skip(self),
         fields(fh, offset, len)
     )]
-    pub async fn read(&self, fh: u64, offset: u64, len: usize) -> Result<Vec<u8>, VfsError> {
+    pub(crate) async fn read_bytes(
+        &self,
+        fh: u64,
+        offset: u64,
+        len: usize,
+    ) -> Result<Bytes, VfsError> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
         let handle = self.file_handle_required(fh)?;
@@ -3434,7 +3444,7 @@ where
             .inode_size_cached(handle.ino)
             .unwrap_or_else(|| handle.attr().size);
         if offset >= file_size {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
         let actual_len = len.min((file_size - offset) as usize);
         self.wait_split_write_barrier(handle.ino, offset, actual_len)
@@ -3460,7 +3470,7 @@ where
                 .map_err(VfsError::from)?
         };
         if let Some(data) = dirty_data {
-            return Ok(data);
+            return Ok(Bytes::from(data));
         }
 
         // We intentionally do NOT call flush_if_exists here: blocking every
@@ -3490,34 +3500,42 @@ where
         // the current read can still see the write that won the race.
         let inode = self.ensure_inode_registered(handle.ino).await?;
         handle.ensure_reader_with(|| self.state.reader.open_for_handle(inode, fh));
-        let mut data = {
+        let data = {
             let _handle_read_timer = self.vfs_timing_timer(
                 &self.state.stats.vfs_read_handle_ops,
                 &self.state.stats.vfs_read_handle_lat_us,
             );
             handle
-                .read(offset, actual_len)
+                .read_bytes(offset, actual_len)
                 .await
                 .map_err(VfsError::from)?
         };
-        for patch in dirty_snapshot {
-            if patch.offset >= data.len() {
-                continue;
+        let needs_overlay = !dirty_snapshot.is_empty()
+            || self.state.writer.has_dirty_state(handle.ino as u64).await;
+        let data = if needs_overlay {
+            let mut data = data.to_vec();
+            for patch in dirty_snapshot {
+                if patch.offset >= data.len() {
+                    continue;
+                }
+                let end = (patch.offset + patch.data.len()).min(data.len());
+                data[patch.offset..end].copy_from_slice(&patch.data[..end - patch.offset]);
             }
-            let end = (patch.offset + patch.data.len()).min(data.len());
-            data[patch.offset..end].copy_from_slice(&patch.data[..end - patch.offset]);
-        }
-        {
-            let _overlay_timer = self.vfs_timing_timer(
-                &self.state.stats.vfs_read_overlay_ops,
-                &self.state.stats.vfs_read_overlay_lat_us,
-            );
-            self.state
-                .writer
-                .overlay_dirty_if_exists(handle.ino as u64, offset, &mut data)
-                .await
-                .map_err(VfsError::from)?;
-        }
+            {
+                let _overlay_timer = self.vfs_timing_timer(
+                    &self.state.stats.vfs_read_overlay_ops,
+                    &self.state.stats.vfs_read_overlay_lat_us,
+                );
+                self.state
+                    .writer
+                    .overlay_dirty_if_exists(handle.ino as u64, offset, &mut data)
+                    .await
+                    .map_err(VfsError::from)?;
+            }
+            Bytes::from(data)
+        } else {
+            data
+        };
 
         self.state
             .reader

@@ -819,7 +819,7 @@ where
             .await;
 
         let data = if fh != 0 {
-            match self.read(fh, offset, size as usize).await {
+            match self.read_bytes(fh, offset, size as usize).await {
                 Ok(data) => data,
                 Err(VfsError::PermissionDenied { .. }) => {
                     // With writeback cache, the kernel can issue a read on an
@@ -833,7 +833,7 @@ where
                         .await
                         .map_err(Into::<Errno>::into)?;
                     let out = self
-                        .read(tmp_fh, offset, size as usize)
+                        .read_bytes(tmp_fh, offset, size as usize)
                         .await
                         .map_err(Into::<Errno>::into)?;
                     let _ = self.close(tmp_fh).await;
@@ -851,7 +851,7 @@ where
                 .await
                 .map_err(Into::<Errno>::into)?;
             let out = self
-                .read(tmp_fh, offset, size as usize)
+                .read_bytes(tmp_fh, offset, size as usize)
                 .await
                 .map_err(Into::<Errno>::into)?;
             let _ = self.close(tmp_fh).await;
@@ -861,9 +861,7 @@ where
         self.stats()
             .fuse_read_bytes
             .fetch_add(data.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        Ok(ReplyData {
-            data: Bytes::from(data),
-        })
+        Ok(ReplyData { data })
     }
 
     async fn readlink(&self, _req: Request, ino: u64) -> FuseResult<ReplyData> {

@@ -6,6 +6,7 @@ use crate::meta::store::FileAttr;
 use crate::vfs::fs::DirEntry;
 use crate::vfs::io::{FileReader, FileWriter};
 use anyhow::anyhow;
+use bytes::Bytes;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -363,6 +364,11 @@ where
 
     #[tracing::instrument(name = "Handle.read", level = "trace", skip(self))]
     pub(crate) async fn read(&self, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+        Ok(self.read_bytes(offset, len).await?.to_vec())
+    }
+
+    #[tracing::instrument(name = "Handle.read_bytes", level = "trace", skip(self))]
+    pub(crate) async fn read_bytes(&self, offset: u64, len: usize) -> anyhow::Result<Bytes> {
         let _guard = self.gate.read_lock().await;
         let reader = {
             let guard = self.state.lock().unwrap();
@@ -371,7 +377,7 @@ where
                 .clone()
                 .ok_or_else(|| anyhow!("file handle reader not initialized"))?
         };
-        let data = reader.read(offset, len).await?;
+        let data = reader.read_bytes(offset, len).await?;
         self.update_offset(offset + data.len() as u64);
         Ok(data)
     }

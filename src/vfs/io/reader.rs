@@ -6,6 +6,7 @@
 // - Writer commit calls DataReader::invalidate(...) to mark slice metadata stale.
 
 use crate::chunk::reader::DataFetcher;
+use crate::chunk::store::BlockReadHint;
 use crate::chunk::{BlockStore, ChunkLayout};
 use crate::meta::MetaLayer;
 use crate::utils::NumCastExt;
@@ -16,12 +17,13 @@ use crate::vfs::chunk_id_for;
 use crate::vfs::config::ReadConfig;
 use crate::vfs::io::split_chunk_spans;
 use crate::vfs::memory::{MemoryBudget, PressureLevel};
+use bytes::Bytes;
 use dashmap::{DashMap, Entry};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use parking_lot::Mutex as ParkingMutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
@@ -30,6 +32,9 @@ use tracing::Instrument;
 const DEFAULT_TOTAL_AHEAD_LIMIT: u64 = 256 * 1024 * 1024;
 const READ_SESSIONS: usize = 2;
 const MAX_SLICE_READ_RETRIES: u32 = 5;
+const BUFFERED_READ_FRAGMENT_DIVISOR: u64 = 16;
+const MAX_TRACKED_BUFFERED_BLOCKS: usize = 1024;
+const MAX_BUFFERED_PROMOTION_HANDLES: usize = 2;
 
 /// Send-able wrapper for one non-overlapping read output span.
 ///
@@ -80,6 +85,7 @@ pub(crate) struct DataReader<B, M> {
     backend: Arc<Backend<B, M>>,
     prefetcher: Option<Arc<dyn Prefetcher>>,
     memory_budget: Option<MemoryBudget>,
+    read_handle_count: Arc<AtomicUsize>,
 }
 
 impl<B, M> DataReader<B, M>
@@ -94,6 +100,7 @@ where
             backend,
             prefetcher: None,
             memory_budget: None,
+            read_handle_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -114,12 +121,14 @@ where
             ino,
             self.backend.clone(),
             self.memory_budget.clone(),
+            self.read_handle_count.clone(),
         ));
 
         self.files
             .entry(ino_number as u64)
             .or_default()
             .push((fh, reader.clone()));
+        self.read_handle_count.fetch_add(1, Ordering::Relaxed);
         reader
     }
 
@@ -150,6 +159,8 @@ where
             Vec::new()
         };
 
+        self.read_handle_count
+            .fetch_sub(removed.len(), Ordering::Relaxed);
         for reader in removed {
             reader.invalidate_all().await;
         }
@@ -335,6 +346,129 @@ impl Session {
     }
 }
 
+#[derive(Debug, Default)]
+struct BufferedBlockCoverage {
+    seen_fragments: u64,
+    promotion_started: bool,
+}
+
+#[derive(Debug, Default)]
+struct BufferedReadTracker {
+    blocks: HashMap<u64, BufferedBlockCoverage>,
+    insertion_order: VecDeque<u64>,
+}
+
+enum BufferedReadBlockState {
+    Pending,
+    Ready(Bytes),
+    Failed,
+}
+
+struct BufferedReadBlock {
+    state: ParkingMutex<BufferedReadBlockState>,
+    notify: Notify,
+}
+
+impl BufferedReadBlock {
+    fn new() -> Self {
+        Self {
+            state: ParkingMutex::new(BufferedReadBlockState::Pending),
+            notify: Notify::new(),
+        }
+    }
+
+    fn finish(&self, data: anyhow::Result<Vec<u8>>) {
+        *self.state.lock() = match data {
+            Ok(data) => BufferedReadBlockState::Ready(Bytes::from(data)),
+            Err(_) => BufferedReadBlockState::Failed,
+        };
+        self.notify.notify_waiters();
+    }
+
+    async fn read_range(&self, offset: usize, len: usize) -> Option<Bytes> {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let state = self.state.lock();
+                match &*state {
+                    BufferedReadBlockState::Pending => {}
+                    BufferedReadBlockState::Ready(data) => {
+                        let end = offset.checked_add(len)?;
+                        return (end <= data.len()).then(|| data.slice(offset..end));
+                    }
+                    BufferedReadBlockState::Failed => return None,
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
+impl BufferedReadTracker {
+    fn observe(
+        &mut self,
+        offset: u64,
+        len: usize,
+        block_size: u64,
+        file_size: u64,
+    ) -> BlockReadHint {
+        if block_size == 0 {
+            return BlockReadHint::Normal;
+        }
+        let len = len as u64;
+        let target = block_size
+            .saturating_div(BUFFERED_READ_FRAGMENT_DIVISOR)
+            .max(1);
+        let fragment_count = block_size / target;
+        if len != target
+            || !block_size.is_multiple_of(target)
+            || fragment_count == 0
+            || fragment_count > u64::BITS as u64
+        {
+            return BlockReadHint::Normal;
+        }
+
+        let Some(end) = offset.checked_add(len) else {
+            return BlockReadHint::Normal;
+        };
+        let block_start = offset / block_size * block_size;
+        let Some(block_end) = block_start.checked_add(block_size) else {
+            return BlockReadHint::Normal;
+        };
+        let offset_in_block = offset - block_start;
+        if end > block_end || block_end > file_size || !offset_in_block.is_multiple_of(target) {
+            return BlockReadHint::Normal;
+        }
+
+        if !self.blocks.contains_key(&block_start) {
+            if self.blocks.len() >= MAX_TRACKED_BUFFERED_BLOCKS
+                && let Some(oldest) = self.insertion_order.pop_front()
+            {
+                self.blocks.remove(&oldest);
+            }
+            self.insertion_order.push_back(block_start);
+        }
+
+        let coverage = self.blocks.entry(block_start).or_default();
+        let full_coverage = if fragment_count == u64::BITS as u64 {
+            u64::MAX
+        } else {
+            (1_u64 << fragment_count) - 1
+        };
+        if coverage.promotion_started {
+            return BlockReadHint::Normal;
+        }
+        if coverage.seen_fragments == full_coverage {
+            coverage.promotion_started = true;
+            return BlockReadHint::PromoteBlock;
+        }
+
+        let fragment_index = offset_in_block / target;
+        coverage.seen_fragments |= 1_u64 << fragment_index;
+        BlockReadHint::Normal
+    }
+}
+
 #[derive(Copy, Clone)]
 enum SliceStatus {
     /// Created and fetching has not yet begun.
@@ -491,6 +625,15 @@ pub(crate) struct FileReader<B, M> {
     /// Reads-since-last-cleanup counter.  clean_evictable_slices scans the
     /// entire slice list (O(n)) so we amortize it over many reads.
     read_count: AtomicU64,
+    /// Track complete first-pass coverage of kernel-split buffered reads per
+    /// open handle. Promotion starts only when a fully consumed block is read
+    /// again, so one-pass reads never pay for an extra full-block copy.
+    buffered_read_tracker: ParkingMutex<BufferedReadTracker>,
+    /// Sequential 256 KiB streams use a per-handle one-block lookahead. At low
+    /// concurrency the full block may also enter the shared cache; at high
+    /// concurrency it stays private to avoid cross-stream cache pollution.
+    buffered_blocks: Arc<DashMap<u64, Arc<BufferedReadBlock>>>,
+    read_handle_count: Arc<AtomicUsize>,
 }
 
 impl<B, M> FileReader<B, M>
@@ -503,6 +646,7 @@ where
         inode: Arc<Inode>,
         backend: Arc<Backend<B, M>>,
         memory_budget: Option<MemoryBudget>,
+        read_handle_count: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             config,
@@ -513,15 +657,22 @@ where
             memory_budget,
             chunk_slices: DashMap::new(),
             read_count: AtomicU64::new(0),
+            buffered_read_tracker: ParkingMutex::new(BufferedReadTracker::default()),
+            buffered_blocks: Arc::new(DashMap::new()),
+            read_handle_count,
         }
     }
 
     pub(crate) async fn read(&self, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+        Ok(self.read_bytes(offset, len).await?.to_vec())
+    }
+
+    pub(crate) async fn read_bytes(&self, offset: u64, len: usize) -> anyhow::Result<Bytes> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
-        self.read_at(offset, len).await
+        self.read_at_bytes(offset, len).await
     }
 
     fn select_forward_session_match(
@@ -769,22 +920,141 @@ where
         Ok(())
     }
 
-    pub(crate) async fn read_at(&self, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+    async fn fetch_buffered_block(
+        backend: Arc<Backend<B, M>>,
+        layout: ChunkLayout,
+        ino: i64,
+        offset: u64,
+        len: usize,
+        hint: BlockReadHint,
+    ) -> anyhow::Result<Vec<u8>> {
+        let spans = split_chunk_spans(layout, offset, len);
+        let mut data = vec![0; len];
+        let mut cursor = 0;
+        for span in spans {
+            let span_len = span.len.as_usize();
+            let chunk_id = chunk_id_for(ino, span.index)?;
+            let mut fetcher = DataFetcher::new(layout, chunk_id, backend.as_ref());
+            fetcher.prepare_slices().await?;
+            let slices = fetcher.into_slices();
+            DataFetcher::read_at_into_from_slices_with_hint(
+                layout,
+                chunk_id,
+                backend.as_ref(),
+                slices.as_slice(),
+                span.offset.into(),
+                &mut data[cursor..cursor + span_len],
+                hint,
+            )
+            .await?;
+            cursor += span_len;
+        }
+        Ok(data)
+    }
+
+    fn schedule_buffered_block(&self, offset: u64, read_len: u64, ahead: u64, hint: BlockReadHint) {
+        let block_size = u64::from(self.config.layout.block_size);
+        let fragment_size = block_size
+            .saturating_div(BUFFERED_READ_FRAGMENT_DIVISOR)
+            .max(1);
+        if read_len != fragment_size || ahead < block_size {
+            return;
+        }
+
+        let Some(read_end) = offset.checked_add(read_len) else {
+            return;
+        };
+        let target = align_up_to(read_end, block_size);
+        let file_size = self.inode.file_size();
+        if target >= file_size {
+            return;
+        }
+
+        let current_block = offset / block_size * block_size;
+        self.buffered_blocks
+            .retain(|start, _| *start >= current_block && *start <= target);
+        let state = match self.buffered_blocks.entry(target) {
+            Entry::Occupied(_) => return,
+            Entry::Vacant(entry) => {
+                let state = Arc::new(BufferedReadBlock::new());
+                entry.insert(state.clone());
+                state
+            }
+        };
+
+        let backend = self.backend.clone();
+        let layout = self.config.layout;
+        let ino = self.inode.ino();
+        let len = (file_size - target).min(block_size) as usize;
+        tokio::spawn(async move {
+            let result = Self::fetch_buffered_block(backend, layout, ino, target, len, hint).await;
+            state.finish(result);
+        });
+    }
+
+    async fn read_buffered_block(&self, offset: u64, len: usize) -> Option<Bytes> {
+        let block_size = u64::from(self.config.layout.block_size);
+        let block_start = offset / block_size * block_size;
+        let state = self
+            .buffered_blocks
+            .get(&block_start)
+            .map(|entry| entry.value().clone())?;
+        state
+            .read_range((offset - block_start).as_usize(), len)
+            .await
+    }
+
+    async fn read_at_bytes(&self, offset: u64, len: usize) -> anyhow::Result<Bytes> {
         if len == 0 {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
         let file_size = self.inode.file_size();
         if file_size <= offset {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
         let actual_len = std::cmp::min(len, file_size as usize - offset as usize);
         if actual_len == 0 {
-            return Ok(Vec::new());
+            return Ok(Bytes::new());
         }
 
-        let track_read_slices = actual_len as u64 >= self.config.layout.block_size as u64;
+        let high_handle_concurrency =
+            self.read_handle_count.load(Ordering::Relaxed) > MAX_BUFFERED_PROMOTION_HANDLES;
+        let block_read_hint = if !high_handle_concurrency {
+            self.buffered_read_tracker.lock().observe(
+                offset,
+                actual_len,
+                u64::from(self.config.layout.block_size),
+                file_size,
+            )
+        } else {
+            BlockReadHint::Normal
+        };
+
+        let block_size = u64::from(self.config.layout.block_size);
+        let buffered_fragment = block_size
+            .saturating_div(BUFFERED_READ_FRAGMENT_DIVISOR)
+            .max(1);
+        let is_buffered_fragment = actual_len as u64 == buffered_fragment;
+        let buffered_read_hint = if high_handle_concurrency {
+            BlockReadHint::AvoidPromotion
+        } else {
+            BlockReadHint::Normal
+        };
+        let track_read_slices = actual_len as u64 >= block_size;
+        let ahead = if track_read_slices || is_buffered_fragment {
+            self.check_session(offset, actual_len)
+        } else {
+            0
+        };
+
+        if is_buffered_fragment
+            && let Some(data) = self.read_buffered_block(offset, actual_len).await
+        {
+            self.schedule_buffered_block(offset, actual_len as u64, ahead, buffered_read_hint);
+            return Ok(data);
+        }
 
         // Evict stale slices every N reads.  Both cleanup paths scan the full
         // slice list, so keep them out of the per-read hot path.
@@ -811,10 +1081,6 @@ where
         let spans = tracing::trace_span!("read_at.split_spans", offset, len = actual_len)
             .in_scope(|| split_chunk_spans(self.config.layout, offset, actual_len));
 
-        if track_read_slices {
-            let _ahead = self.check_session(offset, actual_len);
-        }
-
         let mut data = vec![0; actual_len];
         let result = async {
             // The common 4 MiB read stays within one chunk. Avoid building a
@@ -822,7 +1088,7 @@ where
             // path; the multi-span case still reads chunk spans concurrently.
             if spans.len() == 1 {
                 let span = spans[0];
-                self.read_chunk_span_into(span.index, span.offset, &mut data)
+                self.read_chunk_span_into(span.index, span.offset, &mut data, block_read_hint)
                     .await?;
                 return Ok::<_, anyhow::Error>(());
             }
@@ -841,7 +1107,7 @@ where
                     // SAFETY: every ReadSpanBuf points at a disjoint range of
                     // `data`, and all futures are awaited before `data` is used.
                     let out = unsafe { out.as_mut_slice() };
-                    self.read_chunk_span_into(span.index, span.offset, out)
+                    self.read_chunk_span_into(span.index, span.offset, out, block_read_hint)
                         .await
                 });
             }
@@ -860,7 +1126,11 @@ where
                 .instrument(tracing::trace_span!("read_at.cleanup_invalid"))
                 .await;
         }
-        result.map(|_| data)
+        result?;
+        if is_buffered_fragment {
+            self.schedule_buffered_block(offset, actual_len as u64, ahead, buffered_read_hint);
+        }
+        Ok(Bytes::from(data))
     }
 
     // Read one chunk span directly into the caller buffer through DataFetcher →
@@ -871,6 +1141,7 @@ where
         index: u64,
         offset: u64,
         out: &mut [u8],
+        block_read_hint: BlockReadHint,
     ) -> anyhow::Result<()> {
         let chunk_id = chunk_id_for(self.inode.ino(), index)?;
 
@@ -905,13 +1176,14 @@ where
                     }
                 };
 
-                DataFetcher::read_at_into_from_slices(
+                DataFetcher::read_at_into_from_slices_with_hint(
                     self.config.layout,
                     chunk_id,
                     &self.backend,
                     slices_arc.as_slice(),
                     offset.into(),
                     out,
+                    block_read_hint,
                 )
                 .await
             }
@@ -943,7 +1215,12 @@ where
         }
 
         let spans = split_chunk_spans(self.config.layout, offset, len);
-
+        let invalidated_end = offset.saturating_add(len as u64);
+        let block_size = u64::from(self.config.layout.block_size);
+        self.buffered_blocks.retain(|block_start, _| {
+            let block_end = block_start.saturating_add(block_size);
+            block_end <= offset || *block_start >= invalidated_end
+        });
         // Invalidate per-handle chunk→slice metadata cache for affected chunks
         // so subsequent reads re-fetch the updated slice list from meta.
         for span in &spans {
@@ -1012,6 +1289,7 @@ where
 
     async fn invalidate_all(&self) {
         self.chunk_slices.clear();
+        self.buffered_blocks.clear();
         let mut guard = self.slices.lock().await;
         for slice in guard.drain(..) {
             let mut state = slice.lock();
@@ -1058,6 +1336,88 @@ mod tests {
         ChunkLayout {
             chunk_size: 8 * 1024,
             block_size: 4 * 1024,
+        }
+    }
+
+    #[test]
+    fn buffered_read_tracker_promotes_only_on_a_second_pass() {
+        let block_size = 4 * 1024 * 1024;
+        let fragment = 256 * 1024;
+        let file_size = block_size * 2;
+        let mut tracker = BufferedReadTracker::default();
+
+        for offset in (0..block_size).step_by(fragment) {
+            assert_eq!(
+                tracker.observe(offset as u64, fragment, block_size as u64, file_size as u64,),
+                BlockReadHint::Normal,
+                "the complete first pass must stay ranged"
+            );
+        }
+        assert_eq!(
+            tracker.observe(0, fragment, block_size as u64, file_size as u64),
+            BlockReadHint::PromoteBlock
+        );
+        assert_eq!(
+            tracker.observe(
+                fragment as u64,
+                fragment,
+                block_size as u64,
+                file_size as u64,
+            ),
+            BlockReadHint::Normal,
+            "a block must issue at most one promotion request"
+        );
+    }
+
+    #[test]
+    fn buffered_read_tracker_accepts_reordered_complete_coverage() {
+        let block_size = 4 * 1024 * 1024;
+        let fragment = 256 * 1024;
+        let file_size = block_size * 3;
+        let mut tracker = BufferedReadTracker::default();
+
+        let mut offsets = (0..block_size).step_by(fragment).collect::<Vec<_>>();
+        offsets.reverse();
+        for offset in offsets {
+            assert_eq!(
+                tracker.observe(offset as u64, fragment, block_size as u64, file_size as u64,),
+                BlockReadHint::Normal
+            );
+        }
+        assert_eq!(
+            tracker.observe(0, fragment, block_size as u64, file_size as u64),
+            BlockReadHint::PromoteBlock,
+            "worker reordering must not prevent second-pass promotion"
+        );
+    }
+
+    #[test]
+    fn buffered_read_tracker_does_not_promote_partial_or_small_reads() {
+        let block_size = 4 * 1024 * 1024;
+        let fragment = 256 * 1024;
+        let file_size = block_size + fragment * 2;
+        let mut tracker = BufferedReadTracker::default();
+
+        for _ in 0..2 {
+            for offset in [block_size, block_size + fragment] {
+                assert_eq!(
+                    tracker.observe(offset as u64, fragment, block_size as u64, file_size as u64,),
+                    BlockReadHint::Normal,
+                    "a partial EOF block must never promote"
+                );
+            }
+        }
+        for offset in (0..block_size).step_by(128 * 1024) {
+            assert_eq!(
+                tracker.observe(
+                    offset as u64,
+                    128 * 1024,
+                    block_size as u64,
+                    (block_size * 2) as u64,
+                ),
+                BlockReadHint::Normal,
+                "128 KiB random-read fragments are outside the promotion profile"
+            );
         }
     }
 
@@ -1581,6 +1941,8 @@ mod tests {
     struct CountingBlockStore {
         data: StdMutex<HashMap<BlockKey, Vec<u8>>>,
         read_attempts: AtomicUsize,
+        reads_without_promotion: AtomicUsize,
+        promotions: StdMutex<Vec<BlockKey>>,
     }
 
     #[async_trait::async_trait]
@@ -1620,6 +1982,21 @@ mod tests {
             Ok(())
         }
 
+        async fn promote_read_block(&self, key: BlockKey) -> anyhow::Result<()> {
+            self.promotions.lock().unwrap().push(key);
+            Ok(())
+        }
+
+        async fn read_range_without_promotion(
+            &self,
+            key: BlockKey,
+            offset: u64,
+            buf: &mut [u8],
+        ) -> anyhow::Result<()> {
+            self.reads_without_promotion.fetch_add(1, Ordering::SeqCst);
+            self.read_range(key, offset, buf).await
+        }
+
         async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()> {
             let mut guard = self.data.lock().unwrap();
             for block in key.1..key.1 + block_count as u32 {
@@ -1627,6 +2004,209 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn file_reader_hints_only_after_complete_first_pass() {
+        let layout = small_layout();
+        let fragment_len = layout.block_size as usize / BUFFERED_READ_FRAGMENT_DIVISOR as usize;
+        let data = (0..layout.block_size as usize)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let block_store = Arc::new(CountingBlockStore::default());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let ino = 81;
+        let chunk_id = chunk_id_for(ino, 0).unwrap();
+        let slice_id = meta_store.next_id(SLICE_ID_KEY).await.unwrap() as u64;
+        block_store
+            .write_fresh_range((slice_id, 0), 0, &data)
+            .await
+            .unwrap();
+        meta_store
+            .append_slice(
+                chunk_id,
+                SliceDesc {
+                    slice_id,
+                    chunk_id,
+                    offset: 0,
+                    length: data.len() as u64,
+                },
+            )
+            .await
+            .unwrap();
+
+        let backend = Arc::new(Backend::new(block_store.clone(), meta_handle.layer()));
+        let data_reader = DataReader::new(Arc::new(ReadConfig::new(layout)), backend.clone());
+        let file_reader = data_reader.open_for_handle(Inode::new(ino, data.len() as u64), 9);
+
+        for offset in (0..data.len()).step_by(fragment_len) {
+            assert_eq!(
+                file_reader.read(offset as u64, fragment_len).await.unwrap(),
+                data[offset..offset + fragment_len]
+            );
+        }
+        assert_eq!(
+            file_reader.read(0, fragment_len).await.unwrap(),
+            data[..fragment_len]
+        );
+        assert_eq!(*block_store.promotions.lock().unwrap(), vec![(slice_id, 0)]);
+        file_reader
+            .read(fragment_len as u64, fragment_len)
+            .await
+            .unwrap();
+        assert_eq!(*block_store.promotions.lock().unwrap(), vec![(slice_id, 0)]);
+
+        block_store.promotions.lock().unwrap().clear();
+        file_reader
+            .read_handle_count
+            .store(MAX_BUFFERED_PROMOTION_HANDLES + 1, Ordering::Relaxed);
+        file_reader.read(0, fragment_len).await.unwrap();
+        assert_eq!(
+            *block_store.promotions.lock().unwrap(),
+            Vec::<BlockKey>::new(),
+            "high handle concurrency must bypass buffered promotion tracking"
+        );
+
+        block_store.promotions.lock().unwrap().clear();
+        let short_slice_id = slice_id + 1;
+        block_store
+            .write_fresh_range((short_slice_id, 0), 0, &data[..fragment_len * 2])
+            .await
+            .unwrap();
+        let mut short_out = vec![0; fragment_len];
+        DataFetcher::read_at_into_from_slices_with_hint(
+            layout,
+            chunk_id,
+            backend.as_ref(),
+            &[SliceDesc {
+                slice_id: short_slice_id,
+                chunk_id,
+                offset: 0,
+                length: (fragment_len * 2) as u64,
+            }],
+            (fragment_len as u64).into(),
+            &mut short_out,
+            BlockReadHint::PromoteBlock,
+        )
+        .await
+        .unwrap();
+        assert_eq!(short_out, data[fragment_len..fragment_len * 2]);
+        assert_eq!(
+            *block_store.promotions.lock().unwrap(),
+            Vec::<BlockKey>::new(),
+            "a partial physical slice block must not receive a promotion hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn high_concurrency_buffered_readahead_is_private_and_invalidated() {
+        let layout = small_layout();
+        let block_size = layout.block_size as usize;
+        let fragment_len = block_size / BUFFERED_READ_FRAGMENT_DIVISOR as usize;
+        let data = (0..block_size * 2)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let block_store = Arc::new(CountingBlockStore::default());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let ino = 82;
+        let chunk_id = chunk_id_for(ino, 0).unwrap();
+        let slice_id = meta_store.next_id(SLICE_ID_KEY).await.unwrap() as u64;
+        block_store
+            .write_fresh_range((slice_id, 0), 0, &data[..block_size])
+            .await
+            .unwrap();
+        block_store
+            .write_fresh_range((slice_id, 1), 0, &data[block_size..])
+            .await
+            .unwrap();
+        meta_store
+            .append_slice(
+                chunk_id,
+                SliceDesc {
+                    slice_id,
+                    chunk_id,
+                    offset: 0,
+                    length: data.len() as u64,
+                },
+            )
+            .await
+            .unwrap();
+
+        let backend = Arc::new(Backend::new(block_store.clone(), meta_handle.layer()));
+        let data_reader = DataReader::new(Arc::new(ReadConfig::new(layout)), backend);
+        let file_reader = data_reader.open_for_handle(Inode::new(ino, data.len() as u64), 10);
+        file_reader
+            .read_handle_count
+            .store(MAX_BUFFERED_PROMOTION_HANDLES + 1, Ordering::Relaxed);
+
+        assert_eq!(
+            file_reader.read(0, fragment_len).await.unwrap(),
+            data[..fragment_len]
+        );
+        let buffered = file_reader
+            .read_bytes(block_size as u64, fragment_len)
+            .await
+            .unwrap();
+        assert_eq!(buffered, data[block_size..block_size + fragment_len]);
+        let cached_ptr = {
+            let block = file_reader
+                .buffered_blocks
+                .get(&(block_size as u64))
+                .unwrap();
+            let state = block.state.lock();
+            match &*state {
+                BufferedReadBlockState::Ready(data) => data.as_ptr(),
+                _ => panic!("private readahead block must be ready"),
+            }
+        };
+        assert_eq!(
+            buffered.as_ptr(),
+            cached_ptr,
+            "Bytes reply must share the private readahead allocation"
+        );
+        assert_eq!(
+            block_store.read_attempts.load(Ordering::SeqCst),
+            2,
+            "the foreground fragment and one private full-block readahead are the only reads"
+        );
+        assert_eq!(
+            block_store.reads_without_promotion.load(Ordering::SeqCst),
+            1,
+            "high-concurrency lookahead must bypass shared-cache promotion"
+        );
+
+        file_reader
+            .invalidate(block_size as u64, fragment_len)
+            .await;
+        file_reader
+            .read(block_size as u64, fragment_len)
+            .await
+            .unwrap();
+        assert_eq!(
+            block_store.read_attempts.load(Ordering::SeqCst),
+            3,
+            "invalidation must prevent stale private-buffer hits"
+        );
+
+        file_reader.read_handle_count.store(1, Ordering::Relaxed);
+        file_reader.invalidate_all().await;
+        file_reader.read(0, fragment_len).await.unwrap();
+        file_reader
+            .read(block_size as u64, fragment_len)
+            .await
+            .unwrap();
+        assert_eq!(
+            block_store.read_attempts.load(Ordering::SeqCst),
+            5,
+            "low-concurrency sequential reads must also consume one-block lookahead"
+        );
+        assert_eq!(
+            block_store.reads_without_promotion.load(Ordering::SeqCst),
+            1,
+            "low-concurrency lookahead must use the promotable shared-cache path"
+        );
     }
 
     struct DelayedBlockStore {
