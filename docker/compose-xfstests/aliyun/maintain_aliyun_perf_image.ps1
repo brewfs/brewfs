@@ -206,16 +206,23 @@ command -v juicefs >/dev/null 2>&1 || { echo 'native JuiceFS installation failed
 git config --global http.version HTTP/1.1
 git config --global http.lowSpeedLimit 0
 git config --global http.lowSpeedTime 300
+clone_urls="`$REPO"
+if [[ "`$REPO" == https://github.com/* ]]; then
+  clone_urls+=" https://gh-proxy.com/`$REPO"
+  clone_urls+=" https://ghfast.top/`$REPO"
+fi
 fetched=0
-for attempt in `$(seq 1 5); do
-  echo "cloning source (attempt `$attempt/5)"
-  rm -rf "`$SOURCE"
-  mkdir -p "`$(dirname "`$SOURCE")"
-  if git clone --depth=1 --branch "`$REF" "`$REPO" "`$SOURCE"; then
-    fetched=1
-    break
-  fi
-  sleep `$((attempt * 10))
+for clone_url in `$clone_urls; do
+  for attempt in `$(seq 1 3); do
+    echo "cloning source from `$clone_url (attempt `$attempt/3)"
+    rm -rf "`$SOURCE"
+    mkdir -p "`$(dirname "`$SOURCE")"
+    if git clone --depth=1 --branch "`$REF" "`$clone_url" "`$SOURCE"; then
+      fetched=1
+      break 2
+    fi
+    sleep `$((attempt * 10))
+  done
 done
 [[ "`$fetched" == 1 ]] || { echo 'unable to fetch BrewFS source after retries' >&2; exit 1; }
 git -C "`$SOURCE" checkout --force --detach HEAD
