@@ -8,6 +8,9 @@ export DEBIAN_FRONTEND=noninteractive
 
 ROOT="${BREWFS_PERF_KERNEL_ROOT:-/opt/brewfs-perf/kernel}"
 SOURCE_URL="${BREWFS_FUSE_KERNEL_SOURCE_URL:-https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.8.12.tar.xz}"
+SOURCE_URLS="${BREWFS_FUSE_KERNEL_SOURCE_URLS:-https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.8.12.tar.xz https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.8.12.tar.xz $SOURCE_URL}"
+DOWNLOAD_CONNECT_TIMEOUT="${BREWFS_FUSE_KERNEL_CONNECT_TIMEOUT:-15}"
+DOWNLOAD_MAX_TIME="${BREWFS_FUSE_KERNEL_MAX_TIME:-300}"
 PATCH_ID="98b4ca2378e1f6b6c06a74f699623ebecfb3549d"
 LOCALVERSION="${BREWFS_FUSE_KERNEL_LOCALVERSION:--brewfs-io-pages}"
 JOBS="${BREWFS_FUSE_KERNEL_JOBS:-$(nproc)}"
@@ -52,9 +55,25 @@ mkdir -p "$ROOT"
 archive="$ROOT/linux-6.8.12.tar.xz"
 source_dir="$ROOT/linux-6.8.12"
 if [[ ! -s "$archive" ]]; then
-    log "downloading $SOURCE_URL"
-    curl --fail --location --retry 5 --retry-all-errors --connect-timeout 20 \
-        --max-time 1800 "$SOURCE_URL" --output "$archive"
+    downloaded=0
+    downloaded_source_url=""
+    for source_url in $SOURCE_URLS; do
+        log "downloading $source_url"
+        rm -f "$archive.part"
+        if curl --fail --location --retry 2 --retry-all-errors \
+            --connect-timeout "$DOWNLOAD_CONNECT_TIMEOUT" --max-time "$DOWNLOAD_MAX_TIME" \
+            "$source_url" --output "$archive.part" && \
+            tar -tJf "$archive.part" >/dev/null 2>&1; then
+            mv "$archive.part" "$archive"
+            downloaded=1
+            downloaded_source_url="$source_url"
+            break
+        fi
+        log "download failed or archive is invalid; trying the next source"
+    done
+    (( downloaded == 1 )) || fail "unable to download a valid kernel archive from: $SOURCE_URLS"
+else
+    downloaded_source_url="$SOURCE_URL"
 fi
 tar -tJf "$archive" >/dev/null 2>&1 || fail "invalid kernel archive: $archive"
 
@@ -116,7 +135,8 @@ update-grub
 mkdir -p "$(dirname "$MANIFEST")"
 {
     printf 'patch=%s\n' "$PATCH_ID"
-    printf 'source_url=%s\n' "$SOURCE_URL"
+    printf 'source_url=%s\n' "$downloaded_source_url"
+    printf 'source_urls=%s\n' "$SOURCE_URLS"
     printf 'source_dir=%s\n' "$source_dir"
     printf 'base_release=%s\n' "$running_release"
     printf 'localversion=%s\n' "$LOCALVERSION"
