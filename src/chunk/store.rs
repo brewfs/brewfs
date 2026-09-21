@@ -151,6 +151,8 @@ pub struct ObjectStoreStatsSnapshot {
     pub read_range_gets: u64,
     pub read_full_gets: u64,
     pub read_piggyback_full: u64,
+    pub persistent_slice_read_ops: u64,
+    pub persistent_slice_read_bytes: u64,
     pub read_background_prefetches: u64,
     pub read_background_prefetch_dropped: u64,
 }
@@ -172,6 +174,8 @@ pub struct ObjectStoreMetrics {
     read_range_gets: AtomicU64,
     read_full_gets: AtomicU64,
     read_piggyback_full: AtomicU64,
+    persistent_slice_read_ops: AtomicU64,
+    persistent_slice_read_bytes: AtomicU64,
     read_background_prefetches: AtomicU64,
     read_background_prefetch_dropped: AtomicU64,
 }
@@ -194,6 +198,8 @@ impl ObjectStoreMetrics {
             read_range_gets: self.read_range_gets.load(Ordering::Relaxed),
             read_full_gets: self.read_full_gets.load(Ordering::Relaxed),
             read_piggyback_full: self.read_piggyback_full.load(Ordering::Relaxed),
+            persistent_slice_read_ops: self.persistent_slice_read_ops.load(Ordering::Relaxed),
+            persistent_slice_read_bytes: self.persistent_slice_read_bytes.load(Ordering::Relaxed),
             read_background_prefetches: self.read_background_prefetches.load(Ordering::Relaxed),
             read_background_prefetch_dropped: self
                 .read_background_prefetch_dropped
@@ -251,6 +257,13 @@ impl ObjectStoreMetrics {
 
     fn record_read_piggyback_full(&self) {
         self.read_piggyback_full.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_persistent_slice_read(&self, bytes: usize) {
+        self.persistent_slice_read_ops
+            .fetch_add(1, Ordering::Relaxed);
+        self.persistent_slice_read_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
     fn record_read_background_prefetch(&self) {
@@ -425,6 +438,46 @@ impl Default for BlockStoreConfig {
 
 pub(crate) fn persistent_slice_cache_path(root: &Path, slice_id: u64) -> PathBuf {
     root.join(format!(".writeback-slice-{slice_id}"))
+}
+
+#[cfg(unix)]
+const PERSISTENT_SLICE_PROMOTION_SLOP: usize = 4 * 1024;
+
+#[cfg(unix)]
+fn can_block_in_place() -> bool {
+    tokio::runtime::Handle::try_current()
+        .map(|handle| {
+            matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn read_file_range_at_into(
+    file: &fs::File,
+    offset: u64,
+    data: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut read_len = 0;
+    while read_len < data.len() {
+        let n = file.read_at(&mut data[read_len..], offset + read_len as u64)?;
+        if n == 0 {
+            break;
+        }
+        read_len += n;
+    }
+    Ok(read_len)
+}
+
+#[cfg(unix)]
+fn read_file_range_at(file: &fs::File, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut data = vec![0; len];
+    let read_len = read_file_range_at_into(file, offset, &mut data)?;
+    data.truncate(read_len);
+    Ok(data)
 }
 
 impl BlockStoreConfig {
@@ -822,20 +875,94 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             let file = if let Some(file) = self.persistent_slice_files.get(&key.0) {
                 file
             } else {
-                let opened = Arc::new(fs::File::open(path).ok()?);
+                let opened = if can_block_in_place() {
+                    tokio::task::block_in_place(|| fs::File::open(path)).ok()?
+                } else {
+                    tokio::task::spawn_blocking(move || fs::File::open(path))
+                        .await
+                        .ok()?
+                        .ok()?
+                };
+                let opened = Arc::new(opened);
                 self.persistent_slice_files.insert(key.0, opened.clone());
                 opened
             };
 
-            let mut read_len = 0;
-            while read_len < buf.len() {
-                match file.read_at(&mut buf[read_len..], file_offset + read_len as u64) {
-                    Ok(0) => break,
-                    Ok(n) => read_len += n,
-                    Err(_) => return None,
-                }
+            let threshold = self.config.range_size_threshold();
+            // FUSE can shave a small protocol/header tail from an otherwise
+            // threshold-sized request (1 MiB becomes 1 MiB - 16 B on the
+            // current Linux path). Keep genuinely small reads ranged, but do
+            // not miss full-block promotion because of sub-page framing.
+            let promotion_threshold = threshold
+                .saturating_sub(PERSISTENT_SLICE_PROMOTION_SLOP)
+                .max(1);
+            let promote_full_block = threshold > 0 && buf.len() >= promotion_threshold;
+            let use_block_in_place = can_block_in_place();
+            if !promote_full_block {
+                let read_len = if use_block_in_place {
+                    tokio::task::block_in_place(|| {
+                        read_file_range_at_into(file.as_ref(), file_offset, buf)
+                    })
+                    .ok()?
+                } else {
+                    let requested_len = buf.len();
+                    let data = tokio::task::spawn_blocking(move || {
+                        read_file_range_at(file.as_ref(), file_offset, requested_len)
+                    })
+                    .await
+                    .ok()?
+                    .ok()?;
+                    let read_len = data.len();
+                    if read_len == requested_len {
+                        buf.copy_from_slice(&data);
+                    }
+                    read_len
+                };
+                self.object_metrics.record_persistent_slice_read(read_len);
+                return (read_len == buf.len()).then_some(read_len);
             }
-            (read_len == buf.len()).then_some(read_len)
+
+            let read_offset = (key.1 as u64).checked_mul(self.config.block_size as u64)?;
+            let block_size = self.config.block_size;
+            let cache_key = Self::key_for(key);
+            let block_cache = self.block_cache.clone();
+            let object_metrics = self.object_metrics.clone();
+            let data = self
+                .read_flight
+                .execute(key, || async move {
+                    let data = if use_block_in_place {
+                        tokio::task::block_in_place(move || {
+                            read_file_range_at(file.as_ref(), read_offset, block_size)
+                        })?
+                    } else {
+                        tokio::task::spawn_blocking(move || {
+                            read_file_range_at(file.as_ref(), read_offset, block_size)
+                        })
+                        .await??
+                    };
+                    object_metrics.record_persistent_slice_read(data.len());
+                    if data.len() != block_size {
+                        anyhow::bail!(
+                            "short persistent-slice block read: expected {block_size}, got {}",
+                            data.len()
+                        );
+                    }
+                    let data = Bytes::from(data);
+                    block_cache
+                        .insert_recent_write_hot(&cache_key, data.clone())
+                        .await;
+                    Ok::<Bytes, anyhow::Error>(data)
+                })
+                .await
+                .ok()?;
+
+            let data_offset = offset.as_usize();
+            let data_end = data_offset.checked_add(buf.len())?;
+            if data_end > data.len() {
+                return None;
+            }
+            buf.copy_from_slice(&data[data_offset..data_end]);
+            Some(buf.len())
         }
 
         #[cfg(not(unix))]
@@ -852,6 +979,43 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                 }
             }
             (read_len == buf.len()).then_some(read_len)
+        }
+    }
+
+    async fn serve_persistent_slice_cache(
+        &self,
+        key: BlockKey,
+        key_str: &str,
+        offset: u64,
+        buf: &mut [u8],
+        full_block_read: bool,
+    ) -> Option<usize> {
+        let read_len = self.read_persistent_slice_cache(key, offset, buf).await?;
+        tracing::trace!(key = %key_str, len = read_len, "persistent writeback slice HIT");
+        tracing::Span::current().record("strategy", "writeback_slice_hit");
+        tracing::Span::current().record("read_len", read_len);
+        self.object_metrics.record_read_block_cache_hit();
+        if full_block_read {
+            self.block_cache
+                .insert_recent_write_opportunistic(
+                    key_str.to_owned(),
+                    Bytes::copy_from_slice(&buf[..read_len]),
+                )
+                .await;
+        }
+        Some(read_len)
+    }
+
+    fn has_open_persistent_slice(&self, slice_id: u64) -> bool {
+        #[cfg(unix)]
+        {
+            self.persistent_slice_files.get(&slice_id).is_some()
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = slice_id;
+            false
         }
     }
 
@@ -1131,6 +1295,19 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
 
         // Try cache first — blocks are immutable once committed, so a cache
         // hit is always valid regardless of read size or offset.
+        // Once a writeback slice has been opened, prefer its shared descriptor
+        // over probing the ordinary disk cache again for every block. The
+        // first block still follows the normal cache order, so reads without a
+        // persistent slice do not gain an extra filesystem lookup.
+        if self.has_open_persistent_slice(key.0)
+            && self
+                .serve_persistent_slice_cache(key, &key_str, offset, buf, full_block_read)
+                .await
+                .is_some()
+        {
+            return Ok(());
+        }
+
         if !full_block_read
             && let Some(read_len) = self
                 .block_cache
@@ -1163,19 +1340,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             );
         }
 
-        if let Some(read_len) = self.read_persistent_slice_cache(key, offset, buf).await {
-            tracing::trace!(key = %key_str, len = read_len, "persistent writeback slice HIT");
-            tracing::Span::current().record("strategy", "writeback_slice_hit");
-            tracing::Span::current().record("read_len", read_len);
-            self.object_metrics.record_read_block_cache_hit();
-            if full_block_read {
-                self.block_cache
-                    .insert_recent_write_opportunistic(
-                        key_str.clone(),
-                        Bytes::copy_from_slice(&buf[..read_len]),
-                    )
-                    .await;
-            }
+        if self
+            .serve_persistent_slice_cache(key, &key_str, offset, buf, full_block_read)
+            .await
+            .is_some()
+        {
             return Ok(());
         }
 
@@ -2617,28 +2786,120 @@ mod tests {
 
         let promoted_slice = persistent_slice_cache_path(cache_dir.path(), 124);
         tokio::fs::write(&promoted_slice, &large_data).await?;
-        let mut promoted_out = vec![0u8; large_data.len()];
+        let promotion_read_len = block_size / 4 - 16;
+        let mut promoted_out = vec![0u8; promotion_read_len];
         remounted_store
             .read_range((124, 0), 0, &mut promoted_out)
             .await?;
-        assert_eq!(promoted_out, large_data);
+        assert_eq!(promoted_out, large_data[..promotion_read_len]);
+        let promoted_metrics = remounted_store.object_metrics.snapshot();
+        assert_eq!(promoted_metrics.persistent_slice_read_ops, 1);
+        assert_eq!(
+            promoted_metrics.persistent_slice_read_bytes,
+            block_size as u64
+        );
         assert_eq!(
             *backend.get_object_calls.lock().unwrap(),
             0,
             "a remounted store must serve a promoted writeback slice without an object GET"
         );
+        assert_eq!(
+            remounted_store
+                .block_cache
+                .get(&"chunks/124/0".to_string())
+                .await,
+            Some(large_data.clone().into()),
+            "a near-threshold persistent-slice read should promote the complete block"
+        );
 
         tokio::fs::remove_file(&promoted_slice).await?;
         promoted_out.fill(0);
         remounted_store
-            .read_range((124, 0), 0, &mut promoted_out)
+            .read_range((124, 0), promotion_read_len as u64, &mut promoted_out)
             .await?;
-        assert_eq!(promoted_out, large_data);
+        assert_eq!(
+            promoted_out,
+            large_data[promotion_read_len..promotion_read_len * 2]
+        );
         assert_eq!(
             *backend.get_object_calls.lock().unwrap(),
             0,
             "a promoted slice block must remain in memory after its first disk hit"
         );
+
+        let unpromoted_slice = persistent_slice_cache_path(cache_dir.path(), 125);
+        tokio::fs::write(&unpromoted_slice, &large_data).await?;
+        let small_read_len = promotion_read_len - PERSISTENT_SLICE_PROMOTION_SLOP - 1;
+        let mut small_out = vec![0u8; small_read_len];
+        remounted_store
+            .read_range((125, 0), 0, &mut small_out)
+            .await?;
+        assert_eq!(small_out, large_data[..small_read_len]);
+        let unpromoted_metrics = remounted_store.object_metrics.snapshot();
+        assert_eq!(unpromoted_metrics.persistent_slice_read_ops, 2);
+        assert_eq!(
+            unpromoted_metrics.persistent_slice_read_bytes,
+            (block_size + small_read_len) as u64
+        );
+        assert_eq!(
+            remounted_store
+                .block_cache
+                .get(&"chunks/125/0".to_string())
+                .await,
+            None,
+            "sub-threshold persistent-slice reads must not amplify into a complete block"
+        );
+
+        let concurrent_slice = persistent_slice_cache_path(cache_dir.path(), 126);
+        tokio::fs::write(&concurrent_slice, &large_data).await?;
+        let before_concurrent = remounted_store.object_metrics.snapshot();
+        let reads = (0..4).map(|part| {
+            let store = &remounted_store;
+            let expected = &large_data;
+            async move {
+                let offset = part * promotion_read_len;
+                let mut out = vec![0u8; promotion_read_len];
+                store.read_range((126, 0), offset as u64, &mut out).await?;
+                anyhow::ensure!(
+                    out == expected[offset..offset + promotion_read_len],
+                    "concurrent persistent-slice read returned unexpected data"
+                );
+                Ok::<(), anyhow::Error>(())
+            }
+        });
+        futures::future::try_join_all(reads).await?;
+        let after_concurrent = remounted_store.object_metrics.snapshot();
+        assert_eq!(
+            after_concurrent.persistent_slice_read_ops
+                - before_concurrent.persistent_slice_read_ops,
+            1,
+            "concurrent ranges from one block should share one persistent-slice read"
+        );
+        assert_eq!(
+            after_concurrent.persistent_slice_read_bytes
+                - before_concurrent.persistent_slice_read_bytes,
+            block_size as u64
+        );
+
+        let multi_block_slice = persistent_slice_cache_path(cache_dir.path(), 127);
+        tokio::fs::write(&multi_block_slice, large_data.repeat(2)).await?;
+        let mut first_block_out = vec![0u8; promotion_read_len];
+        remounted_store
+            .read_range((127, 0), 0, &mut first_block_out)
+            .await?;
+        let misses_after_first_block = remounted_store.block_cache.stats().cache_misses;
+        let mut second_block_out = vec![0u8; promotion_read_len];
+        remounted_store
+            .read_range((127, 1), 0, &mut second_block_out)
+            .await?;
+        assert_eq!(first_block_out, large_data[..promotion_read_len]);
+        assert_eq!(second_block_out, large_data[..promotion_read_len]);
+        assert_eq!(
+            remounted_store.block_cache.stats().cache_misses,
+            misses_after_first_block,
+            "an opened persistent slice should bypass failed ordinary disk-cache probes"
+        );
+
         Ok(())
     }
 

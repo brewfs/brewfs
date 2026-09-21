@@ -2337,6 +2337,8 @@ if brewfs_stats_paths:
         range_gets = delta("brewfs_read_range_gets_total")
         full_gets = delta("brewfs_read_full_gets_total")
         bg_prefetch = delta("brewfs_read_background_prefetch_total")
+        persistent_slice_read_ops = delta("brewfs_persistent_slice_read_ops_total")
+        persistent_slice_read_bytes = delta("brewfs_persistent_slice_read_bytes_total")
         stage_ops = delta("brewfs_writeback_stage_ops_total")
         stage_bytes = delta("brewfs_writeback_stage_bytes_total")
         stage_ms = delta("brewfs_writeback_stage_lat_us_total") / 1000.0
@@ -2459,6 +2461,8 @@ if brewfs_stats_paths:
             f"{fmt_mib(read_buffer)} | GET={int(s3_get)}, PUT={int(s3_put)} | "
             f"GET={s3_get_avg_ms:.2f} ms, PUT={s3_put_avg_ms:.2f} ms | "
             f"{rel}; range={int(range_gets)}, full={int(full_gets)}, bg_prefetch={int(bg_prefetch)}, "
+            f"persistent_slice={int(persistent_slice_read_ops)} ops/"
+            f"{fmt_mib(persistent_slice_read_bytes)}, "
             f"stage={int(stage_ops)} ops/{fmt_mib(stage_bytes)}/{stage_ms:.1f} ms, "
             f"foreground=stage {stage_s:.2f}s/commit_wait {commit_wait_s:.2f}s, "
             f"flush_wait={int(flush_wait_ops)} ops/{flush_wait_s:.2f}s/{int(flush_wait_slices)} slices, "

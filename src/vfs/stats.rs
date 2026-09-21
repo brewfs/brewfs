@@ -187,6 +187,8 @@ pub struct FsStatsSnapshot {
     pub read_range_gets: u64,
     pub read_full_gets: u64,
     pub read_piggyback_full: u64,
+    pub persistent_slice_read_ops: u64,
+    pub persistent_slice_read_bytes: u64,
     pub read_background_prefetches: u64,
     pub read_background_prefetch_dropped: u64,
     pub meta_stat_cache_hit: u64,
@@ -590,6 +592,10 @@ pub struct FsStats {
     pub read_full_gets: AtomicU64,
     /// Reads piggybacked onto an in-flight full-block GET
     pub read_piggyback_full: AtomicU64,
+    /// Positional reads issued against persistent writeback slices
+    pub persistent_slice_read_ops: AtomicU64,
+    /// Bytes read from persistent writeback slices
+    pub persistent_slice_read_bytes: AtomicU64,
     /// Background full-block prefetches scheduled by range reads
     pub read_background_prefetches: AtomicU64,
     /// Background full-block prefetches dropped before execution
@@ -794,6 +800,8 @@ impl FsStats {
             read_range_gets: AtomicU64::new(0),
             read_full_gets: AtomicU64::new(0),
             read_piggyback_full: AtomicU64::new(0),
+            persistent_slice_read_ops: AtomicU64::new(0),
+            persistent_slice_read_bytes: AtomicU64::new(0),
             read_background_prefetches: AtomicU64::new(0),
             read_background_prefetch_dropped: AtomicU64::new(0),
             meta_stat_cache_hit: AtomicU64::new(0),
@@ -1099,6 +1107,8 @@ impl FsStats {
             read_range_gets: self.read_range_gets.load(ORD),
             read_full_gets: self.read_full_gets.load(ORD),
             read_piggyback_full: self.read_piggyback_full.load(ORD),
+            persistent_slice_read_ops: self.persistent_slice_read_ops.load(ORD),
+            persistent_slice_read_bytes: self.persistent_slice_read_bytes.load(ORD),
             read_background_prefetches: self.read_background_prefetches.load(ORD),
             read_background_prefetch_dropped: self.read_background_prefetch_dropped.load(ORD),
             meta_stat_cache_hit: self.meta_stat_cache_hit.load(ORD),
@@ -1534,6 +1544,8 @@ impl FsStats {
         range_gets: u64,
         full_gets: u64,
         piggyback_full: u64,
+        persistent_slice_read_ops: u64,
+        persistent_slice_read_bytes: u64,
         background_prefetches: u64,
         background_prefetch_dropped: u64,
     ) {
@@ -1543,6 +1555,10 @@ impl FsStats {
         self.read_range_gets.store(range_gets, ORD);
         self.read_full_gets.store(full_gets, ORD);
         self.read_piggyback_full.store(piggyback_full, ORD);
+        self.persistent_slice_read_ops
+            .store(persistent_slice_read_ops, ORD);
+        self.persistent_slice_read_bytes
+            .store(persistent_slice_read_bytes, ORD);
         self.read_background_prefetches
             .store(background_prefetches, ORD);
         self.read_background_prefetch_dropped
@@ -2327,6 +2343,14 @@ impl FsStats {
             snapshot.read_piggyback_full
         ));
         out.push_str(&format!(
+            "brewfs_persistent_slice_read_ops_total {}\n",
+            snapshot.persistent_slice_read_ops
+        ));
+        out.push_str(&format!(
+            "brewfs_persistent_slice_read_bytes_total {}\n",
+            snapshot.persistent_slice_read_bytes
+        ));
+        out.push_str(&format!(
             "brewfs_read_background_prefetch_total {}\n",
             snapshot.read_background_prefetches
         ));
@@ -2513,6 +2537,7 @@ mod tests {
         );
         stats.sync_writeback_upload_batch_shape_metrics(64, 65);
         stats.sync_writeback_upload_origin_metrics(32, 33, 34, 35, 36, 37, 38, 39);
+        stats.sync_read_strategy_metrics(40, 41, 42, 43, 44, 45, 46, 47, 48, 49);
 
         let output = stats.render();
         assert!(output.contains("brewfs_fuse_read_ops_total 42"));
@@ -2527,14 +2552,16 @@ mod tests {
         assert!(output.contains("brewfs_cache_misses_total 2"));
         assert!(output.contains("brewfs_cache_requests_total 10"));
         assert!(output.contains("brewfs_cache_hit_ratio 0.800000"));
-        assert!(output.contains("brewfs_read_block_cache_hits_total 0"));
-        assert!(output.contains("brewfs_read_page_cache_hits_total 0"));
-        assert!(output.contains("brewfs_read_page_cache_misses_total 0"));
-        assert!(output.contains("brewfs_read_range_gets_total 0"));
-        assert!(output.contains("brewfs_read_full_gets_total 0"));
-        assert!(output.contains("brewfs_read_piggyback_full_total 0"));
-        assert!(output.contains("brewfs_read_background_prefetch_total 0"));
-        assert!(output.contains("brewfs_read_background_prefetch_dropped_total 0"));
+        assert!(output.contains("brewfs_read_block_cache_hits_total 40"));
+        assert!(output.contains("brewfs_read_page_cache_hits_total 41"));
+        assert!(output.contains("brewfs_read_page_cache_misses_total 42"));
+        assert!(output.contains("brewfs_read_range_gets_total 43"));
+        assert!(output.contains("brewfs_read_full_gets_total 44"));
+        assert!(output.contains("brewfs_read_piggyback_full_total 45"));
+        assert!(output.contains("brewfs_persistent_slice_read_ops_total 46"));
+        assert!(output.contains("brewfs_persistent_slice_read_bytes_total 47"));
+        assert!(output.contains("brewfs_read_background_prefetch_total 48"));
+        assert!(output.contains("brewfs_read_background_prefetch_dropped_total 49"));
         assert!(output.contains("brewfs_meta_stat_cache_hit_total 0"));
         assert!(output.contains("brewfs_meta_stat_cache_miss_total 0"));
         assert!(output.contains("brewfs_meta_stat_fresh_store_hit_total 0"));
