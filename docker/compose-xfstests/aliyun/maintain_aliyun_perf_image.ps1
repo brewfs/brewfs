@@ -171,6 +171,7 @@ mkdir -p /etc/fuse
 grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
 
 curl --fail --location --retry 5 --retry-all-errors \
+  --connect-timeout 20 --max-time 1800 \
   https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip --output /tmp/awscliv2.zip
 rm -rf /tmp/aws
 unzip -q /tmp/awscliv2.zip -d /tmp
@@ -182,9 +183,22 @@ command -v aws >/dev/null 2>&1 || { echo 'native AWS CLI installation failed' >&
 # the endpoints supplied for each test run.
 
 JUICEFS_VERSION=1.4.1
-curl --fail --location --retry 5 --retry-all-errors \
-  "https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/juicefs-`$JUICEFS_VERSION-linux-amd64.tar.gz" \
-  --output /tmp/juicefs.tar.gz
+juicefs_asset="juicefs-`$JUICEFS_VERSION-linux-amd64.tar.gz"
+juicefs_urls="https://d.juicefs.com/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_urls+=" https://gh-proxy.com/https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_urls+=" https://ghfast.top/https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_downloaded=0
+for juicefs_url in `$juicefs_urls; do
+  echo "downloading `$juicefs_url"
+  rm -f /tmp/juicefs.tar.gz
+  if curl --fail --location --retry 2 --retry-all-errors \
+      --connect-timeout 20 --max-time 900 "`$juicefs_url" --output /tmp/juicefs.tar.gz && \
+      tar -tzf /tmp/juicefs.tar.gz >/dev/null 2>&1; then
+    juicefs_downloaded=1
+    break
+  fi
+done
+[[ "`$juicefs_downloaded" == 1 ]] || { echo 'unable to download JuiceFS release archive' >&2; exit 1; }
 tar -xzf /tmp/juicefs.tar.gz -C /tmp
 install -m 0755 /tmp/juicefs /usr/local/bin/juicefs
 command -v juicefs >/dev/null 2>&1 || { echo 'native JuiceFS installation failed' >&2; exit 1; }
