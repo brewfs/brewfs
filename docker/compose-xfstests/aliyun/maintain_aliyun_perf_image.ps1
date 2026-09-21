@@ -237,9 +237,30 @@ fi
 
 [[ -s "`$SOURCE/docker/compose-xfstests/run_redis_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: Redis runner missing' >&2; exit 1; }
 [[ -s "`$SOURCE/docker/compose-xfstests/run_juicefs_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: JuiceFS runner missing' >&2; exit 1; }
-if gzip -t "`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" >/dev/null 2>&1; then
+xfstests_archive="`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"
+if ! gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
+  # GitHub clones without Git LFS leave a pointer file. Fetch the public LFS
+  # object directly so image preparation does not depend on git-lfs on ECS.
+  repo_path="`$REPO"
+  repo_path="`$repo_path#https://github.com/"
+  repo_path="`$repo_path%.git"
+  for archive_url in \
+    "https://media.githubusercontent.com/media/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
+    "https://raw.githubusercontent.com/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"; do
+    echo "fetching prebuilt xfstests archive from `$archive_url"
+    rm -f /tmp/xfstests-prebuilt.tar.gz
+    if curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 \
+      --max-time 900 "`$archive_url" --output /tmp/xfstests-prebuilt.tar.gz && \
+      gzip -t /tmp/xfstests-prebuilt.tar.gz >/dev/null 2>&1; then
+      install -m 0644 /tmp/xfstests-prebuilt.tar.gz "`$xfstests_archive"
+      break
+    fi
+  done
+  rm -f /tmp/xfstests-prebuilt.tar.gz
+fi
+if gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
   rm -rf /opt/xfstests-dev
-  tar -xzf "`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" -C /opt --transform 's|^xfstests|xfstests-dev|'
+  tar -xzf "`$xfstests_archive" -C /opt --transform 's|^xfstests|xfstests-dev|'
   chmod +x /opt/xfstests-dev/check /opt/xfstests-dev/src/* 2>/dev/null || true
 else
   echo 'xfstests prebuilt archive is missing or invalid' >&2
