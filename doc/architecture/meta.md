@@ -51,7 +51,7 @@
 #### RedisMetaStore（高性能 KV 存储后端）
 
 - **技术栈**：使用 `redis` 异步连接管理器，复用 Redis 的单线程原子语义（`INCR`、Lua/事务）保证一致性
-- **键空间规划**：采用与 JuiceFS 类似的命名约定，`i{ino}` 存储 inode JSON、`d{ino}` 维护目录子项、`c{ino}_{chunk_idx}` 记录切片列表、`nextinode`/`nextchunk` 负责全局 ID、`delslices` 存待清理记录
+- **键空间规划**：`i{ino}` 存储 inode JSON、`d{ino}` 维护目录子项、`c{ino}_{chunk_idx}` 记录切片列表、`nextinode`/`nextchunk` 负责全局 ID、`delslices` 存待清理记录
 
 ### 数据模型与实体
 

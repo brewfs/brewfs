@@ -100,7 +100,7 @@ rustfs 和 xfstests 两个容器均设置 `ulimits.nofile: 65536`。
 ### 根因
 `DirHandle` 在 opendir 时缓存目录条目，rewinddir 只是重置读指针，不刷新缓存。POSIX 要求 rewinddir + readdir 能看到 opendir 之后创建的文件。
 
-参考 JuiceFS 的做法：offset=0 时丢弃旧 dir handle，从 meta 层重建新 handle（同一 fh），保证每次 rewinddir 拿到最新快照。
+处理方式是：offset=0 时丢弃旧 dir handle，从 meta 层重建新 handle（同一 fh），保证每次 rewinddir 拿到最新快照。
 
 ### 修复
 **文件**: `src/fuse/mod.rs`, `src/vfs/fs/mod.rs`

@@ -17,10 +17,9 @@ benchmark improves.
 - `docker/compose-pjdfstest/`: POSIX smoke tests.
 - `tools/perf/`: profiling/flamegraph helpers. Use these for diagnosis, not as
   the sole acceptance baseline.
-- `doc/performance/`: current performance analysis, JuiceFS comparison, and
-  accepted/rejected tuning notes.
-- `doc/performance/performance-agent-guide.md`: extended guidance for
-  performance-focused agent work and current optimization gaps.
+- `doc/testing/bench.md`: local benchmark and profiling guidance.
+- `docker/compose-xfstests/aliyun/README.md`: current managed-backend
+  performance methodology and parity rules.
 - `doc/superpowers/plans/`: detailed implementation and experiment logs.
 
 ## Development Discipline
@@ -143,16 +142,15 @@ Acceptance requires:
 
 ## JuiceFS Comparison Notes
 
-BrewFS is not a JuiceFS fork, but JuiceFS is the production reference for cache,
-metadata, writeback, and object-store behavior. Before changing architecture,
-check:
+BrewFS is not a JuiceFS fork. JuiceFS remains the comparison implementation for
+cache, metadata, writeback, and object-store behavior. Before changing
+architecture or interpreting a comparison, check:
 
-- `doc/juicefs/README.md`
-- `doc/performance/brewfs-vs-juicefs-analysis.md`
-- `doc/performance/review-writeback-writer.md`
-- `doc/performance/review-read-cache.md`
-- `doc/performance/review-metadata-cache.md`
-- `doc/performance/review-perf-harness-config.md`
+- `docker/compose-xfstests/aliyun/README.md`
+- `doc/testing/bench.md`
+- `doc/architecture/read-path.md`
+- `doc/architecture/write-path.md`
+- `doc/operations/observability.md`
 
 When comparing to JuiceFS, keep compression, cache budgets, fio direct mode,
 runtime, working set, upload/download concurrency, and drain semantics explicit.

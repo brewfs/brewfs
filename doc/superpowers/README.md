@@ -8,5 +8,8 @@ explicitly names one as active.
   iteration records.
 - [specs/](specs/): design specs that supported larger changes.
 
-For current performance priorities, prefer
-[../performance/perf-optimization-roadmap.md](../performance/perf-optimization-roadmap.md).
+For current performance priorities, prefer the maintained
+[Aliyun performance guide](../../docker/compose-xfstests/aliyun/README.md),
+the [local benchmark guide](../testing/bench.md), and the performance section
+of the [project README](../../README.md). The dated plans below are historical
+records and may describe configurations that no longer exist.
