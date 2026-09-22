@@ -76,6 +76,23 @@ pub trait BlockStore {
     /// corruption and must return [`IncompleteBlockRead`].
     async fn read_range(&self, key: BlockKey, offset: u64, buf: &mut [u8]) -> anyhow::Result<()>;
 
+    /// Read a range without promoting it into a larger shared-cache entry.
+    /// Per-handle readahead uses this to own the fetched bytes directly.
+    async fn read_range_without_promotion(
+        &self,
+        key: BlockKey,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<()> {
+        self.read_range(key, offset, buf).await
+    }
+
+    /// Best-effort promotion hook for a block whose reuse has been confirmed.
+    /// Stores without a promotable local tier can keep the default no-op.
+    async fn promote_read_block(&self, _key: BlockKey) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Delete `block_count` blocks starting from `key.1` (block_index) for slice `key.0`.
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()>;
 
@@ -100,6 +117,21 @@ pub trait BlockStore {
 }
 
 pub type BlockKey = (u64 /*slice_id*/, u32 /*block_index*/);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlockReadHint {
+    #[default]
+    Normal,
+    PromoteBlock,
+    AvoidPromotion,
+}
+
+#[derive(Clone, Copy)]
+enum PersistentSlicePromotion {
+    Auto,
+    Force,
+    Never,
+}
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -863,6 +895,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         key: BlockKey,
         offset: u64,
         buf: &mut [u8],
+        promotion: PersistentSlicePromotion,
     ) -> Option<usize> {
         let root = self.config.persistent_slice_cache_dir.as_ref()?;
         let path = persistent_slice_cache_path(root, key.0);
@@ -896,7 +929,11 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             let promotion_threshold = threshold
                 .saturating_sub(PERSISTENT_SLICE_PROMOTION_SLOP)
                 .max(1);
-            let promote_full_block = threshold > 0 && buf.len() >= promotion_threshold;
+            let promote_full_block = match promotion {
+                PersistentSlicePromotion::Auto => threshold > 0 && buf.len() >= promotion_threshold,
+                PersistentSlicePromotion::Force => true,
+                PersistentSlicePromotion::Never => false,
+            };
             let use_block_in_place = can_block_in_place();
             if !promote_full_block {
                 let read_len = if use_block_in_place {
@@ -989,13 +1026,16 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         offset: u64,
         buf: &mut [u8],
         full_block_read: bool,
+        promotion: PersistentSlicePromotion,
     ) -> Option<usize> {
-        let read_len = self.read_persistent_slice_cache(key, offset, buf).await?;
+        let read_len = self
+            .read_persistent_slice_cache(key, offset, buf, promotion)
+            .await?;
         tracing::trace!(key = %key_str, len = read_len, "persistent writeback slice HIT");
         tracing::Span::current().record("strategy", "writeback_slice_hit");
         tracing::Span::current().record("read_len", read_len);
         self.object_metrics.record_read_block_cache_hit();
-        if full_block_read {
+        if full_block_read && !matches!(promotion, PersistentSlicePromotion::Never) {
             self.block_cache
                 .insert_recent_write_opportunistic(
                     key_str.to_owned(),
@@ -1301,7 +1341,14 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         // persistent slice do not gain an extra filesystem lookup.
         if self.has_open_persistent_slice(key.0)
             && self
-                .serve_persistent_slice_cache(key, &key_str, offset, buf, full_block_read)
+                .serve_persistent_slice_cache(
+                    key,
+                    &key_str,
+                    offset,
+                    buf,
+                    full_block_read,
+                    PersistentSlicePromotion::Auto,
+                )
                 .await
                 .is_some()
         {
@@ -1341,7 +1388,14 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         }
 
         if self
-            .serve_persistent_slice_cache(key, &key_str, offset, buf, full_block_read)
+            .serve_persistent_slice_cache(
+                key,
+                &key_str,
+                offset,
+                buf,
+                full_block_read,
+                PersistentSlicePromotion::Auto,
+            )
             .await
             .is_some()
         {
@@ -1526,6 +1580,46 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             .await;
 
         Ok(())
+    }
+
+    async fn promote_read_block(&self, key: BlockKey) -> anyhow::Result<()> {
+        if self.block_cache.get(&Self::key_for(key)).await.is_some() {
+            return Ok(());
+        }
+        let mut empty = [];
+        let _ = self
+            .read_persistent_slice_cache(key, 0, &mut empty, PersistentSlicePromotion::Force)
+            .await;
+        Ok(())
+    }
+
+    async fn read_range_without_promotion(
+        &self,
+        key: BlockKey,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<()> {
+        let key_str = Self::key_for(key);
+        if self.block_cache.get(&key_str).await.is_some() {
+            return self.read_range(key, offset, buf).await;
+        }
+
+        let full_block_read = offset == 0 && buf.len() == self.config.block_size;
+        if self
+            .serve_persistent_slice_cache(
+                key,
+                &key_str,
+                offset,
+                buf,
+                full_block_read,
+                PersistentSlicePromotion::Never,
+            )
+            .await
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.read_range(key, offset, buf).await
     }
 
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()> {
@@ -2848,6 +2942,79 @@ mod tests {
                 .await,
             None,
             "sub-threshold persistent-slice reads must not amplify into a complete block"
+        );
+
+        let private_readahead_slice = persistent_slice_cache_path(cache_dir.path(), 99_129);
+        tokio::fs::write(&private_readahead_slice, &large_data).await?;
+        let before_private_readahead = remounted_store.object_metrics.snapshot();
+        let mut private_readahead_out = vec![0u8; block_size];
+        remounted_store
+            .read_range_without_promotion((99_129, 0), 0, &mut private_readahead_out)
+            .await?;
+        assert_eq!(private_readahead_out, large_data);
+        let after_private_readahead = remounted_store.object_metrics.snapshot();
+        assert_eq!(
+            after_private_readahead.persistent_slice_read_ops
+                - before_private_readahead.persistent_slice_read_ops,
+            1
+        );
+        assert_eq!(
+            after_private_readahead.persistent_slice_read_bytes
+                - before_private_readahead.persistent_slice_read_bytes,
+            block_size as u64
+        );
+        assert!(
+            remounted_store
+                .block_cache
+                .get(&"chunks/99129/0".to_string())
+                .await
+                .is_none(),
+            "per-handle readahead must not populate the shared block cache"
+        );
+
+        let hinted_slice = persistent_slice_cache_path(cache_dir.path(), 128);
+        tokio::fs::write(&hinted_slice, &large_data).await?;
+        let fragment_len = block_size / 16;
+        let before_hint = remounted_store.object_metrics.snapshot();
+        let mut hinted_out = vec![0u8; fragment_len];
+        remounted_store
+            .read_range((128, 0), 0, &mut hinted_out)
+            .await?;
+        assert_eq!(hinted_out, large_data[..fragment_len]);
+        assert_eq!(
+            remounted_store
+                .block_cache
+                .get(&"chunks/128/0".to_string())
+                .await,
+            None,
+            "the first buffered fragment must stay a ranged disk read"
+        );
+
+        remounted_store.promote_read_block((128, 0)).await?;
+        remounted_store
+            .read_range((128, 0), fragment_len as u64, &mut hinted_out)
+            .await?;
+        assert_eq!(hinted_out, large_data[fragment_len..fragment_len * 2]);
+        let after_hint = remounted_store.object_metrics.snapshot();
+        assert_eq!(
+            after_hint.persistent_slice_read_ops - before_hint.persistent_slice_read_ops,
+            2
+        );
+        assert_eq!(
+            after_hint.persistent_slice_read_bytes - before_hint.persistent_slice_read_bytes,
+            (fragment_len + block_size) as u64,
+            "confirmed buffered reads should pay for one ranged fragment and one full block"
+        );
+
+        tokio::fs::remove_file(&hinted_slice).await?;
+        remounted_store
+            .read_range((128, 0), (fragment_len * 2) as u64, &mut hinted_out)
+            .await?;
+        assert_eq!(hinted_out, large_data[fragment_len * 2..fragment_len * 3]);
+        let after_memory_hit = remounted_store.object_metrics.snapshot();
+        assert_eq!(
+            after_memory_hit.persistent_slice_read_ops, after_hint.persistent_slice_read_ops,
+            "later fragments must be served from the promoted memory block"
         );
 
         let concurrent_slice = persistent_slice_cache_path(cache_dir.path(), 126);

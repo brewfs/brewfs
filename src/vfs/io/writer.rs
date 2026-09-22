@@ -5906,11 +5906,14 @@ where
 
     pub(crate) async fn has_dirty_state(&self, ino: u64) -> bool {
         let writer = self.files.get(&ino).map(|entry| entry.value().clone());
-        if let Some(writer) = writer {
-            writer.has_pending().await || writer.has_overlay_state().await
-        } else {
-            false
+        if let Some(writer) = writer
+            && (writer.has_pending().await || writer.has_overlay_state().await)
+        {
+            return true;
         }
+        self.write_back
+            .as_ref()
+            .is_some_and(|cache| cache.has_recoverable_data())
     }
 
     pub(crate) async fn overlay_dirty_if_exists(

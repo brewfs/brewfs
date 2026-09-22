@@ -13,6 +13,8 @@ param(
     [string]$Repository = 'https://github.com/brewfs/brewfs.git',
     [string]$Ref = 'main',
     [string]$DockerRegistryMirror = 'https://docker.m.daocloud.io',
+    [bool]$InstallIoPagesKernel = $true,
+    [string]$FuseKernelSourceUrl = 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.8.12.tar.xz',
     [ValidateRange(30, 1440)]
     [int]$AutoReleaseMinutes = 180
 )
@@ -22,6 +24,14 @@ Set-StrictMode -Version Latest
 
 $aliyunCandidates = @()
 if ($env:LOCALAPPDATA) { $aliyunCandidates += (Join-Path $env:LOCALAPPDATA 'AliyunCLI\aliyun.exe') }
+if ($env:ALIBABA_CLOUD_CLI_PATH) { $aliyunCandidates += $env:ALIBABA_CLOUD_CLI_PATH }
+if ($env:LOCALAPPDATA) {
+    $wingetPackages = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $wingetPackages) {
+        $aliyunCandidates += @(Get-ChildItem -LiteralPath $wingetPackages -Filter 'aliyun.exe' -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    }
+}
 $script:Aliyun = $null
 $script:BuilderInstanceId = $null
 
@@ -127,10 +137,30 @@ REGISTRY_MIRROR=$mirror
 ROOT=/opt/brewfs-perf
 SOURCE="`$ROOT/source/brewfs"
 
+wait_for_dpkg_lock() {
+  exec 9>/var/lib/dpkg/lock-frontend
+  for _ in `$(seq 1 180); do
+    if flock -n 9; then
+      flock -u 9
+      exec 9>&-
+      return 0
+    fi
+    echo 'waiting for another dpkg/apt process to release the package lock'
+    sleep 5
+  done
+  exec 9>&-
+  echo 'timed out waiting for the dpkg package lock' >&2
+  exit 1
+}
+
+wait_for_dpkg_lock
+dpkg --configure -a || true
+
 apt-get update -qq
 # Do not upgrade packages already present in the base image. In particular,
 # upgrading the Cloud Assistant/runtime dependency chain can restart the
 # agent that is executing this command and leave the image builder stranded.
+wait_for_dpkg_lock
 apt-get install --no-upgrade -y -qq git curl zip jq ca-certificates unzip tar gzip xz-utils \
   bash build-essential protobuf-compiler util-linux e2fsprogs fuse3 libfuse3-3 \
   xfsprogs fio stress-ng redis-tools \
@@ -141,6 +171,7 @@ mkdir -p /etc/fuse
 grep -q '^user_allow_other$' /etc/fuse.conf 2>/dev/null || echo 'user_allow_other' >> /etc/fuse.conf
 
 curl --fail --location --retry 5 --retry-all-errors \
+  --connect-timeout 20 --max-time 1800 \
   https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip --output /tmp/awscliv2.zip
 rm -rf /tmp/aws
 unzip -q /tmp/awscliv2.zip -d /tmp
@@ -152,9 +183,22 @@ command -v aws >/dev/null 2>&1 || { echo 'native AWS CLI installation failed' >&
 # the endpoints supplied for each test run.
 
 JUICEFS_VERSION=1.4.1
-curl --fail --location --retry 5 --retry-all-errors \
-  "https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/juicefs-`$JUICEFS_VERSION-linux-amd64.tar.gz" \
-  --output /tmp/juicefs.tar.gz
+juicefs_asset="juicefs-`$JUICEFS_VERSION-linux-amd64.tar.gz"
+juicefs_urls="https://d.juicefs.com/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_urls+=" https://gh-proxy.com/https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_urls+=" https://ghfast.top/https://github.com/juicedata/juicefs/releases/download/v`$JUICEFS_VERSION/`$juicefs_asset"
+juicefs_downloaded=0
+for juicefs_url in `$juicefs_urls; do
+  echo "downloading `$juicefs_url"
+  rm -f /tmp/juicefs.tar.gz
+  if curl --fail --location --retry 2 --retry-all-errors \
+      --connect-timeout 20 --max-time 900 "`$juicefs_url" --output /tmp/juicefs.tar.gz && \
+      tar -tzf /tmp/juicefs.tar.gz >/dev/null 2>&1; then
+    juicefs_downloaded=1
+    break
+  fi
+done
+[[ "`$juicefs_downloaded" == 1 ]] || { echo 'unable to download JuiceFS release archive' >&2; exit 1; }
 tar -xzf /tmp/juicefs.tar.gz -C /tmp
 install -m 0755 /tmp/juicefs /usr/local/bin/juicefs
 command -v juicefs >/dev/null 2>&1 || { echo 'native JuiceFS installation failed' >&2; exit 1; }
@@ -162,26 +206,61 @@ command -v juicefs >/dev/null 2>&1 || { echo 'native JuiceFS installation failed
 git config --global http.version HTTP/1.1
 git config --global http.lowSpeedLimit 0
 git config --global http.lowSpeedTime 300
+clone_urls="`$REPO"
+if [[ "`$REPO" == https://github.com/* ]]; then
+  clone_urls+=" https://gh-proxy.com/`$REPO"
+  clone_urls+=" https://ghfast.top/`$REPO"
+fi
 fetched=0
-for attempt in `$(seq 1 5); do
-  echo "cloning source (attempt `$attempt/5)"
-  rm -rf "`$SOURCE"
-  mkdir -p "`$(dirname "`$SOURCE")"
-  if git clone --depth=1 --branch "`$REF" "`$REPO" "`$SOURCE"; then
-    fetched=1
-    break
-  fi
-  sleep `$((attempt * 10))
+for clone_url in `$clone_urls; do
+  for attempt in `$(seq 1 3); do
+    echo "cloning source from `$clone_url (attempt `$attempt/3)"
+    rm -rf "`$SOURCE"
+    mkdir -p "`$(dirname "`$SOURCE")"
+    if git clone --depth=1 --branch "`$REF" "`$clone_url" "`$SOURCE"; then
+      fetched=1
+      break 2
+    fi
+    sleep `$((attempt * 10))
+  done
 done
 [[ "`$fetched" == 1 ]] || { echo 'unable to fetch BrewFS source after retries' >&2; exit 1; }
 git -C "`$SOURCE" checkout --force --detach HEAD
 git config --global --add safe.directory "`$SOURCE"
 
+if [[ '__INSTALL_IO_PAGES_KERNEL__' == 1 ]]; then
+  kernel_installer="`$SOURCE/docker/compose-xfstests/aliyun/install_fuse_io_pages_kernel.sh"
+  [[ -x "`$kernel_installer" ]] || { echo "FUSE io_pages installer is missing: `$kernel_installer" >&2; exit 1; }
+  BREWFS_FUSE_KERNEL_SOURCE_URL='__FUSE_KERNEL_SOURCE_URL__' \
+    BREWFS_FUSE_KERNEL_JOBS="`$(nproc)" "`$kernel_installer"
+fi
+
 [[ -s "`$SOURCE/docker/compose-xfstests/run_redis_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: Redis runner missing' >&2; exit 1; }
 [[ -s "`$SOURCE/docker/compose-xfstests/run_juicefs_perf.sh" ]] || { echo 'BrewFS source checkout is incomplete: JuiceFS runner missing' >&2; exit 1; }
-if gzip -t "`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" >/dev/null 2>&1; then
+xfstests_archive="`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"
+if ! gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
+  # GitHub clones without Git LFS leave a pointer file. Fetch the public LFS
+  # object directly so image preparation does not depend on git-lfs on ECS.
+  repo_path="`$(printf '%s' "`$REPO" | sed -e 's#^https://github.com/##' -e 's#\.git##')"
+  source_commit="`$(git -C "`$SOURCE" rev-parse HEAD)"
+  for archive_url in \
+    "https://media.githubusercontent.com/media/`$repo_path/`$source_commit/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
+    "https://media.githubusercontent.com/media/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" \
+    "https://raw.githubusercontent.com/`$repo_path/`$REF/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz"; do
+    echo "fetching prebuilt xfstests archive from `$archive_url"
+    rm -f /tmp/xfstests-prebuilt.tar.gz
+    if curl --fail --location --retry 3 --retry-all-errors --connect-timeout 20 \
+      --max-time 900 "`$archive_url" --output /tmp/xfstests-prebuilt.tar.gz && \
+      gzip -t /tmp/xfstests-prebuilt.tar.gz >/dev/null 2>&1; then
+      install -m 0644 /tmp/xfstests-prebuilt.tar.gz "`$xfstests_archive"
+      break
+    fi
+  done
+  rm -f /tmp/xfstests-prebuilt.tar.gz
+fi
+if gzip -t "`$xfstests_archive" >/dev/null 2>&1; then
   rm -rf /opt/xfstests-dev
-  tar -xzf "`$SOURCE/tests/scripts/xfstests-prebuilt/xfstests-prebuilt.tar.gz" -C /opt --transform 's|^xfstests|xfstests-dev|'
+  tar -xzf "`$xfstests_archive" -C /opt --transform 's|^xfstests|xfstests-dev|'
   chmod +x /opt/xfstests-dev/check /opt/xfstests-dev/src/* 2>/dev/null || true
 else
   echo 'xfstests prebuilt archive is missing or invalid' >&2
@@ -203,7 +282,9 @@ cat > "`$ROOT/image-manifest.json" <<EOF
   "ref": "`$REF",
   "sourceCommit": "`$(git -C "`$SOURCE" rev-parse HEAD)",
   "preparedAt": "`$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "dockerRegistryMirror": "`$REGISTRY_MIRROR"
+  "dockerRegistryMirror": "`$REGISTRY_MIRROR",
+  "fuseIoPagesPatch": "__FUSE_IO_PAGES_PATCH__",
+  "fuseKernelSourceUrl": "__FUSE_KERNEL_SOURCE_URL__"
 }
 EOF
 chmod 0644 "`$ROOT/image-manifest.json" "`$ROOT/image-source-commit"
@@ -211,7 +292,11 @@ sync
 sleep 10
 echo 'BrewFS performance base image preparation complete.'
 "@
-    return $command.Replace('__NATIVE_RUNNER_B64__', $nativeRunnerB64)
+    $command = $command.Replace('__NATIVE_RUNNER_B64__', $nativeRunnerB64)
+    $command = $command.Replace('__INSTALL_IO_PAGES_KERNEL__', $(if ($InstallIoPagesKernel) { '1' } else { '0' }))
+    $command = $command.Replace('__FUSE_KERNEL_SOURCE_URL__', (Quote-Bash $FuseKernelSourceUrl).Trim("'"))
+    $command = $command.Replace('__FUSE_IO_PAGES_PATCH__', '98b4ca2378e1f6b6c06a74f699623ebecfb3549d')
+    return $command
 }
 
 function New-BuilderInstance {

@@ -709,6 +709,10 @@ impl WriteBackCache for FsWriteBackCache {
 }
 
 impl FsWriteBackCache {
+    pub(crate) fn has_recoverable_data(&self) -> bool {
+        !self.recoverable_keys.is_empty()
+    }
+
     /// Overlay dirty data from SSD onto a read buffer.
     /// Scans dirty slices for the given inode/chunk and copies any
     /// overlapping ranges into `buf`.  Used as a fallback when in-memory
