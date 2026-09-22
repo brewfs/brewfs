@@ -1,6 +1,6 @@
 # BrewFS 架构概述
 
-BrewFS 是一个用 Rust 实现的分布式文件系统，设计思路受 JuiceFS 启发。计算与存储分离，元数据与数据分流到不同后端，对外通过 FUSE 挂载提供 POSIX 兼容的文件系统接口。
+BrewFS 是一个用 Rust 实现的分布式文件系统。计算与存储分离，元数据与数据分流到不同后端，对外通过 FUSE 挂载提供 POSIX 兼容的文件系统接口。
 
 ## 分层结构
 
@@ -87,7 +87,7 @@ FUSE 层通过 `OpTimer` RAII 结构记录每个操作的计数、字节数和�
 
 ### 5. 数据层（Chunk 子系统）
 
-`src/chunk/` 实现了 JuiceFS 风格的 Chunk → Block 两级数据布局：
+`src/chunk/` 实现了 BrewFS 的 Chunk → Block 两级数据布局：
 
 - `layout.rs`：`ChunkLayout`，定义 chunk_size（默认 64MiB）和 block_size（默认 4MiB），提供全套偏移换算
 - `span.rs`：泛型 `Span<T>` 结构，用编译期 marker（ChunkTag/BlockTag/PageTag）区分层级

@@ -37,4 +37,4 @@ brewfs 的 read 路径对 O_DIRECT 标志没有特殊处理：
 
 ## 处理
 
-加入 `xfstests_slayer.exclude`。FUSE 对 O_DIRECT 的支持本身有限，绝大多数 FUSE 文件系统（包括 JuiceFS）不声称支持 direct I/O。
+加入 `xfstests_slayer.exclude`。FUSE 对 O_DIRECT 的支持本身有限；该用例不应被默认测试配置视为 direct I/O 能力承诺。

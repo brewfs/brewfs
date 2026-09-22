@@ -1,18 +1,21 @@
 # BrewFS Documentation
 
-This directory is the canonical documentation tree for BrewFS. Keep new design
-notes, operations guides, performance analysis, test plans, and implementation
-plans under `doc/` unless a tool explicitly requires another location.
+This directory is the canonical documentation tree for BrewFS. Keep current
+architecture, operations, testing, protocol, bug-fix, and workspace material
+under `doc/`. Historical execution records belong under `superpowers/` and
+should not be treated as current behavior without checking the source.
 
 ## Start Here
 
 | Topic | Document |
 |---|---|
+| Project overview and Quick Start | [../README.md](../README.md) |
+| 中文项目说明 | [../README_CN.md](../README_CN.md) |
 | Architecture overview | [architecture/arch.md](architecture/arch.md) |
 | Configuration | [operations/configuration.md](operations/configuration.md) |
 | Binary deployment | [operations/binary-deployment.md](operations/binary-deployment.md) |
-| Current performance roadmap | [performance/perf-optimization-roadmap.md](performance/perf-optimization-roadmap.md) |
-| BrewFS vs JuiceFS comparison | [performance/brewfs-vs-juicefs-analysis.md](performance/brewfs-vs-juicefs-analysis.md) |
+| Aliyun performance runs | [../docker/compose-xfstests/aliyun/README.md](../docker/compose-xfstests/aliyun/README.md) |
+| Local benchmarks and profiling | [testing/bench.md](testing/bench.md) |
 | Docker and CI test guide | [testing/docker-compose-test-guide.md](testing/docker-compose-test-guide.md) |
 | VFS internals | [vfs/README.md](vfs/README.md) |
 
@@ -22,15 +25,12 @@ plans under `doc/` unless a tool explicitly requires another location.
 |---|---|
 | [architecture/](architecture/) | Core layout, metadata, data path, cache, consistency, POSIX behavior, and compaction/GC design. |
 | [operations/](operations/) | Runtime configuration, control plane, observability, profiling, SDK, and stats tooling. |
-| [testing/](testing/) | Benchmark, compose, fuzz, lock, xfstests, and CI-oriented test guidance. |
-| [performance/](performance/) | Performance roadmap, JuiceFS comparisons, and focused review notes from previous tuning passes. |
-| [meta-api/](meta-api/) | Meta client API audit, mapping, extension plan, and read/write follow-up work. |
-| [juicefs/](juicefs/) | JuiceFS internals notes used for cross-project comparison. |
-| [gap/](gap/) | BrewFS/JuiceFS module gap analysis and iteration roadmap. |
+| [testing/](testing/) | Benchmarks, compose, fuzz, lock, xfstests, and CI-oriented test guidance. |
 | [protocols/](protocols/) | Multi-protocol gateway specs (S3, WebDAV, NFS), shared conventions, and the milestone roadmap. |
 | [vfs/](vfs/) | VFS module-specific implementation guide. |
-| [bugfix/](bugfix/) | Historical bug investigations and fix notes that are still useful for regression context. |
+| [bugfix/](bugfix/) | Historical bug investigations and fix notes that remain useful for regression context. |
 | [superpowers/](superpowers/) | Dated agent plans and specs. Treat these as historical execution records unless a plan is explicitly current. |
+| [wechat/](wechat/) | Draft public-facing material and evidence checklist for the BrewFS introduction article. |
 
 ## Architecture
 
@@ -72,19 +72,16 @@ plans under `doc/` unless a tool explicitly requires another location.
 | pjdfstest compose plan | [superpowers/plans/2026-06-13-pjdfstest-compose.md](superpowers/plans/2026-06-13-pjdfstest-compose.md) |
 | GitHub Actions DAG plan | [superpowers/plans/2026-06-14-github-actions-dag-reorg.md](superpowers/plans/2026-06-14-github-actions-dag-reorg.md) |
 
-## Performance And JuiceFS Comparison
+## Performance And Comparison
 
-| Topic | Document |
-|---|---|
-| Current performance roadmap | [performance/perf-optimization-roadmap.md](performance/perf-optimization-roadmap.md) |
-| Broader performance backlog | [performance/performance-roadmap.md](performance/performance-roadmap.md) |
-| Metadata cache analysis | [performance/perf-agent-metadata-cache.md](performance/perf-agent-metadata-cache.md), [performance/review-metadata-cache.md](performance/review-metadata-cache.md) |
-| Read/object/writeback reviews | [performance/review-read-cache.md](performance/review-read-cache.md), [performance/review-object-store-cache.md](performance/review-object-store-cache.md), [performance/review-writeback-writer.md](performance/review-writeback-writer.md) |
-| Perf harness review | [performance/review-perf-harness-config.md](performance/review-perf-harness-config.md) |
-| Small-file optimization notes | [performance/small-file-read-write-performance-optimization.md](performance/small-file-read-write-performance-optimization.md) |
-| BrewFS vs JuiceFS overview | [performance/brewfs-vs-juicefs-analysis.md](performance/brewfs-vs-juicefs-analysis.md) |
-| JuiceFS internals | [juicefs/README.md](juicefs/README.md) |
-| Gap analysis | [gap/README.md](gap/README.md) |
+The maintained comparison baseline is published in the root README. The
+reproduction details, resource lifecycle, cache-budget parity rules, and
+result-vault conventions live in the
+[Aliyun performance guide](../docker/compose-xfstests/aliyun/README.md).
+Use the [benchmark guide](testing/bench.md) for local Criterion, FUSE, `perf`,
+and flamegraph workflows. The active comparison runners remain under
+`docker/compose-xfstests/`; old one-off analysis snapshots are intentionally
+not indexed here.
 
 ## Historical Plans
 
