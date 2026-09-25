@@ -202,7 +202,12 @@ if ! apt-get update -qq; then
 fi
 apt-get install -y -qq git curl docker.io docker-compose-v2 protobuf-compiler \
   || apt-get install -y -qq git curl docker.io docker-compose-plugin protobuf-compiler
+mkdir -p /etc/docker
+cat >/etc/docker/daemon.json <<'DOCKER_DAEMON'
+{"registry-mirrors":["https://w23geq7ncegg6etqsl.xuanyuan.run"]}
+DOCKER_DAEMON
 systemctl enable --now docker
+systemctl restart docker
 
 # The distro Cargo on the supported Ubuntu image may predate Rust 2024
 # edition support.  Install a current stable toolchain with rustup so the
