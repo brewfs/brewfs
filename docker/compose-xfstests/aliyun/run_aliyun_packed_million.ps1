@@ -50,6 +50,28 @@ if (-not (Test-Path -LiteralPath $scriptPath)) {
 }
 
 $readBytes = if ($ReadMode -eq 'full') { '0' } else { '1' }
+$runnerParams = @{
+    Action = $Action
+    RegionId = $RegionId
+    ZoneId = $ZoneId
+    ImageId = $ImageId
+    InstanceType = $InstanceType
+    SystemDiskSizeGiB = $SystemDiskSizeGiB
+    Backend = 'redis'
+    DataBackend = 's3'
+    VolumeFormat = 'packed-metadata-v1'
+    PerfTools = 'packed-smallfiles packed-posix'
+    PackedSmallFileCount = $SmallFileCount
+    PackedSmallFileSizeBytes = $SmallFileSizeBytes
+    PackedDirLevels = $DirLevels
+    PackedDirsPerLevel = $DirsPerLevel
+    PackedFilesPerDir = $FilesPerLeaf
+    PackedSmallFileReadBytes = $readBytes
+    Repository = $Repository
+    Ref = $Ref
+    AutoReleaseMinutes = $AutoReleaseMinutes
+    ColdRead = $true
+}
 $runnerArgs = @(
     '-Action', $Action,
     '-RegionId', $RegionId,
@@ -76,12 +98,19 @@ $runnerArgs = @(
 foreach ($name in @('InstanceId', 'VSwitchId', 'SecurityGroupId', 'InstanceName')) {
     $value = Get-Variable -Name $name -ValueOnly
     if ($value) {
+        $runnerParams[$name] = $value
         $runnerArgs += "-$name"
         $runnerArgs += [string]$value
     }
 }
-if ($KeepInstance) { $runnerArgs += '-KeepInstance' }
-if ($NoCleanup) { $runnerArgs += '-NoCleanup' }
+if ($KeepInstance) {
+    $runnerParams.KeepInstance = $true
+    $runnerArgs += '-KeepInstance'
+}
+if ($NoCleanup) {
+    $runnerParams.NoCleanup = $true
+    $runnerArgs += '-NoCleanup'
+}
 
 Write-Host 'Aliyun packed million-small-file profile'
 Write-Host "  instance_type=$InstanceType"
@@ -97,5 +126,5 @@ if ($DryRun) {
     exit 0
 }
 
-& $scriptPath @runnerArgs
+& $scriptPath @runnerParams
 exit $LASTEXITCODE
