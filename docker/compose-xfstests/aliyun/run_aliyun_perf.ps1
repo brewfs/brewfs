@@ -215,6 +215,7 @@ systemctl restart docker
 export RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-https://rsproxy.cn}"
 export RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://rsproxy.cn/rustup}"
 export CARGO_REGISTRIES_CRATES_IO_INDEX="${CARGO_REGISTRIES_CRATES_IO_INDEX:-sparse+https://rsproxy.cn/index/}"
+export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 mkdir -p "${CARGO_HOME:-/root/.cargo}"
 cat >"${CARGO_HOME:-/root/.cargo}/config.toml" <<'CARGO_CONFIG'
 [source.crates-io]
