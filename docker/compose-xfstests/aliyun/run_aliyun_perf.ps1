@@ -64,6 +64,11 @@ function Invoke-AliyunJson([string[]]$Arguments) {
     return ($output -join [Environment]::NewLine | ConvertFrom-Json)
 }
 
+function Format-InstanceIds([string]$Value) {
+    # Windows PowerShell 5.1 removes unescaped quotes from native arguments.
+    return '[\"' + $Value + '\"]'
+}
+
 function Wait-Until([scriptblock]$Condition, [string]$Description, [int]$TimeoutSeconds = 900) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
@@ -112,7 +117,7 @@ function New-EcsInstance {
     $script:CreatedInstance = $true
     Write-Host "ECS 创建成功: $InstanceId"
     Wait-Until {
-        $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]")
+        $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', (Format-InstanceIds $InstanceId))
         $state = @($instance.Instances.Instance)[0].Status
         Write-Host "  ECS state=$state"
         $state -eq 'Running'
@@ -287,7 +292,7 @@ function Remove-EcsInstance {
         # 新实例可能仍处于初始化锁定状态，先停止后再释放。
         Invoke-AliyunJson @('ecs', 'StopInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--ForceStop', 'true') | Out-Null
         Wait-Until {
-            $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]")
+            $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', (Format-InstanceIds $InstanceId))
             @($instance.Instances.Instance)[0].Status -eq 'Stopped'
         } "ECS $InstanceId 停止" 300
         Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId) | Out-Null
@@ -301,7 +306,7 @@ try {
     }
     if ($Action -eq 'status') {
         if (-not $InstanceId) { throw 'status 需要 -InstanceId。' }
-        Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', "[`"$InstanceId`"]") | ConvertTo-Json -Depth 8
+        Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', (Format-InstanceIds $InstanceId)) | ConvertTo-Json -Depth 8
     } elseif ($Action -in @('run', 'create')) {
         if ($Action -eq 'run') { Invoke-PerfOnEcs }
     } elseif ($Action -eq 'destroy') {
