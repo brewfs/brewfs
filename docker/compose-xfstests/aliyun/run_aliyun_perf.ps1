@@ -187,7 +187,19 @@ DATA_ARGS=__DATA_ARGS__
 BENCH_ARGS=__BENCH_ARGS__
 __PROFILE_ENV__
 
-apt-get update -qq
+if ! apt-get update -qq; then
+  # Some Alibaba Ubuntu images contain a malformed legacy sources.list line.
+  # Keep valid deb entries and disable only lines apt cannot parse.
+  if [[ -f /etc/apt/sources.list ]]; then
+    awk '
+      /^[[:space:]]*(deb|deb-src)[[:space:]]/ { print; next }
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+      { print "# disabled invalid apt source: " $0 }
+    ' /etc/apt/sources.list >/etc/apt/sources.list.brewfs-clean
+    mv /etc/apt/sources.list.brewfs-clean /etc/apt/sources.list
+  fi
+  apt-get update -qq
+fi
 apt-get install -y -qq git curl docker.io docker-compose-v2 protobuf-compiler \
   || apt-get install -y -qq git curl docker.io docker-compose-plugin protobuf-compiler
 systemctl enable --now docker
@@ -286,17 +298,23 @@ function Invoke-PerfOnEcs {
 
 function Remove-EcsInstance {
     if (-not $InstanceId) { throw 'destroy 需要 -InstanceId。' }
-    try {
-        Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--Force', 'true') | Out-Null
-    } catch {
+    $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', (Format-InstanceIds $InstanceId))
+    $item = @($instance.Instances.Instance)[0]
+    if (-not $item) {
+        Write-Host "ECS 已不存在: $InstanceId"
+        return
+    }
+    if ($item.Status -ne 'Stopped') {
         # 新实例可能仍处于初始化锁定状态，先停止后再释放。
-        Invoke-AliyunJson @('ecs', 'StopInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--ForceStop', 'true') | Out-Null
+        if ($item.Status -ne 'Stopping') {
+            Invoke-AliyunJson @('ecs', 'StopInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--ForceStop', 'true') | Out-Null
+        }
         Wait-Until {
             $instance = Invoke-AliyunJson @('ecs', 'DescribeInstances', '--region', $RegionId, '--InstanceIds', (Format-InstanceIds $InstanceId))
             @($instance.Instances.Instance)[0].Status -eq 'Stopped'
         } "ECS $InstanceId 停止" 300
-        Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId) | Out-Null
     }
+    Invoke-AliyunJson @('ecs', 'DeleteInstance', '--region', $RegionId, '--InstanceId', $InstanceId, '--Force', 'true') | Out-Null
     Write-Host "ECS 删除任务已提交: $InstanceId"
 }
 
