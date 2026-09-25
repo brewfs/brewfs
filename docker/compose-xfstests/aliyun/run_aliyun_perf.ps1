@@ -207,8 +207,11 @@ systemctl enable --now docker
 # The distro Cargo on the supported Ubuntu image may predate Rust 2024
 # edition support.  Install a current stable toolchain with rustup so the
 # checked-out BrewFS revision is built with the same language features as CI.
+export RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-https://rsproxy.cn}"
+export RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://rsproxy.cn/rustup}"
+export CARGO_REGISTRIES_CRATES_IO_INDEX="${CARGO_REGISTRIES_CRATES_IO_INDEX:-sparse+https://rsproxy.cn/index/}"
 if ! command -v rustup >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --profile minimal
 fi
 export PATH="/root/.cargo/bin:${PATH}"
 rustup toolchain install stable --profile minimal
