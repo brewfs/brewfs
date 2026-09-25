@@ -6,7 +6,16 @@
 //! rule.  Mount admission does not enable it unless the persisted volume
 //! header explicitly requires `frozen-base-metadata`.
 
+pub mod budget;
+pub mod catalog;
+pub mod producer;
+pub mod readonly;
+
+pub use budget::{BudgetError, BudgetReservation, MetadataBudget, MetadataBudgetSnapshot};
+
+use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, RwLock};
 
 use sha2::{Digest, Sha256};
 
@@ -111,6 +120,22 @@ impl FrozenInodeRecord {
             return Err(WireError::invalid(
                 "frozen inode",
                 "only symlinks may carry a target",
+            ));
+        }
+        let expected_mode_type = match record.kind {
+            1 => 0o100000,
+            2 => 0o040000,
+            3 => 0o120000,
+            4 => 0o010000,
+            5 => 0o140000,
+            6 => 0o020000,
+            7 => 0o060000,
+            _ => unreachable!(),
+        };
+        if record.mode & 0o170000 != expected_mode_type {
+            return Err(WireError::invalid(
+                "frozen inode",
+                "inode kind and mode type disagree",
             ));
         }
         Ok(record)
@@ -484,6 +509,43 @@ pub fn extent_key(inode: u64, chunk_index: u64, offset: u64) -> Vec<u8> {
     key
 }
 
+/// Canonical data-table value for an extent that can be served by the normal
+/// block reader. The first field preserves the extent length decoder's
+/// predecessor lookup contract; the remaining fields identify the immutable
+/// loose slice referenced by the data path.
+pub fn encode_extent_slice_value(
+    length: u64,
+    slice_id: u64,
+    chunk_id: u64,
+    offset: u64,
+) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.u64(length);
+    writer.u64(slice_id);
+    writer.u64(chunk_id);
+    writer.u64(offset);
+    writer.into_bytes()
+}
+
+/// Decode the canonical extent value used by the packed data table.
+///
+/// All scalar fields use the wire module's little-endian encoding. Keeping
+/// this decoder strict prevents a snapshot from silently turning a malformed
+/// row into a different block address during a read-only mount.
+pub fn decode_extent_slice_value(value: &[u8]) -> WireResult<(u64, u64, u64, u64)> {
+    let mut reader = Reader::new(value);
+    let decoded = (
+        reader.u64("frozen extent")?,
+        reader.u64("frozen extent")?,
+        reader.u64("frozen extent")?,
+        reader.u64("frozen extent")?,
+    );
+    if !reader.is_empty() {
+        return Err(WireError::invalid("frozen extent", "trailing bytes"));
+    }
+    Ok(decoded)
+}
+
 /// `BE32(ordinal)` key of the frozen inventory ordinal map.  Big-endian so
 /// numeric ordinal order equals the byte order of the inventory pages.
 pub fn inventory_ordinal_key(ordinal: u32) -> [u8; 4] {
@@ -586,6 +648,74 @@ pub enum FrozenReadError {
     CopyOnWrite(String),
 }
 
+type DecodedPageKey = (ObjectId, u64, u32, u32, u8, u8, u8, u32, [u8; 32]);
+
+pub(super) fn decoded_page_key(
+    object: &crate::native_base::wire::refs::ObjectRef,
+    address: &crate::native_base::wire::refs::PageAddress,
+) -> DecodedPageKey {
+    (
+        object.object_id,
+        address.offset,
+        address.stored_len,
+        address.raw_len,
+        address.codec.as_u8(),
+        address.page_kind.as_u8(),
+        address.level,
+        address.entry_count,
+        address.stored_digest,
+    )
+}
+
+/// Shared decoded-page state for one immutable catalog.
+///
+/// The object bytes are already authenticated and resident at mount time, but
+/// rebuilding a reader used to repeat header/range/hash/decode work for every
+/// lookup.  Catalog readers share this cache; standalone fixed readers keep it
+/// disabled so their deterministic read-count tests remain a true cold path.
+#[derive(Default)]
+pub(super) struct ReaderPageCache {
+    pages: RwLock<HashMap<DecodedPageKey, Arc<IndexPage>>>,
+}
+
+impl ReaderPageCache {
+    fn get(&self, key: &DecodedPageKey) -> Option<IndexPage> {
+        self.pages
+            .read()
+            .ok()?
+            .get(key)
+            .cloned()
+            .map(|page| (*page).clone())
+    }
+
+    /// Borrow the immutable decoded page without cloning its entry vectors.
+    /// Streaming packed lookups usually need one leaf value or one child;
+    /// cloning the whole page on every FUSE lookup defeats the page cache.
+    pub(super) fn get_shared(&self, key: &DecodedPageKey) -> Option<Arc<IndexPage>> {
+        self.pages.read().ok()?.get(key).cloned()
+    }
+
+    fn insert(&self, key: DecodedPageKey, page: IndexPage) {
+        if let Ok(mut pages) = self.pages.write() {
+            pages.insert(key, Arc::new(page));
+        }
+    }
+
+    pub(super) fn keys(&self) -> Vec<DecodedPageKey> {
+        self.pages
+            .read()
+            .map(|pages| pages.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn remove(&self, key: &DecodedPageKey) -> bool {
+        self.pages
+            .write()
+            .map(|mut pages| pages.remove(key).is_some())
+            .unwrap_or(false)
+    }
+}
+
 /// A fixed revision reader owns no mutable KV client.  Every lookup is served
 /// from the authenticated manifest and its external pages; the counter is
 /// intentionally exposed for tests and observability to prove that inode
@@ -593,6 +723,7 @@ pub enum FrozenReadError {
 pub struct FixedRevisionReader<'a, S: ObjectSource> {
     source: &'a S,
     manifest: SnapshotManifest,
+    page_cache: Option<Arc<ReaderPageCache>>,
     metadata_rpc_count: std::sync::atomic::AtomicU64,
     object_reads: std::sync::atomic::AtomicU64,
 }
@@ -642,9 +773,24 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
         Ok(Self {
             source,
             manifest: SnapshotManifest::decode(&raw)?,
+            page_cache: None,
             metadata_rpc_count: std::sync::atomic::AtomicU64::new(0),
             object_reads: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    pub(super) fn from_decoded_manifest(
+        source: &'a S,
+        manifest: SnapshotManifest,
+        page_cache: Arc<ReaderPageCache>,
+    ) -> Self {
+        Self {
+            source,
+            manifest,
+            page_cache: Some(page_cache),
+            metadata_rpc_count: std::sync::atomic::AtomicU64::new(0),
+            object_reads: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn manifest(&self) -> &SnapshotManifest {
@@ -669,6 +815,75 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
 
     pub fn lookup_namespace(&self, key: &[u8]) -> Result<Option<Vec<u8>>, FrozenReadError> {
         self.lookup_root(self.manifest.namespace_root.as_ref(), key)
+    }
+
+    /// Return all namespace rows whose keys start with `prefix` in canonical
+    /// byte order.  The walk stays inside the authenticated namespace tree;
+    /// it never asks a mutable metadata service to enumerate the directory.
+    ///
+    /// This is the producer/read-only-facade bridge for directory enumeration.
+    /// Callers must still apply the semantic prefix they own (for example
+    /// [`dentry_prefix`]) because the index itself is a general key/value tree.
+    pub fn scan_namespace_prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, FrozenReadError> {
+        let Some(root) = self.manifest.namespace_root.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        let mut current_object = root.object.clone();
+        let mut child = ChildRef::External(root.clone());
+        // Keep the internal path so that after exhausting one leaf we can
+        // descend into the next sibling without another root lower-bound walk.
+        let mut stack = Vec::new();
+
+        loop {
+            let (page, object) = self.read_page(&current_object, &child)?;
+            match page.body {
+                PageBody::Internal(entries) => {
+                    let selected = entries
+                        .iter()
+                        .position(|entry| entry.max_key.as_slice() >= prefix)
+                        .unwrap_or(entries.len().saturating_sub(1));
+                    let next_child = entries
+                        .get(selected)
+                        .ok_or(FrozenReadError::PageOutOfBounds)?
+                        .child
+                        .clone();
+                    current_object = object.clone();
+                    stack.push((object, entries, selected));
+                    child = next_child;
+                }
+                PageBody::Leaf(entries) => {
+                    for entry in entries
+                        .into_iter()
+                        .skip_while(|entry| entry.key.as_slice() < prefix)
+                    {
+                        if !entry.key.starts_with(prefix) {
+                            return Ok(rows);
+                        }
+                        rows.push((entry.key, entry.value));
+                    }
+
+                    let mut next = None;
+                    while let Some((container, entries, selected)) = stack.last_mut() {
+                        if *selected + 1 < entries.len() {
+                            *selected += 1;
+                            next = Some((container.clone(), entries[*selected].child.clone()));
+                            break;
+                        }
+                        stack.pop();
+                    }
+                    let Some((container, next_child)) = next else {
+                        break;
+                    };
+                    current_object = container;
+                    child = next_child;
+                }
+            }
+        }
+        Ok(rows)
     }
 
     pub fn lookup_data(&self, key: &[u8]) -> Result<Option<Vec<u8>>, FrozenReadError> {
@@ -732,7 +947,7 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
                 return Err(WireError::invalid("frozen extent key", "invalid key length").into());
             }
             let offset = u64::from_be_bytes(key[prefix.len()..].try_into().unwrap());
-            let length = decode_extent_length(&value)?;
+            let (length, _, _, _) = decode_extent_slice_value(&value)?;
             if length != 0 && offset < end && offset.saturating_add(length) > start {
                 rows.push(FrozenExtent {
                     inode,
@@ -797,6 +1012,16 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
             ChildRef::External(root) => (&root.object, root.address),
             ChildRef::Local(address) => (current_object, *address),
         };
+        let cache_key = decoded_page_key(object, &address);
+        if let Some(page) = self
+            .page_cache
+            .as_ref()
+            .and_then(|cache| cache.get(&cache_key))
+        {
+            self.object_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok((page, object.clone()));
+        }
         let header_bytes = self
             .source
             .get_range(&object.object_id, 0, HEADER_LEN as u64)?;
@@ -837,15 +1062,23 @@ impl<'a, S: ObjectSource> FixedRevisionReader<'a, S> {
         if page.level != address.level || page.entry_count() != address.entry_count {
             return Err(WireError::invalid("frozen metadata page", "address mismatch").into());
         }
+        if let Some(cache) = &self.page_cache {
+            cache.insert(cache_key, page.clone());
+        }
         self.object_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok((page, object.clone()))
     }
 
     fn lower_bound_data(&self, key: &[u8]) -> Result<Option<(Vec<u8>, Vec<u8>)>, FrozenReadError> {
-        let Some(root) = Some(&self.manifest.data_root) else {
-            unreachable!()
-        };
+        self.lower_bound_root(&self.manifest.data_root, key)
+    }
+
+    fn lower_bound_root(
+        &self,
+        root: &RootRef,
+        key: &[u8],
+    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, FrozenReadError> {
         let mut child = ChildRef::External(root.clone());
         let mut current_object = root.object.clone();
         for _ in 0..=MAX_INDEX_LEVEL {
@@ -887,6 +1120,9 @@ fn increment_key(key: &[u8]) -> Result<Vec<u8>, FrozenReadError> {
 }
 
 fn decode_extent_length(value: &[u8]) -> Result<u64, FrozenReadError> {
+    if value.len() != 8 {
+        return Err(WireError::invalid("frozen extent", "length probe requires 8 bytes").into());
+    }
     let mut reader = Reader::new(value);
     let length = reader.u64("frozen extent")?;
     if !reader.is_empty() {
@@ -1458,6 +1694,24 @@ mod tests {
     }
 
     #[test]
+    fn extent_slice_value_uses_canonical_wire_endianness() {
+        let value = encode_extent_slice_value(
+            0x0102_0304_0506_0708,
+            0x1112_1314_1516_1718,
+            0x2122_2324_2526_2728,
+            0x3132_3334_3536_3738,
+        );
+        assert_eq!(value.len(), 32);
+        assert_eq!(value[..8], 0x0102_0304_0506_0708u64.to_le_bytes());
+        assert_eq!(value[8..16], 0x1112_1314_1516_1718u64.to_le_bytes());
+        assert_eq!(
+            decode_extent_length(&value[..8]).unwrap(),
+            0x0102_0304_0506_0708
+        );
+        assert!(decode_extent_length(&value).is_err());
+    }
+
+    #[test]
     fn directory_cookie_survives_page_replay() {
         let mut cursor = DirectoryCursor::new(
             vec![
@@ -1941,6 +2195,75 @@ mod tests {
         assert!(reader.lookup_data(b"key-9999").unwrap().is_none());
         assert!(reader.lookup_data(b"zebra").unwrap().is_none());
         assert!(reader.lookup_data(b"").unwrap().is_none());
+        assert_eq!(reader.metadata_rpc_count(), 0);
+    }
+
+    #[test]
+    fn fixed_revision_reader_scans_only_authenticated_namespace_prefix() {
+        let inode = FrozenInodeRecord {
+            kind: 1,
+            mode: 0o100_644,
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            nlink: 1,
+            size: 7,
+            atime_ns: 1,
+            mtime_ns: 2,
+            ctime_ns: 3,
+            parent_hint: Some(1),
+            symlink_target: None,
+        };
+        let entries = vec![
+            (dentry_key(1, b"a"), inode_key(7)),
+            (dentry_key(1, b"b"), inode_key(8)),
+            (dentry_key(2, b"hidden"), inode_key(9)),
+            (inode_key(7), inode.encode()),
+        ];
+        let (namespace_obj, namespace_root) =
+            build_frozen_metadata_object([31; 16], b"frozen/ns-scan", &entries);
+        let (inventory_obj, inventory_root) = build_frozen_metadata_object(
+            [32; 16],
+            b"frozen/inventory-scan",
+            &[(b"__inv_sentinel".to_vec(), vec![])],
+        );
+        let manifest = SnapshotManifest {
+            volume_id: [33; 16],
+            storage_namespace_id: [34; 16],
+            chunk_size: 4096,
+            block_size: 512,
+            required_features: 0,
+            logical_revision: [35; 32],
+            namespace_digest: [36; 32],
+            binding_digest: [37; 32],
+            namespace_mode: 2,
+            kv_layer_id: None,
+            kv_sealed_version: None,
+            namespace_root: Some(namespace_root),
+            data_root: inventory_root.clone(),
+            inventory_root,
+            file_count: 1,
+            directory_count: 1,
+            total_logical_bytes: 7,
+            created_at_ns: 0,
+        };
+        let manifest_obj = build_manifest_object([38; 16], b"frozen/manifest-scan", &manifest);
+        let mut source = MemoryObjectSource::new();
+        source.insert([31; 16], namespace_obj);
+        source.insert([32; 16], inventory_obj);
+        source.insert([38; 16], manifest_obj.clone());
+        let reader = FixedRevisionReader::open_manifest(&source, &manifest_obj).unwrap();
+
+        let rows = reader.scan_namespace_prefix(&dentry_prefix(1)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, dentry_key(1, b"a"));
+        assert_eq!(rows[1].0, dentry_key(1, b"b"));
+        assert!(
+            reader
+                .scan_namespace_prefix(&dentry_prefix(3))
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(reader.metadata_rpc_count(), 0);
     }
 

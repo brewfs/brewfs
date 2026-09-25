@@ -2,10 +2,12 @@
 //! by generic key/value indexes.
 //!
 //! Raw page prefix is 16 bytes: `"BNPG"[4] | kind:u8 | level:u8 |
-//! flags:u16=0 | entry_count:u32 | reserved:u32=0`. Leaf records are
+//! flags:u16 | entry_count:u32 | reserved:u32=0`. Leaf records are
 //! `shared_prefix:uvarint + suffix:bytes + value:bytes`; internal records
-//! are `min_key:bytes + max_key:bytes + ChildRef`. Keys are compared as
-//! unsigned byte strings (lexicographic, spec 02 §10).
+//! are `min_key:bytes + max_key:bytes + [subtree_count:u64] + ChildRef`.
+//! The optional subtree count is selected by a page flag so the original
+//! generic index encoding remains readable. Keys are compared as unsigned
+//! byte strings (lexicographic, spec 02 §10).
 //!
 //! Page kinds 2/3 (table root directory, manifest payload) do not use the
 //! BNPG prefix; their codecs live in later PRs (04/05 formats).
@@ -16,6 +18,9 @@ use super::uvarint::{Reader, Writer};
 
 pub const PAGE_PREFIX_LEN: usize = 16;
 pub const PAGE_MAGIC: &[u8; 4] = b"BNPG";
+/// Internal pages carrying the number of visible leaf records below each
+/// child. This is the rank/select extension used by packed metadata v2.
+pub const PAGE_FLAG_SUBTREE_COUNTS: u16 = 1 << 0;
 
 /// Hard limits (spec 02 §8).
 pub const MAX_RAW_PAGE: usize = 1024 * 1024;
@@ -60,6 +65,10 @@ pub struct LeafEntry {
 pub struct InternalEntry {
     pub min_key: Vec<u8>,
     pub max_key: Vec<u8>,
+    /// Number of leaf records reachable through `child`. Zero means that the
+    /// legacy page encoding did not carry a rank count. A counted page must
+    /// have a positive value for every internal entry.
+    pub subtree_count: u64,
     pub child: ChildRef,
 }
 
@@ -90,7 +99,17 @@ impl IndexPage {
         w.put(PAGE_MAGIC);
         w.u8(self.kind.as_u8());
         w.u8(self.level);
-        w.u16(0); // flags
+        let has_subtree_counts = match &self.body {
+            PageBody::Internal(entries) if !entries.is_empty() => {
+                entries.iter().any(|entry| entry.subtree_count > 0)
+            }
+            _ => false,
+        };
+        w.u16(if has_subtree_counts {
+            PAGE_FLAG_SUBTREE_COUNTS
+        } else {
+            0
+        });
         w.u32(self.entry_count());
         w.u32(0); // reserved
         match &self.body {
@@ -108,6 +127,9 @@ impl IndexPage {
                 for entry in entries {
                     w.bytes(&entry.min_key);
                     w.bytes(&entry.max_key);
+                    if has_subtree_counts {
+                        w.u64(entry.subtree_count);
+                    }
                     entry.child.encode_into(&mut w);
                 }
             }
@@ -140,9 +162,10 @@ impl IndexPage {
         let kind = BnpgKind::from_u8(r.u8(what)?)?;
         let level = r.u8(what)?;
         let flags = r.u16(what)?;
-        if flags != 0 {
+        if flags & !PAGE_FLAG_SUBTREE_COUNTS != 0 {
             return Err(WireError::invalid(what, "flags must be zero"));
         }
+        let has_subtree_counts = flags & PAGE_FLAG_SUBTREE_COUNTS != 0;
         let entry_count = r.u32(what)?;
         let reserved = r.u32(what)?;
         if reserved != 0 {
@@ -156,6 +179,12 @@ impl IndexPage {
 
         let body = match level {
             0 => {
+                if has_subtree_counts {
+                    return Err(WireError::invalid(
+                        what,
+                        "subtree-count flag is only valid on internal pages",
+                    ));
+                }
                 let mut entries = Vec::with_capacity(entry_count as usize);
                 let mut prev: Option<Vec<u8>> = None;
                 for i in 0..entry_count {
@@ -222,6 +251,18 @@ impl IndexPage {
                             "internal key exceeds {MAX_INDEX_KEY} bytes"
                         )));
                     }
+                    let subtree_count = if has_subtree_counts {
+                        let count = r.u64(what)?;
+                        if count == 0 {
+                            return Err(WireError::invalid(
+                                what,
+                                format!("entry {i}: subtree count must be positive"),
+                            ));
+                        }
+                        count
+                    } else {
+                        0
+                    };
                     let child = ChildRef::decode(&mut r)?;
                     let child_level = match &child {
                         ChildRef::Local(addr) => addr.level,
@@ -248,6 +289,7 @@ impl IndexPage {
                     entries.push(InternalEntry {
                         min_key,
                         max_key,
+                        subtree_count,
                         child,
                     });
                 }
@@ -383,11 +425,13 @@ mod tests {
                 InternalEntry {
                     min_key: b"a".to_vec(),
                     max_key: b"m".to_vec(),
+                    subtree_count: 0,
                     child: ChildRef::Local(addr(1)),
                 },
                 InternalEntry {
                     min_key: b"n".to_vec(),
                     max_key: b"z".to_vec(),
+                    subtree_count: 0,
                     child: ChildRef::Local(addr(1)),
                 },
             ]),
@@ -402,11 +446,13 @@ mod tests {
                 InternalEntry {
                     min_key: b"a".to_vec(),
                     max_key: b"n".to_vec(),
+                    subtree_count: 0,
                     child: ChildRef::Local(addr(1)),
                 },
                 InternalEntry {
                     min_key: b"b".to_vec(),
                     max_key: b"z".to_vec(),
+                    subtree_count: 0,
                     child: ChildRef::Local(addr(1)),
                 },
             ]),
@@ -420,10 +466,58 @@ mod tests {
             body: PageBody::Internal(vec![InternalEntry {
                 min_key: b"z".to_vec(),
                 max_key: b"a".to_vec(),
+                subtree_count: 0,
                 child: ChildRef::Local(addr(1)),
             }]),
         };
         assert!(IndexPage::decode(&bad.encode()).is_err());
+    }
+
+    #[test]
+    fn counted_internal_page_roundtrips_subtree_counts() {
+        let page = IndexPage {
+            kind: BnpgKind::GenericKeyValue,
+            level: 1,
+            body: PageBody::Internal(vec![
+                InternalEntry {
+                    min_key: b"a".to_vec(),
+                    max_key: b"m".to_vec(),
+                    subtree_count: 17,
+                    child: ChildRef::Local(addr(0)),
+                },
+                InternalEntry {
+                    min_key: b"n".to_vec(),
+                    max_key: b"z".to_vec(),
+                    subtree_count: 23,
+                    child: ChildRef::Local(addr(0)),
+                },
+            ]),
+        };
+        let encoded = page.encode();
+        assert_eq!(
+            u16::from_le_bytes([encoded[6], encoded[7]]),
+            PAGE_FLAG_SUBTREE_COUNTS
+        );
+        assert_eq!(IndexPage::decode(&encoded).unwrap(), page);
+
+        let invalid_page = IndexPage {
+            body: PageBody::Internal(vec![
+                InternalEntry {
+                    min_key: b"a".to_vec(),
+                    max_key: b"m".to_vec(),
+                    subtree_count: 1,
+                    child: ChildRef::Local(addr(0)),
+                },
+                InternalEntry {
+                    min_key: b"n".to_vec(),
+                    max_key: b"z".to_vec(),
+                    subtree_count: 0,
+                    child: ChildRef::Local(addr(0)),
+                },
+            ]),
+            ..page
+        };
+        assert!(IndexPage::decode(&invalid_page.encode()).is_err());
     }
 
     #[test]
@@ -435,6 +529,7 @@ mod tests {
             body: PageBody::Internal(vec![InternalEntry {
                 min_key: b"a".to_vec(),
                 max_key: b"z".to_vec(),
+                subtree_count: 0,
                 child: ChildRef::Local(addr(2)),
             }]),
         };
@@ -447,6 +542,7 @@ mod tests {
             body: PageBody::Internal(vec![InternalEntry {
                 min_key: b"a".to_vec(),
                 max_key: b"z".to_vec(),
+                subtree_count: 0,
                 child: ChildRef::External(crate::native_base::wire::refs::RootRef {
                     object: crate::native_base::wire::refs::ObjectRef {
                         object_id: [1u8; 16],

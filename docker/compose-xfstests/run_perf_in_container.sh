@@ -7,6 +7,10 @@ info() { log "INFO  $*"; }
 ok()   { log "OK    $*"; }
 err()  { log "ERROR $*" >&2; }
 
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+    export BREWFS_WRITEBACK_MODE=upload_before_commit
+fi
+
 config_path="${BREWFS_CONFIG_PATH:-/run/brewfs/config.yaml}"
 mount_dir="${BREWFS_MOUNT_POINT:-/mnt/brewfs}"
 data_backend="${BREWFS_DATA_BACKEND:-local-fs}"
@@ -45,6 +49,24 @@ truthy_env() {
     esac
 }
 
+force_cold_read_profile() {
+    if truthy_env "${PERF_FIO_COLD_READ:-false}" \
+        || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        # A cold-read result is invalid if any BrewFS data tier or the FUSE
+        # kernel page cache can satisfy the measured read. Keep this profile
+        # deterministic even when the caller inherited production defaults.
+        export BREWFS_READ_MEMORY_BYTES=0
+        export BREWFS_READ_SSD_BYTES=0
+        export BREWFS_PREFETCH_ENABLED=false
+        export BREWFS_RANGE_BACKGROUND_PREFETCH=false
+        export BREWFS_FUSE_READ_DIRECT_IO=1
+        export BREWFS_FUSE_KEEP_CACHE=0
+        export PERF_FIO_DIRECT=1
+        export PERF_FIO_REQUIRE_DROP_CACHES="${PERF_FIO_REQUIRE_DROP_CACHES:-true}"
+        info "冷读 profile: 数据缓存预算=0、prefetch=off、FUSE read direct-io=on"
+    fi
+}
+
 write_perf_profile() {
     local path="$artifact_dir/perf-profile.env"
     cat >"$path" <<EOF
@@ -57,7 +79,8 @@ PERF_FIO_PREFILL_REMOUNT=${PERF_FIO_PREFILL_REMOUNT:-false}
 PERF_FIO_COLD_READ_CLEAR_CACHE=${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}
 PERF_FIO_DROP_CACHES=${PERF_FIO_DROP_CACHES:-false}
 PERF_FIO_COLD_READ=${PERF_FIO_COLD_READ:-false}
-PERF_FIO_COLD_READ_DROP_CACHES=${PERF_FIO_COLD_READ_DROP_CACHES:-false}
+PERF_FIO_COLD_READ_DROP_CACHES=${PERF_FIO_COLD_READ_DROP_CACHES:-true}
+PERF_FIO_REQUIRE_DROP_CACHES=${PERF_FIO_REQUIRE_DROP_CACHES:-false}
 PERF_FIO_POST_WRITE_DRAIN=${PERF_FIO_POST_WRITE_DRAIN:-false}
 PERF_FIO_DIRECT_MATRIX=${PERF_FIO_DIRECT_MATRIX:-}
 PERF_FIO_BIGREAD_REPEATS=${PERF_FIO_BIGREAD_REPEATS:-1}
@@ -115,6 +138,14 @@ PERF_OBJECT_PUT_OBJECTS=${PERF_OBJECT_PUT_OBJECTS:-0}
 PERF_OBJECT_PUT_OBJECT_SIZE=${PERF_OBJECT_PUT_OBJECT_SIZE:-${BREWFS_BLOCK_SIZE:-4194304}}
 PERF_OBJECT_PUT_WORKERS=${PERF_OBJECT_PUT_WORKERS:-${BREWFS_UPLOAD_CONCURRENCY:-32}}
 PERF_OBJECT_PUT_PREFIX=${PERF_OBJECT_PUT_PREFIX:-bench/direct-put}
+PERF_PACKED_SMALLFILE_COUNT=${PERF_PACKED_SMALLFILE_COUNT:-36000}
+PERF_PACKED_DIRS=${PERF_PACKED_DIRS:-8}
+PERF_PACKED_DIR_LEVELS=${PERF_PACKED_DIR_LEVELS:-0}
+PERF_PACKED_DIRS_PER_LEVEL=${PERF_PACKED_DIRS_PER_LEVEL:-10}
+PERF_PACKED_FILES_PER_DIR=${PERF_PACKED_FILES_PER_DIR:-4500}
+PERF_PACKED_SMALLFILE_SIZE=${PERF_PACKED_SMALLFILE_SIZE:-4096}
+PERF_PACKED_SMALLFILE_READ_BYTES=${PERF_PACKED_SMALLFILE_READ_BYTES:-1}
+PERF_PACKED_FIO_FILE_SIZE=${PERF_PACKED_FIO_FILE_SIZE:-67108864}
 PERF_FIO_BIGREAD_REPEATS=${PERF_FIO_BIGREAD_REPEATS:-1}
 PERF_FIO_BIGREAD_COOLDOWN_SECS=${PERF_FIO_BIGREAD_COOLDOWN_SECS:-10}
 PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES=${PERF_FIO_BIGREAD_EVICT_LOCAL_CACHE_PAGES:-true}
@@ -146,6 +177,101 @@ write_config() {
     {
         echo "mount_point: $mount_dir"
         echo
+        if [[ -n "${BREWFS_VOLUME_FORMAT:-}" ]]; then
+            echo "volume_format: ${BREWFS_VOLUME_FORMAT}"
+            if [[ "$BREWFS_VOLUME_FORMAT" == "packed-metadata-v1" ]]; then
+                if [[ -z "${BREWFS_PACKED_MANIFEST_KEY:-}" ]]; then
+                    err "BREWFS_PACKED_MANIFEST_KEY 不能为空 (packed-metadata-v1)"
+                    exit 1
+                fi
+                echo "packed_manifest_key: ${BREWFS_PACKED_MANIFEST_KEY}"
+            elif [[ "$BREWFS_VOLUME_FORMAT" == "workspace-native-v2" ]]; then
+                echo
+                echo "volume:"
+                echo "  format: workspace-native-v2"
+                echo "  schema_version: 2"
+                echo "  native_control_version: 2"
+                echo "  chunk_size: ${BREWFS_CHUNK_SIZE:-67108864}"
+                echo "  block_size: ${BREWFS_BLOCK_SIZE:-4194304}"
+                echo
+                echo "native_base:"
+                echo "  release_profile: p1-retained-trial"
+                echo "  format_version: 3"
+                echo "  namespace_mode: kv"
+                echo "  packing:"
+                echo "    payload_format: native-block-v1"
+                echo "    pack_target_bytes: 67108864"
+                echo "    codec: none"
+                echo "    multipart_part_target_bytes: 16777216"
+                echo "    retention_grouping: required"
+                echo "  reader:"
+                echo "    capture_protocol: single-writer-bounded-capture"
+                echo "    ordered_inode_commits: true"
+                echo "    capture_deadline_ms: 2000"
+                echo "    capture_max_retries: 4"
+                echo "    max_read_capture_bytes: 67108864"
+                echo "    max_plan_segments: 64"
+                echo "    max_plan_bytes: 134217728"
+                echo "    demand_get_concurrency: 8"
+                echo "    request_deadline_ms: 30000"
+                echo "    inflight_encoded_bytes: 268435456"
+                echo "    inflight_decoded_bytes: 536870912"
+                echo "    physical_coalescing: false"
+                echo "    exact_range_response_required: true"
+                echo "  cache:"
+                echo "    scope: per-mount"
+                echo "    shared_service: false"
+                echo "    metadata_ram_bytes: 536870912"
+                echo "    decoded_data_bytes: 2147483648"
+                echo "    encoded_disk_bytes: 8589934592"
+                echo "    trust_domain_isolation: true"
+                echo "  prefetch:"
+                echo "    enabled: false"
+                echo "    get_concurrency: 0"
+                echo "    metadata_only_ops_fetch_data: false"
+                echo "  commit:"
+                echo "    max_receipts: 1024"
+                echo "    max_payload_bytes: 67108864"
+                echo "  durability:"
+                echo "    write_mode: upload-before-commit"
+                echo "    remote_verification: exact-readback"
+                echo "    require_atomic_create_only: true"
+                echo "    coordinator_profile: perf-harness"
+                echo "  retention:"
+                echo "    published: forever"
+                echo "    published_gc: false"
+                echo "    read_retention_leases: false"
+                echo "    promotion: exact-object-retain-batches"
+                echo "    private_write_domain: workspace-lifetime"
+                echo "  cleanup:"
+                echo "    mode: disabled"
+                echo "    closed_private_domains_only: true"
+                echo "    require_close_certificate: true"
+                echo "    backend_mode: unversioned-only"
+                echo "    allow_legacy_slice_gc: false"
+                echo "    unknown_upload_policy: quarantine"
+                echo "    count_delete_markers_as_freed_bytes: false"
+                echo "  repack:"
+                echo "    automatic: false"
+                echo "    reclaim_published: false"
+                echo "    require_explicit_extra_bytes_budget: true"
+                echo "  limits:"
+                echo "    namespace_hard_bytes: 1099511627776"
+                echo "    private_domain_soft_bytes: 536870912"
+                echo "    private_domain_hard_bytes: 1073741824"
+                echo "    completion_reserve_bytes: 134217728"
+                echo "    on_hard_limit: reject-new-admissions-not-accepted-drain"
+            fi
+        fi
+        if [[ -n "${BREWFS_WORKSPACE_ID:-}" ]]; then
+            echo "workspace: ${BREWFS_WORKSPACE_ID}"
+        fi
+        if [[ -n "${BREWFS_WORKSPACE_NAMESPACE:-}" ]]; then
+            echo "workspace_namespace: ${BREWFS_WORKSPACE_NAMESPACE}"
+        fi
+        if [[ -n "${BREWFS_VOLUME_FORMAT:-}" || -n "${BREWFS_WORKSPACE_ID:-}" ]]; then
+            echo
+        fi
         case "$data_backend" in
             local-fs)
                 cat <<EOF
@@ -183,6 +309,7 @@ EOF
         esac
         echo
 
+        if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-metadata-v1" ]]; then
         case "$meta_backend" in
             sqlite)
                 mkdir -p "$(dirname "$sqlite_path")"
@@ -248,6 +375,7 @@ EOF
         fi
         if [[ -n "${BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE:-}" ]]; then
             echo "  allow_write_open_cache: ${BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE}"
+        fi
         fi
 
         if [[ -n "${BREWFS_COMPACT_INTERVAL_SECS:-}" \
@@ -503,6 +631,16 @@ prepare_artifacts() {
     printf 'ts\ttool\telapsed_s\tbuffer_dirty_bytes\tlive_dirty_bytes\tlive_slices\trecent_pending_upload_bytes\trecent_uploaded_bytes\tstage_inflight_bytes\tremote_upload_inflight_bytes\ts3_put_ops\ts3_put_bytes\tbuffer_soft_sleep_ops\tbuffer_moderate_sleep_ops\tbuffer_hard_sleep_ops\tfuse_write_bytes\tupload_batch_ops\n' \
         >"$artifact_dir/writeback-samples.tsv"
     write_perf_profile
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v1" ]]; then
+        cat >"$artifact_dir/packed-runtime-proof.env" <<EOF
+volume_format=packed-metadata-v1
+metadata_store=immutable-object-snapshot
+metadata_client=none
+metadata_config=omitted
+redis_endpoint=${meta_url:-<unset>}
+redis_diagnostics=disabled
+EOF
+    fi
     if truthy_env "${PERF_FUSE_OPS_LOG:-0}" || truthy_env "${BREWFS_FUSE_OP_LOG:-0}"; then
         export BREWFS_FUSE_OP_LOG=1
         export BREWFS_FUSE_LOG_FILE="$artifact_dir/brewfs_fuse_ops.log"
@@ -876,13 +1014,53 @@ drop_kernel_page_cache_if_requested() {
         info "请求 drop_caches 以降低页缓存影响"
         sync || true
         if ! sh -c 'echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1; then
-            err "drop_caches 失败；继续测试，但结果可能仍受页缓存影响"
+            err "drop_caches 失败；拒绝继续冷读测试，避免产出含缓存命中的无效结果"
+            if truthy_env "${PERF_FIO_REQUIRE_DROP_CACHES:-false}"; then
+                return 1
+            fi
         fi
     fi
 }
 
+assert_cold_read_no_hits() {
+    local tool="$1"
+    if ! truthy_env "${PERF_FIO_COLD_READ:-false}" \
+        && ! truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        return 0
+    fi
+
+    local before_path="$artifact_dir/diagnostics/stats-${tool}-before.txt"
+    local after_path="$artifact_dir/diagnostics/stats-${tool}-after.txt"
+    if [[ ! -s "$before_path" || ! -s "$after_path" ]]; then
+        err "冷读校验失败: 缺少 $tool 的前后 stats 快照"
+        return 1
+    fi
+
+    local metric before after
+    for metric in \
+        brewfs_cache_hits_total \
+        brewfs_read_block_cache_hits_total \
+        brewfs_read_page_cache_hits_total \
+        brewfs_read_background_prefetch_total; do
+        before="$(awk -v metric="$metric" '$1 == metric { print $2; found=1; exit } END { if (!found) exit 2 }' "$before_path" 2>/dev/null || true)"
+        after="$(awk -v metric="$metric" '$1 == metric { print $2; found=1; exit } END { if (!found) exit 2 }' "$after_path" 2>/dev/null || true)"
+        if [[ ! "$before" =~ ^[0-9]+$ || ! "$after" =~ ^[0-9]+$ ]]; then
+            err "冷读校验失败: $tool 缺少计数器 $metric"
+            return 1
+        fi
+        if (( after > before )); then
+            err "冷读校验失败: $tool 命中 $metric (before=$before after=$after)"
+            return 1
+        fi
+    done
+    ok "冷读校验通过: $tool 数据缓存命中=0"
+}
+
 clear_brewfs_cache_root_if_requested() {
     if truthy_env "${PERF_FIO_COLD_READ:-false}" || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        # Keep this fallback aligned with CacheConfig::default().  The perf
+        # container does not set XDG_CACHE_HOME, so the runtime default is
+        # /root/.cache/brewfs rather than the BrewFS state volume path.
         local root="${BREWFS_CACHE_ROOT:-${XDG_CACHE_HOME:-/root/.cache}/brewfs}"
         if [[ -n "$root" && "$root" == /* && "$root" != "/" ]]; then
             info "清理 BrewFS 本地 cache root: $root"
@@ -931,6 +1109,15 @@ run_logged_tool() {
     local log_path="$artifact_dir/tools/${tool}.log"
     local start end elapsed status sampler_pid
 
+    # Cold-read validation compares the counters immediately around each
+    # measured tool.  Fio prefill paths have their own snapshots, while
+    # metadata and packed scans previously had no canonical before snapshot,
+    # which made an otherwise valid zero-hit run fail closed.
+    if truthy_env "${PERF_FIO_COLD_READ:-false}" \
+        || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        stats_snapshot_before_tool "$tool"
+    fi
+
     start="$(date +%s)"
     info "运行压力工具: $tool"
     info "  命令: $*"
@@ -963,6 +1150,7 @@ run_logged_tool() {
     wait_for_metadata_post_tool_drain "$tool" || status=1
     stats_snapshot_after_tool "$tool"
     redis_diag_after_tool "$tool"
+    assert_cold_read_no_hits "$tool" || status=1
 
     local log_size
     log_size=$(wc -c < "$log_path" 2>/dev/null || echo 0)
@@ -1050,6 +1238,197 @@ run_dirperf() {
     fi
 
     run_logged_tool dirperf "$bin" "${args[@]}"
+}
+
+run_packed_smallfiles() {
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-metadata-v1" ]]; then
+        err "packed-smallfiles requires BREWFS_VOLUME_FORMAT=packed-metadata-v1"
+        return 1
+    fi
+    local root="$mount_dir"
+    local expected="${PERF_PACKED_SMALLFILE_COUNT:-36000}"
+    local file_size="${PERF_PACKED_SMALLFILE_SIZE:-4096}"
+    local read_bytes="${PERF_PACKED_SMALLFILE_READ_BYTES:-1}"
+    local dir_levels="${PERF_PACKED_DIR_LEVELS:-0}"
+    local dirs_per_level
+    if (( dir_levels > 0 )); then
+        dirs_per_level="${PERF_PACKED_DIRS_PER_LEVEL:-10}"
+    else
+        dirs_per_level="${PERF_PACKED_DIRS:-8}"
+    fi
+    local files_per_dir="${PERF_PACKED_FILES_PER_DIR:-4500}"
+    if truthy_env "${PERF_FIO_COLD_READ:-false}" \
+        || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        remount_brewfs_for_fio_profile packed-smallfiles || return $?
+    fi
+    info "扫描 packed metadata 小文件: root=$root expected=$expected"
+    packed_smallfiles_scan() {
+        python3 - "$root" "$expected" "$file_size" "$read_bytes" "$dir_levels" "$dirs_per_level" "$files_per_dir" <<'PY'
+import os
+import pathlib
+import sys
+import time
+
+root = pathlib.Path(sys.argv[1])
+expected = int(sys.argv[2])
+file_size = int(sys.argv[3])
+read_bytes = int(sys.argv[4])
+dir_levels = int(sys.argv[5])
+dirs_per_level = int(sys.argv[6])
+files_per_dir = int(sys.argv[7])
+if dir_levels <= 0:
+    dir_levels = 1
+expected_leaf_dirs = dirs_per_level ** dir_levels
+if expected % expected_leaf_dirs:
+    raise SystemExit(f"file count {expected} is not divisible by leaf directory count {expected_leaf_dirs}")
+expected_files_per_leaf = expected // expected_leaf_dirs
+if expected_files_per_leaf != files_per_dir:
+    raise SystemExit(f"fixture layout mismatch files_per_leaf={expected_files_per_leaf} configured={files_per_dir}")
+expected_tree_dirs = sum(dirs_per_level ** level for level in range(1, dir_levels + 1))
+started = time.monotonic()
+files = 0
+tree_dirs = 0
+leaf_dirs = 0
+logical_bytes = 0
+payload_bytes = 0
+checksum = 0
+errors = 0
+for directory, dirs, names in os.walk(root):
+    dirs.sort()
+    relative = pathlib.Path(directory).relative_to(root)
+    depth = len(relative.parts)
+    child_dirs = [name for name in dirs if name.startswith("d")]
+    dirs[:] = child_dirs
+    if depth:
+        tree_dirs += 1
+    expected_children = dirs_per_level if depth < dir_levels else 0
+    if len(child_dirs) != expected_children:
+        raise SystemExit(f"directory fanout mismatch path={directory} depth={depth} actual={len(child_dirs)} expected={expected_children}")
+    if depth < dir_levels:
+        if names:
+            raise SystemExit(f"unexpected files above leaf level path={directory} files={len(names)}")
+        continue
+    if depth != dir_levels:
+        raise SystemExit(f"directory tree is deeper than configured levels path={directory} depth={depth} expected={dir_levels}")
+    leaf_dirs += 1
+    if len(names) != files_per_dir:
+        raise SystemExit(f"leaf file count mismatch path={directory} actual={len(names)} expected={files_per_dir}")
+    for name in sorted(names):
+        path = pathlib.Path(directory) / name
+        try:
+            st = path.stat()
+            if st.st_size != file_size:
+                raise OSError(f"unexpected size {st.st_size}, expected {file_size}")
+            with path.open("rb") as handle:
+                payload = handle.read() if read_bytes <= 0 else handle.read(read_bytes)
+            if read_bytes <= 0 and len(payload) != file_size:
+                raise OSError(f"short read {len(payload)}, expected {file_size}")
+            files += 1
+            logical_bytes += st.st_size
+            payload_bytes += len(payload)
+            checksum = (checksum + (payload[0] if payload else 0)) & 0xffffffff
+        except OSError as error:
+            errors += 1
+            print(f"error path={path} error={error}")
+elapsed = time.monotonic() - started
+mode = "full" if read_bytes <= 0 else f"prefix:{read_bytes}"
+print(f"packed_smallfiles_summary files={files} expected={expected} directories={tree_dirs} expected_directories={expected_tree_dirs} leaf_directories={leaf_dirs} expected_leaf_directories={expected_leaf_dirs} levels={dir_levels} dirs_per_level={dirs_per_level} files_per_leaf={files_per_dir} file_size={file_size} read_mode={mode} logical_bytes={logical_bytes} payload_bytes={payload_bytes} errors={errors} checksum={checksum} seconds={elapsed:.6f} files_per_sec={files / elapsed if elapsed else 0:.2f}")
+if files != expected or tree_dirs != expected_tree_dirs or leaf_dirs != expected_leaf_dirs or errors:
+    raise SystemExit(1)
+PY
+    }
+    run_logged_tool packed-smallfiles packed_smallfiles_scan
+}
+
+run_packed_posix() {
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-metadata-v1" ]]; then
+        err "packed-posix requires BREWFS_VOLUME_FORMAT=packed-metadata-v1"
+        return 1
+    fi
+    local small_size="${PERF_PACKED_SMALLFILE_SIZE:-4096}"
+    local fio_size="${PERF_PACKED_FIO_FILE_SIZE:-67108864}"
+    local files_per_dir="${PERF_PACKED_FILES_PER_DIR:-4500}"
+    local dir_levels="${PERF_PACKED_DIR_LEVELS:-0}"
+    local dirs_per_level="${PERF_PACKED_DIRS_PER_LEVEL:-10}"
+    packed_posix_scan() {
+        python3 - "$mount_dir" "$small_size" "$fio_size" "$files_per_dir" "$dir_levels" "$dirs_per_level" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+small_size = int(sys.argv[2])
+fio_size = int(sys.argv[3])
+files_per_dir = int(sys.argv[4])
+dir_levels = int(sys.argv[5])
+dirs_per_level = int(sys.argv[6])
+if dir_levels <= 0:
+    dir_levels = 1
+    dirs_per_level = 8
+leaf_components = ["d000"] * dir_levels
+leaf = root.joinpath(*leaf_components)
+symlink_target = "../" + "/".join(leaf_components) + "/f00000"
+read_path = leaf / "f00000"
+bench_path = root / "bench" / "read.bin"
+verify_dir = root / "verify"
+hardlink_path = verify_dir / "hardlink"
+symlink_path = verify_dir / "symlink"
+checks = 0
+mutations_rejected = 0
+data = read_path.read_bytes()
+bench_size = bench_path.stat().st_size
+if len(data) != small_size or bench_size != fio_size:
+    raise SystemExit(f"unexpected fixture sizes small={len(data)} bench={bench_size}")
+
+def check(condition, message):
+    global checks
+    checks += 1
+    if not condition:
+        raise SystemExit(f"semantic check failed: {message}")
+
+check(read_path.stat().st_ino == hardlink_path.stat().st_ino, "hardlink inode")
+check(read_path.stat().st_nlink == 2, "hardlink nlink")
+check(os.readlink(symlink_path) == symlink_target, "symlink target")
+check(symlink_path.stat().st_ino == read_path.stat().st_ino, "symlink follow")
+check(len(list(leaf.iterdir())) == files_per_dir, "readdir count")
+check(stat.S_ISFIFO((verify_dir / "fifo").lstat().st_mode), "fifo type")
+check(stat.S_ISSOCK((verify_dir / "socket").lstat().st_mode), "socket type")
+check(stat.S_ISCHR((verify_dir / "char").lstat().st_mode), "char type")
+check(stat.S_ISBLK((verify_dir / "block").lstat().st_mode), "block type")
+check(stat.S_IMODE(read_path.stat().st_mode) == 0o644, "regular mode")
+check(stat.S_IMODE(bench_path.stat().st_mode) == 0o644, "benchmark mode")
+
+def rejected(label, operation):
+    global mutations_rejected
+    try:
+        result = operation()
+        if isinstance(result, int):
+            os.close(result)
+        print(f"mutation unexpectedly succeeded label={label}")
+    except OSError as error:
+        mutations_rejected += 1
+        print(f"mutation rejected label={label} errno={error.errno} text={error}")
+
+for operation in (
+    ("open-write", lambda: os.open(root / "write-attempt", os.O_WRONLY | os.O_CREAT, 0o644)),
+    ("mkdir", lambda: os.mkdir(root / "mkdir-attempt")),
+    ("unlink", lambda: os.unlink(read_path)),
+    ("rename", lambda: os.rename(read_path, root / "rename-attempt")),
+    ("truncate", lambda: os.truncate(bench_path, 0)),
+    ("chmod", lambda: os.chmod(read_path, 0o600)),
+    ("link", lambda: os.link(read_path, root / "link-attempt")),
+    ("symlink", lambda: os.symlink("d000/f00000", root / "symlink-attempt")),
+    ("rmdir", lambda: os.rmdir(root / "d000")),
+    ("setxattr", lambda: os.setxattr(read_path, "user.packed", b"deny")),
+):
+    rejected(*operation)
+if mutations_rejected != 10:
+    raise SystemExit(f"mutation rejection mismatch rejected={mutations_rejected} expected=10")
+print(f"packed_posix_summary read_bytes={len(data)} bench_bytes={bench_size} semantic_checks={checks} mutation_checks=10 mutations_rejected={mutations_rejected}")
+PY
+    }
+    run_logged_tool packed-posix packed_posix_scan
 }
 
 run_metaperf() {
@@ -1462,6 +1841,8 @@ run_fio_profile() {
     local repeat_count=1
     local repeat_cooldown_secs=10
     local warmup_count=0
+    local packed_read=false
+    local packed_fio_path=""
     local -a args=()
 
     if [[ -n "$profile_key_override" ]]; then
@@ -1498,6 +1879,20 @@ run_fio_profile() {
         return "$matrix_status"
     fi
 
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v1" ]]; then
+        # Packed snapshots are immutable. Default read profiles use the
+        # fixture's real read-only file; custom fio args remain caller-owned.
+        work_dir="/tmp/brewfs-perf-${tool}"
+        if [[ -z "${!profile_args_var:-}" ]] \
+            && [[ "$mode" == "seqread" || "$mode" == "randread" || "$mode" == "bigread" ]]; then
+            packed_read=true
+            packed_fio_path="$mount_dir/bench/read.bin"
+            if [[ ! -f "$packed_fio_path" ]]; then
+                err "packed fio fixture 不存在或不可读: $packed_fio_path"
+                return 1
+            fi
+        fi
+    fi
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
@@ -1614,17 +2009,36 @@ run_fio_profile() {
                 ;;
         esac
 
-        args=(
-            --name="$name"
-            --directory="$work_dir"
-            --rw="$rw"
-            --bs="$bs"
-            --size="$size"
-            --numjobs="$numjobs"
-            --ioengine="$ioengine"
-            --iodepth="$iodepth"
-            --direct="$direct"
-        )
+        if [[ "$packed_read" == true ]]; then
+            size="$(stat -c '%s' "$packed_fio_path")"
+            needs_prefill=false
+        fi
+
+        if [[ "$packed_read" == true ]]; then
+            args=(
+                --name="$name"
+                --filename="$packed_fio_path"
+                --rw="$rw"
+                --bs="$bs"
+                --size="$size"
+                --numjobs="$numjobs"
+                --ioengine="$ioengine"
+                --iodepth="$iodepth"
+                --direct="$direct"
+            )
+        else
+            args=(
+                --name="$name"
+                --directory="$work_dir"
+                --rw="$rw"
+                --bs="$bs"
+                --size="$size"
+                --numjobs="$numjobs"
+                --ioengine="$ioengine"
+                --iodepth="$iodepth"
+                --direct="$direct"
+            )
+        fi
 
         if [[ "${use_time_based:-true}" == true ]]; then
             args+=(--runtime="$runtime" --time_based)
@@ -1653,6 +2067,13 @@ run_fio_profile() {
         if truthy_env "${PERF_FIO_COLD_READ:-false}" || truthy_env "${PERF_FIO_PREFILL_REMOUNT:-false}"; then
             remount_brewfs_for_fio_profile "$tool" || return $?
         fi
+    fi
+
+    # Packed read profiles use the immutable fixture and skip writable prefill,
+    # but still perform the same cold-read boundary before measuring.
+    if [[ "$packed_read" == true ]] \
+        && (truthy_env "${PERF_FIO_COLD_READ:-false}" || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"); then
+        remount_brewfs_for_fio_profile "$tool" || return $?
     fi
 
     if [[ "$mode" == "bigread" ]]; then
@@ -2567,6 +2988,12 @@ run_perf_suite() {
             dirperf)
                 run_dirperf || status=1
                 ;;
+            packed-smallfiles)
+                run_packed_smallfiles || status=1
+                ;;
+            packed-posix)
+                run_packed_posix || status=1
+                ;;
             metaperf)
                 run_metaperf || status=1
                 ;;
@@ -2625,11 +3052,37 @@ main() {
     log_file="$artifact_dir/brewfs.log"
     export BREWFS_LOG_FILE="$log_file"
 
+    force_cold_read_profile
+
     trap on_exit EXIT INT TERM
     raise_nofile_limit
 
     info "写入 BrewFS 配置: $config_path"
     write_config
+
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+        info "初始化 workspace-v1 catalog + native-v2 control header"
+        /usr/local/bin/brewfs workspace init-volume \
+            --meta-backend redis --meta-url "$meta_url" \
+            >"$artifact_dir/workspace-init.json" 2>&1 \
+            || info "workspace volume may already exist"
+        if [[ -z "${BREWFS_WORKSPACE_ID:-}" ]]; then
+            BREWFS_WORKSPACE_ID="$(sed -n '/^{/,$p' "$artifact_dir/workspace-init.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['workspace_id'])" 2>/dev/null || true)"
+        fi
+        if [[ -n "$BREWFS_WORKSPACE_ID" ]]; then
+            /usr/local/bin/brewfs workspace init-native \
+                --meta-backend redis --meta-url "$meta_url" \
+                >"$artifact_dir/native-init.json" 2>&1 \
+                || info "native control header may already exist"
+        fi
+        if [[ -z "$BREWFS_WORKSPACE_ID" ]]; then
+            err "无法获取 workspace ID，native-v2 挂载将失败"
+            exit 1
+        fi
+        info "native-v2 workspace: $BREWFS_WORKSPACE_ID"
+        export BREWFS_WORKSPACE_ID
+        write_config
+    fi
 
     info "准备产物目录: $artifact_dir"
     prepare_artifacts
@@ -2639,24 +3092,28 @@ main() {
 
     mount_brewfs
 
-    # Pre-flight sanity check: verify the filesystem can create, write, and read files.
-    info "执行挂载点预检: $mount_dir"
-    local preflight_dir="$mount_dir/.perf-preflight"
-    local preflight_file="$preflight_dir/test.bin"
-    rm -rf "$preflight_dir"
-    mkdir -p "$preflight_dir"
-    if ! echo "brewfs-preflight-$(date +%s)" > "$preflight_file"; then
-        err "预检失败: 无法写入 $preflight_file"
-        exit 1
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v1" ]]; then
+        info "跳过写入型预检: packed-metadata-v1 是只读挂载"
+    else
+        # Pre-flight sanity check: verify the filesystem can create, write, and read files.
+        info "执行挂载点预检: $mount_dir"
+        local preflight_dir="$mount_dir/.perf-preflight"
+        local preflight_file="$preflight_dir/test.bin"
+        rm -rf "$preflight_dir"
+        mkdir -p "$preflight_dir"
+        if ! echo "brewfs-preflight-$(date +%s)" > "$preflight_file"; then
+            err "预检失败: 无法写入 $preflight_file"
+            exit 1
+        fi
+        local preflight_read
+        preflight_read=$(cat "$preflight_file" 2>/dev/null)
+        if [[ -z "$preflight_read" ]]; then
+            err "预检失败: 无法读取 $preflight_file"
+            exit 1
+        fi
+        rm -rf "$preflight_dir"
+        ok "预检通过: 写入/读取正常"
     fi
-    local preflight_read
-    preflight_read=$(cat "$preflight_file" 2>/dev/null)
-    if [[ -z "$preflight_read" ]]; then
-        err "预检失败: 无法读取 $preflight_file"
-        exit 1
-    fi
-    rm -rf "$preflight_dir"
-    ok "预检通过: 写入/读取正常"
 
     info "开始性能测试: tools=$perf_tools"
     set +e

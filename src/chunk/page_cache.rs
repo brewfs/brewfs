@@ -17,9 +17,9 @@ use std::time::Duration;
 #[allow(dead_code)]
 pub const DEFAULT_PAGE_SIZE: usize = 64 * 1024;
 
-/// Default capacity in number of pages: 4096 pages × 64 KiB = 256 MiB.
+/// Default capacity in number of pages: 32768 pages × 64 KiB = 2 GiB.
 #[allow(dead_code)]
-pub const DEFAULT_PAGE_CAPACITY: usize = 4096;
+pub const DEFAULT_PAGE_CAPACITY: usize = 32768;
 
 /// Uniquely identifies a 64KB page within a committed block.
 ///

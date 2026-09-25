@@ -30,7 +30,7 @@ use super::overlay::{MutationSpec, OverlayParams, WriteOverlay, ensure_workspace
 use super::receipts::{MemorySink, ReceiptEntry, ReceiptSet, build_receipts_container};
 use super::records::{ExtentKind, HeadPlacement, HeadState, NativeExtent};
 use super::replace::plan_rename_over;
-use super::store::ControlStore;
+use super::store::{ControlStore, Txn};
 use crate::native_base::wire::bnct::{ControlRecord, DomainState};
 use crate::native_base::wire::page::{IndexPage, PageBody};
 use crate::native_base::wire::refs::{Hash32, ObjectId, RootRef};
@@ -1503,6 +1503,59 @@ pub(crate) async fn mutation_order_continues_from_the_durable_watermark(
         ticket.mutation_order, 2,
         "order continues committed_order + 1"
     );
+}
+
+#[tokio::test]
+async fn unattributed_head_advance_before_drain_fences_the_commit() {
+    let env = env_on(Arc::new(MemoryControlStore::new()), 64).await;
+    let ticket = env.overlay.accept(INODE, write_spec(0, 64)).await.unwrap();
+    env.overlay.dispatch(&ticket).await.unwrap();
+    env.overlay.complete_upload(&ticket).await.unwrap();
+
+    let head_key = env.keys.head(&env.params.workspace_id);
+    let head = read_head(&env).await;
+    env.store
+        .run(
+            Txn::new()
+                .check_bytes(head_key.clone(), head.encode())
+                .put(head_key, head.next_commit().encode()),
+        )
+        .await
+        .unwrap();
+
+    let report = env.overlay.drain().await.unwrap();
+    assert!(report.committed.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    assert!(report.failed[0].1.contains("stale head guard"));
+    assert_eq!(read_head(&env).await.head.commit_seq, 1);
+}
+
+#[tokio::test]
+async fn writer_generation_change_before_drain_still_fences_the_commit() {
+    let env = env_on(Arc::new(MemoryControlStore::new()), 64).await;
+    let ticket = env.overlay.accept(INODE, write_spec(0, 64)).await.unwrap();
+    env.overlay.dispatch(&ticket).await.unwrap();
+    env.overlay.complete_upload(&ticket).await.unwrap();
+
+    let head_key = env.keys.head(&env.params.workspace_id);
+    let head = read_head(&env).await;
+    let changed = HeadState {
+        writer_generation: head.writer_generation + 1,
+        ..head.clone()
+    };
+    env.store
+        .run(
+            Txn::new()
+                .check_bytes(head_key.clone(), head.encode())
+                .put(head_key, changed.encode()),
+        )
+        .await
+        .unwrap();
+
+    let report = env.overlay.drain().await.unwrap();
+    assert!(report.committed.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(read_head(&env).await, changed);
 }
 
 // ---------------------------------------------------------------------------

@@ -136,14 +136,14 @@ pub struct ChunksCacheConfig {
 
     /// Maximum bytes for the hot (in-memory) cache tier.
     ///
-    /// **Default**: 1 GiB (maps to CacheConfig.read_memory_bytes)
+    /// **Default**: 8 GiB (maps to CacheConfig.read_memory_bytes)
     /// **Impact**: Controls how much RAM is used for frequently-accessed blocks.
     /// Uses moka's byte-weighted eviction (weigher returns entry byte size).
     pub max_hot_bytes: u64,
 
     /// Maximum bytes for on-disk cache storage.
     ///
-    /// **Default**: 20 GiB (maps to CacheConfig.read_ssd_bytes)
+    /// **Default**: 64 GiB (maps to CacheConfig.read_ssd_bytes)
     /// **Impact**: Controls SSD usage for the persistent read cache.
     /// When exceeded, oldest files (by access time) are evicted on insert.
     pub max_disk_bytes: u64,
@@ -201,10 +201,12 @@ pub struct ChunksCacheConfig {
 impl Default for ChunksCacheConfig {
     fn default() -> Self {
         Self {
-            hot_cache_size: 1024,
-            cold_cache_size: 1024,
-            max_hot_bytes: 1024 * 1024 * 1024,       // 1 GiB
-            max_disk_bytes: 20 * 1024 * 1024 * 1024, // 20 GiB
+            // Keep enough policy/index entries for large small-file scans;
+            // byte-weighted hot admission remains bounded by max_hot_bytes.
+            hot_cache_size: 65536,
+            cold_cache_size: 131072,
+            max_hot_bytes: 8 * 1024 * 1024 * 1024,   // 8 GiB
+            max_disk_bytes: 64 * 1024 * 1024 * 1024, // 64 GiB
             base_promotion_threshold: 5.0,
             short_window_size: Duration::from_secs(10),
             medium_window_size: Duration::from_secs(60),
@@ -2235,6 +2237,14 @@ impl ChunksCache {
         trace!("Hot cache MISS: {}", key);
         self.policy.record_cache_request(false);
 
+        // A zero disk budget is the explicit no-persistent-cache profile.
+        // Keep this separate from the hot-cache admission check so a stale
+        // file left by an earlier mount cannot silently warm a no-cache run.
+        if self.config.max_disk_bytes == 0 {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+
         // Try loading from disk directly — the cold_cache index may have
         // evicted the key marker but the file can still exist on disk
         // (populated by write-through or prior reads).
@@ -2319,6 +2329,11 @@ impl ChunksCache {
 
         trace!("Hot cache range MISS: {}", key);
         self.policy.record_cache_request(false);
+
+        if self.config.max_disk_bytes == 0 {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
 
         let generation = self.disk_storage.store_generation(key);
         let mut disk_buf = vec![0u8; buf.len()];
@@ -2491,6 +2506,10 @@ impl ChunksCache {
     }
 
     async fn persist_opportunistic(&self, key: String, data: bytes::Bytes, generation: u64) {
+        if self.config.max_disk_bytes == 0 {
+            return;
+        }
+
         // Persist to disk so future cold starts / hot cache evictions avoid
         // S3, but keep this genuinely opportunistic. If local cache I/O is
         // saturated, skip the disk write instead of queuing more background
@@ -2574,6 +2593,9 @@ impl ChunksCache {
         let generation = self.disk_storage.store_generation(key);
         self.insert_hot_at_generation(key, bytes::Bytes::from(data.clone()), generation)
             .await;
+        if self.config.max_disk_bytes == 0 {
+            return Ok(());
+        }
         if let Some(stored_generation) = self
             .disk_storage
             .store_with_health_at_generation(key, data, generation)
@@ -2986,6 +3008,29 @@ mod tests {
         );
 
         drop(permits);
+    }
+
+    #[tokio::test]
+    async fn zero_disk_budget_disables_persistent_cache() {
+        let temp_dir = tempdir().unwrap();
+        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
+            0,
+            0,
+            temp_dir.path().to_path_buf(),
+        ))
+        .await
+        .unwrap();
+
+        let key = "zero-disk-budget-key".to_string();
+        cache
+            .insert_opportunistic(key.clone(), vec![3u8; 128 * 1024].into())
+            .await;
+        cache.insert(&key, &vec![4u8; 128 * 1024]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(!cache.is_disk_cached(&key).await);
+        assert!(cache.get(&key).await.is_none());
+        assert_eq!(cache.stats().disk_bytes, 0);
     }
 
     #[test]
@@ -3914,6 +3959,10 @@ mod tests {
     fn test_default_promotion_policy_is_more_aggressive_for_read_cache_warmup() {
         let config = ChunksCacheConfig::default();
 
+        assert_eq!(config.hot_cache_size, 65536);
+        assert_eq!(config.cold_cache_size, 131072);
+        assert_eq!(config.max_hot_bytes, 8 * 1024 * 1024 * 1024);
+        assert_eq!(config.max_disk_bytes, 64 * 1024 * 1024 * 1024);
         assert_eq!(config.base_promotion_threshold, 5.0);
         assert_eq!(config.short_window_weight, 0.75);
         assert_eq!(config.medium_window_weight, 0.25);

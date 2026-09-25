@@ -1,6 +1,41 @@
 # Aliyun 云端性能测试
 
-这个目录把现有 Redis/TiKV Docker Compose 性能测试迁移到 Aliyun。推荐使用 ACK/Kubernetes runner：镜像在本地构建并推送，测试在 K8s Job 中运行；ECS/Cloud Assistant runner 仅作为没有 ACK 集群时的 fallback。
+这个目录把现有 Redis/TiKV Docker Compose 性能测试迁移到 Aliyun。百万级 packed 小文件测试使用 ECS/Cloud Assistant runner：默认 32 GiB 内存、100 GiB ESSD、100 万个 100 KiB 文件和三级目录树。ACK runner 仍用于已有集群上的通用矩阵。
+
+## 百万级 packed 小文件测试
+
+`run_aliyun_packed_million.ps1` 是专用入口，目录布局默认是：
+
+```text
+root/
+  d000..d009/
+    d000..d009/
+      d000..d009/
+        f00000..f00999  (100 KiB each)
+```
+
+也就是 `10 x 10 x 10 x 1,000 = 1,000,000` 个文件。packed fixture 的小文件数据共享一个不可变 block，因此不会在 ECS 本地落下约 100 GiB 的重复 payload；全文件读模式仍会实际读取约 100 GiB 的逻辑数据并记录 payload bytes。
+
+```powershell
+# 先用 -DryRun 检查参数；需要已有 vSwitch 和安全组。
+.\docker\compose-xfstests\aliyun\run_aliyun_packed_million.ps1 `
+  -DryRun `
+  -VSwitchId vsw-xxxxxxxx `
+  -SecurityGroupId sg-xxxxxxxx
+
+# 创建 ECS，构建指定 ref，发布 packed fixture，冷读扫描后自动释放 ECS。
+.\docker\compose-xfstests\aliyun\run_aliyun_packed_million.ps1 `
+  -VSwitchId vsw-xxxxxxxx `
+  -SecurityGroupId sg-xxxxxxxx `
+  -RegionId cn-hangzhou `
+  -ZoneId cn-hangzhou-h `
+  -ImageId ubuntu_24_04_x64_20G_alibase_20260916.vhd `
+  -Ref codex/packed-million
+```
+
+默认使用 `ReadMode=full`，会读取每个 100 KiB 文件；若只想先验证元数据路径，可使用 `-ReadMode prefix`。测试固定关闭 BrewFS 数据缓存和预取，并要求 `drop_caches` 成功；结果不会把缓存命中当成冷读性能。`-KeepInstance` 可保留现场，`-NoCleanup` 禁止自动释放，完成后使用原 ECS runner 的 `-Action destroy` 清理。
+
+当前工作树的代码尚未提交到远端时，`-Ref` 必须指向已推送的分支或 commit；ECS runner 会在远端重新 clone 该 ref，不会自动上传未提交修改。
 
 ## ACK/Kubernetes 主流程
 
@@ -44,7 +79,7 @@ ACK 集群本身可使用 `operator/brewfs-operator/scripts/ack-e2e.ps1` 创建/
 - Aliyun CLI 已配置，并具备 ECS、VPC 查询、RunCommand 权限。
 - 目标地域已有可用的 VPC vSwitch 和安全组；脚本不会自动创建或删除账号网络资源。
 - ECS 镜像内置 Cloud Assistant Agent，且能访问软件源和 GitHub/GHCR。
-- 目标镜像在该地域可用。默认值是 `ubuntu_24_04_x64_20G_alibase_20260522.vhd`，可用 `ecs DescribeImages` 查询并通过 `-ImageId` 覆盖。
+- 目标镜像在该地域可用。百万级入口默认使用 `ubuntu_24_04_x64_20G_alibase_20260916.vhd`，可用 `ecs DescribeImages` 查询并通过 `-ImageId` 覆盖；通用 runner 仍可单独传入 `-ImageId`。
 
 ## 使用方式
 
@@ -86,4 +121,4 @@ ACK 集群本身可使用 `operator/brewfs-operator/scripts/ack-e2e.ps1` 创建/
 | `-PerfTools` | 传递给现有 runner 的 `--tools`，保持本地与云端测试矩阵一致 |
 | `-RunBench` | 传递 `--brewfs-bench` |
 
-默认 ECS 为按量付费，并设置四小时自动释放时间；`run` 结束后还会主动释放实例，除非指定 `-KeepInstance` 或 `-NoCleanup`。脚本不会删除快照、VPC、vSwitch、安全组或其他账号资源。
+默认 ECS 为按量付费，并设置八小时自动释放时间；`run` 结束后还会主动释放实例，除非指定 `-KeepInstance` 或 `-NoCleanup`。脚本不会删除快照、VPC、vSwitch、安全组或其他账号资源。创建前会在实例内校验内存至少 30,000,000 KiB、工作盘至少 90,000,000,000 字节，并把实际值写入 `aliyun-resource-proof.env`。

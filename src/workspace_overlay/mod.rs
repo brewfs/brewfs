@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod cache_scope;
 pub mod catalog;
+pub mod clustered_snapshot;
 pub mod compaction;
 pub mod control;
 pub mod digest;

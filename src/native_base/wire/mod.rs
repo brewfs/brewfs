@@ -36,7 +36,7 @@ pub mod page;
 pub mod refs;
 pub mod uvarint;
 
-pub use index_build::{IndexTreeParams, build_index_tree};
+pub use index_build::{IndexTreeParams, build_index_tree, build_index_tree_with_subtree_counts};
 
 pub use error::{WireError, WireResult};
 

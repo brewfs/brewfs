@@ -1,46 +1,83 @@
 # BrewFS Clustered Frozen Metadata v2
 
-Status: **RFC / implementation pending** (documentation only; not supported by the current runtime)
+Status: **v2 final specification / implementation in progress**
 
 Scope: immutable committed base metadata, file-cluster ingestion, S3 persistence, progressive loading,
 and private agent overlays
 
 This document supersedes the single-image BRFI v1 design. Its `MUST`/`SHALL` language is normative
-for a future implementation, not a statement that the described formats or workflows exist today.
+for the packed-metadata-v2 format and runtime. The implementation status below is deliberately
+separate from the format contract: a passing P0/P1 unit test is not evidence that the complete v2
+producer, multi-cluster reader, Data Seal, or performance comparison is finished.
 
 > [!IMPORTANT]
-> The current BrewFS runtime cannot read, write, mount, ingest, resume, or publish the `.brfsm`,
-> `.brfc`, `.brfds`, or `.brfdp` formats specified here. The modules in section 29, dedicated
-> implementation tracking issues, golden fixtures, and executable acceptance tests have not been
-> added yet.
+> The current runtime has a verifier/CAS gate for a manually assembled
+> `.brfsm/.brfc/.brfds/.brfdp` graph, but it still lacks the end-to-end upload session and mountable
+> FUSE v2 snapshot path. P0/P1 groundwork is now present: raw-name/range/budget contracts live under
+> `src/workspace_overlay/clustered_snapshot/`, and the existing frozen read-only facade has an
+> end-to-end bounded page path. Those changes do not make the legacy v1 object format a v2 format.
+
+## Final revision 2026-09-22
+
+The attached design review is incorporated here as the normative revision. It is a specification,
+not an instruction to treat suggested batch sizes as measured results.
+
+* **Partitioning:** namespace ownership is split by contiguous raw-name dictionary ranges. A hash
+  route may be retained only as an exact candidate filter; it is never the namespace truth.
+* **Canonical directories:** the offline planner folds duplicate directory skeletons with the same
+  `DirKey` after validating hot/cold attributes. A runtime lookup never opens every contributor just
+  to return one directory name.
+* **Bounded windows:** one `RangeWindow` has at most 8 input sources and 4,096 visible names in the
+  initial profile. An oversized window is replanned or rejected before publication; it must not
+  silently fall back to all contributors.
+* **Paging:** `opendir`, `MetaLayer`, `DirHandle`, FUSE cookies, `readdir`, and `readdirplus` are
+  one protocol. The packed path returns bounded pages and never implements paging as
+  `collect -> Vec -> truncate`.
+* **Names and cookies:** v2 compares raw name bytes, with no lossy UTF-8 conversion, normalization,
+  or locale ordering. A fixed snapshot uses a reconstructible logical ordinal cookie including `.`
+  and `..`; the index stores deduplicated visible subtree counts rather than an unbounded cookie map.
+* **Admission:** every allocation is admitted against one hard budget covering reclaimable cache,
+  pinned metadata, compressed in-flight bytes, decompression workspace, inode/handle state, output
+  pages, and route/cluster/singleflight/queue control state.
+* **Extents and frames:** extent indexes include file offsets, and span lists are pageable. Data Seal
+  and data frames are independently authenticated so metadata packing does not create hidden data
+  read amplification.
+* **Build and publication:** the producer uses external sorting, disk-backed hardlink grouping, and
+  bounded k-way merge. Metadata is sealed and CAS-published before data becomes visible.
+
+The implementation is staged P0 through P5. P0 now includes executable `DirKey` derivation and the
+producer/reference directory-folding planner. Until P5's matched cold-read matrix is complete, this
+specification makes no claim that packed metadata is faster than JuiceFS, Redis, TiKV, or ordinary
+BrewFS under any particular cache state.
 
 ## Implementation status and acceptance tracking
 
-This RFC is the design record, not an implementation progress report. No dedicated implementation
-issue, clustered-metadata fixture, or executable acceptance test exists yet. Nothing in this
-document is evidence that implementation work has started.
+This document is primarily the design record. The implementation ledger below records the small
+amount of accepted groundwork separately from the still-missing v2 format and publication pieces.
+The existing frozen-v1 producer/reader and its tests are not v2 evidence.
 
 The table below is the repository-owned acceptance manifest until implementation begins. It maps
-every major unit to its required acceptance contract while recording that implementation tracking is
-still missing. A `Missing` evidence state is intentional and must not be interpreted as a passing
-test. Planned paths are rendered as code, rather than broken links, because those files do not exist.
-When work begins, each row must gain a dedicated implementation issue and a link to committed fixture
-or test evidence before its status can change from **RFC / implementation pending**.
+every major unit to its required acceptance contract. A `Missing` evidence state is intentional and
+must not be interpreted as a passing test. A **P0/P1 groundwork** state means only the bounded API
+contract is tested; it does not certify the on-disk v2 format. Each remaining row must gain a durable
+fixture and executable acceptance evidence before it can be marked complete.
 
 | Major format or state transition | Normative definition | Tracking record | Executable evidence status |
 |---|---|---|---|
-| Snapshot manifest `.brfsm` and immutable head publication | [§3](#3-immutable-publication-boundary) and [§8](#8-snapshot-manifest-format-brfsm) | dedicated implementation issue: **Missing** | **Missing:** [format/determinism](#format-and-determinism) and [equivalence/isolation](#equivalence-and-isolation) are requirements only; planned fixture root: `tests/fixtures/clustered_snapshot/v2/manifest/` |
-| Frozen cluster metadata `.brfc`, Merkle indexes, and independently decodable batches | [§9](#9-frozen-cluster-metadata-format-brfc) through [§14](#14-streaming-and-arbitrary-batch-loading) | dedicated implementation issue: **Missing** | **Missing:** [format/determinism](#format-and-determinism) and [streaming/cold replacement](#streaming-and-cold-replacement) are requirements only; planned fixture root: `tests/fixtures/clustered_snapshot/v2/cluster/` |
-| Data Seal `.brfds` and the unsealed-to-visible boundary | [§19](#19-metadatadata-split-and-the-data-seal) and [§24](#24-metadata-first-upload-state-machine) | dedicated implementation issue: **Missing** | **Missing:** [upload/crash injection](#upload-and-crash-injection) is a requirement only; planned fixture root: `tests/fixtures/clustered_snapshot/v2/data_seal/` |
-| DataPack `.brfdp` encoding and verified frame publication | [§25](#25-data-packing-and-upload) | dedicated implementation issue: **Missing** | **Missing:** [format/determinism](#format-and-determinism) and [upload/crash injection](#upload-and-crash-injection) are requirements only; planned fixture root: `tests/fixtures/clustered_snapshot/v2/data_pack/` |
-| Namespace readiness, targeted loading, eviction, and union transitions | [§5](#5-namespace-union-semantics), [§14](#14-streaming-and-arbitrary-batch-loading), and [§15](#15-lookup-readdir-and-getattr-algorithms) | dedicated implementation issue: **Missing** | **Missing:** [cluster union](#cluster-union) and [streaming/cold replacement](#streaming-and-cold-replacement) are requirements only; no executable test exists |
-| Source inventory and safe local/archive ingestion | [§20](#20-single-cluster-local-ingestion-interface) through [§23](#23-local-session-layout) | dedicated implementation issue: **Missing** | **Missing:** [ingestion/archives](#ingestion-and-archives) is a requirement only; no executable test exists |
+| Snapshot manifest `.brfsm` and immutable head publication | [§3](#3-immutable-publication-boundary) and [§8](#8-snapshot-manifest-format-brfsm) | P1 envelope, typed page codecs, range reader, and publication gate: `src/workspace_overlay/clustered_snapshot/{snapshot_manifest,manifest_remote,mount_trie,merge_route,publication,head_store}.rs` | **Partial:** fixed `BRFSM002` superblock plus deterministic cluster-descriptor/section/footer assembly, typed paged mount-trie/merge-route payloads, single-cluster source-to-manifest assembly, round-trip, duplicate-ID, corruption, remote range, and graph-publication tests exist. `SnapshotPublisher` verifies the manifest, every `.brfc` index/batch, every `.brfds` table, extent-to-SliceId closure, and each referenced `.brfdp` by bounded range-read SHA-256 plus per-frame authentication/decode before CAS. Redis/TiKV now share the fixed-width `KvWorkspaceHeadStore` adapter over the existing transactional KV backends; crash injection and golden fixtures remain missing |
+| Frozen cluster metadata `.brfc`, Merkle indexes, and independently decodable batches | [§9](#9-frozen-cluster-metadata-format-brfc) through [§14](#14-streaming-and-arbitrary-batch-loading) | P1 wire and remote reader: `src/workspace_overlay/clustered_snapshot/{batch,attribute,extent,cluster_format,merkle_index,index_builder,cluster_builder,ingest,range_reader,remote}.rs` | **Partial:** `BRFCBT02` headers, CRC/BLAKE3 authentication, bounded Zstd decode, raw-name front-coded namespace segments, independent extent/attribute payload codecs, `BRFCL002`/`BRFSM002` fixed superblocks, `BRFIDX02` leaf/internal index nodes, capacity-bounded multi-level tree construction, bounded namespace and `(LocalNodeId, file offset)` extent range reads with locator verification, clipped resolved spans, planner→cluster assembly, deterministic parent-first source-inventory bridge with hardlink preservation, complete local-source assembly of namespace/extent/attribute sections via `build_source_cluster`, remote single-flight targeted loading, byte-capped decoded caches, 240-source traversal, and negative tests exist; archive ingestion, upload integration, and golden fixtures remain missing |
+| Data Seal `.brfds` and the unsealed-to-visible boundary | [§19](#19-metadatadata-split-and-the-data-seal) and [§24](#24-metadata-first-upload-state-machine) | deterministic builder plus section reader: `src/workspace_overlay/clustered_snapshot/{data_seal,data_seal_remote}.rs` | **Partial:** `BRFDS002` fixed header, independently authenticated slice/frame/object tables, closed SliceId→frame→object validation, deterministic build, authenticated pageable SliceId directory, targeted remote page lookup, tamper tests, header-only remote open with on-demand table range reads, and local-source SliceId/frame/object planning with source revalidation exist; upload/crash injection, publication state machine, archive planning, and golden fixtures remain missing |
+| DataPack `.brfdp` encoding and verified frame publication | [§25](#25-data-packing-and-upload) | deterministic vertical slice: `src/workspace_overlay/clustered_snapshot/data_pack.rs` | **Partial:** `BRFDP002` deterministic frame encoding, bounded scrub, tamper tests, and complete local-source 1 MiB frame generation with sparse-hole omission exist; remote frame paging, upload/crash injection, publication state machine, and planned fixtures remain missing |
+| Namespace readiness, targeted loading, eviction, and union transitions | [§5](#5-namespace-union-semantics), [§14](#14-streaming-and-arbitrary-batch-loading), and [§15](#15-lookup-readdir-and-getattr-algorithms) | P0/P1 groundwork plus P3 planner/reference merge: `src/workspace_overlay/clustered_snapshot/`, frozen page path | **Partial:** raw-name/range/budget tests, exact `DirKey` derivation, canonical skeleton folding, bounded source planning/k-way merge, typed authenticated DirectoryView/merge-route serialization (including physical contributor NodeRefs), raw FUSE page path, optional BNPG subtree-count encoding, rank/select paging, streaming budget admission, authenticated remote single-cluster lookup, targeted cold-attribute and extent-range lookup, persisted multi-cluster route lookup, and byte-capped decoded-cache eviction are covered by unit tests. Remote multi-cluster bounded `readdir` reads only route-overlapping index/batch ranges, folds duplicate directory entries, rejects file/name collisions, and returns stable ordinal pages; full FUSE integration, overlay transitions, and policy-grade segmented eviction remain missing |
+| Source inventory and safe local/archive ingestion | [§20](#20-single-cluster-local-ingestion-interface) through [§23](#23-local-session-layout) | existing source contract plus v2 bridge: `src/native_base/ingest/source.rs`, `src/workspace_overlay/clustered_snapshot/ingest.rs` | **Partial:** local inventory output now converts into a deterministic parent-first `.brfc` cluster, derives raw-byte `DirKey`s, preserves hardlink `ExistingNode` references, runs the canonical directory planner, reads regular-file ranges into verified DataPack frames, emits offset-indexed extent batches, captures symlink cold attributes, and rejects missing parents/conflicting hardlink attributes or malformed sparse ranges. Archive adapters, xattr/ACL capture, session layout, and upload publication remain missing |
 | Upload WAL, multipart reconciliation, and monotonic resume states | [§24](#24-metadata-first-upload-state-machine) and [§26](#26-power-loss-and-multipart-resume-protocol) | dedicated implementation issue: **Missing** | **Missing:** [upload/crash injection](#upload-and-crash-injection) is a requirement only; no executable test exists |
 | Private `MemLayer`, shared snapshot caches, and CAS publication | [§17](#17-memory-tiers-and-cold-data-replacement), [§18](#18-agent-overlay-boundary), and [§24](#24-metadata-first-upload-state-machine) | dedicated implementation issue: **Missing** | **Missing:** [equivalence/isolation](#equivalence-and-isolation) is a requirement only; no executable test exists |
 
 Section 30 specifies the acceptance behavior but is not executable evidence. Section 31 is an intended
 sequence, not a completed-work checklist. A future implementation PR must replace every **Missing**
-state and every planned path above with durable links to its issue and committed evidence.
+state and every planned path above with durable links to its issue and committed evidence. The P1 wire
+tests below are implementation evidence for the fixed contracts only; they do not certify a mountable
+clustered snapshot.
 
 ## 1. Goals
 
@@ -263,52 +300,47 @@ a global entry-per-file routing database.
 
 The cluster packer should minimize duplicated skeletons, but they are semantically required.
 
-## 6. Merge routing without per-file duplication
+## 6. Range routing and canonical directory projection
 
-Querying every root cluster for every filename is correct but can become expensive. The manifest has a
-paged `MergeRouteIndex` only for virtual directories with more than one contributor.
+Hash buckets are not the primary namespace partition. The manifest contains a paged `DirectoryView`
+and a non-overlapping raw-name `RangeRoute` index for every directory whose entries are split across
+clusters.
 
 ```rust
-pub struct MergeRouteRecord {
+pub struct DirectoryView {
     pub dir_key: DirKey,
-    pub contributors: Vec<DirContributor>,
-    pub route_bucket_bits: u8,       // 0..=12
-    pub bucket_offsets: Vec<u32>,
-    pub candidate_ordinals: Vec<u16_or_u32>,
+    pub canonical_node: NodeRef,
+    pub visible_entry_count: u64, // deduplicated names, excluding . and ..
+    pub entry_index_root: MerkleRootRef,
 }
 
-pub struct DirContributor {
-    pub cluster_slot: u32,
-    pub local_dir_node_id: u32,
+pub struct RangeWindow {
+    pub lower: NameBound, // inclusive, -infinity allowed
+    pub upper: NameBound, // exclusive, +infinity allowed
+    pub visible_entry_count: u32,
+    pub sources: BoundedVec<WindowSource, 8>,
+}
+
+pub enum WindowSource {
+    FileEntries(ClusterSegmentRef),
+    CanonicalDirectoryEntries(DirectoryProjectionRef),
 }
 ```
 
-The route hash is:
+Windows are sorted by raw bytes, cover the complete name space, and never overlap. A source locator
+contains an authenticated byte range inside one metadata batch; it never means “open the whole
+contributor”. The initial admission profile is at most **8 sources** and **4,096 visible names** per
+window. The planner splits or rejects a window that exceeds either limit.
 
-```text
-low_bits(BLAKE3("BrewFS.Route.v2" || snapshot_route_seed || raw_name))
-```
+At build time, all directory skeletons with the same `DirKey` are folded into one canonical logical
+directory after validating hot attributes, cold attributes, and child identity. Physical skeletons
+may remain in their clusters for self-description, but they are not separate runtime contributors for
+the same returned directory name. A conflicting file/file, file/directory, or unequal directory
+attribute remains a publication error; there is no priority or last-writer-wins rule.
 
-For each hash bucket, the record contains every contributor that owns at least one name in that
-bucket. It is an exact candidate set at bucket granularity, not a probabilistic filter, so it cannot
-create false negatives. Hash collisions may create extra cluster lookups but never incorrect results.
-
-Rules:
-
-- a multi-contributor directory must have one authenticated route record;
-- contributor lists in the route record must equal contributor discovery from the cluster data;
-- a single-contributor directory uses the contributor directly and has no route record;
-- `route_bucket_bits=0` means query all contributors;
-- the default is 8 bits; a builder may choose up to 12 bits for high fan-out directories;
-- the route index is derived acceleration data and is included in the manifest physical hash;
-- collision validation still runs independently of routing.
-
-For large merged directories, the packer should assign names to clusters by contiguous route-hash
-bucket ranges. Then a lookup normally selects one cluster while related directory paths can still be
-distributed across different cluster objects. Arbitrary cluster grouping remains correct but can
-degrade to fan-out reads.
-
-The route index stores one record per merged directory, not one record per file.
+An optional hash route may be stored as an exact candidate filter for a very high-fan-out range. It
+must never be used to prove absence and is included in the manifest digest. Ordinary lookup and
+readdir follow the raw-name range index first, then validate the small source set for that window.
 
 ## 7. Cluster planning and placement
 
@@ -317,11 +349,11 @@ attributes, extents, and cold attributes for one file move together.
 
 Default planner objectives:
 
-- target 256 MiB to 2 GiB of stored metadata per cluster;
+- target 256-512 MiB of stored metadata per cluster; one `.brfc` may not exceed 2 GiB;
 - cap local nodes below `u32::MAX - 1`;
 - cap one cluster's page-index height and batch count;
 - preserve subtree locality when requested;
-- use route-hash ranges for very large shared directories;
+- use contiguous raw-name ranges for very large shared directories;
 - avoid placing all hot roots into one oversized cluster;
 - keep directory skeleton overhead below a configured fraction, default 5%;
 - create a new cluster rather than violate a hard limit.
@@ -330,7 +362,7 @@ Planner modes:
 
 ```text
 Subtree        keep subtrees together until the target size
-HashRange      partition names in selected directories by route hash
+NameRange      partition selected directories by raw byte ranges
 SizeBalanced   distribute inode groups by estimated metadata/data size
 Explicit       caller supplies include rules and mount root
 ```
@@ -473,6 +505,20 @@ Index properties:
 - all lengths and offsets are checked before allocation or Range GET;
 - root-to-leaf validation is sufficient to trust one `BatchLocator` without loading other leaves.
 
+For a v2 directory rank index, an internal entry also carries an authenticated
+`visible_subtree_count:u64`. The count is after canonical-directory folding and
+name de-duplication, excludes `.` and `..`, and is summed only from the child
+subtree. Rank/select uses these counts to reconstruct a logical FUSE ordinal
+after index or batch eviction; it must not persist a cookie-to-leaf map. The
+counted encoding is version/flag bound to the page kind, and a counted page
+with a missing or zero child count is invalid. Existing generic BNPG pages use
+the flag value zero and remain readable through the compatibility cursor walk.
+
+The current single-frozen-catalog bridge implements this wire extension on its
+namespace tree and counts authenticated leaf rows. That is an acceleration for
+the bridge, not evidence that the full v2 DirectoryView producer has already
+performed cross-cluster folding or visible-name de-duplication.
+
 `BatchLocator` contains:
 
 ```rust
@@ -501,9 +547,9 @@ Default raw targets:
 
 | Batch kind | Default target | Hard maximum |
 |---|---:|---:|
-| Namespace | 1 MiB | 16 MiB |
-| Extent | 1 MiB | 16 MiB |
-| Attribute | 512 KiB | 16 MiB |
+| Namespace raw payload | 256 KiB | 4 MiB |
+| Extent raw payload | 256-512 KiB | 4 MiB |
+| Cold attribute raw payload | 128-256 KiB | 4 MiB |
 
 Each batch has a 128-byte header:
 
@@ -542,9 +588,12 @@ Every batch is self-contained:
 - targeted decode does not require the predecessor batch;
 - predecessor is required only to advance a sequential streaming frontier.
 
-Large directory segments may continue in adjacent batches. A targeted segment carries its parent,
-first name, entry count, continuation flags, and the directory's total entry count or authenticated
-unknown marker. It can answer indexed lookup without materializing earlier name ranges.
+Large directory segments may continue in adjacent batches, but a segment is also bounded by the
+range-window limits in §6. A targeted segment carries its parent, first name, entry count,
+continuation flags, and the directory's total entry count or authenticated unknown marker. It can
+answer indexed lookup without materializing earlier name ranges. The physical object may contain
+adjacent batches for sequential coalescing, but each batch remains independently authenticated and
+decodable.
 
 ## 12. Namespace encoding and parent-first order
 
@@ -598,11 +647,13 @@ may later be evicted.
 
 ## 13. Extent and attribute encoding
 
-Extent groups remain complete final file maps ordered by LocalNodeId:
+Extent groups are indexed by `(LocalNodeId, file_offset)` and are independently pageable. A single
+inode's extent list is not allowed to become a hidden unbounded `Vec`:
 
 ```text
-file_group:
+file_extent_segment:
   local_node_id
+  first_file_offset
   extent_count
   repeated:
     gap_from_previous_end
@@ -619,7 +670,9 @@ Attribute groups contain symlink target, xattrs, and ACLs in LocalNodeId order. 
 attributes are repeated in each contribution and must compare equal during snapshot validation.
 
 Extent and attribute batches are independently indexed and may be loaded or evicted without their
-namespace batch. Namespace hot inode records state whether a corresponding cold group exists.
+namespace batch. Namespace hot inode records state whether a corresponding cold group exists. A
+`SliceDescriptor.spans` field is either bounded by the request's read plan or represented by an
+offset-indexed segment locator; it must not hide an arbitrary allocation.
 
 ## 14. Streaming and arbitrary batch loading
 
@@ -629,7 +682,7 @@ The loader exposes two complementary paths over the same format.
 
 Used for mount warm-up, root-first traversal, prefetch, and full scans:
 
-1. open the manifest and root contributors;
+1. open the manifest and root directory views;
 2. open selected cluster superblocks and index roots;
 3. Range-stream namespace batches in physical ordinal order;
 4. validate a batch before exposing any of it;
@@ -645,10 +698,10 @@ answers beyond that global frontier.
 
 Used for cache misses and random lookup:
 
-1. use `DirKey` to obtain the merge route record when needed;
-2. hash the name and select exact candidate contributors;
-3. traverse each cluster's pageable namespace index;
-4. fetch the indicated batch through one Range GET;
+1. use `DirKey` to obtain the `DirectoryView` and raw-name range window;
+2. select the bounded, exact source set for that window (an optional hash route may only narrow it);
+3. traverse each source's pageable namespace index;
+4. fetch the indicated batch through one bounded Range GET;
 5. validate and decode the complete batch;
 6. resolve a matching dentry or authoritative absence in that indexed name interval;
 7. load an introduction batch if a hardlink target's hot inode is not resident;
@@ -695,24 +748,35 @@ batches are in RAM.”
 8. any committed collision => EIO
 ```
 
-An authenticated empty candidate set is an immediate negative answer. Otherwise negative lookup is
-cached only after all candidates for that hash bucket were checked. The negative cache key includes
-`SnapshotRef`, so entries remain valid for that immutable snapshot and cannot leak across head changes.
+An authenticated empty range-source set is an immediate negative answer. Otherwise negative lookup is
+cached only after every exact source covering the raw-name range was checked. The negative cache key
+includes `SnapshotRef` and the range identity, so entries remain valid for that immutable snapshot
+and cannot leak across head changes.
 
 ### 15.2 Readdir
 
-Each contributor supplies a sorted batch cursor. Readdir performs a k-way merge by raw name:
+`readdir_page` is the only packed-v2 directory API. It accepts a `ReadDirCursor` and a
+`ReadDirLimit { max_entries, max_owned_bytes }`, and returns a bounded `ReadDirPage`. It MUST NOT
+call legacy `readdir()->Vec` and truncate it.
+
+Each range window supplies a sorted cursor. Readdir performs a bounded k-way merge by raw name:
 
 - equal directory names collapse into one result after equality validation;
 - equal file names or file/directory pairs are corruption;
 - private MemLayer additions/replacements/Whiteouts are merged last according to overlay semantics;
-- only current and next contributor batches are pinned;
+- only current and next source batches are pinned;
 - batches behind all cursors are immediately eligible for eviction;
 - reaching an unloaded boundary fetches the next indexed batch.
 
-A FUSE directory handle stores a stable bookmark `(last_raw_name, tie_state)` rather than an arena
-offset. Handle-local cookies map to bookmarks. After eviction or retry, the cursor resumes by indexed
-lower-bound search. The namespace is immutable, so a bookmark cannot be invalidated during the mount.
+The immutable snapshot cookie is a logical ordinal for the next output item. `0` is `.`, `1` is `..`,
+and child ordinals start at `2`; the internal page cursor stores the corresponding child ordinal.
+The B+ tree stores deduplicated visible subtree counts, so a historical cookie is reconstructed by
+walking prefix counts and at most the bounded source set. No unbounded cookie-to-bookmark map is
+permitted. A bookmark fast path must use `upper_bound(last_raw_name)` when replaying a name.
+
+The packed `opendir` path keeps snapshot identity, directory identity, and this cursor state only.
+Legacy mutable backends may retain a materialized handle, but a v2 handle must not store all entries,
+all contributors, or a pointer into an evictable batch.
 
 ### 15.3 Getattr and read
 
@@ -770,7 +834,25 @@ L3 S3: immutable source objects
 
 L1 has separate accounting for namespace, extent, attribute, route, and index data. Default soft
 shares are 55%, 25%, 10%, 5%, and 5%; unused capacity is borrowable. Operators configure a single hard
-byte budget plus optional per-class floors.
+byte budget plus optional per-class floors. The implementation must reserve before allocation and
+release through an owning lease; an LRU capacity alone is not admission control.
+
+The hard budget is the sum of disjoint reservations:
+
+```text
+B_meta = reclaimable cache
+       + pinned metadata
+       + compressed in-flight bytes
+       + decompression workspace
+       + inode/handle state
+       + output pages
+       + route/cluster/singleflight/queue control state
+```
+
+`raw_len` is not a memory estimate for expanded records. Decoder/container overhead, `Vec` capacity,
+front-code restart tables, and control structures must be charged to the class that owns them. A
+request that cannot reserve its page, batch, or decode workspace fails with an explicit resource
+error and must not silently widen its source set.
 
 Eviction uses size-aware segmented LRU:
 
@@ -1151,11 +1233,13 @@ Defaults are configurable; hard limits are decoder safety boundaries.
 |---|---:|---:|
 | nodes per cluster | planner target | `u32::MAX - 1` |
 | cluster slots per snapshot | planner target | `2^29 - 1` |
-| contributors per merged directory | 16 target | 65,535 |
-| route bucket bits | 8 | 12 |
-| metadata batch raw bytes | kind default | 16 MiB |
+| input sources per range window | 8 | 8 |
+| visible names per range window | 4,096 | 4,096 |
+| optional hash-route bucket bits | 8 | 12 |
+| metadata batch raw bytes | kind default | 4 MiB |
 | Merkle index node | 4096 B | 64 KiB |
-| raw name bytes | platform limit | 64 KiB format limit |
+| raw name bytes | 255 B profile | 255 B profile |
+| cluster stored metadata | 256-512 MiB target | 2 GiB |
 | path depth | 1,024 | 65,535 |
 | xattr value | policy | 16 MiB |
 | archive expansion ratio | 100:1 | configured mandatory limit |
@@ -1167,18 +1251,24 @@ integer arithmetic and bound all allocations before decompression.
 
 ## 29. Required implementation modules
 
-The following paths are planned. They are not present in the current runtime and must not be read as
-an inventory of implemented modules.
+The following paths define the ownership boundary. The P0/P1 contract files, fixed superblock and
+batch codec, and the P3 producer/reference merge primitive currently exist; the remaining files are
+implementation work and must not be read as implemented merely because they are listed here.
 
 ```text
 src/workspace_overlay/clustered_snapshot/
   mod.rs
-  identity.rs
+  name.rs                 # P0 raw-name capability
+  directory.rs            # P0 range/cursor contract
+  budget.rs               # P0 hard admission budget
+  identity.rs             # P0 exact DirKey derivation
+  merge.rs                # P3 canonical fold and bounded reference merge
+  ingest.rs               # P4 source-inventory to parent-first namespace bridge
   snapshot_manifest.rs
   mount_trie.rs
   merge_route.rs
-  cluster_format.rs
-  batch.rs
+  cluster_format.rs      # P1 fixed BRFCL002/BRFSM002 roots and locators
+  batch.rs               # P1 BRFCBT02 auth and namespace segment codec
   merkle_index.rs
   namespace.rs
   extent.rs
@@ -1213,13 +1303,16 @@ src/workspace_overlay/cluster_ingest/
   publisher.rs
 ```
 
-Both modules are behind dedicated Cargo features. Format parsing uses checked safe byte access. Source
-adapters are isolated from namespace publication and cannot bypass validation.
+The contract module is currently compiled with the existing `workspace-overlay` feature; the full
+clustered reader/producer and ingestion adapters must remain behind dedicated feature boundaries
+before publication. Format parsing uses checked safe byte access. Source adapters are isolated from
+namespace publication and cannot bypass validation.
 
 ## 30. Required tests
 
 This section is the acceptance contract referenced by the manifest above. It lists requirements for
-future implementation, not passing tests. None is implemented by this documentation-only change.
+the complete implementation. The codec and planner tests that already exist are recorded in the
+implementation ledger; every other item remains a future acceptance requirement.
 Golden bytes must eventually be committed under the planned
 `tests/fixtures/clustered_snapshot/v2/` root and linked from the manifest before the corresponding
 evidence state changes from **Missing**.
@@ -1241,7 +1334,8 @@ evidence state changes from **Missing**.
 - mismatched directory attributes rejection;
 - route buckets contain every true contributor;
 - arbitrary grouping produces the same visible namespace;
-- hash-range planning avoids O(cluster_count) lookup in large merged directories;
+- raw-name range planning keeps each lookup within the bounded source set;
+- duplicate directory skeletons fold to one canonical directory projection;
 - cross-cluster hardlinks rejected or co-located by planner.
 
 ### Streaming and cold replacement
@@ -1250,7 +1344,9 @@ evidence state changes from **Missing**.
 - global merged prefix never advances past the slowest contributor;
 - targeted lookup beyond stream frontier is correct;
 - one-billion-entry synthetic directory uses bounded resident memory;
+- readdir pages are end-to-end bounded from FUSE through the batch fetch;
 - readdir pins only cursor windows and survives eviction/refetch;
+- stable ordinal cookies replay after index/cache eviction without a cookie map;
 - active FUSE inode survives eviction of its source namespace batch;
 - ten billion emitted deterministic inode numbers require no global inode interner;
 - scan traffic does not evict protected hot lookup batches;
@@ -1292,31 +1388,46 @@ cross-agent visibility, KV access, or unbounded cache growth occurs.
 
 ## 31. Implementation order
 
-This order is prospective; no numbered item is marked complete by this RFC.
+The phases below are the acceptance plan. A phase is complete only when its code and matched tests
+are present; a design paragraph or a benchmark artifact cannot mark a later phase complete.
 
-1. Scalar codec, batch header, 4096-byte Merkle index node, and arbitrary-byte fuzzing.
-2. DirKey/LocalNodeId assignment and one-cluster parent-first namespace builder.
-3. Targeted namespace index lookup plus independently decodable batches.
-4. Snapshot manifest, same-directory multi-cluster union, and strict collision validation.
-5. Route records and hash-range cluster planner.
-6. Deterministic FUSE inode packing, readdir merge cursor, and bounded L1 batch cache with eviction.
-7. Extent/attribute batches, Data Seal reader, and data-range planning.
-8. Local filesystem inventory and deterministic `.brfc` builder.
-9. DataPack encoder, metadata-first S3 uploader, append-only WAL, and multipart resume.
-10. tar/ZIP adapters, compressed-archive spool mode, and security limits.
-11. Shared caches across agents, private MemLayer integration, and feature gating.
-12. Snapshot publication, crash injection, full scrub, POSIX, scale, and performance gates.
+1. **P0 contract:** raw-name capability, `DirKey`/identity types, `ReadDirPage`/cursor/limit,
+   complete metadata budget accounting, and bounded synthetic fixtures. The legacy MetaLayer remains
+   compatible through an explicit adapter.
+2. **P1 single cluster:** one independently authenticated cluster, pageable Merkle namespace index,
+   targeted lookup, and true FUSE `opendir/readdir/readdirplus` pagination. No full-directory vector
+   may occur in the packed path.
+3. **P2 file ranges:** offset-indexed extent batches, pageable Data Seal, independent data frames,
+   cold attributes, and bounded read-plan spans.
+4. **P3 merged view:** canonical directory projection, raw-name `RangeRoute`, bounded k-way merge,
+   duplicate/collision validation, multi-cluster `DirectoryView`, and stable ordinal cookie replay.
+5. **P4 producer/publication:** external sort, disk-backed hardlink grouping, bounded k-way merge,
+   deterministic `.brfc`, metadata-first upload, seal/manifest verification, CAS publication, and
+   crash-resume/WAL recovery.
+6. **P5 validation:** eviction/refetch and corruption tests, POSIX/FUSE regression, 36K/1M/synthetic
+   100M entry scans, and matched cold-read comparisons across fresh mount, namespace-cold, L2-warm,
+   L1-warm, kernel-warm, and data-warm states.
 
-Milestone 1 is one independently uploaded sealed cluster mounted read-only with bounded batch caching.
-Milestone 2 is collision-safe union of several clusters at one directory. Milestone 3 is resumable local
-and archive ingestion followed by private agent overlays.
+Current code has P0 contract tests, a P1-style bounded page adapter for the existing frozen-v1
+catalog, independently authenticated namespace/extent/attribute batches and fixed `BRFCL002`/`BRFSM002`
+superblocks, typed paged mount-trie and merge-route payloads, a P3 producer/reference planner that
+folds duplicate directory skeletons and performs bounded raw-name window merges over in-memory source
+streams, and a publication verifier that range-validates the complete metadata/Data Seal/DataPack
+graph before the workspace-head CAS. The planner, upload session, and mountable multi-cluster v2
+reader are still separate: there is no end-to-end archive/WAL/multipart producer pipeline or mounted
+FUSE v2 snapshot until the remaining P3/P4 work lands.
 
 ## 32. Normative decisions summary
 
 - A file cluster is an immutable namespace fragment, not a mutable database shard.
 - Multiple clusters union by `DirKey`; they do not form an override stack.
 - Directory-directory duplicates merge; all other committed name collisions are errors.
-- The manifest routes only merged directories and does not duplicate every file entry.
+- The manifest routes merged directories by non-overlapping raw-name ranges and does not duplicate
+  every file entry.
+- Duplicate physical directory skeletons are folded into one canonical logical directory before
+  publication; runtime windows never fan out over every skeleton.
+- One packed `readdir` request is bounded by source count, visible names, output bytes, and the hard
+  metadata budget from admission through FUSE reply.
 - Metadata is physically parent-first but every batch is independently decodable.
 - RAM residency is replaceable; IDs and locators remain stable across eviction.
 - `.brfc` metadata is uploaded and remotely verified before any data PUT begins.

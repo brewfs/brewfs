@@ -5,7 +5,7 @@ use crate::chunk::compress::{
     Compression, PERSISTED_HEADER_LEN, PersistedHeader, decompress_bytes, decompress_framed_bytes,
     encode_persisted_block, parse_persisted_header,
 };
-use crate::chunk::page_cache::{PageKey, ReadPageCache};
+use crate::chunk::page_cache::{DEFAULT_PAGE_CAPACITY, DEFAULT_PAGE_SIZE, PageKey, ReadPageCache};
 use crate::chunk::singleflight::SingleFlight;
 use crate::utils::NumCastExt;
 use crate::utils::zero::make_zero_bytes;
@@ -98,6 +98,17 @@ pub trait BlockStore {
 }
 
 pub type BlockKey = (u64 /*slice_id*/, u32 /*block_index*/);
+
+/// Identifies one contiguous page span within an immutable block.
+///
+/// Range reads use this key instead of a page key so concurrent callers that
+/// need the same span share one object-store request.
+type PageRangeKey = (BlockKey, u32 /*start_page*/, u32 /*end_page*/);
+
+/// Layout classification is immutable for a committed block. Keep enough
+/// entries for large small-file scans so repeated opens do not reprobe object
+/// headers, while still bounding the process-local index.
+const DEFAULT_FORMAT_CACHE_CAPACITY: u64 = 65536;
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -345,8 +356,12 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     /// otherwise be discarded.  Intercepts repeated small random reads so they
     /// hit memory instead of making a network round-trip every time.
     page_cache: ReadPageCache,
-    /// SingleFlight controller for coalescing concurrent page-cache misses.
-    page_flight: SingleFlight<PageKey, Bytes>,
+    /// SingleFlight controller for coalescing contiguous page-cache misses.
+    ///
+    /// A request may cover many 64 KiB pages. Fetching the whole missing span
+    /// under one flight avoids one object-store range request per page while
+    /// retaining page-granularity cache admission.
+    range_flight: SingleFlight<PageRangeKey, Bytes>,
     /// Per-object layout classification. Chunk object keys are immutable, so a
     /// classification remains valid for the lifetime of this store.
     format_cache: Cache<BlockKey, ObjectLayout>,
@@ -381,7 +396,7 @@ pub struct BlockStoreConfig {
     /// Page size for the page-granularity read cache (default: 64KB).
     /// Small range reads are aligned to page boundaries, fetched, and cached at this granularity.
     pub page_size: usize,
-    /// Maximum number of pages in the read cache (default: 4096 → 256MB with 64KB pages).
+    /// Maximum number of pages in the read cache (default: 32768 → 2GiB with 64KiB pages).
     pub page_cache_capacity: usize,
     /// Whether a page-cache range miss should schedule a best-effort full-block prefetch.
     pub range_background_prefetch: bool,
@@ -405,10 +420,10 @@ pub struct BlockStoreConfig {
 impl Default for BlockStoreConfig {
     fn default() -> Self {
         Self {
-            block_size: 4 * 1024 * 1024, // 4MB
-            range_read_threshold: 0.25,  // 25% = 1MB for 4MB blocks
-            page_size: 64 * 1024,        // 64KB
-            page_cache_capacity: 4096,   // 4096 pages × 64KB = 256MB
+            block_size: 4 * 1024 * 1024,                // 4MB
+            range_read_threshold: 0.25,                 // 25% = 1MB for 4MB blocks
+            page_size: DEFAULT_PAGE_SIZE,               // 64KiB
+            page_cache_capacity: DEFAULT_PAGE_CAPACITY, // 32768 pages × 64KiB = 2GiB
             range_background_prefetch: true,
             compression: Compression::Lz4,
             populate_write_cache_after_upload: true,
@@ -433,9 +448,6 @@ impl BlockStoreConfig {
         }
         if self.page_size == 0 {
             anyhow::bail!("page_size must be greater than 0");
-        }
-        if self.page_cache_capacity == 0 {
-            anyhow::bail!("page_cache_capacity must be greater than 0");
         }
         Ok(())
     }
@@ -462,8 +474,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             client: Arc::new(client),
             block_cache,
             page_cache,
-            page_flight: SingleFlight::new(),
-            format_cache: Cache::new(4096),
+            range_flight: SingleFlight::new(),
+            format_cache: Cache::new(DEFAULT_FORMAT_CACHE_CAPACITY),
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
@@ -512,8 +524,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             client: Arc::new(client),
             block_cache,
             page_cache,
-            page_flight: SingleFlight::new(),
-            format_cache: Cache::new(4096),
+            range_flight: SingleFlight::new(),
+            format_cache: Cache::new(DEFAULT_FORMAT_CACHE_CAPACITY),
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
@@ -540,8 +552,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             client: Arc::new(client),
             block_cache,
             page_cache,
-            page_flight: SingleFlight::new(),
-            format_cache: Cache::new(4096),
+            range_flight: SingleFlight::new(),
+            format_cache: Cache::new(DEFAULT_FORMAT_CACHE_CAPACITY),
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
@@ -994,7 +1006,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         }
 
         let range_size_threshold = self.config.range_size_threshold();
-        let can_try_object_ranges = offset > 0 && len > 0 && len <= range_size_threshold;
+        // Uncompressed objects are byte-addressable from their first payload
+        // byte as well.  Requiring offset > 0 made every small-file read at
+        // the beginning of a block download the complete block, which is
+        // especially costly when the data cache is intentionally cold.
+        let can_try_object_ranges = len > 0 && len <= range_size_threshold;
 
         if can_try_object_ranges
             && let Some(block_data) = self.read_flight.try_piggyback(&key).await
@@ -1079,9 +1095,10 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         if can_read_object_ranges {
             let layout = layout.expect("range path resolved an object layout");
             let object_key = Self::object_key_for(key, layout);
-            // Small range read — serve via page-granularity cache so that
-            // repeated small reads within the same 64KB page avoid a network
-            // round-trip.
+            // Small range reads are cached at page granularity, but fetch
+            // contiguous missing pages in one object-store request. The
+            // previous implementation performed one range request per page,
+            // multiplying S3 request overhead for every multi-page FUSE read.
             let page_size = self.page_cache.page_size();
             let start_page = offset as usize / page_size;
             // end_page is inclusive
@@ -1090,58 +1107,187 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             let client = &self.client;
             let page_cache = &self.page_cache;
             let object_metrics = self.object_metrics.clone();
-            let mut total_read: usize = 0;
             let mut range_missed = false;
+            let mut pages: Vec<Option<Bytes>> = Vec::with_capacity(end_page - start_page + 1);
 
             for page_idx in start_page..=end_page {
-                let page_start = page_idx * page_size;
-                let page_end = (page_start + page_size).min(self.config.block_size);
-
                 let cache_key: PageKey = (key.0, key.1, page_idx as u32);
-
-                let page_data = if let Some(cached) = page_cache.get(&cache_key).await {
+                if let Some(cached) = page_cache.get(&cache_key).await {
                     tracing::Span::current().record("strategy", "page_cache_hit");
-                    cached
+                    pages.push(Some(cached));
                 } else {
                     tracing::Span::current().record("strategy", "page_cache_miss");
                     range_missed = true;
-                    let range_offset =
-                        range_base.expect("range path has a base offset") + page_start as u64;
-                    let range_len = page_end - page_start;
-                    let page_key_str = object_key.clone();
-                    let page_object_metrics = object_metrics.clone();
-                    let page = self
-                        .page_flight
-                        .execute(cache_key, || async move {
-                            if let Some(cached) = page_cache.get(&cache_key).await {
-                                return Ok::<_, anyhow::Error>(cached);
-                            }
+                    pages.push(None);
+                }
+            }
 
-                            let mut page_buf = vec![0u8; range_len];
-                            self.bandwidth.acquire_download(range_len).await;
+            let range_base = range_base.expect("range path has a base offset");
+
+            // When the request is page-aligned and every page is cold, the
+            // backend can stream the contiguous response straight into the
+            // caller's buffer. The shared Bytes result is retained for
+            // waiters and page-cache admission, so concurrent callers still
+            // issue only one object-store request.
+            let direct_target_read = (offset as usize).is_multiple_of(page_size)
+                && len.is_multiple_of(page_size)
+                && pages.iter().all(Option::is_none);
+            if direct_target_read {
+                let range_key: PageRangeKey = (key, start_page as u32, end_page as u32);
+                let object_key = object_key.clone();
+                let object_metrics = object_metrics.clone();
+                let bandwidth = &self.bandwidth;
+                let object_key_for_read = object_key.clone();
+                let (is_leader, fetched) = self
+                    .range_flight
+                    .execute_with_status(range_key, || {
+                        let target = &mut *buf;
+                        async move {
+                            let range_offset = range_base + offset;
+                            bandwidth.acquire_download(len).await;
                             let started = Instant::now();
                             let read_len = client
-                                .get_object_range(&page_key_str, range_offset, &mut page_buf)
-                                .await
-                                .map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "object store range read failed: {page_key_str}, {e:?}"
-                                    )
-                                })?;
-                            page_object_metrics.record_get(read_len as u64, started.elapsed());
-                            page_buf.truncate(read_len);
-                            let page_bytes = Bytes::from(page_buf);
-                            if read_len == range_len {
-                                page_cache.insert(cache_key, page_bytes.clone()).await;
-                            }
-                            Ok(page_bytes)
-                        })
-                        .await
-                        .map_err(|e| anyhow::anyhow!("SingleFlight page read failed: {e}"))?;
-                    page.as_ref().clone()
-                };
+                            .get_object_range(&object_key_for_read, range_offset, target)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "object store range read failed: {object_key_for_read}, {e:?}"
+                                )
+                            })?;
+                            object_metrics.record_get(read_len as u64, started.elapsed());
+                            let fetched = Bytes::copy_from_slice(&target[..read_len]);
 
-                // Determine the byte range within this page that the caller needs
+                            for page_idx in start_page..=end_page {
+                                let page_start = (page_idx - start_page) * page_size;
+                                if page_start + page_size <= fetched.len() {
+                                    let page_end = page_start + page_size;
+                                    page_cache
+                                        .insert(
+                                            (key.0, key.1, page_idx as u32),
+                                            fetched.slice(page_start..page_end),
+                                        )
+                                        .await;
+                                }
+                            }
+
+                            Ok::<_, anyhow::Error>(fetched)
+                        }
+                    })
+                    .await;
+                let fetched = fetched
+                    .map_err(|e| anyhow::anyhow!("SingleFlight direct range read failed: {e}"))?;
+
+                let total_read = if is_leader {
+                    fetched.len()
+                } else {
+                    let copy_len = fetched.len().min(buf.len());
+                    buf[..copy_len].copy_from_slice(&fetched[..copy_len]);
+                    copy_len
+                };
+                tracing::Span::current().record("read_len", total_read);
+                self.object_metrics.record_read_range_get();
+                self.object_metrics.record_read_page_cache_miss();
+                require_complete_read(key, offset, len, total_read)?;
+                if self.config.range_background_prefetch
+                    && !self.try_promote_page_cache_to_block_cache(key).await
+                {
+                    self.prefetch_full_block_background(key, key_str, object_key, layout);
+                }
+                return Ok(());
+            }
+
+            let mut page_idx = start_page;
+            while page_idx <= end_page {
+                if pages[page_idx - start_page].is_some() {
+                    page_idx += 1;
+                    continue;
+                }
+
+                let run_start = page_idx;
+                while page_idx < end_page && pages[page_idx + 1 - start_page].is_none() {
+                    page_idx += 1;
+                }
+                let run_end = page_idx;
+                let range_key: PageRangeKey = (key, run_start as u32, run_end as u32);
+                let object_key = object_key.clone();
+                let object_metrics = object_metrics.clone();
+                let bandwidth = &self.bandwidth;
+                let block_size = self.config.block_size;
+                let fetched = self
+                    .range_flight
+                    .execute(range_key, || async move {
+                        let range_start = run_start * page_size;
+                        let range_end = ((run_end + 1) * page_size).min(block_size);
+                        let range_len = range_end - range_start;
+                        let range_offset = range_base + range_start as u64;
+                        let mut range_buf = vec![0u8; range_len];
+
+                        bandwidth.acquire_download(range_len).await;
+                        let started = Instant::now();
+                        let read_len = client
+                            .get_object_range(&object_key, range_offset, &mut range_buf)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "object store range read failed: {object_key}, {e:?}"
+                                )
+                            })?;
+                        object_metrics.record_get(read_len as u64, started.elapsed());
+                        range_buf.truncate(read_len);
+                        let fetched = Bytes::from(range_buf);
+
+                        // Bytes::slice keeps all page-cache entries backed by
+                        // the one contiguous response allocation.
+                        for page_idx in run_start..=run_end {
+                            let page_start = page_idx * page_size;
+                            let page_end = (page_start + page_size).min(block_size);
+                            let local_start = page_start - range_start;
+                            let page_len = page_end - page_start;
+                            if local_start + page_len <= fetched.len() {
+                                page_cache
+                                    .insert(
+                                        (key.0, key.1, page_idx as u32),
+                                        fetched.slice(local_start..local_start + page_len),
+                                    )
+                                    .await;
+                            }
+                        }
+
+                        Ok::<_, anyhow::Error>(fetched)
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("SingleFlight range read failed: {e}"))?;
+
+                // A disabled/evicted page cache still gets a correct response
+                // from the shared contiguous result.
+                for page_idx in run_start..=run_end {
+                    let page_start = page_idx * page_size;
+                    let page_end = (page_start + page_size).min(self.config.block_size);
+                    let local_start = page_start - run_start * page_size;
+                    let page_len = page_end - page_start;
+                    let page = if let Some(cached) =
+                        page_cache.get(&(key.0, key.1, page_idx as u32)).await
+                    {
+                        cached
+                    } else if local_start < fetched.len() {
+                        let local_end = (local_start + page_len).min(fetched.len());
+                        fetched.slice(local_start..local_end)
+                    } else {
+                        Bytes::new()
+                    };
+                    pages[page_idx - start_page] = Some(page);
+                }
+
+                page_idx += 1;
+            }
+
+            let mut total_read: usize = 0;
+            for (page_offset, page_data) in pages.into_iter().enumerate() {
+                let page_idx = start_page + page_offset;
+                let page_start = page_idx * page_size;
+                let Some(page_data) = page_data else {
+                    continue;
+                };
                 let copy_start = if page_idx == start_page {
                     offset as usize - page_start
                 } else {
@@ -1150,7 +1296,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 let requested_end = if page_idx == end_page {
                     (offset as usize + len).saturating_sub(page_start)
                 } else {
-                    page_end - page_start
+                    (page_start + page_size).min(self.config.block_size) - page_start
                 };
                 let copy_end = requested_end.min(page_data.len());
                 if copy_end > copy_start {
@@ -1322,6 +1468,15 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[test]
+    fn block_store_config_allows_disabled_page_cache() {
+        let mut config = BlockStoreConfig::default();
+        assert_eq!(config.page_size, DEFAULT_PAGE_SIZE);
+        assert_eq!(config.page_cache_capacity, DEFAULT_PAGE_CAPACITY);
+        config.page_cache_capacity = 0;
+        config.validate().unwrap();
     }
 
     fn assert_incomplete_read(
@@ -1736,23 +1891,23 @@ mod tests {
 
         backend.reset_stats();
 
-        // Small read at block start should load the full block. JuiceFS only
-        // uses loadRange() when offset > 0, so sequential reads from the start
-        // warm the block cache immediately instead of fragmenting into pages.
+        // Small read at block start should use the byte-addressable range path.
+        // This is important for workloads made of many small files where each
+        // read begins at offset zero.
         let mut small_buf = vec![0u8; 512 * 1024];
         store.read_range((42, 3), 0, &mut small_buf).await?;
 
         let stats = backend.get_stats();
-        assert_eq!(
-            stats.get_object_calls, 1,
-            "Small read at block start should use full block read"
+        assert!(
+            stats.get_object_calls <= 1,
+            "Small read at block start should not issue more than one background full read"
         );
         assert_eq!(
-            stats.get_object_range_calls, 1,
-            "A cold legacy block first probes the versioned namespace before its full read"
+            stats.get_object_range_calls, 2,
+            "A cold legacy block probes the versioned namespace then fetches one range"
         );
 
-        // Same read again should hit the full block cache.
+        // Same read again should hit the page cache.
         backend.reset_stats();
         let mut small_buf2 = vec![0u8; 512 * 1024];
         store.read_range((42, 3), 0, &mut small_buf2).await?;
@@ -1761,11 +1916,11 @@ mod tests {
         let stats = backend.get_stats();
         assert_eq!(
             stats.get_object_range_calls, 0,
-            "Re-read of same range should hit block cache (no new range reads)"
+            "Re-read of same range should hit page cache (no new range reads)"
         );
         assert_eq!(
             stats.get_object_calls, 0,
-            "Re-read should not issue another full block read"
+            "Re-read should not issue a full block read"
         );
 
         // Non-zero small read still uses the page range path.
@@ -1779,31 +1934,31 @@ mod tests {
             .expect("ObjectBlockStore exposes object metrics")
             .snapshot();
         assert_eq!(
-            snapshot.read_range_gets, 1,
-            "Non-zero small read should record one range-read strategy event"
+            snapshot.read_range_gets, 2,
+            "Both small reads should record one range-read strategy event"
         );
         assert_eq!(
-            snapshot.read_page_cache_misses, 1,
-            "Non-zero small read should record one page-cache miss event per request"
+            snapshot.read_page_cache_misses, 2,
+            "Both small reads should record one page-cache miss event per request"
         );
         assert_eq!(
-            snapshot.read_background_prefetches, 1,
-            "Range miss should schedule one background full-block prefetch"
+            snapshot.read_background_prefetches, 2,
+            "Each range miss should schedule one background full-block prefetch"
         );
         assert_eq!(
-            stats.get_object_range_calls, 9,
-            "Non-zero 512KB read should probe the format then fetch 8 pages"
+            stats.get_object_range_calls, 2,
+            "Non-zero 512KB read should probe the format then fetch one contiguous range"
         );
-        for _ in 0..100 {
-            if backend.get_stats().get_object_calls >= 1 {
+        for _ in 0..200 {
+            if backend.get_stats().get_object_calls >= 2 {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(
             backend.get_stats().get_object_calls,
-            1,
-            "Non-zero small read should trigger one background full-block prefetch"
+            2,
+            "Each cold range miss should trigger one background full-block prefetch"
         );
 
         let disabled_backend = MockBackend::new();
@@ -1839,8 +1994,8 @@ mod tests {
             .expect("ObjectBlockStore exposes object metrics")
             .snapshot();
         assert_eq!(
-            disabled_stats.get_object_range_calls, 9,
-            "Disabled background prefetch should probe the format then serve page ranges"
+            disabled_stats.get_object_range_calls, 2,
+            "Disabled background prefetch should probe the format then serve one contiguous range"
         );
         assert_eq!(
             disabled_stats.get_object_calls, 0,
@@ -2442,6 +2597,7 @@ mod tests {
                 block_size: 64 * 1024,
                 page_size: 4 * 1024,
                 compression: Compression::None,
+                range_background_prefetch: false,
                 ..Default::default()
             },
         )
@@ -2475,19 +2631,20 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(
             snapshot.get_ops, 2,
-            "a legacy full read probes the versioned namespace before fetching legacy data"
+            "a legacy range read probes the versioned namespace before fetching legacy data"
         );
-        assert_eq!(snapshot.get_bytes, full_block.len() as u64);
+        assert_eq!(snapshot.get_bytes, out.len() as u64);
         assert_eq!(snapshot.put_ops, 1);
         assert_eq!(snapshot.del_ops, 1);
-        assert_eq!(snapshot.read_full_gets, 1);
+        assert_eq!(snapshot.read_full_gets, 0);
         assert_eq!(snapshot.read_block_cache_hits, 0);
-        assert_eq!(snapshot.read_range_gets, 0);
+        assert_eq!(snapshot.read_range_gets, 1);
 
         let mut cached_out = vec![0u8; 4096];
         store.read_range((11, 0), 0, &mut cached_out).await?;
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.read_block_cache_hits, 1);
+        assert_eq!(snapshot.read_block_cache_hits, 0);
+        assert_eq!(snapshot.read_page_cache_hits, 1);
         assert_eq!(snapshot.get_ops, 2);
 
         Ok(())

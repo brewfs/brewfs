@@ -184,6 +184,10 @@ pub struct MountArgs {
     #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
     pub workspace: Option<uuid::Uuid>,
 
+    /// Object-store key of the immutable packed-metadata manifest.
+    #[arg(long, value_name = "KEY")]
+    pub packed_manifest_key: Option<String>,
+
     /// Key namespace for the workspace overlay catalog.
     #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "NAMESPACE"))]
     #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
@@ -285,6 +289,8 @@ pub enum VolumeFormat {
     FlatV1,
     WorkspaceV1,
     WorkspaceNativeV2,
+    #[cfg(feature = "native-packed-base")]
+    PackedMetadataV1,
 }
 
 #[cfg(feature = "workspace-overlay")]
@@ -515,6 +521,8 @@ pub struct MountFileConfig {
     pub volume: Option<VolumeFileConfig>,
     pub native_base: Option<NativeBaseFileConfig>,
     pub workspace: Option<uuid::Uuid>,
+    /// Immutable packed-metadata manifest object key (read-only format).
+    pub packed_manifest_key: Option<String>,
     pub workspace_namespace: Option<String>,
     #[serde(default)]
     pub workspace_operator_managed: bool,
@@ -883,6 +891,7 @@ pub struct MountConfig {
     pub mount_point: PathBuf,
     pub volume_format: VolumeFormat,
     pub workspace: Option<uuid::Uuid>,
+    pub packed_manifest_key: Option<String>,
     pub workspace_namespace: String,
     pub workspace_operator_managed: bool,
     pub data_backend: DataBackendKind,
@@ -962,6 +971,10 @@ impl MountConfig {
         let cache_cfg = file_cfg.cache.unwrap_or_default();
         let compact = file_cfg.compact.unwrap_or_default();
         let workspace = args.workspace.or(file_cfg.workspace);
+        let packed_manifest_key = args
+            .packed_manifest_key
+            .or(file_cfg.packed_manifest_key)
+            .filter(|key| !key.is_empty());
         if let (Some(legacy), Some(nested)) = (file_cfg.volume_format, volume_cfg.format) {
             if legacy != nested {
                 anyhow::bail!("volume_format conflicts with volume.format");
@@ -988,6 +1001,23 @@ impl MountConfig {
         }
         if workspace.is_none() && volume_format == VolumeFormat::WorkspaceNativeV2 {
             anyhow::bail!("workspace id is required with volume_format=workspace-native-v2");
+        }
+        #[cfg(feature = "native-packed-base")]
+        if volume_format == VolumeFormat::PackedMetadataV1 {
+            if workspace.is_some() {
+                anyhow::bail!("packed-metadata-v1 is a standalone read-only volume");
+            }
+            if packed_manifest_key.is_none() {
+                anyhow::bail!(
+                    "packed-metadata-v1 requires --packed-manifest-key or packed_manifest_key"
+                );
+            }
+            if native_base.is_some()
+                || volume_cfg.schema_version.is_some()
+                || volume_cfg.native_control_version.is_some()
+            {
+                anyhow::bail!("native workspace controls cannot be used with packed-metadata-v1");
+            }
         }
         if volume_format == VolumeFormat::WorkspaceNativeV2 {
             if volume_cfg.format != Some(VolumeFormat::WorkspaceNativeV2) {
@@ -1079,6 +1109,7 @@ impl MountConfig {
             mount_point,
             volume_format,
             workspace,
+            packed_manifest_key,
             workspace_namespace: args
                 .workspace_namespace
                 .or(file_cfg.workspace_namespace)
@@ -1434,6 +1465,7 @@ mod tests {
             config,
             volume_format: None,
             workspace: None,
+            packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point,
@@ -1576,6 +1608,7 @@ mod tests {
             config: None,
             volume_format: None,
             workspace: None,
+            packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
@@ -1643,6 +1676,7 @@ mod tests {
             config: None,
             volume_format: None,
             workspace: None,
+            packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
@@ -1724,6 +1758,34 @@ mod tests {
                 .to_string()
                 .contains("workspace id cannot be used")
         );
+    }
+
+    #[cfg(feature = "native-packed-base")]
+    #[test]
+    fn packed_metadata_format_requires_manifest_key_and_is_standalone() {
+        let cli = Cli::parse_from([
+            "brewfs",
+            "mount",
+            "/mnt/packed",
+            "--volume-format",
+            "packed-metadata-v1",
+            "--packed-manifest-key",
+            "volumes/v1/manifest",
+        ]);
+        let Command::Mount(args) = cli.cmd else {
+            panic!("expected mount command");
+        };
+        let config = MountConfig::from_sources(*args).unwrap();
+        assert_eq!(config.volume_format, VolumeFormat::PackedMetadataV1);
+        assert_eq!(
+            config.packed_manifest_key.as_deref(),
+            Some("volumes/v1/manifest")
+        );
+        assert!(config.workspace.is_none());
+
+        let mut missing = empty_mount_args(None, Some(PathBuf::from("/mnt/packed")));
+        missing.volume_format = Some(VolumeFormat::PackedMetadataV1);
+        assert!(MountConfig::from_sources(missing).is_err());
     }
 
     #[test]

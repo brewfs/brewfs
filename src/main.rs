@@ -9,7 +9,6 @@ mod fuse;
 #[cfg(any(feature = "gateway-s3", feature = "gateway-webdav"))]
 mod gateway;
 mod meta;
-#[cfg(feature = "native-packed-base")]
 mod native_base;
 mod posix;
 mod utils;
@@ -65,10 +64,14 @@ use crate::meta::config::{
 };
 use crate::meta::layer::MetaLayer;
 use crate::meta::stores::{DatabaseMetaStore, EtcdMetaStore, RedisMetaStore, TiKvMetaStore};
+#[cfg(feature = "frozen-base-metadata")]
+use crate::native_base::frozen::catalog::{FrozenCatalog, StreamingFrozenMetadataCatalog};
+#[cfg(feature = "frozen-base-metadata")]
+use crate::native_base::frozen::readonly::FrozenReadonlyMeta;
 #[cfg(feature = "native-packed-base")]
 use crate::native_base::runtime::{
-    BackendObjectRepository, NativeDataRuntime, NativeRuntimeCapabilities, NativeVolumeHeader,
-    WorkspaceBaseDataSource, initialize_volume, load_volume_header,
+    BackendObjectRepository, FROZEN_METADATA_FEATURE, NativeDataRuntime, NativeRuntimeCapabilities,
+    NativeVolumeHeader, WorkspaceBaseDataSource, initialize_volume, load_volume_header,
 };
 #[cfg(feature = "native-packed-base")]
 #[cfg(feature = "native-packed-base")]
@@ -410,6 +413,14 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
         DataBackendKind::LocalFs => {
             let client = create_localfs_client(&args)?;
             tracing::info!("mount startup localfs client ready");
+            #[cfg(feature = "frozen-base-metadata")]
+            if args.volume_format == VolumeFormat::PackedMetadataV1 {
+                return mount_packed_readonly_with_client(client, layout, &args).await;
+            }
+            #[cfg(all(feature = "native-packed-base", not(feature = "frozen-base-metadata")))]
+            if args.volume_format == VolumeFormat::PackedMetadataV1 {
+                anyhow::bail!("packed-metadata-v1 requires feature frozen-base-metadata");
+            }
             #[cfg(feature = "native-packed-base")]
             if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
                 return mount_native_with_client(client, layout, &args).await;
@@ -426,6 +437,14 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
         DataBackendKind::S3 => {
             let client = create_s3_client(&args).await?;
             tracing::info!("mount startup s3 client ready");
+            #[cfg(feature = "frozen-base-metadata")]
+            if args.volume_format == VolumeFormat::PackedMetadataV1 {
+                return mount_packed_readonly_with_client(client, layout, &args).await;
+            }
+            #[cfg(all(feature = "native-packed-base", not(feature = "frozen-base-metadata")))]
+            if args.volume_format == VolumeFormat::PackedMetadataV1 {
+                anyhow::bail!("packed-metadata-v1 requires feature frozen-base-metadata");
+            }
             #[cfg(feature = "native-packed-base")]
             if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
                 return mount_native_with_client(client, layout, &args).await;
@@ -838,6 +857,12 @@ fn validate_volume_format_support(format: VolumeFormat) -> anyhow::Result<()> {
         VolumeFormat::WorkspaceNativeV2 => {
             Err(anyhow::anyhow!("feature not compiled: native-packed-base"))
         }
+        #[cfg(all(feature = "native-packed-base", feature = "frozen-base-metadata"))]
+        VolumeFormat::PackedMetadataV1 => Ok(()),
+        #[cfg(all(feature = "native-packed-base", not(feature = "frozen-base-metadata")))]
+        VolumeFormat::PackedMetadataV1 => Err(anyhow::anyhow!(
+            "feature not compiled: frozen-base-metadata"
+        )),
     }
 }
 
@@ -865,7 +890,86 @@ where
         VolumeFormat::WorkspaceNativeV2 => {
             anyhow::bail!("feature not compiled: native-packed-base")
         }
+        #[cfg(feature = "frozen-base-metadata")]
+        VolumeFormat::PackedMetadataV1 => {
+            anyhow::bail!("packed-metadata-v1 must be dispatched with its object client")
+        }
+        #[cfg(all(feature = "native-packed-base", not(feature = "frozen-base-metadata")))]
+        VolumeFormat::PackedMetadataV1 => {
+            anyhow::bail!("feature not compiled: frozen-base-metadata")
+        }
     }
+}
+
+#[cfg(feature = "native-packed-base")]
+#[cfg(feature = "frozen-base-metadata")]
+async fn mount_packed_readonly_with_client<B>(
+    client: ObjectClient<B>,
+    layout: ChunkLayout,
+    args: &MountConfig,
+) -> anyhow::Result<()>
+where
+    B: ObjectBackend + Clone + Send + Sync + 'static,
+{
+    let manifest_key = args
+        .packed_manifest_key
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("packed-metadata-v1 manifest key is missing"))?;
+    let catalog = Arc::new(
+        StreamingFrozenMetadataCatalog::open_by_key(&client, manifest_key)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?,
+    );
+    let manifest = catalog.manifest();
+    if manifest.chunk_size != layout.chunk_size || manifest.block_size != layout.block_size {
+        anyhow::bail!(
+            "packed manifest layout {}:{} does not match mount layout {}:{}",
+            manifest.chunk_size,
+            manifest.block_size,
+            layout.chunk_size,
+            layout.block_size
+        );
+    }
+    let logical_revision = manifest.logical_revision;
+    let store = Arc::new(create_object_store(client, layout, &args.cache, false).await?);
+    let meta_layer = Arc::new(FrozenReadonlyMeta::new(catalog, 1));
+    meta_layer.initialize().await?;
+    let vfs_config =
+        crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone());
+    let fs = VFS::from_readonly_components(vfs_config, store, meta_layer)?;
+    let concurrency = FuseConcurrencyConfig {
+        worker_count: args.fuse_workers,
+        max_background: args.fuse_max_background,
+    };
+    let mount_result = async {
+        let handle = if args.privileged {
+            mount_vfs_privileged(fs, &args.mount_point, concurrency).await?
+        } else {
+            mount_vfs_unprivileged(fs, &args.mount_point, concurrency).await?
+        };
+        println!(
+            "mounted packed metadata {} at {}",
+            logical_revision
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            args.mount_point.display()
+        );
+        let mut handle = handle;
+        tokio::select! {
+            signal = shutdown_signal() => {
+                signal?;
+                println!("unmounting...");
+                handle.unmount().await?;
+            }
+            result = &mut handle => {
+                result?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    mount_result
 }
 
 #[cfg(feature = "native-packed-base")]
@@ -951,6 +1055,11 @@ where
     )
     .await
     .map_err(|error| anyhow::anyhow!(error))?;
+    if native_header.required_features & FROZEN_METADATA_FEATURE != 0 {
+        anyhow::bail!(
+            "native volume requires frozen metadata, but the mutable P1 KV mount is not a valid fallback"
+        );
+    }
     let volume_id = *workspace_header.volume_id.as_bytes();
     if native_header.volume_id != volume_id {
         anyhow::bail!("native volume header volume_id does not match workspace metadata volume_id");
@@ -1094,7 +1203,7 @@ where
         cache.cache_root.join("chunks"),
     )
     .with_integrity_mode(cache.verify_cache_checksum);
-    let block_store_config = BlockStoreConfig {
+    let mut block_store_config = BlockStoreConfig {
         block_size: layout.block_size as usize,
         compression: cache.compression,
         range_background_prefetch: cache.range_background_prefetch,
@@ -1105,6 +1214,12 @@ where
         create_only_writes,
         ..BlockStoreConfig::default()
     };
+    if cache.read_memory_bytes == 0 {
+        // A zero memory budget is the explicit no-read-cache profile. The
+        // range/page cache is independent of the disk block cache, so disable
+        // it explicitly instead of retaining the default 256 MiB page tier.
+        block_store_config.page_cache_capacity = 0;
+    }
     let bandwidth = BandwidthLimiter::new(&cache.bandwidth);
 
     Ok(

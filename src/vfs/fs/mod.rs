@@ -121,7 +121,7 @@ use crate::vfs::cache::config::CacheConfig;
 use crate::vfs::chunk_id_for;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::{PathHint, VfsError};
-use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags, WriteDirtyState};
+use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags, RawDirEntry, WriteDirtyState};
 use crate::vfs::io::{DataReader, DataWriter, split_chunk_spans};
 use crate::vfs::memory::MemoryBudget;
 
@@ -1006,6 +1006,20 @@ where
         Self::from_components_with_backend(config, store, meta_layer, None, backend)
     }
 
+    /// Build a VFS over an immutable metadata facade.  Frozen snapshots do
+    /// not implement the workspace read-plan provider because their extent
+    /// resolution is owned by the packed-base reader; keeping this entry
+    /// point separate prevents a read-only snapshot from being coerced into
+    /// the mutable workspace overlay path.
+    pub(crate) fn from_readonly_components(
+        config: VFSConfig,
+        store: Arc<S>,
+        meta_layer: Arc<M>,
+    ) -> Result<Self, VfsError> {
+        let backend = Arc::new(Backend::new(store.clone(), meta_layer.clone()));
+        Self::from_components_with_backend(config, store, meta_layer, None, backend)
+    }
+
     fn from_components_with_backend(
         config: VFSConfig,
         store: Arc<S>,
@@ -1653,6 +1667,21 @@ where
         }
 
         tracing::debug!(ino, nlink = attr.nlink, kind = ?attr.kind, "child_attr_of");
+        Ok(Some((ino, attr)))
+    }
+
+    pub(crate) async fn child_attr_of_bytes(
+        &self,
+        parent: i64,
+        name: &[u8],
+    ) -> Result<Option<(i64, FileAttr)>, VfsError> {
+        let Some((ino, mut attr)) = self.meta_lookup_with_attr_bytes(parent, name).await? else {
+            return Ok(None);
+        };
+        if let Some(size) = self.inode_size_cached(ino) {
+            attr.size = size;
+        }
+        tracing::debug!(ino, nlink = attr.nlink, kind = ?attr.kind, "child_attr_of_bytes");
         Ok(Some((ino, attr)))
     }
 
@@ -3620,6 +3649,7 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
+            self.ensure_inode_registered(handle.ino).await?;
             let write_offset = if handle.flags.append {
                 runtime
                     .size(handle.ino as u64)
@@ -3639,9 +3669,10 @@ where
                 .await
                 .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
             let written = receipt.accepted_len;
+            let prior_size = handle.attr().size;
             handle.update_offset(write_end);
             handle.extend_size(write_end);
-            if write_end > handle.attr().size {
+            if write_end > prior_size {
                 self.meta_extend_file_size(handle.ino, write_end).await?;
                 self.extend_local_file_size(handle.ino, write_end);
             }
@@ -4199,11 +4230,29 @@ where
 
             let dirty_state = self.state.handles.take_write_dirty(fh);
             let flushed_pending = if dirty_state.dirty {
-                self.state
-                    .writer
-                    .flush_for_close(handle.ino as u64)
-                    .await
-                    .map_err(VfsError::from)?
+                #[cfg(feature = "native-packed-base")]
+                {
+                    if let Some(runtime) = self.native_runtime() {
+                        runtime.fsync(handle.ino as u64).await.map_err(|error| {
+                            VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
+                        })?;
+                        false
+                    } else {
+                        self.state
+                            .writer
+                            .flush_for_close(handle.ino as u64)
+                            .await
+                            .map_err(VfsError::from)?
+                    }
+                }
+                #[cfg(not(feature = "native-packed-base"))]
+                {
+                    self.state
+                        .writer
+                        .flush_for_close(handle.ino as u64)
+                        .await
+                        .map_err(VfsError::from)?
+                }
             } else {
                 false
             };
@@ -4341,10 +4390,10 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
-            runtime
-                .fsync(handle.ino as u64)
-                .await
-                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            runtime.fsync(handle.ino as u64).await.map_err(|error| {
+                tracing::warn!(fh, ino = handle.ino, error = %error, "native fsync failed");
+                VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
+            })?;
             self.update_mtime_ctime(handle.ino).await?;
             return Ok(handle.ino);
         }
@@ -4431,7 +4480,10 @@ where
             runtime
                 .fsync(handle.ino as u64)
                 .await
-                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+                .map_err(|error| {
+                    tracing::warn!(fh, ino = handle.ino, error = %error, "native fsync snapshot failed");
+                    VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
+                })?;
             self.update_mtime_ctime(handle.ino).await?;
             return Ok(());
         }
@@ -4539,6 +4591,43 @@ where
         let handle = self.dir_handle(fh)?;
 
         Some(handle.get_entries(offset))
+    }
+
+    /// Read one bounded directory page. Snapshot-paged handles use their
+    /// asynchronous source here; legacy handles keep the existing in-memory
+    /// slice behavior. Keeping the async method separate avoids forcing every
+    /// mutable metadata backend to implement the packed snapshot protocol.
+    pub async fn readdir_page(
+        &self,
+        fh: u64,
+        offset: u64,
+    ) -> Result<Option<Vec<DirEntry>>, VfsError> {
+        let Some(handle) = self.dir_handle(fh) else {
+            return Ok(None);
+        };
+        handle
+            .get_entries_page(offset, 256)
+            .await
+            .map(Some)
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))
+    }
+
+    /// Read one bounded directory page without converting packed names to
+    /// UTF-8. The raw method is used by the FUSE adapter for immutable
+    /// snapshots; legacy callers can keep using `readdir_page` above.
+    pub async fn readdir_page_raw(
+        &self,
+        fh: u64,
+        offset: u64,
+    ) -> Result<Option<Vec<RawDirEntry>>, VfsError> {
+        let Some(handle) = self.dir_handle(fh) else {
+            return Ok(None);
+        };
+        handle
+            .get_entries_page_raw(offset, 256)
+            .await
+            .map(Some)
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))
     }
 
     /// Update cached information about a handle (e.g. last observed offset).

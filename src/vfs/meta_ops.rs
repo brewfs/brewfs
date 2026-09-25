@@ -121,6 +121,17 @@ where
             .map_err(meta_err_to_vfs)
     }
 
+    pub(super) async fn meta_lookup_with_attr_bytes(
+        &self,
+        parent: i64,
+        name: &[u8],
+    ) -> Result<Option<(i64, FileAttr)>, VfsError> {
+        self.meta_layer()
+            .lookup_with_attr_bytes(parent, name)
+            .await
+            .map_err(meta_err_to_vfs)
+    }
+
     pub(super) async fn meta_lookup_required(
         &self,
         parent: i64,

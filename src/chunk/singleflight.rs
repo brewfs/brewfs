@@ -194,6 +194,20 @@ where
         Fut: Future<Output = Result<V, E>>,
         E: Into<anyhow::Error>,
     {
+        self.execute_with_status(key, f).await.1
+    }
+
+    /// Execute an operation and report whether this caller ran the closure.
+    ///
+    /// This is useful when the leader can write into a caller-owned buffer
+    /// while the shared result remains available for waiters. The ordinary
+    /// [`execute`](Self::execute) API intentionally hides that distinction.
+    pub async fn execute_with_status<F, Fut, E>(&self, key: K, f: F) -> (bool, SharedResult<V>)
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<V, E>>,
+        E: Into<anyhow::Error>,
+    {
         let (entry, is_leader) = match self.in_flight.entry(key.clone()) {
             Entry::Occupied(entry) => (entry.get().clone(), false),
             Entry::Vacant(entry) => {
@@ -204,7 +218,7 @@ where
         };
 
         if !is_leader {
-            return Self::wait_for_result(&entry).await;
+            return (false, Self::wait_for_result(&entry).await);
         }
 
         let mut leader = LeaderGuard::new(self, key, entry.clone());
@@ -214,7 +228,7 @@ where
             Err(e) => Err(Arc::new(e.into())),
         };
 
-        leader.complete(shared_result)
+        (true, leader.complete(shared_result))
     }
 
     /// Join an existing flight for `key` without starting a new operation.

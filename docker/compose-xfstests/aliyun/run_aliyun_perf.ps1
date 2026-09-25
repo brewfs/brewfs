@@ -8,13 +8,24 @@ param(
     [string]$VSwitchId,
     [string]$SecurityGroupId,
     [string]$InstanceName,
-    [string]$InstanceType = 'ecs.u1-c1m2.2xlarge',
+    [string]$InstanceType = 'ecs.u1-c1m4.2xlarge',
+    [ValidateRange(40, 1000)]
+    [int]$SystemDiskSizeGiB = 100,
     [string]$ImageId = 'ubuntu_24_04_x64_20G_alibase_20260522.vhd',
     [ValidateSet('redis', 'tikv')]
     [string]$Backend = 'redis',
     [ValidateSet('s3', 'local-fs')]
     [string]$DataBackend = 's3',
+    [ValidateSet('flat', 'packed-metadata-v1')]
+    [string]$VolumeFormat = 'flat',
     [string]$PerfTools = 'fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest',
+    [int64]$PackedSmallFileCount = 0,
+    [int64]$PackedSmallFileSizeBytes = 0,
+    [int]$PackedDirLevels = 0,
+    [int64]$PackedDirsPerLevel = 0,
+    [int64]$PackedFilesPerDir = 0,
+    [string]$PackedSmallFileReadBytes = '',
+    [switch]$ColdRead,
     [string]$Repository = 'https://github.com/brewfs/brewfs.git',
     [string]$Ref = 'main',
     [string]$AutoReleaseMinutes = '240',
@@ -84,7 +95,7 @@ function New-EcsInstance {
         '--ClientToken', $clientToken,
         '--InstanceChargeType', 'PostPaid', '--InternetChargeType', 'PayByTraffic',
         '--InternetMaxBandwidthOut', '20', '--AutoReleaseTime', $release,
-        '--SystemDisk.Category', 'cloud_essd', '--SystemDisk.Size', '80',
+        '--SystemDisk.Category', 'cloud_essd', '--SystemDisk.Size', [string]$SystemDiskSizeGiB,
         '--SystemDisk.PerformanceLevel', 'PL1',
         '--Tag.1.Key', 'brewfs-test', '--Tag.1.Value', $InstanceName
     )
@@ -109,9 +120,55 @@ function New-EcsInstance {
 }
 
 function Get-RemoteCommand {
-    $runner = if ($Backend -eq 'redis') { 'docker/compose-xfstests/run_redis_perf.sh' } else { 'docker/compose-xfstests/run_tikv_perf.sh' }
+    if ($VolumeFormat -eq 'packed-metadata-v1') {
+        if ($DataBackend -ne 's3') { throw 'packed-metadata-v1 只能使用 -DataBackend s3。' }
+        if ($RunBench) { throw 'packed-metadata-v1 不能运行 -RunBench。' }
+        if ($PackedSmallFileCount -le 0 -or $PackedSmallFileSizeBytes -le 0 -or
+            $PackedDirLevels -le 0 -or $PackedDirsPerLevel -le 0 -or $PackedFilesPerDir -le 0) {
+            throw 'packed-metadata-v1 需要正数的 PackedSmallFileCount/PackedSmallFileSizeBytes/PackedDirLevels/PackedDirsPerLevel/PackedFilesPerDir。'
+        }
+        if ($PackedSmallFileSizeBytes -gt 4MB) {
+            throw 'PackedSmallFileSizeBytes 不能超过 4 MiB。'
+        }
+        $expected = [int64]1
+        for ($level = 0; $level -lt $PackedDirLevels; $level++) {
+            $expected = $expected * $PackedDirsPerLevel
+        }
+        $expected = $expected * $PackedFilesPerDir
+        if ($expected -ne $PackedSmallFileCount) {
+            throw "packed 文件数量不一致: dirs_per_level^dir_levels*files_per_dir=$expected, PackedSmallFileCount=$PackedSmallFileCount。"
+        }
+    }
+
+    $runner = if ($VolumeFormat -eq 'packed-metadata-v1' -or $Backend -eq 'redis') {
+        'docker/compose-xfstests/run_redis_perf.sh'
+    } else {
+        'docker/compose-xfstests/run_tikv_perf.sh'
+    }
     $backendArgs = if ($DataBackend -eq 's3') { '--s3' } else { '--local-fs' }
     $benchArg = if ($RunBench) { '--brewfs-bench' } else { '' }
+    $profileLines = @()
+    if ($VolumeFormat -eq 'packed-metadata-v1') {
+        $profileLines += "export BREWFS_VOLUME_FORMAT=$(Quote-Bash $VolumeFormat)"
+        $profileLines += "export PERF_PACKED_SMALLFILE_COUNT=$(Quote-Bash ([string]$PackedSmallFileCount))"
+        $profileLines += "export PERF_PACKED_SMALLFILE_SIZE=$(Quote-Bash ([string]$PackedSmallFileSizeBytes))"
+        $profileLines += "export PERF_PACKED_DIR_LEVELS=$(Quote-Bash ([string]$PackedDirLevels))"
+        $profileLines += "export PERF_PACKED_DIRS_PER_LEVEL=$(Quote-Bash ([string]$PackedDirsPerLevel))"
+        $profileLines += "export PERF_PACKED_FILES_PER_DIR=$(Quote-Bash ([string]$PackedFilesPerDir))"
+        $readBytes = if ($PackedSmallFileReadBytes) { $PackedSmallFileReadBytes } else { '0' }
+        $profileLines += "export PERF_PACKED_SMALLFILE_READ_BYTES=$(Quote-Bash $readBytes)"
+    }
+    if ($ColdRead) {
+        $profileLines += 'export PERF_FIO_COLD_READ=true'
+        $profileLines += 'export PERF_FIO_COLD_READ_CLEAR_CACHE=true'
+        $profileLines += 'export PERF_FIO_COLD_READ_DROP_CACHES=true'
+        $profileLines += 'export PERF_FIO_REQUIRE_DROP_CACHES=true'
+        $profileLines += 'export BREWFS_READ_MEMORY_BYTES=0'
+        $profileLines += 'export BREWFS_READ_SSD_BYTES=0'
+        $profileLines += 'export BREWFS_PREFETCH_ENABLED=false'
+        $profileLines += 'export BREWFS_RANGE_BACKGROUND_PREFETCH=false'
+    }
+    $profileEnv = $profileLines -join "`n"
     $remote = @'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -123,6 +180,7 @@ TOOLS=__TOOLS__
 RUNNER=__RUNNER__
 DATA_ARGS=__DATA_ARGS__
 BENCH_ARGS=__BENCH_ARGS__
+__PROFILE_ENV__
 
 apt-get update -qq
 apt-get install -y -qq git curl docker.io docker-compose-v2 protobuf-compiler \
@@ -151,11 +209,30 @@ export PERF_TOOLS="$TOOLS"
 export RUST_LOG="${RUST_LOG:-warn}"
 export COMPOSE_PROJECT_NAME="brewfs-$(date +%s)"
 
+mem_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+disk_bytes="$(df -B1 --output=size "$WORK" | tail -n 1 | tr -d ' ' )"
+cat >"$WORK/aliyun-resource-proof.env" <<EOF
+instance_type=__INSTANCE_TYPE__
+requested_memory_gib=32
+requested_system_disk_gib=__SYSTEM_DISK_GIB__
+mem_total_kib=$mem_kib
+work_disk_bytes=$disk_bytes
+EOF
+if [[ "$mem_kib" -lt 30000000 ]]; then
+  echo "ECS memory is below the requested 32 GiB: ${mem_kib} KiB" >&2
+  exit 1
+fi
+if [[ "$disk_bytes" -lt 90000000000 ]]; then
+  echo "ECS work disk is below the requested 100 GB: ${disk_bytes} bytes" >&2
+  exit 1
+fi
+
 args=("$DATA_ARGS")
 if [[ -n "$BENCH_ARGS" ]]; then args+=("$BENCH_ARGS"); fi
 bash "$RUNNER" --tools "$TOOLS" "${args[@]}"
 
 echo '--- latest perf summary ---'
+cat "$WORK/aliyun-resource-proof.env"
 find docker/compose-xfstests/artifacts -name perf-summary.tsv -type f -printf '%T@ %p\n' 2>/dev/null \
   | sort -nr | awk 'NR == 1 {print $2}' \
   | xargs -r tail -n 80
@@ -166,6 +243,9 @@ find docker/compose-xfstests/artifacts -name perf-summary.tsv -type f -printf '%
     $remote = $remote.Replace('__RUNNER__', (Quote-Bash $runner))
     $remote = $remote.Replace('__DATA_ARGS__', (Quote-Bash $backendArgs))
     $remote = $remote.Replace('__BENCH_ARGS__', (Quote-Bash $benchArg))
+    $remote = $remote.Replace('__PROFILE_ENV__', $profileEnv)
+    $remote = $remote.Replace('__INSTANCE_TYPE__', (Quote-Bash $InstanceType))
+    $remote = $remote.Replace('__SYSTEM_DISK_GIB__', ([string]$SystemDiskSizeGiB))
     return $remote
 }
 

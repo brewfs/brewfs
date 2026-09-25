@@ -250,9 +250,11 @@ impl NativeDataRuntime {
     }
 
     async fn ensure_baseline_size(&self, inode: u64) -> Result<u64, NativeIoError> {
+        if let Some(size) = self.overlay.get_baseline_size(inode).await {
+            return Ok(size);
+        }
         let size = self.base.size(inode).await?;
-        self.overlay.set_baseline_size(inode, size).await;
-        Ok(size)
+        Ok(self.overlay.set_baseline_size(inode, size).await)
     }
 
     pub async fn write(
@@ -397,7 +399,7 @@ impl NativeDataRuntime {
     }
 
     async fn effective_size_at(&self, inode: u64, boundary: u64) -> Result<u64, NativeIoError> {
-        let base_size = self.base.size(inode).await?;
+        let base_size = self.ensure_baseline_size(inode).await?;
         let snapshot = self.snapshot_metadata(inode, boundary).await?;
         effective_size(&snapshot, base_size)
     }
@@ -518,7 +520,7 @@ impl NativeDataRuntime {
         let requested_end = offset
             .checked_add(len as u64)
             .ok_or(NativeIoError::RangeOverflow)?;
-        let base_size = self.base.size(inode).await?;
+        let base_size = self.ensure_baseline_size(inode).await?;
         // One capture for the whole request: the size, the committed extents
         // and the pending overlay below all come from this generation
         // (CONS-001/CONS-003).
@@ -906,8 +908,16 @@ impl NativeDataRuntime {
         self.overlay.complete_upload(ticket).await?;
         let mut report = self.overlay.drain().await?;
         if !report.failed.is_empty() || !report.blocked.is_empty() {
+            let reason = report
+                .failed
+                .first()
+                .or_else(|| report.blocked.first())
+                .map(|(ticket, reason)| {
+                    format!("; first ticket {}: {reason}", ticket.admission_ticket)
+                })
+                .unwrap_or_default();
             return Err(NativeIoError::Fsync(format!(
-                "{} failed and {} blocked native mutations",
+                "{} failed and {} blocked native mutations{reason}",
                 report.failed.len(),
                 report.blocked.len()
             )));
@@ -2120,6 +2130,30 @@ mod tests {
         bytes_read: AtomicU64,
     }
 
+    struct GrowingBase {
+        len: AtomicU64,
+        bytes_read: AtomicU64,
+    }
+
+    #[async_trait]
+    impl BaseDataSource for GrowingBase {
+        async fn size(&self, _inode: u64) -> Result<u64, NativeIoError> {
+            Ok(self.len.load(Ordering::Relaxed))
+        }
+
+        async fn read_exact(
+            &self,
+            _inode: u64,
+            _offset: u64,
+            output: &mut [u8],
+        ) -> Result<(), NativeIoError> {
+            self.bytes_read
+                .fetch_add(output.len() as u64, Ordering::Relaxed);
+            output.fill(0);
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl BaseDataSource for SparseBase {
         async fn size(&self, _inode: u64) -> Result<u64, NativeIoError> {
@@ -2159,6 +2193,32 @@ mod tests {
         let runtime = NativeDataRuntime::new(overlay, base);
         runtime.initialize([4; 16], 1).await.unwrap();
         runtime
+    }
+
+    #[tokio::test]
+    async fn growing_workspace_metadata_does_not_expand_the_immutable_baseline() {
+        const BLOCK: u64 = 64;
+        let store = Arc::new(MemoryControlStore::new());
+        let sink = Arc::new(MemorySink::default());
+        let base = Arc::new(GrowingBase {
+            len: AtomicU64::new(0),
+            bytes_read: AtomicU64::new(0),
+        });
+        let runtime = runtime_with_block_size(store, sink, base.clone(), BLOCK).await;
+
+        runtime.write(30, 0, &[0xA1; BLOCK as usize]).await.unwrap();
+        base.len.store(BLOCK, Ordering::Relaxed);
+        runtime
+            .write(30, BLOCK, &[0xB2; BLOCK as usize])
+            .await
+            .unwrap();
+        base.len.store(2 * BLOCK, Ordering::Relaxed);
+
+        assert_eq!(runtime.size(30).await.unwrap(), 2 * BLOCK);
+        runtime.fsync(30).await.unwrap();
+        assert_eq!(base.bytes_read.load(Ordering::Relaxed), 0);
+        assert_eq!(runtime.read(30, 0, 1).await.unwrap(), vec![0xA1]);
+        assert_eq!(runtime.read(30, BLOCK, 1).await.unwrap(), vec![0xB2]);
     }
 
     /// WRITE-001: the first overwrite of a GiB file must not copy the file.

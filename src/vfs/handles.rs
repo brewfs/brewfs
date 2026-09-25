@@ -2,10 +2,11 @@
 
 use crate::chunk::BlockStore;
 use crate::meta::MetaLayer;
-use crate::meta::store::FileAttr;
+use crate::meta::store::{FileAttr, MetaError};
 use crate::vfs::fs::DirEntry;
 use crate::vfs::io::{FileReader, FileWriter};
 use anyhow::anyhow;
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -28,6 +29,35 @@ use tokio::task::JoinHandle;
 const MAX_READDIR_ENTRIES: usize = 256;
 const WRITE_DIRTY_DATA: u8 = 0b0000_0001;
 const WRITE_DIRTY_NEEDS_TIMESTAMP: u8 = 0b0000_0010;
+
+/// Async source for a snapshot-paged directory handle.
+///
+/// The source owns the immutable snapshot identity and fetches only the page
+/// requested by the caller.  It is deliberately kept behind a small trait so
+/// the generic VFS can retain its legacy materialized handles for mutable
+/// metadata backends while packed metadata uses the bounded path.
+#[async_trait]
+pub trait DirectoryPageSource: Send + Sync {
+    async fn read_page(
+        &self,
+        ino: i64,
+        child_offset: u64,
+        max_entries: usize,
+    ) -> Result<Vec<RawDirEntry>, MetaError>;
+}
+
+/// A directory entry whose name remains in the POSIX byte domain.
+///
+/// Mutable metadata backends still expose the historical UTF-8 `DirEntry`
+/// type. Packed snapshots use this representation on the page path so a
+/// non-UTF-8 component is not normalized or lossy-converted before FUSE sees
+/// it.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RawDirEntry {
+    pub name: Vec<u8>,
+    pub ino: i64,
+    pub kind: crate::meta::store::FileType,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WriteDirtyState {
@@ -462,6 +492,7 @@ pub struct DirHandle {
     pub(crate) ino: i64,
     pub(crate) attr: Option<FileAttr>,
     pub(crate) entries: Vec<DirEntry>,
+    pub(crate) page_source: Option<Arc<dyn DirectoryPageSource>>,
     #[allow(dead_code)]
     pub(crate) opened_at: Instant,
     /// Background task handle for batch attribute prefetching
@@ -477,6 +508,7 @@ impl DirHandle {
             ino,
             attr: None,
             entries,
+            page_source: None,
             opened_at: Instant::now(),
             prefetch_task: None,
             prefetch_done: Arc::new(AtomicBool::new(false)),
@@ -493,9 +525,22 @@ impl DirHandle {
             ino,
             attr: None,
             entries,
+            page_source: None,
             opened_at: Instant::now(),
             prefetch_task: Some(task),
             prefetch_done: done_flag,
+        }
+    }
+
+    pub(crate) fn new_paged(ino: i64, page_source: Arc<dyn DirectoryPageSource>) -> Self {
+        Self {
+            ino,
+            attr: None,
+            entries: Vec::new(),
+            page_source: Some(page_source),
+            opened_at: Instant::now(),
+            prefetch_task: None,
+            prefetch_done: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -506,12 +551,63 @@ impl DirHandle {
 
     /// Get entries starting from offset, limited to MAX_READDIR_ENTRIES
     pub(crate) fn get_entries(&self, offset: u64) -> Vec<DirEntry> {
+        if self.page_source.is_some() {
+            return Vec::new();
+        }
         let start = offset as usize;
         if start >= self.entries.len() {
             return Vec::new();
         }
         let end = std::cmp::min(start + MAX_READDIR_ENTRIES, self.entries.len());
         self.entries[start..end].to_vec()
+    }
+
+    pub(crate) async fn get_entries_page(
+        &self,
+        offset: u64,
+        max_entries: usize,
+    ) -> Result<Vec<DirEntry>, MetaError> {
+        self.get_entries_page_raw(offset, max_entries)
+            .await?
+            .into_iter()
+            .map(|entry| {
+                let name = String::from_utf8(entry.name).map_err(|_| MetaError::InvalidFilename)?;
+                Ok(DirEntry {
+                    name,
+                    ino: entry.ino,
+                    kind: entry.kind,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) async fn get_entries_page_raw(
+        &self,
+        offset: u64,
+        max_entries: usize,
+    ) -> Result<Vec<RawDirEntry>, MetaError> {
+        if let Some(source) = &self.page_source {
+            return source.read_page(self.ino, offset, max_entries).await;
+        }
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        if start >= self.entries.len() || max_entries == 0 {
+            return Ok(Vec::new());
+        }
+        let end = start
+            .saturating_add(max_entries.min(MAX_READDIR_ENTRIES))
+            .min(self.entries.len());
+        Ok(self.entries[start..end]
+            .iter()
+            .map(|entry| RawDirEntry {
+                name: entry.name.as_bytes().to_vec(),
+                ino: entry.ino,
+                kind: entry.kind,
+            })
+            .collect())
+    }
+
+    pub(crate) fn is_paged(&self) -> bool {
+        self.page_source.is_some()
     }
 
     /// Get total number of entries
@@ -543,6 +639,35 @@ impl Drop for DirHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RawPageSource;
+
+    #[async_trait]
+    impl DirectoryPageSource for RawPageSource {
+        async fn read_page(
+            &self,
+            _ino: i64,
+            _child_offset: u64,
+            _max_entries: usize,
+        ) -> Result<Vec<RawDirEntry>, MetaError> {
+            Ok(vec![RawDirEntry {
+                name: vec![b'a', 0xff, b'b'],
+                ino: 7,
+                kind: crate::meta::store::FileType::File,
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn paged_handle_preserves_raw_name_bytes_until_fuse_boundary() {
+        let handle = DirHandle::new_paged(1, Arc::new(RawPageSource));
+        let raw = handle.get_entries_page_raw(0, 256).await.unwrap();
+        assert_eq!(raw[0].name, vec![b'a', 0xff, b'b']);
+        assert!(matches!(
+            handle.get_entries_page(0, 256).await,
+            Err(MetaError::InvalidFilename)
+        ));
+    }
 
     #[test]
     fn write_dirty_state_tracks_extending_writes_without_timestamp_update() {

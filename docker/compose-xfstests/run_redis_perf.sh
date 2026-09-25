@@ -94,6 +94,41 @@ require_value() {
     fi
 }
 
+truthy_env() {
+    local value
+    value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    case "$value" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+size_to_bytes() {
+    local value="${1:-}"
+    local number suffix multiplier
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$value"
+        return 0
+    fi
+    if [[ ! "$value" =~ ^([0-9]+)([kKmMgGtTpP])([iI]?[bB])?$ ]]; then
+        return 1
+    fi
+    number="${BASH_REMATCH[1]}"
+    suffix="${BASH_REMATCH[2]}"
+    case "${suffix,,}" in
+        k) multiplier=1024 ;;
+        m) multiplier=$((1024 * 1024)) ;;
+        g) multiplier=$((1024 * 1024 * 1024)) ;;
+        t) multiplier=$((1024 * 1024 * 1024 * 1024)) ;;
+        p) multiplier=$((1024 * 1024 * 1024 * 1024 * 1024)) ;;
+        *) return 1 ;;
+    esac
+    if (( number > (9223372036854775807 / multiplier) )); then
+        return 1
+    fi
+    printf '%s' "$((number * multiplier))"
+}
+
 KEEP=false
 STORAGE_BACKEND="rustfs"  # rustfs | minio | local-fs
 RUN_BREWFS_BENCH=false
@@ -227,6 +262,33 @@ enable_writeback_throughput_profile() {
 
 if [[ "$WRITEBACK_THROUGHPUT_PROFILE" == true ]]; then
     enable_writeback_throughput_profile
+fi
+
+PACKED_MODE=false
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v1" ]]; then
+    PACKED_MODE=true
+    if [[ "$STORAGE_BACKEND" == "local-fs" ]]; then
+        err "packed-metadata-v1 requires --s3 or --minio because its fixture is published to object storage"
+        exit 1
+    fi
+    if [[ "$RUN_BREWFS_BENCH" == true ]]; then
+        err "--brewfs-bench is a Redis metadata benchmark and cannot run in packed-metadata-v1 mode"
+        exit 1
+    fi
+    export BREWFS_META_BACKEND="${BREWFS_META_BACKEND:-none}"
+    export BREWFS_META_URL="${BREWFS_META_URL:-}"
+    export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features native-packed-base,frozen-base-metadata}"
+    if truthy_env "${PERF_FIO_COLD_READ:-false}" \
+        || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
+        # A cold-read profile must not warm and reuse BrewFS's block cache
+        # during a time-based fio job. Keep explicit caller budgets intact so
+        # cached packed profiles remain available when requested deliberately.
+        export BREWFS_READ_MEMORY_BYTES="${BREWFS_READ_MEMORY_BYTES:-0}"
+        export BREWFS_READ_SSD_BYTES="${BREWFS_READ_SSD_BYTES:-0}"
+        export BREWFS_PREFETCH_ENABLED="${BREWFS_PREFETCH_ENABLED:-false}"
+        export BREWFS_RANGE_BACKGROUND_PREFETCH="${BREWFS_RANGE_BACKGROUND_PREFETCH:-false}"
+        export BREWFS_CACHE_ROOT="${BREWFS_CACHE_ROOT:-/tmp/brewfs-packed-cold-cache}"
+    fi
 fi
 
 mkdir -p "$ARTIFACTS_DIR"
@@ -376,22 +438,106 @@ case "$STORAGE_BACKEND" in
         ;;
 esac
 
-services=(redis)
+publish_packed_fixture() {
+    local fixture_log="$host_artifact_dir/packed-fixture.log"
+    local manifest_output="$host_artifact_dir/packed-manifest-key.txt"
+    local fixture_bin="$PROJECT_DIR/target/release/packed_snapshot_fixture"
+    if [[ -n "${BREWFS_PACKED_MANIFEST_KEY:-}" ]]; then
+        printf '%s\n' "$BREWFS_PACKED_MANIFEST_KEY" >"$manifest_output"
+        info "复用 packed manifest key: $BREWFS_PACKED_MANIFEST_KEY"
+        return 0
+    fi
+
+    info "构建并发布 packed metadata fixture（无 Redis）"
+    cargo build --release \
+        --features native-packed-base,frozen-base-metadata \
+        --bin packed_snapshot_fixture
+    if [[ ! -x "$fixture_bin" ]]; then
+        err "fixture binary not found: $fixture_bin"
+        return 1
+    fi
+    local prefix="${BREWFS_PACKED_FIXTURE_PREFIX:-packed-fixture-${ts}}"
+    local fio_file_size="${PERF_PACKED_FIO_FILE_SIZE:-67108864}"
+    if ! fio_file_size="$(size_to_bytes "$fio_file_size")"; then
+        err "PERF_PACKED_FIO_FILE_SIZE 不是有效容量: ${PERF_PACKED_FIO_FILE_SIZE:-<empty>}"
+        return 2
+    fi
+    # The in-container scanner and POSIX checks use this value as an integer;
+    # normalize human-friendly input once before publishing and passing env on.
+    export PERF_PACKED_FIO_FILE_SIZE="$fio_file_size"
+    set +e
+    env \
+        AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+        AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+        AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+        "$fixture_bin" \
+        --bucket "$BREWFS_S3_BUCKET" \
+        --endpoint "http://127.0.0.1:${S3_HOST_PORT}" \
+        --region "${BREWFS_S3_REGION:-us-east-1}" \
+        --prefix "$prefix" \
+        --dirs "${PERF_PACKED_DIRS:-8}" \
+        --dir-levels "${PERF_PACKED_DIR_LEVELS:-0}" \
+        --dirs-per-level "${PERF_PACKED_DIRS_PER_LEVEL:-10}" \
+        --files-per-dir "${PERF_PACKED_FILES_PER_DIR:-4500}" \
+        --small-file-size "${PERF_PACKED_SMALLFILE_SIZE:-4096}" \
+        --fio-file-size "$fio_file_size" \
+        --manifest-output "$manifest_output" \
+        >"$fixture_log" 2>&1
+    local fixture_status=$?
+    set -e
+    if [[ "$fixture_status" -ne 0 ]]; then
+        err "packed fixture 发布失败 (exit=$fixture_status)，日志: $fixture_log"
+        return "$fixture_status"
+    fi
+    BREWFS_PACKED_MANIFEST_KEY="$(tr -d '\r\n' <"$manifest_output")"
+    if [[ -z "$BREWFS_PACKED_MANIFEST_KEY" ]]; then
+        err "packed fixture 未产生 manifest key"
+        return 1
+    fi
+    export BREWFS_PACKED_MANIFEST_KEY
+    printf 'manifest_key=%s\n' "$BREWFS_PACKED_MANIFEST_KEY" >>"$fixture_log"
+    ok "packed fixture 已发布: $BREWFS_PACKED_MANIFEST_KEY"
+}
+
+services=()
+if [[ "$PACKED_MODE" != true ]]; then
+    services+=(redis)
+fi
 if [[ -n "$storage_service" ]]; then
     services+=("$storage_service")
 fi
 info "启动依赖服务: ${services[*]}"
 docker compose -f "$COMPOSE_FILE" up -d "${services[@]}"
+docker compose -f "$COMPOSE_FILE" ps >"$host_artifact_dir/compose-services-before-perf.txt" 2>&1 || true
+if [[ "$PACKED_MODE" == true ]] && grep -q 'redis-brewfs-perf' "$host_artifact_dir/compose-services-before-perf.txt"; then
+    err "packed-metadata-v1 unexpectedly started Redis; refusing to run"
+    exit 1
+fi
 
 if [[ -n "$init_service" ]]; then
     info "初始化 ${storage_service} bucket（一次性容器）"
     docker compose -f "$COMPOSE_FILE" run --rm "$init_service"
 fi
 
+if [[ "$PACKED_MODE" == true ]]; then
+    publish_packed_fixture
+fi
+
 info "运行容器内性能测试（退出码由 perf 容器决定）"
 set +e
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_TOOLS="$PERF_TOOLS_VALUE" \
+    -e BREWFS_META_BACKEND \
+    -e BREWFS_META_URL \
+    -e BREWFS_PACKED_MANIFEST_KEY \
+    -e PERF_PACKED_DIRS \
+    -e PERF_PACKED_DIR_LEVELS \
+    -e PERF_PACKED_DIRS_PER_LEVEL \
+    -e PERF_PACKED_FILES_PER_DIR \
+    -e PERF_PACKED_SMALLFILE_COUNT \
+    -e PERF_PACKED_SMALLFILE_SIZE \
+    -e PERF_PACKED_SMALLFILE_READ_BYTES \
+    -e PERF_PACKED_FIO_FILE_SIZE \
     -e PERF_DIRSTRESS_ARGS \
     -e PERF_DIRPERF_ARGS \
     -e PERF_METAPERF_ARGS \

@@ -22,6 +22,7 @@ use crate::meta::store::{MetaError, SetAttrFlags, SetAttrRequest};
 use crate::posix::NAME_MAX;
 use crate::vfs::error::{PathHint, VfsError};
 use crate::vfs::fs::{CreateFileAtResult, FileAttr as VfsFileAttr, FileType as VfsFileType, VFS};
+use crate::vfs::handles::RawDirEntry;
 use asyncfuse::Errno;
 use asyncfuse::Result as FuseResult;
 use asyncfuse::notify::Notify as FuseNotify;
@@ -37,6 +38,8 @@ use std::ffi::{OsStr, OsString};
 #[cfg(target_os = "linux")]
 use std::mem::size_of;
 use std::num::NonZeroU32;
+#[cfg(unix)]
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use asyncfuse::raw::Filesystem;
@@ -95,6 +98,17 @@ fn env_flag(name: &str) -> Option<bool> {
             Some(!matches!(normalized.as_str(), "0" | "false" | "no" | "off"))
         }
     })
+}
+
+fn os_string_from_raw_name(name: &[u8]) -> OsString {
+    #[cfg(unix)]
+    {
+        OsString::from_vec(name.to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        OsString::from(String::from_utf8_lossy(name).into_owned())
+    }
 }
 
 fn fuse_keep_cache_enabled() -> bool {
@@ -601,6 +615,7 @@ where
 
     // Call into VFS to resolve parent inode + name → child inode; if found, build ReplyEntry
     async fn lookup(&self, req: Request, parent: u64, name: &OsStr) -> FuseResult<ReplyEntry> {
+        let raw_name = raw_os_str_bytes(name);
         let name_str = name.to_string_lossy();
         debug!(
             unique = req.unique,
@@ -610,7 +625,7 @@ where
         );
 
         // Virtual `.stats` file at mount root
-        if parent as i64 == self.root_ino() && name_str == STATS_FILENAME {
+        if parent as i64 == self.root_ino() && raw_name == STATS_FILENAME.as_bytes() {
             let now: Timestamp = std::time::SystemTime::now().into();
             let attr = asyncfuse::raw::reply::FileAttr {
                 ino: STATS_INODE,
@@ -638,7 +653,7 @@ where
             });
         }
 
-        validate_fuse_name(name_str.as_ref())?;
+        validate_fuse_name_bytes(raw_name)?;
 
         let _timer = crate::vfs::stats::OpTimer::new(
             &self.stats().fuse_lookup_ops,
@@ -648,9 +663,7 @@ where
         self.ensure_access_allowed(parent as i64, req.uid, req.gid, libc::X_OK as u32)
             .await?;
 
-        let name_str = name.to_string_lossy();
-        let Some((_child_ino, vattr)) =
-            self.child_attr_of(parent as i64, name_str.as_ref()).await?
+        let Some((_child_ino, vattr)) = self.child_attr_of_bytes(parent as i64, raw_name).await?
         else {
             info!(parent, name = %name_str, "fuse.lookup ENOENT");
             return Err(libc::ENOENT.into());
@@ -1131,12 +1144,24 @@ where
         // entry to read: 0=start, 1=after ".", 2=after "..", and 3+=child index+1.
         let (entries, entries_offset, include_dot_entries, include_dotdot_only) = if fh != 0 {
             match offset {
-                i64::MIN..=0 => (self.readdir(fh, 0), 0, true, false),
-                1 => (self.readdir(fh, 0), 0, false, true),
+                i64::MIN..=0 => (
+                    self.readdir_page_raw(fh, 0).await.map_err(Errno::from)?,
+                    0,
+                    true,
+                    false,
+                ),
+                1 => (
+                    self.readdir_page_raw(fh, 0).await.map_err(Errno::from)?,
+                    0,
+                    false,
+                    true,
+                ),
                 _ => {
                     let entries_offset = (offset as u64).saturating_sub(2);
                     (
-                        self.readdir(fh, entries_offset),
+                        self.readdir_page_raw(fh, entries_offset)
+                            .await
+                            .map_err(Errno::from)?,
                         entries_offset,
                         false,
                         false,
@@ -1152,7 +1177,16 @@ where
             e
         } else {
             // Fallback: directly read from meta layer
-            let meta_entries = self.readdir_ino(ino as i64).await;
+            let meta_entries = self.readdir_ino(ino as i64).await.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| RawDirEntry {
+                        name: entry.name.into_bytes(),
+                        ino: entry.ino,
+                        kind: entry.kind,
+                    })
+                    .collect()
+            });
             match meta_entries {
                 Some(v) => v,
                 None => {
@@ -1204,7 +1238,7 @@ where
             all.push(DirectoryEntry {
                 inode: e.ino as u64,
                 kind: vfs_kind_to_fuse(e.kind),
-                name: OsString::from(e.name.clone()),
+                name: os_string_from_raw_name(&e.name),
                 offset: (entries_offset + i as u64 + 3) as i64,
             });
         }
@@ -1236,12 +1270,24 @@ where
         let (entries_from_handle, entries_offset, include_dot_entries, include_dotdot_only) =
             if fh != 0 {
                 match offset {
-                    0 => (self.readdir(fh, 0), 0, true, false),
-                    1 => (self.readdir(fh, 0), 0, false, true),
+                    0 => (
+                        self.readdir_page_raw(fh, 0).await.map_err(Errno::from)?,
+                        0,
+                        true,
+                        false,
+                    ),
+                    1 => (
+                        self.readdir_page_raw(fh, 0).await.map_err(Errno::from)?,
+                        0,
+                        false,
+                        true,
+                    ),
                     _ => {
                         let entries_offset = offset.saturating_sub(2);
                         (
-                            self.readdir(fh, entries_offset),
+                            self.readdir_page_raw(fh, entries_offset)
+                                .await
+                                .map_err(Errno::from)?,
                             entries_offset,
                             false,
                             false,
@@ -1310,7 +1356,16 @@ where
             e
         } else {
             // Fallback: directly read from meta layer
-            let meta_entries = self.readdir_ino(ino as i64).await;
+            let meta_entries = self.readdir_ino(ino as i64).await.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| RawDirEntry {
+                        name: entry.name.into_bytes(),
+                        ino: entry.ino,
+                        kind: entry.kind,
+                    })
+                    .collect()
+            });
             match meta_entries {
                 Some(v) => v,
                 None => {
@@ -1332,7 +1387,7 @@ where
                 inode: e.ino as u64,
                 generation: 0,
                 kind: vfs_kind_to_fuse(e.kind),
-                name: OsString::from(e.name.clone()),
+                name: os_string_from_raw_name(&e.name),
                 offset: (entries_offset + i as u64 + 3) as i64,
                 attr: fattr,
                 entry_ttl: ttl,
@@ -3146,6 +3201,30 @@ fn validate_fuse_name(name: &str) -> Result<(), Errno> {
         return Err(libc::ENAMETOOLONG.into());
     }
     if name.contains('/') || name.contains('\0') {
+        return Err(libc::EINVAL.into());
+    }
+    Ok(())
+}
+
+fn raw_os_str_bytes(name: &OsStr) -> &[u8] {
+    #[cfg(unix)]
+    {
+        name.as_bytes()
+    }
+    #[cfg(not(unix))]
+    {
+        name.to_str().map_or(&[], str::as_bytes)
+    }
+}
+
+fn validate_fuse_name_bytes(name: &[u8]) -> Result<(), Errno> {
+    if name.is_empty() {
+        return Err(libc::EINVAL.into());
+    }
+    if name.len() > NAME_MAX {
+        return Err(libc::ENAMETOOLONG.into());
+    }
+    if name.contains(&b'/') || name.contains(&0) {
         return Err(libc::EINVAL.into());
     }
     Ok(())

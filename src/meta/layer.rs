@@ -103,6 +103,19 @@ pub trait MetaLayer: Send + Sync {
         Ok(Some((ino, attr)))
     }
 
+    /// Byte-preserving lookup capability for immutable packed snapshots.
+    /// Legacy metadata backends remain string based and therefore explicitly
+    /// reject names that are not valid UTF-8 instead of silently replacing
+    /// bytes.
+    async fn lookup_with_attr_bytes(
+        &self,
+        parent: i64,
+        name: &[u8],
+    ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        let name = std::str::from_utf8(name).map_err(|_| MetaError::InvalidFilename)?;
+        self.lookup_with_attr(parent, name).await
+    }
+
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError>;
 
     async fn lookup_path_with_attr(

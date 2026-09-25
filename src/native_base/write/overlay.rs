@@ -934,13 +934,11 @@ impl WriteOverlay {
                         };
                         self.handoff_committed(&mut state, inode, ticket_no);
                         report.committed.push(result);
-                        drop(state);
-                        state = self.refresh_state(inode).await?;
+                        self.refresh_state(&mut state, inode).await?;
                     }
                     Err(err) if err.is_retryable() => {
                         // One re-derivation with fresh state.
-                        drop(state);
-                        state = self.refresh_state(inode).await?;
+                        self.refresh_state(&mut state, inode).await?;
                         let retry = match self.publish_guard(&state.head.clone().unwrap()) {
                             Ok(guard) => {
                                 commit_uploaded_slice(&*self.store, &self.keys, &guard, &request)
@@ -956,8 +954,7 @@ impl WriteOverlay {
                                 };
                                 self.handoff_committed(&mut state, inode, ticket_no);
                                 report.committed.push(result);
-                                drop(state);
-                                state = self.refresh_state(inode).await?;
+                                self.refresh_state(&mut state, inode).await?;
                             }
                             Err(err) => {
                                 let err = self
@@ -1317,20 +1314,17 @@ impl WriteOverlay {
     }
 
     /// Re-read the authoritative head and inode view after a commit and
-    /// return the re-locked overlay state.
-    async fn refresh_state(
-        &self,
-        inode: u64,
-    ) -> Result<tokio::sync::MutexGuard<'_, OverlayState>, WriteError> {
+    /// update the locked overlay state. A second local drain cannot commit
+    /// between the commit and its head refresh.
+    async fn refresh_state(&self, state: &mut OverlayState, inode: u64) -> Result<(), WriteError> {
         let head = self.read_head().await?;
         let view =
             read_inode_view(&*self.store, &self.keys, &self.params.workspace_id, inode).await?;
-        let mut state = self.state.lock().await;
         state.head = Some(head);
         let entry = state.inodes.entry(inode).or_default();
         entry.data = view.data;
         entry.extents = view.extents;
-        Ok(state)
+        Ok(())
     }
 
     async fn register_under_current_head(
@@ -1341,7 +1335,12 @@ impl WriteOverlay {
         // The head advances with every commit, so the guard is re-derived
         // from the store until the registration lands. The state lock is
         // only held to mirror the head that was registered under.
-        for _ in 0..3 {
+        // A multi-file buffered write can have several commits advance the
+        // shared head while one object registration is in flight. Keep the
+        // retry bounded, but allow the registration to ride out that burst;
+        // lease/authority failures still return immediately from
+        // `publish_guard`.
+        for _ in 0..32 {
             let head = self.read_head().await?;
             // A fenced (expired or superseded) lease never reaches the
             // transaction: no registry row, no inventory entry and no domain
@@ -1359,10 +1358,22 @@ impl WriteOverlay {
             {
                 Ok(reservation) => {
                     let mut state = self.state.lock().await;
-                    state.head = Some(head);
+                    let older_than_cached = state.head.as_ref().is_some_and(|cached| {
+                        cached.head.head_id == head.head.head_id
+                            && cached.head.epoch == head.head.epoch
+                            && cached.writer_generation == head.writer_generation
+                            && cached.write_domain_id == head.write_domain_id
+                            && head.head.commit_seq < cached.head.commit_seq
+                    });
+                    if !older_than_cached {
+                        state.head = Some(head);
+                    }
                     return Ok(reservation);
                 }
-                Err(err) if err.is_retryable() => continue,
+                Err(err) if err.is_retryable() => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -1399,8 +1410,20 @@ impl WriteOverlay {
     /// Record the immutable workspace size used when planning the first
     /// native mutation for an inode. The value is request-local metadata and
     /// is never persisted as a separate control-plane record.
-    pub(crate) async fn set_baseline_size(&self, inode: u64, size: u64) {
-        self.state.lock().await.baseline_sizes.insert(inode, size);
+    pub(crate) async fn set_baseline_size(&self, inode: u64, size: u64) -> u64 {
+        *self
+            .state
+            .lock()
+            .await
+            .baseline_sizes
+            .entry(inode)
+            .or_insert(size)
+    }
+
+    /// Return the cached baseline size for the inode, if one was already
+    /// recorded.
+    pub(crate) async fn get_baseline_size(&self, inode: u64) -> Option<u64> {
+        self.state.lock().await.baseline_sizes.get(&inode).copied()
     }
 }
 

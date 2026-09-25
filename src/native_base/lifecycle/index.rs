@@ -85,6 +85,7 @@ pub fn build_object_index(
         leaf_target: leaf_target.max(64),
         leaf_kind: BnpgKind::GenericKeyValue,
         page_kind: PageKind::InventoryIndex,
+        page_codec: Codec::None,
     };
     let mut body = Vec::new();
     let child = build_index_tree(&encoded, &params, &mut body)?;

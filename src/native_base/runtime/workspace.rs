@@ -84,7 +84,7 @@ where
             execute_into(
                 self.store.as_ref(),
                 self.layout,
-                cursor,
+                local_offset,
                 &plan,
                 &mut output[output_start..output_end],
             )
