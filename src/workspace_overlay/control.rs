@@ -83,10 +83,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceControl<W> {
             .max_by_key(|lease| lease.updated_at_ns);
         let journal = self
             .store
-            .list_incomplete_seal_journals()
+            .list_seal_journals(workspace_id)
             .await?
             .into_iter()
-            .filter(|journal| journal.workspace_id == workspace_id)
             .max_by_key(|journal| journal.updated_at_ns);
         Ok(WorkspaceInspection {
             workspace_id,
@@ -166,5 +165,50 @@ mod tests {
         assert_eq!(inspection.holder_generation, Some(7));
         assert!(inspection.private_metadata_rows >= 2);
         session.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn inspect_includes_completed_workspace_journal() {
+        let store = Arc::new(
+            SqliteWorkspaceStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        store.initialize_workspace_schema().await.unwrap();
+        let workspace_id = WorkspaceId::new();
+        store
+            .create_volume_root(CreateVolumeRoot {
+                volume_id: Uuid::new_v4(),
+                workspace_id,
+                root_layer_id: LayerId::new(),
+                writable_layer_id: LayerId::new(),
+                owner_id: None,
+            })
+            .await
+            .unwrap();
+        let session = WorkspaceMountSession::acquire(
+            store.clone(),
+            workspace_id,
+            1,
+            DEFAULT_LEASE_TTL,
+            DEFAULT_HEARTBEAT_INTERVAL,
+        )
+        .await
+        .unwrap();
+        crate::workspace_overlay::lifecycle::WorkspaceLifecycle::new(store.clone())
+            .seal(
+                &session.view,
+                &crate::workspace_overlay::lifecycle::NoopDurableRemoteBarrier,
+            )
+            .await
+            .unwrap();
+        session.release().await.unwrap();
+        store.prune_terminal_records(i64::MAX / 2, 0).await.unwrap();
+        let inspection = WorkspaceControl::new(store.clone())
+            .inspect(workspace_id)
+            .await
+            .unwrap();
+        assert_eq!(inspection.last_seal_phase, Some(SealPhase::Completed));
+        assert!(inspection.last_seal_journal_id.is_some());
     }
 }

@@ -240,21 +240,22 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
     }
 
     pub async fn recover_incomplete_seals(&self) -> Result<Vec<SealResult>, WorkspaceError> {
-        // Expire leases before deciding whether a journal is still owned by a
-        // live client.  Recovery must never mutate a journal while its
-        // workspace still has an active lease.
+        // 先回收过期租约，再检查 journal 所属 workspace 的活跃租约。
         self.store.reap_expired_leases().await?;
         let journals = self.store.list_incomplete_seal_journals().await?;
         let mut completed = Vec::new();
         for journal in journals {
-            let live_lease = self
-                .store
-                .list_leases(journal.workspace_id)
-                .await?
-                .into_iter()
-                .any(|lease| lease.state == LeaseState::Active);
-            if live_lease {
-                continue;
+            let workspace = self.store.load_workspace(journal.workspace_id).await?;
+            if let Some(lease_id) = workspace.active_lease {
+                let live_lease = self
+                    .store
+                    .list_leases(journal.workspace_id)
+                    .await?
+                    .into_iter()
+                    .any(|lease| lease.lease_id == lease_id && lease.state == LeaseState::Active);
+                if live_lease {
+                    continue;
+                }
             }
             match journal.phase {
                 SealPhase::Prepare | SealPhase::Quiesced => {
@@ -420,9 +421,6 @@ impl LeaseHeartbeat {
                 tokio::select! {
                     _ = task_cancel.cancelled() => break,
                     _ = timer.tick() => {
-                        if let Err(error) = store.reap_expired_leases().await {
-                            tracing::warn!(?error, "workspace expired-lease reaper failed");
-                        }
                         if store.renew_lease(RenewLease {
                             lease_id,
                             holder_generation,
@@ -450,3 +448,204 @@ fn duration_ns(duration: Duration) -> Result<u64, WorkspaceError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lease_recovery_tests {
+    use super::super::catalog::{CreateVolumeRoot, CreateWorkspace};
+    use super::super::model::WorkspaceState;
+    use super::super::stores::database::SqliteWorkspaceStore;
+    use super::*;
+    use sea_orm::sqlx::SqlitePool;
+    use uuid::Uuid;
+
+    async fn root() -> (Arc<SqliteWorkspaceStore>, WorkspaceRecord) {
+        let store = Arc::new(
+            SqliteWorkspaceStore::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        store.initialize_workspace_schema().await.unwrap();
+        let workspace = store
+            .create_volume_root(CreateVolumeRoot {
+                volume_id: Uuid::new_v4(),
+                workspace_id: WorkspaceId::new(),
+                root_layer_id: LayerId::new(),
+                writable_layer_id: LayerId::new(),
+                owner_id: None,
+            })
+            .await
+            .unwrap();
+        (store, workspace)
+    }
+
+    #[tokio::test]
+    async fn recovery_reaps_expired_active_lease_before_resuming_journal() {
+        let (store, workspace) = root().await;
+        let lease = store
+            .acquire_lease(AcquireLease {
+                workspace_id: workspace.workspace_id,
+                lease_id: LeaseId::new(),
+                holder_generation: 1,
+                ttl_ns: 250_000_000,
+            })
+            .await
+            .unwrap();
+        let journal_id = JournalId::new();
+        store
+            .begin_seal(BeginSeal {
+                guard: HeadGuard {
+                    workspace_id: workspace.workspace_id,
+                    expected_head_layer_id: workspace.head_layer_id,
+                    expected_head_epoch: workspace.head_epoch,
+                    lease_id: lease.lease_id,
+                    holder_generation: 1,
+                },
+                journal_id,
+                new_head_layer_id: LayerId::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .load_workspace(workspace.workspace_id)
+                .await
+                .unwrap()
+                .active_lease,
+            Some(lease.lease_id)
+        );
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        WorkspaceLifecycle::new(store.clone())
+            .recover_incomplete_seals()
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_seal_journal(journal_id).await.unwrap().phase,
+            SealPhase::Aborted
+        );
+        let recovered = store.load_workspace(workspace.workspace_id).await.unwrap();
+        assert_eq!(recovered.active_lease, None);
+        assert_eq!(recovered.state, WorkspaceState::Active);
+    }
+
+    #[tokio::test]
+    async fn recovery_ignores_pointer_to_released_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let url = format!(
+            "sqlite://{}",
+            directory.path().join("catalog.sqlite").display()
+        );
+        let store = Arc::new(SqliteWorkspaceStore::connect(&url).await.unwrap());
+        store.initialize_workspace_schema().await.unwrap();
+        let workspace = store
+            .create_volume_root(CreateVolumeRoot {
+                volume_id: Uuid::new_v4(),
+                workspace_id: WorkspaceId::new(),
+                root_layer_id: LayerId::new(),
+                writable_layer_id: LayerId::new(),
+                owner_id: None,
+            })
+            .await
+            .unwrap();
+        let lease = store
+            .acquire_lease(AcquireLease {
+                workspace_id: workspace.workspace_id,
+                lease_id: LeaseId::new(),
+                holder_generation: 1,
+                ttl_ns: 30_000_000_000,
+            })
+            .await
+            .unwrap();
+        let journal_id = JournalId::new();
+        store
+            .begin_seal(BeginSeal {
+                guard: HeadGuard {
+                    workspace_id: workspace.workspace_id,
+                    expected_head_layer_id: workspace.head_layer_id,
+                    expected_head_epoch: workspace.head_epoch,
+                    lease_id: lease.lease_id,
+                    holder_generation: 1,
+                },
+                journal_id,
+                new_head_layer_id: LayerId::new(),
+            })
+            .await
+            .unwrap();
+        store
+            .release_lease(ReleaseLease {
+                lease_id: lease.lease_id,
+                holder_generation: 1,
+            })
+            .await
+            .unwrap();
+        let pool = SqlitePool::connect(&url).await.unwrap();
+        sea_orm::sqlx::query("UPDATE ws_v1_workspaces SET active_lease = ? WHERE workspace_id = ?")
+            .bind(lease.lease_id.as_bytes().as_slice())
+            .bind(workspace.workspace_id.as_bytes().as_slice())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        WorkspaceLifecycle::new(store.clone())
+            .recover_incomplete_seals()
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_seal_journal(journal_id).await.unwrap().phase,
+            SealPhase::Aborted
+        );
+        assert_eq!(
+            store
+                .load_workspace(workspace.workspace_id)
+                .await
+                .unwrap()
+                .state,
+            WorkspaceState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_renews_only_its_own_lease() {
+        let (store, workspace) = root().await;
+        let root_lease = store
+            .acquire_lease(AcquireLease {
+                workspace_id: workspace.workspace_id,
+                lease_id: LeaseId::new(),
+                holder_generation: 1,
+                ttl_ns: 1_000_000_000,
+            })
+            .await
+            .unwrap();
+        let child = store
+            .create_workspace(CreateWorkspace {
+                workspace_id: WorkspaceId::new(),
+                head_layer_id: LayerId::new(),
+                base_revision: workspace.fork_base.unwrap(),
+                owner_id: None,
+            })
+            .await
+            .unwrap();
+        let other = store
+            .acquire_lease(AcquireLease {
+                workspace_id: child.workspace_id,
+                lease_id: LeaseId::new(),
+                holder_generation: 2,
+                ttl_ns: 10_000_000,
+            })
+            .await
+            .unwrap();
+        let heartbeat = LeaseHeartbeat::spawn(
+            store.clone(),
+            root_lease.lease_id,
+            1,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        heartbeat.stop().await;
+        let leases = store.list_leases(child.workspace_id).await.unwrap();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].lease_id, other.lease_id);
+        assert_eq!(leases[0].state, LeaseState::Active);
+        assert_eq!(store.reap_expired_leases().await.unwrap(), 1);
+    }
+}
