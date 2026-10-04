@@ -5,6 +5,7 @@
 - 功能名：Workspace Overlay
 - Cargo feature：`workspace-overlay`
 - volume format：`workspace-v1`
+- catalog 格式：`catalog_format: 2`（entity-key 布局）
 - 首要生产 backend：Redis、TiKV
 - 本地语义与故障注入 backend：SQLite / SQLx
 
@@ -383,24 +384,21 @@ async fn server_time_ns(&self) -> Result<i64, WorkspaceError>;
 ```
 
 `compare_and_swap` 必须原子检查全部 expected value 并应用全部 put/delete；条件不匹配返回
-`false`，不得产生部分写。`control` 只串行化 seal/fork/snapshot/GC 等低频拓扑转换；
-workspace head、writable layer、lease 和 allocator 均有独立 hot record。普通 mutation 只 CAS
-当前 workspace/head/lease，并在同一事务提交 delta key；lease heartbeat 只 CAS 对应 lease，
-allocator 只 CAS 对应名称。不同 workspace 的热路径不得读取、锁定或写入 `control`，也不得
-共享进程内 mutex。拓扑转换会读取全部 hot records，并在同一 backend transaction 中检查
-它们、更新 `control` 和发生变化的 hot records，保证跨 mount 正确性。
+`false`，不得产生部分写。
 
 持久记录使用 bincode，并带固定 envelope magic `BWSKV001`。未知 magic、解码失败或
 schema version 不匹配必须 fail-closed。
 
-逻辑 key schema：
+逻辑 key schema（entity-key 布局，entity 键是实体的唯一副本，不存在镜像层）：
 
 ```text
-control
-hot/workspace/<workspace-id>
-hot/layer/<layer-id>
-hot/lease/<lease-id>
-hot/allocator/<allocator-name>
+control                                                   { schema_version, header, catalog_format }
+ws/<workspace-id>                                         WorkspaceRecord
+layer/<layer-id>                                          LayerRecord
+lease/<workspace-id>/<lease-id>                           SnapshotLease
+journal/<workspace-id>/<journal-id>                       SealJournal
+snapshot/<snapshot-id>                                    SnapshotRecord
+alloc/<allocator-name>                                    分配器计数
 delta/dentry/<layer>/<parent-ino-order-key>/<hex-name>
 delta/inode/<layer>/<ino-order-key>
 delta/xattr/<layer>/<ino-order-key>/<hex-name>
@@ -408,21 +406,117 @@ delta/acl/<layer>/<ino-order-key>/<acl-type>/<acl-id-order-key>
 delta/extent/<layer>/<ino-order-key>/<chunk-index>/<sequence>
 ```
 
+`control` 只在创建卷与目录迁移时写入，不随任何拓扑操作更新。lease 与 journal 键按
+workspace 归组，支持精确的前缀列举。
+
+普通 mutation 在同一事务检查 workspace record、head layer record 与该 workspace 的
+lease record，并提交 delta key；lease heartbeat 只 CAS 对应 lease record；allocator
+只 CAS 对应 `alloc/<name>` record。不同 workspace 的热路径不得读取、锁定或写入其他
+workspace 的键，也不得共享进程内 mutex。
+
 inode、chunk 和 sequence 使用固定宽度、保持数值顺序的十六进制 component；文件名和
 xattr name 使用原始 bytes 的 hex，禁止 UTF-8 有损转换。layer 删除必须先进入
-`Deleting`，再按 layer prefix 删除所有 delta，最后 CAS 删除 control metadata。
+`Deleting`，再按 6.6 节的两阶段协议删除 delta 键与 layer record。
 
 Redis 物理前缀为 `{brewfs-ws-v1}:<workspace-namespace>:ws:v1/`。固定 hash tag 保证
 Redis Cluster 中 Lua 涉及的所有 key 位于同一 slot；CAS 使用 binary-safe Lua，lease
 到期时间使用 Redis `TIME`。
 
 TiKV 物理前缀为 `<workspace-namespace>/ws:v1/`。CAS 使用 pessimistic transaction 和
-`get_for_update` 锁定本次 CAS 的实体 keys，冲突执行有界重试；prefix scan 使用同一只读
-事务和分页 range。lease 的当前时间必须来自 `TransactionClient::current_timestamp()` 的
+`get_for_update` 锁定本次 CAS 的实体 keys，冲突执行有界重试并带指数退避；prefix scan
+使用同一只读事务和分页 range。lease 的当前时间必须来自 `TransactionClient::current_timestamp()` 的
 PD TSO physical 毫秒分量并安全换算为纳秒，禁止使用 mount host wall clock。
 
 `workspace-namespace` 只允许 ASCII 字母、数字、`-`、`_`、`.`，为空或包含其他字符时
 启动失败。不同 volume 必须使用不同 namespace。
+
+### 6.4 拓扑事务（read-tracked）
+
+seal、fork、snapshot、commit、compaction、GC、租约获取与释放通过读追踪事务执行：
+
+```rust
+let mut txn = store.topology_txn();
+let workspace = txn.read_workspace(workspace_id).await?;
+let layer = txn.read_layer(head_layer_id).await?;
+// 校验并修改 txn 中的实体，然后一次性提交
+txn.commit().await?;
+```
+
+规则：
+
+- 每次 `read_*` 使用 `get_many` 精确读取并把原始值计入读取集；提交时检查集等于读取集，
+  写入集由实际修改的实体自动生成；
+- `put`/`delete` 只允许作用于已声明读取的键，未声明的写入直接返回
+  `CorruptMetadata`，从接口上消除忘记声明的依赖；
+- 提交调用 `compare_and_swap(checks, writes)`，一次 CAS 原子提交全部检查与写入，外部只能
+  观察到提交前或提交后状态；
+- 冲突重试时在最新值上重新读取并回放操作；
+- 任何操作不得触碰其他 workspace 的键；不同 workspace 的 fork、seal、GC 可以并行，无关
+  workspace 的心跳与热写不进入本事务的检查集；
+- 不存在进程内全局拓扑 gate；不同 workspace 的拓扑并发由 backend 多键 CAS 串行化，互不
+  阻塞；
+- store 层冲突重试使用指数退避加 jitter（基数 1 ms、上限 100 ms）；`hot_mutation`、
+  `renew_lease`、`allocate_id` 使用同一退避策略。
+
+各操作的检查集与写入集：
+
+| 操作 | 检查集 | 写入集 |
+|---|---|---|
+| `acquire_lease` / `release_lease` | ws record、本 lease | ws record（`active_lease`）、lease record |
+| seal 各阶段 | journal、ws record、head layer、`active_lease` 指向的租约 | 各阶段对应实体 |
+| `commit_seal` | journal、ws record、旧 head layer、本 workspace 租约、`alloc/sealed_version` | 旧 layer（Sealed）、新 head layer、ws（head 切换）、租约、journal |
+| `create_workspace` / `create_snapshot` | base layer（须 `Sealed`） | ws record 与 head layer / snapshot |
+| `install_compaction` | ws record、head layer、parent layer | compacted layer、replacement head、ws、compacted delta 键 |
+| `fast_forward_commit` | source base layer、目标 ws record 与 head layer | 目标 ws、新 head layer |
+| GC 删除 | 目标 layer（CAS 至 `Deleting`） | layer record、delta 键 |
+
+### 6.5 单活跃 writable lease
+
+每个 workspace 最多一个 active writable lease，由 `WorkspaceRecord.active_lease:
+Option<LeaseId>` 承载互斥：获取租约时 CAS 该字段 `None -> Some(lease_id)`，释放与过期
+回收时清除。`acquire_lease` 必须识别指向已失效租约的悬挂指针并自动清理，防止任何终止
+路径漏清导致 workspace 无法挂载。热路径的 fencing 直接校验 lease record 本身。
+
+### 6.6 GC 删除协议与终止态清理
+
+GC 不依赖全局一致快照，使用两阶段删除加提交点复核：
+
+1. 扫描根集合（workspace、snapshot、lease、journal）与 layer，得出可达集合与待删除候选
+   （允许陈旧）；
+2. 对每个候选 layer 以读取到的精确值 CAS 标记 `Deleting`；
+3. 重新扫描根集合复核：在标记前提交的根创建（fork、snapshot、mount、journal）在复核中
+   可见，发现引用则放弃删除并把 layer 恢复为 `Sealed`；在标记之后尝试的根创建，其对
+   base layer 精确值的 CAS 检查必然失败；
+4. 复核通过后删除 delta 键与 layer record。
+
+根创建操作（fork、snapshot、`acquire_lease`、`begin_seal`）在其事务中 CAS 检查所引用
+base layer 的精确值（含 `state == Sealed`），这是上述协议的另一半。
+
+GC 周期删除超过宽限期的 `Released`/`Expired` lease 与 `Completed`/`Aborted` journal
+（每个 workspace 保留最近一条 journal 供 `inspect`），目录规模与活跃实体数量挂钩。
+
+### 6.7 目录迁移
+
+`initialize_workspace_schema` 负责目录格式迁移，由 CLI 显式触发：
+
+```text
+brewfs workspace --meta-backend redis --meta-url <url> migrate
+brewfs workspace --meta-backend sqlx --meta-url <url> migrate
+brewfs workspace --meta-backend tikv --meta-tikv-pd-endpoints <pd-endpoints> migrate
+```
+
+TiKV 用 `--meta-tikv-pd-endpoints` 指定 PD endpoints；`--meta-url` 只供 Redis 与
+SQLite backend 使用。
+
+迁移规则：
+
+- 读取 `control` 检测目录格式；旧格式文档包含实体表时，把各实体写入对应 entity 键，并
+  CAS 切换为仅含卷头与 `catalog_format: 2` 的新文档；
+- 迁移由 `control` 单键 CAS 保证只执行一次，中途崩溃可续跑；
+- 迁移完成前 mount 被拒绝，错误提示指向上述 `migrate` 命令；
+- `migrate` 与 mount 必须选择同一个 backend、endpoint 与 `workspace-namespace`；
+- 迁移为单向：迁移完成后旧版本二进制无法读取新格式目录，发布说明必须说明所有 reader
+  升级完成后才能执行 `migrate`。
 
 ## 7. 数据库 schema
 
@@ -448,6 +542,7 @@ CREATE TABLE ws_v1_volume_header (
 ```sql
 CREATE TABLE ws_v1_workspaces (
     workspace_id          BLOB PRIMARY KEY,
+    active_lease          BLOB,
     head_layer_id         BLOB NOT NULL,
     head_epoch            INTEGER NOT NULL,
     fork_base_layer_id    BLOB,
@@ -1113,7 +1208,7 @@ marker 最后写。marker 写入前失败可重试初始化；marker 存在但 s
 1. 读取 format marker；
 2. 加载 workspace/head；
 3. 校验 chain；
-4. 获取 writable 或 read-only lease；
+4. 获取 writable 或 read-only lease（自动清理指向已失效租约的悬挂 `active_lease`）；
 5. 构造 `ViewContext`；
 6. 构造 `WorkspaceMetaLayer`；
 7. 构造 `Backend::new_workspace`；
@@ -1214,7 +1309,11 @@ mount lease；commit 后的新 mount 看到新 revision。
 - heartbeat：10 秒；
 - GC grace：至少 2 × TTL；
 - heartbeat 只允许相同 holder generation 延长；
-- wall clock 由 backend/server 产生，不信任客户端时间。
+- wall clock 由 backend/server 产生，不信任客户端时间；
+- heartbeat 只执行 `renew_lease`；续期失败即终止 heartbeat 任务，挂载的后续写入收到
+  `Fenced`；
+- 过期租约回收不在 heartbeat 中进行，集中在 `acquire_lease` 的本 workspace 顺路清理、
+  GC 周期的全局回收与 `recover_incomplete_seals` 的开头。
 
 ### 15.2 Holder generation
 
@@ -1292,7 +1391,11 @@ mark roots：
 
 ### 18.2 Layer mark
 
-从 root 沿 parent 标记 reachable layer。不可达 layer 超过 grace period 后才能进入 Deleting。
+从 root 沿 parent 标记 reachable layer。不可达 layer 超过 grace period 后按 6.6 节的
+两阶段协议删除：先以精确值 CAS 标记 `Deleting`，重新扫描根集合复核，通过后删除 delta 键
+与 layer record；复核发现新引用则恢复为 `Sealed`。GC 同时删除超过宽限期的
+`Released`/`Expired` lease 与 `Completed`/`Aborted` journal（每个 workspace 保留最近一条
+journal 供 `inspect`）。
 
 ### 18.3 Slice mark
 
@@ -1331,10 +1434,9 @@ mutation。fork 只接受 flat `BaseRevision`，因此仍为 O(1) metadata mutat
 workspace mount/daemon 只启动 feature module 内的：
 
 ```text
-lease heartbeat
-expired lease reaper
-seal recovery worker
-layer GC
+lease heartbeat（只执行 renew_lease，不回收租约）
+seal recovery worker（开头执行过期租约回收）
+layer GC（含终止态 lease/journal 清理）
 orphan object GC
 workspace compaction
 head invalidation watcher（backend 支持时）
@@ -1354,6 +1456,7 @@ brewfs workspace --meta-backend <sqlx|redis|tikv> \
   [--workspace-namespace <name>] <command>
 
 brewfs workspace init-volume
+brewfs workspace migrate
 brewfs workspace create [--from <revision>]
 brewfs workspace snapshot <workspace>
 brewfs workspace fork <workspace-or-revision> --count <n>
@@ -1368,6 +1471,8 @@ brewfs mount <mountpoint> --workspace <workspace-id>
 
 workspace CLI 和 mount 必须选择同一个 backend、endpoint 与 `workspace-namespace`。
 workspace 模式明确拒绝 etcd；普通 flat mount 的 backend 选择保持不变。
+`migrate` 把旧格式目录迁移到 entity-key 布局（见 6.7 节），迁移完成后旧版本二进制无法读取
+该目录，发布说明必须说明所有 reader 升级完成后才能执行 `migrate`。
 
 revision 外部编码：
 
@@ -1540,6 +1645,8 @@ before/after journal complete
 - 100 child 读同 base block 的 shared cache/singleflight；
 - randrw、small-file create、rename、git checkout/build；
 - 分开报告 active throughput、fsync/close、seal drain、fork control latency；
+- 并发 fork 与并发 seal 的拓扑吞吐与延迟基准；拓扑操作延迟不得随无关 workspace 数量与
+  无关写入频率增长；
 - default-flat 与 feature-enabled-flat 对照，回归超出噪声阈值即阻断。
 
 ### 24.7 CI matrix
@@ -1558,6 +1665,16 @@ workspace smoke: fuse-tokio-runtime
 workspace Redis: live distributed catalog contract + 双 mount FUSE + pjdfstest
 workspace TiKV: live distributed catalog contract + 双 mount FUSE + pjdfstest
 ```
+
+### 24.8 拓扑事务并发与目录迁移
+
+- 并发心跳不阻塞 seal；
+- 64 个并发 fork 全部成功；
+- 拓扑操作 × 心跳 / × 本 workspace 写入 / × 其他 workspace 写入的冲突矩阵；
+- GC 与根创建竞争两个方向（故障注入）；
+- 超过宽限期的 `Released`/`Expired` lease 与 `Completed`/`Aborted` journal 被清理；
+- v1 目录迁移后实体完整、中途崩溃可续跑，迁移完成前 mount 被拒绝；
+- Redis、TiKV、SQLite 三个后端运行同一套契约。
 
 ## 25. 分阶段 PR
 
@@ -1661,4 +1778,7 @@ Workspace Overlay v1 只有满足以下全部条件才可声明可用：
 11. xfstests、pjdfstest 和现有 Rust workspace gate 通过；
 12. flat-only 与 workspace-enabled binary 的部署错误均 fail-closed。
 13. Redis 和 TiKV 分别通过两个独立 store instance 的 CAS 并发 contract；
-14. Redis/TiKV 上两个 sibling workspace 同时挂载时共享 sealed base 且 mutation 互不可见。
+14. Redis/TiKV 上两个 sibling workspace 同时挂载时共享 sealed base 且 mutation 互不可见；
+15. 拓扑事务检查集等于读取集、不触碰无关 workspace 的键，并发心跳不阻塞其他 workspace 的
+    拓扑操作；
+16. v1 目录迁移可续跑且实体完整，迁移完成前 mount 被拒绝，迁移后旧版本二进制 fail-closed。

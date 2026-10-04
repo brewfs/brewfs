@@ -3,6 +3,7 @@
 - Status: implemented, maintained with `src/workspace_overlay/`
 - Cargo feature: `workspace-overlay` (off by default)
 - Volume format: `workspace-v1`
+- Catalog format: 2 (entity-key layout; `control` keeps only the volume header)
 - Production metadata backends: Redis and TiKV
 
 This document is the maintained architecture reference for BrewFS agent
@@ -45,8 +46,8 @@ flowchart TB
     Catalog --> KV{Redis or TiKV}
     Resolver --> KV
 
-    KV --> Topology[control<br/>low-frequency topology]
-    KV --> Hot[hot/workspace<br/>hot/layer<br/>hot/lease<br/>hot/allocator]
+    KV --> Control[control<br/>volume header · catalog format]
+    KV --> Entities[ws · layer<br/>lease · journal<br/>snapshot · alloc]
     KV --> Delta[delta/dentry · inode<br/>xattr · acl · extent]
 
     FuseA --> Chunk[Existing chunk read/write path]
@@ -103,7 +104,9 @@ Sealed ancestry is never exposed to the FUSE data path.
 
 Ordinary namespace, inode, xattr, ACL, and extent mutations do not read or CAS
 the global `control` record. They atomically check exactly three entity records
-and update the current layer plus delta keys:
+(`ws/<workspace-id>`, `layer/<head-layer-id>`,
+`lease/<workspace-id>/<lease-id>`) and update the current layer plus delta
+keys:
 
 ```mermaid
 sequenceDiagram
@@ -112,9 +115,9 @@ sequenceDiagram
     participant K as Redis / TiKV
 
     M->>S: mutation + HeadGuard
-    S->>K: batched hot records + authoritative time<br/>(Redis TIME+MGET / TiKV transaction timestamp+batch-get)
+    S->>K: batched entity records + authoritative time<br/>(Redis TIME+MGET / TiKV transaction timestamp+batch-get)
     S->>S: validate workspace, head epoch,<br/>owner, lease generation and expiry
-    S->>K: atomic CAS(three expected values)<br/>put hot/layer + delta keys
+    S->>K: atomic CAS(three expected values)<br/>put layer record + delta keys
     alt CAS conflict
         S->>K: bounded retry from fresh values
     else committed
@@ -124,8 +127,8 @@ sequenceDiagram
 
 The writable layer owns its `next_sequence`, so writers in the same workspace
 serialize correctly while sibling workspaces do not contend. Lease renewal CASes
-only `hot/lease/<lease-id>`. Each ID allocator CASes only its own
-`hot/allocator/<name>` record.
+only `lease/<workspace-id>/<lease-id>`. Each ID allocator CASes only its own
+`alloc/<name>` record.
 
 Named dentry, inode, xattr, and ACL resolution uses exact batched reads. Prefix
 enumeration is reserved for `readdir`, layer materialization, and GC. Redis keeps
@@ -135,12 +138,68 @@ catalog that lacks the index marker.
 
 ### Low-frequency topology path
 
-Seal, fork, snapshot, commit, compaction, and GC retain a versioned `control`
-document so graph changes remain all-or-reject. Before committing, the store
-hydrates and exact-value-checks the hot records used by the transition. The same
-backend transaction updates `control`, changed hot mirrors, journals, and any
-required delta keys. A concurrent writer or heartbeat therefore makes a stale
-topology transaction retry instead of silently committing from an old view.
+Seal, fork, snapshot, commit, compaction, GC, and lease acquire/release build a
+read-tracked topology transaction. The store reads each entity it needs by exact
+key, records the original value of every read, and runs a pure closure that
+validates and modifies those entities. The check set equals the read set, the
+write set is exactly the entities the closure modified, and one multi-key CAS
+commits all checks and writes atomically; an outside observer sees either the
+pre-commit or the post-commit state. A closure cannot read an entity it did not
+declare, so an undeclared dependency fails at the interface instead of silently
+committing from an old view, and retries re-execute the closure on fresh values.
+
+Every topology operation touches only keys of the workspaces it involves. Sibling
+workspaces' seals, forks, and GC run in parallel, and heartbeats or hot writes
+from unrelated workspaces never intersect a topology transaction's check set.
+Conflicting retries use bounded exponential backoff with jitter. There is no
+process-global topology gate: concurrent topology transactions serialize through
+the backend multi-key CAS, and transactions on different workspaces proceed in
+parallel.
+
+The catalog stores one key per entity — `ws/<workspace-id>`,
+`layer/<layer-id>`, `lease/<workspace-id>/<lease-id>`,
+`journal/<workspace-id>/<journal-id>`, `snapshot/<snapshot-id>`, and
+`alloc/<name>` — with entity keys as the sole copy of each record. The
+`control` key holds only the volume header and catalog format and is written
+only at volume creation and catalog migration. Lease and journal keys are
+grouped by workspace prefix so per-workspace listing stays exact.
+
+A single active writable lease per workspace is enforced by
+`WorkspaceRecord.active_lease`: acquire CASes the field `None ->
+Some(lease_id)`, release and expiry clear it, and acquire also clears a dangling
+pointer to an already-invalid lease so no termination path can block remount.
+
+GC deletes a layer in two phases: it CAS-marks the candidate `Deleting` from the
+exact value it read, rescans the root set to confirm no new root references the
+layer (abandoning the deletion and restoring `Sealed` on a hit), and only then
+deletes the delta keys and the layer record. Root-creating operations (fork,
+snapshot, lease acquire, seal begin) CAS-check the exact value of the base layer
+they reference, including `state == Sealed`. GC also reaps `Released`/`Expired`
+leases and `Completed`/`Aborted` journals past their grace period, keeping the
+most recent journal per workspace for `inspect`, so catalog size tracks active
+entities. Expired-lease reaping lives in lease acquire, the GC cycle, and the
+start of seal recovery; the heartbeat task only renews its own lease and stops
+on renewal failure, after which writes are fenced.
+
+`initialize_workspace_schema` migrates older catalogs: it detects the previous
+document format, writes each entity to its entity key, and CAS-switches `control`
+to a header-only document with `catalog_format: 2`. The single-key CAS makes the
+migration run once and a crash mid-migration can resume. Mounting refuses an
+unmigrated catalog and points at the migration command:
+
+```text
+brewfs workspace --meta-backend redis --meta-url <url> migrate
+brewfs workspace --meta-backend sqlx --meta-url <url> migrate
+brewfs workspace --meta-backend tikv --meta-tikv-pd-endpoints <pd-endpoints> migrate
+```
+
+TiKV selects its PD endpoints with `--meta-tikv-pd-endpoints`; `--meta-url` is
+used only by the Redis and SQLite backends. The command selects the same
+backend, endpoint, and `workspace-namespace` as every other workspace CLI
+invocation. Migration is one-way: once `control` carries
+`catalog_format: 2`, older binaries that only understand the entity-table
+document cannot read the catalog, so the release notes must state that all
+readers must be upgraded before `migrate` runs.
 
 Redis implements multi-key CAS with a binary-safe Lua script. All workspace keys
 use one fixed cluster hash tag. TiKV uses pessimistic transactions and
@@ -180,8 +239,8 @@ inspection or retry.
 - `src/workspace_overlay/meta_layer.rs`: POSIX-facing workspace metadata layer.
 - `src/workspace_overlay/resolver.rs`: layered namespace and extent resolution.
 - `src/workspace_overlay/catalog.rs`: backend-neutral storage contract.
-- `src/workspace_overlay/stores/kv_store.rs`: shared Redis/TiKV state machine and
-  hot-record transaction boundaries.
+- `src/workspace_overlay/stores/kv_store.rs`: shared Redis/TiKV state machine,
+  read-tracked topology transactions, and catalog migration.
 - `src/workspace_overlay/stores/redis.rs`: Redis key scoping, Lua CAS, server time.
 - `src/workspace_overlay/stores/tikv.rs`: TiKV transactions, scans, and PD TSO.
 - `src/workspace_overlay/lifecycle.rs`: seal, fork, snapshot, commit, recovery.
@@ -199,9 +258,18 @@ Any architecture change must preserve and test these invariants:
 5. stale epochs and lease generations cannot partially write;
 6. active leases and incomplete journals prevent premature GC;
 7. default flat-volume behavior and serialized metadata remain unchanged;
-8. Redis and TiKV both pass the distributed two-store concurrency contract.
+8. Redis and TiKV both pass the distributed two-store concurrency contract;
 9. every mounted workspace resolves exactly two layers;
-10. named point reads issue no prefix scans, regardless of backend key count.
+10. named point reads issue no prefix scans, regardless of backend key count;
+11. every topology transaction checks exactly the entities it read and touches no
+    other workspace's keys;
+12. GC marks a layer `Deleting` and rechecks the root set before deleting its
+    delta keys, and root-creating operations check the referenced base layer's
+    exact value;
+13. `Released`/`Expired` leases and `Completed`/`Aborted` journals past grace
+    are reaped, and the heartbeat task never reaps leases;
+14. mounting refuses an unmigrated catalog and directs the operator to the
+    migration command.
 
 The feature test suite, resolver oracle tests, real Redis/TiKV backend contracts,
 dual-mount isolation tests, pjdfstest, and xfstests gates are the acceptance
