@@ -26,7 +26,7 @@ use crate::workspace_overlay::catalog::{
 };
 use crate::workspace_overlay::digest::{CanonicalLayerDelta, delta_digest, root_hash};
 use crate::workspace_overlay::error::WorkspaceError;
-use crate::workspace_overlay::ids::{JournalId, LayerId, SnapshotId, WorkspaceId};
+use crate::workspace_overlay::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
 use crate::workspace_overlay::model::{
     AclDelta, BaseRevision, CommitResult, DataExtentDelta, DentryDelta, DentryOp, ExtentKind,
     InodeDelta, InodeState, LayerRecord, LayerState, LeaseState, SealJournal, SealPhase,
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS ws_v1_workspaces (
     fork_base_root_hash BLOB,
     owner_id TEXT,
     state INTEGER NOT NULL,
+    active_lease BLOB,
     created_at_ns INTEGER NOT NULL,
     updated_at_ns INTEGER NOT NULL
 );
@@ -246,6 +247,44 @@ impl SqliteWorkspaceStore {
             .map_err(backend)
     }
 
+    /// 为已有目录增加 `active_lease`，并在同一事务内恢复当前租约指针。
+    async fn migrate_workspace_columns(pool: &SqlitePool) -> Result<(), WorkspaceError> {
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(backend)?;
+        let columns = sea_orm::sqlx::query("PRAGMA table_info(ws_v1_workspaces)")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(backend)?;
+        let names = columns
+            .iter()
+            .map(|row| row.try_get::<String, _>("name").map_err(backend))
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_active_lease = names.iter().any(|name| name == "active_lease");
+        if !has_active_lease {
+            sea_orm::sqlx::query("ALTER TABLE ws_v1_workspaces ADD COLUMN active_lease BLOB")
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+            // 根据有效可写租约恢复旧目录的租约指针。
+            let now = now_ns()?;
+            sea_orm::sqlx::query(
+                "UPDATE ws_v1_workspaces SET active_lease = (
+                     SELECT l.lease_id FROM ws_v1_snapshot_leases l
+                     WHERE l.workspace_id = ws_v1_workspaces.workspace_id
+                       AND l.writable = 1 AND l.state = ? AND l.expires_at_ns > ?
+                     ORDER BY l.updated_at_ns DESC, l.lease_id DESC
+                     LIMIT 1
+                 )",
+            )
+            .bind(LeaseState::Active.discriminant() as i64)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
+
     pub async fn schema_table_names(&self) -> Result<Vec<String>, WorkspaceError> {
         let rows = sea_orm::sqlx::query(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ws_v1_%' ORDER BY name",
@@ -365,6 +404,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             .execute(&self.pool)
             .await
             .map_err(backend)?;
+        Self::migrate_workspace_columns(&self.pool).await?;
         Ok(())
     }
 
@@ -383,7 +423,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let row = sea_orm::sqlx::query(
             "SELECT workspace_id, head_layer_id, head_epoch,
                     fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                    owner_id, state, created_at_ns, updated_at_ns
+                    owner_id, state, active_lease, created_at_ns, updated_at_ns
              FROM ws_v1_workspaces WHERE workspace_id = ?",
         )
         .bind(id.as_bytes().as_slice())
@@ -595,6 +635,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             }),
             owner_id: request.owner_id,
             state: WorkspaceState::Active,
+            active_lease: None,
             created_at_ns: now,
             updated_at_ns: now,
         })
@@ -687,6 +728,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             fork_base: Some(request.base_revision),
             owner_id: request.owner_id,
             state: WorkspaceState::Active,
+            active_lease: None,
             created_at_ns: now,
             updated_at_ns: now,
         })
@@ -696,7 +738,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let rows = sea_orm::sqlx::query(
             "SELECT workspace_id, head_layer_id, head_epoch,
                     fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                    owner_id, state, created_at_ns, updated_at_ns
+                    owner_id, state, active_lease, created_at_ns, updated_at_ns
              FROM ws_v1_workspaces ORDER BY created_at_ns, workspace_id",
         )
         .fetch_all(&self.pool)
@@ -803,8 +845,8 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let _guard = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
         let row = sea_orm::sqlx::query(
-            "SELECT w.state AS workspace_state, l.parent_layer_id,
-                    p.sealed_version, p.root_hash
+            "SELECT w.state AS workspace_state, w.active_lease,
+                    l.parent_layer_id, p.sealed_version, p.root_hash
              FROM ws_v1_workspaces w
              JOIN ws_v1_layers l ON l.layer_id = w.head_layer_id
              JOIN ws_v1_layers p ON p.layer_id = l.parent_layer_id
@@ -839,6 +881,52 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             )?,
         };
         let now = now_ns()?;
+        if let Some(existing) = row
+            .try_get::<Option<Vec<u8>>, _>("active_lease")
+            .map_err(backend)?
+            .map(|bytes| uuid_from_blob(bytes, "workspace active lease").map(LeaseId::from_uuid))
+            .transpose()?
+        {
+            let still_active = sea_orm::sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM ws_v1_snapshot_leases
+                 WHERE lease_id = ? AND workspace_id = ? AND writable = 1
+                   AND state = ? AND expires_at_ns > ?",
+            )
+            .bind(existing.as_bytes().as_slice())
+            .bind(request.workspace_id.as_bytes().as_slice())
+            .bind(LeaseState::Active.discriminant() as i64)
+            .bind(now)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(backend)?;
+            if still_active != 0 {
+                return Err(WorkspaceError::Busy);
+            }
+            // 清除已经失效的租约指针，允许重新获取租约。
+            sea_orm::sqlx::query(
+                "UPDATE ws_v1_snapshot_leases SET state = ?, updated_at_ns = ?
+                 WHERE lease_id = ? AND workspace_id = ? AND state = ? AND expires_at_ns <= ?",
+            )
+            .bind(LeaseState::Expired.discriminant() as i64)
+            .bind(now)
+            .bind(existing.as_bytes().as_slice())
+            .bind(request.workspace_id.as_bytes().as_slice())
+            .bind(LeaseState::Active.discriminant() as i64)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+            sea_orm::sqlx::query(
+                "UPDATE ws_v1_workspaces SET active_lease = NULL, updated_at_ns = ?
+                 WHERE workspace_id = ? AND active_lease = ?",
+            )
+            .bind(now)
+            .bind(request.workspace_id.as_bytes().as_slice())
+            .bind(existing.as_bytes().as_slice())
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
         sea_orm::sqlx::query(
             "UPDATE ws_v1_snapshot_leases SET state = ?, updated_at_ns = ?
              WHERE workspace_id = ? AND state = ? AND expires_at_ns <= ?",
@@ -877,6 +965,20 @@ impl WorkspaceStore for SqliteWorkspaceStore {
                 return Err(WorkspaceError::Busy);
             }
             return Err(backend(error));
+        }
+        let pointed = sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET active_lease = ?, updated_at_ns = ?
+             WHERE workspace_id = ? AND state = ? AND active_lease IS NULL",
+        )
+        .bind(request.lease_id.as_bytes().as_slice())
+        .bind(now)
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(WorkspaceState::Active.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if pointed.rows_affected() != 1 {
+            return Err(WorkspaceError::Busy);
         }
         tx.commit().await.map_err(backend)?;
         Ok(SnapshotLease {
@@ -930,6 +1032,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
 
     async fn release_lease(&self, request: ReleaseLease) -> Result<(), WorkspaceError> {
         let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
         let now = now_ns()?;
         let updated = sea_orm::sqlx::query(
             "UPDATE ws_v1_snapshot_leases SET state = ?, updated_at_ns = ?
@@ -940,18 +1043,42 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(request.lease_id.as_bytes().as_slice())
         .bind(to_i64(request.holder_generation, "holder generation")?)
         .bind(LeaseState::Active.discriminant() as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
         if updated.rows_affected() != 1 {
             return Err(WorkspaceError::Fenced);
         }
+        sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET active_lease = NULL, updated_at_ns = ?
+             WHERE active_lease = ?",
+        )
+        .bind(now)
+        .bind(request.lease_id.as_bytes().as_slice())
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
     async fn reap_expired_leases(&self) -> Result<u64, WorkspaceError> {
         let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
         let now = now_ns()?;
+        sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET active_lease = NULL, updated_at_ns = ?
+             WHERE active_lease IN (
+                 SELECT lease_id FROM ws_v1_snapshot_leases
+                 WHERE state = ? AND expires_at_ns <= ?
+             )",
+        )
+        .bind(now)
+        .bind(LeaseState::Active.discriminant() as i64)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
         let updated = sea_orm::sqlx::query(
             "UPDATE ws_v1_snapshot_leases SET state = ?, updated_at_ns = ?
              WHERE state = ? AND expires_at_ns <= ?",
@@ -960,10 +1087,83 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(now)
         .bind(LeaseState::Active.discriminant() as i64)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(updated.rows_affected())
+    }
+
+    async fn prune_terminal_records(
+        &self,
+        now_ns: i64,
+        grace_ns: u64,
+    ) -> Result<(), WorkspaceError> {
+        let cutoff = now_ns.saturating_sub(to_i64(grace_ns, "terminal record grace")?);
+        let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
+        // 每个 workspace 保留最近的终止态租约和 journal，供 inspect 查询。
+        sea_orm::sqlx::query(
+            "DELETE FROM ws_v1_snapshot_leases
+             WHERE state IN (?, ?) AND updated_at_ns <= ?
+               AND lease_id NOT IN (
+                   SELECT lease_id FROM (
+                       SELECT lease_id,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY workspace_id
+                                  ORDER BY updated_at_ns DESC, lease_id DESC
+                              ) AS rank
+                       FROM ws_v1_snapshot_leases
+                       WHERE state IN (?, ?)
+                   ) WHERE rank = 1
+               )",
+        )
+        .bind(LeaseState::Released.discriminant() as i64)
+        .bind(LeaseState::Expired.discriminant() as i64)
+        .bind(cutoff)
+        .bind(LeaseState::Released.discriminant() as i64)
+        .bind(LeaseState::Expired.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sea_orm::sqlx::query(
+            "DELETE FROM ws_v1_seal_journal
+             WHERE phase IN (?, ?) AND updated_at_ns <= ?
+               AND journal_id NOT IN (
+                   SELECT journal_id FROM (
+                       SELECT journal_id,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY workspace_id
+                                  ORDER BY updated_at_ns DESC, journal_id DESC
+                              ) AS rank
+                       FROM ws_v1_seal_journal
+                       WHERE phase IN (?, ?)
+                   ) WHERE rank = 1
+               )",
+        )
+        .bind(SealPhase::Completed.discriminant() as i64)
+        .bind(SealPhase::Aborted.discriminant() as i64)
+        .bind(cutoff)
+        .bind(SealPhase::Completed.discriminant() as i64)
+        .bind(SealPhase::Aborted.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET active_lease = NULL
+             WHERE active_lease IS NOT NULL
+               AND active_lease NOT IN (
+                   SELECT lease_id FROM ws_v1_snapshot_leases
+                   WHERE state = ? AND expires_at_ns > ?
+               )",
+        )
+        .bind(LeaseState::Active.discriminant() as i64)
+        .bind(now_ns)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
+        Ok(())
     }
 
     async fn list_leases(
@@ -1825,6 +2025,24 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         rows.iter().map(decode_seal_journal).collect()
     }
 
+    async fn list_seal_journals(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<SealJournal>, WorkspaceError> {
+        let rows = sea_orm::sqlx::query(
+            "SELECT journal_id, workspace_id, old_head_layer_id, expected_head_epoch,
+                    phase, pending_bytes, delta_digest, root_hash, new_head_layer_id,
+                    last_error, created_at_ns, updated_at_ns
+             FROM ws_v1_seal_journal WHERE workspace_id = ?
+             ORDER BY created_at_ns, journal_id",
+        )
+        .bind(workspace_id.as_bytes().as_slice())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.iter().map(decode_seal_journal).collect()
+    }
+
     async fn fast_forward_commit(
         &self,
         request: FastForwardCommit,
@@ -1982,7 +2200,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             .map_err(backend)?;
         }
         let row = sea_orm::sqlx::query(
-            "UPDATE ws_v1_workspaces SET state = ?, updated_at_ns = ?
+            "UPDATE ws_v1_workspaces SET state = ?, active_lease = NULL, updated_at_ns = ?
              WHERE workspace_id = ? AND state = ? RETURNING head_layer_id",
         )
         .bind(WorkspaceState::Deleting.discriminant() as i64)
@@ -2548,7 +2766,7 @@ async fn load_workspace_tx(
     let row = sea_orm::sqlx::query(
         "SELECT workspace_id, head_layer_id, head_epoch,
                 fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                owner_id, state, created_at_ns, updated_at_ns
+                owner_id, state, active_lease, created_at_ns, updated_at_ns
          FROM ws_v1_workspaces WHERE workspace_id = ?",
     )
     .bind(workspace_id.as_bytes().as_slice())
@@ -2909,6 +3127,11 @@ fn decode_workspace(row: &SqliteRow) -> Result<WorkspaceRecord, WorkspaceError> 
             row.try_get("state").map_err(backend)?,
             "workspace state",
         )?)?,
+        active_lease: row
+            .try_get::<Option<Vec<u8>>, _>("active_lease")
+            .map_err(backend)?
+            .map(|bytes| uuid_from_blob(bytes, "workspace active lease").map(LeaseId::from_uuid))
+            .transpose()?,
         created_at_ns: row.try_get("created_at_ns").map_err(backend)?,
         updated_at_ns: row.try_get("updated_at_ns").map_err(backend)?,
     })
