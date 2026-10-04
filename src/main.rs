@@ -1402,10 +1402,10 @@ where
 {
     match command {
         WorkspaceCommand::InitVolume { owner } => {
-            store.initialize_workspace_schema().await?;
             if store.load_volume_header().await?.is_some() {
                 anyhow::bail!("workspace volume is already initialized")
             }
+            store.initialize_workspace_schema().await?;
             let workspace = store
                 .create_volume_root(CreateVolumeRoot {
                     volume_id: uuid::Uuid::now_v7(),
@@ -1416,6 +1416,10 @@ where
                 })
                 .await?;
             print_json(&workspace)?;
+        }
+        WorkspaceCommand::Migrate => {
+            store.initialize_workspace_schema().await?;
+            validate_workspace_header(&store).await?;
         }
         WorkspaceCommand::Create { revision, owner } => {
             validate_workspace_header(&store).await?;

@@ -317,6 +317,8 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         owner: Option<String>,
     },
+    /// Migrate an existing workspace catalog to the current entity format.
+    Migrate,
     /// Create a workspace from an exact sealed revision.
     Create {
         #[arg(long = "from", value_name = "REVISION")]
@@ -1109,6 +1111,26 @@ mod tests {
             fuse_max_background: None,
             privileged: false,
         }
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn workspace_migrate_parses_catalog_configuration() {
+        let cli = Cli::parse_from([
+            "brewfs",
+            "workspace",
+            "--meta-backend",
+            "redis",
+            "--meta-url",
+            "redis://localhost:6379/0",
+            "migrate",
+        ]);
+        let Command::Workspace(args) = cli.cmd else {
+            panic!("expected workspace command");
+        };
+        assert_eq!(args.meta_backend, WorkspaceMetaBackendKind::Redis);
+        assert_eq!(args.meta_url, "redis://localhost:6379/0");
+        assert!(matches!(args.command, WorkspaceCommand::Migrate));
     }
 
     #[test]
