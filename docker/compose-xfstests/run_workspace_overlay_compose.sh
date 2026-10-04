@@ -23,14 +23,14 @@ Usage: $(basename "$0") [options]
 
 Run the workspace overlay integration stack with Docker Compose.  A shared
 base is seeded through FUSE, forked into two workspaces, checked for isolation,
-then each selected filesystem suite runs against both forks.
+then concurrent fork/seal checks and selected filesystem suites run.
 
 Options:
   --backend BACKEND          metadata backend: redis or tikv (default: $BACKEND)
   --xfstests-cases "CASES"   xfstests cases; omit for the complete configured suite
   --skip-xfstests            do not run xfstests
   --skip-ltp                 do not run LTP
-  --control-only             run only init/seed/fork/isolation verification
+  --control-only             run init/seed/fork/isolation/concurrency verification
   --ltp-skip-tests "NAMES"   extra LTP test names to skip
   --ltp-extra-args "ARGS"    extra arguments passed to runltp
   --reuse-images             reuse existing images and target/docker/brewfs
@@ -175,6 +175,10 @@ log "forking two independent workspaces"
 run_control fork
 log "verifying simultaneous workspace isolation"
 run_control verify
+log "verifying concurrent forks with two mounted writers"
+run_control concurrent-fork
+log "verifying concurrent seals with two mounted writers"
+run_control concurrent-seal
 
 status=0
 if [[ "$RUN_XFSTESTS" == true ]]; then

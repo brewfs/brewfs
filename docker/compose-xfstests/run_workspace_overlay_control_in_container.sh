@@ -17,8 +17,9 @@ die() {
 
 [[ "$catalog_backend" == redis || "$catalog_backend" == tikv ]] \
     || die "BREWFS_WORKSPACE_META_BACKEND must be redis or tikv"
-[[ "$mode" == init || "$mode" == seed || "$mode" == fork || "$mode" == verify ]] \
-    || die "usage: $0 {init|seed|fork|verify}"
+[[ "$mode" == init || "$mode" == seed || "$mode" == fork || "$mode" == verify || \
+    "$mode" == concurrent-fork || "$mode" == concurrent-seal ]] \
+    || die "usage: $0 {init|seed|fork|verify|concurrent-fork|concurrent-seal}"
 
 mkdir -p "$state_dir"
 
@@ -81,12 +82,12 @@ case "$mode" in
         printf '[workspace-overlay] forked workspaces %s and %s\n' \
             "${fork_ids[0]}" "${fork_ids[1]}"
         ;;
-    verify)
+    verify|concurrent-fork|concurrent-seal)
         workspace_a="$(tr -d '[:space:]' <"$state_dir/workspace-a.id")"
         workspace_b="$(tr -d '[:space:]' <"$state_dir/workspace-b.id")"
         [[ -n "$workspace_a" && -n "$workspace_b" ]] \
             || die "forked workspace ids are missing"
-        export BREWFS_WORKSPACE_HARNESS_MODE=verify
+        export BREWFS_WORKSPACE_HARNESS_MODE="$mode"
         export BREWFS_WORKSPACE_A="$workspace_a"
         export BREWFS_WORKSPACE_B="$workspace_b"
         export BREWFS_WORKSPACE_CATALOG_URL="$catalog_url"

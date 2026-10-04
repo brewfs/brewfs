@@ -316,6 +316,10 @@ fi
 if (( WORKSPACE_COUNT == 2 )); then
     log "verifying simultaneous dual-workspace isolation"
     run_dual_harness verify "$workspace_a" "$workspace_b" "$run_dir/dual-mount"
+    log "verifying concurrent forks with two mounted writers"
+    run_dual_harness concurrent-fork "$workspace_a" "$workspace_b" "$run_dir/concurrent-fork"
+    log "verifying concurrent seals with two mounted writers"
+    run_dual_harness concurrent-seal "$workspace_a" "$workspace_b" "$run_dir/concurrent-seal"
 else
     log "single-workspace mode: skipping dual-workspace isolation check"
 fi

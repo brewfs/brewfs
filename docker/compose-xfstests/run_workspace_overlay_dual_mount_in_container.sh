@@ -19,6 +19,26 @@ mode="${BREWFS_WORKSPACE_HARNESS_MODE:-verify}"
 pid_a=""
 pid_b=""
 last_pid=""
+writer_pids=()
+concurrency="${BREWFS_WORKSPACE_CONCURRENCY:-8}"
+[[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || {
+    printf 'BREWFS_WORKSPACE_CONCURRENCY must be a positive integer\n' >&2
+    exit 2
+}
+writer_stop_file="$artifact_dir/writers.stop"
+catalog_args=(
+    --meta-backend "$catalog_backend"
+    --workspace-namespace "$catalog_namespace"
+)
+case "$catalog_backend" in
+    sqlx|redis) catalog_args+=(--meta-url "$catalog_url") ;;
+    tikv) catalog_args+=(--meta-tikv-pd-endpoints "$catalog_tikv_endpoints") ;;
+    *) printf 'unsupported workspace catalog backend: %s\n' "$catalog_backend" >&2; exit 2 ;;
+esac
+
+run_cli() {
+    (cd "$state_dir" && "$bin" workspace "${catalog_args[@]}" "$@")
+}
 
 log() { printf '[workspace-overlay] %s\n' "$*"; }
 
@@ -50,6 +70,10 @@ stop_mount() {
 cleanup() {
     local status=$?
     set +e
+    for pid in "${writer_pids[@]}"; do
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
     stop_mount "$pid_b" "$mount_b"
     stop_mount "$pid_a" "$mount_a"
     if is_mounted "$mount_a" || is_mounted "$mount_b"; then
@@ -66,23 +90,6 @@ start_mount() {
     local cache_dir="$3"
     local log_file="$4"
     local fuse_log_file="${log_file%.log}.fuse.log"
-    local -a catalog_args=(
-        --meta-backend "$catalog_backend"
-        --workspace-namespace "$catalog_namespace"
-    )
-    case "$catalog_backend" in
-        sqlx|redis)
-            catalog_args+=(--meta-url "$catalog_url")
-            ;;
-        tikv)
-            catalog_args+=(--meta-tikv-pd-endpoints "$catalog_tikv_endpoints")
-            ;;
-        *)
-            log "unsupported workspace catalog backend: $catalog_backend"
-            return 2
-            ;;
-    esac
-
     mkdir -p "$target" "$cache_dir" "$(dirname "$log_file")"
     (
         cd "$state_dir"
@@ -208,6 +215,223 @@ PY
     log "dual workspace isolation PASS"
 }
 
+base_revision() {
+    local inspection
+    inspection="$(run_cli inspect "$workspace_a")"
+    python3 - "$inspection" <<'PY'
+import json
+import sys
+
+revision = json.loads(sys.argv[1])["base_revision"]
+if revision is None:
+    raise SystemExit("workspace A has no fork base")
+print(f"{revision['layer_id']}:{revision['sealed_version']}:{bytes(revision['root_hash']).hex()}")
+PY
+}
+
+start_writers() {
+    local label target ready deadline
+    rm -f "$writer_stop_file" "$artifact_dir/writer-a.ready" "$artifact_dir/writer-b.ready"
+    for label in a b; do
+        if [[ "$label" == a ]]; then target="$mount_a"; else target="$mount_b"; fi
+        (
+            index=0
+            while [[ ! -e "$writer_stop_file" ]]; do
+                index=$((index + 1))
+                printf '%s-%s\n' "$label" "$index" >"$target/concurrent-$label-$index.txt"
+                : >"$artifact_dir/writer-$label.ready"
+                sleep 0.02
+            done
+            sync "$target"
+        ) >"$artifact_dir/writer-$label.log" 2>&1 &
+        writer_pids+=("$!")
+    done
+    deadline=$((SECONDS + 30))
+    for label in a b; do
+        ready="$artifact_dir/writer-$label.ready"
+        until [[ -e "$ready" ]]; do
+            (( SECONDS < deadline )) || { log "writer $label did not start"; return 1; }
+            sleep 0.1
+        done
+    done
+}
+
+wait_writers() {
+    local pid status=0
+    : >"$writer_stop_file"
+    for pid in "${writer_pids[@]}"; do
+        wait "$pid" || status=1
+    done
+    writer_pids=()
+    (( status == 0 )) || log "concurrent mount writes failed; inspect writer logs"
+    return "$status"
+}
+
+wait_cli_jobs() {
+    local pid status=0
+    for pid in "$@"; do
+        wait "$pid" || status=1
+    done
+    (( status == 0 )) || log "concurrent CLI operations failed; inspect CLI logs"
+    return "$status"
+}
+
+measure_cli() {
+    local label="$1" index="$2" started ended status
+    shift 2
+    started="$(date +%s%N)"
+    if run_cli "$@"; then status=0; else status=$?; fi
+    ended="$(date +%s%N)"
+    printf '%s\t%s\t%s\n' "$started" "$ended" "$status" \
+        >"$artifact_dir/$label-$index.time.tsv"
+    return "$status"
+}
+
+write_concurrency_metrics() {
+    local label="$1" started="$2" ended="$3"
+    python3 - "$artifact_dir" "$label" "$concurrency" "$started" "$ended" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+label = sys.argv[2]
+count = int(sys.argv[3])
+started = int(sys.argv[4])
+ended = int(sys.argv[5])
+wall_seconds = (ended - started) / 1_000_000_000
+if wall_seconds <= 0:
+    raise SystemExit("invalid batch wall duration")
+operations = []
+for index in range(1, count + 1):
+    start_ns, end_ns, status = map(
+        int, (root / f"{label}-{index}.time.tsv").read_text().split()
+    )
+    if start_ns > end_ns or start_ns < started or end_ns > ended:
+        raise SystemExit(f"invalid {label}-{index} timing")
+    operations.append({
+        "index": index,
+        "exit_status": status,
+        "latency_seconds": (end_ns - start_ns) / 1_000_000_000,
+    })
+succeeded = sum(operation["exit_status"] == 0 for operation in operations)
+report = {
+    "scenario": f"concurrent-{label}",
+    "timed_scope": "parallel CLI operations, excluding workspace setup and writer drain",
+    "mounted_writers": 2,
+    "operation_count": count,
+    "success_count": succeeded,
+    "batch_wall_seconds": wall_seconds,
+    "successful_operations_per_second": succeeded / wall_seconds,
+    "operations": operations,
+}
+(root / f"concurrent-{label}-metrics.json").write_text(
+    json.dumps(report, indent=2) + "\n", encoding="utf-8"
+)
+PY
+}
+
+verify_forks() {
+    python3 - "$artifact_dir" "$concurrency" "$1" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+count = int(sys.argv[2])
+expected = sys.argv[3]
+seen = set()
+for index in range(1, count + 1):
+    records = json.loads((root / f"fork-{index}.json").read_text())
+    if len(records) != 1:
+        raise SystemExit(f"fork-{index} returned {len(records)} workspaces")
+    record = records[0]
+    revision = record["fork_base"]
+    actual = f"{revision['layer_id']}:{revision['sealed_version']}:{bytes(revision['root_hash']).hex()}"
+    if actual != expected:
+        raise SystemExit(f"fork-{index} has an unexpected base revision")
+    if record["workspace_id"] in seen:
+        raise SystemExit(f"fork-{index} returned a duplicate workspace")
+    seen.add(record["workspace_id"])
+PY
+}
+
+concurrent_forks() {
+    local revision index
+    local -a jobs=()
+    revision="$(base_revision)"
+    start_writers
+    local batch_started batch_ended
+    batch_started="$(date +%s%N)"
+    for index in $(seq 1 "$concurrency"); do
+        measure_cli fork "$index" fork "$revision" --count 1 --owner "concurrent-fork-$index" \
+            >"$artifact_dir/fork-$index.json" 2>"$artifact_dir/fork-$index.log" &
+        jobs+=("$!")
+    done
+    local cli_status=0
+    wait_cli_jobs "${jobs[@]}" || cli_status=1
+    batch_ended="$(date +%s%N)"
+    wait_writers
+    write_concurrency_metrics fork "$batch_started" "$batch_ended"
+    (( cli_status == 0 )) || return 1
+    verify_forks "$revision"
+    log "concurrent fork PASS ($concurrency distinct workspaces)"
+}
+
+concurrent_seals() {
+    local revision index workspace
+    local -a workspaces=() jobs=()
+    revision="$(base_revision)"
+    run_cli fork "$revision" --count "$concurrency" --owner concurrent-seal-setup \
+        >"$artifact_dir/seal-workspaces.json" 2>"$artifact_dir/seal-setup.log"
+    mapfile -t workspaces < <(python3 - "$artifact_dir/seal-workspaces.json" <<'PY'
+import json
+import sys
+
+for record in json.load(open(sys.argv[1], encoding="utf-8")):
+    print(record["workspace_id"])
+PY
+)
+    [[ ${#workspaces[@]} -eq "$concurrency" ]] || {
+        log "seal setup returned ${#workspaces[@]} workspaces, expected $concurrency"
+        return 1
+    }
+    start_writers
+    local batch_started batch_ended
+    batch_started="$(date +%s%N)"
+    index=0
+    for workspace in "${workspaces[@]}"; do
+        index=$((index + 1))
+        measure_cli seal "$index" snapshot "$workspace" --name "concurrent-seal-$index" \
+            --owner "concurrent-seal-$index" \
+            >"$artifact_dir/seal-$index.json" 2>"$artifact_dir/seal-$index.log" &
+        jobs+=("$!")
+    done
+    local cli_status=0
+    wait_cli_jobs "${jobs[@]}" || cli_status=1
+    batch_ended="$(date +%s%N)"
+    wait_writers
+    write_concurrency_metrics seal "$batch_started" "$batch_ended"
+    (( cli_status == 0 )) || return 1
+    python3 - "$artifact_dir" "$concurrency" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+count = int(sys.argv[2])
+seen = set()
+for index in range(1, count + 1):
+    snapshot = json.loads((root / f"seal-{index}.json").read_text())
+    revision = snapshot["revision"]
+    identity = (revision["layer_id"], revision["sealed_version"])
+    if identity in seen:
+        raise SystemExit(f"seal-{index} returned a duplicate revision")
+    seen.add(identity)
+PY
+    log "concurrent seal PASS ($concurrency distinct revisions)"
+}
+
 mkdir -p "$state_dir" "$data_dir" "$artifact_dir"
 start_mount "$workspace_a" "$mount_a" "$state_dir/cache-a" "$artifact_dir/mount-a.log"
 pid_a=$last_pid
@@ -217,11 +441,16 @@ case "$mode" in
     seed)
         seed_base
         ;;
-    verify)
+    verify|concurrent-fork|concurrent-seal)
+        [[ -n "$workspace_b" ]] || { log "BREWFS_WORKSPACE_B is required in $mode mode"; exit 2; }
         start_mount "$workspace_b" "$mount_b" "$state_dir/cache-b" "$artifact_dir/mount-b.log"
         pid_b=$last_pid
         wait_for_mount "$pid_b" "$mount_b" "$artifact_dir/mount-b.log"
-        verify_isolation
+        case "$mode" in
+            verify) verify_isolation ;;
+            concurrent-fork) concurrent_forks ;;
+            concurrent-seal) concurrent_seals ;;
+        esac
         ;;
     *)
         log "unsupported BREWFS_WORKSPACE_HARNESS_MODE: $mode"
