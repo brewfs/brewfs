@@ -96,6 +96,7 @@ pub struct WorkspaceRecord {
     pub fork_base: Option<BaseRevision>,
     pub owner_id: Option<String>,
     pub state: WorkspaceState,
+    pub active_lease: Option<LeaseId>,
     pub created_at_ns: i64,
     pub updated_at_ns: i64,
 }

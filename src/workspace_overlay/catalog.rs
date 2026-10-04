@@ -357,6 +357,11 @@ pub trait WorkspaceStore: Send + Sync {
     async fn load_seal_journal(&self, journal_id: JournalId)
     -> Result<SealJournal, WorkspaceError>;
     async fn list_incomplete_seal_journals(&self) -> Result<Vec<SealJournal>, WorkspaceError>;
+    /// 列出指定 workspace 的所有 seal journal，包括终止状态的记录。
+    async fn list_seal_journals(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<SealJournal>, WorkspaceError>;
     async fn fast_forward_commit(
         &self,
         request: FastForwardCommit,
@@ -375,6 +380,12 @@ pub trait WorkspaceStore: Send + Sync {
     async fn finalize_layer_metadata_deletion(
         &self,
         layer_ids: Vec<LayerId>,
+    ) -> Result<(), WorkspaceError>;
+    /// 删除超过宽限期的终止状态租约与 journal；每个 workspace 保留最近的记录。
+    async fn prune_terminal_records(
+        &self,
+        now_ns: i64,
+        grace_ns: u64,
     ) -> Result<(), WorkspaceError>;
     async fn install_compaction(
         &self,
