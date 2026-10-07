@@ -282,8 +282,8 @@ measure_cli() {
     started="$(date +%s%N)"
     if run_cli "$@"; then status=0; else status=$?; fi
     ended="$(date +%s%N)"
-    printf '%s\t%s\t%s\n' "$started" "$ended" "$status" \
-        >"$artifact_dir/$label-$index.time.tsv"
+    printf '{"start_ns":%s,"end_ns":%s,"exit_status":%s}\n' \
+        "$started" "$ended" "$status" >"$artifact_dir/$label-$index.time.json"
     return "$status"
 }
 
@@ -304,9 +304,10 @@ if wall_seconds <= 0:
     raise SystemExit("invalid batch wall duration")
 operations = []
 for index in range(1, count + 1):
-    start_ns, end_ns, status = map(
-        int, (root / f"{label}-{index}.time.tsv").read_text().split()
-    )
+    timing = json.loads((root / f"{label}-{index}.time.json").read_text())
+    start_ns = timing["start_ns"]
+    end_ns = timing["end_ns"]
+    status = timing["exit_status"]
     if start_ns > end_ns or start_ns < started or end_ns > ended:
         raise SystemExit(f"invalid {label}-{index} timing")
     operations.append({

@@ -381,7 +381,7 @@ pub trait WorkspaceStore: Send + Sync {
         &self,
         layer_ids: Vec<LayerId>,
     ) -> Result<(), WorkspaceError>;
-    /// 删除超过宽限期的终止状态租约与 journal；每个 workspace 保留最近的记录。
+    /// 删除超过宽限期的终止状态租约与 journal；每个 workspace 保留最近的 journal。
     async fn prune_terminal_records(
         &self,
         now_ns: i64,

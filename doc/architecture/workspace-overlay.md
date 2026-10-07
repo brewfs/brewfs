@@ -199,7 +199,8 @@ backend, endpoint, and `workspace-namespace` as every other workspace CLI
 invocation. Migration is one-way: once `control` carries
 `catalog_format: 2`, older binaries that only understand the entity-table
 document cannot read the catalog, so the release notes must state that all
-readers must be upgraded before `migrate` runs.
+readers must be upgraded before `migrate` runs. The operator-facing upgrade notice is in
+[`doc/releases/workspace-catalog-format-2.md`](../releases/workspace-catalog-format-2.md).
 
 Redis implements multi-key CAS with a binary-safe Lua script. All workspace keys
 use one fixed cluster hash tag. TiKV uses pessimistic transactions and

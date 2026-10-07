@@ -570,7 +570,7 @@ async fn sqlite_reaping_clears_the_active_lease_pointer() {
 }
 
 #[tokio::test]
-async fn sqlite_prunes_old_terminal_rows_and_keeps_the_last_per_workspace() {
+async fn sqlite_prunes_old_terminal_leases_and_keeps_last_journal_per_workspace() {
     let store = Arc::new(initialized_store().await);
     let workspace = store.create_volume_root(create_request()).await.unwrap();
     for index in 0..2 {
@@ -651,8 +651,7 @@ async fn sqlite_prunes_old_terminal_rows_and_keeps_the_last_per_workspace() {
         .list_seal_journals(workspace.workspace_id)
         .await
         .unwrap();
-    assert_eq!(leases.len(), 1);
-    assert_eq!(leases[0].state, LeaseState::Released);
+    assert!(leases.is_empty());
     assert_eq!(journals.len(), 1);
     assert_eq!(journals[0].phase, SealPhase::Aborted);
     let inspection = WorkspaceControl::new(Arc::clone(&store))

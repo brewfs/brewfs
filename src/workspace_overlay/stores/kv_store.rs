@@ -135,17 +135,36 @@ impl<'a, B: WorkspaceKvBackend> TopologyTxn<'a, B> {
         }
     }
 
+    async fn read_many_raw(&mut self, keys: &[Vec<u8>]) -> Result<(), WorkspaceError> {
+        let unread = keys
+            .iter()
+            .filter(|key| !self.checks.contains_key(*key))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let values = self.backend.get_many(&unread).await?;
+        if values.len() != unread.len() {
+            return Err(WorkspaceError::CorruptMetadata(
+                "backend returned the wrong number of values".into(),
+            ));
+        }
+        for (key, value) in unread.into_iter().zip(values) {
+            self.checks.insert(key, value);
+        }
+        Ok(())
+    }
+
+    async fn read_raw(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        self.read_many_raw(std::slice::from_ref(&key)).await?;
+        Ok(self.checks.get(&key).cloned().flatten())
+    }
+
     async fn read<T: DeserializeOwned>(
         &mut self,
         key: Vec<u8>,
     ) -> Result<Option<T>, WorkspaceError> {
-        if let Some(raw) = self.checks.get(&key) {
-            return raw.as_deref().map(decode).transpose();
-        }
-        let raw = self.backend.get(&key).await?;
-        let value = raw.as_deref().map(decode).transpose()?;
-        self.checks.insert(key, raw);
-        Ok(value)
+        self.read_raw(key).await?.as_deref().map(decode).transpose()
     }
 
     async fn read_workspace(
@@ -208,12 +227,19 @@ impl<'a, B: WorkspaceKvBackend> TopologyTxn<'a, B> {
     }
 
     fn put<T: Serialize>(&mut self, key: Vec<u8>, value: &T) -> Result<(), WorkspaceError> {
+        self.put_checked(put(key, value)?)
+    }
+
+    fn put_checked(&mut self, write: KvWrite) -> Result<(), WorkspaceError> {
+        let key = match &write {
+            KvWrite::Put { key, .. } | KvWrite::Delete { key } => key.clone(),
+        };
         if !self.checks.contains_key(&key) {
             return Err(WorkspaceError::CorruptMetadata(
                 "topology write has no declared read".into(),
             ));
         }
-        self.writes.insert(key.clone(), put(key, value)?);
+        self.writes.insert(key, write);
         Ok(())
     }
 
@@ -251,34 +277,12 @@ impl<'a, B: WorkspaceKvBackend> TopologyTxn<'a, B> {
         Ok(())
     }
 
-    fn append_write(&mut self, write: KvWrite) {
-        let key = match &write {
-            KvWrite::Put { key, .. } | KvWrite::Delete { key } => key.clone(),
-        };
-        self.writes.insert(key, write);
-    }
-
     async fn commit(self) -> Result<bool, WorkspaceError> {
-        let raw = self.backend.get(CONTROL_KEY).await?;
-        let control = raw.as_ref().ok_or_else(|| {
-            WorkspaceError::CorruptMetadata("workspace catalog is not initialized".into())
-        })?;
-        if !control.starts_with(CONTROL_MAGIC) {
-            return Err(WorkspaceError::CorruptMetadata(
-                "catalog migration required; run brewfs workspace migrate".into(),
-            ));
-        }
-        let mut checks = self
+        let checks = self
             .checks
             .into_iter()
             .map(|(key, expected)| KvCheck { key, expected })
             .collect::<Vec<_>>();
-        if !checks.iter().any(|check| check.key == CONTROL_KEY) {
-            checks.push(KvCheck {
-                key: CONTROL_KEY.to_vec(),
-                expected: raw,
-            });
-        }
         let writes = self.writes.into_values().collect::<Vec<_>>();
         self.backend.compare_and_swap(&checks, &writes).await
     }
@@ -898,8 +902,9 @@ where
                 volume_id: request.volume_id,
                 created_at_ns: now,
             });
-            txn.append_write(put_control(&control)?);
-            txn.append_write(put(inode_key(&root_inode), &root_inode)?);
+            txn.put_checked(put_control(&control)?)?;
+            txn.read_raw(inode_key(&root_inode)).await?;
+            txn.put(inode_key(&root_inode), &root_inode)?;
             if txn.commit().await? {
                 return Ok(workspace);
             }
@@ -2169,7 +2174,8 @@ where
                 sealed_at_ns: None,
             };
             txn.put_layer(&row)?;
-            txn.append_write(put(extent_key(&extent), &extent)?);
+            txn.read_raw(extent_key(&extent)).await?;
+            txn.put(extent_key(&extent), &extent)?;
             if txn.commit().await? {
                 return Ok(());
             }
@@ -2342,8 +2348,13 @@ where
                     return Err(WorkspaceError::Busy);
                 }
                 txn.delete(layer_key(id))?;
-                for key in entries.get(&id).into_iter().flatten() {
-                    txn.append_write(KvWrite::Delete { key: key.clone() });
+                if let Some(keys) = entries.get(&id) {
+                    txn.read_many_raw(keys).await?;
+                    for key in keys {
+                        if txn.checks.get(key).is_some_and(Option::is_some) {
+                            txn.delete(key.clone())?;
+                        }
+                    }
                 }
                 if txn.commit().await? {
                     break;
@@ -2406,7 +2417,7 @@ where
         let mut latest = BTreeMap::<WorkspaceId, (i64, JournalId)>::new();
         for journal in &journals {
             if matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted) {
-                let candidate = (journal.created_at_ns, journal.journal_id);
+                let candidate = (journal.updated_at_ns, journal.journal_id);
                 if latest
                     .get(&journal.workspace_id)
                     .is_none_or(|current| candidate > *current)
@@ -2588,20 +2599,31 @@ where
             head.state = LayerState::Deleting;
             head.owner_workspace_id = None;
             txn.put_layer(&head)?;
+            let mut delta_writes = Vec::new();
             for row in &request.delta.dentries {
-                txn.append_write(put(dentry_key(row), row)?);
+                delta_writes.push(put(dentry_key(row), row)?);
             }
             for row in &request.delta.inodes {
-                txn.append_write(put(inode_key(row), row)?);
+                delta_writes.push(put(inode_key(row), row)?);
             }
             for row in &request.delta.xattrs {
-                txn.append_write(put(xattr_key(row), row)?);
+                delta_writes.push(put(xattr_key(row), row)?);
             }
             for row in &request.delta.acls {
-                txn.append_write(put(acl_key(row), row)?);
+                delta_writes.push(put(acl_key(row), row)?);
             }
             for row in &request.delta.extents {
-                txn.append_write(put(extent_key(row), row)?);
+                delta_writes.push(put(extent_key(row), row)?);
+            }
+            let keys = delta_writes
+                .iter()
+                .map(|write| match write {
+                    KvWrite::Put { key, .. } | KvWrite::Delete { key } => key.clone(),
+                })
+                .collect::<Vec<_>>();
+            txn.read_many_raw(&keys).await?;
+            for write in delta_writes {
+                txn.put_checked(write)?;
             }
             if txn.commit().await? {
                 return Ok(CompactionResult {
@@ -3356,6 +3378,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prune_keeps_the_last_updated_terminal_journal() {
+        let (store, workspace, _, _) = initialized().await;
+        let earlier = SealJournal {
+            journal_id: JournalId::from_uuid(id(100)),
+            workspace_id: workspace.workspace_id,
+            old_head_layer_id: workspace.head_layer_id,
+            expected_head_epoch: workspace.head_epoch,
+            phase: SealPhase::Completed,
+            pending_bytes: 0,
+            delta_digest: None,
+            root_hash: None,
+            new_head_layer_id: None,
+            last_error: None,
+            created_at_ns: 1,
+            updated_at_ns: 4,
+        };
+        let later = SealJournal {
+            journal_id: JournalId::from_uuid(id(101)),
+            created_at_ns: 2,
+            updated_at_ns: 3,
+            ..earlier.clone()
+        };
+        for journal in [&earlier, &later] {
+            let mut txn = store.topology_txn();
+            txn.read_journal(workspace.workspace_id, journal.journal_id)
+                .await
+                .unwrap();
+            txn.read_journal_index(journal.journal_id).await.unwrap();
+            txn.put_journal(journal).unwrap();
+            txn.put(
+                journal_index_key(journal.journal_id),
+                &workspace.workspace_id,
+            )
+            .unwrap();
+            assert!(txn.commit().await.unwrap());
+        }
+        store.prune_terminal_records(100, 0).await.unwrap();
+        let journals = store
+            .list_seal_journals(workspace.workspace_id)
+            .await
+            .unwrap();
+        assert_eq!(journals, vec![earlier]);
+    }
+
+    #[tokio::test]
+    async fn prune_removes_expired_terminal_leases() {
+        let (store, workspace, _, _) = initialized().await;
+        let first = store
+            .list_leases(workspace.workspace_id)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        store
+            .release_lease(ReleaseLease {
+                lease_id: first.lease_id,
+                holder_generation: first.holder_generation,
+            })
+            .await
+            .unwrap();
+        let second = store
+            .acquire_lease(AcquireLease {
+                workspace_id: workspace.workspace_id,
+                lease_id: LeaseId::from_uuid(id(6)),
+                holder_generation: 2,
+                ttl_ns: 120_000_000_000,
+            })
+            .await
+            .unwrap();
+        store
+            .release_lease(ReleaseLease {
+                lease_id: second.lease_id,
+                holder_generation: second.holder_generation,
+            })
+            .await
+            .unwrap();
+        store.prune_terminal_records(i64::MAX / 2, 0).await.unwrap();
+        assert!(
+            store
+                .list_leases(workspace.workspace_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn independent_kv_store_instances_use_backend_cas() {
         let backend = MemoryBackend::default();
         let probe = backend.clone();
@@ -3866,6 +3975,12 @@ mod tests {
             transaction.put_workspace(&row),
             Err(WorkspaceError::CorruptMetadata(_))
         ));
+        assert!(matches!(
+            transaction.put_checked(KvWrite::Delete {
+                key: layer_key(row.head_layer_id),
+            }),
+            Err(WorkspaceError::CorruptMetadata(_))
+        ));
         assert!(backend.cas_checks.lock().await.is_empty());
     }
 
@@ -3996,12 +4111,7 @@ mod tests {
         let checks = backend.cas_checks.lock().await;
         assert_eq!(checks.len(), 64);
         assert!(checks.iter().all(|keys| {
-            keys.len() == 4
-                && keys
-                    .iter()
-                    .filter(|key| key.as_slice() == CONTROL_KEY)
-                    .count()
-                    == 1
+            keys.len() == 3 && keys.iter().all(|key| key.as_slice() != CONTROL_KEY)
         }));
     }
 

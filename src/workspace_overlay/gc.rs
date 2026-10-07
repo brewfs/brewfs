@@ -290,12 +290,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gc_prunes_old_released_lease_and_keeps_latest() {
+    async fn gc_prunes_all_old_released_leases() {
         let (store, first) = setup().await;
         let workspace_id = first.view.workspace_id;
-        let first_id = first.lease.lease_id;
         first.release().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(2)).await;
         let second = WorkspaceMountSession::acquire(
             store.clone(),
             workspace_id,
@@ -305,7 +303,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let latest_id = second.lease.lease_id;
         second.release().await.unwrap();
         assert_eq!(store.list_leases(workspace_id).await.unwrap().len(), 2);
         let gc = WorkspaceGc::new(
@@ -316,10 +313,7 @@ mod tests {
             Duration::ZERO,
         );
         gc.run_at(i64::MAX / 2).await.unwrap();
-        let leases = store.list_leases(workspace_id).await.unwrap();
-        assert_eq!(leases.len(), 1);
-        assert_eq!(leases[0].lease_id, latest_id);
-        assert_ne!(leases[0].lease_id, first_id);
+        assert!(store.list_leases(workspace_id).await.unwrap().is_empty());
     }
 
     #[tokio::test]

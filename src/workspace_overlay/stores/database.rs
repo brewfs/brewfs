@@ -1102,27 +1102,13 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let cutoff = now_ns.saturating_sub(to_i64(grace_ns, "terminal record grace")?);
         let _guard = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
-        // 每个 workspace 保留最近的终止态租约和 journal，供 inspect 查询。
         sea_orm::sqlx::query(
             "DELETE FROM ws_v1_snapshot_leases
-             WHERE state IN (?, ?) AND updated_at_ns <= ?
-               AND lease_id NOT IN (
-                   SELECT lease_id FROM (
-                       SELECT lease_id,
-                              ROW_NUMBER() OVER (
-                                  PARTITION BY workspace_id
-                                  ORDER BY updated_at_ns DESC, lease_id DESC
-                              ) AS rank
-                       FROM ws_v1_snapshot_leases
-                       WHERE state IN (?, ?)
-                   ) WHERE rank = 1
-               )",
+             WHERE state IN (?, ?) AND updated_at_ns <= ?",
         )
         .bind(LeaseState::Released.discriminant() as i64)
         .bind(LeaseState::Expired.discriminant() as i64)
         .bind(cutoff)
-        .bind(LeaseState::Released.discriminant() as i64)
-        .bind(LeaseState::Expired.discriminant() as i64)
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
