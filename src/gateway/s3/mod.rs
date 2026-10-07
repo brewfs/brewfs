@@ -217,7 +217,6 @@ where
 
 /// Recursively removes a directory tree over the VFS (VFS has no native
 /// `remove_dir_all`).
-#[async_recursion::async_recursion]
 pub(crate) async fn remove_dir_all_rec<S>(
     vfs: &VFS<S, MetaClient<dyn MetaStore>>,
     path: &str,
@@ -240,7 +239,7 @@ where
             let _ = vfs.closedir(fh);
             for entry in entries {
                 let child = format!("{path}/{}", entry.name);
-                remove_dir_all_rec(vfs, &child).await?;
+                Box::pin(remove_dir_all_rec(vfs, &child)).await?;
             }
         }
         vfs.rmdir(path).await

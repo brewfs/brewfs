@@ -302,7 +302,7 @@ impl RecentWriteHotCache {
             let removed_len = removed.data.len() as u64;
             let _ = self
                 .bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                     Some(current.saturating_sub(removed_len))
                 });
         }
@@ -585,7 +585,7 @@ impl DiskStorage {
     fn saturating_fetch_sub_bytes(&self, value: u64) {
         let _ = self
             .bytes_used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_sub(value))
             });
     }

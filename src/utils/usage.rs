@@ -32,7 +32,7 @@ impl Drop for UsageGuard {
 }
 
 fn sub_usage(usage: &AtomicU64, delta: u64) {
-    let _ = usage.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+    let _ = usage.try_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
         Some(r.saturating_sub(delta))
     });
 }

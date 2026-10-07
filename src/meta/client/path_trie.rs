@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_recursion::async_recursion;
 use tokio::sync::RwLock;
 
 struct TrieNode {
@@ -100,7 +99,6 @@ impl PathTrie {
         Vec::new()
     }
 
-    #[async_recursion]
     async fn collect_all_paths_from_node(node: &TrieNode, prefix: &str) -> Vec<(String, Vec<i64>)> {
         let mut paths = Vec::new();
 
@@ -116,7 +114,8 @@ impl PathTrie {
                 format!("{}/{}", prefix, component)
             };
 
-            let child_paths = Self::collect_all_paths_from_node(&child, &child_prefix).await;
+            let child_paths =
+                Box::pin(Self::collect_all_paths_from_node(&child, &child_prefix)).await;
             paths.extend(child_paths);
         }
 

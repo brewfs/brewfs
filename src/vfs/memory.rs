@@ -110,7 +110,7 @@ impl MemoryBudget {
     }
 
     fn fetch_sub_saturating(counter: &AtomicU64, bytes: u64) {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_sub(bytes))
         });
     }
@@ -341,6 +341,16 @@ mod tests {
         assert_eq!(budget.pressure_level(), PressureLevel::High);
         budget.free_writer(500);
         assert_eq!(budget.pressure_level(), PressureLevel::Low);
+    }
+
+    #[test]
+    fn test_free_writer_saturates_at_zero() {
+        let budget = MemoryBudget::new(1000);
+        budget.alloc_writer(300);
+        budget.free_writer(500);
+
+        assert_eq!(budget.writer_bytes(), 0);
+        assert_eq!(budget.used_bytes(), 0);
     }
 
     #[test]

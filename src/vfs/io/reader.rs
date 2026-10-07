@@ -2259,7 +2259,7 @@ mod tests {
             let active = self.active_reads.fetch_add(1, Ordering::SeqCst) + 1;
             let _ =
                 self.max_active_reads
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                         Some(current.max(active))
                     });
             sleep(self.read_delay).await;

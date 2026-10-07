@@ -119,7 +119,7 @@ impl WorkspaceMetrics {
     pub fn remove_active_lease(&self) {
         let _ = self
             .active_leases
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 Some(value.saturating_sub(1))
             });
     }
