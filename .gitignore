@@ -31,3 +31,9 @@ web/results/__pycache__/
 # Editor and OS noise
 .DS_Store
 *.swp
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+.direnv
