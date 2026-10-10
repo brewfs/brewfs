@@ -43,7 +43,7 @@ class PackedLocalRunnerTests(unittest.TestCase):
 
     def test_artifact_manifest_binds_seed_and_final_measurement_metadata(self):
         script = RUNNER.read_text()
-        self.assertIn('packed_run_manifest.py" init', script)
+        self.assertIn('MANIFEST_ARGS=(init', script)
         self.assertIn('packed_run_manifest.py" finalize', script)
         self.assertIn("--scanner-seed \"$SCANNER_SEED\"", script)
         self.assertIn("fixture_prefix=", script)
@@ -53,6 +53,17 @@ class PackedLocalRunnerTests(unittest.TestCase):
         self.assertIn('"git", "-C", str(root), "diff", "HEAD", "--binary"', script)
         self.assertIn('"ls-files", "--others", "--exclude-standard", "-z"', script)
         self.assertIn('"dirty_diff_sha256"', script)
+
+    def test_resource_journal_is_initialized_and_finalized_after_cleanup(self):
+        script = RUNNER.read_text()
+        self.assertIn("packed_resource_journal.py\" init", script)
+        self.assertIn("packed_resource_journal.py\" finalize", script)
+        self.assertIn("--name compose_started", script)
+        self.assertIn("--name mount_ready", script)
+        self.assertIn("--name mount_unmounted", script)
+        self.assertIn("--name compose_stopped", script)
+        self.assertIn("--name work_removed", script)
+        self.assertIn('"$ARTIFACT/resource-journal.json"', script)
 
     def test_layout_controls_are_forwarded_and_recorded(self):
         script = RUNNER.read_text()
@@ -65,6 +76,14 @@ class PackedLocalRunnerTests(unittest.TestCase):
         self.assertIn('--data-codec "$DATA_CODEC"', script)
         self.assertIn('--access-profile "$ACCESS_PROFILE"', script)
         self.assertIn("frame_policy=%s", script)
+
+    def test_p90_training_requires_a_frozen_policy_and_binds_it_to_fixture(self):
+        script = RUNNER.read_text()
+        self.assertIn("PACKED_LOCAL_P90_TRAINING_TRACE", script)
+        self.assertIn("packed_p90_policy.py\"", script)
+        self.assertIn("--p90-training-trace-sha256", script)
+        self.assertIn("--p90-policy \"$ARTIFACT/p90-policy.json\"", script)
+        self.assertIn("p90_training_trace_sha256=%s", script)
 
     def test_conflicting_services_and_failed_cold_setup_stay_fatal(self):
         # Refuse an existing fixed-name Compose service instead of deleting it.

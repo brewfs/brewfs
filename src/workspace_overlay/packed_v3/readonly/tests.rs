@@ -7,6 +7,12 @@ use crate::workspace_overlay::packed_v3::{
 };
 use tempfile::tempdir;
 
+#[test]
+fn packed_read_view_change_preserves_retryable_error_type() {
+    let error = super::packed_error_to_anyhow(PackedWireError::ReadViewChanged);
+    assert!(crate::chunk::read_plan::is_read_view_changed(&error));
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn source_allocation_blocks_survive_packed_getattr_and_lookup() {

@@ -2674,6 +2674,7 @@ mod tests {
                 build_policy: super::super::V3BuildPolicy {
                     frames: Default::default(),
                     inline_data: inline,
+                    p90: None,
                 },
                 metadata_codec: PackedCodec::Raw,
                 data_codec: PackedCodec::Raw,

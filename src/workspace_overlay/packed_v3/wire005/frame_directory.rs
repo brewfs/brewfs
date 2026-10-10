@@ -331,6 +331,7 @@ impl V3FrameDirectoryPage {
         super::V3BuildPolicy {
             frames: self.frame_policy,
             inline_data: false,
+            p90: None,
         }
         .select(1, self.profile, self.size_classes)?;
         let mut previous_end = V3_HEADER_LEN as u64;

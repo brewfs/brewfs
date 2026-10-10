@@ -96,7 +96,7 @@ S和X分别签收，任何未知证据状态记 unverified。通用成功条件�
 | S2 稀疏/大文件：G03 | 已签收PM09 required selectors、SEEK_DATA/HOLE磁盘runs、分页LE09、bounded LD05/FD05及同executor读取；有界group cap保留，source超限自动external | raw/zstd >64MiB dense/all-hole、300段sparse、跨chunk/frame/page、EOF/holes、source attrs/blocks、hardlink复用、EROFS和正常卸载通过；source/binary与40项gate证据见external checkpoint。G07共享预算和G12/G13发布/GC仍独立开放 |
 | S3 读取与预算：G05–G07 | readdir深cookie从起点扫描refs；005预算局限于单次prepare；observing backend只覆盖runtime | 深cookie数量/顺序/GET证据；跨请求queue/pin/stored/raw/decoder/output/cache/慢consumer的全生命周期预算；cancel/failure/eviction/shutdown回收；完整流量和计数守恒 |
 | S4 Packed binding/fallback：G10 | `WorkspaceRecord/BaseRevision`仍是native层；extent resolver最终缺口直接变Hole；packed provider只用于readonly | 独立版本化manifest-digest binding；namespace/hot/cold fallback；upper Absent与explicit Hole区分；upper full-cover零lower GET；partial只补缺口；真实A/B挂载隔离 |
-| S5 Mutation fence：G11 | `ReadGeneration`仅head epoch/lower digest；`ReadPlanError`仅Invalid/Backend | 同epoch data_version/sequence、head/binding/lease变更可检测；typed stale使整个输出丢弃并有限重新resolve；无混合generation bytes |
+| S5 Mutation fence：G11 | `ReadGeneration`含head epoch、mutation sequence和lower digest；005 `FetchedSources`与旧helper均返回typed stale | 同epoch data_version/sequence、head/binding/lease变更可检测；typed stale使整个输出丢弃并有限重新resolve；无混合generation bytes |
 | S6 发布与恢复：G12 | producer返回verified manifest ref；原有seal journal只有native层CAS | 一致effective view→依赖对象闭合→manifest→atomic head+binding；每个持久边界注入崩溃；旧或新可见版本精确；幂等remount recovery；fsync不暗中全量repack |
 | S7 可达性GC：G13 | `gc.rs`追踪native layer与slice；005对象图未加入 | S0/S1/workspaces/leases/journals/active readers为roots；container/IP05/FD05/CA05/large依赖闭合；grace；reader pin；活跃对象不误删；失败上传orphan可收 |
 
@@ -143,6 +143,13 @@ G01语义校验已完成，本次没有重新打开。G09的005 singleflight/coa
 | 明确计数 | metadata/inline/payload/descriptor/startup/failed/retry的归属；received与raw decoded分开；重复fetch与请求union的raw overfetch可验证 | G06 |
 | 全程计时 | source/import/upload/verify、mount/warmup/discovery、active、close/drain/unmount、seal/publish/first-consume/GC与外层wall | G16 |
 | 可复现资源管理 | 唯一owned资源域与durable journal、deadline、成功/失败cleanup独立核验；artifact不含凭据；未测字段为null | G16 |
+
+2026-10-10 G16 checkpoint: the local packed-v3 runner now emits and finalizes
+a durable owned-resource journal. Manifest finalization validates the terminal
+cleanup state for both successful and failed runs, including mount, worker,
+Compose, and temporary-directory ownership. This is only the local
+cleanup-proof checkpoint; cloud dispatch, real FUSE failure recovery, and
+paired performance acceptance remain open.
 
 源码冻结不要求在旧004 magic下扩展字段；root/blocks/large/binding均先给独立payload/
 schema版本和明确拒绝历史payload的规则，再接真实源和workspace；不要求旧reader兼容。

@@ -926,6 +926,15 @@ fn decode_frame_range(
 pub struct PackedFrameSourceFetcher<B: ObjectBackend + Clone> {
     objects: Arc<HashMap<u32, RemotePackedObject<B>>>,
     prefetched: Arc<HashMap<(u32, u32), Bytes>>,
+    /// The immutable generation captured while resolving the unified plan.
+    ///
+    /// A frame source is often built after the plan has been prepared (for
+    /// example, once the coordinator has decoded its frames).  Keeping the
+    /// generation on the source lets the executor reject a plan assembled
+    /// for another snapshot before it copies even inline bytes.  The plain
+    /// constructor remains useful for isolated source tests; production
+    /// readers bind it with [`Self::with_generation`].
+    generation: Option<ReadGeneration>,
 }
 
 impl<B: ObjectBackend + Clone> PackedFrameSourceFetcher<B> {
@@ -933,7 +942,19 @@ impl<B: ObjectBackend + Clone> PackedFrameSourceFetcher<B> {
         Self {
             objects: Arc::new(objects),
             prefetched: Arc::new(HashMap::new()),
+            generation: None,
         }
+    }
+
+    /// Bind this source to the generation used to resolve its plan.
+    ///
+    /// The binding is immutable for the lifetime of the fetcher.  A mismatch
+    /// is reported as [`crate::chunk::read_plan::ReadViewChanged`], which is
+    /// the only typed error that permits the caller to discard the complete
+    /// output and resolve again.
+    pub fn with_generation(mut self, generation: ReadGeneration) -> Self {
+        self.generation = Some(generation);
+        self
     }
 
     pub fn from_object(object: RemotePackedObject<B>, container_ordinal: u32) -> Self {
@@ -953,6 +974,7 @@ impl<B: ObjectBackend + Clone> PackedFrameSourceFetcher<B> {
         Self {
             objects: Arc::new(HashMap::new()),
             prefetched: Arc::new(prefetched),
+            generation: None,
         }
     }
 
@@ -1050,7 +1072,12 @@ impl<B: ObjectBackend + Clone + 'static> UnifiedReadSourceFetcher for PackedFram
         }
     }
 
-    async fn ensure_generation(&self, _generation: ReadGeneration) -> anyhow::Result<()> {
+    async fn ensure_generation(&self, generation: ReadGeneration) -> anyhow::Result<()> {
+        if let Some(expected) = self.generation {
+            if expected != generation {
+                return Err(crate::chunk::read_plan::ReadViewChanged.into());
+            }
+        }
         Ok(())
     }
 }
@@ -1618,5 +1645,36 @@ mod tests {
         let mut output = [0u8; 4];
         fetcher.read_source(&source, &mut output).await.unwrap();
         assert_eq!(&output, b"3456");
+    }
+
+    #[tokio::test]
+    async fn bound_source_rejects_a_plan_from_another_generation_before_copying() {
+        let expected = ReadGeneration::readonly([7; 32]);
+        let fetcher = PackedFrameSourceFetcher::<LocalFsBackend>::new(HashMap::new())
+            .with_generation(expected);
+        let plan = crate::chunk::read_plan::UnifiedReadPlan {
+            generation: ReadGeneration::readonly([8; 32]),
+            logical_size: 4,
+            segments: vec![crate::chunk::read_plan::LogicalSegment {
+                logical_offset: 0,
+                length: 4,
+                source: ReadSource::PackedInline {
+                    data: Arc::from(b"stale".as_slice()),
+                    raw_offset: 0,
+                },
+            }],
+        };
+        let mut output = [0xa5; 4];
+        let error = crate::chunk::read_plan::execute_unified_into(&fetcher, 0, &plan, &mut output)
+            .await
+            .expect_err("a source bound to another generation must fence the read");
+        assert!(matches!(
+            error,
+            crate::chunk::read_plan::ReadPlanError::StaleView(_)
+        ));
+        assert_eq!(
+            output, [0xa5; 4],
+            "fenced reads must not partially write output"
+        );
     }
 }

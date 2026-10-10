@@ -1200,6 +1200,7 @@ mod tests {
             let policy = V3BuildPolicy {
                 frames: V3FramePolicy::Static1Mib,
                 inline_data,
+                p90: None,
             };
             let options = V3ProducerOptions {
                 snapshot_id: [1; 32],
@@ -1285,6 +1286,7 @@ mod tests {
                 let policy = V3BuildPolicy {
                     frames,
                     inline_data: false,
+                    p90: None,
                 };
                 let options = V3ProducerOptions {
                     snapshot_id: [1; 32],
@@ -1401,6 +1403,7 @@ mod tests {
                 size_classes: SizeClassTable::default(),
                 build_policy: super::super::V3BuildPolicy {
                     inline_data: false,
+                    p90: None,
                     ..Default::default()
                 },
                 metadata_codec: PackedCodec::Raw,

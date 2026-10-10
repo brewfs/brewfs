@@ -882,7 +882,17 @@ impl AuthenticatedV3Snapshot {
             output,
         )
         .await
-        .map_err(|error| PackedWireError::Backend(error.to_string()))
+        .map_err(|error| match error {
+            crate::chunk::read_plan::ReadPlanError::StaleView(_) => {
+                PackedWireError::ReadViewChanged
+            }
+            crate::chunk::read_plan::ReadPlanError::Invalid(message) => {
+                PackedWireError::Invalid(message)
+            }
+            crate::chunk::read_plan::ReadPlanError::Backend(error) => {
+                PackedWireError::Backend(error.to_string())
+            }
+        })
     }
 
     pub async fn prepare_inode_read<B: ObjectBackend + Clone + 'static>(
@@ -1458,7 +1468,7 @@ impl AuthenticatedV3Snapshot {
             }
             async fn ensure_generation(&self, generation: ReadGeneration) -> anyhow::Result<()> {
                 if generation != self.generation {
-                    anyhow::bail!("stale packed generation");
+                    return Err(crate::chunk::read_plan::ReadViewChanged.into());
                 }
                 Ok(())
             }

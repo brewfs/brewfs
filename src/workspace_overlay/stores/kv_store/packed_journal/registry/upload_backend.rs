@@ -474,6 +474,7 @@ mod tests {
             size_classes: SizeClassTable::default(),
             build_policy: crate::workspace_overlay::packed_v3::wire005::V3BuildPolicy {
                 inline_data: false,
+                p90: None,
                 ..Default::default()
             },
             metadata_codec: PackedCodec::Raw,

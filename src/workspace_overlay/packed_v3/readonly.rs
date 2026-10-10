@@ -334,6 +334,9 @@ impl<B: ObjectBackend + Clone + 'static> std::fmt::Debug for ReadonlyPathsOwner<
 }
 
 fn map_error(error: PackedWireError) -> MetaError {
+    if matches!(error, PackedWireError::ReadViewChanged) {
+        return MetaError::Anyhow(anyhow::Error::new(crate::chunk::read_plan::ReadViewChanged));
+    }
     if matches!(error, PackedWireError::LimitExceeded(_)) {
         return MetaError::Io(std::io::Error::from_raw_os_error(libc::ENOMEM));
     }
@@ -351,6 +354,15 @@ fn map_error(error: PackedWireError) -> MetaError {
         _ => tracing::warn!(error = %error, "packed readonly metadata validation failed"),
     }
     MetaError::Internal(error.to_string())
+}
+
+fn packed_error_to_anyhow(error: PackedWireError) -> anyhow::Error {
+    match error {
+        PackedWireError::ReadViewChanged => {
+            anyhow::Error::new(crate::chunk::read_plan::ReadViewChanged)
+        }
+        error => anyhow::Error::new(error),
+    }
 }
 
 fn file_type(kind: u8, mode: u32) -> FileType {
@@ -505,7 +517,7 @@ where
                 32 * 1024 * 1024,
             )
             .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .map_err(packed_error_to_anyhow)?;
         context
             .metrics
             .logical_bytes

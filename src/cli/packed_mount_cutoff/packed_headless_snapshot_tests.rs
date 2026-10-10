@@ -145,6 +145,7 @@ pub(super) async fn consume<B, F>(
         size_classes: SizeClassTable::default(),
         build_policy: V3BuildPolicy {
             inline_data: false,
+            p90: None,
             ..Default::default()
         },
         metadata_codec: PackedCodec::Raw,

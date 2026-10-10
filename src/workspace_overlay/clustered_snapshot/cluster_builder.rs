@@ -674,6 +674,12 @@ fn encode_namespace_segment_batches(
             "namespace segment list must not be empty",
         ));
     }
+    // The namespace Merkle index is keyed by (parent_local_node_id, name).
+    // Validating each input segment independently is insufficient: out-of-order
+    // or overlapping segments would otherwise produce leaves that cannot be
+    // routed deterministically after publication.
+    validate_namespace_segment_order(segments)?;
+
     let mut batches = Vec::new();
     let mut next_batch_id = 0u32;
     let mut predecessor_ordinal = BatchHeader::NO_PREDECESSOR;
@@ -735,6 +741,57 @@ fn encode_namespace_segment_batches(
         }
     }
     Ok(batches)
+}
+
+fn validate_namespace_segment_order(segments: &[NamespaceSegmentInput]) -> WireResult<()> {
+    let mut previous_parent = None;
+    let mut previous_dir_key = None;
+    let mut previous_last_name: Option<&NameBytes> = None;
+
+    for segment in segments {
+        if segment.parent_local_node_id == 0 || segment.entries.is_empty() {
+            return Err(WireError::invalid(
+                "cluster builder",
+                "namespace segment has no parent or entries",
+            ));
+        }
+        for pair in segment.entries.windows(2) {
+            if name_of(&pair[0]) >= name_of(&pair[1]) {
+                return Err(WireError::invalid(
+                    "cluster builder",
+                    "namespace segment names are not strictly sorted",
+                ));
+            }
+        }
+
+        if let Some(parent) = previous_parent {
+            if segment.parent_local_node_id < parent {
+                return Err(WireError::invalid(
+                    "cluster builder",
+                    "namespace segments are not parent-first",
+                ));
+            }
+            if segment.parent_local_node_id == parent {
+                if previous_dir_key != Some(segment.parent_dir_key) {
+                    return Err(WireError::invalid(
+                        "cluster builder",
+                        "namespace segments disagree on parent directory key",
+                    ));
+                }
+                if previous_last_name.is_some_and(|last| last >= name_of(&segment.entries[0])) {
+                    return Err(WireError::invalid(
+                        "cluster builder",
+                        "namespace segments overlap or are not name-sorted",
+                    ));
+                }
+            }
+        }
+
+        previous_parent = Some(segment.parent_local_node_id);
+        previous_dir_key = Some(segment.parent_dir_key);
+        previous_last_name = segment.entries.last().map(name_of);
+    }
+    Ok(())
 }
 
 fn source_entries_to_namespace_entries(
@@ -1195,6 +1252,80 @@ mod tests {
             let encoded = EncodedBatch::decode(&built.bytes[batch_start..batch_end]).unwrap();
             assert_eq!(encoded.header.kind, kind);
         }
+    }
+
+    #[test]
+    fn segmented_builder_rejects_out_of_order_parent_ranges() {
+        let dir_key = DirKey::new([0x91; 16]);
+        let entry = |name: &[u8], local_node_id| NamespaceEntry::NewNode {
+            name: NameBytes::new(name.to_vec()).unwrap(),
+            node: NodeRecord {
+                local_node_id,
+                kind: 1,
+                mode: 0o100644,
+                size: 0,
+                dir_key: None,
+            },
+        };
+        let segments = vec![
+            NamespaceSegmentInput {
+                parent_local_node_id: 2,
+                parent_dir_key: dir_key,
+                entries: vec![entry(b"z", 3)],
+            },
+            NamespaceSegmentInput {
+                parent_local_node_id: 1,
+                parent_dir_key: dir_key,
+                entries: vec![entry(b"a", 2)],
+            },
+        ];
+        let error =
+            build_namespace_segments_cluster([0x92; 16], [0x93; 16], dir_key, 3, 1, &segments)
+                .expect_err("parent order must be authenticated before index assembly");
+        assert!(error.to_string().contains("parent-first"));
+    }
+
+    #[test]
+    fn segmented_builder_rejects_overlapping_ranges_and_dir_key_changes() {
+        let first_key = DirKey::new([0xA1; 16]);
+        let second_key = DirKey::new([0xA2; 16]);
+        let entry = |name: &[u8], local_node_id| NamespaceEntry::ExistingNode {
+            name: NameBytes::new(name.to_vec()).unwrap(),
+            local_node_id,
+        };
+        let overlapping = vec![
+            NamespaceSegmentInput {
+                parent_local_node_id: 1,
+                parent_dir_key: first_key,
+                entries: vec![entry(b"a", 2), entry(b"m", 3)],
+            },
+            NamespaceSegmentInput {
+                parent_local_node_id: 1,
+                parent_dir_key: first_key,
+                entries: vec![entry(b"m", 4), entry(b"z", 5)],
+            },
+        ];
+        let error =
+            build_namespace_segments_cluster([0xA3; 16], [0xA4; 16], first_key, 5, 1, &overlapping)
+                .expect_err("overlapping ranges must not produce ambiguous leaves");
+        assert!(error.to_string().contains("overlap"));
+
+        let changed_key = vec![
+            NamespaceSegmentInput {
+                parent_local_node_id: 1,
+                parent_dir_key: first_key,
+                entries: vec![entry(b"a", 2)],
+            },
+            NamespaceSegmentInput {
+                parent_local_node_id: 1,
+                parent_dir_key: second_key,
+                entries: vec![entry(b"z", 3)],
+            },
+        ];
+        let error =
+            build_namespace_segments_cluster([0xA5; 16], [0xA6; 16], first_key, 3, 1, &changed_key)
+                .expect_err("one parent cannot carry multiple authenticated directory keys");
+        assert!(error.to_string().contains("directory key"));
     }
 
     fn read_index_tree(

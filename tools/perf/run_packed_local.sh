@@ -19,6 +19,7 @@ INLINE_DATA="${PACKED_LOCAL_INLINE_DATA:-on}"
 METADATA_CODEC="${PACKED_LOCAL_METADATA_CODEC:-zstd}"
 DATA_CODEC="${PACKED_LOCAL_DATA_CODEC:-zstd}"
 ACCESS_PROFILE="${PACKED_LOCAL_ACCESS_PROFILE:-random-small-file}"
+P90_TRAINING_TRACE="${PACKED_LOCAL_P90_TRAINING_TRACE:-}"
 BINARY="${PACKED_LOCAL_BINARY:-$ROOT/target/debug/brewfs}"
 FIXTURE="${PACKED_LOCAL_FIXTURE:-$ROOT/target/debug/packed_v3_snapshot_fixture}"
 COMPOSE="$ROOT/docker/compose-xfstests/docker-compose.juicefs-perf.yml"
@@ -28,7 +29,7 @@ done
 (( FILES >= 100 && FILES <= 10000 && FILES % 100 == 0 )) || { printf 'Use 100..10000 files divisible by 100\n' >&2; exit 2; }
 (( FILE_BYTES > 0 && FILE_BYTES <= 67108864 && WORKERS > 0 && WORKERS <= 64 && EPOCHS > 0 && EPOCHS <= 3 && TIMEOUT_SECONDS > 0 && TIMEOUT_SECONDS <= 1800 )) || exit 2
 case "$MODE" in stat|tree|full) ;; *) exit 2 ;; esac
-case "$FRAME_POLICY" in size-only|static-256kib|static-1mib|static-4mib) ;; *) exit 2 ;; esac
+case "$FRAME_POLICY" in size-only|static-256kib|static-1mib|static-4mib|p90-training) ;; *) exit 2 ;; esac
 case "$INLINE_DATA" in on|off) ;; *) exit 2 ;; esac
 case "$METADATA_CODEC" in raw|zstd) ;; *) exit 2 ;; esac
 case "$DATA_CODEC" in raw|zstd) ;; *) exit 2 ;; esac
@@ -49,32 +50,82 @@ ARTIFACT="$ROOT/docker/compose-xfstests/artifacts/packed-local-$RUN_ID"
 PROJECT="packed-local-$$"
 WORK="$(mktemp -d)"
 mkdir -p "$ARTIFACT" "$WORK/mnt" "$WORK/cache"
+JOURNAL="$ARTIFACT/resource-journal.json"
 PID=""
 STARTED=false
+MOUNT_READY=false
+MOUNT_UNMOUNTED=false
+python3 "$ROOT/tools/perf/packed_resource_journal.py" init --path "$JOURNAL" --run-id "$RUN_ID" --artifact "$ARTIFACT" --project "$PROJECT" --work "$WORK"
 cleanup() {
     local status=$?
+    local mount_present=false
+    local process_alive=false
+    local compose_present="$STARTED"
+    local work_present=true
     trap - EXIT INT TERM
+    # Cleanup is diagnostic and must finish every ownership check.
+    set +e
     if mountpoint -q "$WORK/mnt"; then
-        timeout 20 fusermount3 -u "$WORK/mnt" >>"$ARTIFACT/cleanup.log" 2>&1 || status=1
+        if timeout 20 fusermount3 -u "$WORK/mnt" >>"$ARTIFACT/cleanup.log" 2>&1; then
+            if python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name mount_unmounted >>"$ARTIFACT/cleanup.log" 2>&1; then
+                MOUNT_UNMOUNTED=true
+            else
+                status=1
+            fi
+        else
+            status=1
+        fi
+    elif [[ "$MOUNT_READY" == true && "$MOUNT_UNMOUNTED" == false ]]; then
+        if python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name mount_unmounted >>"$ARTIFACT/cleanup.log" 2>&1; then
+            MOUNT_UNMOUNTED=true
+        else
+            status=1
+        fi
     fi
     if [[ -n "$PID" ]]; then
         kill -TERM "$PID" 2>/dev/null || true
         for _ in $(seq 1 100); do kill -0 "$PID" 2>/dev/null || break; sleep .1; done
         if kill -0 "$PID" 2>/dev/null; then
-            ps -o pid,stat,wchan:40,comm -p "$PID" >>"$ARTIFACT/cleanup.log"
+            ps -o pid,stat,wchan:40,comm -p "$PID" >>"$ARTIFACT/cleanup.log" 2>&1 || true
             kill -KILL "$PID" 2>/dev/null || true
             status=1
         fi
         wait "$PID" 2>/dev/null || true
+        if kill -0 "$PID" 2>/dev/null; then
+            process_alive=true
+        fi
     fi
     if "$STARTED"; then
-        docker compose -p "$PROJECT" -f "$COMPOSE" down -v --remove-orphans >>"$ARTIFACT/cleanup.log" 2>&1 || status=1
+        if docker compose -p "$PROJECT" -f "$COMPOSE" down -v --remove-orphans >>"$ARTIFACT/cleanup.log" 2>&1; then
+            compose_present=false
+            python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name compose_stopped >>"$ARTIFACT/cleanup.log" 2>&1 || status=1
+        else
+            status=1
+        fi
     fi
     if mountpoint -q "$WORK/mnt"; then
-        printf 'mount remains; preserving temporary directory\n' >>"$ARTIFACT/cleanup.log"
+        mount_present=true
+    fi
+    if [[ "$mount_present" == true || "$process_alive" == true ]]; then
+        printf 'mount or daemon remains; preserving temporary directory\n' >>"$ARTIFACT/cleanup.log"
         status=1
     else
-        rm -r -- "$WORK"
+        if rm -r -- "$WORK"; then
+            work_present=false
+            python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name work_removed >>"$ARTIFACT/cleanup.log" 2>&1 || status=1
+        else
+            status=1
+        fi
+    fi
+    if [[ -f "$JOURNAL" ]]; then
+        JOURNAL_ARGS=(--path "$JOURNAL" --status "$status")
+        [[ "$mount_present" == true ]] && JOURNAL_ARGS+=(--mount-present)
+        [[ "$process_alive" == true ]] && JOURNAL_ARGS+=(--process-alive)
+        [[ "$compose_present" == true ]] && JOURNAL_ARGS+=(--compose-present)
+        [[ "$work_present" == true ]] && JOURNAL_ARGS+=(--work-present)
+        if ! python3 "$ROOT/tools/perf/packed_resource_journal.py" finalize "${JOURNAL_ARGS[@]}" >>"$ARTIFACT/cleanup.log" 2>&1; then
+            status=1
+        fi
     fi
     if [[ -f "$ARTIFACT/run-manifest.json" ]]; then
         if ! python3 "$ROOT/tools/perf/packed_run_manifest.py" finalize --artifact "$ARTIFACT" --status "$status" >>"$ARTIFACT/manifest-validation.log" 2>&1; then
@@ -88,7 +139,33 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-python3 "$ROOT/tools/perf/packed_run_manifest.py" init --artifact "$ARTIFACT" --run-id "$RUN_ID" --wire-version "$WIRE_VERSION" --files "$FILES" --file-bytes "$FILE_BYTES" --metadata-bytes "$METADATA_BYTES" --workers "$WORKERS" --epochs "$EPOCHS" --mode "$MODE" --scanner-seed "$SCANNER_SEED" --fixture-prefix "$FIXTURE_PREFIX" --frame-policy "$FRAME_POLICY" --inline-data "$INLINE_DATA" --metadata-codec "$METADATA_CODEC" --data-codec "$DATA_CODEC" --access-profile "$ACCESS_PROFILE"
+P90_TRACE_SHA=""
+if [[ "$FRAME_POLICY" == p90-training ]]; then
+    [[ -n "$P90_TRAINING_TRACE" && -f "$P90_TRAINING_TRACE" ]] || {
+        printf 'p90-training requires PACKED_LOCAL_P90_TRAINING_TRACE\n' >&2
+        exit 2
+    }
+    python3 "$ROOT/tools/perf/packed_p90_policy.py" \
+        --training-trace "$P90_TRAINING_TRACE" \
+        --output "$ARTIFACT/p90-policy.json"
+    P90_TRACE_SHA="$(python3 - "$ARTIFACT/p90-policy.json" <<'PYP90'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(value["trace_sha256"])
+PYP90
+)"
+else
+    [[ -z "$P90_TRAINING_TRACE" ]] || {
+        printf 'PACKED_LOCAL_P90_TRAINING_TRACE requires p90-training\n' >&2
+        exit 2
+    }
+fi
+MANIFEST_ARGS=(init --artifact "$ARTIFACT" --run-id "$RUN_ID" --wire-version "$WIRE_VERSION" --files "$FILES" --file-bytes "$FILE_BYTES" --metadata-bytes "$METADATA_BYTES" --workers "$WORKERS" --epochs "$EPOCHS" --mode "$MODE" --scanner-seed "$SCANNER_SEED" --fixture-prefix "$FIXTURE_PREFIX" --frame-policy "$FRAME_POLICY" --inline-data "$INLINE_DATA" --metadata-codec "$METADATA_CODEC" --data-codec "$DATA_CODEC" --access-profile "$ACCESS_PROFILE")
+[[ -n "$P90_TRACE_SHA" ]] && MANIFEST_ARGS+=(--p90-training-trace-sha256 "$P90_TRACE_SHA")
+python3 "$ROOT/tools/perf/packed_run_manifest.py" "${MANIFEST_ARGS[@]}"
 # Scope this to this local invocation. Do not change operator settings or cloud
 # transport. Some SDK connectors route loopback ranges through an inherited proxy.
 export HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= http_proxy= https_proxy= all_proxy=
@@ -101,6 +178,7 @@ export RUSTFS_HOST_BIND=127.0.0.1 RUSTFS_S3_HOST_PORT=19000 RUSTFS_CONSOLE_HOST_
 export BREWFS_S3_BUCKET=brewfs-data
 STARTED=true
 docker compose -p "$PROJECT" -f "$COMPOSE" up -d rustfs >"$ARTIFACT/services.log" 2>&1
+python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name compose_started >>"$ARTIFACT/services.log" 2>&1
 docker compose -p "$PROJECT" -f "$COMPOSE" run --rm rustfs-init >>"$ARTIFACT/services.log" 2>&1
 sha256sum "$BINARY" "$FIXTURE" >"$ARTIFACT/binary-sha256.txt"
 git -C "$ROOT" rev-parse HEAD >"$ARTIFACT/revision.txt"
@@ -185,6 +263,7 @@ destination.write_text(
 )
 PYTOOLCHAIN
 FIXTURE_ARGS=(--wire-version 5 --frame-policy "$FRAME_POLICY" --inline-data "$INLINE_DATA" --metadata-codec "$METADATA_CODEC" --data-codec "$DATA_CODEC" --access-profile "$ACCESS_PROFILE")
+[[ "$FRAME_POLICY" == p90-training ]] && FIXTURE_ARGS+=(--p90-policy "$ARTIFACT/p90-policy.json")
 [[ "$COLD_CORPUS" == true ]] && FIXTURE_ARGS+=(--cold-corpus true)
 [[ "$HARDLINK_CORPUS" == true ]] && FIXTURE_ARGS+=(--hardlink-corpus true)
 "$FIXTURE" "${FIXTURE_ARGS[@]}" --bucket brewfs-data --endpoint http://127.0.0.1:19000 --region us-east-1 --force-path-style true --prefix "$FIXTURE_PREFIX" --manifest-output "$ARTIFACT/manifest-key.txt" --dir-levels 2 --dirs-per-level 10 --files-per-dir "$((FILES / 100))" --small-file-size "$FILE_BYTES" --small-file-min-size "$FILE_BYTES" --small-file-max-size "$FILE_BYTES" --access-profile "$ACCESS_PROFILE" >"$ARTIFACT/fixture.log" 2>&1
@@ -236,6 +315,7 @@ direct_io=1
 keep_cache=0
 loopback_proxy=disabled\ncold_corpus=%s\nhardlink_corpus=%s\n' "$FILES" "$FILE_BYTES" "$METADATA_BYTES" "$WORKERS" "$EPOCHS" "$MODE" "$METADATA_PREFETCH" "$WIRE_VERSION" "$FRAME_POLICY" "$INLINE_DATA" "$METADATA_CODEC" "$DATA_CODEC" "$ACCESS_PROFILE" "$COLD_CORPUS" "$HARDLINK_CORPUS" >"$ARTIFACT/profile.env"
 printf 'packed_version=v3\nscanner_seed=%s\nfixture_prefix=%s\nmanifest_schema=packed-v3-run-manifest-v1\n' "$SCANNER_SEED" "$FIXTURE_PREFIX" >>"$ARTIFACT/profile.env"
+[[ -n "$P90_TRACE_SHA" ]] && printf 'p90_training_trace_sha256=%s\n' "$P90_TRACE_SHA" >>"$ARTIFACT/profile.env"
 sync
 sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'
 printf 'page_cache=dropped\n' >"$ARTIFACT/cache-proof.env"
@@ -249,6 +329,11 @@ for _ in $(seq 1 600); do
 done
 mountpoint -q "$WORK/mnt"
 READY="$(date +%s%N)"
+if python3 "$ROOT/tools/perf/packed_resource_journal.py" event --path "$JOURNAL" --name mount_ready >>"$ARTIFACT/brewfs.log" 2>&1; then
+    MOUNT_READY=true
+else
+    exit 1
+fi
 if [[ "$COLD_CORPUS" == true ]]; then
     python3 - "$WORK/mnt" "$ARTIFACT/cold-verification.json" <<'PYCOLD'
 import os,pathlib,json,sys,errno

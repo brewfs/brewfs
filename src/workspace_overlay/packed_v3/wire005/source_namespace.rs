@@ -1287,6 +1287,7 @@ mod tests {
         options.build_policy = V3BuildPolicy {
             frames: V3FramePolicy::Static1Mib,
             inline_data: false,
+            p90: None,
         };
         let published = inventory(source.path(), scratch.path())
             .await

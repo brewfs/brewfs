@@ -82,6 +82,29 @@ def _validate_toolchain(path: pathlib.Path) -> None:
         raise ArtifactError("toolchain provenance has an invalid dirty diff digest")
 
 
+def _validate_resource_journal(
+    path: pathlib.Path,
+    *,
+    status: int,
+    run_id: str,
+    artifact: pathlib.Path,
+) -> None:
+    """Require an owned resource domain and an explicit cleanup terminal state."""
+    try:
+        from .packed_resource_journal import ResourceJournalError, validate_journal
+    except ImportError:  # direct execution from tools/perf
+        from packed_resource_journal import ResourceJournalError, validate_journal
+    try:
+        validate_journal(
+            path,
+            expected_status=status,
+            expected_run_id=run_id,
+            expected_artifact=str(artifact),
+        )
+    except (OSError, ResourceJournalError) as error:
+        raise ArtifactError(f"invalid resource journal: {error}") from error
+
+
 def _read_profile(path: pathlib.Path) -> dict[str, str]:
     """Read the runner's key/value profile without executing it as shell."""
     values: dict[str, str] = {}
@@ -260,12 +283,29 @@ def finalize_manifest(artifact: pathlib.Path, *, status: int) -> dict[str, Any]:
         "profile.env",
         "cache-proof.env",
         "toolchain.json",
+        # A failed process must leave an auditable cleanup decision rather than
+        # merely an exit code.
+        "resource-journal.json",
     ]
     files: dict[str, Any] = {}
     for name in required:
         required_path = _require_file(artifact, name, success=success)
         if required_path is not None:
             files[name] = {"bytes": required_path.stat().st_size, "sha256": _digest(required_path)}
+    # A journal is required even for failed runs: the failure artifact must
+    # prove whether its owned mount/process/Compose/work resources survived.
+    journal_path = _require_file(artifact, "resource-journal.json", success=True)
+    assert journal_path is not None
+    _validate_resource_journal(
+        journal_path,
+        status=status,
+        run_id=str(manifest.get("run_id", "")),
+        artifact=artifact,
+    )
+    files[journal_path.name] = {
+        "bytes": journal_path.stat().st_size,
+        "sha256": _digest(journal_path),
+    }
     if success:
         key_path = artifact / "manifest-key.txt"
         key = key_path.read_text().strip()

@@ -96,6 +96,7 @@ impl V3FrameDemand {
         super::V3BuildPolicy {
             frames: self.frame_policy,
             inline_data: false,
+            p90: None,
         }
         .select(1, self.profile, self.size_classes)?;
         let maximum = self
@@ -693,7 +694,7 @@ impl<T> V3FlightRegistry<T> {
         // its last owner retire the actual slot and shared Roots together.
         self.inner
             .live_slots
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < self.inner.limits.max_pending_frames).then(|| count + 1)
             })
             .map_err(|_| limit("mount pending queue is full"))?;

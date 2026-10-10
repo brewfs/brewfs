@@ -100,7 +100,7 @@ impl SemanticVmWork {
     fn step(&self) -> bool {
         if self
             .remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_err()

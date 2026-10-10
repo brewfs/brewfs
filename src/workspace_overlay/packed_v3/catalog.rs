@@ -1538,7 +1538,8 @@ impl<B: ObjectBackend + Clone + 'static> RemoteGroupCatalog<B> {
         });
         let Some(container_ordinal) = container_ordinal else {
             let fetcher: super::remote::PackedFrameSourceFetcher<B> =
-                super::remote::PackedFrameSourceFetcher::new(HashMap::new());
+                super::remote::PackedFrameSourceFetcher::new(HashMap::new())
+                    .with_generation(plan.generation);
             let result = execute_unified_into(&fetcher, offset, &plan, output)
                 .await
                 .map_err(|error| PackedWireError::Backend(error.to_string()));
@@ -1679,7 +1680,8 @@ impl<B: ObjectBackend + Clone + 'static> RemoteGroupCatalog<B> {
                 container_ordinal,
                 frames,
             )
-        };
+        }
+        .with_generation(plan.generation);
         let result = execute_unified_into(&fetcher, offset, &plan, output)
             .await
             .map_err(|error| PackedWireError::Backend(error.to_string()));

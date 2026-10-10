@@ -418,7 +418,7 @@ impl V3IndexCacheOwnership {
     fn try_admit(self: &Arc<Self>, bytes: u64) -> Option<V3IndexCacheLease> {
         let previous = self
             .owned
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owned| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |owned| {
                 owned.checked_add(bytes).filter(|sum| *sum <= self.capacity)
             })
             .ok()?;

@@ -101,11 +101,11 @@ impl PackedRuntimeMetrics {
     }
 
     pub fn pipeline_release(&self, bytes: u64) {
-        let _ =
-            self.pipeline_current
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_sub(bytes))
-                });
+        let _ = self
+            .pipeline_current
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
     }
 
     pub fn record_prefetched_logical_bytes(&self, bytes: u64) {

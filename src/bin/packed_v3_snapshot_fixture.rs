@@ -47,8 +47,11 @@ struct Args {
     #[arg(long,value_parser=["raw","zstd"])]
     data_codec: Option<String>,
     /// Fixed targets or deterministic size-only selection, applied at build time.
-    #[arg(long, default_value = "size-only", value_parser = ["size-only", "static-256kib", "static-1mib", "static-4mib"])]
+    #[arg(long, default_value = "size-only", value_parser = ["size-only", "static-256kib", "static-1mib", "static-4mib", "p90-training"])]
     frame_policy: String,
+    /// Authenticated offline p90 policy JSON. Required by p90-training.
+    #[arg(long, requires = "frame_policy")]
+    p90_policy: Option<PathBuf>,
     /// Off keeps every nonempty payload out of metadata, including tiny files.
     #[arg(long, default_value = "on", value_parser = ["on", "off"])]
     inline_data: String,
@@ -149,11 +152,131 @@ fn fixture_build_policy(
         "static-256kib" => V3FramePolicy::Static256Kib,
         "static-1mib" => V3FramePolicy::Static1Mib,
         "static-4mib" => V3FramePolicy::Static4Mib,
+        "p90-training" => V3FramePolicy::P90Training,
         _ => bail!("unsupported frame policy"),
+    };
+    let p90 = match frames {
+        V3FramePolicy::P90Training => {
+            Some(read_p90_policy(args.p90_policy.as_deref().ok_or_else(
+                || anyhow::anyhow!("p90-training requires --p90-policy"),
+            )?)?)
+        }
+        _ => {
+            if args.p90_policy.is_some() {
+                bail!("--p90-policy requires --frame-policy p90-training");
+            }
+            None
+        }
     };
     Ok(V3BuildPolicy {
         frames,
         inline_data: args.inline_data == "on",
+        p90,
+    })
+}
+
+fn read_p90_policy(
+    path: &std::path::Path,
+) -> Result<brewfs::workspace_overlay::packed_v3::wire005::V3P90Policy> {
+    const MAX_P90_SAMPLES: u64 = 10_000_000;
+    const MAX_REQUESTED_RANGE: u64 = 1 << 63;
+    use brewfs::workspace_overlay::packed_v3::wire005::V3P90Policy;
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(path).with_context(|| format!("read p90 policy {}", path.display()))?,
+    )?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("p90 policy must be a JSON object"))?;
+    if object.get("schema").and_then(serde_json::Value::as_str) != Some("packed-v3-p90-policy-v1") {
+        bail!("unsupported p90 policy schema");
+    }
+    let hex_digest = |name: &str| -> Result<[u8; 32]> {
+        let text = object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("p90 policy missing {name}"))?;
+        let bytes = hex::decode(text).with_context(|| format!("decode p90 {name}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("p90 {name} must be a SHA-256 digest"))
+    };
+    let trace_digest = hex_digest("trace_sha256")?;
+    let policy_digest = hex_digest("policy_sha256")?;
+    let mut policy_payload = object.clone();
+    policy_payload.remove("policy_sha256");
+    let calculated_policy: [u8; 32] = Sha256::digest(serde_json::to_vec(&policy_payload)?).into();
+    if calculated_policy != policy_digest {
+        bail!("p90 policy digest does not match its contents");
+    }
+    for field in ["source", "captured_at_utc"] {
+        let text = object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.trim().is_empty() && !text.chars().any(char::is_whitespace))
+            .ok_or_else(|| anyhow::anyhow!("p90 policy {field} is malformed"))?;
+        let _ = text;
+    }
+    let sample_count = object
+        .get("sample_count")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|count| *count > 0 && *count <= MAX_P90_SAMPLES)
+        .ok_or_else(|| anyhow::anyhow!("p90 sample_count is invalid"))?;
+    let histogram = object
+        .get("histogram")
+        .and_then(serde_json::Value::as_array)
+        .filter(|entries| !entries.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("p90 histogram is empty"))?;
+    let mut total = 0u64;
+    let mut previous = 0u64;
+    let rank = sample_count
+        .checked_mul(90)
+        .and_then(|value| value.checked_add(99))
+        .map(|value| value / 100)
+        .ok_or_else(|| anyhow::anyhow!("p90 sample_count rank overflows"))?;
+    let mut p90_from_histogram = None;
+    for entry in histogram {
+        let item = entry
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram entry is malformed"))?;
+        let range = item
+            .get("range_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|range| *range > previous && *range <= MAX_REQUESTED_RANGE)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram is not strictly ordered"))?;
+        let count = item
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|count| *count > 0)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram count is invalid"))?;
+        total = total
+            .checked_add(count)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram count overflows"))?;
+        if total > MAX_P90_SAMPLES {
+            bail!("p90 histogram exceeds the bounded sample limit");
+        }
+        if p90_from_histogram.is_none() && total >= rank {
+            p90_from_histogram = Some(range);
+        }
+        previous = range;
+    }
+    if total != sample_count {
+        bail!("p90 histogram total disagrees with sample_count");
+    }
+    let requested_range = object
+        .get("p90_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| Some(*value) == p90_from_histogram)
+        .ok_or_else(|| anyhow::anyhow!("p90 value disagrees with histogram"))?;
+    // Bind the exact histogram bytes into BP12. serde_json's map is sorted by
+    // key in this build, matching the canonical JSON used by the Python
+    // policy builder.
+    let histogram_digest: [u8; 32] = Sha256::digest(serde_json::to_vec(histogram)?).into();
+    Ok(V3P90Policy {
+        trace_digest,
+        policy_digest,
+        histogram_digest,
+        sample_count,
+        requested_range,
     })
 }
 
@@ -853,6 +976,28 @@ fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod codec_control_tests {
+    #[test]
+    fn p90_policy_rejects_sample_count_above_bound_before_rank_calculation() {
+        let mut policy = serde_json::json!({
+            "schema": "packed-v3-p90-policy-v1",
+            "trace_sha256": "00".repeat(32),
+            "source": "fixture-trace",
+            "captured_at_utc": "2026-10-10T00:00:00Z",
+            "sample_count": 10_000_001u64,
+            "histogram": [{"range_bytes": 1u64, "count": 1u64}],
+            "p90_bytes": 1u64,
+        });
+        let digest = Sha256::digest(serde_json::to_vec(&policy).unwrap());
+        policy["policy_sha256"] = serde_json::Value::String(hex::encode(digest));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("p90-policy.json");
+        std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+
+        let error =
+            read_p90_policy(&path).expect_err("oversized p90 sample count must fail closed");
+        assert!(error.to_string().contains("p90 sample_count is invalid"));
+    }
+
     #[test]
     fn g15_cli_accepts_actual_static_and_inline_off_controls() {
         assert!(

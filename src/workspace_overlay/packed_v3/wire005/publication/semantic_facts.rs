@@ -460,7 +460,7 @@ impl SemanticFacts {
         self.charge_sql(1)?;
         if self
             .rows
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_OWNED_ROWS).then_some(count + 1)
             })
             .is_err()

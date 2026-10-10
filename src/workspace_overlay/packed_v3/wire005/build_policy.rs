@@ -17,6 +17,9 @@ pub enum V3FramePolicy {
     Static1Mib = 2,
     #[serde(rename = "static-4mib")]
     Static4Mib = 3,
+    /// Select frame targets from an authenticated offline request histogram.
+    #[serde(rename = "p90-training")]
+    P90Training = 4,
 }
 
 impl V3FramePolicy {
@@ -26,6 +29,7 @@ impl V3FramePolicy {
             Self::Static256Kib => "static-256kib",
             Self::Static1Mib => "static-1mib",
             Self::Static4Mib => "static-4mib",
+            Self::P90Training => "p90-training",
         }
     }
     pub(super) fn target(self) -> Option<u64> {
@@ -34,6 +38,7 @@ impl V3FramePolicy {
             Self::Static256Kib => Some(256 * 1024),
             Self::Static1Mib => Some(1024 * 1024),
             Self::Static4Mib => Some(4 * 1024 * 1024),
+            Self::P90Training => None,
         }
     }
     pub(super) fn from_u8(value: u8) -> PackedResult<Self> {
@@ -42,15 +47,30 @@ impl V3FramePolicy {
             1 => Ok(Self::Static256Kib),
             2 => Ok(Self::Static1Mib),
             3 => Ok(Self::Static4Mib),
+            4 => Ok(Self::P90Training),
             _ => Err(invalid("unknown frame policy")),
         }
     }
+}
+
+/// Authenticated inputs used by the p90 frame selector. The complete
+/// training artifact remains in the runner manifest; these digests and the
+/// selected rank are carried in BP12 so a reader cannot silently substitute a
+/// hint at mount time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct V3P90Policy {
+    pub trace_digest: [u8; 32],
+    pub policy_digest: [u8; 32],
+    pub histogram_digest: [u8; 32],
+    pub sample_count: u64,
+    pub requested_range: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct V3BuildPolicy {
     pub frames: V3FramePolicy,
     pub inline_data: bool,
+    pub p90: Option<V3P90Policy>,
 }
 
 impl Default for V3BuildPolicy {
@@ -58,6 +78,7 @@ impl Default for V3BuildPolicy {
         Self {
             frames: V3FramePolicy::SizeOnly,
             inline_data: true,
+            p90: None,
         }
     }
 }
@@ -69,8 +90,9 @@ impl V3BuildPolicy {
         profile: AccessProfile,
         classes: SizeClassTable,
     ) -> PackedResult<FrameLayoutDecision> {
-        // No mount-time guessing or unproven p90 histogram is accepted here.
-        let mut decision = choose_frame_layout(size, None, profile, classes)
+        self.validate()?;
+        let p90 = self.p90.map(|policy| policy.requested_range);
+        let mut decision = choose_frame_layout(size, p90, profile, classes)
             .map_err(|error| invalid(&error.to_string()))?;
         if let Some(target) = self.frames.target() {
             let cap = match profile {
@@ -88,6 +110,30 @@ impl V3BuildPolicy {
             }
         }
         Ok(decision)
+    }
+
+    fn validate(self) -> PackedResult<()> {
+        match (self.frames, self.p90) {
+            (V3FramePolicy::P90Training, Some(policy)) => {
+                if policy.requested_range == 0 || policy.sample_count == 0 {
+                    return Err(invalid("p90 policy has an empty sample/range"));
+                }
+                if policy.trace_digest == [0; 32]
+                    || policy.policy_digest == [0; 32]
+                    || policy.histogram_digest == [0; 32]
+                {
+                    return Err(invalid("p90 policy digest is empty"));
+                }
+            }
+            (V3FramePolicy::P90Training, None) => {
+                return Err(invalid(
+                    "p90 frame policy requires authenticated provenance",
+                ));
+            }
+            (_, Some(_)) => return Err(invalid("p90 provenance requires p90 frame policy")),
+            (_, None) => {}
+        }
+        Ok(())
     }
 }
 
@@ -130,6 +176,8 @@ pub struct V3BuildProvenance {
     pub metadata_codec_counts: [u64; 2],
     pub inline_dentries: u64,
     pub inline_payload_bytes: u64,
+    /// Authenticated p90 provenance, when the p90 selector was used.
+    pub p90: Option<V3P90Policy>,
 }
 
 impl V3BuildProvenance {
@@ -201,6 +249,10 @@ impl V3BuildProvenance {
         Ok(())
     }
     pub(super) fn validate(&self) -> PackedResult<()> {
+        self.policy.validate()?;
+        if self.p90 != self.policy.p90 {
+            return Err(invalid("p90 provenance disagrees with build policy"));
+        }
         PackedCodec::from_u8(self.requested_metadata_codec)?;
         PackedCodec::from_u8(self.requested_data_codec)?;
         sum(&self.metadata_codec_counts)?;
@@ -254,7 +306,10 @@ impl V3BuildProvenance {
     }
     pub(super) fn encode(&self, writer: &mut Writer) -> PackedResult<()> {
         self.validate()?;
-        writer.bytes(b"BP11");
+        // Keep the fixed legacy BP11 payload byte-for-byte compatible.  A
+        // p90 build opts into BP12, whose explicit extension authenticates
+        // the frozen histogram provenance before any frame is consumed.
+        writer.bytes(if self.p90.is_some() { b"BP12" } else { b"BP11" });
         writer.u8(self.policy.frames as u8);
         writer.u8(u8::from(self.policy.inline_data));
         writer.u8(self.requested_metadata_codec);
@@ -269,6 +324,16 @@ impl V3BuildProvenance {
         ] {
             writer.u64(value);
         }
+        if self.p90.is_some() {
+            writer.u8(1);
+            if let Some(policy) = self.p90 {
+                writer.bytes(&policy.trace_digest);
+                writer.bytes(&policy.policy_digest);
+                writer.bytes(&policy.histogram_digest);
+                writer.u64(policy.sample_count);
+                writer.u64(policy.requested_range);
+            }
+        }
         for values in [
             &self.frame_raw_size_counts[..],
             &self.frame_class_counts[..],
@@ -282,9 +347,12 @@ impl V3BuildProvenance {
         Ok(())
     }
     pub(super) fn decode(reader: &mut Reader<'_>) -> PackedResult<Self> {
-        if reader.take(4)? != b"BP11" {
-            return Err(invalid("provenance version mismatch"));
-        }
+        let magic = reader.take(4)?;
+        let has_p90_extension = match magic {
+            b"BP11" => false,
+            b"BP12" => true,
+            _ => return Err(invalid("provenance version mismatch")),
+        };
         let frames = V3FramePolicy::from_u8(reader.u8()?)?;
         let inline_data = match reader.u8()? {
             0 => false,
@@ -297,6 +365,7 @@ impl V3BuildProvenance {
             policy: V3BuildPolicy {
                 frames,
                 inline_data,
+                p90: None,
             },
             requested_metadata_codec,
             requested_data_codec,
@@ -306,8 +375,28 @@ impl V3BuildProvenance {
             frame_stored_bytes: reader.u64()?,
             inline_dentries: reader.u64()?,
             inline_payload_bytes: reader.u64()?,
+            p90: None,
             ..Self::default()
         };
+        let has_p90 = if has_p90_extension {
+            match reader.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid("p90 provenance marker is invalid")),
+            }
+        } else {
+            false
+        };
+        if has_p90 {
+            result.p90 = Some(V3P90Policy {
+                trace_digest: reader.array()?,
+                policy_digest: reader.array()?,
+                histogram_digest: reader.array()?,
+                sample_count: reader.u64()?,
+                requested_range: reader.u64()?,
+            });
+        }
+        result.policy.p90 = result.p90;
         for values in [
             &mut result.frame_raw_size_counts[..],
             &mut result.frame_class_counts[..],
@@ -331,6 +420,7 @@ mod tests {
         let policy = V3BuildPolicy {
             frames: V3FramePolicy::Static1Mib,
             inline_data: false,
+            p90: None,
         };
         let classes = SizeClassTable::default();
         let selected = policy
@@ -356,5 +446,58 @@ mod tests {
                 .frame_count,
             0
         );
+    }
+
+    #[test]
+    fn bp11_roundtrip_keeps_the_legacy_provenance_layout() {
+        let provenance = V3BuildProvenance {
+            policy: V3BuildPolicy::default(),
+            requested_metadata_codec: PackedCodec::Raw as u8,
+            requested_data_codec: PackedCodec::Raw as u8,
+            ..Default::default()
+        };
+        let mut writer = Writer::default();
+        provenance.encode(&mut writer).unwrap();
+        let bytes = writer.finish();
+        assert_eq!(&bytes[..4], b"BP11");
+        let decoded = V3BuildProvenance::decode(&mut Reader::new(&bytes)).unwrap();
+        assert_eq!(decoded, provenance);
+    }
+
+    #[test]
+    fn bp12_roundtrip_authenticates_p90_provenance_and_selector() {
+        let p90 = V3P90Policy {
+            trace_digest: [1; 32],
+            policy_digest: [2; 32],
+            histogram_digest: [3; 32],
+            sample_count: 100,
+            requested_range: 200 * 1024,
+        };
+        let provenance = V3BuildProvenance {
+            policy: V3BuildPolicy {
+                frames: V3FramePolicy::P90Training,
+                inline_data: false,
+                p90: Some(p90),
+            },
+            requested_metadata_codec: PackedCodec::Raw as u8,
+            requested_data_codec: PackedCodec::Raw as u8,
+            p90: Some(p90),
+            ..Default::default()
+        };
+        let selected = provenance
+            .policy
+            .select(
+                10 * 1024 * 1024,
+                AccessProfile::RandomSmallFile,
+                SizeClassTable::default(),
+            )
+            .unwrap();
+        assert_eq!(selected.frame_raw_bytes, 256 * 1024);
+        let mut writer = Writer::default();
+        provenance.encode(&mut writer).unwrap();
+        let bytes = writer.finish();
+        assert_eq!(&bytes[..4], b"BP12");
+        let decoded = V3BuildProvenance::decode(&mut Reader::new(&bytes)).unwrap();
+        assert_eq!(decoded, provenance);
     }
 }

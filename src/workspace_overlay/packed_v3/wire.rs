@@ -84,6 +84,8 @@ pub enum PackedWireError {
     },
     #[error("packed v3 object backend error: {0}")]
     Backend(String),
+    #[error("packed v3 read view changed")]
+    ReadViewChanged,
 }
 
 pub type PackedResult<T> = Result<T, PackedWireError>;

@@ -60,7 +60,7 @@ impl Filesystem for ReadonlyFs {
         let bytes = usize::try_from(bytes).map_err(|_| crate::Errno::from(libc::ENOMEM))?;
         let previous = self
             .control_used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes)
                     .filter(|total| *total <= self.control_capacity)
             })

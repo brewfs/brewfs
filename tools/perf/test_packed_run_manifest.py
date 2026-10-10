@@ -5,11 +5,42 @@ import unittest
 
 try:
     from .packed_run_manifest import ArtifactError, finalize_manifest, init_manifest
+    from .packed_resource_journal import append_event, finalize_journal, init_journal
 except ImportError:  # direct execution from tools/perf
     from packed_run_manifest import ArtifactError, finalize_manifest, init_manifest
+    from packed_resource_journal import append_event, finalize_journal, init_journal
 
 
 class PackedRunManifestTests(unittest.TestCase):
+    @staticmethod
+    def _write_journal(artifact: pathlib.Path, *, status: int = 0) -> None:
+        path = artifact / "resource-journal.json"
+        manifest = json.loads((artifact / "run-manifest.json").read_text())
+        init_journal(
+            path,
+            run_id=manifest["run_id"],
+            artifact=str(artifact),
+            project="fixture-project",
+            work="/tmp/fixture-work",
+        )
+        if status == 0:
+            for name in (
+                "compose_started",
+                "mount_ready",
+                "mount_unmounted",
+                "compose_stopped",
+                "work_removed",
+            ):
+                append_event(path, name)
+        finalize_journal(
+            path,
+            status=status,
+            mount_present=False,
+            process_alive=False,
+            compose_present=False,
+            work_present=False,
+        )
+
     @staticmethod
     def _write_toolchain(artifact: pathlib.Path) -> None:
         (artifact / "toolchain.json").write_text(
@@ -24,6 +55,7 @@ class PackedRunManifestTests(unittest.TestCase):
                 }
             )
         )
+        PackedRunManifestTests._write_journal(artifact)
 
     def test_old_encoding_is_rejected_before_creating_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -227,6 +259,7 @@ class PackedRunManifestTests(unittest.TestCase):
                 controls={"mode": "stat", "scanner_seed": 20261001},
                 fixture_prefix="local-validation",
             )
+            self._write_journal(artifact, status=124)
             finalize_manifest(artifact, status=124)
             manifest = json.loads((artifact / "run-manifest.json").read_text())
             self.assertEqual(manifest["status"], "failed")

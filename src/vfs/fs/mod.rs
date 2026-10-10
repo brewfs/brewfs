@@ -173,7 +173,7 @@ where
 
     fn next_handle(&self) -> Result<u64, VfsError> {
         self.next_fh
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
                 if next == 0 { None } else { next.checked_add(1) }
             })
             .map_err(|_| VfsError::Anyhow(anyhow::anyhow!("FUSE handle namespace exhausted")))

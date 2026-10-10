@@ -40,6 +40,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   rust:
@@ -89,7 +91,7 @@ jobs:
           bash tools/perf/test_packed_runner_ttl.sh
           python3 -m unittest discover -s tools/perf -p test_smallfiles_scan.py
           bash -n tools/perf/run_packed_local.sh
-          python3 -m unittest discover -s tools/perf -p test_packed_local_runner.py
+          python3 -m unittest discover -s tools/perf -p 'test_packed_*.py'
 
       - name: Check patched FUSE transport
         run: |
