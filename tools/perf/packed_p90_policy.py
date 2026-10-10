@@ -111,18 +111,16 @@ def validate_policy(policy: Any, *, expected_trace_sha256: str | None = None) ->
     payload = {name: policy[name] for name in required if name != "policy_sha256"}
     if _digest(payload) != digest.lower():
         raise P90PolicyError("p90 policy digest does not match its contents")
-    trace_sha256, _, _, _ = _trace_fields(
-        {
-            "trace_sha256": policy["trace_sha256"],
-            "source": policy["source"],
-            "captured_at_utc": policy["captured_at_utc"],
-            "requested_ranges_bytes": [
-                entry["range_bytes"] for entry in policy["histogram"]
-            ]
-            if isinstance(policy["histogram"], list)
-            else [],
-        }
-    )
+    trace_sha256 = policy["trace_sha256"]
+    source = policy["source"]
+    captured_at = policy["captured_at_utc"]
+    if not isinstance(trace_sha256, str) or not _HEX64.fullmatch(trace_sha256.lower()):
+        raise P90PolicyError("p90 policy trace digest is malformed")
+    if not isinstance(source, str) or not source.strip() or any(c.isspace() for c in source):
+        raise P90PolicyError("p90 policy source is missing or malformed")
+    if not isinstance(captured_at, str) or not captured_at.strip() or any(c.isspace() for c in captured_at):
+        raise P90PolicyError("p90 policy collection time is missing or malformed")
+    trace_sha256 = trace_sha256.lower()
     if expected_trace_sha256 is not None and trace_sha256 != expected_trace_sha256.lower():
         raise P90PolicyError("p90 policy trace does not match the manifest")
     sample_count = policy["sample_count"]

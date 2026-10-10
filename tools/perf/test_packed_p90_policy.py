@@ -63,6 +63,12 @@ class PackedP90PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(P90PolicyError, "digest"):
             validate_policy(policy)
 
+    def test_policy_rejects_malformed_histogram_without_leaking_key_errors(self):
+        policy = build_policy(self._trace())
+        policy["histogram"] = [1]
+        with self.assertRaises(P90PolicyError):
+            validate_policy(policy)
+
     def test_policy_rejects_trace_mismatch(self):
         policy = build_policy(self._trace())
         with self.assertRaisesRegex(P90PolicyError, "does not match"):
