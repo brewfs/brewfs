@@ -1453,48 +1453,31 @@ async fn create_s3_client(args: &MountConfig) -> anyhow::Result<ObjectClient<S3B
         .clone()
         .ok_or_else(|| anyhow::anyhow!("s3 bucket must be set when data backend is s3"))?;
 
-    create_s3_client_from_parts(
+    create_s3_client_from_config(S3Config {
         bucket,
-        args.s3_region.clone(),
-        args.s3_endpoint.clone(),
-        args.s3_part_size,
-        args.s3_max_concurrency,
-        args.s3_force_path_style,
-        args.s3_disable_payload_checksum,
-    )
+        region: args.s3_region.clone(),
+        endpoint: args.s3_endpoint.clone(),
+        part_size: args.s3_part_size,
+        max_concurrency: args.s3_max_concurrency,
+        force_path_style: args.s3_force_path_style,
+        disable_payload_checksum: args.s3_disable_payload_checksum,
+        rustfs_ec_block_size_hint: args.s3_rustfs_ec_block_size_hint,
+        ..Default::default()
+    })
     .await
 }
 
-async fn create_s3_client_from_parts(
-    bucket: String,
-    region: Option<String>,
-    endpoint: Option<String>,
-    part_size: usize,
-    max_concurrency: usize,
-    force_path_style: bool,
-    disable_payload_checksum: bool,
-) -> anyhow::Result<ObjectClient<S3Backend>> {
-    if bucket.is_empty() {
+async fn create_s3_client_from_config(config: S3Config) -> anyhow::Result<ObjectClient<S3Backend>> {
+    if config.bucket.is_empty() {
         anyhow::bail!("s3 bucket must not be empty");
     }
 
-    if part_size == 0 {
+    if config.part_size == 0 {
         anyhow::bail!("--s3-part-size must be greater than 0");
     }
-    if max_concurrency == 0 {
+    if config.max_concurrency == 0 {
         anyhow::bail!("--s3-max-concurrency must be greater than 0");
     }
-
-    let config = S3Config {
-        bucket,
-        region,
-        part_size,
-        max_concurrency,
-        endpoint,
-        force_path_style,
-        disable_payload_checksum,
-        ..Default::default()
-    };
 
     let backend = S3Backend::with_config(config).await?;
     Ok(ObjectClient::new(backend))
@@ -1511,15 +1494,17 @@ async fn object_put_bench_cmd(args: ObjectPutBenchArgs) -> anyhow::Result<()> {
         anyhow::bail!("either --duration-secs or --objects must be greater than 0");
     }
 
-    let client = create_s3_client_from_parts(
-        args.s3_bucket.clone(),
-        Some(args.s3_region.clone()),
-        args.s3_endpoint.clone(),
-        args.s3_part_size,
-        args.s3_max_concurrency,
-        args.s3_force_path_style,
-        args.s3_disable_payload_checksum,
-    )
+    let client = create_s3_client_from_config(S3Config {
+        bucket: args.s3_bucket.clone(),
+        region: Some(args.s3_region.clone()),
+        endpoint: args.s3_endpoint.clone(),
+        part_size: args.s3_part_size,
+        max_concurrency: args.s3_max_concurrency,
+        force_path_style: args.s3_force_path_style,
+        disable_payload_checksum: args.s3_disable_payload_checksum,
+        rustfs_ec_block_size_hint: args.s3_rustfs_ec_block_size_hint,
+        ..Default::default()
+    })
     .await?;
     let payload = Bytes::from(pattern_payload(args.object_size));
     let prefix = format!(
