@@ -527,7 +527,7 @@ impl JsonSchema for RedisSpec {
             "x-kubernetes-validations".to_string(),
             json!([
                 {
-                    "rule": "self.storageClassName == oldSelf.storageClassName",
+                    "rule": "has(self.storageClassName) == has(oldSelf.storageClassName) && (!has(self.storageClassName) || self.storageClassName == oldSelf.storageClassName)",
                     "message": "redis.storageClassName is immutable after creation"
                 },
                 {
@@ -791,8 +791,30 @@ mod tests {
             .iter()
             .map(|rule| rule["rule"].as_str().expect("rule string"))
             .collect();
-        assert!(rules.contains(&"self.storageClassName == oldSelf.storageClassName"));
+        assert!(rules.contains(&"has(self.storageClassName) == has(oldSelf.storageClassName) && (!has(self.storageClassName) || self.storageClassName == oldSelf.storageClassName)"));
         assert!(rules
             .contains(&"quantity(self.storageSize).compareTo(quantity(oldSelf.storageSize)) >= 0"));
+    }
+
+    #[cfg(feature = "workspace-operator")]
+    #[test]
+    fn recovered_workspace_secret_schemas_are_structural() {
+        let crd = serde_json::to_value(BrewFSCluster::crd()).unwrap();
+        let properties = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+            ["spec"]["properties"]["workspace"]["properties"];
+        for name in [
+            "metadataAdminSecretRef",
+            "metadataRuntimeSecretRef",
+            "objectAdminSecretRef",
+            "objectRuntimeSecretRef",
+        ] {
+            assert_ne!(
+                properties[name]["additionalProperties"],
+                serde_json::json!(false),
+                "{name}"
+            );
+            assert_eq!(properties[name]["required"], serde_json::json!(["name"]));
+            assert_eq!(properties[name]["properties"]["name"]["type"], "string");
+        }
     }
 }

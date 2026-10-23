@@ -141,14 +141,12 @@ impl WorkspaceClusterSpec {
 
 /// Namespace-local transport credentials; their presence alone grants no admin capability.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct WorkspaceMetadataSecretRef {
     pub name: String,
 }
 
 /// Namespace-local object credentials. Keys are accessKey and secretKey.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct WorkspaceObjectSecretRef {
     pub name: String,
 }

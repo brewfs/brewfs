@@ -682,29 +682,6 @@ pub async fn reconcile_workspace_snapshot(
             anyhow!("snapshot and source workspace must reference the same cluster").into(),
         );
     }
-    if workspace.meta().deletion_timestamp.is_none()
-        && (workspace.spec.desired_state != WorkspaceDesiredState::Suspended
-            || workspace.status.as_ref().is_none_or(|status| {
-                status.phase != "Suspended"
-                    && !(status.phase == "RecoveryRequired"
-                        && snapshot.status.as_ref().is_some_and(|intent| {
-                            intent.source_workspace_id.is_some()
-                                && intent.source_head_epoch.is_some()
-                        }))
-            }))
-    {
-        patch_snapshot_status(
-            &api,
-            &snapshot,
-            "Pending",
-            "source workspace must be fully Suspended before snapshot",
-            None,
-            None,
-            None,
-        )
-        .await?;
-        return Ok(Action::requeue(Duration::from_secs(10)));
-    }
     let cluster = load_cluster(&ctx.client, &namespace, &snapshot.spec.cluster_ref.name).await?;
     let cluster_spec = enabled_cluster_workspace_spec(&cluster)?;
     let cluster_workspace = cluster
@@ -753,30 +730,49 @@ pub async fn reconcile_workspace_snapshot(
             return Ok(Action::await_change());
         }
     }
-    match admin.load_snapshot(snapshot_id).await {
-        Ok(existing) => {
-            if admin.packed_binding(workspace_id).await?.is_some() {
-                admin.verify_packed_revision(&existing.revision).await?;
-            }
-            let source = recorded_source
-                .or_else(|| Some((workspace_id.to_string(), current.record.head_epoch)));
-            patch_snapshot_status(
-                &api,
-                &snapshot,
-                "Ready",
-                "immutable revision is pinned",
-                Some(existing.snapshot_id.to_string()),
-                Some(revision_to_status(&existing.revision)),
-                source,
-            )
-            .await?;
-            return Ok(Action::requeue(Duration::from_secs(300)));
-        }
+    let existing = match admin.load_snapshot(snapshot_id).await {
+        Ok(existing) => Some(existing),
         Err(error)
             if error
                 .downcast_ref::<WorkspaceError>()
-                .is_some_and(|error| matches!(error, WorkspaceError::SnapshotNotFound(_))) => {}
+                .is_some_and(|error| matches!(error, WorkspaceError::SnapshotNotFound(_))) =>
+        {
+            None
+        }
         Err(error) => return Err(error.into()),
+    };
+    // An immutable backend snapshot survives parent reactivation. Check the
+    // backend before the suspension gate; a Ready status alone is not proof.
+    if snapshot_requires_suspension(&workspace, &snapshot, existing.is_some()) {
+        patch_snapshot_status(
+            &api,
+            &snapshot,
+            "Pending",
+            "source workspace must be fully Suspended before snapshot",
+            None,
+            None,
+            recorded_source,
+        )
+        .await?;
+        return Ok(Action::requeue(Duration::from_secs(10)));
+    }
+    if let Some(existing) = existing {
+        if admin.packed_binding(workspace_id).await?.is_some() {
+            admin.verify_packed_revision(&existing.revision).await?;
+        }
+        let source =
+            recorded_source.or_else(|| Some((workspace_id.to_string(), current.record.head_epoch)));
+        patch_snapshot_status(
+            &api,
+            &snapshot,
+            "Ready",
+            "immutable revision is pinned",
+            Some(existing.snapshot_id.to_string()),
+            Some(revision_to_status(&existing.revision)),
+            source,
+        )
+        .await?;
+        return Ok(Action::requeue(Duration::from_secs(300)));
     }
     let Some((_, source_head_epoch)) = recorded_source else {
         patch_snapshot_status(
@@ -876,6 +872,24 @@ pub fn error_policy_mount(
     _ctx: Arc<OperatorContext>,
 ) -> Action {
     Action::requeue(Duration::from_secs(15))
+}
+
+fn snapshot_requires_suspension(
+    workspace: &BrewFSWorkspace,
+    snapshot: &BrewFSWorkspaceSnapshot,
+    snapshot_exists: bool,
+) -> bool {
+    !snapshot_exists
+        && workspace.meta().deletion_timestamp.is_none()
+        && (workspace.spec.desired_state != WorkspaceDesiredState::Suspended
+            || workspace.status.as_ref().is_none_or(|status| {
+                status.phase != "Suspended"
+                    && !(status.phase == "RecoveryRequired"
+                        && snapshot.status.as_ref().is_some_and(|intent| {
+                            intent.source_workspace_id.is_some()
+                                && intent.source_head_epoch.is_some()
+                        }))
+            }))
 }
 
 pub fn error_policy_snapshot(
@@ -1434,6 +1448,55 @@ fn validate_mount_cluster_ref(
 mod tests {
     use super::*;
     use kube::api::ObjectMeta;
+
+    #[test]
+    fn recovered_snapshot_reuse_survives_parent_reactivation() {
+        let mut workspace = BrewFSWorkspace::new(
+            "parent",
+            super::super::crd::BrewFSWorkspaceSpec {
+                cluster_ref: super::super::crd::NamespacedNameRef { name: "c".into() },
+                source: super::super::crd::WorkspaceSourceSpec {
+                    kind: WorkspaceSourceKind::ClusterRoot,
+                    name: None,
+                },
+                desired_state: WorkspaceDesiredState::Active,
+                owner_id: None,
+                deletion_policy: WorkspaceDeletionPolicy::Delete,
+            },
+        );
+        let mut snapshot = BrewFSWorkspaceSnapshot::new(
+            "snapshot",
+            super::super::crd::BrewFSWorkspaceSnapshotSpec {
+                cluster_ref: super::super::crd::NamespacedNameRef { name: "c".into() },
+                workspace_ref: super::super::crd::NamespacedNameRef {
+                    name: "parent".into(),
+                },
+            },
+        );
+        // Backend publication is authoritative, even if the Ready status write
+        // was lost. Resuming the parent cannot invalidate an immutable snapshot.
+        assert!(!snapshot_requires_suspension(&workspace, &snapshot, true));
+        assert!(snapshot_requires_suspension(&workspace, &snapshot, false));
+        snapshot.status = Some(BrewFSWorkspaceSnapshotStatus {
+            phase: "Ready".into(),
+            ..Default::default()
+        });
+        // A stale/forged Ready status must not permit a new snapshot of an
+        // active parent when the backend snapshot does not exist.
+        assert!(snapshot_requires_suspension(&workspace, &snapshot, false));
+        workspace.spec.desired_state = WorkspaceDesiredState::Suspended;
+        workspace.status = Some(BrewFSWorkspaceStatus {
+            phase: "Suspended".into(),
+            ..Default::default()
+        });
+        assert!(!snapshot_requires_suspension(&workspace, &snapshot, false));
+        workspace.status.as_mut().unwrap().phase = "RecoveryRequired".into();
+        assert!(snapshot_requires_suspension(&workspace, &snapshot, false));
+        let status = snapshot.status.as_mut().unwrap();
+        status.source_workspace_id = Some("recorded-source".into());
+        status.source_head_epoch = Some(1);
+        assert!(!snapshot_requires_suspension(&workspace, &snapshot, false));
+    }
 
     #[test]
     fn fallback_resource_uuid_is_stable() {

@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 use super::crd::{WorkspaceCatalogBackend, WorkspaceClusterSpec};
 
 const MAX_PEM_BYTES: usize = 64 * 1024;
-const RUNTIME_COMMANDS: &str = "+auth +ping +select +client|setinfo +acl|whoami +get +mget +set +del +exists +strlen +type +time +zadd +zrangebylex +zrem +scan +eval +evalsha +script|load";
+const RUNTIME_COMMANDS: &str = "+auth +ping +select +client|setinfo +acl|whoami +get +mget +set +del +exists +strlen +type +time +multi +exec +zadd +zrangebylex +zrem +scan +eval +evalsha +script|load";
 
 // Deliberately no Debug/Serialize: neither raw credentials nor TLS paths belong
 // in logs, status, or agent-visible objects.
@@ -328,6 +328,11 @@ mod tests {
         assert_eq!(rows[0], "user default off -@all");
         assert!(rows[1].contains(" +acl|whoami "));
         assert!(rows[1].contains(" +eval +evalsha +script|load"));
+        // The shared runtime reads TIME/MGET in an atomic Redis pipeline.
+        assert!(rows[1]
+            .split_whitespace()
+            .any(|command| command == "+multi"));
+        assert!(rows[1].split_whitespace().any(|command| command == "+exec"));
         assert!(!rows[1].contains("+@all"));
         assert!(!rows[1].contains("+acl|setuser"));
         for (row, password) in [
@@ -339,6 +344,91 @@ mod tests {
                 hex::encode(Sha256::digest(password.as_bytes()))
             )));
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires redis-server; runs an isolated Unix-socket Redis fixture"]
+    async fn recovered_runtime_acl_allows_atomic_metadata_reads() {
+        use brewfs::workspace_overlay::stores::kv_backend::{KvWrite, WorkspaceKvBackend};
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        struct StopOnDrop(Child);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let credentials = credentials_from_secrets(
+            WorkspaceCatalogBackend::Redis,
+            &redis_secret(b"runtime", b"runtime-value-12345"),
+            &redis_secret(b"operator", b"operator-value-1234"),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("redis.sock");
+        let acl = directory.path().join("users.acl");
+        std::fs::write(&acl, credentials.redis_acl_file().unwrap()).unwrap();
+        let mut server = StopOnDrop(
+            Command::new("redis-server")
+                .args([
+                    "--port",
+                    "0",
+                    "--save",
+                    "",
+                    "--appendonly",
+                    "no",
+                    "--unixsocket",
+                ])
+                .arg(&socket)
+                .arg("--aclfile")
+                .arg(acl)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("install redis-server to run this regression"),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(
+                server.0.try_wait().unwrap().is_none(),
+                "Redis fixture exited"
+            );
+            assert!(Instant::now() < deadline, "Redis fixture startup timed out");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let backend = RedisWorkspaceBackend::connect(
+            &format!(
+                "redis+unix://{}?user=runtime&pass=runtime-value-12345",
+                socket.display()
+            ),
+            "acl-regression",
+        )
+        .await
+        .unwrap();
+        let key = b"test-key".to_vec();
+        assert!(backend
+            .compare_and_swap(
+                &[],
+                &[KvWrite::Put {
+                    key: key.clone(),
+                    value: b"value".to_vec()
+                }]
+            )
+            .await
+            .unwrap());
+        let (values, now) = backend
+            .get_many_with_time(std::slice::from_ref(&key))
+            .await
+            .unwrap();
+        assert_eq!(values, vec![Some(b"value".to_vec())]);
+        assert!(now > 0);
+        let (values, later) = backend.get_many_consistent_with_time(&[key]).await.unwrap();
+        assert_eq!(values, vec![Some(b"value".to_vec())]);
+        assert!(later >= now);
     }
 
     #[test]

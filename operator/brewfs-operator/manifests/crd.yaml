@@ -80,7 +80,7 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: redis.storageClassName is immutable after creation
-                  rule: self.storageClassName == oldSelf.storageClassName
+                  rule: has(self.storageClassName) == has(oldSelf.storageClassName) && (!has(self.storageClassName) || self.storageClassName == oldSelf.storageClassName)
                 - message: redis.storageSize cannot be reduced
                   rule: quantity(self.storageSize).compareTo(quantity(oldSelf.storageSize)) >= 0
               rustfs:
@@ -152,7 +152,6 @@ spec:
                     minimum: 0.0
                     type: integer
                   metadataAdminSecretRef:
-                    additionalProperties: false
                     description: Namespace-local transport credentials; their presence alone grants no admin capability.
                     nullable: true
                     properties:
@@ -162,7 +161,6 @@ spec:
                     - name
                     type: object
                   metadataRuntimeSecretRef:
-                    additionalProperties: false
                     description: Namespace-local transport credentials; their presence alone grants no admin capability.
                     nullable: true
                     properties:
@@ -175,7 +173,6 @@ spec:
                     nullable: true
                     type: string
                   objectAdminSecretRef:
-                    additionalProperties: false
                     description: Namespace-local object credentials. Keys are accessKey and secretKey.
                     nullable: true
                     properties:
@@ -185,7 +182,6 @@ spec:
                     - name
                     type: object
                   objectRuntimeSecretRef:
-                    additionalProperties: false
                     description: Namespace-local object credentials. Keys are accessKey and secretKey.
                     nullable: true
                     properties:
