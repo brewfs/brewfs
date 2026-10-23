@@ -166,11 +166,22 @@ fn is_internal_xattr(name: impl AsRef<[u8]>) -> bool {
 }
 
 /// POSIX reserves the `user.*` namespace for unprivileged extended attributes;
-/// FUSE clients may only write names in that namespace. Non-`user.` namespaces
-/// (`system.*`, `trusted.*`, `security.*`, ...) require privileges the FUSE
-/// layer does not model, so writes to them are rejected with EPERM.
+/// FUSE clients may write names in that namespace. Other reserved namespaces
+/// are handled explicitly by the operation-specific policy below.
 fn is_user_xattr_name(name: impl AsRef<[u8]>) -> bool {
     name.as_ref().starts_with(b"user.")
+}
+
+/// Linux reserves the `trusted.*` namespace for callers with
+/// `CAP_SYS_ADMIN`. FUSE requests expose the caller uid but not its capability
+/// set, so UID 0 is the narrowest authorization available at this layer.
+/// Other reserved namespaces remain unavailable to FUSE clients.
+fn is_trusted_xattr_name(name: impl AsRef<[u8]>) -> bool {
+    name.as_ref().starts_with(b"trusted.")
+}
+
+fn can_access_trusted_xattr(uid: u32, name: impl AsRef<[u8]>) -> bool {
+    !is_trusted_xattr_name(name) || uid == 0
 }
 
 /// Virtual inode for the `.stats` file exposed at the mount root.
@@ -2306,7 +2317,7 @@ where
         // Control-plane xattrs such as `system.brewfs.acl` drive permission
         // decisions, so untrusted clients must never be able to write (and
         // thereby overwrite) them.
-        if !is_user_xattr_name(name) {
+        if !is_user_xattr_name(name) && !(req.uid == 0 && is_trusted_xattr_name(name)) {
             return Err(libc::EPERM.into());
         }
         self.set_xattr_bytes_ino(inode as i64, name, value, flags)
@@ -2323,7 +2334,7 @@ where
 
     async fn getxattr(
         &self,
-        _req: Request,
+        req: Request,
         inode: u64,
         name: &OsStr,
         size: u32,
@@ -2347,6 +2358,9 @@ where
         if is_internal_xattr(name) && !is_posix_acl_xattr(name) {
             // Internal control-plane xattrs are hidden from FUSE clients.
             return Err(libc::ENODATA.into());
+        }
+        if !can_access_trusted_xattr(req.uid, name) {
+            return Err(libc::EPERM.into());
         }
         let value = self
             .get_xattr_bytes_ino(inode as i64, name)
@@ -2375,7 +2389,7 @@ where
         }))
     }
 
-    async fn listxattr(&self, _req: Request, inode: u64, size: u32) -> FuseResult<ReplyXAttr> {
+    async fn listxattr(&self, req: Request, inode: u64, size: u32) -> FuseResult<ReplyXAttr> {
         let reply_guard = Filesystem::reserve_reply_memory(self, u64::from(size.max(256 * 1024)))?;
         if self
             .stat_ino_checked(inode as i64)
@@ -2395,10 +2409,11 @@ where
         let visible = |name: &&Vec<u8>| {
             // Internal control metadata stays hidden; supported Linux ACLs
             // remain visible to the kernel and xattr clients.
-            !is_internal_xattr(name)
+            (!is_internal_xattr(name)
                 || (is_posix_acl_xattr(name)
                     && self.meta_layer().posix_acl_capability()
-                        != crate::meta::layer::PosixAclCapability::Unsupported)
+                        != crate::meta::layer::PosixAclCapability::Unsupported))
+                && can_access_trusted_xattr(req.uid, name)
         };
         let total_len: usize = names
             .names
@@ -2471,7 +2486,7 @@ where
                 .await
                 .map_err(posix_acl_errno);
         }
-        if !is_user_xattr_name(name) {
+        if !is_user_xattr_name(name) && !(req.uid == 0 && is_trusted_xattr_name(name)) {
             return Err(libc::EPERM.into());
         }
         self.remove_xattr_bytes_ino(inode as i64, name)
@@ -6937,6 +6952,8 @@ mod fuse_init_tests {
         assert!(!is_user_xattr_name("trusted.foo"));
         assert!(!is_user_xattr_name("security.selinux"));
         assert!(!is_user_xattr_name("userspace"));
+        assert!(is_trusted_xattr_name("trusted.foo"));
+        assert!(!is_trusted_xattr_name("user.foo"));
 
         assert!(is_internal_xattr("system.brewfs.acl"));
         assert!(is_internal_xattr("system.brewfs.trash"));
@@ -6950,25 +6967,34 @@ mod fuse_init_tests {
         let fs = new_fuse_test_vfs().await;
         fs.create_file("/file.txt").await.unwrap();
         let attr = fs.stat("/file.txt").await.unwrap();
+        let user = request_with_ids(1000, 1000);
 
         for name in [
             "system.brewfs.acl",
             "system.brewfs.trash",
-            "trusted.external",
             "security.selinux",
+            "security.capability",
         ] {
-            let err = Filesystem::setxattr(
-                &fs,
-                Request::default(),
-                attr.ino as u64,
-                OsStr::new(name),
-                b"{}",
-                0,
-                0,
-            )
-            .await
-            .unwrap_err();
-            assert_eq!(err, Errno::from(libc::EPERM), "unexpected errno for {name}");
+            for caller in [Request::default(), user] {
+                let err = Filesystem::setxattr(
+                    &fs,
+                    caller,
+                    attr.ino as u64,
+                    OsStr::new(name),
+                    b"{}",
+                    0,
+                    0,
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(err, Errno::from(libc::EPERM), "unexpected errno for {name}");
+                assert_eq!(
+                    Filesystem::removexattr(&fs, caller, attr.ino as u64, OsStr::new(name))
+                        .await
+                        .unwrap_err(),
+                    Errno::from(libc::EPERM)
+                );
+            }
         }
 
         // The Linux POSIX ACL interception path is unchanged.
@@ -6991,6 +7017,105 @@ mod fuse_init_tests {
             attr.ino as u64,
             OsStr::new("user.ok"),
             b"v",
+            0,
+            0,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn privileged_trusted_xattrs_round_trip_and_stay_hidden_from_users() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        let root = Request::default();
+        let user = request_with_ids(1000, 1000);
+
+        Filesystem::setxattr(
+            &fs,
+            root,
+            attr.ino as u64,
+            OsStr::new("trusted.external"),
+            b"v",
+            0,
+            0,
+        )
+        .await
+        .unwrap();
+
+        let ReplyXAttr::Data(value) = Filesystem::getxattr(
+            &fs,
+            root,
+            attr.ino as u64,
+            OsStr::new("trusted.external"),
+            1,
+        )
+        .await
+        .unwrap() else {
+            panic!("privileged trusted xattr read should return data");
+        };
+        assert_eq!(value.as_ref(), b"v");
+
+        let ReplyXAttr::Data(listed) = Filesystem::listxattr(&fs, root, attr.ino as u64, 4096)
+            .await
+            .unwrap()
+        else {
+            panic!("privileged trusted xattr list should return data");
+        };
+        assert_eq!(listed.as_ref(), b"trusted.external\0");
+
+        assert_eq!(
+            Filesystem::setxattr(
+                &fs,
+                user,
+                attr.ino as u64,
+                OsStr::new("trusted.user"),
+                b"blocked",
+                0,
+                0,
+            )
+            .await
+            .unwrap_err(),
+            Errno::from(libc::EPERM)
+        );
+        assert_eq!(
+            Filesystem::getxattr(
+                &fs,
+                user,
+                attr.ino as u64,
+                OsStr::new("trusted.external"),
+                0,
+            )
+            .await
+            .unwrap_err(),
+            Errno::from(libc::EPERM)
+        );
+        let ReplyXAttr::Size(size) = Filesystem::listxattr(&fs, user, attr.ino as u64, 0)
+            .await
+            .unwrap()
+        else {
+            panic!("unprivileged xattr list size should return a size");
+        };
+        assert_eq!(size as usize, 0);
+        assert_eq!(
+            Filesystem::removexattr(&fs, user, attr.ino as u64, OsStr::new("trusted.external"))
+                .await
+                .unwrap_err(),
+            Errno::from(libc::EPERM)
+        );
+
+        Filesystem::removexattr(&fs, root, attr.ino as u64, OsStr::new("trusted.external"))
+            .await
+            .unwrap();
+
+        // The user namespace remains available through the existing path.
+        Filesystem::setxattr(
+            &fs,
+            user,
+            attr.ino as u64,
+            OsStr::new("user.visible"),
+            b"ok",
             0,
             0,
         )
