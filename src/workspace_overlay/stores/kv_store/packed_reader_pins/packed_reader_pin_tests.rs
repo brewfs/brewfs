@@ -7,6 +7,7 @@ mod cancelled_lower_transport_tests;
 #[path = "native_effective_export_tests.rs"]
 mod native_effective_export_tests;
 
+mod entity_directory_page_tests;
 mod entity_lower_tests;
 
 use super::*;

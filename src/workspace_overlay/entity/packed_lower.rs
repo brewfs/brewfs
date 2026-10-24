@@ -577,23 +577,35 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> ImmutableLower
                 .cloned()
                 .collect()
         } else {
-            self.snapshot
-                .readdir_page(
-                    &self.client,
-                    &self.reader,
-                    self.directory_key(ino),
-                    offset,
-                    limit,
-                    ALLOCATION_LIMIT,
-                )
-                .await
-                .map_err(packed_error)?
-                .into_iter()
-                .map(|entry| {
+            let mut entries = Vec::with_capacity(limit);
+            while entries.len() < limit {
+                let next_offset = offset
+                    .checked_add(entries.len() as u64)
+                    .ok_or(EntityError::Overflow)?;
+                let page = self
+                    .snapshot
+                    .readdir_page(
+                        &self.client,
+                        &self.reader,
+                        self.directory_key(ino),
+                        next_offset,
+                        limit - entries.len(),
+                        ALLOCATION_LIMIT,
+                    )
+                    .await
+                    .map_err(packed_error)?;
+                // Packed pages can stop at the byte budget before the name
+                // limit. Only an empty packed page proves EOF. Retain just
+                // names/dentries so inline data is dropped before the next read.
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page {
                     validate_name(&entry.name)?;
-                    Ok((entry.name, self.dentry_value(entry.inode, entry.kind)?))
-                })
-                .collect::<Result<Vec<_>>>()?
+                    entries.push((entry.name, self.dentry_value(entry.inode, entry.kind)?));
+                }
+            }
+            entries
         };
         self.end_call(&admission).await?;
         Ok(entries)
