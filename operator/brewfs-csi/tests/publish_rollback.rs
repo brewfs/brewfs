@@ -84,4 +84,35 @@ fn remount_subprocess() {
     assert!(error.to_string().contains("injected remount failure"));
     assert!(error.to_string().contains("injected unmount failure"));
     assert!(root.join("mounted").exists());
+
+    // Supply mount options in the subprocess while using real inode identity.
+    fs::create_dir(&source).unwrap();
+    script(
+        &root.join("bin/findmnt"),
+        "#!/bin/sh\nprintf 'ro,relatime\\n'\n",
+    );
+    assert!(SystemMountOps.bind_matches(&source, &source, true).unwrap());
+    assert!(
+        !SystemMountOps
+            .bind_matches(&source, &source, false)
+            .unwrap()
+    );
+    assert!(!SystemMountOps.bind_matches(&source, &target, true).unwrap());
+    script(
+        &root.join("bin/findmnt"),
+        "#!/bin/sh\nprintf 'rw,relatime\\n'\n",
+    );
+    assert!(
+        SystemMountOps
+            .bind_matches(&source, &source, false)
+            .unwrap()
+    );
+    assert!(!SystemMountOps.bind_matches(&source, &source, true).unwrap());
+    script(
+        &root.join("bin/findmnt"),
+        "#!/bin/sh\nprintf 'ro\\nrw\\n'\n",
+    );
+    assert!(!SystemMountOps.bind_matches(&source, &source, true).unwrap());
+    script(&root.join("bin/findmnt"), "#!/bin/sh\nexit 1\n");
+    assert!(SystemMountOps.bind_matches(&source, &source, true).is_err());
 }

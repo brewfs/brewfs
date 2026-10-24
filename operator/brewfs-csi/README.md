@@ -36,6 +36,12 @@ filesystem binary or its on-disk formats.
   a recorded PID (including state from an older adapter) is rejected; unmount
   it before retrying stage. A mount visibility timeout kills and reaps the
   child, then removes any mount that appeared during the final poll.
+* Publish records its target before binding, so state persistence failures
+  cannot leave an untracked bind. A failed read-only remount rolls back the
+  bind; if cleanup also fails, the error reports both failures and the target
+  remains recorded for `NodeUnpublishVolume`. A publish retry verifies the
+  source inode and the target's read-only mount option before accepting an
+  existing mount. A mismatched mount must be unpublished before retrying.
 
 The BrewFS process remains the lease authority. CSI reference tracking only
 controls when the node plugin may unbind and unstage; it cannot grant a second
