@@ -38,15 +38,19 @@ filesystem binary or its on-disk formats.
   proof of ownership.
   Publish checks an existing target before starting or persisting a shared
   mount, so rejecting a foreign target leaves prior state unchanged.
-  Unpublish retains an `O_PATH` reference to prevent mount-ID reuse, pins the
-  parent directory, and revalidates the exact mount ID and identity immediately
-  before `umount2(..., UMOUNT_NOFOLLOW)`. This avoids resolving the caller's
-  ancestor pathname again and rejects a final-component symlink swap. Linux
-  does not provide an atomic unmount-by-handle operation here: a privileged
-  overmount or rename can still race the final check and syscall. Host mount
-  changes must be serialized with CSI operations to eliminate that remaining
-  window. Passing a target fd through `/proc/self/fd` alone is insufficient;
-  Linux can follow an overmount even through that path. Lazy detach is not used.
+  Unpublish retains an `O_PATH | O_NOFOLLOW` reference to the validated target,
+  including an anchored parent/name for cleanup, and revalidates the visible
+  mount identity after opening it with Linux's `open_tree` API. The exact mount
+  is moved, through its mount fd, into a private randomly named quarantine
+  directory before the unmount hook runs; the mount-fd and target descriptors
+  are then released and a normal `umount2` is issued through the retained
+  parent fd's proc path. `unlinkat` cleans the quarantine and original
+  directory through that same parent fd. A replacement or overmount at the
+  requested target therefore remains visible and cannot redirect the unmount.
+  Final and intermediate symlinks, dot-component aliases, and an alias of the
+  shared mount are rejected. There is no target pathname check-to-unmount
+  window in this design. If the validated mount disappeared before it was
+  quarantined, unpublish returns an error and leaves the replacement untouched.
   Unstage refuses to remove a shared mount while a target is still published.
   If a recorded mount process is gone but its mountpoint remains, the stale
   mount is removed only if its identity still matches, before a new process
