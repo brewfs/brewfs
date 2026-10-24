@@ -14,8 +14,7 @@ use super::model::{
     LowerBinding, MAX_XATTR_BYTES, UpperInode, validate_name, validate_xattr_name,
 };
 
-/// Initial bounded directory interface; larger directories require a paged
-/// adapter before they can be admitted. Implementors bound before allocating.
+/// Bound for a lower page and for the complete-directory compatibility API.
 pub const MAX_DIRECTORY_ENTRIES: usize = 4096;
 
 #[async_trait]
@@ -39,6 +38,67 @@ pub trait ImmutableLower: Send + Sync {
     ) -> Result<Option<ChunkMap>, EntityError>;
     /// Current names only, no whiteouts or duplicates; bounded before materialization.
     async fn readdir(&self, ino: i64) -> Result<Vec<(Vec<u8>, EntityDentry)>, EntityError>;
+
+    /// A bounded page in stable immutable order; a short page means EOF.
+    /// Offset counts physical lower names, before upper suppression. Adapters
+    /// for large directories override this compatibility implementation to
+    /// avoid complete materialization.
+    async fn readdir_page(
+        &self,
+        ino: i64,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, EntityDentry)>, EntityError> {
+        validate_directory_page(limit)?;
+        let offset = usize::try_from(offset).map_err(|_| EntityError::Overflow)?;
+        let entries = self.readdir(ino).await?;
+        if entries.len() > MAX_DIRECTORY_ENTRIES {
+            return Err(EntityError::Corrupt(
+                "immutable directory response exceeds its bound".into(),
+            ));
+        }
+        Ok(entries.into_iter().skip(offset).take(limit).collect())
+    }
+}
+
+pub(super) fn validate_directory_page(limit: usize) -> Result<(), EntityError> {
+    if limit == 0 || limit > MAX_DIRECTORY_ENTRIES {
+        return Err(EntityError::Invalid("invalid directory page bound".into()));
+    }
+    Ok(())
+}
+
+pub(super) async fn directory_page<L: ImmutableLower + ?Sized>(
+    lower: &L,
+    binding: &LowerBinding,
+    ino: i64,
+    offset: u64,
+    limit: usize,
+) -> Result<Vec<(Vec<u8>, EntityDentry)>, EntityError> {
+    check_binding(lower, binding)?;
+    check_ino(ino)?;
+    validate_directory_page(limit)?;
+    if ino > binding.max_ino {
+        return Ok(Vec::new());
+    }
+    let entries = lower.readdir_page(ino, offset, limit).await?;
+    check_binding(lower, binding)?;
+    if entries.len() > limit {
+        return Err(EntityError::Corrupt(
+            "oversized immutable directory page".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for (name, row) in &entries {
+        validate_name(name)?;
+        check_lower_dentry(row, binding)?;
+        if !names.insert(name) {
+            return Err(EntityError::Corrupt(
+                "duplicate immutable directory name".into(),
+            ));
+        }
+    }
+    Ok(entries)
 }
 
 /// Implementations return exactly the requested authenticated bytes, or an
@@ -308,11 +368,6 @@ pub async fn merge_directory<L: ImmutableLower + ?Sized>(
 ) -> Result<Vec<(Vec<u8>, EntityDentry)>, EntityError> {
     check_binding(lower, binding)?;
     check_ino(ino)?;
-    if upper.len() > MAX_DIRECTORY_ENTRIES {
-        return Err(EntityError::Unsupported(
-            "entity directory requires paged enumeration",
-        ));
-    }
     let mut upper_names = BTreeSet::new();
     for (name, row) in upper {
         validate_name(name)?;
@@ -323,26 +378,24 @@ pub async fn merge_directory<L: ImmutableLower + ?Sized>(
             ));
         }
     }
-    let lower_entries = if ino <= binding.max_ino {
-        lower.readdir(ino).await?
-    } else {
-        Vec::new()
-    };
-    check_binding(lower, binding)?;
-    if lower_entries.len() > MAX_DIRECTORY_ENTRIES {
-        return Err(EntityError::Corrupt(
-            "immutable directory response exceeds its bound".into(),
-        ));
-    }
     let mut merged = BTreeMap::new();
-    for (name, row) in lower_entries {
-        validate_name(&name)?;
-        check_lower_dentry(&row, binding)?;
-        if merged.insert(name, row).is_some() {
-            return Err(EntityError::Corrupt(
-                "duplicate immutable directory name".into(),
-            ));
+    let mut offset = 0;
+    loop {
+        let entries = directory_page(lower, binding, ino, offset, MAX_DIRECTORY_ENTRIES).await?;
+        let count = entries.len();
+        for (name, row) in entries {
+            if merged.insert(name, row).is_some() {
+                return Err(EntityError::Corrupt(
+                    "duplicate immutable directory name".into(),
+                ));
+            }
         }
+        if count < MAX_DIRECTORY_ENTRIES {
+            break;
+        }
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or(EntityError::Overflow)?;
     }
     for (name, row) in upper {
         match row {
@@ -353,11 +406,6 @@ pub async fn merge_directory<L: ImmutableLower + ?Sized>(
                 merged.insert(name.clone(), row.clone());
             }
         }
-    }
-    if merged.len() > MAX_DIRECTORY_ENTRIES {
-        return Err(EntityError::Unsupported(
-            "entity directory requires paged enumeration",
-        ));
     }
     Ok(merged.into_iter().collect())
 }
@@ -482,6 +530,24 @@ pub(crate) mod test_support {
                 ));
             }
             Ok(rows)
+        }
+
+        async fn readdir_page(
+            &self,
+            ino: i64,
+            offset: u64,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, EntityDentry)>, EntityError> {
+            validate_directory_page(limit)?;
+            let offset = usize::try_from(offset).map_err(|_| EntityError::Overflow)?;
+            Ok(self
+                .dentries
+                .range((ino, Vec::new())..)
+                .take_while(|((parent, _), _)| *parent == ino)
+                .skip(offset)
+                .take(limit)
+                .map(|((_, name), row)| (name.clone(), row.clone()))
+                .collect())
         }
     }
 }
@@ -818,6 +884,28 @@ mod tests {
             resolve_chunk(&lower, lower.binding(), &other_inode, 0, 16, Some(&old)).await,
             Err(EntityError::Corrupt(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn large_directory_merge_crosses_old_merged_bound() {
+        let lower = Lower::new();
+        for count in [4095, 4097] {
+            let upper: Vec<_> = (0..count)
+                .map(|index| {
+                    (
+                        format!("upper-{index:04}").into_bytes(),
+                        EntityDentry::Present {
+                            ino: 3,
+                            kind: EntityKind::File,
+                        },
+                    )
+                })
+                .collect();
+            let entries = merge_directory(&lower, lower.binding(), 1, &upper)
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), count + 2);
+        }
     }
 
     #[tokio::test]

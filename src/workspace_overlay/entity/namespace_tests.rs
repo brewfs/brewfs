@@ -103,6 +103,129 @@ async fn fixture(lower: MemoryLower) -> Fixture<MemoryEntityBackend> {
 }
 
 #[tokio::test]
+async fn large_directory_upper_entries() {
+    let fixture = fixture(MemoryLower::empty()).await;
+    for index in 0..4097 {
+        fixture
+            .ns
+            .create(
+                request(1, format!("file-{index:04}").as_bytes(), EntityKind::File),
+                root(),
+            )
+            .await
+            .unwrap();
+    }
+    let entries = fixture.ns.readdir(1, &root()).await.unwrap();
+    assert_eq!(entries.len(), 4097);
+    assert_eq!(entries.first().unwrap().0, b"file-0000");
+    assert_eq!(entries.last().unwrap().0, b"file-4096");
+}
+
+#[tokio::test]
+async fn large_directory_whiteouts_allow_rmdir() {
+    let fixture = fixture(MemoryLower::empty()).await;
+    let dir = fixture
+        .ns
+        .create(request(1, b"dir", EntityKind::Directory), root())
+        .await
+        .unwrap();
+    for index in 0..4097 {
+        let name = format!("file-{index:04}").into_bytes();
+        fixture
+            .ns
+            .create(request(dir.ino, &name, EntityKind::File), root())
+            .await
+            .unwrap();
+        fixture
+            .ns
+            .unlink(dir.ino, name, false, root())
+            .await
+            .unwrap();
+    }
+    fixture
+        .ns
+        .create(request(dir.ino, b"file-4096", EntityKind::File), root())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.ns.unlink(1, b"dir".to_vec(), true, root()).await,
+        Err(EntityError::NotEmpty)
+    );
+    fixture
+        .ns
+        .unlink(dir.ino, b"file-4096".to_vec(), false, root())
+        .await
+        .unwrap();
+    fixture
+        .ns
+        .unlink(1, b"dir".to_vec(), true, root())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.ns.lookup(1, b"dir", &root()).await,
+        Err(EntityError::NotFound)
+    );
+}
+
+#[tokio::test]
+async fn large_directory_lower_and_merged_entries() {
+    let mut lower = MemoryLower::empty();
+    for index in 0..4097 {
+        lower.add_file(1, format!("file-{index:04}").as_bytes(), index + 2, 0);
+    }
+    let fixture = fixture(lower).await;
+    assert_eq!(fixture.ns.readdir(1, &root()).await.unwrap().len(), 4097);
+    fixture
+        .ns
+        .unlink(1, b"file-0000".to_vec(), false, root())
+        .await
+        .unwrap();
+    fixture
+        .ns
+        .create(request(1, b"upper", EntityKind::File), root())
+        .await
+        .unwrap();
+    fixture
+        .ns
+        .unlink(1, b"file-0001".to_vec(), false, root())
+        .await
+        .unwrap();
+    let replacement = fixture
+        .ns
+        .create(request(1, b"file-0001", EntityKind::File), root())
+        .await
+        .unwrap();
+    let entries = fixture.ns.readdir(1, &root()).await.unwrap();
+    assert_eq!(entries.len(), 4097);
+    assert_eq!(entries.first().unwrap().0, b"file-0001");
+    assert_eq!(entries.first().unwrap().1.ino, replacement.ino);
+    assert_eq!(entries.last().unwrap().0, b"upper");
+}
+
+#[tokio::test]
+async fn large_directory_lower_whiteouts_allow_rmdir() {
+    let mut lower = MemoryLower::empty();
+    add_directory(&mut lower, 1, b"dir", 2, 0o777);
+    for index in 0..4097 {
+        lower.add_file(2, format!("file-{index:04}").as_bytes(), index + 3, 0);
+    }
+    let fixture = fixture(lower).await;
+    for index in 0..4097 {
+        fixture
+            .ns
+            .unlink(2, format!("file-{index:04}").into_bytes(), false, root())
+            .await
+            .unwrap();
+    }
+    assert!(fixture.ns.readdir(2, &root()).await.unwrap().is_empty());
+    fixture
+        .ns
+        .unlink(1, b"dir".to_vec(), true, root())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn data_handles_keep_open_access_and_reject_foreign_namespaces() {
     let mut lower = MemoryLower::empty();
     lower.add_file(1, b"file", 2, 10);
@@ -1343,6 +1466,62 @@ impl EntityBackend for PausingBackend {
         self.after_read(&[prefix.to_vec()]).await;
         Ok(rows)
     }
+    async fn scan_prefix_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let rows = self.inner.scan_prefix_page(prefix, after, limit).await?;
+        self.after_read(&[prefix.to_vec()]).await;
+        Ok(rows)
+    }
+}
+
+#[tokio::test]
+async fn directory_pages_restart_when_membership_changes_between_pages() {
+    let backend = Arc::new(PausingBackend::new());
+    let fixture = attach(
+        backend.clone(),
+        Arc::new(MemoryLower::empty()),
+        EntityKeys::new(Uuid::new_v4(), Uuid::new_v4()),
+    )
+    .await;
+    for index in 0..300 {
+        fixture
+            .ns
+            .create(
+                request(1, format!("file-{index:04}").as_bytes(), EntityKind::File),
+                root(),
+            )
+            .await
+            .unwrap();
+    }
+    // The first page's child snapshot is already captured at this pause.
+    // The rename crosses the page boundary, so continuing that cursor without
+    // checking the parent version would return both the old and new names.
+    backend.pause_after_read(fixture.keys.inode(257));
+    let ns = fixture.ns.clone();
+    let pending = tokio::spawn(async move { ns.readdir(1, &root()).await });
+    let entries = tokio::time::timeout(Duration::from_secs(10), async {
+        backend.entered().await;
+        let rename = fixture
+            .ns
+            .rename(1, b"file-0000".to_vec(), 1, b"zzz".to_vec(), false, root());
+        tokio::pin!(rename);
+        // Queue the rename on the directory lock held by the first page.
+        // Tokio's fair mutex admits it before the next page takes that lock.
+        assert!(futures::poll!(&mut rename).is_pending());
+        backend.resume();
+        let (renamed, entries) = tokio::join!(rename, pending);
+        renamed.unwrap();
+        entries.unwrap().unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(entries.len(), 300);
+    assert_eq!(entries[0].0, b"file-0001");
+    assert_eq!(entries.last().unwrap().0, b"zzz");
 }
 
 #[tokio::test]

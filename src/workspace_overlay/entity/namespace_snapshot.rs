@@ -127,7 +127,7 @@ impl<B: EntityBackend + 'static, L: ImmutableLower + 'static> EntityNamespace<B,
             Request::Create(request, _) => {
                 keys.insert(self.keys.xattr(request.parent, DEFAULT_XATTR));
             }
-            Request::Readdir { ino } => self.parent_keys(*ino, &mut keys).await?,
+            Request::Readdir { ino, .. } => self.parent_keys(*ino, &mut keys).await?,
             Request::Xattr { ino, name, .. } => {
                 keys.insert(self.keys.xattr(*ino, name));
             }

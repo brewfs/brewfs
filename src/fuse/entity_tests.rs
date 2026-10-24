@@ -333,3 +333,60 @@ async fn rewind_refresh_failure_keeps_snapshot() {
         fuse.releasedir(request(), node, fh, 0).await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn large_directory_fuse_enumerates_and_removes_4097_children() {
+    let (_temp, fuse, node, _backend) = fixture().await;
+    for index in 0..4096 {
+        fuse.state
+            .namespace
+            .create(
+                CreateRequest {
+                    parent: fuse.ino(node).unwrap(),
+                    name: format!("file-{index:04}").into_bytes(),
+                    kind: EntityKind::File,
+                    mode: 0o600,
+                    rdev: 0,
+                    symlink_target: None,
+                },
+                owner(),
+            )
+            .await
+            .unwrap();
+    }
+    let opened = fuse
+        .opendir(request(), node, libc::O_RDONLY as u32)
+        .await
+        .unwrap();
+    let entries = fuse
+        .readdir(request(), node, opened.fh, 0)
+        .await
+        .unwrap()
+        .entries
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 4099);
+    // Resume at a returned cookie, including on the far side of the old cap.
+    let offset = entries[4095].offset;
+    let tail = fuse
+        .readdirplus(request(), node, opened.fh, offset as u64, 0)
+        .await
+        .unwrap()
+        .entries
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_eq!(tail.len(), 3);
+    assert_eq!(tail[0].name, entries[4096].name);
+    assert_eq!(tail[2].name, entries[4098].name);
+    fuse.releasedir(request(), node, opened.fh, 0)
+        .await
+        .unwrap();
+    for entry in entries.into_iter().skip(2) {
+        fuse.unlink(request(), node, &entry.name).await.unwrap();
+    }
+    fuse.rmdir(request(), 1, OsStr::new("directory"))
+        .await
+        .unwrap();
+}

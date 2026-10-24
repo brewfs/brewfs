@@ -320,13 +320,14 @@ return 0
 "#;
 
 // One lexicographic range, bounded by matching rows rather than database size.
-// Complete scans detect overflow; batches allow a partial prefix for quiescent
-// sweeps. Key-only pages use an exclusive cursor and must be iterated to EOF.
-// Parent/authority predicates remain necessary when committing a scan decision.
+// Complete scans detect overflow; batch and paged scans return at most limit
+// rows. Paged scans resume after an exclusive cursor. Parent/authority
+// predicates fence decisions made from these observations.
 const SCAN_LUA: &str = r#"
 local index, prefix, limit = KEYS[1], ARGV[1], tonumber(ARGV[2])
 local batch = ARGV[3] == 'batch'
 local keys_only = ARGV[3] == 'keys'
+local paged = keys_only or ARGV[3] == 'page'
 if redis.call('TYPE', index).ok ~= 'zset' or not redis.call('ZSCORE', index, '') then
     return redis.error_reply('ENTITY_CORRUPT missing entity key index')
 end
@@ -339,10 +340,9 @@ for i = #prefix, 1, -1 do
         break
     end
 end
-local lower, count = '[' .. prefix, batch and limit or limit + 1
-if keys_only then
-    count = limit
-    if ARGV[4] ~= '' then lower = '(' .. ARGV[4] end
+local lower, count = '[' .. prefix, (batch or paged) and limit or limit + 1
+if paged and ARGV[4] ~= '' then
+    lower = '(' .. ARGV[4]
 end
 local keys = redis.call('ZRANGEBYLEX', index, lower, upper, 'LIMIT', 0, count)
 if #keys > limit then return redis.error_reply('ENTITY_INVALID scan exceeds row bound') end
@@ -760,6 +760,25 @@ impl EntityBackend for RedisEntityBackend {
             .arg(prefix)
             .arg(limit)
             .arg("keys")
+            .arg(after.unwrap_or_default())
+            .invoke_async(&mut self.connection.clone())
+            .await
+            .map_err(backend_error)
+    }
+
+    async fn scan_prefix_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        validate_scan_page(prefix, after, limit)?;
+        self.validate_scope(prefix)?;
+        redis::Script::new(SCAN_LUA)
+            .key(&self.index)
+            .arg(prefix)
+            .arg(limit)
+            .arg("page")
             .arg(after.unwrap_or_default())
             .invoke_async(&mut self.connection.clone())
             .await

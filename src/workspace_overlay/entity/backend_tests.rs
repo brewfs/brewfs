@@ -216,6 +216,92 @@ async fn conformance<B: EntityBackend + 'static>(backend: Arc<B>, keys: EntityKe
         ));
     }
 
+    let page = backend.scan_prefix_page(&prefix, None, 2).await.unwrap();
+    assert_eq!(page, rows[..2]);
+    let after = page.last().unwrap().0.clone();
+    assert_eq!(
+        backend
+            .commit(
+                &authority,
+                &EntityPlan {
+                    checks: vec![],
+                    writes: vec![RowWrite::Delete { key: after.clone() }],
+                }
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Committed
+    );
+    assert_eq!(
+        backend
+            .scan_prefix_page(&prefix, Some(&after), 2)
+            .await
+            .unwrap(),
+        rows[2..]
+    );
+    assert!(
+        backend
+            .scan_prefix_page(&prefix, Some(&rows[2].0), 2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        backend.scan_prefix_page(&prefix, Some(&other_key), 2).await,
+        Err(EntityError::Invalid(_))
+    ));
+    assert!(matches!(
+        backend.scan_prefix_page(&prefix, None, 0).await,
+        Err(EntityError::Invalid(_))
+    ));
+
+    let large_prefix = keys.dentry_prefix(3);
+    for start in (0..4097).step_by(256) {
+        let writes = (start..(start + 256).min(4097))
+            .map(|index| {
+                put(
+                    keys.dentry(3, format!("entry-{index:04}").as_bytes()),
+                    b"row",
+                )
+            })
+            .collect();
+        assert_eq!(
+            backend
+                .commit(
+                    &authority,
+                    &EntityPlan {
+                        checks: vec![],
+                        writes
+                    }
+                )
+                .await
+                .unwrap(),
+            CommitOutcome::Committed
+        );
+    }
+    assert!(matches!(
+        backend.scan_prefix(&large_prefix, 4096).await,
+        Err(EntityError::Invalid(_))
+    ));
+    let mut after = None;
+    let mut observed = Vec::new();
+    loop {
+        let page = backend
+            .scan_prefix_page(&large_prefix, after.as_deref(), 256)
+            .await
+            .unwrap();
+        assert!(page.len() <= 256);
+        if page.is_empty() {
+            break;
+        }
+        assert!(after.as_ref().is_none_or(|after| &page[0].0 > after));
+        after = Some(page.last().unwrap().0.clone());
+        observed.extend(page);
+    }
+    assert_eq!(observed.len(), 4097);
+    assert!(observed.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert_eq!(observed.last().unwrap().0, keys.dentry(3, b"entry-4096"));
+
     let snapshot = backend.read(&[]).await.unwrap();
     let expired =
         TransactionAuthority::from_validated(authority.checks.clone(), Some(snapshot.now_ns))

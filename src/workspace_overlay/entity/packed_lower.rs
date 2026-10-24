@@ -16,7 +16,9 @@ use super::model::{
     ChunkMap, EntityDentry, EntityInode, EntityKind, LowerBinding, validate_name,
     validate_xattr_name,
 };
-use super::resolver::{ImmutableLower, ImmutableLowerData, MAX_DIRECTORY_ENTRIES};
+use super::resolver::{
+    ImmutableLower, ImmutableLowerData, MAX_DIRECTORY_ENTRIES, validate_directory_page,
+};
 use super::{EntityError, Result};
 use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::workspace_overlay::error::WorkspaceError;
@@ -551,6 +553,50 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> ImmutableLower
         let entries = self.directory_inner(ino).await?;
         self.end_call(&admission).await?;
         Ok(entries.entries.clone())
+    }
+
+    async fn readdir_page(
+        &self,
+        ino: i64,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, EntityDentry)>> {
+        validate_directory_page(limit)?;
+        let admission = self.begin_call().await?;
+        self.require_directory(ino).await?;
+        let entries = if let Some(value) = self.memo.peek(&memo::Key::Directory(ino)).await {
+            let memo::Value::Directory(directory) = value.as_ref() else {
+                return Err(EntityError::Corrupt("lower directory memo type".into()));
+            };
+            let offset = usize::try_from(offset).map_err(|_| EntityError::Overflow)?;
+            directory
+                .entries
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect()
+        } else {
+            self.snapshot
+                .readdir_page(
+                    &self.client,
+                    &self.reader,
+                    self.directory_key(ino),
+                    offset,
+                    limit,
+                    ALLOCATION_LIMIT,
+                )
+                .await
+                .map_err(packed_error)?
+                .into_iter()
+                .map(|entry| {
+                    validate_name(&entry.name)?;
+                    Ok((entry.name, self.dentry_value(entry.inode, entry.kind)?))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        self.end_call(&admission).await?;
+        Ok(entries)
     }
 }
 

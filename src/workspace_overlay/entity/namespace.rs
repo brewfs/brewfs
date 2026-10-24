@@ -31,7 +31,7 @@ use super::{
 
 const MAX_RETRIES: usize = 16;
 const MAX_ANCESTORS: usize = 256;
-const MAX_DIRECTORY_ROWS: usize = 4096;
+const DIRECTORY_PAGE_ROWS: usize = 256;
 
 #[path = "namespace_snapshot.rs"]
 mod snapshot;
@@ -130,11 +130,30 @@ impl EntityHandle {
     }
 }
 
-/// Attributes captured and validated together with a directory's entries.
+/// Names from a stable parent version, with attributes validated in bounded batches.
 pub struct DirectorySnapshot {
     pub directory: EntityInode,
     pub parent: EntityInode,
     pub entries: Vec<(Vec<u8>, EntityInode)>,
+}
+
+#[derive(Clone, Default)]
+struct DirectoryCursor {
+    upper_after: Option<Vec<u8>>,
+    upper_done: bool,
+    lower_offset: u64,
+    lower_done: bool,
+}
+
+impl DirectoryCursor {
+    fn done(&self) -> bool {
+        self.upper_done && self.lower_done
+    }
+}
+
+struct DirectoryPage {
+    snapshot: DirectorySnapshot,
+    next: DirectoryCursor,
 }
 
 impl Drop for EntityHandle {
@@ -183,6 +202,7 @@ enum Request {
     Open(Target, u32),
     Readdir {
         ino: i64,
+        cursor: DirectoryCursor,
     },
     Link {
         ino: i64,
@@ -216,7 +236,7 @@ enum Reply {
     Done,
     Inode(EntityInode),
     Open(EntityInode, EntityHandle),
-    Directory(Box<DirectorySnapshot>),
+    Directory(Box<DirectoryPage>),
     Create(CreateAllocation),
 }
 
@@ -233,7 +253,7 @@ impl Reply {
         };
         (inode, handle)
     }
-    fn directory(self) -> DirectorySnapshot {
+    fn directory(self) -> DirectoryPage {
         let Self::Directory(snapshot) = self else {
             unreachable!("directory request reply")
         };
@@ -248,7 +268,7 @@ impl Request {
             Self::Stat(Target::Inode(ino))
             | Self::Access { ino, .. }
             | Self::Open(Target::Inode(ino), _)
-            | Self::Readdir { ino }
+            | Self::Readdir { ino, .. }
             | Self::Chmod { ino, .. }
             | Self::Xattr { ino, .. } => BTreeSet::from([*ino]),
             Self::Stat(Target::Name(parent, _))
@@ -585,9 +605,46 @@ impl<B: EntityBackend + 'static, L: ImmutableLower + 'static> EntityNamespace<B,
         ino: i64,
         credentials: &Credentials,
     ) -> Result<DirectorySnapshot> {
-        self.execute(Request::Readdir { ino }, credentials.clone())
-            .await
-            .map(Reply::directory)
+        for _ in 0..MAX_RETRIES {
+            let mut cursor = DirectoryCursor::default();
+            let mut snapshot: Option<DirectorySnapshot> = None;
+            loop {
+                let page = self
+                    .execute(Request::Readdir { ino, cursor }, credentials.clone())
+                    .await?
+                    .directory();
+                if let Some(snapshot) = &mut snapshot {
+                    // Every dentry edit advances the directory version. Restart
+                    // the complete snapshot when membership changes between pages.
+                    if snapshot.directory != page.snapshot.directory
+                        || snapshot.parent != page.snapshot.parent
+                    {
+                        break;
+                    }
+                    snapshot.entries.extend(page.snapshot.entries);
+                } else {
+                    snapshot = Some(page.snapshot);
+                }
+                cursor = page.next;
+                if cursor.done() {
+                    let mut snapshot = snapshot.expect("at least one directory page");
+                    snapshot
+                        .entries
+                        .sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                    if snapshot
+                        .entries
+                        .windows(2)
+                        .any(|pair| pair[0].0 == pair[1].0)
+                    {
+                        return Err(EntityError::Corrupt(
+                            "duplicate merged directory name".into(),
+                        ));
+                    }
+                    return Ok(snapshot);
+                }
+            }
+        }
+        Err(EntityError::Busy)
     }
 
     /// Admit a read on an already-authorized directory handle. The adapter
@@ -1010,36 +1067,110 @@ impl<'a, B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'a, B
             Err(EntityError::Conflict)
         }
     }
-    async fn directory_entries(&mut self, ino: i64) -> Result<Vec<(Vec<u8>, EntityDentry)>> {
+    async fn directory_entries(
+        &mut self,
+        ino: i64,
+        cursor: &mut DirectoryCursor,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, EntityDentry)>> {
         // The directory inode predicate fences the scan: every namespace mutation
         // changes that parent, including deletion/recreation of an existing name.
         self.inode(ino).await?;
         self.read_covered = false;
+        cursor.lower_done |= ino > self.ns.lower.binding().max_ino;
         let prefix = self.ns.keys.dentry_prefix(ino);
-        let rows = self
-            .ns
-            .backend
-            .scan_prefix(&prefix, MAX_DIRECTORY_ROWS)
-            .await?;
-        let mut upper = Vec::with_capacity(rows.len());
-        for (key, value) in rows {
-            let name = hex::decode(&key[prefix.len()..])
-                .map_err(|_| EntityError::Corrupt("invalid dentry key".into()))?;
-            validate_name(&name)?;
-            if key != self.ns.keys.dentry(ino, &name) {
-                return Err(EntityError::Corrupt("noncanonical dentry key".into()));
+        let mut output = Vec::new();
+        while !cursor.done() {
+            if !cursor.upper_done {
+                let rows = self
+                    .ns
+                    .backend
+                    .scan_prefix_page(&prefix, cursor.upper_after.as_deref(), DIRECTORY_PAGE_ROWS)
+                    .await?;
+                let count = rows.len();
+                if count > DIRECTORY_PAGE_ROWS {
+                    return Err(EntityError::Corrupt("oversized directory scan page".into()));
+                }
+                for (index, (key, value)) in rows.into_iter().enumerate() {
+                    if !key.starts_with(&prefix)
+                        || cursor
+                            .upper_after
+                            .as_ref()
+                            .is_some_and(|after| key <= *after)
+                    {
+                        return Err(EntityError::Corrupt("unordered directory scan page".into()));
+                    }
+                    let name = hex::decode(&key[prefix.len()..])
+                        .map_err(|_| EntityError::Corrupt("invalid dentry key".into()))?;
+                    validate_name(&name)?;
+                    if key != self.ns.keys.dentry(ino, &name) {
+                        return Err(EntityError::Corrupt("noncanonical dentry key".into()));
+                    }
+                    let row: EntityDentry = codec::decode(&value)?;
+                    row.validate()?;
+                    cursor.upper_after = Some(key);
+                    if matches!(row, EntityDentry::Present { .. }) {
+                        output.push((name, row));
+                    }
+                    if output.len() == limit {
+                        cursor.upper_done = count < DIRECTORY_PAGE_ROWS && index + 1 == count;
+                        return Ok(output);
+                    }
+                }
+                cursor.upper_done = count < DIRECTORY_PAGE_ROWS;
+            } else {
+                let rows = resolver::directory_page(
+                    self.ns.lower.as_ref(),
+                    self.ns.lower.binding(),
+                    ino,
+                    cursor.lower_offset,
+                    DIRECTORY_PAGE_ROWS,
+                )
+                .await?;
+                let count = rows.len();
+                if count == 0 {
+                    cursor.lower_done = true;
+                    continue;
+                }
+                let keys: Vec<_> = rows
+                    .iter()
+                    .map(|(name, _)| self.ns.keys.dentry(ino, name))
+                    .collect();
+                let upper = self.ns.backend.read(&keys).await?;
+                if upper.rows.len() != count {
+                    return Err(EntityError::Corrupt("short directory overlay read".into()));
+                }
+                for (index, (entry, upper)) in rows.into_iter().zip(upper.rows).enumerate() {
+                    cursor.lower_offset = cursor
+                        .lower_offset
+                        .checked_add(1)
+                        .ok_or(EntityError::Overflow)?;
+                    // Upper entries were emitted first. Any upper row, including
+                    // a whiteout, suppresses this immutable name. The parent
+                    // predicate covers these observations without retaining a
+                    // transaction row for every hidden name.
+                    if let Some(value) = upper {
+                        let row: EntityDentry = codec::decode(&value)?;
+                        row.validate()?;
+                    } else {
+                        output.push(entry);
+                    }
+                    if output.len() == limit {
+                        cursor.lower_done = count < DIRECTORY_PAGE_ROWS && index + 1 == count;
+                        return Ok(output);
+                    }
+                }
+                cursor.lower_done = count < DIRECTORY_PAGE_ROWS;
             }
-            upper.push((name, codec::decode(&value)?));
-            self.add(RowCheck {
-                key,
-                expected: Some(value),
-            })?;
         }
-        resolver::merge_directory(self.ns.lower.as_ref(), self.ns.lower.binding(), ino, &upper)
-            .await
+        Ok(output)
     }
     async fn empty_directory(&mut self, ino: i64) -> Result<()> {
-        if self.directory_entries(ino).await?.is_empty() {
+        if self
+            .directory_entries(ino, &mut DirectoryCursor::default(), 1)
+            .await?
+            .is_empty()
+        {
             Ok(())
         } else {
             Err(EntityError::NotEmpty)
@@ -1186,7 +1317,7 @@ impl<'a, B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'a, B
                 }
                 return Ok(Reply::Inode(inode));
             }
-            Request::Readdir { ino } => {
+            Request::Readdir { ino, cursor } => {
                 let directory = self.parent(*ino, c, 4).await?;
                 let parent = self
                     .inode(
@@ -1195,7 +1326,10 @@ impl<'a, B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'a, B
                             .unwrap_or(self.ns.lower.binding().root_ino),
                     )
                     .await?;
-                let entries = self.directory_entries(*ino).await?;
+                let mut next = cursor.clone();
+                let entries = self
+                    .directory_entries(*ino, &mut next, DIRECTORY_PAGE_ROWS)
+                    .await?;
                 self.prefetch(
                     entries
                         .iter()
@@ -1219,10 +1353,13 @@ impl<'a, B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'a, B
                     }
                     output.push((name, inode));
                 }
-                return Ok(Reply::Directory(Box::new(DirectorySnapshot {
-                    directory,
-                    parent,
-                    entries: output,
+                return Ok(Reply::Directory(Box::new(DirectoryPage {
+                    snapshot: DirectorySnapshot {
+                        directory,
+                        parent,
+                        entries: output,
+                    },
+                    next,
                 })));
             }
             Request::Link { ino, parent, name } => {

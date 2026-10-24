@@ -294,4 +294,27 @@ impl EntityBackend for MemoryEntityBackend {
             })
             .collect()
     }
+
+    async fn scan_prefix_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        validate_scan_page(prefix, after, limit)?;
+        let state = self.state.lock().map_err(poisoned)?;
+        let start = after.map_or_else(|| Included(prefix.to_vec()), |key| Excluded(key.to_vec()));
+        let mut result = Vec::new();
+        let mut total = 0;
+        for (key, value) in state
+            .rows
+            .range((start, Unbounded))
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .take(limit)
+        {
+            add_bytes(&mut total, key, Some(value))?;
+            result.push((key.clone(), value.clone()));
+        }
+        Ok(result)
+    }
 }
