@@ -6186,7 +6186,6 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn packed_owned_close(&self, fh: u64) -> Result<(), VfsError> {
-        // Note that we cannot hold the lock during the entire function, because `handle.flush()` is a I/O operation.
         let handle = self.file_handle_required(fh)?;
 
         tracing::trace!(
@@ -6195,9 +6194,19 @@ where
             write = handle.flags.write,
             "vfs.close"
         );
-        if handle.flags.write {
-            let _handle_guard = handle.lock_write().await;
-
+        // Keep a write handle's flush and retirement serialized so another
+        // close cannot retire it after this caller takes the dirty state.
+        let handle_guard = if handle.flags.write {
+            Some(handle.lock_write().await)
+        } else {
+            None
+        };
+        // A consuming FileGuard cannot retry a failed close. Save the I/O
+        // result and retire the handle even when flush or timestamps fail.
+        let flush_result: Result<(), VfsError> = async {
+            if !handle.flags.write {
+                return Ok(());
+            }
             let dirty_state = self.state.handles.take_write_dirty(fh);
             let flushed_pending = if dirty_state.dirty {
                 #[cfg(feature = "native-packed-base")]
@@ -6226,15 +6235,12 @@ where
             } else {
                 false
             };
-            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
-                && let Err(err) = self.update_mtime_ctime(handle.ino).await
-            {
-                if dirty_state.dirty {
-                    handle.mark_write_dirty();
-                }
-                return Err(err);
+            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending) {
+                self.update_mtime_ctime(handle.ino).await?;
             }
+            Ok(())
         }
+        .await;
 
         // Prevent us from TOC-TOU (time of check to time of use) error.
         // If we release the handle and remove the inode directly, there is
@@ -6242,7 +6248,12 @@ where
         // to be deleted mistakenly.
         let (release_writer, discard_unlinked) = match self.lock_inode(handle.ino) {
             Entry::Occupied(entry) => {
-                self.state.handles.release(fh);
+                // Only the closer that removes the registry entry owns teardown
+                // and the matching metadata close, even if both held its Arc.
+                self.state
+                    .handles
+                    .release(fh)
+                    .ok_or(VfsError::StaleNetworkFileHandle)?;
                 let release_writer =
                     handle.flags.write && !self.state.handles.has_write_handle(handle.ino);
                 let no_handles = self.state.handles.has_no_handle(handle.ino);
@@ -6255,11 +6266,12 @@ where
                 (release_writer, discard_unlinked)
             }
             Entry::Vacant(_) => {
-                // This is weird/impossible?
-                // It means the inode was deleted while we held a handle to it.
-                unreachable!("Try closing a file that has never been opened");
+                // Another close can retire the last handle after this caller
+                // acquired its Arc, removing the inode along with it.
+                return Err(VfsError::StaleNetworkFileHandle);
             }
         };
+        drop(handle_guard);
 
         if handle.has_reader() {
             self.state
@@ -6271,11 +6283,14 @@ where
         if discard_unlinked {
             self.discard_closed_unlinked_inode_state(handle.ino).await;
         } else if release_writer {
+            // The writer pool retains pending data and owns background drain;
+            // release marks it inactive without discarding failed dirty data.
             self.state.writer.release(handle.ino as u64).await;
         }
 
-        if discard_unlinked {
-            self.meta_record_close(handle.ino).await?;
+        let close_result = if discard_unlinked || flush_result.is_err() {
+            // Failed publication must not warm the open cache with final attrs.
+            self.meta_record_close(handle.ino).await
         } else {
             self.meta_record_close_with_attr(
                 handle.ino,
@@ -6284,11 +6299,11 @@ where
                 handle.flags.write,
                 handle.flags.append,
             )
-            .await?;
-        }
+            .await
+        };
 
         tracing::trace!(fh, ino = handle.ino, "vfs.close_done");
-        Ok(())
+        flush_result.and(close_result)
     }
 
     pub(crate) async fn flush_dirty_handle_snapshot(&self, fh: u64) -> Result<(), VfsError> {
