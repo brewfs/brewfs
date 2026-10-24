@@ -8,9 +8,12 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -164,6 +167,8 @@ pub enum CsiError {
     Busy(String),
     #[error("workspace is still published at: {0}")]
     Published(String),
+    #[error("mount ownership or mode cannot be verified: {0}")]
+    MountConflict(String),
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("mount command failed: {0}")]
@@ -176,11 +181,40 @@ impl From<VolumeIdError> for CsiError {
     }
 }
 
+/// Kernel identity of a mount. Bind mounts share the device, root, filesystem
+/// type and source, but have independent read-only flags and mount IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MountInfo {
+    pub device: String,
+    pub root: String,
+    pub fs_type: String,
+    pub source: String,
+    pub read_only: bool,
+}
+
+impl MountInfo {
+    fn same_filesystem_root(&self, other: &Self) -> bool {
+        self.device == other.device
+            && self.root == other.root
+            && self.fs_type == other.fs_type
+            && self.source == other.source
+    }
+
+    fn is_brewfs(&self) -> bool {
+        (self.fs_type == "fuse" || self.fs_type.starts_with("fuse."))
+            && matches!(
+                self.source.as_str(),
+                "brewfs" | "brewfs-entity-experimental"
+            )
+    }
+}
+
 /// The small set of host operations needed by the node plugin.  Keeping this
 /// boundary explicit makes all idempotency behavior unit-testable without
 /// mounting FUSE in a test process.
 pub trait MountOps: Send + Sync + 'static {
     fn is_mounted(&self, path: &Path) -> io::Result<bool>;
+    fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>>;
     fn process_alive(&self, pid: u32) -> io::Result<bool>;
     fn start_brewfs(&self, spec: &MountSpec, target: &Path) -> io::Result<u32>;
     fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()>;
@@ -191,6 +225,10 @@ pub trait MountOps: Send + Sync + 'static {
 impl<T: MountOps> MountOps for Arc<T> {
     fn is_mounted(&self, path: &Path) -> io::Result<bool> {
         (**self).is_mounted(path)
+    }
+
+    fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>> {
+        (**self).inspect_mount(path)
     }
 
     fn process_alive(&self, pid: u32) -> io::Result<bool> {
@@ -221,6 +259,37 @@ impl MountOps for SystemMountOps {
     fn is_mounted(&self, path: &Path) -> io::Result<bool> {
         let status = Command::new("mountpoint").arg("-q").arg(path).status()?;
         Ok(status.success())
+    }
+
+    fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // Inspect the path without opening the FUSE directory (which may be
+        // disconnected), or blocking if an unexpected target is a FIFO.
+        #[cfg(target_os = "linux")]
+        options.custom_flags(libc::O_PATH);
+        let target = match options.open(path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let fd = target.as_raw_fd();
+        let path = fs::read_link(format!("/proc/self/fd/{fd}"))?;
+        // Pin inspection to the visible mount. A path match alone can select
+        // an owned mount hidden beneath a foreign mount at it or an ancestor.
+        let fdinfo = fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))?;
+        let mount_id = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("mnt_id:"))
+            .and_then(|id| id.trim().parse().ok())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing mount ID in fdinfo")
+            })?;
+        mount_at(
+            &fs::read_to_string("/proc/self/mountinfo")?,
+            &path,
+            mount_id,
+        )
     }
 
     fn process_alive(&self, pid: u32) -> io::Result<bool> {
@@ -320,6 +389,74 @@ fn run_command(command: &mut Command) -> io::Result<()> {
     }
 }
 
+fn mount_at(mountinfo: &str, path: &Path, visible_mount_id: u64) -> io::Result<Option<MountInfo>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid mountinfo");
+    for line in mountinfo.lines() {
+        let (mount, filesystem) = line.split_once(" - ").ok_or_else(invalid)?;
+        let mount: Vec<_> = mount.split(' ').collect();
+        let filesystem: Vec<_> = filesystem.split(' ').collect();
+        if mount.len() < 6 || filesystem.len() < 3 {
+            return Err(invalid());
+        }
+        if mount[0].parse::<u64>().map_err(|_| invalid())? != visible_mount_id {
+            continue;
+        }
+        if Path::new(&unescape_mount_field(mount[4])?) != path {
+            // The descriptor belongs to an ancestor mount: this directory is
+            // not itself a mountpoint, even if mountinfo lists hidden mounts here.
+            return Ok(None);
+        }
+        let mount_ro = mount_read_only(mount[5])?;
+        let filesystem_ro = mount_read_only(filesystem[2])?;
+        return Ok(Some(MountInfo {
+            device: mount[2].to_owned(),
+            root: unescape_mount_field(mount[3])?,
+            fs_type: filesystem[0].to_owned(),
+            source: unescape_mount_field(filesystem[1])?,
+            read_only: mount_ro || filesystem_ro,
+        }));
+    }
+    Err(io::Error::other(format!(
+        "mount {visible_mount_id} disappeared while inspecting {path:?}"
+    )))
+}
+
+fn mount_read_only(options: &str) -> io::Result<bool> {
+    let ro = options.split(',').any(|option| option == "ro");
+    let rw = options.split(',').any(|option| option == "rw");
+    if ro == rw {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid mount mode",
+        ));
+    }
+    Ok(ro)
+}
+
+fn unescape_mount_field(field: &str) -> io::Result<String> {
+    let mut bytes = field.bytes();
+    let mut decoded = Vec::new();
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'\\' {
+            match (bytes.next(), bytes.next(), bytes.next()) {
+                (Some(b'0'), Some(b'4'), Some(b'0')) => b' ',
+                (Some(b'0'), Some(b'1'), Some(b'1')) => b'\t',
+                (Some(b'0'), Some(b'1'), Some(b'2')) => b'\n',
+                (Some(b'1'), Some(b'3'), Some(b'4')) => b'\\',
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid mount escape",
+                    ));
+                }
+            }
+        } else {
+            byte
+        });
+    }
+    String::from_utf8(decoded).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct MountState {
     volume_id: String,
@@ -334,6 +471,11 @@ struct MountState {
     pid: Option<u32>,
     #[serde(default)]
     targets: BTreeSet<String>,
+    /// Captured after starting BrewFS; never inferred from an existing target.
+    #[serde(default)]
+    shared_identity: Option<MountInfo>,
+    #[serde(default)]
+    target_read_only: BTreeMap<String, bool>,
 }
 
 /// Node-side state manager.  The shared mount path is derived only from the
@@ -372,27 +514,27 @@ impl<O: MountOps> MountManager<O> {
     ) -> Result<(), CsiError> {
         let _guard = self.lock.lock().await;
         let shared = self.stage_locked(spec)?;
-        if self.ops.is_mounted(target)? {
-            let mut state = self.load_state(spec)?;
-            state.targets.insert(target.display().to_string());
-            self.store_state(spec, &state)?;
-            return Ok(());
-        }
-        self.ops
-            .bind(&shared, target, read_only || spec.read_only)?;
         let mut state = self.load_state(spec)?;
+        let read_only = read_only || spec.read_only;
+        if let Some(mount) = self.ops.inspect_mount(target)? {
+            self.verify_target(spec, &state, target, &mount, read_only)?;
+        } else {
+            self.ops.bind(&shared, target, read_only)?;
+            let mount = self.ops.inspect_mount(target)?.ok_or_else(|| {
+                CsiError::MountConflict(format!("bind mount missing at {target:?}"))
+            })?;
+            self.verify_target(spec, &state, target, &mount, read_only)?;
+        }
         state.targets.insert(target.display().to_string());
+        state
+            .target_read_only
+            .insert(target.display().to_string(), read_only);
         self.store_state(spec, &state)
     }
 
     pub async fn unpublish(&self, spec: &MountSpec, target: &Path) -> Result<(), CsiError> {
         let _guard = self.lock.lock().await;
-        if self.ops.is_mounted(target)? {
-            self.ops.unbind(target)?;
-        }
-        let mut state = self.load_state(spec)?;
-        state.targets.remove(&target.display().to_string());
-        self.store_state(spec, &state)
+        self.unpublish_locked(spec, target)
     }
 
     pub async fn unpublish_by_id(&self, volume_id: &str, target: &Path) -> Result<(), CsiError> {
@@ -406,15 +548,68 @@ impl<O: MountOps> MountManager<O> {
             read_only: false,
         };
         if !self.state_path(&probe).exists() {
+            if self.ops.inspect_mount(target)?.is_some() {
+                return Err(CsiError::MountConflict(format!(
+                    "no volume state for {target:?}"
+                )));
+            }
             return Ok(());
         }
         let spec = self.spec_from_state(volume_id)?;
-        if self.ops.is_mounted(target)? {
+        self.unpublish_locked(&spec, target)
+    }
+
+    fn unpublish_locked(&self, spec: &MountSpec, target: &Path) -> Result<(), CsiError> {
+        let mut state = self.load_state(spec)?;
+        if let Some(mount) = self.ops.inspect_mount(target)? {
+            let read_only = state
+                .target_read_only
+                .get(&target.display().to_string())
+                .copied()
+                .ok_or_else(|| {
+                    CsiError::MountConflict(format!("no recorded target mode for {target:?}"))
+                })?;
+            self.verify_target(spec, &state, target, &mount, read_only)?;
             self.ops.unbind(target)?;
         }
-        let mut state = self.load_state(&spec)?;
         state.targets.remove(&target.display().to_string());
-        self.store_state(&spec, &state)
+        state.target_read_only.remove(&target.display().to_string());
+        self.store_state(spec, &state)
+    }
+
+    fn verify_shared(&self, spec: &MountSpec, state: &MountState) -> Result<MountInfo, CsiError> {
+        let shared = spec.shared_mount();
+        let mount = self.ops.inspect_mount(&shared)?;
+        match (mount, &state.shared_identity) {
+            (Some(mount), Some(recorded))
+                if mount.is_brewfs()
+                    && mount == *recorded
+                    && state.volume_id == spec.volume.as_string()
+                    && Path::new(&state.shared_mount) == shared =>
+            {
+                Ok(mount)
+            }
+            _ => Err(CsiError::MountConflict(format!(
+                "shared mount changed or has no recorded identity at {shared:?}"
+            ))),
+        }
+    }
+
+    fn verify_target(
+        &self,
+        spec: &MountSpec,
+        state: &MountState,
+        target: &Path,
+        mount: &MountInfo,
+        read_only: bool,
+    ) -> Result<(), CsiError> {
+        let shared = self.verify_shared(spec, state)?;
+        if !mount.same_filesystem_root(&shared) || mount.read_only != read_only {
+            return Err(CsiError::MountConflict(format!(
+                "foreign source or incorrect read-only mode at {target:?}"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn unstage(&self, spec: &MountSpec) -> Result<(), CsiError> {
@@ -478,6 +673,10 @@ impl<O: MountOps> MountManager<O> {
                 "cannot reuse mount at {shared:?} without a recorded BrewFS PID; unmount it before retrying"
             )));
         }
+        if mounted {
+            // A recorded PID alone cannot authenticate a replaced shared mount.
+            self.verify_shared(spec, &state)?;
+        }
         let stale = match state.pid {
             Some(pid) => mounted && !self.ops.process_alive(pid)?,
             None => false,
@@ -497,6 +696,12 @@ impl<O: MountOps> MountManager<O> {
             let pid = self.ops.start_brewfs(spec, &shared)?;
             state = MountState::default();
             state.pid = Some(pid);
+            let mount = self
+                .ops
+                .inspect_mount(&shared)?
+                .filter(MountInfo::is_brewfs)
+                .ok_or_else(|| CsiError::MountConflict(format!("no BrewFS mount at {shared:?}")))?;
+            state.shared_identity = Some(mount);
         }
         state.volume_id = spec.volume.as_string();
         state.shared_mount = shared.display().to_string();
@@ -589,9 +794,35 @@ mod tests {
         binds: StdMutex<BTreeSet<String>>,
         starts: StdMutex<usize>,
         unmounts: StdMutex<usize>,
+        identities: StdMutex<BTreeMap<String, MountInfo>>,
+        inspection_errors: StdMutex<BTreeSet<PathBuf>>,
+        unbinds: StdMutex<usize>,
     }
 
     impl MountOps for FakeOps {
+        fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>> {
+            if self.inspection_errors.lock().unwrap().contains(path) {
+                return Err(io::Error::other("mount inspection failed"));
+            }
+            if !self.is_mounted(path)? {
+                return Ok(None);
+            }
+            Ok(Some(
+                self.identities
+                    .lock()
+                    .unwrap()
+                    .get(&path.display().to_string())
+                    .cloned()
+                    .unwrap_or(MountInfo {
+                        device: "8:1".to_owned(),
+                        root: "/".to_owned(),
+                        fs_type: "ext4".to_owned(),
+                        source: "/dev/sda1".to_owned(),
+                        read_only: false,
+                    }),
+            ))
+        }
+
         fn is_mounted(&self, path: &Path) -> io::Result<bool> {
             Ok(self
                 .mounted
@@ -615,10 +846,28 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(target.display().to_string());
+            self.identities.lock().unwrap().insert(
+                target.display().to_string(),
+                MountInfo {
+                    device: format!("0:{}", *self.starts.lock().unwrap()),
+                    root: "/".to_owned(),
+                    fs_type: "fuse".to_owned(),
+                    source: "brewfs".to_owned(),
+                    read_only: false,
+                },
+            );
             Ok(42)
         }
 
-        fn bind(&self, _source: &Path, target: &Path, _read_only: bool) -> io::Result<()> {
+        fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()> {
+            let mut mount = self
+                .inspect_mount(source)?
+                .ok_or_else(|| io::Error::other("source is not mounted"))?;
+            mount.read_only = read_only;
+            self.identities
+                .lock()
+                .unwrap()
+                .insert(target.display().to_string(), mount);
             self.binds
                 .lock()
                 .unwrap()
@@ -627,6 +876,7 @@ mod tests {
         }
 
         fn unbind(&self, target: &Path) -> io::Result<()> {
+            *self.unbinds.lock().unwrap() += 1;
             self.binds
                 .lock()
                 .unwrap()
@@ -732,6 +982,365 @@ mod tests {
         manager.unstage(&spec).await.unwrap();
         manager.unstage(&spec).await.unwrap();
         assert_eq!(*ops.unmounts.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn ownership_publish_rejects_another_volume_even_with_a_recorded_target() {
+        for recorded in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            fs::create_dir(&target).unwrap();
+            if recorded {
+                manager.publish(&spec, &target, false).await.unwrap();
+                ops.unbind(&target).unwrap();
+            }
+            let mut other = spec.clone();
+            other.volume = VolumeId::new("cluster-a", Uuid::from_u128(8)).unwrap();
+            let foreign = manager.stage(&other).await.unwrap();
+            ops.bind(&foreign, &target, false).unwrap();
+
+            assert!(
+                manager.publish(&spec, &target, false).await.is_err(),
+                "publish accepted another volume's mount (recorded={recorded})"
+            );
+            assert!(ops.is_mounted(&target).unwrap());
+            assert_eq!(
+                manager
+                    .load_state(&spec)
+                    .unwrap()
+                    .targets
+                    .contains(&target.display().to_string()),
+                recorded
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_unpublish_rejects_replaced_target() {
+        for by_id in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.publish(&spec, &target, false).await.unwrap();
+            ops.unbind(&target).unwrap();
+            let mut other = spec.clone();
+            other.volume = VolumeId::new("cluster-a", Uuid::from_u128(8)).unwrap();
+            let foreign = manager.stage(&other).await.unwrap();
+            ops.bind(&foreign, &target, false).unwrap();
+
+            let result = if by_id {
+                manager
+                    .unpublish_by_id(&spec.volume.as_string(), &target)
+                    .await
+            } else {
+                manager.unpublish(&spec, &target).await
+            };
+            assert!(
+                result.is_err(),
+                "unpublish accepted a replaced mount (by_id={by_id})"
+            );
+            assert!(
+                ops.is_mounted(&target).unwrap(),
+                "foreign mount was removed"
+            );
+            assert!(
+                manager
+                    .load_state(&spec)
+                    .unwrap()
+                    .targets
+                    .contains(&target.display().to_string())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_unpublish_rejects_mounted_target_without_state() {
+        for by_id in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            ops.mounted
+                .lock()
+                .unwrap()
+                .insert(target.display().to_string());
+            let result = if by_id {
+                manager
+                    .unpublish_by_id(&spec.volume.as_string(), &target)
+                    .await
+            } else {
+                manager.unpublish(&spec, &target).await
+            };
+            assert!(
+                result.is_err(),
+                "unpublish trusted a mount without state (by_id={by_id})"
+            );
+            assert!(ops.is_mounted(&target).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_publish_rejects_read_only_mismatch() {
+        for read_only in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager =
+                MountManager::new_with_root(FakeOps::default(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.publish(&spec, &target, read_only).await.unwrap();
+            assert!(
+                manager.publish(&spec, &target, !read_only).await.is_err(),
+                "publish accepted the wrong read-only mode"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_owned_target_is_idempotent_after_restart() {
+        for read_only in [false, true] {
+            for by_id in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let ops = Arc::new(FakeOps::default());
+                let state_root = temp.path().join("state");
+                let manager = MountManager::new_with_root(ops.clone(), state_root.clone());
+                let spec = spec(&temp);
+                let target = temp.path().join("target");
+                manager.publish(&spec, &target, read_only).await.unwrap();
+                let restarted = MountManager::new_with_root(ops.clone(), state_root);
+                restarted.publish(&spec, &target, read_only).await.unwrap();
+                for _ in 0..2 {
+                    if by_id {
+                        restarted
+                            .unpublish_by_id(&spec.volume.as_string(), &target)
+                            .await
+                            .unwrap();
+                    } else {
+                        restarted.unpublish(&spec, &target).await.unwrap();
+                    }
+                }
+                assert!(!ops.is_mounted(&target).unwrap());
+                assert_eq!(*ops.starts.lock().unwrap(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_rejects_changed_identity_and_mode_without_unbinding() {
+        for field in ["device", "root", "fs_type", "source", "read_only"] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let state_root = temp.path().join("state");
+            let manager = MountManager::new_with_root(ops.clone(), state_root.clone());
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.publish(&spec, &target, false).await.unwrap();
+            {
+                let mut identities = ops.identities.lock().unwrap();
+                let identity = identities.get_mut(&target.display().to_string()).unwrap();
+                match field {
+                    "device" => identity.device = "8:1".to_owned(),
+                    "root" => identity.root = "/subdirectory".to_owned(),
+                    "fs_type" => identity.fs_type = "ext4".to_owned(),
+                    "source" => identity.source = "other-fuse".to_owned(),
+                    _ => identity.read_only = true,
+                }
+            }
+            let restarted = MountManager::new_with_root(ops.clone(), state_root);
+            let before = fs::read(restarted.state_path(&spec)).unwrap();
+            assert!(
+                matches!(
+                    restarted.publish(&spec, &target, false).await,
+                    Err(CsiError::MountConflict(_))
+                ),
+                "publish accepted changed {field}"
+            );
+            assert!(
+                matches!(
+                    restarted.unpublish(&spec, &target).await,
+                    Err(CsiError::MountConflict(_))
+                ),
+                "unpublish accepted changed {field}"
+            );
+            assert!(
+                matches!(
+                    restarted
+                        .unpublish_by_id(&spec.volume.as_string(), &target)
+                        .await,
+                    Err(CsiError::MountConflict(_))
+                ),
+                "unpublish_by_id accepted changed {field}"
+            );
+            assert_eq!(fs::read(restarted.state_path(&spec)).unwrap(), before);
+            assert_eq!(*ops.unbinds.lock().unwrap(), 0);
+            assert!(ops.is_mounted(&target).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_rejects_host_mount_and_replaced_or_legacy_shared_mount() {
+        for scenario in ["host-target", "replaced-shared", "legacy-state"] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.stage(&spec).await.unwrap();
+            match scenario {
+                "host-target" => {
+                    ops.mounted
+                        .lock()
+                        .unwrap()
+                        .insert(target.display().to_string());
+                }
+                "replaced-shared" => {
+                    // Even a live recorded PID must not authenticate a host mount.
+                    ops.identities
+                        .lock()
+                        .unwrap()
+                        .remove(&spec.shared_mount().display().to_string());
+                }
+                _ => {
+                    let mut state = manager.load_state(&spec).unwrap();
+                    state.shared_identity = None;
+                    manager.store_state(&spec, &state).unwrap();
+                }
+            }
+            assert!(
+                matches!(
+                    manager.publish(&spec, &target, false).await,
+                    Err(CsiError::MountConflict(_))
+                ),
+                "accepted {scenario}"
+            );
+            assert!(manager.load_state(&spec).unwrap().targets.is_empty());
+            assert_eq!(*ops.unbinds.lock().unwrap(), 0);
+            assert_eq!(*ops.unmounts.lock().unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_inspection_errors_are_returned_without_unbinding() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        let target = temp.path().join("target");
+        manager.publish(&spec, &target, false).await.unwrap();
+        ops.inspection_errors.lock().unwrap().insert(target.clone());
+        assert!(matches!(
+            manager.publish(&spec, &target, false).await,
+            Err(CsiError::Io(_))
+        ));
+        assert!(matches!(
+            manager.unpublish(&spec, &target).await,
+            Err(CsiError::Io(_))
+        ));
+        assert!(matches!(
+            manager
+                .unpublish_by_id(&spec.volume.as_string(), &target)
+                .await,
+            Err(CsiError::Io(_))
+        ));
+        assert_eq!(*ops.unbinds.lock().unwrap(), 0);
+        assert!(ops.is_mounted(&target).unwrap());
+    }
+
+    #[test]
+    fn mountinfo_decodes_paths_and_distinguishes_bind_modes() {
+        let info = "41 1 0:55 / /shared rw,relatime shared:7 - fuse brewfs rw,user_id=0\n\
+                    42 1 0:55 / /target\\040one ro,relatime master:7 - fuse brewfs rw,user_id=0\n\
+                    43 1 0:55 /sub\\134dir /subdir rw - fuse brewfs rw\n";
+        let shared = mount_at(info, Path::new("/shared"), 41).unwrap().unwrap();
+        let target = mount_at(info, Path::new("/target one"), 42)
+            .unwrap()
+            .unwrap();
+        assert!(shared.is_brewfs());
+        assert!(target.same_filesystem_root(&shared));
+        assert!(!shared.read_only);
+        assert!(target.read_only);
+        let subdir = mount_at(info, Path::new("/subdir"), 43).unwrap().unwrap();
+        assert_eq!(subdir.root, "/sub\\dir");
+        assert!(!subdir.same_filesystem_root(&shared));
+        assert!(mount_at(info, Path::new("/missing"), 41).unwrap().is_none());
+        assert_eq!(
+            unescape_mount_field(r"a\011b\012c\134d").unwrap(),
+            "a\tb\nc\\d"
+        );
+        // mountinfo separates fields with spaces; a literal carriage return
+        // in a path is not a field separator.
+        assert!(
+            mount_at(
+                "44 1 0:55 / /target\rname rw - fuse brewfs rw",
+                Path::new("/target\rname"),
+                44
+            )
+            .unwrap()
+            .is_some()
+        );
+        let super_ro = "41 1 0:55 / /shared rw - fuse brewfs ro";
+        assert!(
+            mount_at(super_ro, Path::new("/shared"), 41)
+                .unwrap()
+                .unwrap()
+                .read_only
+        );
+    }
+
+    #[test]
+    fn mountinfo_rejects_malformed_entries_and_uses_visible_mount() {
+        for info in [
+            "41 1 0:55 / /target rw",
+            "41 - fuse brewfs rw",
+            "41 1 0:55 / /target rw - fuse",
+            "41 1 0:55 / /target defaults - fuse brewfs rw",
+            "41 1 0:55 / /target ro,rw - fuse brewfs rw",
+            r"41 1 0:55 / /target\999 rw - fuse brewfs rw",
+        ] {
+            assert!(
+                mount_at(info, Path::new("/target"), 41).is_err(),
+                "accepted {info}"
+            );
+        }
+        let stacked =
+            "41 1 0:55 / /target rw - fuse brewfs rw\n42 1 8:1 / /target rw - ext4 /dev/sda1 rw";
+        let visible = mount_at(stacked, Path::new("/target"), 42)
+            .unwrap()
+            .unwrap();
+        assert_eq!(visible.fs_type, "ext4");
+        assert!(!visible.is_brewfs());
+        assert!(mount_at(stacked, Path::new("/target"), 99).is_err());
+        // An ancestor overmount hides the old target mount entirely.
+        let covered = "41 1 0:55 / /parent/target rw - fuse brewfs rw\n42 1 8:1 / /parent rw - ext4 /dev/sda1 rw";
+        assert!(
+            mount_at(covered, Path::new("/parent/target"), 42)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_system_inspection_distinguishes_mounts_from_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(
+            SystemMountOps
+                .inspect_mount(Path::new("/"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(SystemMountOps.inspect_mount(temp.path()).unwrap().is_none());
+        assert!(
+            SystemMountOps
+                .inspect_mount(&temp.path().join("missing"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
