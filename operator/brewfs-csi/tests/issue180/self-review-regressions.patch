@@ -1,0 +1,177 @@
+diff --git a/operator/brewfs-csi/src/lib.rs b/operator/brewfs-csi/src/lib.rs
+index cd6e68c..eaa8033 100644
+--- a/operator/brewfs-csi/src/lib.rs
++++ b/operator/brewfs-csi/src/lib.rs
+@@ -417,6 +417,8 @@ impl MountOps for SystemMountOps {
+         // parent fd avoids resolving the caller's ancestor path again.
+         // Do not use MNT_DETACH: it could detach foreign child mounts too.
+         drop(expected);
++        #[cfg(test)]
++        tests::run_before_unmount_syscall();
+         // SAFETY: syscall_path is NUL-terminated and parent_fd stays open.
+         if unsafe { libc::umount2(syscall_path.as_ptr(), libc::UMOUNT_NOFOLLOW) } != 0 {
+             return Err(io::Error::last_os_error());
+@@ -869,6 +871,18 @@ mod tests {
+     use std::sync::Mutex as StdMutex;
+     use tempfile::TempDir;
+
++    thread_local! {
++        static BEFORE_UNMOUNT_SYSCALL: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
++    }
++
++    pub(super) fn run_before_unmount_syscall() {
++        BEFORE_UNMOUNT_SYSCALL.with(|hook| {
++            if let Some(hook) = hook.borrow_mut().take() {
++                hook();
++            }
++        });
++    }
++
+     #[derive(Debug, Default)]
+     struct FakeOps {
+         mounted: StdMutex<BTreeSet<String>>,
+@@ -880,6 +894,7 @@ mod tests {
+         unbinds: StdMutex<usize>,
+         replace_on_unbind: StdMutex<Option<(PathBuf, MountInfo)>>,
+         next_mount_id: StdMutex<u64>,
++        corrupt_bind_mode: StdMutex<bool>,
+     }
+
+     impl FakeOps {
+@@ -959,6 +974,9 @@ mod tests {
+                 .inspect_mount(source)?
+                 .ok_or_else(|| io::Error::other("source is not mounted"))?;
+             mount.read_only = read_only;
++            if *self.corrupt_bind_mode.lock().unwrap() {
++                mount.read_only = !read_only;
++            }
+             mount.mount_id = self.allocate_mount_id();
+             self.identities
+                 .lock()
+@@ -1093,6 +1111,126 @@ mod tests {
+         assert_eq!(*ops.unmounts.lock().unwrap(), 1);
+     }
+
++    #[tokio::test]
++    async fn ownership_self_review_failed_verification_rolls_back() {
++        let temp = tempfile::tempdir().unwrap();
++        let ops = Arc::new(FakeOps::default());
++        *ops.corrupt_bind_mode.lock().unwrap() = true;
++        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
++        let spec = spec(&temp);
++        let target = temp.path().join("target");
++        assert!(matches!(
++            manager.publish(&spec, &target, true).await,
++            Err(CsiError::MountConflict(_))
++        ));
++        assert!(
++            !manager.state_path(&spec).exists(),
++            "failed ownership verification left persisted state"
++        );
++        assert!(
++            !ops.is_mounted(&spec.shared_mount()).unwrap(),
++            "failed ownership verification left a started mount"
++        );
++        assert!(!ops.is_mounted(&target).unwrap());
++    }
++
++    #[cfg(target_os = "linux")]
++    struct ReviewMountFixture(TempDir);
++
++    #[cfg(target_os = "linux")]
++    impl ReviewMountFixture {
++        fn new() -> Self {
++            assert_eq!(std::env::var("CSI_PRIVATE_MOUNT_TEST").as_deref(), Ok("1"));
++            assert_ne!(
++                fs::read_link("/proc/self/ns/mnt").unwrap(),
++                fs::read_link("/proc/1/ns/mnt").unwrap()
++            );
++            assert!(
++                !fs::read_to_string("/proc/self/mountinfo")
++                    .unwrap()
++                    .lines()
++                    .any(|line| line.split(" - ").next().unwrap().contains(" shared:"))
++            );
++            let fixture = Self(tempfile::tempdir().unwrap());
++            for name in ["owned", "foreign"] {
++                let path = fixture.path(name);
++                fs::create_dir(&path).unwrap();
++                run_command(Command::new("mount").args(["-t", "tmpfs", name]).arg(path)).unwrap();
++            }
++            SystemMountOps
++                .bind(&fixture.path("owned"), &fixture.path("target"), false)
++                .unwrap();
++            fixture
++        }
++
++        fn path(&self, name: &str) -> PathBuf {
++            self.0.path().join(name)
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    impl Drop for ReviewMountFixture {
++        fn drop(&mut self) {
++            for name in ["target", "owned", "foreign"] {
++                let path = CString::new(self.path(name).as_os_str().as_bytes()).unwrap();
++                // Test-only cleanup; all mounts are private fixtures.
++                while unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {}
++            }
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    #[ignore = "requires a private mount namespace and CSI_PRIVATE_MOUNT_TEST=1"]
++    fn ownership_self_review_last_syscall_window_preserves_foreign_mount() {
++        let fixture = ReviewMountFixture::new();
++        let target = fixture.path("target");
++        let expected = SystemMountOps.inspect_mount(&target).unwrap().unwrap();
++        let foreign = fixture.path("foreign");
++        let replaced_target = target.clone();
++        BEFORE_UNMOUNT_SYSCALL.with(|hook| {
++            *hook.borrow_mut() = Some(Box::new(move || {
++                SystemMountOps
++                    .bind(&foreign, &replaced_target, false)
++                    .unwrap();
++            }));
++        });
++        let result = SystemMountOps.unbind(&target, expected);
++        let visible = SystemMountOps.inspect_mount(&target).unwrap().unwrap();
++        assert_eq!(
++            visible.source, "foreign",
++            "foreign overmount was unmounted after the final validation; result={result:?}"
++        );
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    #[ignore = "requires a private mount namespace and CSI_PRIVATE_MOUNT_TEST=1"]
++    fn ownership_self_review_aliases_are_rejected() {
++        let mut accepted = Vec::new();
++        for alias_type in ["symlink", "dot-component"] {
++            let fixture = ReviewMountFixture::new();
++            let expected = SystemMountOps
++                .inspect_mount(&fixture.path("target"))
++                .unwrap()
++                .unwrap();
++            let alias = if alias_type == "symlink" {
++                let alias = fixture.path("alias");
++                std::os::unix::fs::symlink(fixture.path("target"), &alias).unwrap();
++                alias
++            } else {
++                fixture.0.path().join(".").join("target")
++            };
++            if SystemMountOps.unbind(&alias, expected).is_ok() {
++                accepted.push(alias_type);
++            }
++        }
++        assert!(
++            accepted.is_empty(),
++            "aliased targets were accepted and unmounted: {accepted:?}"
++        );
++    }
++
+     #[tokio::test]
+     async fn ownership_unpublish_rejects_replacement_during_unmount() {
+         for by_id in [false, true] {
