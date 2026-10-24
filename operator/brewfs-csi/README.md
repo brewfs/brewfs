@@ -29,13 +29,23 @@ filesystem binary or its on-disk formats.
   bidirectional propagation for the host paths it serves.
 * State is an atomically replaced JSON file under `--state-dir`. It records the
   mount context, published targets, and the PID of a mount process started by
-  this plugin. Repeated stage/publish and unpublish/unstage calls are safe.
+  this plugin, plus the shared mount's kernel filesystem identity and each
+  target's read-only mode. Publish and unpublish inspect `/proc/self/mountinfo`
+  and compare the device, filesystem root, type, source, and mode before
+  accepting an existing target or unmounting it. Foreign mounts and mode
+  mismatches return CSI `FailedPrecondition` and are left mounted. The same
+  checks apply after a plugin restart; a target path in state alone is not
+  proof of ownership.
   Unstage refuses to remove a shared mount while a target is still published.
   If a recorded mount process is gone but its mountpoint remains, the stale
-  mount is removed before a new process is started. An existing mount without
-  a recorded PID (including state from an older adapter) is rejected; unmount
-  it before retrying stage. A mount visibility timeout kills and reaps the
-  child, then removes any mount that appeared during the final poll.
+  mount is removed only if its identity still matches, before a new process
+  is started. Mounted targets with missing state or legacy state lacking
+  identity/mode information are rejected. Drain and unmount these volumes
+  before upgrading, then stage and publish them with the new adapter. A
+  missing or replaced shared mount also prevents target ownership validation;
+  investigate the host mounts before retrying cleanup. A mount visibility
+  timeout kills and reaps the child, then removes any mount that appeared
+  during the final poll.
 
 The BrewFS process remains the lease authority. CSI reference tracking only
 controls when the node plugin may unbind and unstage; it cannot grant a second

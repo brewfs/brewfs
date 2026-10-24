@@ -156,6 +156,7 @@ dependencies = [
  "clap",
  "fs2",
  "hex",
+ "libc",
  "prost",
  "prost-types",
  "serde",
