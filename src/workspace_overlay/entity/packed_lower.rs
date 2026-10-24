@@ -16,7 +16,9 @@ use super::model::{
     ChunkMap, EntityDentry, EntityInode, EntityKind, LowerBinding, validate_name,
     validate_xattr_name,
 };
-use super::resolver::{ImmutableLower, ImmutableLowerData, MAX_DIRECTORY_ENTRIES};
+use super::resolver::{
+    ImmutableLower, ImmutableLowerData, MAX_DIRECTORY_ENTRIES, validate_directory_page,
+};
 use super::{EntityError, Result};
 use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::workspace_overlay::error::WorkspaceError;
@@ -551,6 +553,62 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> ImmutableLower
         let entries = self.directory_inner(ino).await?;
         self.end_call(&admission).await?;
         Ok(entries.entries.clone())
+    }
+
+    async fn readdir_page(
+        &self,
+        ino: i64,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, EntityDentry)>> {
+        validate_directory_page(limit)?;
+        let admission = self.begin_call().await?;
+        self.require_directory(ino).await?;
+        let entries = if let Some(value) = self.memo.peek(&memo::Key::Directory(ino)).await {
+            let memo::Value::Directory(directory) = value.as_ref() else {
+                return Err(EntityError::Corrupt("lower directory memo type".into()));
+            };
+            let offset = usize::try_from(offset).map_err(|_| EntityError::Overflow)?;
+            directory
+                .entries
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect()
+        } else {
+            let mut entries = Vec::with_capacity(limit);
+            while entries.len() < limit {
+                let next_offset = offset
+                    .checked_add(entries.len() as u64)
+                    .ok_or(EntityError::Overflow)?;
+                let page = self
+                    .snapshot
+                    .readdir_page(
+                        &self.client,
+                        &self.reader,
+                        self.directory_key(ino),
+                        next_offset,
+                        limit - entries.len(),
+                        ALLOCATION_LIMIT,
+                    )
+                    .await
+                    .map_err(packed_error)?;
+                // Packed pages can stop at the byte budget before the name
+                // limit. Only an empty packed page proves EOF. Retain just
+                // names/dentries so inline data is dropped before the next read.
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page {
+                    validate_name(&entry.name)?;
+                    entries.push((entry.name, self.dentry_value(entry.inode, entry.kind)?));
+                }
+            }
+            entries
+        };
+        self.end_call(&admission).await?;
+        Ok(entries)
     }
 }
 

@@ -9,14 +9,16 @@ use crate::workspace_overlay::lifecycle::LeaseValidity;
 use crate::workspace_overlay::meta_layer::{MAX_GROUP_WRITES, PendingWrite};
 
 pub(super) struct Control {
-    track: AtomicBool,
-    reads: AtomicUsize,
+    pub(super) track: AtomicBool,
+    pub(super) reads: AtomicUsize,
+    pub(super) fail_pair_read_once: AtomicBool,
+    pub(super) pause_namespace_commit: AtomicBool,
     active: AtomicUsize,
     peak: AtomicUsize,
     commits: AtomicUsize,
     pause_commit: AtomicBool,
-    reached: Semaphore,
-    resume: Semaphore,
+    pub(super) reached: Semaphore,
+    pub(super) resume: Semaphore,
 }
 
 impl Control {
@@ -24,6 +26,8 @@ impl Control {
         Self {
             track: AtomicBool::new(false),
             reads: AtomicUsize::new(0),
+            fail_pair_read_once: AtomicBool::new(false),
+            pause_namespace_commit: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             commits: AtomicUsize::new(0),
@@ -51,7 +55,13 @@ impl Control {
             // A deterministic pending backend read, without timing thresholds.
             tokio::task::yield_now().await;
         }
-        let result = backend.get_many_consistent(keys).await;
+        let result = if keys.len() == 18 && self.fail_pair_read_once.swap(false, Ordering::SeqCst) {
+            Err(WorkspaceError::Backend(
+                "injected speculative read failure".into(),
+            ))
+        } else {
+            backend.get_many_consistent(keys).await
+        };
         if tracked {
             self.active.fetch_sub(1, Ordering::SeqCst);
         }
@@ -59,6 +69,13 @@ impl Control {
     }
 
     pub(super) async fn before_commit(&self, writes: &[KvWrite]) {
+        if writes.iter().any(
+            |write| matches!(write, KvWrite::Put { key, .. } if key.starts_with(b"delta/dentry/")),
+        ) && self.pause_namespace_commit.swap(false, Ordering::SeqCst)
+        {
+            self.reached.add_permits(1);
+            self.resume.acquire().await.unwrap().forget();
+        }
         if self.track.load(Ordering::SeqCst)
             && writes.iter().any(|write| {
                 matches!(write, KvWrite::Put { key, .. }

@@ -3627,11 +3627,10 @@ mod tests {
     #[tokio::test]
     async fn cold_marker_recheck_preserves_concurrent_replacement() {
         let temp_dir = tempdir().unwrap();
-        let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
-            0,
-            4096,
-            temp_dir.path().to_path_buf(),
-        ))
+        let cache = ChunksCache::new_with_config(
+            ChunksCacheConfig::with_budgets(0, 4096, temp_dir.path().to_path_buf())
+                .with_integrity_mode(CacheIntegrityMode::None),
+        )
         .await
         .unwrap();
         let key = "marker-replacement".to_string();
@@ -3639,7 +3638,10 @@ mod tests {
             .store_to_disk(&key, bytes::Bytes::from_static(b"old"))
             .await
             .unwrap();
-        let path = temp_dir.path().join(DiskStorage::key_to_filename(&key));
+        let path = cache
+            .disk_storage
+            .base_dir
+            .join(DiskStorage::key_to_filename(&key));
         tokio::fs::remove_file(&path).await.unwrap();
 
         let shard = &cache.disk_storage.key_shards[DiskStorage::key_shard_index(&key)];

@@ -1,0 +1,135 @@
+{
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_PROFILE_DEV_CODEGEN_UNITS": "16",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_TARGET_DIR": "/home/luxian/fix-work/issue180-third-target"
+  },
+  "final_gates": [
+    {
+      "command": "timeout -k 10 2700 cargo fmt --all --check",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo fmt --manifest-path operator/brewfs-csi/Cargo.toml --all --check",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo check --manifest-path operator/brewfs-csi/Cargo.toml --locked",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo build --manifest-path operator/brewfs-csi/Cargo.toml --locked",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo test --manifest-path operator/brewfs-csi/Cargo.toml --locked --lib tests::ownership_failed_verification_rolls_back -- --exact --nocapture",
+      "exit_code": 0,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "command": "timeout -k 10 2700 cargo test --manifest-path operator/brewfs-csi/Cargo.toml --locked --lib tests::ownership_unmount_recheck_refuses_mismatched_identity -- --exact --nocapture",
+      "exit_code": 0,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "command": "timeout -k 10 2700 cargo test --manifest-path operator/brewfs-csi/Cargo.toml --locked -- --nocapture",
+      "exit_code": 0,
+      "summaries": [
+        "test result: ok. 35 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 30.38s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "command": "timeout -k 10 2700 cargo clippy --manifest-path operator/brewfs-csi/Cargo.toml --locked --all-targets -- -D warnings",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 git diff --check",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash -n docker/compose-xfstests/run_perf_in_container.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash -n docker/compose-xfstests/run_redis_perf.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash -n docker/compose-xfstests/run_juicefs_perf.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash docker/compose-xfstests/test_perf_report_delta.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo check --workspace",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo build --workspace",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo check -p brewfs --no-default-features --features fuse-tokio-runtime",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime",
+      "exit_code": 0,
+      "summaries": []
+    },
+    {
+      "command": "timeout -k 10 2700 cargo test --workspace --lib --bins",
+      "exit_code": 0,
+      "summaries": [
+        "test result: ok. 1244 passed; 0 failed; 254 ignored; 0 measured; 0 filtered out; finished in 29.81s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "command": "timeout -k 10 2700 cargo clippy --workspace",
+      "exit_code": 0,
+      "summaries": []
+    }
+  ]
+}

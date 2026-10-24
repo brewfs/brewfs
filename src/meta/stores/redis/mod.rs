@@ -1671,12 +1671,9 @@ const RENAME_EXCHANGE_LUA: &str = r#"
 // ARGV[1] = xattr name, ARGV[2] = value, ARGV[3] = create-only,
 // ARGV[4] = replace-only, ARGV[5] = new ctime
 //
-// Known limitation: like the other node-mutating scripts here, this re-encodes
-// the whole node JSON via cjson. Lua numbers are doubles, so nanosecond
-// timestamps above 2^53 lose precision on the round trip — an xattr-only
-// update therefore passively truncates mtime/atime (and other ns timestamps)
-// to roughly microsecond granularity. A ms-granularity timestamp migration is
-// tracked separately and is out of scope for this script.
+// cjson decodes numbers as doubles, so re-encoding the whole node would round
+// nanosecond timestamps above 2^53. Validate the node with cjson, then replace
+// only its ctime field in the original JSON so atime and mtime stay exact.
 const SET_XATTR_LUA: &str = r#"
     local function key_type(key)
         local reply = redis.call('TYPE', key)
@@ -1696,7 +1693,7 @@ const SET_XATTR_LUA: &str = r#"
 
     local node_json = redis.call('GET', KEYS[1])
     local decoded, node = pcall(cjson.decode, node_json)
-    if not decoded or not node or not node.attr then
+    if not decoded or type(node) ~= 'table' or type(node.attr) ~= 'table' then
         return cjson.encode({ok=false, error='corrupt_node'})
     end
 
@@ -1719,16 +1716,24 @@ const SET_XATTR_LUA: &str = r#"
     if not timestamp then
         return cjson.encode({ok=false, error='invalid_ctime'})
     end
-    node.attr.ctime = timestamp
+    local updated_node, replacements = string.gsub(
+        node_json,
+        '("ctime"%s*:%s*)[%d%.eE%+%-]+',
+        function(prefix) return prefix .. ARGV[5] end,
+        1
+    )
+    if replacements ~= 1 then
+        return cjson.encode({ok=false, error='corrupt_node'})
+    end
     redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
-    redis.call('SET', KEYS[1], cjson.encode(node))
+    redis.call('SET', KEYS[1], updated_node)
     return cjson.encode({ok=true})
 "#;
 
 // Atomically remove one xattr and update the inode ctime.
 // KEYS[1] = inode node key, KEYS[2] = xattr hash key
 // ARGV[1] = xattr name, ARGV[2] = new ctime
-// Same cjson ns-timestamp truncation caveat as SET_XATTR_LUA above.
+// As in SET_XATTR_LUA, preserve the original JSON and replace only ctime.
 const REMOVE_XATTR_LUA: &str = r#"
     local function key_type(key)
         local reply = redis.call('TYPE', key)
@@ -1748,7 +1753,7 @@ const REMOVE_XATTR_LUA: &str = r#"
 
     local node_json = redis.call('GET', KEYS[1])
     local decoded, node = pcall(cjson.decode, node_json)
-    if not decoded or not node or not node.attr then
+    if not decoded or type(node) ~= 'table' or type(node.attr) ~= 'table' then
         return cjson.encode({ok=false, error='corrupt_node'})
     end
 
@@ -1764,9 +1769,17 @@ const REMOVE_XATTR_LUA: &str = r#"
     if not timestamp then
         return cjson.encode({ok=false, error='invalid_ctime'})
     end
-    node.attr.ctime = timestamp
+    local updated_node, replacements = string.gsub(
+        node_json,
+        '("ctime"%s*:%s*)[%d%.eE%+%-]+',
+        function(prefix) return prefix .. ARGV[2] end,
+        1
+    )
+    if replacements ~= 1 then
+        return cjson.encode({ok=false, error='corrupt_node'})
+    end
     redis.call('HDEL', KEYS[2], ARGV[1])
-    redis.call('SET', KEYS[1], cjson.encode(node))
+    redis.call('SET', KEYS[1], updated_node)
     return cjson.encode({ok=true})
 "#;
 

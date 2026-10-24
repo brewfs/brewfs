@@ -57,6 +57,16 @@ filesystem binary or its on-disk formats.
   investigate the host mounts before retrying cleanup. A mount visibility
   timeout kills and reaps the child, then removes any mount that appeared
   during the final poll.
+* Publish records a pending recovery intent before binding and commits the
+  publish only after ownership and mode verification. Rejected verification
+  rolls back the owned bind, any shared mount/process started by this attempt,
+  and the intent, restoring prior state. If cleanup itself fails, CSI returns
+  `Aborted` and keeps recovery state for `NodeUnpublishVolume`; pending binds
+  still require source verification but may have a failed read-only remount.
+  A changed mount identity at the final unmount re-check also returns `Aborted`.
+  This re-check uses `statx(STATX_MNT_ID)` and `/proc/self/mountinfo` and shrinks
+  the TOCTOU window to the syscall boundary; it does **not** eliminate it.
+  See [the rejected fd/quarantine designs](tests/issue180/README.md).
 
 The BrewFS process remains the lease authority. CSI reference tracking only
 controls when the node plugin may unbind and unstage; it cannot grant a second

@@ -5408,6 +5408,94 @@ async fn test_redis_xattr_crud_flags_and_binary_values() {
     }
 }
 
+async fn check_xattr_timestamps(remove: bool) {
+    let store = Arc::new(new_test_store().await);
+    let client = MetaClient::new(
+        store.clone(),
+        CacheCapacity {
+            inode: 100,
+            path: 100,
+        },
+        CacheTtl::for_redis(),
+    );
+    client.initialize().await.unwrap();
+    let fs = VFS::with_meta_layer_with_default_background(
+        ChunkLayout::default(),
+        Arc::new(InMemoryBlockStore::new()),
+        client,
+    )
+    .unwrap();
+    let ino = fs
+        .create_file_at(fs.root_ino(), "xattr-times", true)
+        .await
+        .unwrap();
+    let fh = fs.open_fresh_ino(ino, false, true, false).await.unwrap();
+    if remove {
+        store
+            .set_xattr(ino, "user.test", b"value", 0)
+            .await
+            .unwrap();
+    }
+    store
+        .set_attr(
+            ino,
+            &SetAttrRequest {
+                atime: Some(1_700_000_000_123_456_789),
+                mtime: Some(1_700_000_001_987_654_321),
+                ctime: Some(1_700_000_002_111_111_111),
+                ..Default::default()
+            },
+            SetAttrFlags::empty(),
+        )
+        .await
+        .unwrap();
+    store.node_cache.invalidate(&ino).await;
+    let before = store.stat(ino).await.unwrap().unwrap();
+    if remove {
+        store.remove_xattr(ino, "user.test").await.unwrap();
+    } else {
+        store
+            .set_xattr(ino, "user.test", b"value", 0)
+            .await
+            .unwrap();
+    }
+    store.node_cache.invalidate(&ino).await;
+    let after = store.stat(ino).await.unwrap().unwrap();
+    eprintln!("remove={remove}: before={before:?}, after={after:?}");
+    assert!(after.ctime > before.ctime, "xattr must advance ctime");
+    assert_eq!(
+        after.mtime.to_ne_bytes(),
+        before.mtime.to_ne_bytes(),
+        "xattr must preserve mtime bytes"
+    );
+    assert_eq!(
+        after.atime.to_ne_bytes(),
+        before.atime.to_ne_bytes(),
+        "xattr must preserve atime bytes"
+    );
+    fs.write(fh, 0, b"ordinary write").await.unwrap();
+    fs.flush(fh).await.unwrap();
+    store.node_cache.invalidate(&ino).await;
+    let written = store.stat(ino).await.unwrap().unwrap();
+    assert!(written.mtime > after.mtime, "write must advance mtime");
+    eprintln!("write advanced mtime: {} -> {}", after.mtime, written.mtime);
+    fs.close(fh).await.unwrap();
+}
+
+#[serial]
+#[tokio::test]
+#[ignore = "requires isolated Redis via BREWFS_REDIS_TEST_URL"]
+async fn test_redis_xattr_set_preserves_timestamps() {
+    check_xattr_timestamps(false).await;
+}
+
+#[serial]
+#[tokio::test]
+#[ignore = "requires isolated Redis via BREWFS_REDIS_TEST_URL"]
+async fn test_redis_xattr_remove_preserves_timestamps() {
+    check_xattr_timestamps(true).await;
+}
+
 #[serial]
 #[tokio::test]
 #[ignore]

@@ -46,6 +46,15 @@ impl<B: EntityBackend> EntityBackend for FaultBackend<B> {
     ) -> Result<Option<Vec<u64>>> {
         self.inner.reserve_slices(authority, allocation).await
     }
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.inner.scan_prefix(prefix, limit).await
     }

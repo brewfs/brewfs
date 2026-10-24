@@ -124,6 +124,140 @@ async fn rename_exchange_and_hardlink_update_dentries_and_nlink_atomically() {
 }
 
 #[tokio::test]
+async fn rename_exchange_cross_parent_directory_file_updates_nlink() {
+    let meta = test_meta().await;
+    let root = meta.root_ino();
+    let a = meta.mkdir(root, "A".into()).await.unwrap();
+    let b = meta.mkdir(root, "B".into()).await.unwrap();
+    let d = meta.mkdir(a, "d".into()).await.unwrap();
+    let f = meta.create_file(b, "f".into()).await.unwrap();
+    let before_a = meta.stat(a).await.unwrap().unwrap();
+    let before_b = meta.stat(b).await.unwrap().unwrap();
+    assert_eq!((before_a.nlink, before_b.nlink), (3, 2));
+
+    meta.rename_exchange(a, "d", b, "f").await.unwrap();
+
+    assert_eq!(meta.lookup(a, "d").await.unwrap(), Some(f));
+    assert_eq!(meta.lookup(b, "f").await.unwrap(), Some(d));
+    let after_a = meta.stat(a).await.unwrap().unwrap();
+    let after_b = meta.stat(b).await.unwrap().unwrap();
+    eprintln!(
+        "parent nlink before: ({}, {}), after: ({}, {})",
+        before_a.nlink, before_b.nlink, after_a.nlink, after_b.nlink
+    );
+    eprintln!(
+        "parent mtime/ctime unchanged: A={}, B={}",
+        (before_a.mtime, before_a.ctime) == (after_a.mtime, after_a.ctime),
+        (before_b.mtime, before_b.ctime) == (after_b.mtime, after_b.ctime)
+    );
+    assert_eq!((after_a.nlink, after_b.nlink), (2, 3));
+}
+
+#[tokio::test]
+async fn rename_exchange_cross_parent_updates_metadata_for_each_entry_kind() {
+    for (left_dir, right_dir) in [(true, false), (false, true), (true, true), (false, false)] {
+        assert_exchange_metadata(left_dir, right_dir, false).await;
+    }
+}
+
+#[tokio::test]
+async fn rename_exchange_same_parent_updates_timestamps_without_changing_nlink() {
+    for (left_dir, right_dir) in [(true, false), (false, true), (true, true), (false, false)] {
+        assert_exchange_metadata(left_dir, right_dir, true).await;
+    }
+}
+
+async fn assert_exchange_metadata(left_dir: bool, right_dir: bool, same_parent: bool) {
+    let meta = test_meta().await;
+    let a = meta.mkdir(meta.root_ino(), "A".into()).await.unwrap();
+    let b = if same_parent {
+        a
+    } else {
+        meta.mkdir(meta.root_ino(), "B".into()).await.unwrap()
+    };
+    let left = if left_dir {
+        meta.mkdir(a, "left".into()).await.unwrap()
+    } else {
+        meta.create_file(a, "left".into()).await.unwrap()
+    };
+    let right = if right_dir {
+        meta.mkdir(b, "right".into()).await.unwrap()
+    } else {
+        meta.create_file(b, "right".into()).await.unwrap()
+    };
+    // Fixed old timestamps make the assertions independent of clock resolution.
+    for ino in [a, b, left, right] {
+        meta.set_attr(
+            ino,
+            &SetAttrRequest {
+                atime: Some(100),
+                mtime: Some(200),
+                ctime: Some(300),
+                ..SetAttrRequest::default()
+            },
+            SetAttrFlags::empty(),
+        )
+        .await
+        .unwrap();
+    }
+
+    meta.rename_exchange(a, "left", b, "right").await.unwrap();
+
+    let reopened = WorkspaceMetaLayer::new(meta.store().clone(), meta.view_context().await);
+    for reader in [&meta, &reopened] {
+        assert_eq!(reader.lookup(a, "left").await.unwrap(), Some(right));
+        assert_eq!(reader.lookup(b, "right").await.unwrap(), Some(left));
+        let after_a = reader.stat(a).await.unwrap().unwrap();
+        let after_b = reader.stat(b).await.unwrap().unwrap();
+        let expected_a = 2 + u32::from(right_dir) + u32::from(same_parent && left_dir);
+        let expected_b = 2 + u32::from(left_dir) + u32::from(same_parent && right_dir);
+        assert_eq!((after_a.nlink, after_b.nlink), (expected_a, expected_b));
+        for parent in [&after_a, &after_b] {
+            assert!(parent.mtime > 300);
+            assert_eq!(parent.ctime, parent.mtime);
+            assert_eq!(parent.atime, 100);
+        }
+        for (ino, is_dir, parent) in [(left, left_dir, b), (right, right_dir, a)] {
+            let inode = reader.resolve_inode_delta(ino).await.unwrap().unwrap();
+            assert_eq!(inode.ctime_ns, after_a.ctime);
+            assert_eq!(inode.mtime_ns, 200);
+            assert_eq!(inode.atime_ns, 100);
+            assert_eq!(inode.nlink, if is_dir { 2 } else { 1 });
+            if is_dir {
+                assert_eq!(inode.parent_hint, Some(parent));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn rename_exchange_same_inode_is_a_noop() {
+    let meta = test_meta().await;
+    let root = meta.root_ino();
+    let other = meta.mkdir(root, "other".into()).await.unwrap();
+    let file = meta.create_file(root, "file".into()).await.unwrap();
+    meta.link(file, root, "alias").await.unwrap();
+    meta.link(file, other, "alias").await.unwrap();
+    let mut before = Vec::new();
+    for ino in [root, other, file] {
+        before.push(meta.resolve_inode_delta(ino).await.unwrap().unwrap());
+    }
+    for (parent, name) in [(root, "file"), (root, "alias"), (other, "alias")] {
+        meta.rename_exchange(root, "file", parent, name)
+            .await
+            .unwrap();
+        assert_eq!(meta.lookup(root, "file").await.unwrap(), Some(file));
+        assert_eq!(meta.lookup(parent, name).await.unwrap(), Some(file));
+        for inode in &before {
+            assert_eq!(
+                meta.resolve_inode_delta(inode.ino).await.unwrap().as_ref(),
+                Some(inode)
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn rename_onto_same_inode_keeps_both_hard_links() {
     let meta = test_meta().await;
     let root = meta.root_ino();

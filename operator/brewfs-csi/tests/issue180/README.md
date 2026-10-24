@@ -1,5 +1,9 @@
 # Issue 180: rejected fd-unmount redesign
 
+This is the historical second-attempt report. The narrowly scoped follow-up
+and its validation are recorded in [third-attempt-validation.md](third-attempt-validation.md).
+The failed designs and their evidence below are preserved unchanged.
+
 PR #322 remains a draft. This directory preserves diagnostic reproductions;
 it is not evidence that the ownership race is fixed. No cluster was used.
 Tests ran on Linux `6.8.0-139-generic`, x86_64, on 2026-10-24.

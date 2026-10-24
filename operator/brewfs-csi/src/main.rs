@@ -365,6 +365,9 @@ fn status_for(error: impl Into<CsiError>) -> Status {
         CsiError::Busy(message) => Status::aborted(message),
         CsiError::Published(message) => Status::failed_precondition(message),
         CsiError::MountConflict(message) => Status::failed_precondition(message),
+        CsiError::Io(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Status::aborted(error.to_string())
+        }
         CsiError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Status::not_found(error.to_string())
         }
@@ -535,6 +538,13 @@ mod tests {
 
     #[test]
     fn maps_driver_errors_to_csi_statuses() {
+        assert_eq!(
+            status_for(CsiError::Io(std::io::Error::from(
+                std::io::ErrorKind::WouldBlock,
+            )))
+            .code(),
+            tonic::Code::Aborted
+        );
         assert_eq!(
             status_for(CsiError::MountConflict("foreign mount".to_owned())).code(),
             tonic::Code::FailedPrecondition

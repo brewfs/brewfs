@@ -194,6 +194,35 @@ pub trait EntityBackend: Send + Sync {
         prefix: &[u8],
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
+    /// The first `limit` keys in lexical order, strictly after `after`, within
+    /// `prefix`. Fewer than `limit` keys proves EOF. Mutating callers must fence the
+    /// parent observed before scanning, and read selected values separately.
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>>;
+
+    /// Up to `limit` rows in key order, strictly after `after`; a short page
+    /// means EOF. A parent predicate read before the first page must fence every
+    /// decision made from these pages. The compatibility fallback retains the
+    /// complete-scan bound; storage backends override it with keyset scans.
+    async fn scan_prefix_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        validate_scan_page(prefix, after, limit)?;
+        Ok(self
+            .scan_prefix(prefix, MAX_TRANSACTION_ROWS)
+            .await?
+            .into_iter()
+            .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+            .take(limit)
+            .collect())
+    }
 }
 
 pub(super) fn validate_key(key: &[u8]) -> Result<()> {
@@ -574,6 +603,19 @@ pub(super) fn validate_scan(prefix: &[u8], limit: usize) -> Result<()> {
     validate_key(prefix)?;
     if limit == 0 || limit > MAX_TRANSACTION_ROWS {
         return Err(EntityError::Invalid("invalid entity scan row bound".into()));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_scan_page(prefix: &[u8], after: Option<&[u8]>, limit: usize) -> Result<()> {
+    validate_scan(prefix, limit)?;
+    if let Some(after) = after {
+        validate_key(after)?;
+        if !after.starts_with(prefix) {
+            return Err(EntityError::Invalid(
+                "entity scan cursor is outside prefix".into(),
+            ));
+        }
     }
     Ok(())
 }

@@ -64,6 +64,13 @@ type PermissionInode = (
     Option<Vec<u8>>,
 );
 
+/// At most one speculative ancestor, decoded from the current mutation version.
+/// Defer its error until the authoritative parent walk actually visits it.
+struct PermissionReadAhead {
+    ino: i64,
+    permission: Result<PermissionInode, MetaError>,
+}
+
 pub struct WorkspaceMetaLayer<W> {
     store: Arc<W>,
     view: Arc<RwLock<ViewContext>>,
@@ -75,6 +82,9 @@ pub struct WorkspaceMetaLayer<W> {
     upper_rows: Option<Arc<row_cache::UpperRowCache>>,
     /// Path/alias results; invalidated only by namespace-changing commits.
     namespace_rows: Option<row_cache::UpperRowCache>,
+    /// Advisory read selection only. Fresh snapshots, never these hints,
+    /// determine the ancestry and permissions checked by a mutation.
+    directory_hints: moka::sync::Cache<i64, i64>,
     /// When set, both caches serve rows only while the mount provably holds
     /// its exclusive lease; once that lapses they are cleared and bypassed.
     lease_validity: Option<Arc<super::lifecycle::LeaseValidity>>,
@@ -243,6 +253,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             resolver_cache: WorkspaceResolverCache::default(),
             upper_rows: None,
             namespace_rows: None,
+            directory_hints: moka::sync::Cache::new(4096),
             lease_validity: None,
             locks: Mutex::new(WorkspaceLocks::default()),
             mutation_gate: Mutex::new(()),
@@ -654,6 +665,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let old_workspace = self.view.read().await.workspace_id;
         self.resolver_cache.invalidate_workspace(old_workspace);
         self.invalidate_upper_rows();
+        self.directory_hints.invalidate_all();
         *self.view.write().await = view;
         *self.layer_pair.write().await = None;
     }
@@ -1043,20 +1055,42 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         inodes: Vec<i64>,
         dentry: Option<(i64, Vec<u8>)>,
     ) -> Result<PermissionSnapshot, MetaError> {
-        if let Some(lower) = self.packed_lower() {
-            return self
-                .merged_packed_permission_snapshot(lower, inodes, dentry)
-                .await;
+        let snapshot = if let Some(lower) = self.packed_lower() {
+            self.merged_packed_permission_snapshot(lower, inodes.clone(), dentry)
+                .await?
+        } else {
+            let chain = self.chain().await?;
+            self.store
+                .read_permission_snapshot(PermissionSnapshotQuery {
+                    layer_ids: [chain[0].layer_id, chain[1].layer_id],
+                    inodes: inodes.clone(),
+                    dentry,
+                })
+                .await
+                .map_err(workspace_to_meta)?
+        };
+        // Retain only bounded topology hints across permission-cache eviction.
+        // A stale hint may fetch an unnecessary row but cannot authorize a walk.
+        for ino in inodes {
+            // File data/permission reads need no topology-cache bookkeeping.
+            if !snapshot
+                .inodes
+                .iter()
+                .any(|row| row.ino == ino && row.kind == file_type_code(FileType::Dir))
+            {
+                continue;
+            }
+            if let Ok(Some(resolved)) = resolve_inode(&snapshot.layers, &snapshot.inodes, ino)
+                && resolved.inode.kind == file_type_code(FileType::Dir)
+                && let Some(parent) = resolved.inode.parent_hint
+                && parent > 0
+            {
+                self.directory_hints.insert(ino, parent);
+            } else {
+                self.directory_hints.invalidate(&ino);
+            }
         }
-        let chain = self.chain().await?;
-        self.store
-            .read_permission_snapshot(PermissionSnapshotQuery {
-                layer_ids: [chain[0].layer_id, chain[1].layer_id],
-                inodes,
-                dentry,
-            })
-            .await
-            .map_err(workspace_to_meta)
+        Ok(snapshot)
     }
 
     async fn mutation_version(&self) -> Result<MutationVersion, MetaError> {
@@ -1086,11 +1120,14 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         if actor.uid == 0 {
             return Ok(());
         }
+        let mut read_ahead = None;
         let loaded;
         let (directory, access, _, control) = match parent_permission {
             Some(permission) => permission,
             None => {
-                loaded = self.permission_inode_for_check(expected, parent).await?;
+                loaded = self
+                    .permission_inode_for_check(expected, parent, Some(&mut read_ahead))
+                    .await?;
                 &loaded
             }
         };
@@ -1122,8 +1159,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 if !visited.insert(ino) {
                     return Err(MetaError::Io(std::io::Error::from_raw_os_error(libc::EIO)));
                 }
-                let (inode, access, _, control) =
-                    self.permission_inode_for_check(expected, ino).await?;
+                let (inode, access, _, control) = self
+                    .permission_inode_for_check(expected, ino, Some(&mut read_ahead))
+                    .await?;
                 if inode.kind != file_type_code(FileType::Dir) {
                     return Err(MetaError::NotDirectory(ino));
                 }
@@ -1149,7 +1187,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             && actor.uid != directory.uid
             && let Some(child) = child
         {
-            let (inode, _, _, _) = self.permission_inode_for_check(expected, child).await?;
+            let (inode, _, _, _) = self
+                .permission_inode_for_check(expected, child, None)
+                .await?;
             if actor.uid != inode.uid {
                 return Err(MetaError::Io(std::io::Error::from_raw_os_error(
                     libc::EPERM,
@@ -1202,6 +1242,25 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         Ok((inode.mode >> shift) & requested == requested)
     }
 
+    fn cached_permission_for_check(
+        &self,
+        expected: &[LayerRecord; 2],
+        ino: i64,
+    ) -> Option<Arc<PermissionSnapshot>> {
+        if self.lease_validity.is_some()
+            && let Some(cache) = self.upper_row_cache()
+            && let Some(row_cache::RowValue::Permission(snapshot)) =
+                cache.get(&row_cache::RowKey::Permission(ino))
+            && snapshot.layers[0].layer_id == expected[0].layer_id
+            && snapshot.layers[1].layer_id == expected[1].layer_id
+            && self.row_caches_authoritative()
+        {
+            Some(snapshot)
+        } else {
+            None
+        }
+    }
+
     /// For a read-only permission decision inside a conditional mutation.
     /// While the exclusive lease is proven held, the cached permission rows
     /// of `ino` are exactly the store's (every local commit invalidates the
@@ -1212,32 +1271,76 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         &self,
         expected: &[LayerRecord; 2],
         ino: i64,
+        mut read_ahead: Option<&mut Option<PermissionReadAhead>>,
     ) -> Result<PermissionInode, MetaError> {
-        if self.lease_validity.is_some()
-            && let Some(cache) = self.upper_row_cache()
-            && let Some(row_cache::RowValue::Permission(snapshot)) =
-                cache.get(&row_cache::RowKey::Permission(ino))
-            && snapshot.layers[0].layer_id == expected[0].layer_id
-            && snapshot.layers[1].layer_id == expected[1].layer_id
-            && self.row_caches_authoritative()
-        {
-            return Self::decode_permission_inode((*snapshot).clone(), ino);
+        let root = self.root_ino();
+        if let Some(slot) = read_ahead.as_deref_mut() {
+            if let Some(next) = slot.take_if(|next| next.ino == ino) {
+                return next.permission;
+            }
+            // A rename may invalidate the predicted next parent. Root is the
+            // one known endpoint and can be retained until the walk reaches it.
+            if slot.as_ref().is_some_and(|next| next.ino != root) {
+                *slot = None;
+            }
         }
+        if let Some(snapshot) = self.cached_permission_for_check(expected, ino) {
+            return Self::decode_permission_inode(&snapshot, ino);
+        }
+        let mut companion = (ino != root && read_ahead.as_ref().is_some_and(|slot| slot.is_none()))
+            .then(|| {
+                self.directory_hints
+                    .get(&ino)
+                    .filter(|parent| *parent > 0 && *parent != ino)
+                    .unwrap_or(root)
+            })
+            .filter(|parent| {
+                self.cached_permission_for_check(expected, *parent)
+                    .is_none()
+            });
+        let mut inodes = vec![ino];
+        inodes.extend(companion);
         let ticket = self.upper_row_cache().map(row_cache::UpperRowCache::ticket);
-        let snapshot = self.permission_snapshot(vec![ino], None).await?;
+        let snapshot = match self.permission_snapshot(inodes, None).await {
+            // Corrupt/unavailable speculative rows must not fail an otherwise
+            // valid operation. Read the required inode alone on this path.
+            Err(_) if companion.is_some() => {
+                companion = None;
+                self.permission_snapshot(vec![ino], None).await?
+            }
+            result => result?,
+        };
         if &snapshot.layers != expected {
             return Err(workspace_to_meta(WorkspaceError::Busy));
         }
+        let permission = Self::decode_permission_inode(&snapshot, ino);
+        let next = companion.map(|ino| PermissionReadAhead {
+            ino,
+            permission: Self::decode_permission_inode(&snapshot, ino),
+        });
         if self.lease_validity.is_some()
             && let (Some(cache), Some(ticket)) = (self.upper_row_cache(), ticket)
         {
+            let snapshot = Arc::new(snapshot);
             cache.insert(
                 ticket,
                 row_cache::RowKey::Permission(ino),
-                row_cache::RowValue::Permission(Arc::new(snapshot.clone())),
+                row_cache::RowValue::Permission(snapshot.clone()),
             );
+            if let Some(companion) = companion {
+                cache.insert(
+                    ticket,
+                    row_cache::RowKey::Permission(companion),
+                    row_cache::RowValue::Permission(snapshot),
+                );
+            }
         }
-        Self::decode_permission_inode(snapshot, ino)
+        if let Some(slot) = read_ahead
+            && next.is_some()
+        {
+            *slot = next;
+        }
+        permission
     }
 
     async fn permission_inode(
@@ -1257,11 +1360,11 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         if &snapshot.layers != expected {
             return Err(workspace_to_meta(WorkspaceError::Busy));
         }
-        Self::decode_permission_inode(snapshot, ino)
+        Self::decode_permission_inode(&snapshot, ino)
     }
 
     fn decode_permission_inode(
-        snapshot: PermissionSnapshot,
+        snapshot: &PermissionSnapshot,
         ino: i64,
     ) -> Result<PermissionInode, MetaError> {
         let inode = resolve_inode(&snapshot.layers, &snapshot.inodes, ino)
@@ -2254,7 +2357,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                 continue;
             }
             let layers = snapshot.layers.clone();
-            let (inode, access, _, control) = Self::decode_permission_inode(snapshot, ino)?;
+            let (inode, access, _, control) = Self::decode_permission_inode(&snapshot, ino)?;
             if let Some(actor) = &actor
                 && !created
             {
@@ -2862,7 +2965,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                     .await?;
                 self.check_namespace_actor(&expected_layers, new_parent, Some(right.ino))
                     .await?;
-                if old_parent == new_parent && old_name == new_name {
+                if left.ino == right.ino {
                     return Ok(());
                 }
                 if file_type_from_code(left.entry_type)? == FileType::Dir
@@ -2885,29 +2988,66 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                         right.ino
                     )));
                 }
-                let guard = self.guard().await;
-                let head = guard.expected_head_layer_id;
-                let mut inodes = Vec::new();
+                let mut left_inode = self
+                    .resolve_inode_delta(left.ino)
+                    .await?
+                    .ok_or(MetaError::NotFound(left.ino))?;
+                let mut right_inode = self
+                    .resolve_inode_delta(right.ino)
+                    .await?
+                    .ok_or(MetaError::NotFound(right.ino))?;
+                let mut old_parent_inode = self
+                    .resolve_inode_delta(old_parent)
+                    .await?
+                    .ok_or(MetaError::ParentNotFound(old_parent))?;
+                let mut new_parent_inode = if old_parent == new_parent {
+                    old_parent_inode.clone()
+                } else {
+                    self.resolve_inode_delta(new_parent)
+                        .await?
+                        .ok_or(MetaError::ParentNotFound(new_parent))?
+                };
+                for parent in [&old_parent_inode, &new_parent_inode] {
+                    if file_type_from_code(parent.kind)? != FileType::Dir {
+                        return Err(MetaError::NotDirectory(parent.ino));
+                    }
+                }
+                let left_is_dir = file_type_from_code(left_inode.kind)? == FileType::Dir;
+                let right_is_dir = file_type_from_code(right_inode.kind)? == FileType::Dir;
                 if old_parent != new_parent {
-                    let mut left_inode = self
-                        .resolve_inode_delta(left.ino)
-                        .await?
-                        .ok_or(MetaError::NotFound(left.ino))?;
-                    let mut right_inode = self
-                        .resolve_inode_delta(right.ino)
-                        .await?
-                        .ok_or(MetaError::NotFound(right.ino))?;
-                    if file_type_from_code(left_inode.kind)? == FileType::Dir {
+                    if left_is_dir != right_is_dir {
+                        let (losing, gaining) = if left_is_dir {
+                            (&mut old_parent_inode, &mut new_parent_inode)
+                        } else {
+                            (&mut new_parent_inode, &mut old_parent_inode)
+                        };
+                        losing.nlink = losing.nlink.checked_sub(1).ok_or_else(|| {
+                            MetaError::Internal("directory nlink underflow".into())
+                        })?;
+                        gaining.nlink = gaining.nlink.checked_add(1).ok_or_else(|| {
+                            MetaError::Internal("directory nlink overflow".into())
+                        })?;
+                    }
+                    if left_is_dir {
                         left_inode.parent_hint = Some(new_parent);
                     }
-                    if file_type_from_code(right_inode.kind)? == FileType::Dir {
+                    if right_is_dir {
                         right_inode.parent_hint = Some(old_parent);
                     }
-                    left_inode.layer_id = head;
-                    right_inode.layer_id = head;
-                    left_inode.sequence = 0;
-                    right_inode.sequence = 0;
-                    inodes.extend([left_inode, right_inode]);
+                }
+                let guard = self.guard().await;
+                let head = guard.expected_head_layer_id;
+                let now = now_ns()?;
+                old_parent_inode.mtime_ns = now;
+                new_parent_inode.mtime_ns = now;
+                let mut inodes = vec![left_inode, right_inode, old_parent_inode];
+                if old_parent != new_parent {
+                    inodes.push(new_parent_inode);
+                }
+                for inode in &mut inodes {
+                    inode.layer_id = head;
+                    inode.ctime_ns = now;
+                    inode.sequence = 0;
                 }
                 let files = (left.entry_type != file_type_code(FileType::Dir)
                     && right.entry_type != file_type_code(FileType::Dir))

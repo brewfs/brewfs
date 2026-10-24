@@ -23,6 +23,9 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[cfg(target_os = "linux")]
+use std::os::fd::{FromRawFd, OwnedFd};
+
 pub mod proto {
     tonic::include_proto!("csi.v1");
 }
@@ -236,9 +239,17 @@ pub trait MountOps: Send + Sync + 'static {
     fn is_mounted(&self, path: &Path) -> io::Result<bool>;
     fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>>;
     fn process_alive(&self, pid: u32) -> io::Result<bool>;
+    /// Return the Linux process start-time marker for a BrewFS process.
+    /// `None` means the PID is absent or is not a BrewFS process.
+    fn process_start_time(&self, pid: u32) -> io::Result<Option<u64>>;
     fn start_brewfs(&self, spec: &MountSpec, target: &Path) -> io::Result<u32>;
+    /// Stop only after the caller has authenticated this exact PID instance.
+    fn stop_brewfs(&self, pid: u32, start_time: u64) -> io::Result<()>;
+    /// May leave a partial bind on error. The manager journals the attempt
+    /// and owns verified rollback, including a failed read-only remount.
     fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()>;
-    /// Refuse a replacement of the inspected mount at the unmount boundary.
+    /// Re-check the inspected mount before unmount and retry if changed.
+    /// The check and syscall are not atomic.
     fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()>;
     fn unmount_brewfs(&self, target: &Path) -> io::Result<()>;
 }
@@ -256,8 +267,16 @@ impl<T: MountOps> MountOps for Arc<T> {
         (**self).process_alive(pid)
     }
 
+    fn process_start_time(&self, pid: u32) -> io::Result<Option<u64>> {
+        (**self).process_start_time(pid)
+    }
+
     fn start_brewfs(&self, spec: &MountSpec, target: &Path) -> io::Result<u32> {
         (**self).start_brewfs(spec, target)
+    }
+
+    fn stop_brewfs(&self, pid: u32, start_time: u64) -> io::Result<()> {
+        (**self).stop_brewfs(pid, start_time)
     }
 
     fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()> {
@@ -292,14 +311,7 @@ impl MountOps for SystemMountOps {
         let path = fs::read_link(format!("/proc/self/fd/{fd}"))?;
         // Pin inspection to the visible mount. A path match alone can select
         // an owned mount hidden beneath a foreign mount at it or an ancestor.
-        let fdinfo = fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))?;
-        let mount_id = fdinfo
-            .lines()
-            .find_map(|line| line.strip_prefix("mnt_id:"))
-            .and_then(|id| id.trim().parse().ok())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "missing mount ID in fdinfo")
-            })?;
+        let mount_id = statx_mount_id(&target)?;
         let mount = mount_at(
             &fs::read_to_string("/proc/self/mountinfo")?,
             &path,
@@ -312,16 +324,78 @@ impl MountOps for SystemMountOps {
     }
 
     fn process_alive(&self, pid: u32) -> io::Result<bool> {
+        Ok(self.process_start_time(pid)?.is_some())
+    }
+
+    fn process_start_time(&self, pid: u32) -> io::Result<Option<u64>> {
         let command_line = match fs::read(Path::new("/proc").join(pid.to_string()).join("cmdline"))
         {
             Ok(command_line) => command_line,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
-        Ok(command_line
+        if !command_line
             .split(|byte| *byte == 0)
             .next()
-            .is_some_and(|command| command.ends_with(b"/brewfs") || command == b"brewfs"))
+            .is_some_and(|command| command.ends_with(b"/brewfs") || command == b"brewfs")
+        {
+            return Ok(None);
+        }
+        let stat = match fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let fields = stat
+            .rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+            .ok_or_else(|| io::Error::other(format!("invalid /proc/{pid}/stat")))?;
+        fields.parse::<u64>().map(Some).map_err(|error| {
+            io::Error::other(format!("invalid /proc/{pid}/stat start time: {error}"))
+        })
+    }
+
+    fn stop_brewfs(&self, pid: u32, start_time: u64) -> io::Result<()> {
+        if self.process_start_time(pid)? != Some(start_time) {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // pidfd_open binds the handle to this process instance. Re-read
+            // the marker after opening it: if the numeric PID was recycled
+            // during open, reject it before sending any signal. Once the
+            // pidfd is open, later PID reuse cannot redirect pidfd_send_signal.
+            match Self::pidfd_open(pid) {
+                Ok(pidfd) => {
+                    if self.process_start_time(pid)? != Some(start_time) {
+                        return Ok(());
+                    }
+                    Self::pidfd_send_term(&pidfd)?;
+                    self.wait_for_exit(pid, start_time)
+                }
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EINVAL | libc::ENOSYS | libc::EPERM)
+                    ) =>
+                {
+                    Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!("pidfd signaling is unavailable for BrewFS PID {pid}: {error}"),
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        }
+
+        // There is no safe numeric-PID fallback on platforms without pidfd;
+        // preserve the state and let a later retry handle cleanup.
+        #[cfg(not(target_os = "linux"))]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("pidfd signaling is unavailable for BrewFS PID {pid}"),
+        ))
     }
 
     fn start_brewfs(&self, spec: &MountSpec, target: &Path) -> io::Result<u32> {
@@ -371,6 +445,8 @@ impl MountOps for SystemMountOps {
         fs::create_dir_all(target)?;
         run_command(Command::new("mount").arg("--bind").arg(source).arg(target))?;
         if read_only {
+            // The manager owns rollback and its persisted recovery intent;
+            // cleanup must verify ownership even when this remount fails.
             run_command(
                 Command::new("mount")
                     .arg("-o")
@@ -389,15 +465,16 @@ impl MountOps for SystemMountOps {
                 "unmount requires a retained mount observation",
             ));
         }
-        let target_fd = open_path(target)?;
-        let resolved = fs::read_link(format!("/proc/self/fd/{}", target_fd.as_raw_fd()))?;
+        let target_fd = open_path(target).map_err(mount_recheck_error)?;
+        let resolved = fs::read_link(format!("/proc/self/fd/{}", target_fd.as_raw_fd()))
+            .map_err(mount_recheck_error)?;
         let parent = resolved
             .parent()
             .ok_or_else(|| io::Error::other("target has no parent"))?;
         let name = resolved
             .file_name()
             .ok_or_else(|| io::Error::other("cannot unbind the namespace root"))?;
-        let parent_fd = open_path(parent)?;
+        let parent_fd = open_path(parent).map_err(mount_recheck_error)?;
         let pinned = PathBuf::from(format!("/proc/self/fd/{}", parent_fd.as_raw_fd())).join(name);
         let syscall_path = CString::new(pinned.as_os_str().as_bytes())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -405,22 +482,26 @@ impl MountOps for SystemMountOps {
         // EBUSY. A proc-fd path to it also follows a later overmount, so it is
         // not an atomic unmount-by-handle API. Pin the parent instead.
         drop(target_fd);
-        if self.inspect_mount(&pinned)?.as_ref() != Some(&expected) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "target mount changed before unmount",
-            ));
-        }
-        // This is the last-moment revalidation fallback: Linux umount2 can
-        // still race an external overmount/rename after the check above.
-        // UMOUNT_NOFOLLOW rejects a final symlink swap, and the retained
-        // parent fd avoids resolving the caller's ancestor path again.
-        // Do not use MNT_DETACH: it could detach foreign child mounts too.
-        drop(expected);
-        // SAFETY: syscall_path is NUL-terminated and parent_fd stays open.
-        if unsafe { libc::umount2(syscall_path.as_ptr(), libc::UMOUNT_NOFOLLOW) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        // Defence in depth: statx(STATX_MNT_ID) + /proc/self/mountinfo re-check
+        // shrinks the TOCTOU window to the syscall boundary; it does NOT
+        // eliminate it. A replacement after this check can still be unmounted.
+        // Disproven on Linux 6.8: umount2("/proc/self/fd/N", 0) follows a
+        // foreign overmount; quarantine + move_mount carries that overmount
+        // along and the next unmount removes it. Do not retry either design.
+        // Evidence: https://github.com/brewfs/brewfs/issues/180#issuecomment-6385927780
+        // PR #322: operator/brewfs-csi/tests/issue180/README.md.
+        // Keep normal busy-mount semantics; never use MNT_DETACH here.
+        unmount_after_recheck(
+            expected,
+            || self.inspect_mount(&pinned),
+            || {
+                // SAFETY: syscall_path is NUL-terminated and parent_fd stays open.
+                if unsafe { libc::umount2(syscall_path.as_ptr(), libc::UMOUNT_NOFOLLOW) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            },
+        )?;
         match fs::remove_dir(&pinned) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -448,6 +529,111 @@ fn open_path(path: &Path) -> io::Result<File> {
     #[cfg(target_os = "linux")]
     options.custom_flags(libc::O_PATH);
     options.open(path)
+}
+
+#[cfg(target_os = "linux")]
+fn statx_mount_id(target: &File) -> io::Result<u64> {
+    let mut stat = std::mem::MaybeUninit::<libc::statx>::uninit();
+    // SAFETY: target is a live fd, the empty pathname is NUL-terminated, and
+    // stat points to writable storage initialized by statx on success.
+    if unsafe {
+        libc::statx(
+            target.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            libc::STATX_MNT_ID,
+            stat.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: statx succeeded and initialized stat.
+    let stat = unsafe { stat.assume_init() };
+    if stat.stx_mask & libc::STATX_MNT_ID == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "statx mount ID unavailable",
+        ));
+    }
+    Ok(stat.stx_mnt_id)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn statx_mount_id(_target: &File) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "mount identity requires Linux",
+    ))
+}
+
+fn mount_recheck_error(error: io::Error) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        format!("cannot re-check target mount; retry: {error}"),
+    )
+}
+
+fn unmount_after_recheck(
+    expected: MountInfo,
+    inspect: impl FnOnce() -> io::Result<Option<MountInfo>>,
+    unmount: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let current = inspect().map_err(mount_recheck_error)?;
+    if current.as_ref() != Some(&expected) {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "target mount changed before unmount; retry",
+        ));
+    }
+    // Release both observations immediately before the syscall so our own
+    // O_PATH fds do not cause EBUSY. This is still a userspace check/use gap.
+    drop(current);
+    drop(expected);
+    unmount()
+}
+
+impl SystemMountOps {
+    #[cfg(target_os = "linux")]
+    fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: pidfd_open returned a newly owned, valid file descriptor.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pidfd_send_term(pidfd: &OwnedFd) -> io::Result<()> {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0u32,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn wait_for_exit(&self, pid: u32, start_time: u64) -> io::Result<()> {
+        for _ in 0..50 {
+            if self.process_start_time(pid)? != Some(start_time) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("BrewFS PID {pid} did not exit after SIGTERM"),
+        ))
+    }
 }
 
 fn run_command(command: &mut Command) -> io::Result<()> {
@@ -545,6 +731,11 @@ struct MountState {
     /// `None` permits reading legacy state, but cannot authenticate a live mount.
     #[serde(default)]
     pid: Option<u32>,
+    /// Linux `/proc/<pid>/stat` start time captured with `pid`. This prevents
+    /// cleanup from signaling a reused PID. Legacy state has no marker and is
+    /// never signaled until a new authenticated state is written.
+    #[serde(default)]
+    pid_start_time: Option<u64>,
     #[serde(default)]
     targets: BTreeSet<String>,
     /// Captured after starting BrewFS; never inferred from an existing target.
@@ -552,6 +743,10 @@ struct MountState {
     shared_identity: Option<MountInfo>,
     #[serde(default)]
     target_read_only: BTreeMap<String, bool>,
+    /// Recovery intent, not a verified publish. A failed read-only remount
+    /// can leave an owned writable bind that unpublish must be able to clean up.
+    #[serde(default)]
+    pending_targets: BTreeSet<String>,
 }
 
 /// Node-side state manager.  The shared mount path is derived only from the
@@ -596,20 +791,97 @@ impl<O: MountOps> MountManager<O> {
             // create directories, or persist any state. An owned retry only
             // needs to validate and record the existing bind mount.
             self.verify_target(spec, &state, target, &mount, read_only)?;
-        } else {
-            let shared = self.stage_locked(spec)?;
-            state = self.load_state(spec)?;
-            self.ops.bind(&shared, target, read_only)?;
-            let mount = self.ops.inspect_mount(target)?.ok_or_else(|| {
-                CsiError::MountConflict(format!("bind mount missing at {target:?}"))
-            })?;
-            self.verify_target(spec, &state, target, &mount, read_only)?;
+            // Preserve #320's PID fencing even though preflight no longer
+            // calls stage_locked (which may start a mount or rewrite state).
+            let live = match state.pid.zip(state.pid_start_time) {
+                Some((pid, marker)) => self.ops.process_start_time(pid)? == Some(marker),
+                None => false,
+            };
+            if !live {
+                return Err(CsiError::Busy(
+                    "existing publish has no authenticated live BrewFS process".to_owned(),
+                ));
+            }
+            state.targets.insert(target.display().to_string());
+            state
+                .target_read_only
+                .insert(target.display().to_string(), read_only);
+            state.pending_targets.remove(&target.display().to_string());
+            return self.store_state(spec, &state);
         }
+
+        let previous = self.state_path(spec).exists().then_some(state);
+        let (mut state, started) = self.prepare_stage_locked(spec)?;
+        // Keep #323's recovery intent durable before exposing a bind. It is
+        // rolled back with the mounts if ownership verification fails; only
+        // the final state write below commits a verified publish.
         state.targets.insert(target.display().to_string());
         state
             .target_read_only
             .insert(target.display().to_string(), read_only);
-        self.store_state(spec, &state)
+        state.pending_targets.insert(target.display().to_string());
+        if let Err(error) = self.store_state(spec, &state) {
+            if started {
+                self.cleanup_started_mount(spec, &state)?;
+            }
+            return Err(error);
+        }
+        let result = (|| {
+            self.ops.bind(&spec.shared_mount(), target, read_only)?;
+            let mount = self.ops.inspect_mount(target)?.ok_or_else(|| {
+                CsiError::MountConflict(format!("bind mount missing at {target:?}"))
+            })?;
+            self.verify_target(spec, &state, target, &mount, read_only)?;
+            state.pending_targets.remove(&target.display().to_string());
+            self.store_state(spec, &state)
+        })();
+        if let Err(error) = result {
+            if let Err(cleanup) =
+                self.rollback_publish(spec, target, &state, started, previous.as_ref())
+            {
+                return Err(CsiError::Busy(format!(
+                    "{error}; publish rollback failed: {cleanup}; recovery state retained"
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn rollback_publish(
+        &self,
+        spec: &MountSpec,
+        target: &Path,
+        state: &MountState,
+        started: bool,
+        previous: Option<&MountState>,
+    ) -> Result<(), CsiError> {
+        if let Some(mount) = self.ops.inspect_mount(target)? {
+            // A failed read-only remount can still be our bind. Verify the
+            // filesystem independently of the requested mode before cleanup.
+            self.verify_target(spec, state, target, &mount, mount.read_only)?;
+            self.ops.unbind(target, mount)?;
+        }
+        if started {
+            self.cleanup_started_mount(spec, state)?;
+        }
+        match previous {
+            Some(previous) => self.store_state(spec, previous),
+            None => {
+                fs::remove_file(self.state_path(spec))?;
+                Ok(())
+            }
+        }
+    }
+
+    fn cleanup_started_mount(&self, spec: &MountSpec, state: &MountState) -> Result<(), CsiError> {
+        let shared = spec.shared_mount();
+        if self.ops.is_mounted(&shared)? {
+            self.verify_shared(spec, state)?;
+            self.verify_pid_for_cleanup(state)?;
+            self.ops.unmount_brewfs(&shared)?;
+        }
+        self.stop_pid_for_cleanup(state)
     }
 
     pub async fn unpublish(&self, spec: &MountSpec, target: &Path) -> Result<(), CsiError> {
@@ -649,11 +921,20 @@ impl<O: MountOps> MountManager<O> {
                 .ok_or_else(|| {
                     CsiError::MountConflict(format!("no recorded target mode for {target:?}"))
                 })?;
+            let read_only = if state
+                .pending_targets
+                .contains(&target.display().to_string())
+            {
+                mount.read_only
+            } else {
+                read_only
+            };
             self.verify_target(spec, &state, target, &mount, read_only)?;
             self.ops.unbind(target, mount)?;
         }
         state.targets.remove(&target.display().to_string());
         state.target_read_only.remove(&target.display().to_string());
+        state.pending_targets.remove(&target.display().to_string());
         self.store_state(spec, &state)
     }
 
@@ -703,8 +984,10 @@ impl<O: MountOps> MountManager<O> {
         }
         let shared = spec.shared_mount();
         if self.ops.is_mounted(&shared)? {
+            self.verify_pid_for_cleanup(&state)?;
             self.ops.unmount_brewfs(&shared)?;
         }
+        self.stop_pid_for_cleanup(&state)?;
         let path = self.state_path(spec);
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -735,8 +1018,10 @@ impl<O: MountOps> MountManager<O> {
         }
         let shared = spec.shared_mount();
         if self.ops.is_mounted(&shared)? {
+            self.verify_pid_for_cleanup(&state)?;
             self.ops.unmount_brewfs(&shared)?;
         }
+        self.stop_pid_for_cleanup(&state)?;
         match fs::remove_file(self.state_path(&spec)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -745,6 +1030,17 @@ impl<O: MountOps> MountManager<O> {
     }
 
     fn stage_locked(&self, spec: &MountSpec) -> Result<PathBuf, CsiError> {
+        let (state, started) = self.prepare_stage_locked(spec)?;
+        if let Err(error) = self.store_state(spec, &state) {
+            if started {
+                self.cleanup_started_mount(spec, &state)?;
+            }
+            return Err(error);
+        }
+        Ok(spec.shared_mount())
+    }
+
+    fn prepare_stage_locked(&self, spec: &MountSpec) -> Result<(MountState, bool), CsiError> {
         fs::create_dir_all(&spec.mount_root)?;
         let shared = spec.shared_mount();
         let mut state = self.load_state(spec)?;
@@ -758,31 +1054,67 @@ impl<O: MountOps> MountManager<O> {
             // A recorded PID alone cannot authenticate a replaced shared mount.
             self.verify_shared(spec, &state)?;
         }
-        let stale = match state.pid {
-            Some(pid) => mounted && !self.ops.process_alive(pid)?,
-            None => false,
-        };
+        let mut stale = false;
+        if let Some(pid) = state.pid {
+            let alive = self.ops.process_alive(pid)?;
+            let current_start_time = self.ops.process_start_time(pid)?;
+            let verified = state
+                .pid_start_time
+                .zip(current_start_time)
+                .is_some_and(|(expected, actual)| expected == actual);
+            if mounted {
+                if state.pid_start_time.is_some() && alive && !verified {
+                    return Err(CsiError::Busy(format!(
+                        "shared mount {shared:?} is not owned by recorded BrewFS PID {pid}"
+                    )));
+                }
+                stale = !alive;
+            } else if alive {
+                if state.pid_start_time.is_some() && !verified {
+                    return Err(CsiError::Busy(format!(
+                        "recorded BrewFS PID {pid} was reused while shared mount {shared:?} is absent"
+                    )));
+                }
+                return Err(CsiError::Busy(format!(
+                    "recorded BrewFS PID {pid} is still alive while shared mount {shared:?} is absent"
+                )));
+            } else {
+                stale = true;
+            }
+        }
         if stale {
             // The previous plugin process left a stale mount behind. Remove
             // only the mount owned by this volume before reacquiring the
             // workspace lease; a live PID is always reused.
-            self.ops.unmount_brewfs(&shared)?;
-            mounted = false;
+            if mounted {
+                self.ops.unmount_brewfs(&shared)?;
+                mounted = false;
+            }
             state = MountState::default();
         }
-        if !mounted {
+        let started = !mounted;
+        if started {
             // A state file without a live mount is stale after a process crash.
             // Replacing it is safe: the new BrewFS process must reacquire the
             // same workspace lease before serving any request.
             let pid = self.ops.start_brewfs(spec, &shared)?;
+            let start_time = self.ops.process_start_time(pid)?.ok_or_else(|| {
+                CsiError::MountCommand(format!(
+                    "started BrewFS PID {pid} but could not record its process identity"
+                ))
+            })?;
             state = MountState::default();
             state.pid = Some(pid);
-            let mount = self
+            let mut mount = self
                 .ops
                 .inspect_mount(&shared)?
                 .filter(MountInfo::is_brewfs)
                 .ok_or_else(|| CsiError::MountConflict(format!("no BrewFS mount at {shared:?}")))?;
+            // State records filesystem identity. Do not keep a mount fd alive
+            // across rollback: ordinary unmount must retain EBUSY semantics.
+            mount.pin = None;
             state.shared_identity = Some(mount);
+            state.pid_start_time = Some(start_time);
         }
         state.volume_id = spec.volume.as_string();
         state.shared_mount = shared.display().to_string();
@@ -790,8 +1122,50 @@ impl<O: MountOps> MountManager<O> {
         state.binary = spec.binary.display().to_string();
         state.mount_root = spec.mount_root.display().to_string();
         state.read_only = spec.read_only;
-        self.store_state(spec, &state)?;
-        Ok(shared)
+        Ok((state, started))
+    }
+
+    fn verify_pid_for_cleanup(&self, state: &MountState) -> Result<(), CsiError> {
+        let Some(pid) = state.pid else {
+            return Err(CsiError::MountCommand(
+                "cannot clean up a shared mount without a recorded BrewFS PID".to_owned(),
+            ));
+        };
+        if !self.ops.process_alive(pid)? {
+            return Ok(());
+        }
+        let Some(expected) = state.pid_start_time else {
+            return Err(CsiError::Busy(format!(
+                "cannot authenticate live legacy BrewFS PID {pid} for cleanup"
+            )));
+        };
+        if self.ops.process_start_time(pid)? != Some(expected) {
+            return Err(CsiError::Busy(format!(
+                "recorded BrewFS PID {pid} was reused; refusing cleanup"
+            )));
+        }
+        Ok(())
+    }
+
+    fn stop_pid_for_cleanup(&self, state: &MountState) -> Result<(), CsiError> {
+        let Some(pid) = state.pid else {
+            return Ok(());
+        };
+        if !self.ops.process_alive(pid)? {
+            return Ok(());
+        }
+        let Some(start_time) = state.pid_start_time else {
+            return Err(CsiError::Busy(format!(
+                "cannot stop live legacy BrewFS PID {pid} without an identity marker"
+            )));
+        };
+        if self.ops.process_start_time(pid)? != Some(start_time) {
+            return Err(CsiError::Busy(format!(
+                "recorded BrewFS PID {pid} was reused; refusing to stop it"
+            )));
+        }
+        self.ops.stop_brewfs(pid, start_time)?;
+        Ok(())
     }
 
     fn spec_from_state(&self, volume_id: &str) -> Result<MountSpec, CsiError> {
@@ -866,20 +1240,34 @@ pub fn lock_state_dir(path: &Path) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::sync::Mutex as StdMutex;
     use tempfile::TempDir;
 
     #[derive(Debug, Default)]
     struct FakeOps {
         mounted: StdMutex<BTreeSet<String>>,
-        binds: StdMutex<BTreeSet<String>>,
+        binds: StdMutex<BTreeMap<String, (PathBuf, bool)>>,
         starts: StdMutex<usize>,
         unmounts: StdMutex<usize>,
+        fail_state_write: StdMutex<Option<PathBuf>>,
+        fail_state_after_probe: StdMutex<Option<(PathBuf, PathBuf)>>,
+        fail_bind: StdMutex<bool>,
+        leak_failed_bind: StdMutex<bool>,
+        alive: StdMutex<BTreeSet<u32>>,
+        dead: StdMutex<BTreeSet<u32>>,
+        checked_pids: StdMutex<Vec<u32>>,
+        next_pid: StdMutex<u32>,
+        stopped_pids: StdMutex<Vec<u32>>,
         identities: StdMutex<BTreeMap<String, MountInfo>>,
         inspection_errors: StdMutex<BTreeSet<PathBuf>>,
         unbinds: StdMutex<usize>,
         replace_on_unbind: StdMutex<Option<(PathBuf, MountInfo)>>,
         next_mount_id: StdMutex<u64>,
+        corrupt_bind_mode: StdMutex<bool>,
+        fail_bind_inspection: StdMutex<bool>,
+        inspection_error_once: StdMutex<Option<PathBuf>>,
+        fail_unbind_once: StdMutex<bool>,
     }
 
     impl FakeOps {
@@ -892,6 +1280,11 @@ mod tests {
 
     impl MountOps for FakeOps {
         fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>> {
+            let mut once = self.inspection_error_once.lock().unwrap();
+            if once.as_deref() == Some(path) {
+                once.take();
+                return Err(io::Error::other("injected ownership inspection failure"));
+            }
             if self.inspection_errors.lock().unwrap().contains(path) {
                 return Err(io::Error::other("mount inspection failed"));
             }
@@ -917,6 +1310,11 @@ mod tests {
         }
 
         fn is_mounted(&self, path: &Path) -> io::Result<bool> {
+            if let Some((target, state_tmp)) = self.fail_state_after_probe.lock().unwrap().as_ref()
+                && path == target
+            {
+                fs::create_dir(state_tmp)?;
+            }
             Ok(self
                 .mounted
                 .lock()
@@ -926,15 +1324,25 @@ mod tests {
                     .binds
                     .lock()
                     .unwrap()
-                    .contains(&path.display().to_string()))
+                    .contains_key(&path.display().to_string()))
         }
 
         fn process_alive(&self, _pid: u32) -> io::Result<bool> {
-            Ok(true)
+            let pid = _pid;
+            self.checked_pids.lock().unwrap().push(pid);
+            Ok(!self.dead.lock().unwrap().contains(&pid))
+        }
+
+        fn process_start_time(&self, pid: u32) -> io::Result<Option<u64>> {
+            Ok((!self.dead.lock().unwrap().contains(&pid)).then_some(pid as u64))
         }
 
         fn start_brewfs(&self, _spec: &MountSpec, target: &Path) -> io::Result<u32> {
             *self.starts.lock().unwrap() += 1;
+            let mut next_pid = self.next_pid.lock().unwrap();
+            let pid = *next_pid;
+            *next_pid += 1;
+            self.alive.lock().unwrap().insert(pid);
             self.mounted
                 .lock()
                 .unwrap()
@@ -951,27 +1359,55 @@ mod tests {
                     read_only: false,
                 },
             );
-            Ok(42)
+            Ok(pid)
+        }
+
+        fn stop_brewfs(&self, pid: u32, start_time: u64) -> io::Result<()> {
+            assert_eq!(start_time, pid as u64);
+            self.stopped_pids.lock().unwrap().push(pid);
+            self.dead.lock().unwrap().insert(pid);
+            Ok(())
         }
 
         fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()> {
+            if *self.fail_bind.lock().unwrap() && !*self.leak_failed_bind.lock().unwrap() {
+                return Err(io::Error::other("injected bind failure"));
+            }
             let mut mount = self
                 .inspect_mount(source)?
                 .ok_or_else(|| io::Error::other("source is not mounted"))?;
-            mount.read_only = read_only;
+            mount.read_only = read_only && !*self.leak_failed_bind.lock().unwrap();
+            if *self.corrupt_bind_mode.lock().unwrap() {
+                mount.read_only = !read_only;
+            }
             mount.mount_id = self.allocate_mount_id();
             self.identities
                 .lock()
                 .unwrap()
                 .insert(target.display().to_string(), mount);
-            self.binds
-                .lock()
-                .unwrap()
-                .insert(target.display().to_string());
+            self.binds.lock().unwrap().insert(
+                target.display().to_string(),
+                (
+                    source.to_owned(),
+                    read_only && !*self.leak_failed_bind.lock().unwrap(),
+                ),
+            );
+            if let Some(path) = self.fail_state_write.lock().unwrap().as_ref() {
+                fs::create_dir(path)?;
+            }
+            if *self.fail_bind.lock().unwrap() {
+                return Err(io::Error::other("injected bind cleanup failure"));
+            }
+            if *self.fail_bind_inspection.lock().unwrap() {
+                *self.inspection_error_once.lock().unwrap() = Some(target.to_path_buf());
+            }
             Ok(())
         }
 
         fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()> {
+            if std::mem::take(&mut *self.fail_unbind_once.lock().unwrap()) {
+                return Err(io::Error::from_raw_os_error(libc::EBUSY));
+            }
             if let Some((path, foreign)) = self.replace_on_unbind.lock().unwrap().take() {
                 assert_eq!(path, target);
                 self.identities
@@ -979,27 +1415,35 @@ mod tests {
                     .unwrap()
                     .insert(path.display().to_string(), foreign);
             }
-            if self.inspect_mount(target)?.as_ref() != Some(&expected) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "target mount changed before unmount",
-                ));
-            }
-            *self.unbinds.lock().unwrap() += 1;
-            self.binds
-                .lock()
-                .unwrap()
-                .remove(&target.display().to_string());
-            Ok(())
+            unmount_after_recheck(
+                expected,
+                || self.inspect_mount(target),
+                || {
+                    *self.unbinds.lock().unwrap() += 1;
+                    self.binds
+                        .lock()
+                        .unwrap()
+                        .remove(&target.display().to_string());
+                    Ok(())
+                },
+            )
         }
 
         fn unmount_brewfs(&self, target: &Path) -> io::Result<()> {
             *self.unmounts.lock().unwrap() += 1;
-            self.mounted
+            let removed = self
+                .mounted
                 .lock()
                 .unwrap()
                 .remove(&target.display().to_string());
-            Ok(())
+            if removed {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "shared mount is already absent",
+                ))
+            }
         }
     }
 
@@ -1073,6 +1517,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stage_preserves_live_pid_when_shared_mount_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(100),
+            ..Default::default()
+        });
+        let state_root = temp.path().join("state");
+        let spec = spec(&temp);
+        let manager = MountManager::new_with_root(ops.clone(), state_root);
+
+        manager.stage(&spec).await.unwrap();
+        let shared = spec.shared_mount();
+        let state_before: MountState = manager.load_state(&spec).unwrap();
+        let live_pid = state_before.pid.expect("initial stage records a PID");
+        ops.mounted
+            .lock()
+            .unwrap()
+            .remove(&shared.display().to_string());
+
+        let result = manager.stage(&spec).await;
+        assert!(matches!(result, Err(CsiError::Busy(_))));
+        let state_after: MountState = manager.load_state(&spec).unwrap();
+        assert_eq!(state_after.pid, Some(live_pid));
+        assert_eq!(*ops.starts.lock().unwrap(), 1);
+        assert_eq!(*ops.checked_pids.lock().unwrap(), vec![live_pid]);
+    }
+
+    #[tokio::test]
+    async fn stage_replaces_stale_or_absent_pid_only_when_safe() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(200),
+            ..Default::default()
+        });
+        let spec = spec(&temp);
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+
+        manager.stage(&spec).await.unwrap();
+        let shared = spec.shared_mount();
+        let stale_pid = manager.load_state(&spec).unwrap().pid.unwrap();
+        ops.mounted
+            .lock()
+            .unwrap()
+            .remove(&shared.display().to_string());
+        ops.dead.lock().unwrap().insert(stale_pid);
+        manager.stage(&spec).await.unwrap();
+        assert_eq!(*ops.starts.lock().unwrap(), 2);
+        assert_eq!(manager.load_state(&spec).unwrap().pid, Some(stale_pid + 1));
+
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(300),
+            ..Default::default()
+        });
+        let spec = self::spec(&temp);
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        manager.stage(&spec).await.unwrap();
+        assert_eq!(manager.load_state(&spec).unwrap().pid, Some(300));
+        assert!(ops.checked_pids.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stage_recovers_dead_pid_when_shared_mount_is_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(600),
+            ..Default::default()
+        });
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        manager.stage(&spec).await.unwrap();
+        let dead_pid = manager.load_state(&spec).unwrap().pid.unwrap();
+        ops.mounted
+            .lock()
+            .unwrap()
+            .remove(&spec.shared_mount().display().to_string());
+        ops.dead.lock().unwrap().insert(dead_pid);
+
+        manager.stage(&spec).await.unwrap();
+        assert_eq!(*ops.starts.lock().unwrap(), 2);
+        assert_eq!(manager.load_state(&spec).unwrap().pid, Some(dead_pid + 1));
+        assert_eq!(*ops.unmounts.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn system_stop_brewfs_does_not_signal_a_recycled_pid() {
+        let mut child = Command::new("bash")
+            .args(["-c", "exec -a brewfs sleep 30"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let ops = SystemMountOps;
+        let start_time = (0..20)
+            .find_map(|_| {
+                let marker = ops.process_start_time(pid).unwrap();
+                marker.or_else(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                })
+            })
+            .unwrap();
+
+        // A different start marker represents the same numeric PID after
+        // recycling. Cleanup must leave that unrelated process untouched.
+        ops.stop_brewfs(pid, start_time.wrapping_add(1)).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[tokio::test]
+    async fn unstage_stops_the_recorded_pid_after_shared_mount_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(400),
+            ..Default::default()
+        });
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        manager.stage(&spec).await.unwrap();
+        let pid = manager.load_state(&spec).unwrap().pid.unwrap();
+        ops.mounted
+            .lock()
+            .unwrap()
+            .remove(&spec.shared_mount().display().to_string());
+
+        manager.unstage(&spec).await.unwrap();
+        assert_eq!(*ops.stopped_pids.lock().unwrap(), vec![pid]);
+        assert!(!manager.state_path(&spec).exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_a_reused_pid_without_signaling_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps {
+            next_pid: StdMutex::new(500),
+            ..Default::default()
+        });
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        manager.stage(&spec).await.unwrap();
+        let mut state = manager.load_state(&spec).unwrap();
+        state.pid_start_time = Some(501);
+        manager.store_state(&spec, &state).unwrap();
+        ops.mounted
+            .lock()
+            .unwrap()
+            .remove(&spec.shared_mount().display().to_string());
+
+        assert!(matches!(
+            manager.unstage(&spec).await,
+            Err(CsiError::Busy(_))
+        ));
+        assert!(manager.state_path(&spec).exists());
+        assert!(ops.stopped_pids.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn stage_publish_and_unpublish_are_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let ops = Arc::new(FakeOps::default());
@@ -1091,6 +1693,112 @@ mod tests {
         manager.unstage(&spec).await.unwrap();
         manager.unstage(&spec).await.unwrap();
         assert_eq!(*ops.unmounts.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn ownership_failed_verification_rolls_back() {
+        for previously_staged in [false, true] {
+            for inspection_error in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let ops = Arc::new(FakeOps::default());
+                let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+                let spec = spec(&temp);
+                let target = temp.path().join("target");
+                if previously_staged {
+                    manager.stage(&spec).await.unwrap();
+                }
+                let before = fs::read(manager.state_path(&spec)).ok();
+                *ops.corrupt_bind_mode.lock().unwrap() = !inspection_error;
+                *ops.fail_bind_inspection.lock().unwrap() = inspection_error;
+                let result = manager.publish(&spec, &target, true).await;
+                if inspection_error {
+                    assert!(matches!(result, Err(CsiError::Io(_))), "{result:?}");
+                } else {
+                    assert!(
+                        matches!(result, Err(CsiError::MountConflict(_))),
+                        "{result:?}"
+                    );
+                }
+                assert_eq!(
+                    fs::read(manager.state_path(&spec)).ok(),
+                    before,
+                    "failed ownership verification left persisted state"
+                );
+                assert_eq!(
+                    ops.is_mounted(&spec.shared_mount()).unwrap(),
+                    previously_staged,
+                    "failed ownership verification left a started mount"
+                );
+                assert!(!ops.is_mounted(&target).unwrap());
+                assert_eq!(
+                    ops.stopped_pids.lock().unwrap().len(),
+                    usize::from(!previously_staged)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_existing_publish_preserves_pid_fencing() {
+        for dead in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.publish(&spec, &target, false).await.unwrap();
+            let mut state = manager.load_state(&spec).unwrap();
+            if dead {
+                ops.dead.lock().unwrap().insert(state.pid.unwrap());
+            } else {
+                state.pid_start_time = Some(state.pid_start_time.unwrap() + 1);
+                manager.store_state(&spec, &state).unwrap();
+            }
+            let before = fs::read(manager.state_path(&spec)).unwrap();
+            assert!(matches!(
+                manager.publish(&spec, &target, false).await,
+                Err(CsiError::Busy(_))
+            ));
+            assert_eq!(fs::read(manager.state_path(&spec)).unwrap(), before);
+            assert!(ops.is_mounted(&target).unwrap());
+            assert_eq!(*ops.starts.lock().unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn ownership_unmount_recheck_refuses_mismatched_identity() {
+        let mounts =
+            "41 1 0:55 / /target rw - fuse brewfs rw\n42 1 0:55 / /target rw - fuse brewfs rw";
+        let expected = mount_at(mounts, Path::new("/target"), 41).unwrap().unwrap();
+        let replacement = mount_at(mounts, Path::new("/target"), 42).unwrap().unwrap();
+        assert!(expected.same_filesystem_root(&replacement));
+        let calls = std::cell::Cell::new(0);
+        for observation in [
+            Ok(Some(replacement)),
+            Ok(None),
+            Err(io::Error::other("mountinfo unavailable")),
+        ] {
+            let result = unmount_after_recheck(
+                expected.clone(),
+                || observation,
+                || {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            );
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            assert_eq!(calls.get(), 0, "unmount ran after failed identity re-check");
+        }
+        unmount_after_recheck(
+            expected.clone(),
+            || Ok(Some(expected)),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 1, "unchanged mount should reach unmount");
     }
 
     #[tokio::test]
@@ -1638,6 +2346,172 @@ mod tests {
             manager.unstage(&spec).await,
             Err(CsiError::Published(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn publish_never_leaves_an_untracked_bind_on_state_write_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        let target = temp.path().join("target");
+        manager.stage(&spec).await.unwrap();
+        *ops.fail_state_write.lock().unwrap() =
+            Some(manager.state_path(&spec).with_extension("json.tmp"));
+
+        let result = manager.publish(&spec, &target, false).await;
+        let mounted = ops.is_mounted(&target).unwrap();
+        let recorded = manager
+            .load_state(&spec)
+            .unwrap()
+            .targets
+            .contains(&target.display().to_string());
+        assert!(
+            if result.is_ok() {
+                mounted && recorded
+            } else {
+                !mounted
+            },
+            "publish={result:?}, mounted={mounted}, recorded={recorded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_bind_restores_previous_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        manager
+            .publish(&spec, &temp.path().join("existing"), false)
+            .await
+            .unwrap();
+        let previous = fs::read(manager.state_path(&spec)).unwrap();
+        *ops.fail_bind.lock().unwrap() = true;
+
+        assert!(
+            manager
+                .publish(&spec, &temp.path().join("failed"), true)
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(manager.state_path(&spec)).unwrap(), previous);
+    }
+
+    #[tokio::test]
+    async fn publish_state_failure_before_bind_preserves_existing_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        let existing = temp.path().join("existing");
+        let target = temp.path().join("target");
+        manager.publish(&spec, &existing, false).await.unwrap();
+        let previous = fs::read(manager.state_path(&spec)).unwrap();
+        *ops.fail_state_after_probe.lock().unwrap() = Some((
+            target.clone(),
+            manager.state_path(&spec).with_extension("json.tmp"),
+        ));
+
+        assert!(manager.publish(&spec, &target, false).await.is_err());
+        *ops.fail_state_after_probe.lock().unwrap() = None;
+        assert!(!ops.is_mounted(&target).unwrap());
+        assert!(ops.is_mounted(&existing).unwrap());
+        assert_eq!(fs::read(manager.state_path(&spec)).unwrap(), previous);
+    }
+
+    #[tokio::test]
+    async fn readonly_publish_is_idempotent_after_restart() {
+        for spec_read_only in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let state_root = temp.path().join("state");
+            let manager = MountManager::new_with_root(ops.clone(), state_root.clone());
+            let mut spec = spec(&temp);
+            spec.read_only = spec_read_only;
+            let target = temp.path().join("target");
+            manager
+                .publish(&spec, &target, !spec_read_only)
+                .await
+                .unwrap();
+            MountManager::new_with_root(ops, state_root)
+                .publish(&spec, &target, !spec_read_only)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_bind_cleanup_keeps_recovery_state_across_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let state_root = temp.path().join("state");
+        let manager = MountManager::new_with_root(ops.clone(), state_root.clone());
+        let spec = spec(&temp);
+        let target = temp.path().join("target");
+        *ops.fail_bind.lock().unwrap() = true;
+        *ops.leak_failed_bind.lock().unwrap() = true;
+        // The manager now also attempts verified rollback. Model a real
+        // cleanup failure, then allow the later unpublish retry to succeed.
+        *ops.fail_unbind_once.lock().unwrap() = true;
+
+        assert!(manager.publish(&spec, &target, true).await.is_err());
+        assert!(
+            manager
+                .load_state(&spec)
+                .unwrap()
+                .targets
+                .contains(&target.display().to_string())
+        );
+        let restarted = MountManager::new_with_root(ops.clone(), state_root);
+        assert!(restarted.publish(&spec, &target, true).await.is_err());
+        assert!(matches!(
+            restarted.unstage(&spec).await,
+            Err(CsiError::Published(_))
+        ));
+        restarted
+            .unpublish_by_id(&spec.volume.as_string(), &target)
+            .await
+            .unwrap();
+        assert!(!ops.is_mounted(&target).unwrap());
+        restarted
+            .unstage_by_id(&spec.volume.as_string())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_an_unrelated_existing_mount() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        let target = temp.path().join("target");
+        ops.mounted
+            .lock()
+            .unwrap()
+            .insert(target.display().to_string());
+
+        assert!(manager.publish(&spec, &target, true).await.is_err());
+        assert!(ops.is_mounted(&target).unwrap());
+        assert!(manager.load_state(&spec).unwrap().targets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_retry_checks_volume_and_readonly_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = Arc::new(FakeOps::default());
+        let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+        let spec = spec(&temp);
+        let target = temp.path().join("target");
+        manager.publish(&spec, &target, false).await.unwrap();
+        assert!(manager.publish(&spec, &target, true).await.is_err());
+
+        let mut other = spec.clone();
+        other.volume.workspace = Uuid::from_u128(8);
+        assert!(manager.publish(&other, &target, false).await.is_err());
+        assert!(manager.load_state(&other).unwrap().targets.is_empty());
+        assert!(ops.is_mounted(&target).unwrap());
     }
 
     #[tokio::test]

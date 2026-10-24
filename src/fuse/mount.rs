@@ -122,19 +122,21 @@ where
     S: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
-    let mount_point = mount_point.as_ref();
+    let mount_point = std::fs::canonicalize(mount_point.as_ref())?;
+    let identity = fs.clone();
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
     // Prefer unprivileged mount on Linux (requires fusermount3 in PATH)
-    if fuse_op_log_enabled() {
+    let handle = if fuse_op_log_enabled() {
         configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount_with_unprivileged(LoggingFileSystem::new(fs), mount_point)
+            .mount_with_unprivileged(LoggingFileSystem::new(fs), &mount_point)
             .await
     } else {
         configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount_with_unprivileged(fs, mount_point)
+            .mount_with_unprivileged(fs, &mount_point)
             .await
-    }
+    }?;
+    bind_mount_device(&identity, &mount_point, handle).await
 }
 
 /// Mount a VFS instance to the given empty directory using privileged mode (via /dev/fuse).
@@ -149,17 +151,41 @@ where
     S: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
-    let mount_point = mount_point.as_ref();
+    let mount_point = std::fs::canonicalize(mount_point.as_ref())?;
+    let identity = fs.clone();
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
-    if fuse_op_log_enabled() {
+    let handle = if fuse_op_log_enabled() {
         configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount(LoggingFileSystem::new(fs), mount_point)
+            .mount(LoggingFileSystem::new(fs), &mount_point)
             .await
     } else {
         configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount(fs, mount_point)
+            .mount(fs, &mount_point)
             .await
+    }?;
+    bind_mount_device(&identity, &mount_point, handle).await
+}
+
+#[cfg(target_os = "linux")]
+async fn bind_mount_device<S, M>(
+    fs: &VFS<S, M>,
+    mount_point: &Path,
+    handle: asyncfuse::raw::MountHandle,
+) -> std::io::Result<asyncfuse::raw::MountHandle>
+where
+    S: BlockStore + Send + Sync + 'static,
+    M: MetaLayer + Send + Sync + 'static,
+{
+    match super::clone_ioctl::mounted_device(mount_point) {
+        Ok(device) => {
+            fs.set_fuse_mount_device(Some(device));
+            Ok(handle)
+        }
+        Err(error) => {
+            handle.unmount().await?;
+            Err(error)
+        }
     }
 }
 

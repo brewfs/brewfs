@@ -302,6 +302,16 @@ impl<B: EntityBackend> EntityBackend for MeteredBackend<B> {
         self.inner.reserve_slices(authority, allocation).await
     }
 
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.scans.fetch_add(1, Ordering::SeqCst);
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.scans.fetch_add(1, Ordering::SeqCst);
         self.inner.scan_prefix(prefix, limit).await
@@ -2157,6 +2167,15 @@ impl EntityBackend for RenewDuringAllocationBackend {
         self.inner.reserve_slices(authority, allocation).await
     }
 
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.inner.scan_prefix(prefix, limit).await
     }
@@ -2258,6 +2277,15 @@ impl EntityBackend for LostReplyBackend {
     ) -> Result<Option<Vec<u64>>> {
         self.inner.reserve_slices(authority, allocation).await
     }
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.inner.scan_prefix(prefix, limit).await
     }

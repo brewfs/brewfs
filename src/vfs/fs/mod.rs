@@ -142,7 +142,9 @@ use crate::vfs::cache::config::CacheConfig;
 use crate::vfs::chunk_id_for;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::{PathHint, VfsError};
-use crate::vfs::handles::{DirHandle, FileHandle, HandleFlags, RawDirEntry, WriteDirtyState};
+use crate::vfs::handles::{
+    DirHandle, FileHandle, HandleFlags, PinnedFileHandle, RawDirEntry, WriteDirtyState,
+};
 use crate::vfs::io::{DataReader, DataWriter, split_chunk_spans};
 use crate::vfs::memory::MemoryBudget;
 
@@ -366,6 +368,8 @@ where
     fuse_write_order: Arc<FuseWriteOrder>,
     fuse_read_cancel: crate::vfs::fuse_read_cancel::ReadRegistry,
     fuse_notify: StdMutex<Option<FuseNotify>>,
+    #[cfg(target_os = "linux")]
+    fuse_mount_device: StdMutex<Option<(u32, u32)>>,
     statfs_cache: StdMutex<Option<StatFsCache>>,
     fallocate_statfs_cache: StdMutex<Option<FallocateStatFsCache>>,
     posix_lock_owners: DashMap<(i64, i64), ()>,
@@ -770,6 +774,8 @@ where
             fuse_write_order: Arc::new(FuseWriteOrder::default()),
             fuse_read_cancel,
             fuse_notify: StdMutex::new(None),
+            #[cfg(target_os = "linux")]
+            fuse_mount_device: StdMutex::new(None),
             statfs_cache: StdMutex::new(None),
             fallocate_statfs_cache: StdMutex::new(None),
             posix_lock_owners: DashMap::new(),
@@ -1862,6 +1868,56 @@ where
         self.file_handle(fh).ok_or(VfsError::StaleNetworkFileHandle)
     }
 
+    pub(crate) async fn pin_file_handle(
+        &self,
+        fh: u64,
+    ) -> Result<PinnedFileHandle<S, M>, VfsError> {
+        let handle = self.file_handle_required(fh)?;
+        let pin = handle.pin().await;
+        self.check_handle_pin(pin)
+    }
+
+    fn try_pin_file_handle(&self, fh: u64) -> Result<PinnedFileHandle<S, M>, VfsError> {
+        let handle = self.file_handle_required(fh)?;
+        let pin = handle.try_pin().ok_or(VfsError::StaleNetworkFileHandle)?;
+        self.check_handle_pin(pin)
+    }
+
+    fn check_handle_pin(
+        &self,
+        pin: PinnedFileHandle<S, M>,
+    ) -> Result<PinnedFileHandle<S, M>, VfsError> {
+        // Close may have won while pin() waited. Never validate a retired
+        // handle, even if the numeric slot were subsequently reused.
+        if !self
+            .file_handle(pin.handle.fh)
+            .is_some_and(|current| Arc::ptr_eq(&current, &pin.handle))
+        {
+            return Err(VfsError::StaleNetworkFileHandle);
+        }
+        Ok(pin)
+    }
+
+    pub(crate) fn pin_clone_source(
+        &self,
+        ino: i64,
+        destination: &PinnedFileHandle<S, M>,
+    ) -> Result<PinnedFileHandle<S, M>, VfsError> {
+        if destination.handle.ino == ino && destination.handle.flags.read {
+            return Ok(destination.clone());
+        }
+        for handle in self.file_handles_for_inode(ino) {
+            if handle.flags.read
+                // Never wait for a second pin while retaining the first: two
+                // crossing copies plus queued closes must not deadlock.
+                && let Ok(pin) = self.try_pin_file_handle(handle.fh)
+            {
+                return Ok(pin);
+            }
+        }
+        Err(VfsError::StaleNetworkFileHandle)
+    }
+
     pub(crate) fn mark_handle_write_dirty(&self, fh: u64) -> bool {
         self.state.handles.mark_write_dirty(fh)
     }
@@ -1875,6 +1931,24 @@ where
             .fuse_write_order
             .wait_for_prior(ino, unique)
             .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_fuse_mount_device(&self, device: Option<(u32, u32)>) {
+        *self
+            .state
+            .fuse_mount_device
+            .lock()
+            .expect("fuse mount lock poisoned") = device;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fuse_mount_device(&self) -> Option<(u32, u32)> {
+        *self
+            .state
+            .fuse_mount_device
+            .lock()
+            .expect("fuse mount lock poisoned")
     }
 
     pub(crate) fn set_fuse_notify(&self, notify: FuseNotify) {
@@ -4029,36 +4103,20 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn packed_owned_truncate_inode(&self, ino: i64, size: u64) -> Result<(), VfsError> {
         #[cfg(feature = "native-packed-base")]
-        if let Some(runtime) = self.native_runtime() {
-            let attr = self.meta_stat_required(ino, PathHint::none()).await?;
-            if attr.kind != FileType::File {
-                return Err(if attr.kind == FileType::Dir {
-                    VfsError::IsADirectory {
-                        path: PathHint::none(),
-                    }
-                } else {
-                    VfsError::InvalidInput
-                });
-            }
-            runtime
-                .truncate(ino as u64, size)
+        if self.native_runtime().is_some() {
+            return self
+                .packed_owned_set_attr_inner(
+                    ino,
+                    &SetAttrRequest {
+                        size: Some(size),
+                        ..Default::default()
+                    },
+                    SetAttrFlags::empty(),
+                    true,
+                    None,
+                )
                 .await
-                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
-            self.meta_truncate(ino, size, self.core.layout.chunk_size)
-                .await?;
-            self.state.reader.invalidate_all(ino as u64).await;
-            let inode = self
-                .lock_inode(ino)
-                .or_insert_with(|| Inode::new(ino, size));
-            inode.set_size(size);
-            inode.invalidate_allocated_blocks();
-            inode.bump_data_epoch();
-            if let Some(mut attr) = self.state.handles.attr_for_inode(ino) {
-                attr.size = size;
-                self.state.handles.update_attr_for_inode(ino, &attr);
-            }
-            self.notify_kernel_invalidate_inode_all(ino);
-            return Ok(());
+                .map(|_| ());
         }
 
         // Flush dirty data BEFORE acquiring mutation_lock so that we do not hold the
@@ -4683,6 +4741,26 @@ where
             self.flush_before_truncate(ino, size, "set_attr_truncate_locked")
                 .await?;
 
+            #[cfg(feature = "native-packed-base")]
+            if let Some(runtime) = self.native_runtime() {
+                let attr = self.meta_stat_required(ino, PathHint::none()).await?;
+                if attr.kind != FileType::File {
+                    return Err(if attr.kind == FileType::Dir {
+                        VfsError::IsADirectory {
+                            path: PathHint::none(),
+                        }
+                    } else {
+                        VfsError::InvalidInput
+                    });
+                }
+                // Capture the baseline before changing namespace size. Defer
+                // the data mutation until metadata has authorized the request.
+                runtime
+                    .size(ino as u64)
+                    .await
+                    .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            }
+
             if !atomic_permissions {
                 self.meta_truncate(ino, size, self.core.layout.chunk_size)
                     .await?;
@@ -4720,6 +4798,25 @@ where
         } else {
             self.meta_set_attr(ino, &filtered, flags).await?
         };
+
+        #[cfg(feature = "native-packed-base")]
+        if let Some(size) = req.size
+            && let Some(runtime) = self.native_runtime()
+        {
+            // Keep the same inode mutation lock through namespace permission
+            // checks and native admission so writes cannot split the truncate.
+            runtime
+                .truncate(ino as u64, size)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+            // The runtime commits pending control mutations as a final size.
+            // Drain this truncate before a later extension can coalesce away
+            // the shrink and leave the old extents visible after fsync.
+            runtime
+                .fsync(ino as u64)
+                .await
+                .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
+        }
 
         // Ensure the returned attr carries exactly the requested truncation size.
         // The kernel trusts this value for truncate_pagecache decisions; a stale
@@ -4946,8 +5043,6 @@ where
         len: usize,
         output_reserved: bool,
     ) -> Result<crate::vfs::io::reader::ReadReply, VfsError> {
-        #[cfg(not(feature = "workspace-overlay"))]
-        let _ = output_reserved;
         if len == 0 {
             #[cfg(feature = "workspace-overlay")]
             let fenced = self
@@ -4961,8 +5056,22 @@ where
                 return Ok(Vec::new().into());
             }
         }
-
         let handle = self.file_handle_required(fh)?;
+        self.read_handle_inner(handle, offset, len, output_reserved)
+            .await
+    }
+
+    async fn read_handle_inner(
+        &self,
+        handle: Arc<FileHandle<S, M>>,
+        offset: u64,
+        len: usize,
+        output_reserved: bool,
+    ) -> Result<crate::vfs::io::reader::ReadReply, VfsError> {
+        let fh = handle.fh;
+        #[cfg(not(feature = "workspace-overlay"))]
+        let _ = output_reserved;
+
         // With writeback cache enabled, the kernel may issue reads on O_WRONLY
         // handles to fill partial pages before writing them back, so we only
         // reject reads when neither read nor write flags are set.
@@ -5299,6 +5408,7 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
+            let _mutation_guard = self.state.append_lock(handle.ino).lock_owned().await;
             self.ensure_inode_registered(handle.ino).await?;
             let write_offset = if handle.flags.append {
                 runtime
@@ -5347,7 +5457,8 @@ where
         #[cfg(test)]
         write_diagnostic("vfs-append-lock-after", handle.ino, fh, offset, data.len());
 
-        self.write_with_inode_lock_held(handle, offset, data).await
+        self.write_with_inode_lock_held(handle, offset, data, true)
+            .await
     }
 
     async fn write_with_inode_lock_held(
@@ -5355,6 +5466,7 @@ where
         handle: Arc<FileHandle<S, M>>,
         offset: u64,
         data: &[u8],
+        honor_append: bool,
     ) -> Result<usize, VfsError> {
         let data_len = data.len() as u64;
         #[cfg(test)]
@@ -5365,7 +5477,7 @@ where
             offset,
             data.len(),
         );
-        let (write_offset, written) = if handle.flags.append {
+        let (write_offset, written) = if honor_append && handle.flags.append {
             let _handle_guard = handle.lock_write().await;
             #[cfg(test)]
             write_diagnostic(
@@ -5557,6 +5669,7 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
+            let _mutation_guard = self.state.append_lock(ino).lock_owned().await;
             let attr = self.meta_stat_required(ino, PathHint::none()).await?;
             if attr.kind == FileType::Dir {
                 return Err(VfsError::IsADirectory {
@@ -5689,6 +5802,7 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
+            let _mutation_guard = self.state.append_lock(ino).lock_owned().await;
             let receipt = runtime
                 .write(ino as u64, offset, data)
                 .await
@@ -5788,6 +5902,82 @@ where
         Ok(written)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn clone_file_handles(
+        &self,
+        source: crate::fuse::clone_ioctl::SourceFile,
+        src: PinnedFileHandle<S, M>,
+        dst: PinnedFileHandle<S, M>,
+        range: Option<(u64, u64, u64)>,
+    ) -> Result<(), VfsError> {
+        #[cfg(feature = "workspace-overlay")]
+        if self.packed_mutation_needs_driver() {
+            let driver = self.packed_mutation_admit(&[])?;
+            let vfs = self.clone();
+            // Detached mutations must own the pins too, not borrow them from
+            // a FUSE request that can be cancelled while the mutation runs.
+            return driver
+                .run(async move {
+                    vfs.packed_owned_clone_file_handles(source, src, dst, range)
+                        .await
+                })
+                .await?;
+        }
+        self.packed_owned_clone_file_handles(source, src, dst, range)
+            .await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn packed_owned_clone_file_handles(
+        &self,
+        source: crate::fuse::clone_ioctl::SourceFile,
+        src: PinnedFileHandle<S, M>,
+        dst: PinnedFileHandle<S, M>,
+        range: Option<(u64, u64, u64)>,
+    ) -> Result<(), VfsError> {
+        if source.ino != src.handle.ino
+            || !src.handle.flags.read
+            || !dst.handle.flags.write
+            || dst.handle.flags.append
+        {
+            return Err(VfsError::InvalidInput);
+        }
+        let result = async {
+            let (off_in, off_out, length) = match range {
+                Some(range) => range,
+                None => {
+                    if src.handle.ino == dst.handle.ino {
+                        return Err(VfsError::InvalidInput);
+                    }
+                    let attr = self
+                        .meta_stat_required(src.handle.ino, PathHint::none())
+                        .await?;
+                    // The target inode comes from the pinned, writable handle.
+                    // Close cannot retire its inode/writer during either truncate.
+                    self.truncate_inode(dst.handle.ino, 0).await?;
+                    (0, 0, attr.size)
+                }
+            };
+            self.copy_file_range_handles(
+                src.handle.clone(),
+                off_in,
+                dst.handle.clone(),
+                off_out,
+                length,
+            )
+            .await?;
+            if range.is_none() {
+                self.truncate_inode(dst.handle.ino, length).await?;
+            }
+            Ok(())
+        }
+        .await;
+        // Retain the kernel reference and both close barriers through the final
+        // mutation/flush on success and every error path.
+        drop((source, src, dst));
+        result
+    }
+
     /// Copy a byte range between two opened file handles.
     ///
     /// This keeps the copy inside BrewFS so we can serialize it with the
@@ -5828,8 +6018,34 @@ where
             return Ok(0);
         }
 
-        let src = self.file_handle_required(fh_in)?;
-        let dst = self.file_handle_required(fh_out)?;
+        let src = self.pin_file_handle(fh_in).await?;
+        let dst = if fh_in == fh_out {
+            src.clone()
+        } else {
+            self.try_pin_file_handle(fh_out)?
+        };
+
+        self.copy_file_range_handles(
+            src.handle.clone(),
+            off_in,
+            dst.handle.clone(),
+            off_out,
+            length,
+        )
+        .await
+    }
+
+    async fn copy_file_range_handles(
+        &self,
+        src: Arc<FileHandle<S, M>>,
+        off_in: u64,
+        dst: Arc<FileHandle<S, M>>,
+        off_out: u64,
+        length: u64,
+    ) -> Result<usize, VfsError> {
+        if length == 0 {
+            return Ok(0);
+        }
 
         #[cfg(feature = "workspace-overlay")]
         let packed_provider = self
@@ -5879,7 +6095,8 @@ where
         }
 
         let src_attr = self.meta_stat_required(src.ino, PathHint::none()).await?;
-        let dst_attr = self.meta_stat_required(dst.ino, PathHint::none()).await?;
+        self.meta_stat_required(dst.ino, PathHint::none()).await?;
+        src.update_attr(&src_attr);
         let available = src_attr.size.saturating_sub(off_in);
         let copy_len = length.min(available);
         if copy_len == 0 {
@@ -5903,14 +6120,11 @@ where
             .reader
             .invalidate(src.ino as u64, off_in, len)
             .await;
-        let src_guard = self.open_guard(src.ino, src_attr, true, false).await?;
-        let dst_guard = self.open_guard(dst.ino, dst_attr, false, true).await?;
 
         // Read the full source snapshot before writing so same-file overlap keeps
         // copy_file_range semantics close to a memmove-style copy.
         #[cfg(feature = "workspace-overlay")]
         let data = if let Some(provider) = packed_provider {
-            let source_handle = self.file_handle_required(src_guard.fh())?;
             let held_guard = mutation_guards
                 .iter()
                 .find(|guard| {
@@ -5927,7 +6141,7 @@ where
                 .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
             let data = self
                 .read_packed_workspace_request(
-                    source_handle,
+                    src.clone(),
                     (off_in, len),
                     true,
                     provider,
@@ -5942,20 +6156,24 @@ where
                 None => bytes::Bytes::from(data),
             }
         } else {
-            bytes::Bytes::from(src_guard.read(off_in, len).await?)
+            self.read_handle_inner(src.clone(), off_in, len, false)
+                .await?
+                .into_bytes()
         };
         #[cfg(not(feature = "workspace-overlay"))]
-        let data = src_guard.read(off_in, len).await?;
-        let dst_handle = self.file_handle_required(dst_guard.fh())?;
+        let data = self
+            .read_handle_inner(src.clone(), off_in, len, false)
+            .await?
+            .into_bytes();
         let dst_inode = self.ensure_inode_registered(dst.ino).await?;
-        dst_handle.ensure_writer_with(|| self.state.writer.ensure_file(dst_inode));
+        dst.ensure_writer_with(|| self.state.writer.ensure_file(dst_inode));
         let written = self
-            .write_with_inode_lock_held(dst_handle, off_out, &data)
+            .write_with_inode_lock_held(dst.clone(), off_out, &data, false)
             .await?;
 
-        // Close guards to flush and commit before releasing locks.
-        dst_guard.close().await?;
-        src_guard.close().await?;
+        // Flush the validated destination itself; never open a replacement
+        // file object by inode or close the caller's handle.
+        self.flush_and_sync_file_handle(dst.clone()).await?;
         self.state.reader.invalidate_all(dst.ino as u64).await;
         self.notify_kernel_invalidate_inode_range(dst.ino, off_out, written as u64);
         drop(mutation_guards);
@@ -6186,8 +6404,16 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn packed_owned_close(&self, fh: u64) -> Result<(), VfsError> {
-        // Note that we cannot hold the lock during the entire function, because `handle.flush()` is a I/O operation.
+        // Retain the close barrier across IO, but only acquire the inode
+        // registry lock below when retiring the handle.
         let handle = self.file_handle_required(fh)?;
+        let _close_guard = handle.lock_close().await;
+        if !self
+            .file_handle(fh)
+            .is_some_and(|current| Arc::ptr_eq(&current, &handle))
+        {
+            return Err(VfsError::StaleNetworkFileHandle);
+        }
 
         tracing::trace!(
             fh,
@@ -6195,9 +6421,19 @@ where
             write = handle.flags.write,
             "vfs.close"
         );
-        if handle.flags.write {
-            let _handle_guard = handle.lock_write().await;
-
+        // Keep a write handle's flush and retirement serialized so another
+        // close cannot retire it after this caller takes the dirty state.
+        let handle_guard = if handle.flags.write {
+            Some(handle.lock_write().await)
+        } else {
+            None
+        };
+        // A consuming FileGuard cannot retry a failed close. Save the I/O
+        // result and retire the handle even when flush or timestamps fail.
+        let flush_result: Result<(), VfsError> = async {
+            if !handle.flags.write {
+                return Ok(());
+            }
             let dirty_state = self.state.handles.take_write_dirty(fh);
             let flushed_pending = if dirty_state.dirty {
                 #[cfg(feature = "native-packed-base")]
@@ -6226,15 +6462,12 @@ where
             } else {
                 false
             };
-            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
-                && let Err(err) = self.update_mtime_ctime(handle.ino).await
-            {
-                if dirty_state.dirty {
-                    handle.mark_write_dirty();
-                }
-                return Err(err);
+            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending) {
+                self.update_mtime_ctime(handle.ino).await?;
             }
+            Ok(())
         }
+        .await;
 
         // Prevent us from TOC-TOU (time of check to time of use) error.
         // If we release the handle and remove the inode directly, there is
@@ -6242,7 +6475,12 @@ where
         // to be deleted mistakenly.
         let (release_writer, discard_unlinked) = match self.lock_inode(handle.ino) {
             Entry::Occupied(entry) => {
-                self.state.handles.release(fh);
+                // Only the closer that removes the registry entry owns teardown
+                // and the matching metadata close, even if both held its Arc.
+                self.state
+                    .handles
+                    .release(fh)
+                    .ok_or(VfsError::StaleNetworkFileHandle)?;
                 let release_writer =
                     handle.flags.write && !self.state.handles.has_write_handle(handle.ino);
                 let no_handles = self.state.handles.has_no_handle(handle.ino);
@@ -6255,11 +6493,12 @@ where
                 (release_writer, discard_unlinked)
             }
             Entry::Vacant(_) => {
-                // This is weird/impossible?
-                // It means the inode was deleted while we held a handle to it.
-                unreachable!("Try closing a file that has never been opened");
+                // Another close can retire the last handle after this caller
+                // acquired its Arc, removing the inode along with it.
+                return Err(VfsError::StaleNetworkFileHandle);
             }
         };
+        drop(handle_guard);
 
         if handle.has_reader() {
             self.state
@@ -6271,11 +6510,14 @@ where
         if discard_unlinked {
             self.discard_closed_unlinked_inode_state(handle.ino).await;
         } else if release_writer {
+            // The writer pool retains pending data and owns background drain;
+            // release marks it inactive without discarding failed dirty data.
             self.state.writer.release(handle.ino as u64).await;
         }
 
-        if discard_unlinked {
-            self.meta_record_close(handle.ino).await?;
+        let close_result = if discard_unlinked || flush_result.is_err() {
+            // Failed publication must not warm the open cache with final attrs.
+            self.meta_record_close(handle.ino).await
         } else {
             self.meta_record_close_with_attr(
                 handle.ino,
@@ -6284,11 +6526,11 @@ where
                 handle.flags.write,
                 handle.flags.append,
             )
-            .await?;
-        }
+            .await
+        };
 
         tracing::trace!(fh, ino = handle.ino, "vfs.close_done");
-        Ok(())
+        flush_result.and(close_result)
     }
 
     pub(crate) async fn flush_dirty_handle_snapshot(&self, fh: u64) -> Result<(), VfsError> {
@@ -6383,6 +6625,14 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn packed_owned_flush_and_sync_handle(&self, fh: u64) -> Result<i64, VfsError> {
         let handle = self.file_handle_required(fh)?;
+        self.flush_and_sync_file_handle(handle).await
+    }
+
+    async fn flush_and_sync_file_handle(
+        &self,
+        handle: Arc<FileHandle<S, M>>,
+    ) -> Result<i64, VfsError> {
+        let fh = handle.fh;
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
