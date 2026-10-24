@@ -31,8 +31,8 @@ struct Objects {
     puts: AtomicUsize,
     fail_put: AtomicUsize,
     pause_put: AtomicUsize,
-    heads: AtomicUsize,
-    pause_head: AtomicUsize,
+    gets: AtomicUsize,
+    pause_get: AtomicUsize,
     deletes: AtomicUsize,
     fail_delete: AtomicBool,
     entered: Notify,
@@ -46,8 +46,8 @@ impl Objects {
             puts: AtomicUsize::new(0),
             fail_put: AtomicUsize::new(0),
             pause_put: AtomicUsize::new(0),
-            heads: AtomicUsize::new(0),
-            pause_head: AtomicUsize::new(0),
+            gets: AtomicUsize::new(0),
+            pause_get: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
             fail_delete: AtomicBool::new(false),
             entered: Notify::new(),
@@ -104,14 +104,12 @@ impl ObjectBackend for Objects {
         offset: u64,
         length: u64,
     ) -> anyhow::Result<ObjectByteStream> {
-        self.inner
+        let number = self.gets.fetch_add(1, Ordering::SeqCst) + 1;
+        let result = self
+            .inner
             .get_object_range_stream(key, offset, length)
-            .await
-    }
-    async fn get_object_size_bounded(&self, key: &str) -> anyhow::Result<Option<u64>> {
-        let number = self.heads.fetch_add(1, Ordering::SeqCst) + 1;
-        let result = self.inner.get_object_size_bounded(key).await;
-        if self.pause_head.load(Ordering::SeqCst) == number {
+            .await;
+        if self.pause_get.load(Ordering::SeqCst) == number {
             let resumed = self.resume.notified();
             tokio::pin!(resumed);
             resumed.as_mut().enable();
@@ -119,6 +117,9 @@ impl ObjectBackend for Objects {
             resumed.await;
         }
         result
+    }
+    async fn get_object_size_bounded(&self, key: &str) -> anyhow::Result<Option<u64>> {
+        self.inner.get_object_size_bounded(key).await
     }
     async fn get_etag(&self, key: &str) -> anyhow::Result<String> {
         self.inner.get_etag(key).await
@@ -336,9 +337,9 @@ async fn exercise_batched_file_io<B: EntityBackend + 'static>(
         fixture.data.read(handle.clone(), 0, 24).await.unwrap(),
         original
     );
-    // Map/ownership rows are batched before transport; the final read retains
-    // the post-transport lease and exact-row fence without a transaction.
-    assert_eq!(fixture.backend.take_counts(), (3, 0, 0, 0));
+    // Slice identities known from publication should nominate ownership and
+    // authentication rows in the initial batch. Keep the post-transport fence.
+    assert_eq!(fixture.backend.take_counts(), (2, 0, 0, 0));
     fixture.data.fsync(handle.clone()).await.unwrap();
     assert_eq!(fixture.backend.take_counts(), (1, 1, 0, 0));
     assert!(
@@ -350,6 +351,15 @@ async fn exercise_batched_file_io<B: EntityBackend + 'static>(
             .is_empty()
     );
     assert_eq!(fixture.backend.take_counts(), (1, 0, 0, 0));
+    // A new reader must discover the identities once, then batch later reads.
+    let cold = EntityData::new(fixture.namespace.clone(), fixture.objects.clone(), 8)
+        .await
+        .unwrap();
+    fixture.backend.take_counts();
+    for reads in [3, 2] {
+        assert_eq!(cold.read(handle.clone(), 0, 24).await.unwrap(), original);
+        assert_eq!(fixture.backend.take_counts(), (reads, 0, 0, 0));
+    }
     let replacement = Bytes::from_static(b"ZYXWVUTSRQPONMLKJIHGFEDC");
     fixture
         .data
@@ -361,7 +371,13 @@ async fn exercise_batched_file_io<B: EntityBackend + 'static>(
         fixture.data.read(handle.clone(), 0, 24).await.unwrap(),
         replacement
     );
-    fixture.backend.take_counts();
+    assert_eq!(fixture.backend.take_counts(), (2, 0, 0, 0));
+    // Another reader's stale identities must never substitute cached values
+    // for the newly published maps, ownership, or object authentication rows.
+    for reads in [3, 2] {
+        assert_eq!(cold.read(handle.clone(), 0, 24).await.unwrap(), replacement);
+        assert_eq!(fixture.backend.take_counts(), (reads, 0, 0, 0));
+    }
     let resized = fixture.data.truncate(handle.clone(), 32).await.unwrap();
     assert_eq!((resized.size, resized.data_version), (32, 3));
     assert_eq!(fixture.backend.take_counts(), (1, 1, 0, 0));
@@ -534,6 +550,25 @@ async fn redis_batched_file_io_has_one_publication_and_preserves_bytes() {
     )
     .await;
     exercise_batched_file_io(&fixture).await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated RustFS via the entity data test harness"]
+async fn batched_upper_read_rechecks_lease_after_get() {
+    let fixture = fixture().await;
+    let handle = new_file(&fixture, b"fenced-read").await;
+    fixture
+        .data
+        .write(handle.clone(), 0, Bytes::from_static(b"payload"), false)
+        .await
+        .unwrap();
+    fixture.objects.pause_get.store(1, Ordering::SeqCst);
+    let data = fixture.data.clone();
+    let reading = tokio::spawn(async move { data.read(handle, 0, 7).await });
+    fixture.objects.entered().await;
+    fixture.backend.set_time(2_000_000).unwrap();
+    fixture.objects.resume.notify_one();
+    assert_eq!(reading.await.unwrap(), Err(EntityError::Fenced));
 }
 
 async fn exercise_fragmented_publication<B: EntityBackend + 'static>(
@@ -1055,7 +1090,7 @@ async fn fragmented_small_write_read_is_fenced_between_bounded_groups() {
     let (fixture, handle, expected) = fragmented_small_write_fixture(4 * 1024 * 1024).await;
     // The first half fits the metadata bound; stop the first object fetch in
     // the next group, after the first group's bytes have already been read.
-    fixture.objects.pause_head.store(751, Ordering::SeqCst);
+    fixture.objects.pause_get.store(751, Ordering::SeqCst);
     let data = fixture.data.clone();
     let mut reading = tokio::spawn(async move { data.read(handle, 0, expected.len()).await });
     tokio::select! {
@@ -1084,7 +1119,7 @@ async fn fragmented_small_write_read_retries_changed_version_between_groups() {
         1000,
     )
     .unwrap();
-    fixture.objects.pause_head.store(751, Ordering::SeqCst);
+    fixture.objects.pause_get.store(751, Ordering::SeqCst);
     let data = fixture.data.clone();
     let mut reading = tokio::spawn(async move { data.read(handle, 0, 1500).await });
     tokio::select! {
