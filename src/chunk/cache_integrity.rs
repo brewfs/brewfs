@@ -13,7 +13,9 @@ use std::ops::Range;
 /// `Full` preserves the current behavior: every cached block is wrapped with
 /// CRC32C framing and verified on load. `None` stores raw cache bytes and
 /// relies on atomic rename plus cache miss recovery if local cache data is
-/// corrupted.
+/// corrupted. Disk storage uses separate versioned namespaces for these modes
+/// so raw user data is never interpreted as CRC32C framing. Legacy entries in
+/// the shared cache directory are not reused, since their encoding is ambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheIntegrityMode {
     #[default]

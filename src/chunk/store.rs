@@ -3891,7 +3891,7 @@ mod tests {
             .store_to_disk(&cache_key, Bytes::from(block.clone()))
             .await?;
 
-        let cache_file = std::fs::read_dir(cache_dir.path())?
+        let cache_file = std::fs::read_dir(cache_dir.path().join("v2-crc32c"))?
             .filter_map(Result::ok)
             .find(|entry| entry.path().is_file())
             .expect("disk cache file should exist")

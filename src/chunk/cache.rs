@@ -403,7 +403,13 @@ impl DiskStorage {
         max_bytes: u64,
         integrity_mode: CacheIntegrityMode,
     ) -> anyhow::Result<Self> {
-        let base_dir = base_dir.as_ref().to_path_buf();
+        // The namespace determines the encoding, never the payload's prefix.
+        // Do not reuse the old shared directory: its files can be either raw
+        // bytes or CRC32C frames, with no way to distinguish them reliably.
+        let base_dir = base_dir.as_ref().join(match integrity_mode {
+            CacheIntegrityMode::Full => "v2-crc32c",
+            CacheIntegrityMode::None => "v2-raw",
+        });
         debug!(
             "Initializing disk storage at: {:?}, max_bytes: {}, integrity_mode: {:?}",
             base_dir, max_bytes, integrity_mode
@@ -886,7 +892,11 @@ impl DiskStorage {
             }
         };
 
-        // Decode with CRC32C verification (handles legacy unencoded files too)
+        if self.integrity_mode == CacheIntegrityMode::None {
+            return Ok(bytes::Bytes::from(raw));
+        }
+
+        // Only the CRC32C namespace contains framed cache entries.
         match super::cache_integrity::decode_bytes(raw) {
             Some(data) => Ok(data),
             None => {
@@ -952,6 +962,10 @@ impl DiskStorage {
         };
 
         let file_len = file.metadata().await?.len();
+
+        if self.integrity_mode == CacheIntegrityMode::None {
+            return Self::read_legacy_range(&mut file, file_len, offset, buf).await;
+        }
 
         let mut header = [0u8; super::cache_integrity::HEADER_LEN];
         let header_len = file.read(&mut header).await?;
@@ -2841,7 +2855,7 @@ mod tests {
         storage.store(etag, &test_data).await.unwrap();
 
         let filename = DiskStorage::key_to_filename(etag);
-        let filepath = temp_dir.path().join(filename);
+        let filepath = storage.base_dir.join(filename);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .open(&filepath)
@@ -3849,9 +3863,10 @@ mod tests {
     #[tokio::test]
     async fn test_disk_health_bypass_on_repeated_store_errors() {
         let temp_dir = tempdir().unwrap();
-        let not_dir = temp_dir.path().join("not-a-directory");
+        let storage = DiskStorage::new(temp_dir.path(), 0).await.unwrap();
+        let not_dir = storage.base_dir.clone();
+        fs::remove_dir(&not_dir).await.unwrap();
         fs::write(&not_dir, b"not a directory").await.unwrap();
-        let storage = DiskStorage::new(&not_dir, 0).await.unwrap();
 
         for i in 0..3 {
             storage
@@ -3871,9 +3886,10 @@ mod tests {
     async fn test_disk_health_recovers_through_health_wrappers() {
         for operation in ["store", "permit", "load", "range"] {
             let temp_dir = tempdir().unwrap();
-            let base = temp_dir.path().join("cache");
+            let storage = DiskStorage::new(temp_dir.path(), 0).await.unwrap();
+            let base = storage.base_dir.clone();
+            fs::remove_dir(&base).await.unwrap();
             fs::write(&base, b"not a directory").await.unwrap();
-            let storage = DiskStorage::new(&base, 0).await.unwrap();
             for i in 0..3 {
                 assert!(
                     storage
@@ -3954,9 +3970,10 @@ mod tests {
     #[tokio::test]
     async fn test_disk_health_failed_probe_restarts_cooldown() {
         let temp_dir = tempdir().unwrap();
-        let base = temp_dir.path().join("cache");
+        let storage = DiskStorage::new(temp_dir.path(), 0).await.unwrap();
+        let base = storage.base_dir.clone();
+        fs::remove_dir(&base).await.unwrap();
         fs::write(&base, b"not a directory").await.unwrap();
-        let storage = DiskStorage::new(&base, 0).await.unwrap();
         for i in 0..3 {
             storage
                 .store_with_health(&format!("failed-{i}"), b"data")
@@ -3993,15 +4010,16 @@ mod tests {
     #[tokio::test]
     async fn test_chunks_cache_insert_swallows_disk_cache_errors() {
         let temp_dir = tempdir().unwrap();
-        let not_dir = temp_dir.path().join("not-a-directory");
-        fs::write(&not_dir, b"not a directory").await.unwrap();
         let cache = ChunksCache::new_with_config(ChunksCacheConfig::with_budgets(
             16 * 1024 * 1024,
             16 * 1024 * 1024,
-            not_dir,
+            temp_dir.path().to_path_buf(),
         ))
         .await
         .unwrap();
+        let not_dir = &cache.disk_storage.base_dir;
+        fs::remove_dir(not_dir).await.unwrap();
+        fs::write(not_dir, b"not a directory").await.unwrap();
 
         for i in 0..3 {
             cache
@@ -4237,7 +4255,7 @@ mod tests {
         storage.store("raw-cache-entry", b"abcdef").await.unwrap();
 
         let filename = DiskStorage::key_to_filename("raw-cache-entry");
-        let raw = tokio::fs::read(temp_dir.path().join(filename))
+        let raw = tokio::fs::read(storage.base_dir.join(filename))
             .await
             .unwrap();
         assert_eq!(raw, b"abcdef");
