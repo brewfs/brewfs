@@ -2524,17 +2524,25 @@ mod tests {
         let mut small_buf = vec![0u8; 512 * 1024];
         store.read_range((42, 3), 0, &mut small_buf).await?;
 
+        // Account for this read's asynchronous prefetch before resetting the
+        // counters; otherwise its completion can be charged to the cache hit.
+        for _ in 0..200 {
+            if backend.get_stats().get_object_calls >= 1 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
         let stats = backend.get_stats();
-        assert!(
-            stats.get_object_calls <= 1,
-            "Small read at block start should not issue more than one background full read"
+        assert_eq!(
+            stats.get_object_calls, 1,
+            "Small read at block start should issue one background full read"
         );
         assert_eq!(
             stats.get_object_range_calls, 2,
             "A cold legacy block probes the versioned namespace then fetches one range"
         );
 
-        // Same read again should hit the page cache.
+        // Same read again should use cached data or the existing prefetch.
         backend.reset_stats();
         let mut small_buf2 = vec![0u8; 512 * 1024];
         store.read_range((42, 3), 0, &mut small_buf2).await?;
@@ -2577,15 +2585,15 @@ mod tests {
             "Non-zero 512KB read should probe the format then fetch one contiguous range"
         );
         for _ in 0..200 {
-            if backend.get_stats().get_object_calls >= 2 {
+            if backend.get_stats().get_object_calls >= 1 {
                 break;
             }
             sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(
             backend.get_stats().get_object_calls,
-            2,
-            "Each cold range miss should trigger one background full-block prefetch"
+            1,
+            "The second cold range miss should trigger one background full-block prefetch"
         );
 
         let disabled_backend = MockBackend::new();

@@ -280,3 +280,122 @@ async fn namespace_permission_batches_reauthorize_after_commit_conflict() {
     assert_eq!(f.meta.lookup(inodes[7], "raced").await.unwrap(), None);
     shutdown(&f).await;
 }
+
+#[tokio::test]
+async fn namespace_permission_batches_deny_each_ancestor() {
+    for cached in [false, true] {
+        let mut f = fixture_with_cache(64 << 20).await;
+        if cached {
+            f.meta = f
+                .meta
+                .with_upper_row_cache(Duration::from_secs(60))
+                .with_lease_bound_row_cache(Arc::new(LeaseValidity::new(
+                    std::time::Instant::now(),
+                    Duration::from_secs(30),
+                )));
+        }
+        let inodes = directories(&f).await;
+        let parent = inodes[7];
+        let source =
+            scope_namespace_actor(Some(actor()), f.meta.create_file(parent, "source".into()))
+                .await
+                .unwrap();
+        // Revoke each position, including both members of every batch and root.
+        // With the cache enabled, leave unaffected permission rows warm.
+        for ino in std::iter::once(f.meta.root_ino()).chain(inodes.iter().copied()) {
+            chmod(&f, ino, 0o700).await;
+            denied(
+                scope_namespace_actor(Some(actor()), f.meta.create_file(parent, "denied".into()))
+                    .await
+                    .unwrap_err(),
+            );
+            denied(
+                scope_namespace_actor(Some(actor()), f.meta.mkdir(parent, "denied-dir".into()))
+                    .await
+                    .unwrap_err(),
+            );
+            denied(
+                scope_namespace_actor(Some(actor()), f.meta.unlink(parent, "source"))
+                    .await
+                    .unwrap_err(),
+            );
+            denied(
+                scope_namespace_actor(
+                    Some(actor()),
+                    f.meta.rename(parent, "source", parent, "renamed".into()),
+                )
+                .await
+                .unwrap_err(),
+            );
+            assert_eq!(f.meta.lookup(parent, "source").await.unwrap(), Some(source));
+            for name in ["denied", "denied-dir", "renamed"] {
+                assert_eq!(f.meta.lookup(parent, name).await.unwrap(), None);
+            }
+            chmod(&f, ino, 0o777).await;
+        }
+        shutdown(&f).await;
+    }
+}
+
+#[tokio::test]
+async fn namespace_permission_batches_handle_root_short_and_missing_paths() {
+    let f = fixture_with_cache(64 << 20).await;
+    let root = f.meta.root_ino();
+    chmod(&f, root, 0o777).await;
+    let shallow = directory(&f, root, "shallow").await;
+    let parent = directory(&f, shallow, "parent").await;
+    let control = &f.control.group_commit;
+    for (ino, expected_reads) in [(root, 1), (shallow, 2), (parent, 2)] {
+        f.meta.invalidate_upper_rows();
+        control.reads.store(0, Ordering::SeqCst);
+        control.track.store(true, Ordering::SeqCst);
+        scope_namespace_actor(Some(actor()), f.meta.create_file(ino, "probe".into()))
+            .await
+            .unwrap();
+        control.track.store(false, Ordering::SeqCst);
+        assert_eq!(control.reads.load(Ordering::SeqCst), expected_reads);
+    }
+
+    let missing = directory(&f, root, "removed").await;
+    f.meta.rmdir(root, "removed").await.unwrap();
+    let error = scope_namespace_actor(
+        Some(actor()),
+        f.meta.create_file(missing, "missing-parent".into()),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, MetaError::NotFound(ino) if ino == missing));
+
+    // A missing authoritative ancestor must fail even if root was read ahead.
+    let snapshot = f
+        .meta
+        .permission_snapshot(vec![shallow], None)
+        .await
+        .unwrap();
+    let mut inode = crate::workspace_overlay::resolver::resolve_inode(
+        &snapshot.layers,
+        &snapshot.inodes,
+        shallow,
+    )
+    .unwrap()
+    .unwrap()
+    .inode;
+    inode.parent_hint = Some(missing);
+    f.meta
+        .mutate_inode(&snapshot.layers, inode, Vec::new())
+        .await
+        .unwrap();
+    f.meta.directory_hints.invalidate_all();
+    let error = scope_namespace_actor(
+        Some(actor()),
+        f.meta.create_file(parent, "missing-ancestor".into()),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, MetaError::NotFound(ino) if ino == missing));
+    assert_eq!(
+        f.meta.lookup(parent, "missing-ancestor").await.unwrap(),
+        None
+    );
+    shutdown(&f).await;
+}

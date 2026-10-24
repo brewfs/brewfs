@@ -1281,8 +1281,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     ) -> Result<PermissionInode, MetaError> {
         let root = self.root_ino();
         if let Some(slot) = read_ahead.as_deref_mut() {
-            if slot.as_ref().is_some_and(|next| next.ino == ino) {
-                return slot.take().expect("matching read-ahead").permission;
+            if let Some(next) = slot.take_if(|next| next.ino == ino) {
+                return next.permission;
             }
             // A rename may invalidate the predicted next parent. Root is the
             // one known endpoint and can be retained until the walk reaches it.
