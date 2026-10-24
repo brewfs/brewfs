@@ -301,9 +301,9 @@ where
 
     async fn recover_locked(&self, ino: i64) -> Result<()> {
         let recovery = Recovery::new(self.namespace.backend.clone(), self.namespace.keys.clone());
-        // The reference scanner admits at most 4096 chunk rows. One additional
-        // step clears the intent after the final boundary/tail row.
-        for _ in 0..4098 {
+        // Drain until the durable intent clears. Each committed step advances
+        // cleanup; contention retries remain bounded below.
+        loop {
             let mut completed = None;
             for _ in 0..MAX_RETRIES {
                 let authority = self.namespace.authority().await?;
@@ -321,7 +321,6 @@ where
                 None => return Err(EntityError::Busy),
             }
         }
-        Err(EntityError::Busy)
     }
 
     pub async fn attr(self: &Arc<Self>, handle: Arc<EntityHandle>) -> Result<EntityInode> {

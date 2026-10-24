@@ -1318,6 +1318,17 @@ impl EntityBackend for PausingBackend {
         }
         Ok(inode)
     }
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        let keys = self.inner.scan_keys_page(prefix, after, limit).await?;
+        self.after_read(&[prefix.to_vec()]).await;
+        Ok(keys)
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let rows = self.inner.scan_prefix(prefix, limit).await?;
         self.after_read(&[prefix.to_vec()]).await;

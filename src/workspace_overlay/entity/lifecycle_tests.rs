@@ -268,6 +268,15 @@ impl EntityBackend for CensusBackend {
         self.inner.commit(authority, plan).await
     }
 
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.inner.scan_prefix(prefix, limit).await
     }
@@ -732,6 +741,15 @@ impl EntityBackend for LostReplyBackend {
         }
         Ok(ids)
     }
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+
     async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.inner.scan_prefix(prefix, limit).await
     }

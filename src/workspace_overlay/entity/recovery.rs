@@ -188,14 +188,11 @@ impl<B: EntityBackend> Recovery<B> {
                 "truncate cut or generation changed during cleanup".into(),
             ));
         }
-        let chunks = self.chunks(ino).await?;
         let first = intent.cut_size / intent.chunk_size;
+        let chunks = self.first_chunks(ino, first).await?;
         let suffix = intent.cut_size % intent.chunk_size;
         let mut candidate = None;
         for (index, key, bytes) in chunks {
-            if index < first {
-                continue;
-            }
             let map: ChunkMap = decode(&bytes)?;
             map.validate()?;
             if map.chunk_size != intent.chunk_size || index.checked_mul(intent.chunk_size).is_none()
@@ -275,8 +272,8 @@ impl<B: EntityBackend> Recovery<B> {
 
     /// One atomic orphan cleanup step after truncate recovery and quiescence.
     /// Chunk deletion, membership changes and the durable cursor share a commit;
-    /// repeated recovery cannot release an owner twice. Prefix scans are bounded
-    /// to 4096 rows, as for truncate cleanup. Lower data is never upper-owned.
+    /// repeated recovery cannot release an owner twice. Chunk discovery pages
+    /// keys without imposing a file-wide row limit. Lower data is never upper-owned.
     async fn orphan_step(&self, authority: &TransactionAuthority, ino: i64) -> Result<bool> {
         let keys = vec![
             self.keys.orphan(ino),
@@ -308,7 +305,7 @@ impl<B: EntityBackend> Recovery<B> {
         if inode.ino != ino || inode.nlink != 0 {
             return Err(EntityError::Corrupt("orphan still linked".into()));
         }
-        let chunks = self.chunks(ino).await?;
+        let chunks = self.first_chunks(ino, 0).await?;
         if chunks
             .iter()
             .any(|(index, _, _)| *index < orphan.cleanup_chunk)
@@ -370,21 +367,56 @@ impl<B: EntityBackend> Recovery<B> {
         Ok(true)
     }
 
-    async fn chunks(&self, ino: i64) -> Result<Vec<(u64, Vec<u8>, Vec<u8>)>> {
+    /// Keep numeric cursor semantics for existing intents and decimal keys.
+    /// Two maps suffice: an already-clipped boundary and the next stale map.
+    /// Page through keys while retaining only the two smallest numeric indexes;
+    /// loading their values afterwards also bounds aggregate metadata bytes.
+    async fn first_chunks(&self, ino: i64, first: u64) -> Result<Vec<(u64, Vec<u8>, Vec<u8>)>> {
+        const PAGE_KEYS: usize = 128;
         let prefix = self.keys.chunk_prefix(ino);
-        let mut chunks = Vec::new();
-        for (key, value) in self.backend.scan_prefix(&prefix, 4096).await? {
-            let index = std::str::from_utf8(&key[prefix.len()..])
-                .ok()
-                .and_then(|text| text.parse::<u64>().ok())
-                .ok_or_else(|| EntityError::Corrupt("invalid chunk index".into()))?;
-            if key != self.keys.chunk(ino, index) {
-                return Err(EntityError::Corrupt("noncanonical chunk index".into()));
+        let mut after: Option<Vec<u8>> = None;
+        let mut selected = Vec::new();
+        loop {
+            let page = self
+                .backend
+                .scan_keys_page(&prefix, after.as_deref(), PAGE_KEYS)
+                .await?;
+            let complete = page.len() < PAGE_KEYS;
+            let Some(last) = page.last().cloned() else {
+                break;
+            };
+            after = Some(last);
+            for key in page {
+                let index = std::str::from_utf8(&key[prefix.len()..])
+                    .ok()
+                    .and_then(|text| text.parse::<u64>().ok())
+                    .ok_or_else(|| EntityError::Corrupt("invalid chunk index".into()))?;
+                if key != self.keys.chunk(ino, index) {
+                    return Err(EntityError::Corrupt("noncanonical chunk index".into()));
+                }
+                if index >= first {
+                    selected.push((index, key));
+                    selected.sort_unstable_by_key(|(index, _)| *index);
+                    selected.truncate(2);
+                }
             }
-            chunks.push((index, key, value));
+            if complete {
+                break;
+            }
         }
-        chunks.sort_by_key(|(index, _, _)| *index);
-        Ok(chunks)
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys = selected
+            .iter()
+            .map(|(_, key)| key.clone())
+            .collect::<Vec<_>>();
+        let snapshot = self.backend.read(&keys).await?;
+        selected
+            .into_iter()
+            .zip(snapshot.rows)
+            .map(|((index, key), value)| Ok((index, key, value.ok_or(EntityError::Conflict)?)))
+            .collect()
     }
 
     /// Retire one chunk, sweep a bounded metadata batch, or return a durable
