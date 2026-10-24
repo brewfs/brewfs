@@ -15,11 +15,16 @@ const MAX_KEY_BYTES: usize = 2048;
 const MAX_VALUE_BYTES: usize = 8192;
 const MAX_HEIGHT: u8 = 16;
 
+#[cfg(test)]
+tokio::task_local! {
+    static GROUP_WEIGHT_DECODES: std::cell::Cell<usize>;
+}
+
 /// Immutable record view. Its page keeps the actual decoded allocation charged
 /// even after cache eviction, reader close, and cloning this view.
 #[derive(Clone, Debug)]
 pub struct V3IndexRecordHandle {
-    page: Arc<V3Owned<V3IndexPage>>,
+    page: Arc<V3Owned<V3DecodedIndexPage>>,
     ordinal: usize,
 }
 impl std::ops::Deref for V3IndexRecordHandle {
@@ -119,6 +124,8 @@ impl V3IndexRecord {
                 "IP06 internal subtree has zero weight".into(),
             )),
             V3IndexValue::Leaf(value) if kind == V3ObjectKind::GroupIndex => {
+                #[cfg(test)]
+                let _ = GROUP_WEIGHT_DECODES.try_with(|count| count.set(count.get() + 1));
                 let group = super::V3GroupRef::decode_value(value)?;
                 let mut first = group.parent_dir_key.to_vec();
                 first.extend_from_slice(&group.first_name);
@@ -141,6 +148,23 @@ pub struct V3IndexPage {
     pub kind: V3ObjectKind,
     pub height: u8,
     pub records: Vec<V3IndexRecord>,
+}
+
+/// The reader owns immutable authenticated pages. Keep their validated weight
+/// here, not on the public mutable page used by builders, so every parent edge
+/// can check its claim without decoding the child's records again.
+#[derive(Debug)]
+struct V3DecodedIndexPage {
+    page: V3IndexPage,
+    total_weight: u64,
+}
+
+impl std::ops::Deref for V3DecodedIndexPage {
+    type Target = V3IndexPage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.page
+    }
 }
 
 fn index_kind(kind: V3ObjectKind) -> bool {
@@ -193,6 +217,10 @@ impl V3IndexPage {
     }
 
     pub fn decode(reference: &V3ObjectRef, bytes: &[u8]) -> PackedResult<Self> {
+        Self::decode_validated(reference, bytes).map(|decoded| decoded.page)
+    }
+
+    fn decode_validated(reference: &V3ObjectRef, bytes: &[u8]) -> PackedResult<V3DecodedIndexPage> {
         if !index_kind(reference.kind) {
             return Err(PackedWireError::Invalid(
                 "wire 005 index ref has a non-index kind".into(),
@@ -284,11 +312,11 @@ impl V3IndexPage {
             height,
             records,
         };
-        page.validate()?;
-        Ok(page)
+        let total_weight = page.validate()?;
+        Ok(V3DecodedIndexPage { page, total_weight })
     }
 
-    fn validate(&self) -> PackedResult<()> {
+    fn validate(&self) -> PackedResult<u64> {
         if !index_kind(self.kind)
             || self.height > MAX_HEIGHT
             || self.records.len() > MAX_RECORDS
@@ -343,8 +371,7 @@ impl V3IndexPage {
             }
             previous = Some(&record.last_key);
         }
-        self.total_weight()?;
-        Ok(())
+        self.total_weight()
     }
 
     pub fn total_weight(&self) -> PackedResult<u64> {
@@ -375,7 +402,7 @@ impl V3IndexPage {
     fn weight(&self) -> u32 {
         // Arc header, owned permit, cache identity and page wrapper are kept
         // with the backing Vecs even after the cache drops its reference.
-        let bytes = std::mem::size_of::<Self>()
+        let bytes = std::mem::size_of::<V3DecodedIndexPage>()
             + 256
             + self
                 .records
@@ -444,12 +471,12 @@ impl Drop for V3IndexCacheLease {
 /// A cursor receives only the inner page Arc. Its mount Metadata permit remains
 /// alive after cache eviction; it does not pin this separate retention charge.
 struct V3RetainedIndexPage {
-    page: Arc<V3Owned<V3IndexPage>>,
+    page: Arc<V3Owned<V3DecodedIndexPage>>,
     _cache_lease: V3IndexCacheLease,
 }
 
 impl std::ops::Deref for V3RetainedIndexPage {
-    type Target = V3Owned<V3IndexPage>;
+    type Target = V3Owned<V3DecodedIndexPage>;
 
     fn deref(&self) -> &Self::Target {
         &self.page
@@ -461,7 +488,7 @@ impl std::ops::Deref for V3RetainedIndexPage {
 /// it is returned as success to callers, never as a wire/backend failure.
 enum V3IndexFetchError {
     Wire(PackedWireError),
-    Unretained(Arc<V3Owned<V3IndexPage>>),
+    Unretained(Arc<V3Owned<V3DecodedIndexPage>>),
 }
 
 pub struct V3IndexReader<B: ObjectBackend + Clone> {
@@ -530,7 +557,7 @@ struct ChildExpectation {
     weight: u64,
 }
 impl ChildExpectation {
-    fn validate(&self, child: &V3IndexPage) -> PackedResult<()> {
+    fn validate(&self, child: &V3DecodedIndexPage) -> PackedResult<()> {
         validate_child_claim(
             IndexPageClaim {
                 kind: self.kind,
@@ -542,7 +569,7 @@ impl ChildExpectation {
                 kind: child.kind,
                 height: child.height,
                 bounds: child.bounds(),
-                weight: child.total_weight()?,
+                weight: child.total_weight,
             },
         )
     }
@@ -577,7 +604,7 @@ pub(crate) struct V3WeightedCursor {
     root_digest: [u8; 32],
     lower: Vec<u8>,
     upper: Vec<u8>,
-    stack: Vec<(Arc<V3Owned<V3IndexPage>>, usize)>,
+    stack: Vec<(Arc<V3Owned<V3DecodedIndexPage>>, usize)>,
     record_offset: u64,
     _permit: super::V3OwnedPermit,
 }
@@ -656,7 +683,10 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         }
     }
 
-    async fn load(&self, reference: &V3ObjectRef) -> PackedResult<Arc<V3Owned<V3IndexPage>>> {
+    async fn load(
+        &self,
+        reference: &V3ObjectRef,
+    ) -> PackedResult<Arc<V3Owned<V3DecodedIndexPage>>> {
         self.load_expected(reference, None).await
     }
 
@@ -664,7 +694,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         &self,
         reference: &V3ObjectRef,
         expected: Option<ChildExpectation>,
-    ) -> PackedResult<Arc<V3Owned<V3IndexPage>>> {
+    ) -> PackedResult<Arc<V3Owned<V3DecodedIndexPage>>> {
         self.ensure_open().await?;
         // Cache hits and followers are mount work too. Admit before either
         // Moka operation or cloning the authenticated reference into a fetch
@@ -777,7 +807,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         reference: &V3ObjectRef,
         budget: &Arc<V3MountBudget>,
         expected: Option<ChildExpectation>,
-    ) -> PackedResult<Arc<V3Owned<V3IndexPage>>> {
+    ) -> PackedResult<Arc<V3Owned<V3DecodedIndexPage>>> {
         let mut permit = budget.admit(&[
             (
                 V3BudgetPool::Stored,
@@ -789,7 +819,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             (V3BudgetPool::Control, 2048),
         ])?;
         super::read_v3_page_validated(client, reference, V3_INDEX_BODY_LIMIT, |bytes| {
-            let page = V3IndexPage::decode(reference, &bytes)?;
+            let page = V3IndexPage::decode_validated(reference, &bytes)?;
             if let Some(expected) = &expected {
                 expected.validate(&page)?;
             }
@@ -856,7 +886,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         &self,
         parent: &V3IndexPage,
         record: &V3IndexRecord,
-    ) -> PackedResult<Arc<V3Owned<V3IndexPage>>> {
+    ) -> PackedResult<Arc<V3Owned<V3DecodedIndexPage>>> {
         let V3IndexValue::Child {
             reference,
             subtree_weight,
@@ -894,7 +924,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
     }
 
     pub async fn total_weight(&self, root: &V3ObjectRef) -> PackedResult<u64> {
-        self.load(root).await?.total_weight()
+        Ok(self.load(root).await?.total_weight)
     }
 
     /// Authenticate only the rightmost IP06 path. No namespace scan, caller
@@ -946,7 +976,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
 
     async fn rank_lower_bound(
         &self,
-        mut page: Arc<V3Owned<V3IndexPage>>,
+        mut page: Arc<V3Owned<V3DecodedIndexPage>>,
         key: &[u8],
     ) -> PackedResult<u64> {
         let mut rank = 0u64;
@@ -1060,7 +1090,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             _permit: permit,
         };
         let root_page = self.load(root).await?;
-        if root_page.total_weight()? != expected_total {
+        if root_page.total_weight != expected_total {
             return Err(PackedWireError::Invalid(
                 "IP06 root weight disagrees with manifest".into(),
             ));
@@ -1210,7 +1240,8 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         }
         let _stack = self.budget.admit(&[(
             V3BudgetPool::Control,
-            ((MAX_HEIGHT as usize + 1) * std::mem::size_of::<(Arc<V3Owned<V3IndexPage>>, usize)>())
+            ((MAX_HEIGHT as usize + 1)
+                * std::mem::size_of::<(Arc<V3Owned<V3DecodedIndexPage>>, usize)>())
                 as u64,
         )])?;
         let mut found = V3IndexRows::new(&self.budget, limit)?;

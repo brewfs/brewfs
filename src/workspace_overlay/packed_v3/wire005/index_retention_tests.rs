@@ -104,6 +104,168 @@ async fn visible_page_owner_charge(
     charge
 }
 
+async fn group_tree(backend: &CountingBackend, entries_per_group: u32) -> V3ObjectRef {
+    let parent = [1; 32];
+    let leaf = V3IndexPage {
+        kind: V3ObjectKind::GroupIndex,
+        height: 0,
+        records: (0..1024)
+            .map(|ordinal| {
+                let name = format!("g{ordinal:04}").into_bytes();
+                let mut key = parent.to_vec();
+                key.extend_from_slice(&name);
+                let mut last_name = name.clone();
+                if entries_per_group > 1 {
+                    last_name.push(b'z');
+                }
+                let mut last_key = parent.to_vec();
+                last_key.extend_from_slice(&last_name);
+                let group = super::super::V3GroupRef {
+                    group_id: ordinal,
+                    container_ordinal: 0,
+                    parent_dir_key: parent,
+                    first_name: name,
+                    last_name,
+                    meta_offset: V3_HEADER_LEN as u64,
+                    meta_stored_len: 1,
+                    meta_raw_len: 1,
+                    meta_codec: crate::workspace_overlay::packed_v3::PackedCodec::Raw,
+                    meta_digest: [1; 32],
+                    entry_count: entries_per_group,
+                    first_frame: 0,
+                    frame_count: 1,
+                };
+                V3IndexRecord {
+                    first_key: key,
+                    last_key,
+                    value: V3IndexValue::Leaf(group.encode_value().unwrap()),
+                }
+            })
+            .collect(),
+    };
+    let bytes = leaf.encode().unwrap();
+    let reference = V3ObjectRef::from_bytes("groups/leaf".into(), leaf.kind, &bytes).unwrap();
+    backend.put_object(&reference.key, &bytes).await.unwrap();
+    let root = V3IndexPage {
+        kind: leaf.kind,
+        height: 1,
+        records: vec![V3IndexRecord {
+            first_key: leaf.records.first().unwrap().first_key.clone(),
+            last_key: leaf.records.last().unwrap().last_key.clone(),
+            value: V3IndexValue::Child {
+                reference,
+                subtree_weight: 1024 * u64::from(entries_per_group),
+            },
+        }],
+    };
+    let bytes = root.encode().unwrap();
+    let reference = V3ObjectRef::from_bytes("groups/root".into(), root.kind, &bytes).unwrap();
+    backend.put_object(&reference.key, &bytes).await.unwrap();
+    reference
+}
+
+#[tokio::test]
+async fn cached_group_descent_does_not_decode_unselected_records() {
+    GROUP_WEIGHT_DECODES
+        .scope(std::cell::Cell::new(0), async {
+            let backend = CountingBackend::default();
+            backend.open();
+            let root = group_tree(&backend, 1).await;
+            let reader = V3IndexReader::new(ObjectClient::new(backend.clone()), 4 << 20);
+            let mut key = vec![1; 32];
+            key.extend_from_slice(b"g0500");
+            let selected = reader.lookup(&root, &key).await.unwrap().unwrap();
+            assert_eq!(backend.range_calls.load(Ordering::SeqCst), 2);
+            GROUP_WEIGHT_DECODES.with(|count| count.set(0));
+            for _ in 0..100 {
+                let found = reader.lookup(&root, &key).await.unwrap().unwrap();
+                assert_eq!(found, selected);
+            }
+            let decodes = GROUP_WEIGHT_DECODES.with(|count| count.get());
+            let reads = backend.range_calls.load(Ordering::SeqCst) - 2;
+            println!(
+                "100 cached descents: group weight decodes={decodes}, backend range reads={reads}"
+            );
+            assert_eq!(reads, 0, "the measured descents must all hit the cache");
+            assert_eq!(
+                decodes, 0,
+                "cached descents must reuse the validated weight"
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn cached_group_child_still_checks_every_parent_claim() {
+    let backend = CountingBackend::default();
+    backend.open();
+    let root = group_tree(&backend, 1).await;
+    let reader = V3IndexReader::new(ObjectClient::new(backend.clone()), 4 << 20);
+    let mut key = vec![1; 32];
+    key.extend_from_slice(b"g0500");
+    reader.lookup(&root, &key).await.unwrap().unwrap();
+    let bytes = backend.get_object(&root.key).await.unwrap().unwrap();
+    let parent = V3IndexPage::decode(&root, &bytes).unwrap();
+    let record = &parent.records[0];
+    let V3IndexValue::Child { reference, .. } = &record.value else {
+        unreachable!()
+    };
+    let expected = ChildExpectation {
+        kind: root.kind,
+        height: 0,
+        first: record.first_key.clone(),
+        last: record.last_key.clone(),
+        weight: 1024,
+    };
+    for field in 0..5 {
+        let mut wrong = expected.clone();
+        match field {
+            0 => wrong.kind = V3ObjectKind::InodeIndex,
+            1 => wrong.height = 1,
+            2 => wrong.first.push(0),
+            3 => wrong.last.push(0),
+            4 => wrong.weight += 1,
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            reader.load_expected(reference, Some(wrong)).await,
+            Err(PackedWireError::Invalid(_))
+        ));
+    }
+    reader
+        .load_expected(reference, Some(expected))
+        .await
+        .unwrap();
+    assert_eq!(backend.range_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn cached_group_weight_tracks_new_digest_and_cache_invalidation() {
+    let backend = CountingBackend::default();
+    backend.open();
+    let old_root = group_tree(&backend, 1).await;
+    let reader = V3IndexReader::new(ObjectClient::new(backend.clone()), 4 << 20);
+    let mut key = vec![1; 32];
+    key.extend_from_slice(b"g0500");
+    reader.lookup(&old_root, &key).await.unwrap().unwrap();
+    assert_eq!(reader.total_weight(&old_root).await.unwrap(), 1024);
+
+    // Even reuse of an object key cannot reuse an old summary after a new
+    // authenticated root is published: cache identity includes its digest.
+    let new_root = group_tree(&backend, 2).await;
+    assert_eq!(new_root.key, old_root.key);
+    assert_ne!(new_root.digest, old_root.digest);
+    for expected_reads in [4, 6] {
+        let value = reader.lookup(&new_root, &key).await.unwrap().unwrap();
+        let group = super::super::V3GroupRef::decode_value(&value).unwrap();
+        assert_eq!(group.entry_count, 2);
+        assert_eq!(reader.total_weight(&new_root).await.unwrap(), 2048);
+        assert_eq!(backend.range_calls.load(Ordering::SeqCst), expected_reads);
+        reader.pages.invalidate_all();
+        reader.pages.run_pending_tasks().await;
+    }
+}
+
 #[tokio::test]
 async fn existing_reader_never_publishes_an_oversized_page_to_cache() {
     let backend = CountingBackend::default();
