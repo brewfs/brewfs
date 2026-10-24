@@ -9,11 +9,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -183,14 +185,32 @@ impl From<VolumeIdError> for CsiError {
 
 /// Kernel identity of a mount. Bind mounts share the device, root, filesystem
 /// type and source, but have independent read-only flags and mount IDs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountInfo {
+    /// Identifies this particular mount in the current namespace. It is not
+    /// persisted: a plugin restart may enter a different mount namespace.
+    #[serde(skip)]
+    pub mount_id: u64,
+    /// Keep the mount alive so Linux cannot recycle its ID before unbind's
+    /// final validation. Persisted state contains filesystem identity only.
+    #[serde(skip)]
+    pin: Option<Arc<File>>,
     pub device: String,
     pub root: String,
     pub fs_type: String,
     pub source: String,
     pub read_only: bool,
 }
+
+impl PartialEq for MountInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.mount_id == other.mount_id
+            && self.same_filesystem_root(other)
+            && self.read_only == other.read_only
+    }
+}
+
+impl Eq for MountInfo {}
 
 impl MountInfo {
     fn same_filesystem_root(&self, other: &Self) -> bool {
@@ -218,7 +238,8 @@ pub trait MountOps: Send + Sync + 'static {
     fn process_alive(&self, pid: u32) -> io::Result<bool>;
     fn start_brewfs(&self, spec: &MountSpec, target: &Path) -> io::Result<u32>;
     fn bind(&self, source: &Path, target: &Path, read_only: bool) -> io::Result<()>;
-    fn unbind(&self, target: &Path) -> io::Result<()>;
+    /// Refuse a replacement of the inspected mount at the unmount boundary.
+    fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()>;
     fn unmount_brewfs(&self, target: &Path) -> io::Result<()>;
 }
 
@@ -243,8 +264,8 @@ impl<T: MountOps> MountOps for Arc<T> {
         (**self).bind(source, target, read_only)
     }
 
-    fn unbind(&self, target: &Path) -> io::Result<()> {
-        (**self).unbind(target)
+    fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()> {
+        (**self).unbind(target, expected)
     }
 
     fn unmount_brewfs(&self, target: &Path) -> io::Result<()> {
@@ -262,13 +283,7 @@ impl MountOps for SystemMountOps {
     }
 
     fn inspect_mount(&self, path: &Path) -> io::Result<Option<MountInfo>> {
-        let mut options = OpenOptions::new();
-        options.read(true);
-        // Inspect the path without opening the FUSE directory (which may be
-        // disconnected), or blocking if an unexpected target is a FIFO.
-        #[cfg(target_os = "linux")]
-        options.custom_flags(libc::O_PATH);
-        let target = match options.open(path) {
+        let target = match open_path(path) {
             Ok(target) => target,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -285,11 +300,15 @@ impl MountOps for SystemMountOps {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "missing mount ID in fdinfo")
             })?;
-        mount_at(
+        let mount = mount_at(
             &fs::read_to_string("/proc/self/mountinfo")?,
             &path,
             mount_id,
-        )
+        )?;
+        Ok(mount.map(|mut mount| {
+            mount.pin = Some(Arc::new(target));
+            mount
+        }))
     }
 
     fn process_alive(&self, pid: u32) -> io::Result<bool> {
@@ -362,18 +381,73 @@ impl MountOps for SystemMountOps {
         Ok(())
     }
 
-    fn unbind(&self, target: &Path) -> io::Result<()> {
-        run_command(Command::new("umount").arg(target))?;
-        match fs::remove_dir(target) {
+    #[cfg(target_os = "linux")]
+    fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()> {
+        if expected.pin.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unmount requires a retained mount observation",
+            ));
+        }
+        let target_fd = open_path(target)?;
+        let resolved = fs::read_link(format!("/proc/self/fd/{}", target_fd.as_raw_fd()))?;
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| io::Error::other("target has no parent"))?;
+        let name = resolved
+            .file_name()
+            .ok_or_else(|| io::Error::other("cannot unbind the namespace root"))?;
+        let parent_fd = open_path(parent)?;
+        let pinned = PathBuf::from(format!("/proc/self/fd/{}", parent_fd.as_raw_fd())).join(name);
+        let syscall_path = CString::new(pinned.as_os_str().as_bytes())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        // Keeping an fd on the mount itself makes ordinary umount return
+        // EBUSY. A proc-fd path to it also follows a later overmount, so it is
+        // not an atomic unmount-by-handle API. Pin the parent instead.
+        drop(target_fd);
+        if self.inspect_mount(&pinned)?.as_ref() != Some(&expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "target mount changed before unmount",
+            ));
+        }
+        // This is the last-moment revalidation fallback: Linux umount2 can
+        // still race an external overmount/rename after the check above.
+        // UMOUNT_NOFOLLOW rejects a final symlink swap, and the retained
+        // parent fd avoids resolving the caller's ancestor path again.
+        // Do not use MNT_DETACH: it could detach foreign child mounts too.
+        drop(expected);
+        // SAFETY: syscall_path is NUL-terminated and parent_fd stays open.
+        if unsafe { libc::umount2(syscall_path.as_ptr(), libc::UMOUNT_NOFOLLOW) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        match fs::remove_dir(&pinned) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn unbind(&self, _target: &Path, _expected: MountInfo) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "verified unmount requires Linux",
+        ))
+    }
+
     fn unmount_brewfs(&self, target: &Path) -> io::Result<()> {
         run_command(Command::new("umount").arg(target))
     }
+}
+
+fn open_path(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // Avoid opening a disconnected FUSE directory or blocking on a FIFO.
+    #[cfg(target_os = "linux")]
+    options.custom_flags(libc::O_PATH);
+    options.open(path)
 }
 
 fn run_command(command: &mut Command) -> io::Result<()> {
@@ -409,6 +483,8 @@ fn mount_at(mountinfo: &str, path: &Path, visible_mount_id: u64) -> io::Result<O
         let mount_ro = mount_read_only(mount[5])?;
         let filesystem_ro = mount_read_only(filesystem[2])?;
         return Ok(Some(MountInfo {
+            mount_id: visible_mount_id,
+            pin: None,
             device: mount[2].to_owned(),
             root: unescape_mount_field(mount[3])?,
             fs_type: filesystem[0].to_owned(),
@@ -513,12 +589,16 @@ impl<O: MountOps> MountManager<O> {
         read_only: bool,
     ) -> Result<(), CsiError> {
         let _guard = self.lock.lock().await;
-        let shared = self.stage_locked(spec)?;
         let mut state = self.load_state(spec)?;
         let read_only = read_only || spec.read_only;
         if let Some(mount) = self.ops.inspect_mount(target)? {
+            // Reject existing foreign targets before stage can start BrewFS,
+            // create directories, or persist any state. An owned retry only
+            // needs to validate and record the existing bind mount.
             self.verify_target(spec, &state, target, &mount, read_only)?;
         } else {
+            let shared = self.stage_locked(spec)?;
+            state = self.load_state(spec)?;
             self.ops.bind(&shared, target, read_only)?;
             let mount = self.ops.inspect_mount(target)?.ok_or_else(|| {
                 CsiError::MountConflict(format!("bind mount missing at {target:?}"))
@@ -570,7 +650,7 @@ impl<O: MountOps> MountManager<O> {
                     CsiError::MountConflict(format!("no recorded target mode for {target:?}"))
                 })?;
             self.verify_target(spec, &state, target, &mount, read_only)?;
-            self.ops.unbind(target)?;
+            self.ops.unbind(target, mount)?;
         }
         state.targets.remove(&target.display().to_string());
         state.target_read_only.remove(&target.display().to_string());
@@ -583,7 +663,8 @@ impl<O: MountOps> MountManager<O> {
         match (mount, &state.shared_identity) {
             (Some(mount), Some(recorded))
                 if mount.is_brewfs()
-                    && mount == *recorded
+                    && mount.same_filesystem_root(recorded)
+                    && mount.read_only == recorded.read_only
                     && state.volume_id == spec.volume.as_string()
                     && Path::new(&state.shared_mount) == shared =>
             {
@@ -797,6 +878,16 @@ mod tests {
         identities: StdMutex<BTreeMap<String, MountInfo>>,
         inspection_errors: StdMutex<BTreeSet<PathBuf>>,
         unbinds: StdMutex<usize>,
+        replace_on_unbind: StdMutex<Option<(PathBuf, MountInfo)>>,
+        next_mount_id: StdMutex<u64>,
+    }
+
+    impl FakeOps {
+        fn allocate_mount_id(&self) -> u64 {
+            let mut id = self.next_mount_id.lock().unwrap();
+            *id += 1;
+            *id
+        }
     }
 
     impl MountOps for FakeOps {
@@ -814,6 +905,8 @@ mod tests {
                     .get(&path.display().to_string())
                     .cloned()
                     .unwrap_or(MountInfo {
+                        mount_id: 0,
+                        pin: None,
                         device: "8:1".to_owned(),
                         root: "/".to_owned(),
                         fs_type: "ext4".to_owned(),
@@ -849,6 +942,8 @@ mod tests {
             self.identities.lock().unwrap().insert(
                 target.display().to_string(),
                 MountInfo {
+                    mount_id: self.allocate_mount_id(),
+                    pin: None,
                     device: format!("0:{}", *self.starts.lock().unwrap()),
                     root: "/".to_owned(),
                     fs_type: "fuse".to_owned(),
@@ -864,6 +959,7 @@ mod tests {
                 .inspect_mount(source)?
                 .ok_or_else(|| io::Error::other("source is not mounted"))?;
             mount.read_only = read_only;
+            mount.mount_id = self.allocate_mount_id();
             self.identities
                 .lock()
                 .unwrap()
@@ -875,7 +971,20 @@ mod tests {
             Ok(())
         }
 
-        fn unbind(&self, target: &Path) -> io::Result<()> {
+        fn unbind(&self, target: &Path, expected: MountInfo) -> io::Result<()> {
+            if let Some((path, foreign)) = self.replace_on_unbind.lock().unwrap().take() {
+                assert_eq!(path, target);
+                self.identities
+                    .lock()
+                    .unwrap()
+                    .insert(path.display().to_string(), foreign);
+            }
+            if self.inspect_mount(target)?.as_ref() != Some(&expected) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "target mount changed before unmount",
+                ));
+            }
             *self.unbinds.lock().unwrap() += 1;
             self.binds
                 .lock()
@@ -985,6 +1094,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ownership_unpublish_rejects_replacement_during_unmount() {
+        for by_id in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let manager = MountManager::new_with_root(ops.clone(), temp.path().join("state"));
+            let spec = spec(&temp);
+            let target = temp.path().join("target");
+            manager.publish(&spec, &target, false).await.unwrap();
+            let before = fs::read(manager.state_path(&spec)).unwrap();
+            let mut foreign = ops.inspect_mount(&target).unwrap().unwrap();
+            foreign.device = "8:99".to_owned();
+            foreign.fs_type = "ext4".to_owned();
+            foreign.source = "/dev/foreign".to_owned();
+            *ops.replace_on_unbind.lock().unwrap() = Some((target.clone(), foreign.clone()));
+            let result = if by_id {
+                manager
+                    .unpublish_by_id(&spec.volume.as_string(), &target)
+                    .await
+            } else {
+                manager.unpublish(&spec, &target).await
+            };
+            assert_eq!(
+                ops.inspect_mount(&target).unwrap(),
+                Some(foreign),
+                "replacement was unmounted (by_id={by_id})"
+            );
+            assert!(result.is_err());
+            assert_eq!(fs::read(manager.state_path(&spec)).unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn ownership_rejection_has_no_stage_side_effects() {
+        for previously_staged in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let ops = Arc::new(FakeOps::default());
+            let state_root = temp.path().join("state");
+            let manager = MountManager::new_with_root(ops.clone(), state_root.clone());
+            let mut spec = spec(&temp);
+            if previously_staged {
+                manager.stage(&spec).await.unwrap();
+                // A rejected request must not rewrite an existing volume context.
+                spec.read_only = true;
+            }
+            let before = fs::read(manager.state_path(&spec)).ok();
+            let target = temp.path().join("target");
+            ops.mounted
+                .lock()
+                .unwrap()
+                .insert(target.display().to_string());
+            assert!(matches!(
+                manager.publish(&spec, &target, false).await,
+                Err(CsiError::MountConflict(_))
+            ));
+            assert_eq!(
+                *ops.starts.lock().unwrap(),
+                usize::from(previously_staged),
+                "rejection started BrewFS"
+            );
+            assert_eq!(
+                ops.is_mounted(&spec.shared_mount()).unwrap(),
+                previously_staged
+            );
+            assert_eq!(
+                state_root.exists(),
+                previously_staged,
+                "rejection persisted state"
+            );
+            assert_eq!(fs::read(manager.state_path(&spec)).ok(), before);
+            assert_eq!(
+                spec.mount_root.exists(),
+                previously_staged,
+                "rejection created the mount root"
+            );
+            assert!(ops.is_mounted(&target).unwrap());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run with sudo unshare --mount --fork --propagation private and CSI_PRIVATE_MOUNT_TEST=1"]
+    fn ownership_kernel_replacements_are_not_unmounted() {
+        assert_eq!(std::env::var("CSI_PRIVATE_MOUNT_TEST").as_deref(), Ok("1"));
+        assert_ne!(
+            fs::read_link("/proc/self/ns/mnt").unwrap(),
+            fs::read_link("/proc/1/ns/mnt").unwrap()
+        );
+        assert!(
+            !fs::read_to_string("/proc/self/mountinfo")
+                .unwrap()
+                .lines()
+                .any(|line| line.split(" - ").next().unwrap().contains(" shared:")),
+            "mount propagation must be private"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let ops = SystemMountOps;
+        let source = temp.path().join("source");
+        let foreign = temp.path().join("foreign");
+        for (name, path) in [("owned", &source), ("foreign", &foreign)] {
+            fs::create_dir(path).unwrap();
+            run_command(Command::new("mount").args(["-t", "tmpfs", name]).arg(path)).unwrap();
+        }
+        let foreign_identity = ops.inspect_mount(&foreign).unwrap().unwrap();
+        for replacement in ["overmount", "symlink", "same-filesystem"] {
+            let target = temp.path().join("target");
+            ops.bind(&source, &target, false).unwrap();
+            let expected = ops.inspect_mount(&target).unwrap().unwrap();
+            let alias = temp.path().join("alias");
+            let request_path = if replacement == "symlink" {
+                std::os::unix::fs::symlink(&target, &alias).unwrap();
+                alias.as_path()
+            } else {
+                target.as_path()
+            };
+            assert_eq!(
+                ops.inspect_mount(request_path).unwrap().as_ref(),
+                Some(&expected)
+            );
+            match replacement {
+                "overmount" => ops.bind(&foreign, &target, false).unwrap(),
+                "symlink" => {
+                    fs::remove_file(&alias).unwrap();
+                    std::os::unix::fs::symlink(&foreign, &alias).unwrap();
+                }
+                _ => {
+                    // Simulate another actor detaching and replacing the
+                    // mount. The observation must retain its ID until checked.
+                    run_command(Command::new("umount").arg("-l").arg(&target)).unwrap();
+                    ops.bind(&source, &target, false).unwrap();
+                }
+            }
+            let replacement_identity = ops.inspect_mount(request_path).unwrap().unwrap();
+            assert_ne!(replacement_identity.mount_id, expected.mount_id);
+            assert!(
+                ops.unbind(request_path, expected).is_err(),
+                "accepted {replacement}"
+            );
+            assert_eq!(
+                ops.inspect_mount(request_path).unwrap(),
+                Some(replacement_identity)
+            );
+            assert_eq!(
+                ops.inspect_mount(&foreign).unwrap().as_ref(),
+                Some(&foreign_identity)
+            );
+            if replacement == "overmount" {
+                run_command(Command::new("umount").arg(&target)).unwrap();
+            }
+            if replacement == "symlink" {
+                fs::remove_file(&alias).unwrap();
+            }
+            let owned = ops.inspect_mount(&target).unwrap().unwrap();
+            // Ordinary unmount must still reject a busy target, not detach it.
+            let busy = open_path(&target).unwrap();
+            assert_eq!(
+                ops.unbind(&target, owned.clone())
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EBUSY)
+            );
+            assert_eq!(ops.inspect_mount(&target).unwrap().as_ref(), Some(&owned));
+            drop(busy);
+            ops.unbind(&target, owned).unwrap();
+            assert!(!target.exists());
+        }
+        drop(foreign_identity);
+        for path in [&source, &foreign] {
+            ops.unbind(path, ops.inspect_mount(path).unwrap().unwrap())
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn ownership_publish_rejects_another_volume_even_with_a_recorded_target() {
         for recorded in [false, true] {
             let temp = tempfile::tempdir().unwrap();
@@ -995,7 +1277,8 @@ mod tests {
             fs::create_dir(&target).unwrap();
             if recorded {
                 manager.publish(&spec, &target, false).await.unwrap();
-                ops.unbind(&target).unwrap();
+                ops.unbind(&target, ops.inspect_mount(&target).unwrap().unwrap())
+                    .unwrap();
             }
             let mut other = spec.clone();
             other.volume = VolumeId::new("cluster-a", Uuid::from_u128(8)).unwrap();
@@ -1027,7 +1310,8 @@ mod tests {
             let spec = spec(&temp);
             let target = temp.path().join("target");
             manager.publish(&spec, &target, false).await.unwrap();
-            ops.unbind(&target).unwrap();
+            ops.unbind(&target, ops.inspect_mount(&target).unwrap().unwrap())
+                .unwrap();
             let mut other = spec.clone();
             other.volume = VolumeId::new("cluster-a", Uuid::from_u128(8)).unwrap();
             let foreign = manager.stage(&other).await.unwrap();

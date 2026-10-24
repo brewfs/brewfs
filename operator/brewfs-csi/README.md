@@ -36,6 +36,17 @@ filesystem binary or its on-disk formats.
   mismatches return CSI `FailedPrecondition` and are left mounted. The same
   checks apply after a plugin restart; a target path in state alone is not
   proof of ownership.
+  Publish checks an existing target before starting or persisting a shared
+  mount, so rejecting a foreign target leaves prior state unchanged.
+  Unpublish retains an `O_PATH` reference to prevent mount-ID reuse, pins the
+  parent directory, and revalidates the exact mount ID and identity immediately
+  before `umount2(..., UMOUNT_NOFOLLOW)`. This avoids resolving the caller's
+  ancestor pathname again and rejects a final-component symlink swap. Linux
+  does not provide an atomic unmount-by-handle operation here: a privileged
+  overmount or rename can still race the final check and syscall. Host mount
+  changes must be serialized with CSI operations to eliminate that remaining
+  window. Passing a target fd through `/proc/self/fd` alone is insufficient;
+  Linux can follow an overmount even through that path. Lazy detach is not used.
   Unstage refuses to remove a shared mount while a target is still published.
   If a recorded mount process is gone but its mountpoint remains, the stale
   mount is removed only if its identity still matches, before a new process
@@ -160,6 +171,15 @@ The unit tests use a fake mount-operations boundary; they validate identity
 parsing, status mapping, idempotent reference handling, and stale-target
 protection without pretending to validate host mount propagation. The k3s
 verification above is the only cluster evidence currently recorded.
+
+The focused `ownership_kernel_replacements_are_not_unmounted` test also uses
+real tmpfs bind mounts in a private Linux mount namespace. It checks overmounts,
+symlink swaps, replacement by another bind of the same filesystem, busy mounts,
+and successful cleanup. Build the CSI library test binary, then run that test
+with `sudo unshare --mount --fork --propagation private env
+CSI_PRIVATE_MOUNT_TEST=1 <test-binary> --exact
+tests::ownership_kernel_replacements_are_not_unmounted --ignored --nocapture`.
+The test refuses to run in the host mount namespace or with shared propagation.
 
 For a kind smoke after replacing the config Secret values and the static PV's
 `volumeHandle` with an existing operator-provisioned workspace:
