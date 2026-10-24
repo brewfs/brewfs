@@ -32,6 +32,9 @@ use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
 #[path = "group_commit_tests.rs"]
 mod group_commit_tests;
 
+#[path = "namespace_permission_tests.rs"]
+mod namespace_permission_tests;
+
 const IDLE: u8 = 0;
 const RENEW_ONCE: u8 = 1;
 const ALWAYS_BUSY: u8 = 2;
@@ -413,6 +416,17 @@ async fn fixture_with() -> Fixture<impl WorkspaceKvBackend> {
 /// `metadata_bytes` > 0 enables the lower index cache and immutable memos,
 /// as the CLI mount does.
 async fn fixture_with_cache(metadata_bytes: u64) -> Fixture<impl WorkspaceKvBackend> {
+    fixture_with_backend(
+        metadata_bytes,
+        Arc::new(packed_open_preparation_test_backend()),
+    )
+    .await
+}
+
+async fn fixture_with_backend<B: WorkspaceKvBackend>(
+    metadata_bytes: u64,
+    inner: Arc<B>,
+) -> Fixture<B> {
     let (objects, client, snapshot, proof, _payload) = packed().await;
     let lower = Arc::new(PackedV3ReadonlyMeta::from_v3(
         client,
@@ -420,7 +434,6 @@ async fn fixture_with_cache(metadata_bytes: u64) -> Fixture<impl WorkspaceKvBack
         4096,
         metadata_bytes,
     ));
-    let inner = Arc::new(packed_open_preparation_test_backend());
     let control = Arc::new(ValidationControl::new());
     let store = Arc::new(
         KvWorkspaceStore::new(ValidationBackend {

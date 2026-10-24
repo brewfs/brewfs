@@ -9,8 +9,8 @@ use crate::workspace_overlay::lifecycle::LeaseValidity;
 use crate::workspace_overlay::meta_layer::{MAX_GROUP_WRITES, PendingWrite};
 
 pub(super) struct Control {
-    track: AtomicBool,
-    reads: AtomicUsize,
+    pub(super) track: AtomicBool,
+    pub(super) reads: AtomicUsize,
     active: AtomicUsize,
     peak: AtomicUsize,
     commits: AtomicUsize,
