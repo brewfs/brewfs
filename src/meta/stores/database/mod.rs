@@ -20,6 +20,7 @@ use crate::meta::store::{
     OpenFlags, RenameOutcome, RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
     stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
+use crate::meta::trash::{CONTROL_TRASH_XATTR_NAME, ControlTrashMetadata};
 use crate::meta::{INODE_ID_KEY, Permission, SLICE_ID_KEY};
 use crate::utils::NumCastExt;
 use crate::vfs::chunk_id_for;
@@ -99,6 +100,52 @@ impl DatabaseMetaStore {
         if result.rows_affected == 0 {
             return Err(MetaError::ParentNotFound(self.root_ino()));
         }
+        Ok(())
+    }
+
+    async fn record_trash_in_transaction(
+        &self,
+        txn: &DatabaseTransaction,
+        ino: i64,
+        mut parent: i64,
+        name: &str,
+    ) -> Result<(), MetaError> {
+        let mut parts = vec![name.to_string()];
+        let mut visited = HashSet::new();
+        while parent != self.root_ino() {
+            if !visited.insert(parent) {
+                return Err(MetaError::InvalidPath("cyclic trash ancestry".into()));
+            }
+            let entries = ContentMeta::find()
+                .filter(content_meta::Column::Inode.eq(parent))
+                .all(txn)
+                .await
+                .map_err(MetaError::Database)?;
+            if entries.len() != 1 || entries[0].entry_type != EntryType::Directory {
+                return Err(MetaError::InvalidPath("invalid trash ancestry".into()));
+            }
+            parts.push(entries[0].entry_name.clone());
+            parent = entries[0].parent_inode;
+        }
+        parts.reverse();
+        let value = serde_json::to_vec(&ControlTrashMetadata {
+            original_path: format!("/{}", parts.join("/")),
+            deleted_at: Utc::now().to_rfc3339(),
+        })
+        .map_err(|err| MetaError::Internal(format!("encode trash metadata: {err}")))?;
+        XattrMeta::insert(xattr_meta::ActiveModel {
+            inode: Set(ino),
+            name: Set(CONTROL_TRASH_XATTR_NAME.to_string()),
+            value: Set(value),
+        })
+        .on_conflict(
+            sea_query::OnConflict::columns([xattr_meta::Column::Inode, xattr_meta::Column::Name])
+                .update_column(xattr_meta::Column::Value)
+                .to_owned(),
+        )
+        .exec(txn)
+        .await
+        .map_err(MetaError::Database)?;
         Ok(())
     }
 
@@ -1794,6 +1841,7 @@ impl MetaStore for DatabaseMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
+        self.lock_namespace_for_rename(&txn).await?;
 
         let file_entry = ContentMeta::find()
             .filter(content_meta::Column::ParentInode.eq(parent))
@@ -1871,6 +1919,8 @@ impl MetaStore for DatabaseMetaStore {
             }
         } else {
             // 1->0 transition: Mark as deleted
+            self.record_trash_in_transaction(&txn, file_id, parent, name)
+                .await?;
             file_meta.deleted = Set(true);
             file_meta.nlink = Set(0);
             file_meta.parent = Set(0);
@@ -1901,6 +1951,9 @@ impl MetaStore for DatabaseMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
+        // Serialize with rename/unlink/restore so their final-link decisions
+        // cannot race a new hard link on PostgreSQL.
+        self.lock_namespace_for_rename(&txn).await?;
 
         if ino == 1 {
             txn.rollback().await.map_err(MetaError::Database)?;
@@ -2349,6 +2402,13 @@ impl MetaStore for DatabaseMetaStore {
                                 .map_err(MetaError::Database)?;
                         }
                     } else {
+                        self.record_trash_in_transaction(
+                            &txn,
+                            existing.inode,
+                            new_parent,
+                            &new_name,
+                        )
+                        .await?;
                         replaced_file.deleted = Set(true);
                         replaced_file.nlink = Set(0);
                         replaced_file.parent = Set(0);
@@ -3210,6 +3270,7 @@ impl MetaStore for DatabaseMetaStore {
         name: String,
     ) -> Result<(), MetaError> {
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
+        self.lock_namespace_for_rename(&txn).await?;
 
         AccessMeta::find_by_id(parent)
             .one(&txn)
@@ -3262,6 +3323,11 @@ impl MetaStore for DatabaseMetaStore {
         active.parent = Set(parent);
         active.modify_time = Set(now);
         active.update(&txn).await.map_err(MetaError::Database)?;
+
+        XattrMeta::delete_by_id((ino, CONTROL_TRASH_XATTR_NAME.to_string()))
+            .exec(&txn)
+            .await
+            .map_err(MetaError::Database)?;
 
         let mut parent_meta: access_meta::ActiveModel = AccessMeta::find_by_id(parent)
             .one(&txn)

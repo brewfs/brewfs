@@ -330,7 +330,7 @@ BREWFS_S3_BUCKET=brewfs-hint-test \
 |---|---:|---|
 | `meta.backend` | `sqlx` | `sqlx`、`redis`、`etcd` 或 `tikv`。 |
 | `meta.sqlx.url` | `sqlite::memory:` | SQLite 或 PostgreSQL URL。 |
-| `meta.redis.url` | 无 | 单一 Redis endpoint URL；`backend=redis` 时必须显式配置。当前元数据后端依赖跨 key Lua 原子事务，不支持 Redis Cluster。 |
+| `meta.redis.url` | 无 | 单一 Redis 7+ endpoint URL；`backend=redis` 时必须显式配置。原子命名空间操作需要 Lua ACL 预检，启动时拒绝旧版本。当前元数据后端依赖跨 key Lua 原子事务，不支持 Redis Cluster。 |
 | `meta.etcd.urls` | `[]` | Etcd endpoint 列表。 |
 | `meta.tikv.pd_endpoints` | `[]` | TiKV PD endpoint 列表。 |
 | `meta.tikv.namespace` | `brewfs` | TiKV key namespace。 |

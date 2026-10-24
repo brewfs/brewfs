@@ -18,6 +18,7 @@ use crate::meta::store::{
     SetAttrFlags, SetAttrRequest, StatFsSnapshot,
 };
 use crate::meta::stores::{CacheInvalidationEvent, EtcdMetaStore, EtcdWatchWorker, WatchConfig};
+use crate::meta::trash::{CONTROL_TRASH_XATTR_NAME, ControlTrashMetadata};
 use crate::posix::NAME_MAX;
 use crate::vfs::fs::FileType;
 use crate::vfs::handles::DirHandle;
@@ -40,13 +41,6 @@ use cache::{InodeCache, OpenFileCache};
 use chrono::Utc;
 use hostname::get as get_hostname;
 
-const CONTROL_TRASH_XATTR_NAME: &str = "system.brewfs.trash";
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ControlTrashMetadata {
-    original_path: String,
-    deleted_at: String,
-}
 use path_trie::PathTrie;
 use session::{SessionInfo, SessionManager};
 
@@ -732,9 +726,6 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             .await
         {
             Ok(()) => {
-                if let Err(err) = self.store.remove_xattr(ino, CONTROL_TRASH_XATTR_NAME).await {
-                    warn!(inode = ino, error = ?err, "failed to remove restored trash metadata");
-                }
                 if let Ok(Some(attr)) = self.store.stat(ino).await {
                     self.inode_cache.insert_node(ino, attr, Some(parent)).await;
                 }
@@ -815,44 +806,6 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         Self::validate_entry_name(name)?;
         let parent = if parent.is_empty() { "/" } else { parent };
         Ok((parent.to_string(), name.to_string()))
-    }
-
-    async fn child_original_path_for_trash(&self, parent: i64, name: &str) -> String {
-        let parent_path = MetaLayer::get_paths(self, parent)
-            .await
-            .ok()
-            .and_then(|paths| paths.into_iter().next())
-            .unwrap_or_else(|| "/".to_string());
-        if parent_path == "/" {
-            format!("/{name}")
-        } else {
-            format!("{}/{name}", parent_path.trim_end_matches('/'))
-        }
-    }
-
-    async fn remember_trash_entry(&self, ino: i64, original_path: String) {
-        if !self.store.capabilities().xattr {
-            return;
-        }
-
-        let metadata = ControlTrashMetadata {
-            original_path,
-            deleted_at: Utc::now().to_rfc3339(),
-        };
-        let raw = match serde_json::to_vec(&metadata) {
-            Ok(raw) => raw,
-            Err(err) => {
-                warn!(inode = ino, error = %err, "failed to encode trash metadata");
-                return;
-            }
-        };
-        if let Err(err) = self
-            .store
-            .set_xattr(ino, CONTROL_TRASH_XATTR_NAME, &raw, 0)
-            .await
-        {
-            warn!(inode = ino, error = ?err, "failed to persist trash metadata");
-        }
     }
 
     fn normalize_control_path(path: &str) -> Result<String, MetaError> {
@@ -2594,11 +2547,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         info!("MetaClient: unlink operation for ({}, '{}')", parent, name);
 
         let target_ino = self.cached_lookup(parent, name).await?;
-        let original_path = self.child_original_path_for_trash(parent, name).await;
         self.store.unlink(parent, name).await?;
-        if let Some(ino) = target_ino {
-            self.remember_trash_entry(ino, original_path).await;
-        }
 
         debug!("MetaClient: unlink completed, updating cache");
 

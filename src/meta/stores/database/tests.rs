@@ -63,6 +63,149 @@ async fn new_test_store() -> DatabaseMetaStore {
 }
 
 #[tokio::test]
+async fn rename_overwrite_trash_is_restorable() {
+    super::super::trash_tests::rename_overwrite_trash_is_restorable(new_test_store().await).await;
+}
+
+#[tokio::test]
+async fn rename_trash_last_link_and_retry() {
+    super::super::trash_tests::rename_trash_last_link_and_retry(new_test_store().await).await;
+}
+
+#[tokio::test]
+async fn rename_trash_noop_and_rejections() {
+    super::super::trash_tests::rename_trash_noop_and_rejections(new_test_store().await).await;
+}
+
+#[tokio::test]
+async fn unlink_trash_is_restorable() {
+    super::super::trash_tests::unlink_trash_is_restorable(new_test_store().await).await;
+}
+
+#[tokio::test]
+async fn rename_trash_write_failure_rolls_back_namespace() {
+    let store = new_test_store().await;
+    let src = store.create_file(1, "src".into()).await.unwrap();
+    let dst = store.create_file(1, "dst".into()).await.unwrap();
+    store.db.execute_unprepared("CREATE TRIGGER reject_trash BEFORE INSERT ON xattr WHEN NEW.name = 'system.brewfs.trash' BEGIN SELECT RAISE(ABORT, 'injected trash write failure'); END").await.unwrap();
+    assert!(store.rename(1, "src", 1, "dst".into()).await.is_err());
+    assert!(store.unlink(1, "dst").await.is_err());
+    assert_eq!(store.lookup(1, "src").await.unwrap(), Some(src));
+    assert_eq!(store.lookup(1, "dst").await.unwrap(), Some(dst));
+    assert_eq!(store.stat(dst).await.unwrap().unwrap().nlink, 1);
+    assert!(store.get_deleted_files().await.unwrap().is_empty());
+    assert!(
+        store
+            .get_xattr(dst, "system.brewfs.trash")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    store
+        .db
+        .execute_unprepared("DROP TRIGGER reject_trash")
+        .await
+        .unwrap();
+
+    // Failure after the trash insert must roll back that insert as well.
+    store.db.execute_unprepared("CREATE TRIGGER reject_move BEFORE DELETE ON content_meta WHEN OLD.entry_name = 'src' BEGIN SELECT RAISE(ABORT, 'injected namespace failure'); END").await.unwrap();
+    assert!(store.rename(1, "src", 1, "dst".into()).await.is_err());
+    assert_eq!(store.lookup(1, "src").await.unwrap(), Some(src));
+    assert_eq!(store.lookup(1, "dst").await.unwrap(), Some(dst));
+    assert!(store.get_deleted_files().await.unwrap().is_empty());
+    assert!(
+        store
+            .get_xattr(dst, "system.brewfs.trash")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    store
+        .db
+        .execute_unprepared("DROP TRIGGER reject_move")
+        .await
+        .unwrap();
+    store.rename(1, "src", 1, "dst".into()).await.unwrap();
+
+    store.db.execute_unprepared("CREATE TRIGGER reject_cleanup BEFORE DELETE ON xattr WHEN OLD.name = 'system.brewfs.trash' BEGIN SELECT RAISE(ABORT, 'injected trash cleanup failure'); END").await.unwrap();
+    assert!(
+        store
+            .restore_deleted_file(dst, 1, "restored".into())
+            .await
+            .is_err()
+    );
+    assert_eq!(store.lookup(1, "restored").await.unwrap(), None);
+    assert_eq!(store.get_deleted_files().await.unwrap(), vec![dst]);
+    store
+        .db
+        .execute_unprepared("DROP TRIGGER reject_cleanup")
+        .await
+        .unwrap();
+    store
+        .restore_deleted_file(dst, 1, "restored".into())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn rename_trash_reopen_after_backend_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = file_db_config(&dir.path().join("trash.db"));
+    let dst;
+    {
+        let store = DatabaseMetaStore::from_config(config.clone())
+            .await
+            .unwrap();
+        dst = store.create_file(1, "dst".into()).await.unwrap();
+        store.create_file(1, "src".into()).await.unwrap();
+        store.rename(1, "src", 1, "dst".into()).await.unwrap();
+        // No MetaClient finalization runs after this backend commit.
+    }
+    let store = DatabaseMetaStore::from_config(config).await.unwrap();
+    let raw = store
+        .get_xattr(dst, "system.brewfs.trash")
+        .await
+        .unwrap()
+        .unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(metadata["original_path"], "/dst");
+    assert_eq!(store.get_deleted_files().await.unwrap(), vec![dst]);
+    store.rename(1, "dst", 1, "moved".into()).await.unwrap();
+    store
+        .restore_deleted_file(dst, 1, "dst".into())
+        .await
+        .unwrap();
+    assert_eq!(store.lookup(1, "dst").await.unwrap(), Some(dst));
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated PostgreSQL database via BREWFS_POSTGRES_TEST_URL"]
+async fn postgres_rename_trash_contract() {
+    for case in 0..4 {
+        let mut config = test_config();
+        config.database.db_config = DatabaseType::Postgres {
+            url: std::env::var("BREWFS_POSTGRES_TEST_URL").expect("dedicated PostgreSQL test URL"),
+        };
+        let store = DatabaseMetaStore::from_config(config).await.unwrap();
+        // This is an explicitly dedicated test database, reset between cases.
+        store
+            .db
+            .execute_unprepared(
+                "TRUNCATE content_meta, file_meta, access_meta, link_parent_meta, xattr CASCADE",
+            )
+            .await
+            .unwrap();
+        store.init_root_directory().await.unwrap();
+        match case {
+            0 => super::super::trash_tests::rename_overwrite_trash_is_restorable(store).await,
+            1 => super::super::trash_tests::rename_trash_last_link_and_retry(store).await,
+            2 => super::super::trash_tests::rename_trash_noop_and_rejections(store).await,
+            _ => super::super::trash_tests::unlink_trash_is_restorable(store).await,
+        }
+    }
+}
+
+#[tokio::test]
 async fn directory_pages_follow_namespace_mutations() {
     super::super::readdir_tests::directory_pages_follow_namespace_mutations(
         &new_test_store().await,

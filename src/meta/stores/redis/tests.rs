@@ -12,7 +12,7 @@ use crate::vfs::fs::VFS;
 use crate::{chunk::layout::ChunkLayout, chunk::store::InMemoryBlockStore};
 use asyncfuse::Errno;
 use asyncfuse::raw::{Filesystem, Request};
-use redis::AsyncCommands;
+use redis::{AsyncCommands, IntoConnectionInfo};
 use serial_test::serial;
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -147,6 +147,241 @@ async fn new_test_store() -> RedisMetaStore {
     RedisMetaStore::from_config(test_config())
         .await
         .expect("Failed to create test database store")
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis test database"]
+async fn rename_overwrite_trash_is_restorable() {
+    super::super::trash_tests::rename_overwrite_trash_is_restorable(new_test_store().await).await;
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis test database"]
+async fn rename_trash_last_link_and_retry() {
+    super::super::trash_tests::rename_trash_last_link_and_retry(new_test_store().await).await;
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis test database"]
+async fn rename_trash_noop_and_rejections() {
+    super::super::trash_tests::rename_trash_noop_and_rejections(new_test_store().await).await;
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis test database"]
+async fn unlink_trash_is_restorable() {
+    super::super::trash_tests::unlink_trash_is_restorable(new_test_store().await).await;
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis test database"]
+async fn rename_trash_failure_leaves_no_partial_writes() {
+    for corruption in [
+        "trash",
+        "deleted",
+        "source_links",
+        "source_names",
+        "destination_names",
+        "ancestor",
+    ] {
+        let store = new_test_store().await;
+        let dir = store.mkdir(1, "dir".into()).await.unwrap();
+        let src = store.create_file(1, "src".into()).await.unwrap();
+        let dst = store.create_file(dir, "dst".into()).await.unwrap();
+        let mut conn = store.conn.clone();
+        let key = match corruption {
+            "trash" => store.xattr_key(dst),
+            "deleted" => store.deleted_set_key().to_string(),
+            "source_links" => {
+                store.link(src, 1, "alias").await.unwrap();
+                let key = format!("lp:{src}");
+                let _: () = conn.srem(&key, "1:src").await.unwrap();
+                key
+            }
+            "source_names" => "d1:names".to_string(),
+            "destination_names" => format!("d{dir}:names"),
+            "ancestor" => store.node_key(dir),
+            _ => unreachable!(),
+        };
+        if corruption != "source_links" {
+            let _: () = conn.set(&key, "wrong-type-or-json").await.unwrap();
+        }
+        let before = trash_test_snapshot(&store).await;
+        let result = store.rename(1, "src", dir, "dst".into()).await;
+        assert!(result.is_err(), "{corruption}: {result:?}");
+        assert_eq!(trash_test_snapshot(&store).await, before, "{corruption}");
+        assert_eq!(
+            store.lookup(1, "src").await.unwrap(),
+            Some(src),
+            "{corruption}"
+        );
+        assert_eq!(
+            store.lookup(dir, "dst").await.unwrap(),
+            Some(dst),
+            "{corruption}"
+        );
+        assert_eq!(
+            store.stat(dst).await.unwrap().unwrap().nlink,
+            1,
+            "{corruption}"
+        );
+        if corruption != "deleted" {
+            assert!(
+                store.get_deleted_files().await.unwrap().is_empty(),
+                "{corruption}"
+            );
+        }
+        if corruption != "trash" {
+            assert!(
+                store
+                    .get_xattr(dst, "system.brewfs.trash")
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{corruption}"
+            );
+        }
+    }
+}
+
+async fn trash_test_snapshot(
+    store: &RedisMetaStore,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut conn = store.conn.clone();
+    let keys: Vec<String> = conn.keys("*").await.unwrap();
+    let mut snapshot = std::collections::BTreeMap::new();
+    for key in keys {
+        let value = redis::cmd("DUMP")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        snapshot.insert(key, value);
+    }
+    snapshot
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires a dedicated Redis 7+ test database"]
+async fn rename_trash_denied_write_is_atomic() {
+    let mut store = new_test_store().await;
+    let src = store.create_file(1, "src".into()).await.unwrap();
+    let dst = store.create_file(1, "dst".into()).await.unwrap();
+    let admin = store.conn.clone();
+    let mut conn = admin.clone();
+    // HSET fails the trash write; ZADD would fail later in the namespace
+    // sequence. Neither permission error may leave any partial record.
+    for (command, key, args) in [
+        (
+            "HSET",
+            store.xattr_key(dst),
+            [super::CONTROL_TRASH_XATTR_NAME, "acl-probe"],
+        ),
+        ("ZADD", format!("{}:names", store.dir_key(1)), ["0", "dst"]),
+    ] {
+        let _: () = redis::cmd("ACL")
+            .arg("SETUSER")
+            .arg("issue128-test")
+            .arg("reset")
+            .arg("on")
+            .arg("nopass")
+            .arg("~*")
+            .arg("+@all")
+            .arg(format!("-{command}"))
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let before = trash_test_snapshot(&store).await;
+        let mut info: redis::ConnectionInfo =
+            redis_test_url().as_str().into_connection_info().unwrap();
+        info.redis.username = Some("issue128-test".into());
+        // RESP2 skips AUTH when password is None. An empty-password URL
+        // normalizes to None, so set Some("") explicitly even for nopass.
+        info.redis.password = Some(String::new());
+        store.conn = redis::aio::ConnectionManager::new(redis::Client::open(info).unwrap())
+            .await
+            .unwrap();
+        let user: String = redis::cmd("ACL")
+            .arg("WHOAMI")
+            .query_async(&mut store.conn.clone())
+            .await
+            .unwrap();
+        assert_eq!(user, "issue128-test");
+        // Prove fault injection is active on the same connection and key that
+        // rename uses; a default-user connection would allow these commands.
+        let direct: redis::RedisResult<i64> = redis::cmd(command)
+            .arg(&key)
+            .arg(&args)
+            .query_async(&mut store.conn.clone())
+            .await;
+        let denied = direct.expect_err("the actual write command must be denied");
+        assert_eq!(denied.code(), Some("NOPERM"), "{command}: {denied}");
+        let result = store.rename(1, "src", 1, "dst".into()).await;
+        store.conn = admin.clone();
+        let _: () = redis::cmd("ACL")
+            .arg("DELUSER")
+            .arg("issue128-test")
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        let error = result.expect_err("rename must propagate the denied write");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("namespace command denied: {command}")),
+            "{command}: {error}"
+        );
+        assert_eq!(trash_test_snapshot(&store).await, before, "{command}");
+        assert_eq!(store.lookup(1, "src").await.unwrap(), Some(src));
+        assert_eq!(store.lookup(1, "dst").await.unwrap(), Some(dst));
+        eprintln!(
+            "{command}: user={user}; direct write={denied}; rename={error}; snapshot unchanged"
+        );
+    }
+    store.rename(1, "src", 1, "dst".into()).await.unwrap();
+    assert_eq!(store.lookup(1, "src").await.unwrap(), None);
+    assert_eq!(store.lookup(1, "dst").await.unwrap(), Some(src));
+    let record = store
+        .get_xattr(dst, super::CONTROL_TRASH_XATTR_NAME)
+        .await
+        .unwrap()
+        .expect("successful retry must write the trash record");
+    let record: serde_json::Value = serde_json::from_slice(&record).unwrap();
+    assert_eq!(record["original_path"], "/dst");
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated Redis 6 server via BREWFS_REDIS_LEGACY_TEST_URL"]
+async fn trash_requires_lua_acl_preflight() {
+    let url = std::env::var("BREWFS_REDIS_LEGACY_TEST_URL").expect("dedicated legacy Redis URL");
+    let mut conn = redis::Client::open(url.clone())
+        .unwrap()
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let _: () = redis::cmd("FLUSHDB").query_async(&mut conn).await.unwrap();
+    let mut config = test_config();
+    config.database.db_config = DatabaseType::Redis { url };
+    let err = RedisMetaStore::from_config(config)
+        .await
+        .err()
+        .expect("Redis 6 must be rejected");
+    assert!(err.to_string().contains("Redis 7"), "{err}");
+    // Also guard script execution if a connection is redirected after startup.
+    let result: redis::RedisResult<i32> =
+        super::namespace_script("stage('SET', KEYS[1], 'unreachable'); commit_staged(); return 1")
+            .key("must-not-exist")
+            .invoke_async(&mut conn)
+            .await;
+    assert!(result.is_err());
+    let count: u64 = redis::cmd("DBSIZE").query_async(&mut conn).await.unwrap();
+    assert_eq!(count, 0, "unsupported server must see no metadata writes");
 }
 
 #[tokio::test]

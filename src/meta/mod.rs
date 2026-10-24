@@ -25,6 +25,7 @@ pub mod posix_acl;
 pub(crate) mod serialization;
 pub mod store;
 pub mod stores;
+pub(crate) mod trash;
 
 // Primary exports
 #[allow(dead_code)]

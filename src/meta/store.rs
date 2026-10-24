@@ -726,6 +726,8 @@ pub trait MetaStore: Send + Sync {
         Ok(CreateEntryResult { ino, attr })
     }
 
+    /// Backends supporting trash xattrs must record the original path in the
+    /// same atomic operation that removes the final link.
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError>;
 
     async fn rename(
@@ -758,6 +760,8 @@ pub trait MetaStore: Send + Sync {
     }
 
     /// Backend implementation for ordinary and no-replace rename.
+    /// A replaced non-directory's final link must preserve its trash record
+    /// atomically with deletion on backends supporting trash xattrs.
     async fn rename_with_mode(
         &self,
         old_parent: i64,
@@ -919,6 +923,8 @@ pub trait MetaStore: Send + Sync {
 
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError>;
 
+    /// Restore a tombstone and consume its trash record atomically. Callers
+    /// must not remove the record afterwards: another deletion may own it.
     async fn restore_deleted_file(
         &self,
         ino: i64,

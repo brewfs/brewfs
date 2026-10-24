@@ -18,6 +18,7 @@ use crate::meta::store::{
     RenameOutcome, RetryReason, SetAttrFlags, SetAttrRequest, StatFsSnapshot,
     stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
+use crate::meta::trash::CONTROL_TRASH_XATTR_NAME;
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -56,6 +57,10 @@ const LOCKS_KEY: &str = "locks";
 const LOCKED_KEY: &str = "locked";
 const LINK_PARENT_KEY_PREFIX: &str = "lp:";
 const TRUNCATE_REWRITE_MAX_RETRIES: usize = 64;
+
+fn namespace_script(body: &str) -> redis::Script {
+    redis::Script::new(&format!("{}\n{body}", include_str!("namespace.lua")))
+}
 
 // Atomically replace a compacted chunk and create the delayed-GC ledger for
 // every removed slice. Redis does not roll back earlier writes when a Lua
@@ -851,6 +856,9 @@ const UNLINK_LUA: &str = r#"
     local timestamp = tonumber(ARGV[3])
     local node_prefix = ARGV[4]
     local link_parent_prefix = ARGV[5]
+    local xattr_prefix = ARGV[6]
+    local trash_xattr_name = ARGV[7]
+    local deleted_at = ARGV[8]
 
     local dentry_ino = redis.call('HGET', dir_key, name)
     if not dentry_ino then
@@ -873,13 +881,18 @@ const UNLINK_LUA: &str = r#"
         return cjson.encode({ok=false, error="is_directory", ino=child_ino})
     end
 
-    -- Remove from directory
-    redis.call('HDEL', dir_key, name)
-    redis.call('ZREM', dir_key .. ':names', name)
+    if node.attr.nlink == 1 then
+        stage_trash(dentry_ino, tonumber(parent_ino), name, node_prefix,
+            xattr_prefix, trash_xattr_name, deleted_at)
+    end
+
+    -- Stage every mutation; nothing is written until all validation succeeds.
+    stage('HDEL', dir_key, name)
+    stage('ZREM', dir_key .. ':names', name)
 
     -- Remove from link_parents (idempotent)
     local member = parent_ino .. ":" .. name
-    redis.call('SREM', lp_key, member)
+    stage('SREM', lp_key, member)
 
     -- Decrement nlink
     if node.attr.nlink > 0 then
@@ -889,7 +902,12 @@ const UNLINK_LUA: &str = r#"
 
     -- If transitioning from nlink=2 to nlink=1, restore parent/name from remaining link_parent
     if node.attr.nlink == 1 then
-        local remaining_members = redis.call('SMEMBERS', lp_key)
+        local remaining_members = {}
+        for _, candidate in ipairs(redis.call('SMEMBERS', lp_key)) do
+            if candidate ~= member then
+                table.insert(remaining_members, candidate)
+            end
+        end
         if #remaining_members == 1 then
             local parts = {}
             for part in string.gmatch(remaining_members[1], "[^:]+") do
@@ -900,18 +918,18 @@ const UNLINK_LUA: &str = r#"
                 node.name = table.concat(parts, ":", 2)
             end
             -- Clear link_parents set
-            redis.call('DEL', lp_key)
+            stage('DEL', lp_key)
         end
     end
 
     local deleted = node.attr.nlink == 0
     if deleted then
         node.deleted = true
-        redis.call('HSET', deleted_set_key, tostring(node.ino), 1)
+        stage('HSET', deleted_set_key, dentry_ino, 1)
     end
 
     -- Save node
-    redis.call('SET', node_key, cjson.encode(node))
+    stage('SET', node_key, cjson.encode(node))
 
     local parent_json = redis.call('GET', parent_node_key)
     if parent_json then
@@ -919,11 +937,13 @@ const UNLINK_LUA: &str = r#"
         if parent_ok and parent_node and parent_node.attr and parent_node.kind == "Dir" then
             parent_node.attr.mtime = timestamp
             parent_node.attr.ctime = timestamp
-            redis.call('SET', parent_node_key, cjson.encode(parent_node))
+            stage('SET', parent_node_key, cjson.encode(parent_node))
         end
     end
 
-    return cjson.encode({ok=true, ino=child_ino})
+    local response = cjson.encode({ok=true, ino=child_ino})
+    commit_staged()
+    return response
 "#;
 
 // Atomically remove a tombstoned inode and all of its xattrs during final GC.
@@ -1163,6 +1183,8 @@ const RENAME_LUA: &str = r#"
     local link_parent_prefix = ARGV[7]
     local xattr_prefix = ARGV[8]
     local noreplace = ARGV[9] == "1"
+    local trash_xattr_name = ARGV[10]
+    local deleted_at = ARGV[11]
 
     local function validate_ancestry(parent_ino, ancestor_ino)
         local seen = {}
@@ -1270,11 +1292,11 @@ const RENAME_LUA: &str = r#"
                 return cjson.encode({ok=false, error="target_dir_not_empty", ino=tonumber(dest_ino_str)})
             end
             -- Remove destination directory atomically
-            redis.call('HDEL', new_parent_dir_key, new_name)
-            redis.call('DEL', dest_node_key)
-            redis.call('DEL', dest_dir_key)
-            redis.call('DEL', dest_dir_key .. ':names')
-            redis.call('DEL', xattr_prefix .. dest_ino_str)
+            stage('HDEL', new_parent_dir_key, new_name)
+            stage('DEL', dest_node_key)
+            stage('DEL', dest_dir_key)
+            stage('DEL', dest_dir_key .. ':names')
+            stage('DEL', xattr_prefix .. dest_ino_str)
             -- Destination dir had a ".." entry pointing to new_parent; account for its removal
             new_parent_nlink_adj = new_parent_nlink_adj - 1
         elseif src_kind == "Dir" then
@@ -1309,24 +1331,28 @@ const RENAME_LUA: &str = r#"
             end
             -- file/symlink replacing file/symlink: decrement nlink, delete node if no links remain
             dest_node.attr.nlink = dest_node.attr.nlink - 1
-            redis.call('HDEL', new_parent_dir_key, new_name)
+            if dest_node.attr.nlink <= 0 then
+                stage_trash(dest_ino_str, new_parent_ino, new_name, node_prefix,
+                    xattr_prefix, trash_xattr_name, deleted_at)
+            end
+            stage('HDEL', new_parent_dir_key, new_name)
             if dest_node.attr.nlink <= 0 then
                 dest_node.attr.nlink = 0
                 dest_node.attr.ctime = timestamp
                 dest_node.deleted = true
-                redis.call('SET', dest_node_key, cjson.encode(dest_node))
-                redis.call('HSET', deleted_set_key, dest_ino_str, 1)
-                redis.call('DEL', link_parent_prefix .. dest_ino_str)
+                stage('SET', dest_node_key, cjson.encode(dest_node))
+                stage('HSET', deleted_set_key, dest_ino_str, 1)
+                stage('DEL', link_parent_prefix .. dest_ino_str)
             else
-                redis.call('SREM', dest_lp_key, dest_member)
+                stage('SREM', dest_lp_key, dest_member)
                 -- Restore the verified inline path when only one link remains.
                 if dest_node.attr.nlink == 1 then
                     dest_node.parent = remaining_parent
                     dest_node.name = remaining_name
-                    redis.call('DEL', dest_lp_key)
+                    stage('DEL', dest_lp_key)
                 end
                 dest_node.attr.ctime = timestamp
-                redis.call('SET', dest_node_key, cjson.encode(dest_node))
+                stage('SET', dest_node_key, cjson.encode(dest_node))
             end
         end
     end
@@ -1366,9 +1392,9 @@ const RENAME_LUA: &str = r#"
         end
 
         -- Replace link_parents set atomically
-        redis.call('DEL', link_parents_key)
+        stage('DEL', link_parents_key)
         for _, member in ipairs(new_members) do
-            redis.call('SADD', link_parents_key, member)
+            stage('SADD', link_parents_key, member)
         end
 
         -- Hardlinked files have parent=0, name=""
@@ -1381,18 +1407,20 @@ const RENAME_LUA: &str = r#"
     child_node.attr.ctime = timestamp
 
     -- Remove old dentry and add new dentry
-    redis.call('HDEL', old_parent_dir_key, old_name)
-    redis.call('HSET', new_parent_dir_key, new_name, dentry_ino)
-    redis.call('ZREM', old_parent_dir_key .. ':names', old_name)
+    stage('HDEL', old_parent_dir_key, old_name)
+    stage('HSET', new_parent_dir_key, new_name, dentry_ino)
+    stage('ZREM', old_parent_dir_key .. ':names', old_name)
+    local new_count = redis.call('HLEN', new_parent_dir_key)
+        + (dest_ino_str and 0 or 1) - (old_parent_ino == new_parent_ino and 1 or 0)
     if redis.call('ZSCORE', new_parent_dir_key .. ':names', '') then
-        redis.call('ZADD', new_parent_dir_key .. ':names', 0, new_name)
-    elseif redis.call('HLEN', new_parent_dir_key) == 1 then
-        redis.call('DEL', new_parent_dir_key .. ':names')
-        redis.call('ZADD', new_parent_dir_key .. ':names', 0, '', 0, new_name)
+        stage('ZADD', new_parent_dir_key .. ':names', 0, new_name)
+    elseif new_count == 1 then
+        stage('DEL', new_parent_dir_key .. ':names')
+        stage('ZADD', new_parent_dir_key .. ':names', 0, '', 0, new_name)
     end
 
     -- Save updated child node
-    redis.call('SET', child_node_key, cjson.encode(child_node))
+    stage('SET', child_node_key, cjson.encode(child_node))
 
     -- Update parent directory timestamps and directory link counts.
     -- For same-directory rename, new_parent_node already represents the only
@@ -1407,7 +1435,7 @@ const RENAME_LUA: &str = r#"
                 end
                 old_parent_node.attr.mtime = timestamp
                 old_parent_node.attr.ctime = timestamp
-                redis.call('SET', old_parent_node_key, cjson.encode(old_parent_node))
+                stage('SET', old_parent_node_key, cjson.encode(old_parent_node))
             end
         end
     end
@@ -1419,9 +1447,11 @@ const RENAME_LUA: &str = r#"
     new_parent_node.attr.nlink = new_parent_node.attr.nlink + new_parent_nlink_adj
     new_parent_node.attr.mtime = timestamp
     new_parent_node.attr.ctime = timestamp
-    redis.call('SET', new_parent_node_key, cjson.encode(new_parent_node))
+    stage('SET', new_parent_node_key, cjson.encode(new_parent_node))
 
-    return cjson.encode({ok=true, ino=child_ino, replaced_ino=replaced_ino, source_is_dir=child_node.kind == "Dir", replaced_is_dir=replaced_is_dir})
+    local response = cjson.encode({ok=true, ino=child_ino, replaced_ino=replaced_ino, source_is_dir=child_node.kind == "Dir", replaced_is_dir=replaced_is_dir})
+    commit_staged()
+    return response
 "#;
 
 const RENAME_EXCHANGE_LUA: &str = r#"
@@ -1849,7 +1879,7 @@ struct LuaResponse {
 
 /// Minimal Redis-backed meta store.
 ///
-/// This backend requires standalone Redis command semantics. Redis Cluster is
+/// This backend requires Redis 7+ and standalone command semantics. Redis Cluster is
 /// not supported because filesystem transitions use atomic Lua scripts across
 /// multiple metadata keys, including keys allocated dynamically by a script.
 pub struct RedisMetaStore {
@@ -1880,7 +1910,7 @@ impl RedisMetaStore {
         // side-effect-free script. Other errors are also fatal because the real
         // metadata scripts would be unusable for the same connection.
         let probe: i32 = redis::cmd("EVAL")
-            .arg("return 1")
+            .arg("return redis.acl_check_cmd and 1 or 0")
             .arg(2)
             .arg(REDIS_CLUSTER_PROBE_KEY_A)
             .arg(REDIS_CLUSTER_PROBE_KEY_B)
@@ -1900,7 +1930,8 @@ impl RedisMetaStore {
             })?;
         if probe != 1 {
             return Err(MetaError::Config(
-                "Redis standalone capability probe returned an unexpected result".to_string(),
+                "Redis 7 or newer is required for atomic namespace operations (Lua ACL preflight)"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -3354,7 +3385,7 @@ impl MetaStore for RedisMetaStore {
         let deleted_set_key = self.deleted_set_key();
         let now = current_time();
 
-        let script = redis::Script::new(UNLINK_LUA);
+        let script = namespace_script(UNLINK_LUA);
         let result: String = script
             .key(&dir_key)
             .key(&parent_node_key)
@@ -3364,6 +3395,9 @@ impl MetaStore for RedisMetaStore {
             .arg(now)
             .arg(NODE_KEY_PREFIX)
             .arg(LINK_PARENT_KEY_PREFIX)
+            .arg(XATTR_KEY_PREFIX)
+            .arg(CONTROL_TRASH_XATTR_NAME)
+            .arg(Utc::now().to_rfc3339())
             .invoke_async(&mut self.conn.clone())
             .await
             .map_err(redis_err)?;
@@ -3417,7 +3451,7 @@ impl MetaStore for RedisMetaStore {
         let deleted_set_key = self.deleted_set_key();
         let now = current_time();
 
-        let result: String = redis::Script::new(RENAME_LUA)
+        let result: String = namespace_script(RENAME_LUA)
             .key(&old_parent_dir_key)
             .key(&new_parent_dir_key)
             .key(&old_parent_node_key)
@@ -3432,6 +3466,8 @@ impl MetaStore for RedisMetaStore {
             .arg(LINK_PARENT_KEY_PREFIX)
             .arg(XATTR_KEY_PREFIX)
             .arg(1)
+            .arg(CONTROL_TRASH_XATTR_NAME)
+            .arg(Utc::now().to_rfc3339())
             .invoke_async(&mut self.conn.clone())
             .await
             .map_err(redis_err)?;
@@ -3503,7 +3539,7 @@ impl MetaStore for RedisMetaStore {
         let deleted_set_key = self.deleted_set_key();
         let now = current_time();
 
-        let script = redis::Script::new(RENAME_LUA);
+        let script = namespace_script(RENAME_LUA);
         let result: String = script
             .key(&old_parent_dir_key) // KEYS[1]
             .key(&new_parent_dir_key) // KEYS[2]
@@ -3518,6 +3554,9 @@ impl MetaStore for RedisMetaStore {
             .arg(NODE_KEY_PREFIX) // ARGV[6]
             .arg(LINK_PARENT_KEY_PREFIX) // ARGV[7]
             .arg(XATTR_KEY_PREFIX) // ARGV[8]
+            .arg(0) // ARGV[9]
+            .arg(CONTROL_TRASH_XATTR_NAME) // ARGV[10]
+            .arg(Utc::now().to_rfc3339()) // ARGV[11]
             .invoke_async(&mut self.conn.clone())
             .await
             .map_err(redis_err)?;
@@ -3968,6 +4007,42 @@ impl MetaStore for RedisMetaStore {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
+    async fn restore_deleted_file(
+        &self,
+        ino: i64,
+        parent: i64,
+        name: String,
+    ) -> Result<(), MetaError> {
+        let result: String = namespace_script(include_str!("restore_trash.lua"))
+            .key(self.node_key(ino))
+            .key(self.node_key(parent))
+            .key(self.dir_key(parent))
+            .key(self.deleted_set_key())
+            .key(self.xattr_key(ino))
+            .arg(ino)
+            .arg(parent)
+            .arg(&name)
+            .arg(current_time())
+            .arg(CONTROL_TRASH_XATTR_NAME)
+            .invoke_async(&mut self.conn.clone())
+            .await
+            .map_err(redis_err)?;
+        let response: LuaResponse = serde_json::from_str(&result)
+            .map_err(|err| MetaError::Internal(format!("Lua response parse error: {err}")))?;
+        match response.error.as_deref() {
+            Some("not_found") | Some("not_deleted") => Err(MetaError::NotFound(ino)),
+            Some("parent_not_found") => Err(MetaError::ParentNotFound(parent)),
+            Some("parent_not_directory") => Err(MetaError::NotDirectory(parent)),
+            Some("already_exists") => Err(MetaError::AlreadyExists { parent, name }),
+            Some(other) => Err(MetaError::Internal(format!("Lua error: {other}"))),
+            None if response.ok => {
+                self.invalidate_nodes(&[ino, parent]).await;
+                Ok(())
+            }
+            None => Err(MetaError::Internal("unexpected Lua response".into())),
+        }
+    }
+
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
         let mut conn = self.conn.clone();
         let raw: Vec<String> = conn
