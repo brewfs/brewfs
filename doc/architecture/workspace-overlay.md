@@ -204,6 +204,16 @@ exact transaction predicates. This reuses existing reads and introduces no
 public/backend API, object type, authoritative cache, persistence/lifecycle
 protocol or snapshot feature.
 
+Upper-data reads also keep advisory slice identities for at most 4,096 chunks,
+with at most 16 identities per chunk. Successful writes and freshly decoded
+maps seed these hints. A warm read batches maps, ownership, and object
+descriptors in its first snapshot, then retains full post-transport validation:
+two metadata reads instead of three. Cold, stale, evicted, or more fragmented
+maps use dependent reads. All row values still come from fresh atomic snapshots.
+Unused hinted rows are removed before dependent reads and final validation;
+failure of a speculative snapshot retries without hints, so stale rows cannot
+exhaust the operation's metadata budget or make unrelated corruption fatal.
+
 Path open retains its observed ancestry and name through inode-lock acquisition,
 then rereads authority and those predicates before returning the handle.
 Directory SCAN also invalidates coverage, including an empty result. Payload

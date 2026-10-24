@@ -5,7 +5,7 @@
 //! each bounded group publishes its inode/maps/memberships and authenticated
 //! object descriptors atomically. Mount admission remains a separate qualification.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -37,6 +37,9 @@ pub const MAX_IO_BYTES: usize = 16 * 1024 * 1024;
 const MAX_IO_CHUNKS: u64 = 64;
 const MAX_READ_PIECES: usize = 4096;
 const MAX_RETRIES: usize = 16;
+// Even 64 chunks of hints fit the metadata row bound. Fragmented maps use
+// the existing dependent-read path instead of growing the advisory cache.
+const MAX_HINTED_SLICES_PER_CHUNK: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteOutcome {
@@ -68,6 +71,8 @@ pub struct EntityData<B, L, O> {
     chunk_size: u64,
     config_key: Vec<u8>,
     config_bytes: Vec<u8>,
+    // Only identities that nominate keys, never cached metadata or authority.
+    slice_hints: moka::sync::Cache<(i64, u64), Arc<[u64]>>,
 }
 
 struct UploadedRange {
@@ -140,6 +145,7 @@ where
                     chunk_size,
                     config_key,
                     config_bytes,
+                    slice_hints: moka::sync::Cache::new(4096),
                 }));
             }
         }
@@ -231,6 +237,46 @@ where
         (offset / self.chunk_size..=(offset + length as u64 - 1) / self.chunk_size)
             .map(|index| self.namespace.keys.chunk(ino, index))
             .collect()
+    }
+
+    fn slice_hint(ids: impl IntoIterator<Item = u64>) -> Option<Arc<[u64]>> {
+        let mut slices = BTreeSet::new();
+        for id in ids {
+            slices.insert(id);
+            if slices.len() > MAX_HINTED_SLICES_PER_CHUNK {
+                return None;
+            }
+        }
+        if slices.is_empty() {
+            None
+        } else {
+            Some(slices.into_iter().collect::<Vec<_>>().into())
+        }
+    }
+
+    fn remember_slice_hint(&self, ino: i64, index: u64, hint: Option<Arc<[u64]>>) {
+        match hint {
+            Some(ids) => self.slice_hints.insert((ino, index), ids),
+            None => self.slice_hints.invalidate(&(ino, index)),
+        }
+    }
+
+    fn read_hint_keys(&self, ino: i64, offset: u64, length: usize) -> Vec<Vec<u8>> {
+        let mut keys = Vec::new();
+        if length != 0 {
+            for index in offset / self.chunk_size..=(offset + length as u64 - 1) / self.chunk_size {
+                if let Some(ids) = self.slice_hints.get(&(ino, index)) {
+                    for &slice_id in ids.iter() {
+                        keys.extend([
+                            self.namespace.keys.slice(slice_id),
+                            self.namespace.keys.owner(slice_id, ino, index),
+                            self.namespace.keys.object_descriptor(slice_id),
+                        ]);
+                    }
+                }
+            }
+        }
+        keys
     }
 
     async fn inode(&self, ino: i64, rows: &mut Prepared<'_, B, L>) -> Result<EntityInode> {
@@ -537,6 +583,7 @@ where
                 };
                 let mut inode = self.inode(ino, &mut rows).await?;
                 let mut replacements = Vec::new();
+                let mut hints = Vec::new();
                 let mut owner_keys = Vec::new();
                 let mut writes = Vec::new();
                 for (range, receipt) in uploaded.iter().zip(receipts) {
@@ -556,6 +603,13 @@ where
                             slice_offset: 0,
                         },
                     )?;
+                    hints.push((
+                        index,
+                        Self::slice_hint(new.spans.iter().filter_map(|span| match span.source {
+                            ChunkSource::Data { slice_id, .. } => Some(slice_id),
+                            _ => None,
+                        })),
+                    ));
                     rows.add(RowCheck {
                         key: self.namespace.keys.object_descriptor(receipt.slice_id()),
                         expected: None,
@@ -617,10 +671,10 @@ where
                     })?;
                     super::backend::add_bytes(&mut stored_bytes, write.key(), old.as_deref())?;
                 }
-                Ok::<_, EntityError>((authority, plan, size))
+                Ok::<_, EntityError>((authority, plan, size, hints))
             }
             .await;
-            let (authority, plan, size) = match prepared {
+            let (authority, plan, size, hints) = match prepared {
                 Ok(prepared) => prepared,
                 Err(error) if can_split && Self::aggregate_metadata_bound(&error) => {
                     return Ok(None);
@@ -628,7 +682,12 @@ where
                 Err(error) => return Err(error),
             };
             match self.namespace.backend.commit(&authority, &plan).await {
-                Ok(CommitOutcome::Committed) => return Ok(Some(size)),
+                Ok(CommitOutcome::Committed) => {
+                    for (index, hint) in hints {
+                        self.remember_slice_hint(ino, index, hint);
+                    }
+                    return Ok(Some(size));
+                }
                 // A durable PUT may outlive this snapshot's deadline while the
                 // same writer successfully renews. Refresh exact authority after
                 // a known rejection; a truly expired/fenced session fails the
@@ -711,9 +770,20 @@ where
     }
 
     async fn read_attempt(&self, ino: i64, offset: u64, length: usize) -> Result<Vec<u8>> {
-        let chunk_keys = self.chunk_keys(ino, offset, length);
+        let hint_keys = self.read_hint_keys(ino, offset, length);
+        let mut chunk_keys = self.chunk_keys(ino, offset, length);
+        chunk_keys.extend(hint_keys.iter().cloned());
+        let snapshot = match self.snapshot(ino, chunk_keys).await {
+            // Unused stale hints may name oversized or malformed backend rows.
+            // A speculative read must not make an otherwise valid read fail.
+            Err(_) if !hint_keys.is_empty() => {
+                self.snapshot(ino, self.chunk_keys(ino, offset, length))
+                    .await
+            }
+            result => result,
+        };
         let mut fetch_visible_chunks = false;
-        let (_, mut rows) = match self.snapshot(ino, chunk_keys).await {
+        let (_, mut rows) = match snapshot {
             Err(error) if Self::aggregate_metadata_bound(&error) => {
                 // A visible truncate cut can leave large tail maps awaiting
                 // cleanup. Read the inode first when eager prefetch exceeds
@@ -733,13 +803,15 @@ where
         let mut pieces = Vec::new();
         let mut descriptors = BTreeMap::new();
         let mut maps = Vec::new();
-        let mut ownership_keys = Vec::new();
+        let mut ownership_keys = BTreeSet::new();
         while position < offset + length as u64 {
             let index = position / self.chunk_size;
             let count = (self.chunk_size - position % self.chunk_size)
                 .min(offset + length as u64 - position);
             let map = self.chunk(&inode, index, &mut rows).await?;
-            for slice_id in map.upper_slices()? {
+            let slices = map.upper_slices()?;
+            self.remember_slice_hint(ino, index, Self::slice_hint(slices.iter().copied()));
+            for slice_id in slices {
                 ownership_keys.extend([
                     self.namespace.keys.slice(slice_id),
                     self.namespace.keys.owner(slice_id, ino, index),
@@ -747,15 +819,17 @@ where
             }
             for span in map.clip(position % self.chunk_size, count)? {
                 if let ChunkSource::Data { slice_id, .. } = span.source {
-                    ownership_keys.push(self.namespace.keys.object_descriptor(slice_id));
+                    ownership_keys.insert(self.namespace.keys.object_descriptor(slice_id));
                 }
             }
             maps.push((index, count, map));
             position += count;
         }
-        // Slice identities depend on decoded maps. Fetch all dependent
-        // ownership/authentication rows in one batch, never per piece.
-        rows.prefetch(ownership_keys).await?;
+        // Fresh maps determine the required rows. Discard unused hints so they
+        // cannot consume the dependent-read budget or create false conflicts.
+        rows.discard_unused_hints(&hint_keys, &ownership_keys);
+        // Cold/stale hints still discover all dependencies in one atomic batch.
+        rows.prefetch(ownership_keys.into_iter().collect()).await?;
         position = offset;
         for (index, count, map) in maps {
             let membership = super::ownership::plan_chunk_membership_from_rows(

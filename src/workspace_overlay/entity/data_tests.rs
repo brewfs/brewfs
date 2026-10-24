@@ -571,6 +571,152 @@ async fn batched_upper_read_rechecks_lease_after_get() {
     assert_eq!(reading.await.unwrap(), Err(EntityError::Fenced));
 }
 
+#[tokio::test]
+#[ignore = "requires isolated RustFS via the entity data test harness"]
+async fn batched_read_does_not_validate_unused_stale_slice_hints() {
+    let fixture = attach(
+        Arc::new(MeteredBackend::new(MemoryEntityBackend::new(1000))),
+        EntityKeys::new(Uuid::new_v4(), Uuid::new_v4()),
+        1_000_000,
+    )
+    .await;
+    let handle = new_file(&fixture, b"stale-hints").await;
+    fixture
+        .data
+        .write(handle.clone(), 0, Bytes::from_static(b"old"), false)
+        .await
+        .unwrap();
+    let snapshot = fixture
+        .backend
+        .inner
+        .read(&[fixture.keys.chunk(handle.ino(), 0)])
+        .await
+        .unwrap();
+    let map: ChunkMap = codec::decode(snapshot.rows[0].as_deref().unwrap()).unwrap();
+    let descriptor_key = fixture
+        .keys
+        .object_descriptor(*map.upper_slices().unwrap().first().unwrap());
+    let expected = fixture
+        .backend
+        .inner
+        .read(std::slice::from_ref(&descriptor_key))
+        .await
+        .unwrap()
+        .rows
+        .remove(0);
+    let reader = EntityData::new(fixture.namespace.clone(), fixture.objects.clone(), 8)
+        .await
+        .unwrap();
+    assert_eq!(reader.read(handle.clone(), 0, 3).await.unwrap(), b"old");
+    fixture
+        .data
+        .write(handle.clone(), 0, Bytes::from_static(b"new"), false)
+        .await
+        .unwrap();
+    let authority = fixture.namespace.authority().await.unwrap();
+    let next_get = fixture.objects.gets.load(Ordering::SeqCst) + 1;
+    fixture.objects.pause_get.store(next_get, Ordering::SeqCst);
+    fixture.backend.take_counts();
+    let reading = tokio::spawn(async move { reader.read(handle, 0, 3).await });
+    fixture.objects.entered().await;
+    // This old descriptor is unrelated to the freshly observed map. Changing
+    // it during GET must not invalidate the read or cause a second object GET.
+    assert_eq!(
+        fixture
+            .backend
+            .inner
+            .commit(
+                &authority,
+                &EntityPlan {
+                    checks: vec![RowCheck {
+                        key: descriptor_key.clone(),
+                        expected
+                    }],
+                    writes: vec![RowWrite::Delete {
+                        key: descriptor_key
+                    }],
+                }
+            )
+            .await
+            .unwrap(),
+        CommitOutcome::Committed,
+    );
+    fixture.objects.resume.notify_one();
+    assert_eq!(reading.await.unwrap().unwrap(), b"new");
+    assert_eq!(fixture.backend.take_counts(), (3, 0, 0, 0));
+    assert_eq!(fixture.objects.gets.load(Ordering::SeqCst), next_get);
+}
+
+#[tokio::test]
+#[ignore = "requires isolated Redis and RustFS via the entity data test harness"]
+async fn redis_batched_read_ignores_corrupt_unused_hint_rows() {
+    let url = std::env::var("BREWFS_TEST_REDIS_URL").expect("BREWFS_TEST_REDIS_URL");
+    let volume = Uuid::new_v4();
+    let fixture = attach(
+        Arc::new(MeteredBackend::new(
+            RedisEntityBackend::connect(&url, volume).await.unwrap(),
+        )),
+        EntityKeys::new(volume, Uuid::new_v4()),
+        60_000_000_000,
+    )
+    .await;
+    let mut connection = redis::Client::open(url)
+        .unwrap()
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let handle = new_file(&fixture, b"corrupt-hint").await;
+    let reader = EntityData::new(fixture.namespace.clone(), fixture.objects.clone(), 8)
+        .await
+        .unwrap();
+    for (bytes, required) in [(b"before", false), (b"after!", true)] {
+        fixture
+            .data
+            .write(handle.clone(), 0, Bytes::copy_from_slice(bytes), false)
+            .await
+            .unwrap();
+        assert_eq!(reader.read(handle.clone(), 0, 6).await.unwrap(), bytes);
+        let snapshot = fixture
+            .backend
+            .inner
+            .read(&[fixture.keys.chunk(handle.ino(), 0)])
+            .await
+            .unwrap();
+        let map: ChunkMap = codec::decode(snapshot.rows[0].as_deref().unwrap()).unwrap();
+        let key = fixture
+            .keys
+            .object_descriptor(*map.upper_slices().unwrap().first().unwrap());
+        redis::pipe()
+            .cmd("DEL")
+            .arg(&key)
+            .ignore()
+            .cmd("LPUSH")
+            .arg(&key)
+            .arg("wrong type")
+            .ignore()
+            .query_async::<()>(&mut connection)
+            .await
+            .unwrap();
+        if required {
+            assert!(matches!(
+                reader.read(handle.clone(), 0, 6).await,
+                Err(EntityError::Corrupt(_))
+            ));
+        } else {
+            // Replace the map without consulting its now-unused descriptor.
+            fixture
+                .data
+                .write(handle.clone(), 0, Bytes::from_static(b"after!"), false)
+                .await
+                .unwrap();
+            fixture.backend.take_counts();
+            assert_eq!(reader.read(handle.clone(), 0, 6).await.unwrap(), b"after!");
+            // Failed speculative read, ordinary map/dependency reads, final fence.
+            assert_eq!(fixture.backend.take_counts(), (4, 0, 0, 0));
+        }
+    }
+}
+
 async fn exercise_fragmented_publication<B: EntityBackend + 'static>(
     fixture: &Fixture<MeteredBackend<B>>,
 ) {

@@ -142,6 +142,22 @@ impl<B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'_, B, L>
         &self.rows
     }
 
+    /// Drop only advisory rows that the freshly decoded read plan does not use.
+    /// Atomic coverage of the remaining observations is unchanged.
+    pub(in crate::workspace_overlay::entity) fn discard_unused_hints(
+        &mut self,
+        hints: &[Vec<u8>],
+        required: &BTreeSet<Vec<u8>>,
+    ) {
+        for key in hints {
+            if !required.contains(key)
+                && let Some(value) = self.rows.remove(key)
+            {
+                self.bytes -= key.len() + value.as_ref().map_or(0, Vec::len);
+            }
+        }
+    }
+
     /// Never replace an observation: a plan assembled from incompatible views
     /// is a conflict, including when one of those observations was absence.
     pub(in crate::workspace_overlay::entity) fn add(&mut self, check: RowCheck) -> Result<()> {
