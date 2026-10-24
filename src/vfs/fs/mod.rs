@@ -366,6 +366,8 @@ where
     fuse_write_order: Arc<FuseWriteOrder>,
     fuse_read_cancel: crate::vfs::fuse_read_cancel::ReadRegistry,
     fuse_notify: StdMutex<Option<FuseNotify>>,
+    #[cfg(target_os = "linux")]
+    fuse_mount_device: StdMutex<Option<(u32, u32)>>,
     statfs_cache: StdMutex<Option<StatFsCache>>,
     fallocate_statfs_cache: StdMutex<Option<FallocateStatFsCache>>,
     posix_lock_owners: DashMap<(i64, i64), ()>,
@@ -770,6 +772,8 @@ where
             fuse_write_order: Arc::new(FuseWriteOrder::default()),
             fuse_read_cancel,
             fuse_notify: StdMutex::new(None),
+            #[cfg(target_os = "linux")]
+            fuse_mount_device: StdMutex::new(None),
             statfs_cache: StdMutex::new(None),
             fallocate_statfs_cache: StdMutex::new(None),
             posix_lock_owners: DashMap::new(),
@@ -1875,6 +1879,24 @@ where
             .fuse_write_order
             .wait_for_prior(ino, unique)
             .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_fuse_mount_device(&self, device: Option<(u32, u32)>) {
+        *self
+            .state
+            .fuse_mount_device
+            .lock()
+            .expect("fuse mount lock poisoned") = device;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fuse_mount_device(&self) -> Option<(u32, u32)> {
+        *self
+            .state
+            .fuse_mount_device
+            .lock()
+            .expect("fuse mount lock poisoned")
     }
 
     pub(crate) fn set_fuse_notify(&self, notify: FuseNotify) {

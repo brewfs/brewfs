@@ -15,6 +15,8 @@
 pub(crate) mod adapter;
 #[cfg(all(test, feature = "workspace-overlay", target_os = "linux"))]
 mod cancel_tests;
+#[cfg(target_os = "linux")]
+mod clone_ioctl;
 #[cfg(feature = "workspace-overlay")]
 pub mod entity;
 pub mod mount;
@@ -458,44 +460,17 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    async fn resolve_proc_fd_inode(&self, pid: u32, fd: i64) -> FuseResult<i64> {
-        if fd < 0 {
-            return Err(libc::EBADF.into());
-        }
-
-        let link = std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
-            .map_err(|_| Errno::from(libc::ENOENT))?;
-        let mut host_path = link.to_string_lossy().into_owned();
-        if let Some(stripped) = host_path.strip_suffix(" (deleted)") {
-            host_path = stripped.to_string();
-        }
-        if !host_path.starts_with('/') {
-            return Err(libc::EXDEV.into());
-        }
-
-        let mut starts = vec![0];
-        for (idx, ch) in host_path.char_indices().skip(1) {
-            if ch == '/' {
-                starts.push(idx);
-            }
-        }
-
-        for start in starts {
-            let candidate = &host_path[start..];
-            if let Ok(ino) = self.lookup_path_to_ino(candidate).await {
-                return Ok(ino);
-            }
-        }
-
-        Err(libc::EXDEV.into())
+    fn resolve_proc_fd_inode(&self, pid: u32, fd: i64) -> FuseResult<i64> {
+        let device = self
+            .fuse_mount_device()
+            .ok_or_else(|| Errno::from(libc::EXDEV))?;
+        clone_ioctl::source_inode(pid, fd, device)
     }
 
     #[cfg(target_os = "linux")]
     async fn ioctl_ficlone(&self, req: Request, dst_ino: u64, arg: u64) -> FuseResult<ReplyIoctl> {
         let src_fd = i32::try_from(arg).map_err(|_| Errno::from(libc::EINVAL))?;
-        let src_ino = self
-            .resolve_proc_fd_inode(req.pid, i64::from(src_fd))
-            .await?;
+        let src_ino = self.resolve_proc_fd_inode(req.pid, i64::from(src_fd))?;
         let src_attr = self
             .stat_ino(src_ino)
             .await
@@ -522,7 +497,7 @@ where
         in_data: &[u8],
     ) -> FuseResult<ReplyIoctl> {
         let range = Self::parse_clone_range(in_data).ok_or_else(|| Errno::from(libc::EINVAL))?;
-        let src_ino = self.resolve_proc_fd_inode(req.pid, range.src_fd).await?;
+        let src_ino = self.resolve_proc_fd_inode(req.pid, range.src_fd)?;
         self.copy_file_range_inodes(
             src_ino,
             range.src_offset,
@@ -769,6 +744,8 @@ where
     }
 
     async fn destroy(&self, _req: Request) {
+        #[cfg(target_os = "linux")]
+        self.set_fuse_mount_device(None);
         if Filesystem::supports_read_cancellation(self) {
             self.shutdown_fuse_reads().await;
         }
@@ -2229,7 +2206,7 @@ where
         &self,
         req: Request,
         inode: u64,
-        _fh: u64,
+        fh: u64,
         flags: u32,
         cmd: u32,
         arg: u64,
@@ -2252,6 +2229,11 @@ where
 
         #[cfg(target_os = "linux")]
         {
+            if (cmd == libc::FICLONE as u32 || cmd == libc::FICLONERANGE as u32)
+                && !self.handle_allows_write_for_inode(fh, inode as i64)
+            {
+                return Err(libc::EBADF.into());
+            }
             match cmd {
                 // FS_IOC_FSGETXATTR = _IOR('X', 31, struct fsxattr).
                 // xfs_io labels this probe FS_IOC_GETXATTR in diagnostics.
