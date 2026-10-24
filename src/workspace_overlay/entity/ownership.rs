@@ -22,6 +22,7 @@ use super::lifecycle::{
     committed, put,
 };
 use super::model::ChunkMap;
+use super::recovery::ChunkDiscovery;
 use super::{EntityError, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -706,6 +707,8 @@ pub struct OrphanRecord {
     pub ino: i64,
     pub lease: LeaseIdentity,
     pub cleanup_chunk: u64,
+    #[serde(default)]
+    pub(super) discovery: ChunkDiscovery,
 }
 
 /// Combine with the last-unlink inode/dentry transaction. The edge exists even
@@ -724,6 +727,7 @@ pub fn plan_orphan(
         ino,
         lease: session.identity(),
         cleanup_chunk: 0,
+        discovery: ChunkDiscovery::default(),
     };
     let writes = match current.as_deref() {
         Some(bytes) => {

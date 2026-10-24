@@ -1,11 +1,15 @@
 #![cfg(feature = "workspace-overlay")]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use brewfs::ObjectBackend;
-use brewfs::workspace_overlay::entity::backend::EntityBackend;
+use brewfs::workspace_overlay::entity::backend::{
+    CommitOutcome, CreateAllocation, EntityBackend, EntityPlan, RowCheck, RowSnapshot, RowWrite,
+    SliceAllocation, TransactionAuthority,
+};
 use brewfs::workspace_overlay::entity::codec::decode;
 use brewfs::workspace_overlay::entity::data::EntityData;
 use brewfs::workspace_overlay::entity::keys::EntityKeys;
@@ -17,8 +21,8 @@ use brewfs::workspace_overlay::entity::model::{
 use brewfs::workspace_overlay::entity::namespace::{
     CreateRequest, Credentials, EntityHandle, EntityNamespace,
 };
-use brewfs::workspace_overlay::entity::ownership::SliceOwnership;
-use brewfs::workspace_overlay::entity::recovery::Recovery;
+use brewfs::workspace_overlay::entity::ownership::{OrphanRecord, SliceOwnership};
+use brewfs::workspace_overlay::entity::recovery::{Recovery, TruncateIntent, prepare_resize};
 use brewfs::workspace_overlay::entity::redis::RedisEntityBackend;
 use brewfs::workspace_overlay::entity::resolver::{ImmutableLower, ImmutableLowerData};
 use brewfs::workspace_overlay::entity::{EntityError, Result};
@@ -132,6 +136,85 @@ impl ObjectBackend for Objects {
 }
 
 const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
+
+/// A recovery attempt must save progress before inspecting more than 4096
+/// chunk keys, even if every scanned key belongs to the retained prefix.
+struct BoundedDiscovery<B> {
+    inner: Arc<B>,
+    scanned: AtomicUsize,
+}
+
+#[async_trait]
+impl<B: EntityBackend> EntityBackend for BoundedDiscovery<B> {
+    async fn read(&self, keys: &[Vec<u8>]) -> Result<RowSnapshot> {
+        self.inner.read(keys).await
+    }
+
+    async fn read_checked(
+        &self,
+        keys: &[Vec<u8>],
+        checks: &[RowCheck],
+    ) -> Result<(RowSnapshot, bool)> {
+        self.inner.read_checked(keys, checks).await
+    }
+
+    async fn commit(
+        &self,
+        authority: &TransactionAuthority,
+        plan: &EntityPlan,
+    ) -> Result<CommitOutcome> {
+        let result = self.inner.commit(authority, plan).await?;
+        assert_eq!(result, CommitOutcome::Committed, "uncontended recovery");
+        self.scanned.store(0, Ordering::SeqCst);
+        Ok(result)
+    }
+
+    async fn commit_with_inode_allocation(
+        &self,
+        authority: &TransactionAuthority,
+        plan: &EntityPlan,
+        create: &CreateAllocation,
+    ) -> Result<Option<i64>> {
+        self.inner
+            .commit_with_inode_allocation(authority, plan, create)
+            .await
+    }
+
+    async fn reserve_slices(
+        &self,
+        authority: &TransactionAuthority,
+        allocation: &SliceAllocation,
+    ) -> Result<Option<Vec<u64>>> {
+        self.inner.reserve_slices(authority, allocation).await
+    }
+
+    async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_prefix(prefix, limit).await
+    }
+
+    async fn scan_prefix_batch(
+        &self,
+        prefix: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_prefix_batch(prefix, limit).await
+    }
+
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        let page = self.inner.scan_keys_page(prefix, after, limit).await?;
+        let scanned = self.scanned.fetch_add(page.len(), Ordering::SeqCst) + page.len();
+        assert!(
+            scanned <= 4096,
+            "cleanup scanned {scanned} keys without saving progress"
+        );
+        Ok(page)
+    }
+}
 
 fn root() -> Credentials {
     Credentials {
@@ -254,6 +337,19 @@ impl<B: EntityBackend + 'static> Fixture<B> {
             .await
             .unwrap();
         drop(self.handle.take());
+        let orphan = self
+            .backend
+            .read(&[self.keys.orphan(self.ino)])
+            .await
+            .unwrap();
+        let bytes = orphan.rows[0].as_deref().unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        legacy.as_object_mut().unwrap().remove("discovery");
+        assert_eq!(
+            decode::<OrphanRecord>(&serde_json::to_vec(&legacy).unwrap()).unwrap(),
+            decode::<OrphanRecord>(bytes).unwrap(),
+            "old orphan records start with empty discovery"
+        );
         let maintenance = self
             .lifecycle
             .enter_maintenance(&self.session)
@@ -300,6 +396,10 @@ async fn large_file_contract<B: EntityBackend + 'static>(
         "backend={}, chunks={chunks}, orphan={orphan}",
         std::any::type_name::<B>()
     );
+    let backend = Arc::new(BoundedDiscovery {
+        inner: backend,
+        scanned: AtomicUsize::new(0),
+    });
     let mut fixture = Fixture::new(backend, keys, chunks).await;
     let prefix = fixture.keys.chunk_prefix(fixture.ino);
     // Full observations must still reject overflow: directory emptiness and
@@ -348,7 +448,10 @@ async fn large_file_contract<B: EntityBackend + 'static>(
         Err(EntityError::Invalid(_))
     ));
     if orphan {
-        fixture.unlink_and_drain(chunks + 1).await;
+        // Discovery-only steps also have to survive reconstructing Recovery.
+        fixture
+            .unlink_and_drain(chunks * (chunks / 1024 + 1) + 1)
+            .await;
         fixture.assert_drained().await;
     } else {
         let handle = fixture.handle.as_ref().unwrap().clone();
@@ -426,13 +529,18 @@ async fn issue_188_runtime_truncate_drains_more_than_4098_steps() {
 #[tokio::test]
 async fn issue_188_partial_cut_preserves_large_prefix_and_drains_sparse_tail() {
     let fixture = Fixture::new(
-        Arc::new(MemoryEntityBackend::new(1000)),
+        Arc::new(BoundedDiscovery {
+            inner: Arc::new(MemoryEntityBackend::new(1000)),
+            scanned: AtomicUsize::new(0),
+        }),
         EntityKeys::new(Uuid::new_v4(), Uuid::new_v4()),
         4097,
     )
     .await;
     let handle = fixture.handle.as_ref().unwrap().clone();
-    let far_index = (1_u64 << 32) + 17;
+    // The tail sorts into the first lexical page, but the smaller numeric
+    // boundary (4096) appears several pages later. Both must survive selection.
+    let far_index = 10_000_000_000;
     fixture
         .data
         .write(
@@ -451,6 +559,67 @@ async fn issue_188_partial_cut_preserves_large_prefix_and_drains_sparse_tail() {
     let tail: ChunkMap = decode(tail.rows[0].as_deref().unwrap()).unwrap();
     let tail_id = *tail.upper_slices().unwrap().first().unwrap();
     let cut = 4096 * CHUNK_SIZE + 1;
+    // Commit a legacy intent without discovery fields, then interrupt recovery
+    // after two pages. Each new Recovery instance must resume its durable scan.
+    let raw = fixture
+        .backend
+        .read(&[fixture.keys.inode(fixture.ino)])
+        .await
+        .unwrap()
+        .rows
+        .remove(0);
+    let UpperInode::Present(inode) = decode(raw.as_deref().unwrap()).unwrap() else {
+        panic!("file inode must be present");
+    };
+    let mut plan =
+        prepare_resize(&fixture.keys, fixture.ino, raw, &inode, cut, CHUNK_SIZE, 2).unwrap();
+    for write in &mut plan.writes {
+        if let RowWrite::Put { key, value } = write
+            && *key == fixture.keys.truncate(fixture.ino)
+        {
+            let mut legacy: serde_json::Value = serde_json::from_slice(value).unwrap();
+            legacy.as_object_mut().unwrap().remove("discovery");
+            *value = serde_json::to_vec(&legacy).unwrap();
+        }
+    }
+    let authority = fixture.lifecycle.authority(&fixture.session).await.unwrap();
+    fixture.backend.commit(&authority, &plan).await.unwrap();
+    let observed = [
+        fixture.keys.chunk(fixture.ino, 4096),
+        fixture.keys.chunk(fixture.ino, far_index),
+    ];
+    let before = fixture.backend.read(&observed).await.unwrap().rows;
+    let mut previous_after = None;
+    for _ in 0..2 {
+        assert!(
+            !Recovery::new(fixture.backend.clone(), fixture.keys.clone())
+                .truncate_step(&authority, fixture.ino)
+                .await
+                .unwrap()
+        );
+        let row = fixture
+            .backend
+            .read(&[fixture.keys.truncate(fixture.ino)])
+            .await
+            .unwrap();
+        let bytes = row.rows[0].as_deref().unwrap();
+        assert_eq!(decode::<TruncateIntent>(bytes).unwrap().next_chunk, 4096);
+        let state: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let after = fixture
+            .keys
+            .chunk(fixture.ino, state["discovery"]["after"].as_u64().unwrap());
+        assert!(
+            previous_after
+                .as_ref()
+                .is_none_or(|previous| *previous < after)
+        );
+        previous_after = Some(after);
+        assert_eq!(
+            state["discovery"]["smallest"],
+            serde_json::json!([far_index])
+        );
+        assert_eq!(fixture.backend.read(&observed).await.unwrap().rows, before);
+    }
     fixture
         .data
         .truncate(handle.clone(), cut)
