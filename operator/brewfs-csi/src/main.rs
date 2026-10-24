@@ -524,6 +524,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn static_volumes_do_not_advertise_controller_service() {
+        let response = IdentityService
+            .get_plugin_capabilities(Request::new(proto::GetPluginCapabilitiesRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(response.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn static_volumes_do_not_advertise_controller_rpcs() {
+        let response = ControllerService
+            .controller_get_capabilities(Request::new(proto::ControllerGetCapabilitiesRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(response.capabilities.is_empty());
+    }
+
+    fn single_node_mount() -> proto::VolumeCapability {
+        proto::VolumeCapability {
+            access_type: Some(AccessType::Mount(Default::default())),
+            access_mode: Some(proto::volume_capability::AccessMode {
+                mode: proto::volume_capability::access_mode::Mode::SingleNodeWriter as i32,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn static_volumes_reject_create_requests_without_promising_capacity() {
+        for required_bytes in [1 << 30, 2 << 30] {
+            let request = proto::CreateVolumeRequest {
+                name: "same-name".to_owned(),
+                capacity_range: Some(proto::CapacityRange {
+                    required_bytes,
+                    limit_bytes: 0,
+                }),
+                volume_capabilities: vec![single_node_mount()],
+                parameters: HashMap::from([
+                    ("cluster".to_owned(), "cluster-a".to_owned()),
+                    ("workspace".to_owned(), uuid::Uuid::from_u128(7).to_string()),
+                    ("config".to_owned(), "/etc/brewfs/config.yaml".to_owned()),
+                ]),
+                ..Default::default()
+            };
+            assert_eq!(
+                ControllerService
+                    .create_volume(Request::new(request))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::Unimplemented
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn static_volumes_do_not_confirm_unknown_volumes() {
+        let request = proto::ValidateVolumeCapabilitiesRequest {
+            volume_id: VolumeId::new("cluster-a", uuid::Uuid::from_u128(8))
+                .unwrap()
+                .as_string(),
+            volume_capabilities: vec![single_node_mount()],
+            ..Default::default()
+        };
+        assert_eq!(
+            ControllerService
+                .validate_volume_capabilities(Request::new(request))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unimplemented
+        );
+    }
+
+    #[tokio::test]
+    async fn static_volumes_do_not_offer_controller_deletion() {
+        let request = proto::DeleteVolumeRequest {
+            volume_id: VolumeId::new("cluster-a", uuid::Uuid::from_u128(8))
+                .unwrap()
+                .as_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            ControllerService
+                .delete_volume(Request::new(request))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unimplemented
+        );
+    }
+
     #[test]
     fn maps_driver_errors_to_csi_statuses() {
         assert_eq!(
