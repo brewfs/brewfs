@@ -106,6 +106,8 @@ aws cli / mc / SDK
 
 M1 仅承诺已验证的基础读写与 Range 语义，不承诺完整条件头行为。所有未实现的条件头必须明确拒绝，不能静默表现为已满足；完整 precondition 语义列入 M3。
 
+PUT、GET、HEAD、COPY、DELETE，以及 multipart complete/abort 的条件字段目前统一返回 `NotImplemented`，并在消费请求体、访问上传状态或修改对象之前拒绝请求。
+
 ## 5. 目录语义（S3 扁平空间 ↔ POSIX 层级）
 
 这是 S3 网关最难做对的部分，规则如下（与 JuiceFS gateway 行为对齐，但用 xattr 代替 atime 技巧）：

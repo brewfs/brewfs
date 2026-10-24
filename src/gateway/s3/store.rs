@@ -807,6 +807,12 @@ where
         mut req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
         let input = &mut req.input;
+        if input.if_match.is_some() || input.if_none_match.is_some() {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional PUT is not supported"
+            ));
+        }
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
         let mode = &self.opts.bucket_mode;
@@ -930,6 +936,16 @@ where
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
         let input = req.input;
+        if input.if_match.is_some()
+            || input.if_none_match.is_some()
+            || input.if_modified_since.is_some()
+            || input.if_unmodified_since.is_some()
+        {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional GET is not supported"
+            ));
+        }
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
         let lock = self.lock_for(&bucket, &key);
@@ -1015,6 +1031,16 @@ where
         req: S3Request<HeadObjectInput>,
     ) -> S3Result<S3Response<HeadObjectOutput>> {
         let input = req.input;
+        if input.if_match.is_some()
+            || input.if_none_match.is_some()
+            || input.if_modified_since.is_some()
+            || input.if_unmodified_since.is_some()
+        {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional HEAD is not supported"
+            ));
+        }
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
         let lock = self.lock_for(&bucket, &key);
@@ -1052,6 +1078,15 @@ where
         req: S3Request<DeleteObjectInput>,
     ) -> S3Result<S3Response<DeleteObjectOutput>> {
         let input = req.input;
+        if input.if_match.is_some()
+            || input.if_match_last_modified_time.is_some()
+            || input.if_match_size.is_some()
+        {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional DELETE is not supported"
+            ));
+        }
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
         let lock = self.lock_for(&bucket, &key);
@@ -1110,6 +1145,16 @@ where
         req: S3Request<CopyObjectInput>,
     ) -> S3Result<S3Response<CopyObjectOutput>> {
         let input = req.input;
+        if input.copy_source_if_match.is_some()
+            || input.copy_source_if_none_match.is_some()
+            || input.copy_source_if_modified_since.is_some()
+            || input.copy_source_if_unmodified_since.is_some()
+        {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional COPY is not supported"
+            ));
+        }
         let dst_bucket = input.bucket.as_str().to_string();
         let dst_key = input.key.as_str().to_string();
         let mode = &self.opts.bucket_mode;
@@ -1558,6 +1603,12 @@ where
         req: S3Request<CompleteMultipartUploadInput>,
     ) -> S3Result<S3Response<CompleteMultipartUploadOutput>> {
         let input = req.input;
+        if input.if_match.is_some() || input.if_none_match.is_some() {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional multipart completion is not supported"
+            ));
+        }
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
         let upload_id = input.upload_id.clone();
@@ -1688,6 +1739,12 @@ where
         req: S3Request<AbortMultipartUploadInput>,
     ) -> S3Result<S3Response<AbortMultipartUploadOutput>> {
         let input = req.input;
+        if input.if_match_initiated_time.is_some() {
+            return Err(s3_error!(
+                NotImplemented,
+                "conditional multipart abort is not supported"
+            ));
+        }
         let upload_id = input.upload_id.clone();
         let bucket = input.bucket.as_str().to_string();
         let key = input.key.as_str().to_string();
@@ -1863,6 +1920,10 @@ fn prefixes_to_dto(prefixes: &std::collections::BTreeSet<String>) -> Option<Vec<
             .collect(),
     )
 }
+
+#[cfg(test)]
+#[path = "tests/conditions.rs"]
+mod conditions_tests;
 
 #[cfg(test)]
 mod tests {
