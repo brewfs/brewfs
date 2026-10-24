@@ -1,10 +1,30 @@
-# Apply this after manifests/ has been installed and the example StorageClass
-# has been edited for a real BrewFS workspace. It is intentionally separate
-# from the base kustomization because it creates a test PVC and Pod.
+# Apply after manifests/ has been installed. Replace the PV volumeHandle with
+# an existing operator-provisioned workspace. Run only one example per workspace.
+# The PV capacity is administrator-supplied binding metadata, not a CSI quota.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: brewfs-csi-smoke
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: brewfs-csi-smoke-workspace
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    name: workspace
+    namespace: brewfs-csi-smoke
+  csi:
+    driver: csi.brewfs.io
+    volumeHandle: brewfs://replace-with-brewfs-cluster/00000000-0000-0000-0000-000000000001
+    volumeAttributes:
+      config: /etc/brewfs/config.yaml
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -13,7 +33,8 @@ metadata:
   namespace: brewfs-csi-smoke
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: brewfs-workspace
+  storageClassName: ""
+  volumeName: brewfs-csi-smoke-workspace
   resources:
     requests:
       storage: 1Gi

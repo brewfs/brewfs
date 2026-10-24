@@ -1,7 +1,30 @@
+# Replace the PV volumeHandle with an existing operator-provisioned workspace.
+# Run only one example per workspace. The PV capacity is administrator-supplied
+# binding metadata; the CSI adapter does not allocate or enforce it.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: brewfs-csi-example
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: brewfs-csi-example-workspace
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    name: brewfs-workspace
+    namespace: brewfs-csi-example
+  csi:
+    driver: csi.brewfs.io
+    volumeHandle: brewfs://replace-with-brewfs-cluster/00000000-0000-0000-0000-000000000001
+    volumeAttributes:
+      config: /etc/brewfs/config.yaml
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -11,7 +34,8 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: brewfs-workspace
+  storageClassName: ""
+  volumeName: brewfs-csi-example-workspace
   resources:
     requests:
       storage: 1Gi

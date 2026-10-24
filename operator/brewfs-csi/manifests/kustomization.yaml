@@ -5,7 +5,4 @@ resources:
   - rbac.yaml
   - csi-driver.yaml
   - config-secret.yaml
-  - controller.yaml
   - node.yaml
-  - csidriverconfig.yaml
-  - storageclass.yaml

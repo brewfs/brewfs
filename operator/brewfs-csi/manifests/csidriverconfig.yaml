@@ -1,8 +1,0 @@
-apiVersion: ate.dev/v1alpha1
-kind: CSIDriverConfig
-metadata:
-  name: csi.brewfs.io
-spec:
-  driverName: csi.brewfs.io
-  controllerEndpoint: tcp://brewfs-csi-controller.brewfs-csi-system.svc.cluster.local:10000
-  nodeSocketOverride: unix:///var/lib/kubelet/plugins/csi.brewfs.io/csi.sock

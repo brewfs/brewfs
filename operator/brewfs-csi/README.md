@@ -10,11 +10,17 @@ filesystem binary or its on-disk formats.
 * Driver name: `csi.brewfs.io`.
 * Volume identity: `brewfs://<cluster>/<workspace-uuid>`. The cluster name
   prevents an accidental cross-cluster identity collision; the UUID identifies
-  the operator-owned workspace. `CreateVolume` is deterministic and
-  idempotent. It returns StorageClass parameters as `volume_context`.
-* The controller does not create, clone, or delete workspace data. `DeleteVolume`
-  is a no-op and the example StorageClass uses `Retain`; workspace lifecycle
-  remains with `BrewFSWorkspace` and its operator.
+  an existing operator-provisioned workspace. An administrator supplies this ID
+  as a static PV's `spec.csi.volumeHandle`, with the mount configuration in
+  `spec.csi.volumeAttributes`. Keep that handle and context fixed for the PV.
+* The adapter supports **static volumes only**. It does not advertise
+  `CONTROLLER_SERVICE` or `CREATE_DELETE_VOLUME`. `CreateVolume`, `DeleteVolume`,
+  and `ValidateVolumeCapabilities` return `Unimplemented`; it has no controller
+  inventory or capacity guarantees. Workspace lifecycle remains with
+  `BrewFSWorkspace` and its operator. The example PVs use `Retain`.
+* A static PV's `capacity.storage` is administrator-supplied Kubernetes binding
+  metadata. The adapter does not allocate, reserve, or enforce that capacity.
+  Administrators must manage backing storage capacity separately.
 * `NodeStageVolume` starts the existing `brewfs mount` command with the
   configured file, workspace UUID, and privileged mount mode. One node plugin
   reuses one hash-derived mount directory for a volume. `NodePublishVolume`
@@ -51,31 +57,30 @@ acquisition is returned as a failed stage request.
 
 `manifests/` contains:
 
-* `CSIDriver` (`attachRequired: false`, `podInfoOnMount: true`), the
-  Substrate `ate.dev/v1alpha1/CSIDriverConfig`, and a workspace-aware
-  `StorageClass`;
-* a controller Deployment and Service. The controller exposes TCP gRPC for
-  Substrate and an in-pod Unix socket for the external provisioner sidecar;
+* `CSIDriver` (`attachRequired: false`, `podInfoOnMount: true`);
 * a privileged node DaemonSet with the CSI node registrar, `/dev/fuse`,
   `/var/lib/kubelet/pods`, `/var/lib/ate`, and `/var/lib/brewfs-csi` mounted
   with bidirectional propagation;
 * an example config Secret. Replace its Redis/S3 endpoints and credentials
   before use; it is a template, not a working credential;
-* separate PVC/Pod examples under `manifests/examples/`.
+* separate static PV/PVC/Pod examples under `manifests/examples/`. Replace the
+  PV's cluster name and workspace UUID with an existing workspace before use.
+  The PV and PVC use `storageClassName: ""` and explicit binding so Kubernetes
+  does not invoke a default dynamic provisioner. Run one example per workspace.
 
-Substrate v0.5.0 does not consume a PVC. Its `externalVolumeTemplate` names a
-StorageClass and asks the registered `CSIDriverConfig` to provision one volume
-per actor. The AX fork used for the integration adds
-`WorkspaceSpec.externalStorageClassName`; when it is set, AX emits that
-`externalVolumeTemplate` and leaves `durableDir` empty. The StorageClass's
-`workspace` parameter is the pre-provisioned BrewFS workspace UUID. This keeps
-workspace ownership with BrewFS while giving AX a deterministic CSI volume
-identity. The AX change is in `Ivanbeethoven/ax` branch `brewfs-workspace`,
-commit `a0a660a`.
+There is no external provisioner, controller Deployment, or dynamic StorageClass
+in the base installation. Substrate v0.5.0 `externalVolumeTemplate` and the AX
+fork's `WorkspaceSpec.externalStorageClassName` path require `CreateVolume` and
+are unsupported under this contract. Use the operator's mount-pod path or a
+consumer that accepts an existing static PV instead.
 
-The controller endpoint in `csidriverconfig.yaml` is intentionally plaintext
-inside the cluster. Enable Substrate pod-identity TLS and configure a matching
-server name before exposing it outside a trusted cluster network.
+When upgrading an earlier installation, move consumers to existing static PVs
+and stop dynamic provisioning. Existing PVs can retain their volume handles and
+attributes. Remove the old `brewfs-csi-controller` Deployment, Service, and
+ServiceAccount, the `brewfs-csi-provisioner` ClusterRole and ClusterRoleBinding,
+the `brewfs-workspace` StorageClass, and the `csi.brewfs.io` Substrate
+`CSIDriverConfig` if installed. Applying the new kustomization does not prune
+those old resources. Do not delete workspace data or bound PVs during migration.
 
 ## Build and local tests
 
@@ -83,6 +88,8 @@ server name before exposing it outside a trusted cluster network.
 cargo fmt --manifest-path operator/brewfs-csi/Cargo.toml --all --check
 cargo check --manifest-path operator/brewfs-csi/Cargo.toml --locked
 cargo test --manifest-path operator/brewfs-csi/Cargo.toml --locked
+cargo clippy --manifest-path operator/brewfs-csi/Cargo.toml --locked --all-targets -- -D warnings
+kubectl kustomize operator/brewfs-csi/manifests > /tmp/brewfs-csi.yaml
 ```
 
 The image build expects a BrewFS image containing `/usr/local/bin/brewfs`.
@@ -99,17 +106,25 @@ docker build \
 
 ## Verification matrix
 
+The static-volume contract has local regression coverage for capability
+discovery, rejection of 1 GiB/2 GiB `CreateVolume` requests with the same name,
+and rejection of controller validation/deletion of unknown IDs. All five tests
+fail against the earlier implementation. These tests do not exercise host
+mounts or establish new cluster/csi-sanity evidence.
+
 The following evidence was collected on the single-node k3s cluster
 `brewfs-singapore-v2` on 2026-10-22. The existing `ax-system`, `ate-system`,
 WorkerPool, and registry workloads were left running. The temporary resources
-were in `brewfs-csi-ax-test` and `ax-csi-test`.
+were in `brewfs-csi-ax-test` and `ax-csi-test`. This is historical evidence from
+before the static-volume contract; the dynamic provisioning and AX
+external-volume paths below are no longer supported.
 
 | Area | Result | Evidence |
 | --- | --- | --- |
 | Rust unit tests | **Verified** | `cargo fmt --manifest-path operator/brewfs-csi/Cargo.toml --all --check`; `cargo test --manifest-path operator/brewfs-csi/Cargo.toml --locked`: 6 tests passed. |
 | CSI image | **Verified** | Image `localhost:5001/brewfs-csi@sha256:91d446adb46e48e80b36bd8715440fc3fafb7e168d4de9a062adf2829e32ec96`, built from the committed Dockerfile with `protobuf-compiler` and pushed to the in-cluster registry. |
 | Identity and node CSI calls | **Verified** | csi-sanity v5.3.0 full run: no identity or node failures after the target-removal fix. `NodeStageVolume`, `NodePublishVolume`, `NodeUnpublishVolume`, `NodeUnstageVolume`, and idempotent stage/publish paths exercised against the live Unix socket. |
-| csi-sanity overall | **Partial** | `Ran 33 of 92 Specs`: **30 passed, 3 failed, 1 pending, 58 skipped**. The first failure was `CreateVolume ... same name and different capacity` (expected an error, got nil). The other failures were invalid-volume `DeleteVolume` and nonexistent-volume `ValidateVolumeCapabilities`. The controller is intentionally stateless and maps the configured workspace deterministically, so it does not retain capacity or a volume inventory. Snapshot, expansion, stats, and group-controller cases were skipped as unsupported. |
+| csi-sanity overall (before static-volume fix) | **Partial** | `Ran 33 of 92 Specs`: **30 passed, 3 failed, 1 pending, 58 skipped**. The first failure was `CreateVolume ... same name and different capacity` (expected an error, got nil). The other failures were invalid-volume `DeleteVolume` and nonexistent-volume `ValidateVolumeCapabilities`. The earlier controller lacked capacity enforcement and a volume inventory; issue #183 removes that unsupported provisioning contract. Snapshot, expansion, stats, and group-controller cases were skipped as unsupported. |
 | AX external-volume selection | **Verified** | AX fork `a0a660a`; `WorkspaceSpec.externalStorageClassName: brewfs-ax-workspace` produced a Substrate `externalVolumeTemplate`. The patched runner image was `localhost:5001/ax-task-runner@sha256:1b89768c157514a8e83571abeea5de71828107186a4d776aa4e050571f99ab5e`. |
 | AX task data path | **Verified** | `brewfs-csi-task-3` was resumed to `Running` with `Ready=True`, `WorkspaceReady=True`, worker `10.42.0.23`. `ax ssh ... -- sh -c 'cat /workspace/ax-proof; sha256sum /workspace/ax-proof; wc -c < /workspace/ax-proof'` returned `ax-csi-proof:workspace`, SHA-256 `4f6f4a5fcfde254f79f67bf571401928044d4f54b071f5e0a211ec210aecff38`, and `23` bytes. |
 | RustFS publication | **Verified** | `aws s3 ls s3://brewfs-data/chunks-v2/ --recursive` showed `chunks-v2/129/0` (27 bytes). Reading that object through RustFS and hashing its 23-byte payload after the four-byte slice header returned the same SHA and `ax-csi-proof:workspace`. |
@@ -135,8 +150,8 @@ parsing, status mapping, idempotent reference handling, and stale-target
 protection without pretending to validate host mount propagation. The k3s
 verification above is the only cluster evidence currently recorded.
 
-For a kind smoke after installing the base resources and replacing the config
-Secret/StorageClass workspace values:
+For a kind smoke after replacing the config Secret values and the static PV's
+`volumeHandle` with an existing operator-provisioned workspace:
 
 ```bash
 kubectl apply -k operator/brewfs-csi/manifests

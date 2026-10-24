@@ -1,8 +1,9 @@
 //! Shared CSI state and BrewFS volume identity handling.
 //!
-//! The CSI controller never creates or deletes a BrewFS workspace.  A
-//! workspace is an operator-owned resource, and its ID is carried by an
-//! immutable CSI volume ID.  The node side is the only component that starts
+//! CSI volumes refer to existing, operator-provisioned BrewFS workspaces;
+//! dynamic provisioning is unsupported. A workspace is an operator-owned
+//! resource, and its ID is carried by an immutable CSI volume ID.
+//! The node side is the only component that starts
 //! a BrewFS process; that process acquires the normal BrewFS sole-writer lease.
 
 use serde::{Deserialize, Serialize};

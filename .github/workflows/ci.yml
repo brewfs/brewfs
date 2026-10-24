@@ -125,6 +125,14 @@ jobs:
       - name: Clippy workspace overlay
         run: cargo clippy --workspace --all-targets --features workspace-overlay -- -D warnings
 
+      - name: Test CSI adapter
+        working-directory: operator/brewfs-csi
+        run: |
+          cargo fmt --all --check
+          cargo check --locked
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+
       - name: Test workspace operator
         working-directory: operator/brewfs-operator
         run: |

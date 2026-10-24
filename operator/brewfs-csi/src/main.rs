@@ -26,12 +26,11 @@ struct Args {
         default_value = "/var/lib/kubelet/plugins/csi.brewfs.io/csi.sock"
     )]
     socket: PathBuf,
-    /// Optional TCP endpoint for the controller service. Substrate's
-    /// CSIDriverConfig points at this endpoint; the node service still uses
-    /// the Unix socket above.
+    /// Optional TCP endpoint for CSI diagnostics. Dynamic provisioning is
+    /// unsupported; kubelet uses the Unix socket above.
     #[arg(long, env = "BREWFS_CSI_LISTEN")]
     listen: Option<std::net::SocketAddr>,
-    /// Durable state root shared by the controller/node process and restarts.
+    /// Durable node mount state root, preserved across restarts.
     #[arg(
         long,
         env = "BREWFS_CSI_STATE_DIR",
@@ -64,17 +63,9 @@ impl Identity for IdentityService {
         _request: Request<proto::GetPluginCapabilitiesRequest>,
     ) -> Result<Response<proto::GetPluginCapabilitiesResponse>, Status> {
         Ok(Response::new(proto::GetPluginCapabilitiesResponse {
-            // The external provisioner uses this capability response to
-            // decide whether it may call CreateVolume/DeleteVolume.  The
-            // controller service is implemented below, so advertising it is
-            // required for dynamic provisioning to proceed.
-            capabilities: vec![proto::PluginCapability {
-                r#type: Some(proto::plugin_capability::Type::Service(
-                    proto::plugin_capability::Service {
-                        r#type: proto::plugin_capability::service::Type::ControllerService as i32,
-                    },
-                )),
-            }],
+            // Workspaces are provisioned by the operator. Without a volume
+            // inventory or enforced capacity, we cannot offer a CSI controller.
+            capabilities: Vec::new(),
         }))
     }
 
@@ -89,72 +80,24 @@ impl Identity for IdentityService {
 #[derive(Debug, Clone, Copy, Default)]
 struct ControllerService;
 
-impl ControllerService {
-    fn context(
-        &self,
-        volume_id: &str,
-        context: &HashMap<String, String>,
-    ) -> Result<MountSpec, Status> {
-        let pairs = context
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect::<Vec<_>>();
-        MountSpec::from_context(volume_id, &pairs).map_err(status_for)
-    }
-}
-
 #[tonic::async_trait]
 impl Controller for ControllerService {
     async fn create_volume(
         &self,
-        request: Request<proto::CreateVolumeRequest>,
+        _request: Request<proto::CreateVolumeRequest>,
     ) -> Result<Response<proto::CreateVolumeResponse>, Status> {
-        let request = request.into_inner();
-        validate_capabilities(&request.volume_capabilities)?;
-        let cluster = request
-            .parameters
-            .get("cluster")
-            .cloned()
-            .unwrap_or_else(|| "default".to_owned());
-        let workspace = request.parameters.get("workspace").ok_or_else(|| {
-            Status::invalid_argument("StorageClass parameter workspace is required")
-        })?;
-        let workspace = uuid::Uuid::parse_str(workspace)
-            .map_err(|_| Status::invalid_argument("workspace must be a UUID"))?;
-        let id = VolumeId::new(cluster, workspace)
-            .map_err(status_for)?
-            .as_string();
-        let capacity_bytes = request
-            .capacity_range
-            .as_ref()
-            .map(|range| range.required_bytes.max(1))
-            .unwrap_or(1);
-        // The controller is intentionally stateless. BrewFS workspaces are
-        // operator-owned, so repeated CreateVolume calls return the same ID
-        // and never allocate or delete filesystem data.
-        let mut context = request.parameters;
-        context.insert("cluster".to_owned(), VolumeId::parse(&id).unwrap().cluster);
-        context.insert("workspace".to_owned(), workspace.to_string());
-        self.context(&id, &context)?;
-        Ok(Response::new(proto::CreateVolumeResponse {
-            volume: Some(proto::Volume {
-                capacity_bytes,
-                volume_id: id,
-                volume_context: context,
-                content_source: None,
-                accessible_topology: Vec::new(),
-            }),
-        }))
+        Err(Status::unimplemented(
+            "dynamic provisioning is unsupported; use a static PV for an operator-provisioned workspace",
+        ))
     }
 
     async fn delete_volume(
         &self,
-        request: Request<proto::DeleteVolumeRequest>,
+        _request: Request<proto::DeleteVolumeRequest>,
     ) -> Result<Response<proto::DeleteVolumeResponse>, Status> {
-        VolumeId::parse(&request.into_inner().volume_id).map_err(status_for)?;
-        // Do not delete the workspace. Its lifecycle belongs to the BrewFS
-        // operator, not to an individual AX actor.
-        Ok(Response::new(proto::DeleteVolumeResponse {}))
+        Err(Status::unimplemented(
+            "workspace lifecycle belongs to the BrewFS operator",
+        ))
     }
 
     async fn controller_publish_volume(
@@ -177,40 +120,25 @@ impl Controller for ControllerService {
 
     async fn validate_volume_capabilities(
         &self,
-        request: Request<proto::ValidateVolumeCapabilitiesRequest>,
+        _request: Request<proto::ValidateVolumeCapabilitiesRequest>,
     ) -> Result<Response<proto::ValidateVolumeCapabilitiesResponse>, Status> {
-        let request = request.into_inner();
-        VolumeId::parse(&request.volume_id).map_err(status_for)?;
-        validate_capabilities(&request.volume_capabilities)?;
-        Ok(Response::new(proto::ValidateVolumeCapabilitiesResponse {
-            confirmed: Some(proto::validate_volume_capabilities_response::Confirmed {
-                volume_context: request.volume_context,
-                volume_capabilities: request.volume_capabilities,
-                parameters: request.parameters,
-            }),
-            message: String::new(),
-        }))
+        Err(Status::unimplemented(
+            "controller validation is unsupported for operator-provisioned workspaces",
+        ))
     }
 
     async fn list_volumes(
         &self,
         _request: Request<proto::ListVolumesRequest>,
     ) -> Result<Response<proto::ListVolumesResponse>, Status> {
-        Ok(Response::new(proto::ListVolumesResponse {
-            entries: Vec::new(),
-            next_token: String::new(),
-        }))
+        Err(Status::unimplemented("volume inventory is not supported"))
     }
 
     async fn get_capacity(
         &self,
         _request: Request<proto::GetCapacityRequest>,
     ) -> Result<Response<proto::GetCapacityResponse>, Status> {
-        Ok(Response::new(proto::GetCapacityResponse {
-            available_capacity: 0,
-            maximum_volume_size: None,
-            minimum_volume_size: None,
-        }))
+        Err(Status::unimplemented("capacity reporting is not supported"))
     }
 
     async fn controller_get_capabilities(
@@ -218,9 +146,7 @@ impl Controller for ControllerService {
         _request: Request<proto::ControllerGetCapabilitiesRequest>,
     ) -> Result<Response<proto::ControllerGetCapabilitiesResponse>, Status> {
         Ok(Response::new(proto::ControllerGetCapabilitiesResponse {
-            capabilities: vec![controller_capability(
-                proto::controller_service_capability::rpc::Type::CreateDeleteVolume,
-            )],
+            capabilities: Vec::new(),
         }))
     }
 
@@ -399,18 +325,6 @@ impl Node for NodeService {
             max_volumes_per_node: 0,
             accessible_topology: None,
         }))
-    }
-}
-
-fn controller_capability(
-    capability: proto::controller_service_capability::rpc::Type,
-) -> proto::ControllerServiceCapability {
-    proto::ControllerServiceCapability {
-        r#type: Some(proto::controller_service_capability::Type::Rpc(
-            proto::controller_service_capability::Rpc {
-                r#type: capability as i32,
-            },
-        )),
     }
 }
 
