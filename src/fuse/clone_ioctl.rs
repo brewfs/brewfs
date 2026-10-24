@@ -1,7 +1,10 @@
 //! Resolve clone sources from kernel descriptor identity, never pathname suffixes.
 
+use std::fs::File;
 use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use asyncfuse::{Errno, Result};
@@ -73,14 +76,54 @@ pub(super) fn mounted_device(mount_point: &Path) -> io::Result<(u32, u32)> {
     }
 }
 
-pub(super) fn source_inode(pid: u32, fd: i64, device: (u32, u32)) -> Result<i64> {
+pub(crate) struct SourceFile {
+    pub(crate) ino: i64,
+    // O_PATH pins the kernel inode without opening a new FUSE handle (which
+    // would recursively enter our worker pool). The data path separately pins
+    // and validates the existing readable VFS handle it actually uses.
+    _file: File,
+}
+
+pub(super) fn source_file(pid: u32, fd: i64, device: (u32, u32)) -> Result<SourceFile> {
     let fd = i32::try_from(fd)
         .ok()
         .filter(|fd| *fd >= 0)
         .ok_or_else(|| Errno::from(libc::EBADF))?;
-    let info = read_proc(format!("/proc/{pid}/fdinfo/{fd}"), 4096)
+    let file = File::options()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(format!("/proc/{pid}/fd/{fd}"))
         .map_err(|_| Errno::from(libc::EBADF))?;
-    let info = std::str::from_utf8(&info).map_err(|_| Errno::from(libc::EBADF))?;
+    let pinned = read_proc(format!("/proc/self/fdinfo/{}", file.as_raw_fd()), 4096)
+        .map_err(|_| Errno::from(libc::EBADF))?;
+    let (mount_id, ino, _) = fd_identity(&pinned)?;
+    let original = read_proc(format!("/proc/{pid}/fdinfo/{fd}"), 4096)
+        .map_err(|_| Errno::from(libc::EBADF))?;
+    let (original_mount, original_ino, flags) = fd_identity(&original)?;
+    // The caller may have closed/reused its descriptor while we pinned it.
+    // Validate read authority only for the inode our owned reference pins.
+    if (mount_id, ino) != (original_mount, original_ino) {
+        return Err(libc::EBADF.into());
+    }
+    let access = flags & libc::O_ACCMODE as u32;
+    if flags & libc::O_PATH as u32 != 0
+        || (access != libc::O_RDONLY as u32 && access != libc::O_RDWR as u32)
+    {
+        return Err(libc::EBADF.into());
+    }
+
+    // The owned reference retains the original mount, including a bind mount
+    // visible only in the caller's namespace. Inspect that namespace's table.
+    let mounts = read_proc(format!("/proc/{pid}/mountinfo"), MAX_MOUNTINFO_BYTES)
+        .map_err(|_| Errno::from(libc::EXDEV))?;
+    if !fuse_mounts(&mounts).any(|mount| mount.id == mount_id && mount.device == device) {
+        return Err(libc::EXDEV.into());
+    }
+    Ok(SourceFile { ino, _file: file })
+}
+
+fn fd_identity(info: &[u8]) -> Result<(u64, i64, u32)> {
+    let info = std::str::from_utf8(info).map_err(|_| Errno::from(libc::EBADF))?;
     let field = |key| {
         info.lines()
             .find_map(|line| line.strip_prefix(key))
@@ -89,9 +132,6 @@ pub(super) fn source_inode(pid: u32, fd: i64, device: (u32, u32)) -> Result<i64>
     let flags = field("flags:")
         .and_then(|value| u32::from_str_radix(value, 8).ok())
         .ok_or_else(|| Errno::from(libc::EBADF))?;
-    if flags & libc::O_PATH as u32 != 0 || flags & libc::O_ACCMODE as u32 == libc::O_WRONLY as u32 {
-        return Err(libc::EBADF.into());
-    }
     let mount_id: u64 = field("mnt_id:")
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| Errno::from(libc::EXDEV))?;
@@ -100,16 +140,5 @@ pub(super) fn source_inode(pid: u32, fd: i64, device: (u32, u32)) -> Result<i64>
         .filter(|ino| *ino > 0)
         .ok_or_else(|| Errno::from(libc::EBADF))?;
 
-    // Mount IDs can differ for bind mounts and other mount namespaces. Match
-    // the source's kernel mount ID in its own namespace, then compare FUSE
-    // superblock devices. A different BrewFS mount has a different device even
-    // if both mounts expose identical paths and inode numbers.
-    let mounts = read_proc(format!("/proc/{pid}/mountinfo"), MAX_MOUNTINFO_BYTES)
-        .map_err(|_| Errno::from(libc::EXDEV))?;
-    if !fuse_mounts(&mounts).any(|mount| mount.id == mount_id && mount.device == device) {
-        return Err(libc::EXDEV.into());
-    }
-    // fdinfo supplies the open inode, so rename/unlink and paths ending in
-    // " (deleted)" cannot redirect the clone to a different inode.
-    Ok(ino)
+    Ok((mount_id, ino, flags))
 }

@@ -16,7 +16,7 @@ pub(crate) mod adapter;
 #[cfg(all(test, feature = "workspace-overlay", target_os = "linux"))]
 mod cancel_tests;
 #[cfg(target_os = "linux")]
-mod clone_ioctl;
+pub(crate) mod clone_ioctl;
 #[cfg(feature = "workspace-overlay")]
 pub mod entity;
 pub mod mount;
@@ -460,54 +460,36 @@ where
     }
 
     #[cfg(target_os = "linux")]
-    fn resolve_proc_fd_inode(&self, pid: u32, fd: i64) -> FuseResult<i64> {
+    fn resolve_proc_fd_source(&self, pid: u32, fd: i64) -> FuseResult<clone_ioctl::SourceFile> {
         let device = self
             .fuse_mount_device()
             .ok_or_else(|| Errno::from(libc::EXDEV))?;
-        clone_ioctl::source_inode(pid, fd, device)
+        clone_ioctl::source_file(pid, fd, device)
     }
 
     #[cfg(target_os = "linux")]
-    async fn ioctl_ficlone(&self, req: Request, dst_ino: u64, arg: u64) -> FuseResult<ReplyIoctl> {
-        let src_fd = i32::try_from(arg).map_err(|_| Errno::from(libc::EINVAL))?;
-        let src_ino = self.resolve_proc_fd_inode(req.pid, i64::from(src_fd))?;
-        let src_attr = self
-            .stat_ino(src_ino)
-            .await
-            .ok_or_else(|| Errno::from(libc::ENOENT))?;
-
-        self.truncate_inode(dst_ino as i64, 0)
-            .await
-            .map_err(Into::<Errno>::into)?;
-        self.copy_file_range_inodes(src_ino, 0, dst_ino as i64, 0, src_attr.size)
-            .await
-            .map_err(Into::<Errno>::into)?;
-        self.truncate_inode(dst_ino as i64, src_attr.size)
-            .await
-            .map_err(Into::<Errno>::into)?;
-
-        Ok(Self::ioctl_ok_reply())
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn ioctl_ficlonerange(
+    async fn ioctl_clone(
         &self,
         req: Request,
         dst_ino: u64,
-        in_data: &[u8],
+        dst_fh: u64,
+        src_fd: i64,
+        range: Option<(u64, u64, u64)>,
     ) -> FuseResult<ReplyIoctl> {
-        let range = Self::parse_clone_range(in_data).ok_or_else(|| Errno::from(libc::EINVAL))?;
-        let src_ino = self.resolve_proc_fd_inode(req.pid, range.src_fd)?;
-        self.copy_file_range_inodes(
-            src_ino,
-            range.src_offset,
-            dst_ino as i64,
-            range.dest_offset,
-            range.src_length,
-        )
-        .await
-        .map_err(Into::<Errno>::into)?;
-
+        let dst = self
+            .pin_file_handle(dst_fh)
+            .await
+            .map_err(|_| Errno::from(libc::EBADF))?;
+        if dst.handle.ino != dst_ino as i64 || !dst.handle.flags.write || dst.handle.flags.append {
+            return Err(libc::EBADF.into());
+        }
+        let source = self.resolve_proc_fd_source(req.pid, src_fd)?;
+        let src = self
+            .pin_clone_source(source.ino, &dst)
+            .map_err(|_| Errno::from(libc::EBADF))?;
+        self.clone_file_handles(source, src, dst, range)
+            .await
+            .map_err(Errno::from)?;
         Ok(Self::ioctl_ok_reply())
     }
 
@@ -2229,18 +2211,26 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            if (cmd == libc::FICLONE as u32 || cmd == libc::FICLONERANGE as u32)
-                && !self.handle_allows_write_for_inode(fh, inode as i64)
-            {
-                return Err(libc::EBADF.into());
-            }
             match cmd {
                 // FS_IOC_FSGETXATTR = _IOR('X', 31, struct fsxattr).
                 // xfs_io labels this probe FS_IOC_GETXATTR in diagnostics.
                 0x801c_581f => Ok(Self::ioctl_fsgetxattr_reply()),
-                x if x == libc::FICLONE as u32 => self.ioctl_ficlone(req, inode, arg).await,
+                x if x == libc::FICLONE as u32 => {
+                    let src_fd = i32::try_from(arg).map_err(|_| Errno::from(libc::EBADF))?;
+                    self.ioctl_clone(req, inode, fh, i64::from(src_fd), None)
+                        .await
+                }
                 x if x == libc::FICLONERANGE as u32 => {
-                    self.ioctl_ficlonerange(req, inode, in_data).await
+                    let range = Self::parse_clone_range(in_data)
+                        .ok_or_else(|| Errno::from(libc::EINVAL))?;
+                    self.ioctl_clone(
+                        req,
+                        inode,
+                        fh,
+                        range.src_fd,
+                        Some((range.src_offset, range.dest_offset, range.src_length)),
+                    )
+                    .await
                 }
                 _ => Err(libc::EOPNOTSUPP.into()),
             }

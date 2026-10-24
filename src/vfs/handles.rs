@@ -20,7 +20,7 @@ fn current_time_secs() -> i64 {
 }
 use std::time::Instant;
 use tokio::pin;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tokio::task::JoinHandle;
 
 /// Maximum entries to return per readdir/readdirplus call.
@@ -281,6 +281,9 @@ where
     pub(crate) flags: HandleFlags,
     write_dirty: AtomicU8,
     gate: Arc<HandleGate>,
+    // Clone ioctls hold a shared lifetime pin independently of the IO gate.
+    // Close takes the exclusive side before flushing/removing this handle.
+    lifetime: Arc<RwLock<()>>,
     state: StdMutex<FileHandleState<B, M>>,
     _memory_guard: Option<crate::meta::layer::MetadataMemoryGuard>,
 }
@@ -310,6 +313,7 @@ where
             flags,
             write_dirty: AtomicU8::new(0),
             gate: Arc::new(HandleGate::new()),
+            lifetime: Arc::new(RwLock::new(())),
             state: StdMutex::new(FileHandleState {
                 attr,
                 last_offset: 0,
@@ -324,6 +328,24 @@ where
     pub(crate) fn reader(&self, reader: Arc<FileReader<B, M>>) {
         let mut guard = self.state.lock().unwrap();
         guard.reader = Some(reader);
+    }
+
+    pub(crate) async fn pin(self: &Arc<Self>) -> PinnedFileHandle<B, M> {
+        PinnedFileHandle {
+            handle: self.clone(),
+            _guard: Arc::new(self.lifetime.clone().read_owned().await),
+        }
+    }
+
+    pub(crate) async fn lock_close(&self) -> OwnedRwLockWriteGuard<()> {
+        self.lifetime.clone().write_owned().await
+    }
+
+    pub(crate) fn try_pin(self: &Arc<Self>) -> Option<PinnedFileHandle<B, M>> {
+        Some(PinnedFileHandle {
+            handle: self.clone(),
+            _guard: Arc::new(self.lifetime.clone().try_read_owned().ok()?),
+        })
     }
 
     pub(crate) fn ensure_reader_with<F>(&self, make_reader: F)
@@ -545,6 +567,30 @@ where
 #[cfg(feature = "workspace-overlay")]
 pub(crate) struct FileHandleReadGuard {
     guard: HandleReadGuard,
+}
+
+/// The same file object survives validation, mutation and flush. Sharing the
+/// pin avoids taking a second read lock behind an already-queued close.
+pub(crate) struct PinnedFileHandle<B, M>
+where
+    B: BlockStore + Send + Sync + 'static,
+    M: MetaLayer + Send + Sync + 'static,
+{
+    pub(crate) handle: Arc<FileHandle<B, M>>,
+    _guard: Arc<OwnedRwLockReadGuard<()>>,
+}
+
+impl<B, M> Clone for PinnedFileHandle<B, M>
+where
+    B: BlockStore + Send + Sync + 'static,
+    M: MetaLayer + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle.clone(),
+            _guard: self._guard.clone(),
+        }
+    }
 }
 
 pub(crate) struct FileHandleWriteGuard {
