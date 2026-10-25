@@ -1617,9 +1617,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                         && req.gid.is_none()
                         && uid != inode.uid
                     {
-                        if !flags
-                            .contains(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW)
-                        {
+                        if !req.timestamps_use_write_permission(&flags) {
                             return Err(MetaError::Io(std::io::Error::from_raw_os_error(
                                 libc::EPERM,
                             )));
@@ -2154,6 +2152,12 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
     fn permission_snapshot_answers_access(&self) -> bool {
         self.packed_lower().is_some()
             && self.posix_acl_capability() == PosixAclCapability::ReadWrite
+    }
+
+    fn kernel_timestamp_permissions_authoritative(&self) -> bool {
+        self.lease_validity
+            .as_ref()
+            .is_some_and(|validity| validity.authoritative())
     }
 
     fn posix_acl_capability(&self) -> PosixAclCapability {

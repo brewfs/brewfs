@@ -142,6 +142,12 @@ pub struct SetAttr {
     pub mtime: Option<Timestamp>,
     /// The kernel requested current time, distinct from an explicit timestamp.
     pub mtime_now: bool,
+    /// This request came from a Linux connection with negotiated writeback
+    /// caching and default_permissions. Linux has checked the syscall's time
+    /// permissions, but may omit MTIME_NOW while supplying its own mtime.
+    /// This is transport context, not timestamp provenance: explicit values
+    /// must still be preserved. Plain wire conversion leaves this false.
+    pub kernel_writeback_permissions: bool,
     /// set file or directory ctime.
     pub ctime: Option<Timestamp>,
     #[cfg(target_os = "macos")]
@@ -298,9 +304,11 @@ mod timestamp_provenance_tests {
         wire.mtime = 123;
         let explicit = SetAttr::from(&wire);
         assert!(!explicit.atime_now && !explicit.mtime_now);
+        assert!(!explicit.kernel_writeback_permissions);
         wire.valid |= FATTR_ATIME_NOW | FATTR_MTIME_NOW;
         let now = SetAttr::from(&wire);
         assert!(now.atime_now && now.mtime_now);
         assert!(now.atime.is_some() && now.mtime.is_some());
+        assert!(!now.kernel_writeback_permissions);
     }
 }

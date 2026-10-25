@@ -141,6 +141,7 @@ mod budget_reply_tests {
             resp: vec![sender],
             direct_io: false,
             force_readdir_plus: false,
+            kernel_writeback_permissions: false,
             _inflight: Arc::new(AtomicUsize::new(0)),
             _inflight_notify: Arc::new(async_notify::Notify::new()),
             response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
@@ -432,6 +433,7 @@ mod umask_tests {
             resp: vec![tx],
             direct_io: false,
             force_readdir_plus: false,
+            kernel_writeback_permissions: false,
             _inflight: Arc::new(AtomicUsize::new(0)),
             _inflight_notify: Arc::new(async_notify::Notify::new()),
             response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
@@ -1092,7 +1094,8 @@ pub(super) async fn handle_setattr_inline<FS: Filesystem + Send + Sync + 'static
         }
         Ok(v) => v,
     };
-    let set_attr = SetAttr::from(&setattr_in);
+    let mut set_attr = SetAttr::from(&setattr_in);
+    set_attr.kernel_writeback_permissions = ctx.kernel_writeback_permissions;
     let fh = if setattr_in.valid & FATTR_FH > 0 {
         Some(setattr_in.fh)
     } else {

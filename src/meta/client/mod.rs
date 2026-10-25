@@ -924,7 +924,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         }
 
         let timestamp_request = req.atime.is_some() || req.mtime.is_some() || req.ctime.is_some();
-        let timestamp_flags = SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW;
+        let timestamp_flags = SetAttrFlags::SET_ATIME_NOW
+            | SetAttrFlags::SET_MTIME_NOW
+            | SetAttrFlags::KERNEL_WRITEBACK_TIMES;
         let non_timestamp_flags =
             SetAttrFlags::from_bits_retain(flags.bits() & !timestamp_flags.bits());
 

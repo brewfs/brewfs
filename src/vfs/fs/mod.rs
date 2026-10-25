@@ -4857,7 +4857,10 @@ where
     }
 
     fn deleted_inode_timestamp_only_setattr(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool {
-        let timestamp_flags = (SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW).bits();
+        let timestamp_flags = (SetAttrFlags::SET_ATIME_NOW
+            | SetAttrFlags::SET_MTIME_NOW
+            | SetAttrFlags::KERNEL_WRITEBACK_TIMES)
+            .bits();
         req.mode.is_none()
             && req.uid.is_none()
             && req.gid.is_none()

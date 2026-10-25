@@ -117,6 +117,28 @@ pub struct SetAttrRequest {
     pub flags: Option<u32>,
 }
 
+impl SetAttrRequest {
+    /// Whether a non-owner can authorize this time update with write access.
+    /// Linux writeback omits MTIME_NOW even for utime(NULL). Its transport
+    /// marker records the kernel's syscall permission check, not an inferred
+    /// timestamp value. Ordinary metadata callers still need both NOW flags.
+    pub(crate) fn timestamps_use_write_permission(&self, flags: &SetAttrFlags) -> bool {
+        flags.contains(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW)
+            || (flags.contains(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::KERNEL_WRITEBACK_TIMES)
+                && flags.bits()
+                    & !(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::KERNEL_WRITEBACK_TIMES).bits()
+                    == 0
+                && self.atime.is_some()
+                && self.mtime.is_some()
+                && self.ctime.is_some()
+                && self.mode.is_none()
+                && self.uid.is_none()
+                && self.gid.is_none()
+                && self.size.is_none()
+                && self.flags.is_none())
+    }
+}
+
 /// Builds a `SetAttrRequest` for chmod-style updates.
 ///
 /// BrewFS persists the standard permission bits plus setuid, setgid, and sticky.
@@ -146,6 +168,11 @@ bitflags::bitflags! {
         const CLEAR_SGID = 0b0010;
         const SET_ATIME_NOW = 0b0100;
         const SET_MTIME_NOW = 0b1000;
+        /// A Linux FUSE writeback timestamp request whose syscall permissions
+        /// were checked by default_permissions on an exclusively leased
+        /// workspace. This does not mean mtime is NOW: retain the supplied
+        /// value and recheck the current write ACL and mutation lease.
+        const KERNEL_WRITEBACK_TIMES = 0b1_0000;
     }
 }
 
@@ -260,6 +287,65 @@ pub fn stat_fs_snapshot_from_usage(used_space: u64, used_inodes: u64) -> StatFsS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writeback_timestamp_authority_requires_complete_timestamp_only_request() {
+        let request = SetAttrRequest {
+            atime: Some(123),
+            mtime: Some(456),
+            ctime: Some(789),
+            ..Default::default()
+        };
+        let checked = SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::KERNEL_WRITEBACK_TIMES;
+        assert!(request.timestamps_use_write_permission(&checked));
+        for flags in [
+            SetAttrFlags::empty(),
+            SetAttrFlags::SET_ATIME_NOW,
+            SetAttrFlags::KERNEL_WRITEBACK_TIMES,
+            SetAttrFlags::from_bits_retain(checked.bits() | SetAttrFlags::CLEAR_SUID.bits()),
+        ] {
+            assert!(!request.timestamps_use_write_permission(&flags));
+        }
+        for incomplete in [
+            SetAttrRequest {
+                atime: None,
+                ..request
+            },
+            SetAttrRequest {
+                mtime: None,
+                ..request
+            },
+            SetAttrRequest {
+                ctime: None,
+                ..request
+            },
+            SetAttrRequest {
+                mode: Some(0o666),
+                ..request
+            },
+            SetAttrRequest {
+                uid: Some(99),
+                ..request
+            },
+            SetAttrRequest {
+                gid: Some(99),
+                ..request
+            },
+            SetAttrRequest {
+                size: Some(0),
+                ..request
+            },
+            SetAttrRequest {
+                flags: Some(0),
+                ..request
+            },
+        ] {
+            assert!(!incomplete.timestamps_use_write_permission(&checked));
+        }
+        assert!(SetAttrRequest::default().timestamps_use_write_permission(
+            &(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW)
+        ));
+    }
 
     #[test]
     fn stat_fs_snapshot_reports_default_capacity_and_availability() {

@@ -76,6 +76,12 @@ pub trait MetaLayer: Send + Sync {
     fn posix_acl_capability(&self) -> PosixAclCapability {
         PosixAclCapability::Unsupported
     }
+    /// The FUSE mount is the sole metadata writer under a live exclusive lease.
+    /// Only then can Linux's cached ownership authorize a timestamp request
+    /// whose original NOW/explicit distinction was lost by writeback.
+    fn kernel_timestamp_permissions_authoritative(&self) -> bool {
+        false
+    }
     /// `inode_permissions` alone answers an access check (existence plus
     /// attributes and ACLs in one snapshot), so callers may skip the stat.
     fn permission_snapshot_answers_access(&self) -> bool {

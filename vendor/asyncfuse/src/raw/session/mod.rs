@@ -673,6 +673,7 @@ pub struct Session<FS: Filesystem + Send + Sync + 'static> {
     response_senders: Vec<UnboundedSender<FuseData>>,
     response_receivers: Vec<Option<UnboundedReceiver<FuseData>>>,
     mount_options: MountOptions,
+    kernel_writeback_permissions: bool,
     // ---- Concurrency configuration ----
     /// Number of worker tasks to execute FUSE requests. 0 or 1 keeps legacy inline spawn behavior.
     worker_count: usize,
@@ -688,6 +689,24 @@ pub struct Session<FS: Filesystem + Send + Sync + 'static> {
     inflight: Arc<AtomicUsize>,
     inflight_notify: Arc<async_notify::Notify>,
     readonly_reply_tracker: Option<Arc<ReplyTracker>>,
+}
+
+fn kernel_writeback_permissions(default_permissions: bool, negotiated_flags: u32) -> bool {
+    cfg!(target_os = "linux") && default_permissions && negotiated_flags & FUSE_WRITEBACK_CACHE != 0
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod writeback_permission_tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_context_requires_kernel_permissions_and_negotiated_writeback() {
+        assert!(kernel_writeback_permissions(true, FUSE_WRITEBACK_CACHE));
+        assert!(!kernel_writeback_permissions(false, FUSE_WRITEBACK_CACHE));
+        assert!(!kernel_writeback_permissions(true, 0));
+        assert!(!kernel_writeback_permissions(false, 0));
+        assert!(!kernel_writeback_permissions(true, FUSE_ASYNC_READ));
+    }
 }
 
 #[cfg(any(
@@ -722,6 +741,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             response_senders: vec![sender],
             response_receivers: vec![Some(receiver)],
             mount_options,
+            kernel_writeback_permissions: false,
             // default to legacy behaviour (no explicit pool)
             worker_count: 0,
             max_background: DEFAULT_MAX_BACKGROUND as usize,
@@ -854,6 +874,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 resp: self.response_senders.clone(),
                 direct_io: self.mount_options.direct_io,
                 force_readdir_plus: self.mount_options.force_readdir_plus,
+                kernel_writeback_permissions: self.kernel_writeback_permissions,
                 _inflight: self.inflight.clone(),
                 _inflight_notify: self.inflight_notify.clone(),
                 response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
@@ -2480,6 +2501,9 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         // if reply processing is slower than the kernel's dirty-page rate.
         let congestion_threshold = max_background;
 
+        self.kernel_writeback_permissions =
+            kernel_writeback_permissions(self.mount_options.default_permissions, reply_flags);
+
         let init_out = fuse_init_out {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
@@ -2748,8 +2772,10 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         let mut resp_sender = self.response_sender().clone();
         let fs = fs.clone();
 
+        let kernel_writeback_permissions = self.kernel_writeback_permissions;
         spawn(debug_span!("fuse_setattr"), async move {
-            let set_attr = SetAttr::from(&setattr_in);
+            let mut set_attr = SetAttr::from(&setattr_in);
+            set_attr.kernel_writeback_permissions = kernel_writeback_permissions;
 
             let fh = if setattr_in.valid & FATTR_FH > 0 {
                 Some(setattr_in.fh)

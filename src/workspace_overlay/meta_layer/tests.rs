@@ -1844,6 +1844,160 @@ async fn writable_acl_control_denial_and_grant_govern_truncate_same_version() {
 }
 
 #[tokio::test]
+async fn timestamp_setattr_group_writeback_current_time() {
+    let meta = test_meta().await;
+    let ino = meta
+        .create_node_with_umask(1, "group-time".into(), FileType::File, 0o660, 0, 99, 99, 0)
+        .await
+        .unwrap()
+        .ino;
+    for mode in [0o660, 0o1660, 0o2660, 0o4660, 0o7660] {
+        meta.set_attr(
+            ino,
+            &SetAttrRequest {
+                mode: Some(mode),
+                ..Default::default()
+            },
+            SetAttrFlags::empty(),
+        )
+        .await
+        .unwrap();
+        let changed = meta
+            .set_attr_as(
+                ino,
+                &SetAttrRequest {
+                    atime: Some(123),
+                    mtime: Some(456),
+                    ctime: Some(456),
+                    ..Default::default()
+                },
+                SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::KERNEL_WRITEBACK_TIMES,
+                100,
+                &[99],
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.mtime, 456);
+        assert_eq!((changed.uid, changed.gid, changed.mode), (99, 99, mode));
+    }
+}
+
+#[tokio::test]
+async fn writeback_timestamp_authority_requires_live_exclusive_lease() {
+    use crate::workspace_overlay::lifecycle::LeaseValidity;
+    use std::time::{Duration, Instant};
+
+    let meta = test_meta().await;
+    assert!(!meta.kernel_timestamp_permissions_authoritative());
+    let validity = Arc::new(LeaseValidity::new(Instant::now(), Duration::from_secs(60)));
+    let meta = meta.with_lease_bound_row_cache(validity.clone());
+    assert!(meta.kernel_timestamp_permissions_authoritative());
+    validity.revoke();
+    assert!(!meta.kernel_timestamp_permissions_authoritative());
+
+    let expired = Arc::new(LeaseValidity::new(Instant::now(), Duration::ZERO));
+    let meta = test_meta().await.with_lease_bound_row_cache(expired);
+    assert!(!meta.kernel_timestamp_permissions_authoritative());
+}
+
+#[tokio::test]
+async fn writeback_timestamp_rechecks_current_groups_mode_and_acl() {
+    let meta = test_meta().await;
+    let ino = meta
+        .create_node_with_umask(
+            1,
+            "checked-time".into(),
+            FileType::File,
+            0o660,
+            0,
+            99,
+            99,
+            0,
+        )
+        .await
+        .unwrap()
+        .ino;
+    let request = SetAttrRequest {
+        atime: Some(123),
+        mtime: Some(456),
+        ctime: Some(789),
+        ..Default::default()
+    };
+    let flags = || SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::KERNEL_WRITEBACK_TIMES;
+    // Membership in a supplementary group grants exactly the same access.
+    meta.set_attr_as(ino, &request, flags(), 100, &[100, 99])
+        .await
+        .unwrap();
+    let before = meta.permission_snapshot(vec![ino], None).await.unwrap();
+    for (groups, checked_flags, errno) in [
+        (vec![100], flags(), libc::EACCES),
+        (vec![99], SetAttrFlags::SET_ATIME_NOW, libc::EPERM),
+    ] {
+        let error = meta
+            .set_attr_as(ino, &request, checked_flags, 100, &groups)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MetaError::Io(e) if e.raw_os_error() == Some(errno)));
+        assert_eq!(
+            meta.permission_snapshot(vec![ino], None).await.unwrap(),
+            before
+        );
+    }
+    meta.set_attr(
+        ino,
+        &SetAttrRequest {
+            mode: Some(0o600),
+            ..Default::default()
+        },
+        SetAttrFlags::empty(),
+    )
+    .await
+    .unwrap();
+    let before = meta.permission_snapshot(vec![ino], None).await.unwrap();
+    let error = meta
+        .set_attr_as(ino, &request, flags(), 100, &[99])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MetaError::Io(e) if e.raw_os_error() == Some(libc::EACCES)));
+    assert_eq!(
+        meta.permission_snapshot(vec![ino], None).await.unwrap(),
+        before
+    );
+
+    meta.set_attr(
+        ino,
+        &SetAttrRequest {
+            mode: Some(0o666),
+            ..Default::default()
+        },
+        SetAttrFlags::empty(),
+    )
+    .await
+    .unwrap();
+    meta.set_xattr(
+        ino,
+        "system.brewfs.acl",
+        &control_acl_json("access", Some("---")),
+        0,
+    )
+    .await
+    .unwrap();
+    let before = meta.permission_snapshot(vec![ino], None).await.unwrap();
+    let error = meta
+        .set_attr_as(ino, &request, flags(), 1234, &[99])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MetaError::Io(e) if e.raw_os_error() == Some(libc::EACCES)));
+    assert_eq!(
+        meta.permission_snapshot(vec![ino], None).await.unwrap(),
+        before
+    );
+    meta.set_attr_as(ino, &request, flags(), 0, &[])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn writable_acl_explicit_near_now_and_single_now_require_owner_both_now_uses_write_acl() {
     let meta = test_meta().await;
     let ino = meta

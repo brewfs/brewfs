@@ -356,6 +356,7 @@ pub(crate) struct DispatchCtx<FS: Filesystem + Send + Sync + 'static> {
     pub(crate) resp: Vec<UnboundedSender<FuseData>>,
     pub(crate) direct_io: bool,
     pub(crate) force_readdir_plus: bool,
+    pub(crate) kernel_writeback_permissions: bool,
     pub(crate) _inflight: Arc<AtomicUsize>,
     pub(crate) _inflight_notify: Arc<async_notify::Notify>,
     pub(crate) response_memory: ResponseMemoryMap,

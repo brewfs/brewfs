@@ -1223,6 +1223,16 @@ where
         let setattr_start = std::time::Instant::now();
 
         let (mut meta_req, mut meta_flags) = fuse_setattr_to_meta(&set_attr);
+        // A different metadata writer could invalidate the kernel's cached
+        // ownership. Trust its timestamp authorization only while this mount
+        // holds the exclusive workspace lease; the mutation still checks the
+        // current ACL and authenticates that lease in the metadata CAS.
+        if !self
+            .meta_layer()
+            .kernel_timestamp_permissions_authoritative()
+        {
+            meta_flags.remove(SetAttrFlags::KERNEL_WRITEBACK_TIMES);
+        }
 
         // If no attributes to set, just return current attributes
         if attr_request_is_empty(&meta_req) && meta_flags.is_empty() {
@@ -3074,7 +3084,7 @@ where
         let mode = self
             .access_mode_for_attr(ino, &attr, uid, gid, pid, libc::W_OK as u32)
             .await?;
-        if flags.contains(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW) {
+        if req.timestamps_use_write_permission(flags) {
             if (mode & 0o2) != 0 {
                 Ok(())
             } else {
@@ -4215,6 +4225,23 @@ fn fuse_setattr_to_meta(set_attr: &SetAttr) -> (SetAttrRequest, SetAttrFlags) {
     if let Some(ctime) = set_attr.ctime {
         req.ctime = Some(timestamp_to_nanos(ctime));
     }
+    // With default_permissions Linux rejects a non-owner's explicit/mixed
+    // utimens request before dispatch. Writeback nevertheless omits MTIME_NOW
+    // for utime(NULL). Carry that checked context without relabelling mtime
+    // as NOW: owners' mixed NOW/explicit requests must retain the exact value.
+    if set_attr.kernel_writeback_permissions
+        && set_attr.atime_now
+        && !set_attr.mtime_now
+        && req.atime.is_some()
+        && req.mtime.is_some()
+        && req.ctime.is_some()
+        && req.mode.is_none()
+        && req.uid.is_none()
+        && req.gid.is_none()
+        && req.size.is_none()
+    {
+        flags.insert(SetAttrFlags::KERNEL_WRITEBACK_TIMES);
+    }
     (req, flags)
 }
 
@@ -4277,7 +4304,12 @@ fn setattr_is_timestamp_only(req: &SetAttrRequest, flags: &SetAttrFlags) -> bool
             || req.mtime.is_some()
             || req.ctime.is_some()
             || flags.intersects(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW))
-        && (flags.bits() & !(SetAttrFlags::SET_ATIME_NOW | SetAttrFlags::SET_MTIME_NOW).bits()) == 0
+        && (flags.bits()
+            & !(SetAttrFlags::SET_ATIME_NOW
+                | SetAttrFlags::SET_MTIME_NOW
+                | SetAttrFlags::KERNEL_WRITEBACK_TIMES)
+                .bits())
+            == 0
 }
 
 fn timestamp_request_is_ctime_only(req: &SetAttrRequest) -> bool {
@@ -6359,6 +6391,243 @@ mod fuse_init_tests {
         let attr = fs.stat("/tty").await.unwrap();
         assert_eq!(attr.kind, VfsFileType::CharDevice);
         assert_eq!(attr.rdev, 0x0103);
+    }
+
+    #[tokio::test]
+    async fn timestamp_setattr_group_writeback_current_time() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/file.txt").await.unwrap();
+        let attr = fs.stat("/file.txt").await.unwrap();
+        fs.chown(attr.ino, Some(99), Some(99)).await.unwrap();
+        fs.chmod(attr.ino, 0o660).await.unwrap();
+        // Linux writeback supplies mtime/ctime but omits MTIME_NOW for
+        // utime(path, NULL). Keep deliberately old values to exclude a
+        // near-current-time heuristic from the authorization decision.
+        let kernel_time = Timestamp::new(123, 456);
+        let (request, flags) = fuse_setattr_to_meta(&SetAttr {
+            atime: Some(kernel_time),
+            atime_now: true,
+            mtime: Some(kernel_time),
+            ctime: Some(kernel_time),
+            kernel_writeback_permissions: true,
+            ..Default::default()
+        });
+        // This helper receives authorization already checked by the entry
+        // point against both the transport and the exclusive metadata lease.
+        fs.ensure_timestamp_setattr_allowed(attr.ino, 100, 99, 0, &request, &flags)
+            .await
+            .unwrap();
+        assert_eq!(request.mtime, Some(timestamp_to_nanos(kernel_time)));
+        assert!(!flags.contains(SetAttrFlags::SET_MTIME_NOW));
+    }
+
+    #[tokio::test]
+    async fn xfstests_087_permission_matrix() {
+        fn check<T>(result: FuseResult<T>, allowed: bool, errno: i32, context: &str) -> Option<T> {
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "{context}: {:?}",
+                result.as_ref().err()
+            );
+            match result {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    assert_eq!(error, Errno::from(errno), "{context}");
+                    None
+                }
+            }
+        }
+
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/matrix").await.unwrap();
+        let ino = fs.stat("/matrix").await.unwrap().ino;
+        fs.chown(ino, Some(99), Some(99)).await.unwrap();
+        // Explicit expected owner/group/other masks, plus root's X_OK rule.
+        for (mode, masks, root_mask) in [
+            (0o000, [0, 0, 0], 6),
+            (0o600, [6, 0, 0], 6),
+            (0o640, [6, 4, 0], 6),
+            (0o660, [6, 6, 0], 6),
+            (0o664, [6, 6, 4], 6),
+            (0o666, [6, 6, 6], 6),
+            (0o700, [7, 0, 0], 7),
+            (0o770, [7, 7, 0], 7),
+            (0o777, [7, 7, 7], 7),
+        ] {
+            fs.chmod(ino, mode).await.unwrap();
+            for (uid, gid, mask) in [
+                (99, 99, masks[0]),
+                (100, 99, masks[1]),
+                (100, 100, masks[2]),
+                (0, 0, root_mask),
+            ] {
+                let context = format!("mode={mode:o}, caller={uid}:{gid}");
+                let request = request_with_ids(uid, gid);
+                for (flags, bit) in [(libc::O_RDONLY, 4), (libc::O_WRONLY, 2)] {
+                    if let Some(opened) = check(
+                        Filesystem::open(&fs, request, ino as u64, flags as u32).await,
+                        mask & bit != 0,
+                        libc::EACCES,
+                        &format!("{context}, open={flags}"),
+                    ) {
+                        fs.close(opened.fh).await.unwrap();
+                    }
+                }
+                check(
+                    Filesystem::setattr(
+                        &fs,
+                        request,
+                        ino as u64,
+                        None,
+                        SetAttr {
+                            size: Some(0),
+                            ..Default::default()
+                        },
+                    )
+                    .await,
+                    mask & 2 != 0,
+                    libc::EACCES,
+                    &format!("{context}, truncate"),
+                );
+                for requested in 0..=7 {
+                    check(
+                        Filesystem::access(&fs, request, ino as u64, requested).await,
+                        mask & requested == requested,
+                        libc::EACCES,
+                        &format!("{context}, access={requested}"),
+                    );
+                }
+                check(
+                    Filesystem::getattr(&fs, request, ino as u64, None, 0).await,
+                    true,
+                    0,
+                    &format!("{context}, stat"),
+                );
+                let time = Timestamp::new(123, 456);
+                for (name, times, write_allowed) in [
+                    (
+                        "both-now",
+                        SetAttr {
+                            atime: Some(time),
+                            atime_now: true,
+                            mtime: Some(time),
+                            mtime_now: true,
+                            ..Default::default()
+                        },
+                        true,
+                    ),
+                    (
+                        "kernel-writeback-without-exclusive-lease",
+                        SetAttr {
+                            atime: Some(time),
+                            atime_now: true,
+                            mtime: Some(time),
+                            ctime: Some(time),
+                            kernel_writeback_permissions: true,
+                            ..Default::default()
+                        },
+                        false,
+                    ),
+                    (
+                        "unverified-mixed",
+                        SetAttr {
+                            atime: Some(time),
+                            atime_now: true,
+                            mtime: Some(time),
+                            ctime: Some(time),
+                            ..Default::default()
+                        },
+                        false,
+                    ),
+                    (
+                        "explicit",
+                        SetAttr {
+                            atime: Some(time),
+                            mtime: Some(time),
+                            ctime: Some(time),
+                            kernel_writeback_permissions: true,
+                            ..Default::default()
+                        },
+                        false,
+                    ),
+                    (
+                        "single-now",
+                        SetAttr {
+                            atime: Some(time),
+                            atime_now: true,
+                            ctime: Some(time),
+                            kernel_writeback_permissions: true,
+                            ..Default::default()
+                        },
+                        false,
+                    ),
+                ] {
+                    check(
+                        Filesystem::setattr(&fs, request, ino as u64, None, times).await,
+                        uid == 0 || uid == 99 || (write_allowed && mask & 2 != 0),
+                        if write_allowed {
+                            libc::EACCES
+                        } else {
+                            libc::EPERM
+                        },
+                        &format!("{context}, timestamps={name}"),
+                    );
+                }
+                // Independently exercise the permission decision after the
+                // transport and exclusive-lease checks have granted context.
+                let (request, flags) = fuse_setattr_to_meta(&SetAttr {
+                    atime: Some(time),
+                    atime_now: true,
+                    mtime: Some(time),
+                    ctime: Some(time),
+                    kernel_writeback_permissions: true,
+                    ..Default::default()
+                });
+                check(
+                    fs.ensure_timestamp_setattr_allowed(ino, uid, gid, 0, &request, &flags)
+                        .await,
+                    uid == 0 || uid == 99 || mask & 2 != 0,
+                    libc::EACCES,
+                    &format!("{context}, authorized-writeback-timestamps"),
+                );
+                let after = fs.stat("/matrix").await.unwrap();
+                assert_eq!((after.uid, after.gid, after.mode & 0o7777), (99, 99, mode));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn writeback_timestamp_preserves_special_bits_and_owner_explicit_mtime() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/special").await.unwrap();
+        let ino = fs.stat("/special").await.unwrap().ino;
+        fs.chown(ino, Some(99), Some(99)).await.unwrap();
+        for mode in [0o1660, 0o2660, 0o4660, 0o7660] {
+            fs.chmod(ino, mode).await.unwrap();
+            for uid in [99, 0] {
+                let mtime = Timestamp::new(123, 456);
+                let reply = Filesystem::setattr(
+                    &fs,
+                    request_with_ids(uid, 99),
+                    ino as u64,
+                    None,
+                    SetAttr {
+                        atime: Some(Timestamp::new(234, 567)),
+                        atime_now: true,
+                        mtime: Some(mtime),
+                        ctime: Some(Timestamp::new(345, 678)),
+                        kernel_writeback_permissions: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply.attr.mtime, mtime);
+                assert_eq!(reply.attr.perm as u32, mode);
+                assert_eq!((reply.attr.uid, reply.attr.gid), (99, 99));
+            }
+        }
     }
 
     #[tokio::test]
