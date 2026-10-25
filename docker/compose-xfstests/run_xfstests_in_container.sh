@@ -249,7 +249,7 @@ EOF
 }
 
 install_mount_helper() {
-    local helper="/usr/sbin/mount.fuse.brewfs"
+    local helper="${1:-/usr/sbin/mount.fuse.brewfs}"
     # 把运行时确定的路径直接硬写进 helper，避免 mount 调用时环境变量被清除
     local baked_log_file="${log_file:-/artifacts/brewfs.log}"
     local baked_fuse_log_file="${fuse_log_file:-}"
@@ -273,8 +273,16 @@ is_brewfs_mounted() {
     findmnt -rn --target "\$target" --output FSTYPE 2>/dev/null | grep -Eq '^fuse(\\.|$)'
 }
 
-pre_wait_secs="\${BREWFS_PRE_MOUNT_WAIT_SECS:-10}"
+pre_wait_secs="\${BREWFS_PRE_MOUNT_WAIT_SECS:-60}"
 pre_deadline=\$((SECONDS + pre_wait_secs))
+# Kernel unmount can finish before the daemon drains and releases its workspace
+# lease. Keep this lock in the daemon's inherited fd until it exits. Never unlink
+# the lock file: another helper may already be waiting on the same inode.
+exec {mount_lock_fd}>>"\${config_path}.mount.lock"
+if ! flock -w "\$pre_wait_secs" "\$mount_lock_fd"; then
+    echo "previous BrewFS daemon has not exited after \${pre_wait_secs}s (config=\$config_path)" >&2
+    exit 1
+fi
 while is_brewfs_mounted; do
     if (( SECONDS >= pre_deadline )); then
         echo "target \$target is still mounted before starting BrewFS after \${pre_wait_secs}s" >&2
@@ -299,7 +307,7 @@ EOF
     append_env_export AWS_EC2_METADATA_DISABLED "true"
     append_env_export AWS_SESSION_TOKEN
     append_env_export BREWFS_MOUNT_WAIT_SECS "60"
-    append_env_export BREWFS_PRE_MOUNT_WAIT_SECS "10"
+    append_env_export BREWFS_PRE_MOUNT_WAIT_SECS "60"
     append_env_export BREWFS_MOUNT_READY_DELAY_SECS "1"
     append_env_export BREWFS_CACHE_TTL_MS
     append_env_export BREWFS_FUSE_DIRECT_IO

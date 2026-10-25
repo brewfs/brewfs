@@ -73,6 +73,7 @@ jobs:
         run: |
           bash -n docker/compose-xfstests/run_perf_in_container.sh
           bash -n docker/compose-xfstests/run_redis_perf.sh
+          bash -n docker/compose-xfstests/run_xfstests_in_container.sh
           bash -n docker/compose-xfstests/run_tikv_xfstests.sh
           bash -n docker/compose-xfstests/run_tikv_ltp.sh
           bash -n docker/compose-xfstests/run_tikv_pjdfstest.sh
@@ -88,6 +89,7 @@ jobs:
           bash docker/compose-xfstests/test_perf_report_delta.sh
           bash docker/compose-xfstests/test_juicefs_direct_matrix.sh
           bash docker/compose-xfstests/test_juicefs_perf_report.sh
+          bash docker/compose-xfstests/test_xfstests_mount_helper.sh
           bash tools/perf/test_packed_runner_ttl.sh
           python3 -m unittest discover -s tools/perf -p test_smallfiles_scan.py
           bash -n tools/perf/run_packed_local.sh
