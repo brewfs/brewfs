@@ -57,6 +57,41 @@ mod packed_permission_migration_tests {
     }
 
     #[tokio::test]
+    async fn packed_hole_compaction_keeps_cached_commits_bounded() {
+        let (_directory, store, mut mutation, binding, budget) = fixture().await;
+        let head = mutation.guard.expected_head_layer_id;
+        mutation.extents = vec![DataExtentDelta::hole(head, 400, 0, 1, 63, 0)];
+        let used = budget.state().used;
+        for _ in 0..1025 {
+            mutation.expected_layers[0] = store.load_layer(head).await.unwrap();
+            store
+                .apply_packed_versioned_mutation(mutation.clone(), binding.clone())
+                .await
+                .unwrap();
+        }
+        let rows = store
+            .get_extent_deltas_bounded(
+                ExtentQuery {
+                    layer_ids: mutation
+                        .expected_layers
+                        .iter()
+                        .map(|layer| layer.layer_id)
+                        .collect(),
+                    ino: 400,
+                    chunk_index: 0,
+                    range_start: 0,
+                    range_end: 64,
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, ExtentKind::Hole);
+        assert_eq!(budget.state().used, used);
+    }
+
+    #[tokio::test]
     async fn packed_permission_mutation_rejects_migration_marker_before_any_cas() {
         let (_directory, store, mutation, binding, budget) = fixture().await;
         store

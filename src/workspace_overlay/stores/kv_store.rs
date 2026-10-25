@@ -28,6 +28,7 @@ use crate::workspace_overlay::resolver::validate_layer_chain;
 mod topology_scope;
 use topology_scope::*;
 
+mod extent_compaction;
 mod native_finalization;
 mod native_read_conflict;
 mod native_reverse;
@@ -1375,6 +1376,9 @@ where
             }
             let mut writes = Vec::new();
             let result = operation(&mut layer, &mut writes)?;
+            let _hole_compaction = self
+                .compact_obsolete_holes(layer.layer_id, &mut writes)
+                .await?;
             writes.push(put(layer_key.clone(), &layer)?);
             let mut checks = vec![
                 KvCheck {
@@ -7162,6 +7166,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn truncate_holes_do_not_exhaust_extent_read_budget() {
+        let (store, workspace, _lease, guard) = initialized().await;
+        for _ in 0..4097 {
+            store
+                .append_data_extent(AppendDataExtent {
+                    guard: guard.clone(),
+                    extent: DataExtentDelta::hole(workspace.head_layer_id, 2, 0, 1, 8191, 0),
+                    chunk_size: 8192,
+                })
+                .await
+                .unwrap();
+        }
+        // Reopen the catalog: compaction must be persisted, not a mount cache.
+        let reopened = budgeted_kv_store(store.backend.as_ref().clone());
+        let rows = reopened
+            .get_extent_deltas(ExtentQuery {
+                layer_ids: vec![workspace.head_layer_id],
+                ino: 2,
+                chunk_index: 0,
+                range_start: 0,
+                range_end: 8192,
+            })
+            .await
+            .expect("obsolete truncate holes must not consume the read budget");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].logical_offset, 1);
+        assert_eq!(rows[0].length, 8191);
+        assert_eq!(rows[0].kind, ExtentKind::Hole);
+    }
+
+    #[tokio::test]
     async fn bounded_extent_query_enforces_row_limit_before_returning_rows() {
         let (store, workspace, _lease, guard) = initialized().await;
         for index in 0..3_u64 {
@@ -8734,6 +8769,7 @@ mod tests {
         );
     }
 
+    include!("kv_store/extent_compaction_tests.rs");
     include!("kv_store/pr141_entity_cas_tests.rs");
 
     include!("kv_store/topology_write_order_tests.rs");

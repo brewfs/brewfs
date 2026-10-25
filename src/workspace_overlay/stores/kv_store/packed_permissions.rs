@@ -519,6 +519,9 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             let mut head = view.layers[0].clone();
             let mut writes = Vec::new();
             let result = append_versioned_rows(&request, &mut head, count, &mut writes)?;
+            let _hole_compaction = self
+                .compact_obsolete_holes(head.layer_id, &mut writes)
+                .await?;
             if count != 0 {
                 writes.push(put(keys[1].clone(), &head)?);
             }
