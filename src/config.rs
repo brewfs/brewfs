@@ -19,7 +19,18 @@ pub const DEFAULT_S3_MAX_CONCURRENCY: usize = 32;
 pub const DEFAULT_FUSE_MAX_BACKGROUND: usize = 512;
 
 fn default_fuse_workers() -> usize {
-    1
+    fuse_workers_from_parallelism(std::thread::available_parallelism())
+}
+
+fn fuse_workers_from_parallelism(parallelism: std::io::Result<std::num::NonZeroUsize>) -> usize {
+    parallelism
+        .map(|cpus| fuse_workers_for(cpus.get()))
+        .unwrap_or(1)
+}
+
+fn fuse_workers_for(parallelism: usize) -> usize {
+    // Allow backend waits to overlap without unbounded worker pool growth.
+    parallelism.saturating_mul(2).clamp(1, 64)
 }
 
 fn parse_rustfs_ec_block_size_hint(value: &str) -> Result<RustfsEcBlockSizeHint, String> {
@@ -295,6 +306,7 @@ pub struct MountArgs {
     pub block_size: Option<u32>,
 
     /// Number of asyncfuse worker tasks. Use 0 or 1 to keep legacy session dispatch.
+    /// Defaults to twice the available CPU parallelism, clamped to 1..=64 (1 if detection fails).
     #[arg(long)]
     pub fuse_workers: Option<usize>,
 
@@ -2102,6 +2114,53 @@ mod tests {
     }
 
     #[test]
+    fn fuse_workers_for_scales_and_caps_parallelism() {
+        for (cpus, expected) in [
+            (0, 1),
+            (1, 2),
+            (8, 16),
+            (32, 64),
+            (64, 64),
+            (200, 64),
+            (usize::MAX, 64),
+        ] {
+            assert_eq!(fuse_workers_for(cpus), expected, "parallelism={cpus}");
+        }
+    }
+
+    #[test]
+    fn fuse_workers_from_parallelism_uses_detected_cpus() {
+        let cpus = std::num::NonZeroUsize::new(8).unwrap();
+        assert_eq!(fuse_workers_from_parallelism(Ok(cpus)), 16);
+    }
+
+    #[test]
+    fn fuse_workers_from_parallelism_falls_back_on_error() {
+        let error = std::io::Error::other("CPU parallelism unavailable");
+        assert_eq!(fuse_workers_from_parallelism(Err(error)), 1);
+    }
+
+    #[test]
+    fn mount_config_fuse_worker_overrides_take_precedence() {
+        for workers in [0, 1, 16, 128] {
+            // Perf runners translate BREWFS_FUSE_WORKERS into this YAML field.
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                file.path(),
+                format!("mount_point: /mnt/slayer\nfuse:\n  workers: {workers}\n"),
+            )
+            .unwrap();
+            for cli_workers in [None, Some(0), Some(1), Some(4), Some(128)] {
+                let mut args = empty_mount_args(Some(file.path().to_path_buf()), None);
+                args.fuse_workers = cli_workers;
+                let config = MountConfig::from_sources(args).unwrap();
+                assert_eq!(config.fuse_workers, cli_workers.unwrap_or(workers));
+                assert_eq!(config.fuse_max_background, DEFAULT_FUSE_MAX_BACKGROUND);
+            }
+        }
+    }
+
+    #[test]
     fn mount_subcommand_parses_fuse_worker_args() {
         let cli = Cli::parse_from([
             "brewfs",
@@ -2148,7 +2207,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_config_defaults_use_low_overhead_fuse_dispatch() {
+    fn mount_config_defaults_scale_fuse_workers_with_available_parallelism() {
         let config = MountConfig::from_sources(MountArgs {
             config: None,
             volume_format: None,
@@ -2182,7 +2241,16 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(config.fuse_workers, 1);
+        let parallelism = std::thread::available_parallelism();
+        let expected_workers = parallelism
+            .as_ref()
+            .map(|cpus| cpus.get().saturating_mul(2).clamp(1, 64))
+            .unwrap_or(1);
+        eprintln!(
+            "available_parallelism={parallelism:?}, fuse_workers={}",
+            config.fuse_workers
+        );
+        assert_eq!(config.fuse_workers, expected_workers);
         assert_eq!(config.fuse_max_background, DEFAULT_FUSE_MAX_BACKGROUND);
         assert_eq!(config.volume_format, VolumeFormat::FlatV1);
         assert!(config.workspace.is_none());

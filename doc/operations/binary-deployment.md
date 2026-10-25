@@ -123,7 +123,7 @@ sudo BREWFS_DOWNLOAD_URL=https://download.brewfs.ai/brewfs/releases/v0.1.1/brewf
 | `BREWFS_WRITEBACK_MODE` | `commit_before_upload` | 可改为 `upload_before_commit` 获得更保守的崩溃语义。 |
 | `BREWFS_WRITEBACK_PERSIST_SYNC` | `false` | 是否同步落盘本地 writeback stage。 |
 | `BREWFS_CACHE_TTL_MS` | `1000` | FUSE attr/entry TTL，单位 ms。 |
-| `BREWFS_FUSE_WORKERS` | `1` | FUSE worker 数。 |
+| `BREWFS_FUSE_WORKERS` | 由调优档位决定 | installer 写入 `fuse.workers`；`compat` 为 `1`，`balanced` 为 CPU 数限制在 `2..4`，`throughput` 为 `2..6`。未配置时挂载程序默认 `clamp(2 × available_parallelism, 1, 64)`，探测失败时为 `1`。 |
 | `BREWFS_FUSE_MAX_BACKGROUND` | `512` | FUSE 最大 in-flight 请求数。 |
 | `BREWFS_FUSE_PRIVILEGED` | `true` | 生成 `fuse.privileged`。 |
 | `BREWFS_LOG_LEVEL` | `RUST_LOG` 或 `brewfs=info` | 写入 systemd 环境文件里的 `RUST_LOG`。 |
@@ -148,7 +148,7 @@ cache:
   writeback_mode: commit_before_upload
   writeback_persist_sync: false
 fuse:
-  workers: 1
+  workers: 1 # compat 示例；省略该字段则根据可用 CPU 数自动计算
   max_background: 512
   privileged: true
 ```

@@ -209,7 +209,7 @@ brewfs console [OPTIONS]
 | `--meta-tikv-namespace <NAMESPACE>` | TiKV key namespace，默认 `brewfs`。 |
 | `--chunk-size <BYTES>` | chunk 大小，默认 64 MiB。 |
 | `--block-size <BYTES>` | block 大小，默认 4 MiB。 |
-| `--fuse-workers <N>` | FUSE worker 数；`0` 或 `1` 使用低开销 session dispatch。 |
+| `--fuse-workers <N>` | FUSE worker 数；默认 `clamp(2 × available_parallelism, 1, 64)`，CPU 探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `--fuse-max-background <N>` | FUSE 最大 in-flight 请求数，默认 512。 |
 | `--privileged` | 直接打开 `/dev/fuse`，适合 systemd/root/container。 |
 
@@ -383,9 +383,11 @@ meta:
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `fuse.workers` | `1` | `0` 或 `1` 使用低开销 session dispatch；大于 `1` 开启 worker pool。 |
+| `fuse.workers` | `clamp(2 × available_parallelism, 1, 64)` | 根据 CPU affinity / cgroup quota 可用并行度计算，探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `fuse.max_background` | `512` | asyncfuse worker 模式下最大 queued/running 请求数。 |
 | `fuse.privileged` | `false` | 直接使用 `/dev/fuse`，通常用于 root/systemd/container。 |
+
+优先级为 `--fuse-workers` > YAML `fuse.workers` > 自动计算的默认值。perf runner 和 installer 将 `BREWFS_FUSE_WORKERS` 写入 YAML；挂载程序不直接读取这个环境变量。显式配置的 worker 数不受默认值的 `64` 上限限制。
 
 非特权挂载依赖 `fusermount3`；特权挂载依赖进程有权限访问 `/dev/fuse`。
 
