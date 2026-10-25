@@ -12,6 +12,9 @@ use super::model::{
     XattrDelta,
 };
 
+/// Shared by packed extent readers and writable-head publication admission.
+pub(crate) const MAX_UPPER_EXTENT_ROWS: usize = 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkspaceStoreCapabilities {
     pub atomic_head_switch: bool,

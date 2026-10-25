@@ -11,7 +11,7 @@ const STATE_PREFIX: &[u8] = b"packed/v3/native-finalization/";
 const STATE_BYTES: usize = 4096;
 pub(super) const MAX_TARGETS: usize = 4;
 const MAX_QUOTA: usize = 32;
-const FAMILIES: usize = 6;
+const FAMILIES: usize = 7;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Basis {
@@ -59,6 +59,7 @@ fn family_prefix(layer: LayerId, family: usize) -> Vec<u8> {
         3 => acl_layer_prefix(layer),
         4 => extent_layer_prefix(layer),
         5 => native_reverse::layer_prefix(layer),
+        6 => extent_owner_layer_prefix(layer),
         _ => unreachable!("validated durable family phase"),
     }
 }

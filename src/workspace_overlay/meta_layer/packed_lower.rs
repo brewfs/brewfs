@@ -19,7 +19,7 @@ use crate::meta::store::{FileType, MetaError};
 
 use super::{WorkspaceMetaLayer, validate_fixed_layer_pair};
 use crate::workspace_overlay::catalog::{
-    ExtentQuery, HeadGuard, InodeQuery, PackedLowerBinding, WorkspaceStore,
+    ExtentQuery, HeadGuard, InodeQuery, MAX_UPPER_EXTENT_ROWS, PackedLowerBinding, WorkspaceStore,
 };
 use crate::workspace_overlay::error::WorkspaceError;
 use crate::workspace_overlay::model::{ExtentKind, LayerRecord};
@@ -31,7 +31,6 @@ use crate::workspace_overlay::resolver::{
     Resolution, resolve_extent_coverage, resolve_inode_state,
 };
 
-const MAX_UPPER_EXTENT_ROWS: usize = 1024;
 // 8 x 16 MiB walk arenas = half of the default 256 MiB Metadata pool.
 const MAX_CONCURRENT_PATH_WALKS: usize = 8;
 // Includes fixed-width backend rows plus sentinel, resolver intermediates,

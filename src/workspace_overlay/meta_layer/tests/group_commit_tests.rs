@@ -252,7 +252,25 @@ async fn group_commit_handoff_preserves_batch_limit_and_order_with_cancelled_wai
         })
         .await
         .unwrap();
-    assert_eq!(extents.len(), count);
+    assert_eq!(extents.len(), 1, "only the final overwrite remains active");
+    let owned = f
+        .meta
+        .store
+        .gc_snapshot(0, 0)
+        .await
+        .unwrap()
+        .slice_references
+        .into_iter()
+        .filter(|reference| reference.layer_id == chain[0].layer_id)
+        .map(|reference| (reference.slice_id, reference.slice_end))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        owned,
+        (0..count)
+            .map(|index| (50_000 + index as u64, 64))
+            .collect(),
+        "every queued write, including cancelled waiters, must retain GC ownership"
+    );
     assert_eq!(
         resolve_extents(&chain, &extents, ino, 0, 0..64).unwrap(),
         vec![ResolvedExtent {

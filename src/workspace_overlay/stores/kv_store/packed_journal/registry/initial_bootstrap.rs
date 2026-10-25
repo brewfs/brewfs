@@ -435,7 +435,7 @@ impl<K: WorkspaceKvBackend> KvWorkspaceStore<K> {
         }
         let checks = exact(&keys, &values);
         // Every native write changes the head sequence in its own CAS. Sealed
-        // base rows are immutable. Bracketing all five families authenticates
+        // base rows are immutable. Bracketing every native family authenticates
         // absence; a nonempty source is never masked by an empty manifest.
         for layer in [head.layer_id, base.layer_id] {
             for (kind, prefix) in [
@@ -445,6 +445,7 @@ impl<K: WorkspaceKvBackend> KvWorkspaceStore<K> {
                 (3, acl_layer_prefix(layer)),
                 (4, extent_layer_prefix(layer)),
                 (5, native_reverse::layer_prefix(layer)),
+                (6, extent_owner_layer_prefix(layer)),
             ] {
                 if !self
                     .backend

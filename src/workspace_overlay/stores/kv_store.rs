@@ -29,6 +29,9 @@ mod topology_scope;
 use topology_scope::*;
 
 mod extent_compaction;
+mod extent_ownership;
+mod extent_reads;
+use extent_ownership::{EXTENT_OWNER_PREFIX, decode_extent_reference, extent_owner_layer_prefix};
 mod native_finalization;
 mod native_read_conflict;
 mod native_reverse;
@@ -1376,8 +1379,8 @@ where
             }
             let mut writes = Vec::new();
             let result = operation(&mut layer, &mut writes)?;
-            let _hole_compaction = self
-                .compact_obsolete_holes(layer.layer_id, &mut writes)
+            let _extent_compaction = self
+                .compact_extent_history(&layer, None, DELTA_SCAN_MAX_ROWS, &mut writes)
                 .await?;
             writes.push(put(layer_key.clone(), &layer)?);
             let mut checks = vec![
@@ -2304,7 +2307,7 @@ where
         request: ExtentQuery,
         max_rows: usize,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
-        if max_rows == 0 || max_rows > 1024 || request.layer_ids.len() != 2 {
+        if max_rows == 0 || max_rows > MAX_UPPER_EXTENT_ROWS || request.layer_ids.len() != 2 {
             return Err(WorkspaceError::InvalidReadPlan(
                 "invalid bounded extent query".into(),
             ));
@@ -2319,8 +2322,9 @@ where
         }
 
         let mut rows = Vec::with_capacity(max_rows);
+        let mut scanned_rows = 0;
         for layer in request.layer_ids {
-            let remaining = max_rows - rows.len();
+            let remaining = max_rows - scanned_rows;
             let entries = self
                 .backend
                 .scan_prefix_bounded(
@@ -2333,6 +2337,7 @@ where
                     "upper extent row limit exceeded".into(),
                 ));
             }
+            scanned_rows += entries.len();
             let mut found = Vec::with_capacity(entries.len());
             for entry in entries {
                 let row: DataExtentDelta = decode(&entry.value)?;
@@ -3827,70 +3832,7 @@ where
         &self,
         request: ExtentQuery,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
-        if request.range_start > request.range_end {
-            return Err(WorkspaceError::InvalidReadPlan(
-                "extent query starts after its end".into(),
-            ));
-        }
-        if request.range_start == request.range_end {
-            return Ok(Vec::new());
-        }
-        let mut rows = Vec::new();
-        let mut scanned_rows_total = 0usize;
-        let mut scanned_bytes_total = 0usize;
-        for layer in request.layer_ids {
-            let prefix = extent_chunk_prefix(layer, request.ino, request.chunk_index);
-            let mut after = None;
-            let mut found = Vec::new();
-            loop {
-                let page = self
-                    .backend
-                    .scan_prefix_page_with_byte_limits(
-                        &prefix,
-                        after.as_deref(),
-                        delta_scan_limits(),
-                    )
-                    .await?;
-                if page.is_empty() {
-                    break;
-                }
-                let next = page.last().map(|entry| entry.key.clone());
-                scanned_rows_total = scanned_rows_total
-                    .checked_add(page.len())
-                    .ok_or(WorkspaceError::Fenced)?;
-                scanned_bytes_total = scanned_bytes_total
-                    .checked_add(validate_delta_scan_page(&page, &prefix, after.as_deref())?)
-                    .ok_or(WorkspaceError::Fenced)?;
-                if scanned_rows_total > DELTA_SCAN_MAX_ROWS
-                    || scanned_bytes_total > DELTA_SCAN_MAX_BYTES
-                {
-                    return Err(WorkspaceError::InvalidReadPlan(
-                        "extent delta scan exceeds bounded metadata budget".into(),
-                    ));
-                }
-                for entry in page {
-                    let row: DataExtentDelta = decode(&entry.value)?;
-                    row.validate()?;
-                    if row.layer_id != layer
-                        || row.ino != request.ino
-                        || row.chunk_index != request.chunk_index
-                        || entry.key != extent_key(&row)
-                    {
-                        return Err(WorkspaceError::CorruptMetadata(
-                            "extent key/record identity mismatch".into(),
-                        ));
-                    }
-                    let row_end = row.logical_offset.saturating_add(row.length);
-                    if row.logical_offset < request.range_end && row_end > request.range_start {
-                        found.push(row);
-                    }
-                }
-                after = next;
-            }
-            found.sort_by_key(|row| std::cmp::Reverse(row.sequence));
-            rows.extend(found);
-        }
-        Ok(rows)
+        self.read_extent_deltas_consistent(request).await
     }
 
     async fn get_xattr_deltas(
@@ -4444,66 +4386,47 @@ where
         roots.extend(packed_roots);
         let mut layers = state.layers.into_values().collect::<Vec<_>>();
         layers.sort_by_key(|layer| (layer.created_at_ns, layer.layer_id));
-        let extent_prefix = b"delta/extent/";
-        let mut extents = Vec::new();
-        let mut after = None;
+        let mut slice_references = Vec::new();
         let mut scanned_rows_total = 0usize;
         let mut scanned_bytes_total = 0usize;
-        loop {
-            let page = self
-                .backend
-                .scan_prefix_page_with_byte_limits(
-                    extent_prefix,
-                    after.as_deref(),
-                    delta_scan_limits(),
-                )
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            let next = page.last().map(|entry| entry.key.clone());
-            scanned_rows_total = scanned_rows_total
-                .checked_add(page.len())
-                .ok_or(WorkspaceError::Fenced)?;
-            scanned_bytes_total = scanned_bytes_total
-                .checked_add(validate_delta_scan_page(
-                    &page,
-                    extent_prefix,
-                    after.as_deref(),
-                )?)
-                .ok_or(WorkspaceError::Fenced)?;
-            if scanned_rows_total > DELTA_SCAN_MAX_ROWS
-                || scanned_bytes_total > DELTA_SCAN_MAX_BYTES
-            {
-                return Err(WorkspaceError::InvalidReadPlan(
-                    "extent delta scan exceeds bounded metadata budget".into(),
-                ));
-            }
-            for entry in page {
-                let row: DataExtentDelta = decode(&entry.value)?;
-                if entry.key != extent_key(&row) {
-                    return Err(WorkspaceError::CorruptMetadata(
-                        "extent key/record identity mismatch".into(),
+        for extent_prefix in [b"delta/extent/".as_slice(), EXTENT_OWNER_PREFIX] {
+            let mut after = None;
+            loop {
+                let page = self
+                    .backend
+                    .scan_prefix_page_with_byte_limits(
+                        extent_prefix,
+                        after.as_deref(),
+                        delta_scan_limits(),
+                    )
+                    .await?;
+                if page.is_empty() {
+                    break;
+                }
+                let next = page.last().map(|entry| entry.key.clone());
+                scanned_rows_total = scanned_rows_total
+                    .checked_add(page.len())
+                    .ok_or(WorkspaceError::Fenced)?;
+                scanned_bytes_total = scanned_bytes_total
+                    .checked_add(validate_delta_scan_page(
+                        &page,
+                        extent_prefix,
+                        after.as_deref(),
+                    )?)
+                    .ok_or(WorkspaceError::Fenced)?;
+                if scanned_rows_total > DELTA_SCAN_MAX_ROWS
+                    || scanned_bytes_total > DELTA_SCAN_MAX_BYTES
+                {
+                    return Err(WorkspaceError::InvalidReadPlan(
+                        "extent delta scan exceeds bounded metadata budget".into(),
                     ));
                 }
-                extents.push(row);
-            }
-            after = next;
-        }
-        let mut slice_references = Vec::new();
-        for extent in extents {
-            if let ExtentKind::Data {
-                slice_id,
-                slice_offset,
-            } = extent.kind
-            {
-                slice_references.push(SliceReference {
-                    layer_id: extent.layer_id,
-                    slice_id,
-                    slice_end: slice_offset.checked_add(extent.length).ok_or_else(|| {
-                        WorkspaceError::CorruptMetadata("slice reference overflows".into())
-                    })?,
-                });
+                for entry in page {
+                    if let Some(reference) = decode_extent_reference(&entry.key, &entry.value)? {
+                        slice_references.push(reference);
+                    }
+                }
+                after = next;
             }
         }
         Ok(GcSnapshot {
@@ -4638,6 +4561,7 @@ where
                 xattr_layer_prefix(*layer_id),
                 acl_layer_prefix(*layer_id),
                 extent_layer_prefix(*layer_id),
+                extent_owner_layer_prefix(*layer_id),
                 native_reverse::layer_prefix(*layer_id),
             ] {
                 keys.extend(
@@ -5972,6 +5896,7 @@ mod tests {
         mutate_on_cas: Arc<Mutex<Vec<KvWrite>>>,
         timed_reads_until_mutation: Arc<AtomicU64>,
         mutate_on_timed_read: Arc<Mutex<Vec<KvWrite>>>,
+        mutate_after_extent_page: Arc<Mutex<Vec<KvWrite>>>,
     }
 
     // Each simulated catalog/process owns one explicit test mount ledger.
@@ -6265,7 +6190,7 @@ mod tests {
             limits: super::super::kv_backend::KvReadLimits,
         ) -> Result<Vec<KvEntry>, WorkspaceError> {
             limits.validate_scan_page(prefix, after)?;
-            let records = self.records.lock().await;
+            let mut records = self.records.lock().await;
             let selected = || {
                 records
                     .range(prefix.to_vec()..)
@@ -6296,12 +6221,18 @@ mod tests {
                 }
             }
             self.scans.fetch_add(1, Ordering::Relaxed);
-            Ok(selected()
+            let page = selected()
                 .map(|(key, value)| KvEntry {
                     key: key.clone(),
                     value: value.clone(),
                 })
-                .collect())
+                .collect();
+            if prefix.starts_with(b"delta/extent/") && after.is_none() {
+                for write in self.mutate_after_extent_page.lock().await.drain(..) {
+                    apply_memory_write(&mut records, write);
+                }
+            }
+            Ok(page)
         }
 
         async fn compare_and_swap(

@@ -119,6 +119,98 @@ async fn native_slice_existing_live_reference_blocks_reservation() {
 }
 
 #[tokio::test]
+async fn compacted_slice_ownership_participates_in_the_native_gc_fence() {
+    use super::super::extent_ownership::ExtentSliceOwner;
+
+    for reservation_wins in [false, true] {
+        let (backend, store, budget) = catalog().await;
+        orphan(&store, layer(51), 151).await.unwrap();
+        let owner = ExtentSliceOwner {
+            layer_id: layer(34),
+            slice_id: 151,
+            slice_end: 6,
+        };
+        let used = budget.state().used;
+        let before_epoch = epoch(&backend).await;
+        let mut checks = Vec::new();
+        let mut writes = vec![put(owner.key(), &owner).unwrap()];
+        let admission = store
+            .prepare_native_extent_cas(&mut checks, &mut writes)
+            .await
+            .unwrap();
+        if reservation_wins {
+            store
+                .reserve_gc_slice_deletion(151, 6, &[layer(51)])
+                .await
+                .unwrap();
+            assert!(!backend.compare_and_swap(&checks, &writes).await.unwrap());
+            assert!(backend.get(&owner.key()).await.unwrap().is_none());
+        } else {
+            assert!(backend.compare_and_swap(&checks, &writes).await.unwrap());
+            assert_eq!(epoch(&backend).await, before_epoch + 1);
+            assert!(matches!(
+                store.reserve_gc_slice_deletion(151, 6, &[layer(51)]).await,
+                Err(WorkspaceError::Busy)
+            ));
+            assert!(
+                store
+                    .gc_snapshot(0, 0)
+                    .await
+                    .unwrap()
+                    .slice_references
+                    .contains(&SliceReference {
+                        layer_id: owner.layer_id,
+                        slice_id: 151,
+                        slice_end: 6
+                    })
+            );
+        }
+        drop(admission);
+        assert_eq!(budget.state().used, used);
+    }
+}
+
+#[tokio::test]
+async fn compacted_slice_maximum_end_is_checked_and_ownership_is_finalized() {
+    use super::super::extent_ownership::ExtentSliceOwner;
+
+    let (backend, store, _) = catalog().await;
+    orphan(&store, layer(51), 151).await.unwrap();
+    let owner = ExtentSliceOwner {
+        layer_id: layer(51),
+        slice_id: 151,
+        slice_end: 12,
+    };
+    let mut checks = Vec::new();
+    let mut writes = vec![put(owner.key(), &owner).unwrap()];
+    let _admission = store
+        .prepare_native_extent_cas(&mut checks, &mut writes)
+        .await
+        .unwrap();
+    assert!(backend.compare_and_swap(&checks, &writes).await.unwrap());
+    assert!(matches!(
+        store.reserve_gc_slice_deletion(151, 6, &[layer(51)]).await,
+        Err(WorkspaceError::Busy)
+    ));
+    store
+        .reserve_gc_slice_deletion(151, 12, &[layer(51)])
+        .await
+        .unwrap();
+    store
+        .finalize_layer_metadata_deletion(vec![layer(51)])
+        .await
+        .unwrap();
+    assert!(backend.get(&owner.key()).await.unwrap().is_none());
+    assert!(
+        backend
+            .get(&slice_deletion_key(151))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn native_slice_unselected_unreachable_reference_is_still_protected() {
     let (backend, store, _) = catalog().await;
     orphan(&store, layer(61), 161).await.unwrap();

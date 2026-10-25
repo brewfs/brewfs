@@ -308,7 +308,7 @@ async fn native_metadata_pages_survive_restart_and_keep_topology_until_empty() {
     assert!(!rows.contains_key(&native_reverse::state_key(target)));
     assert!(!rows.contains_key(&state_key(&[target])));
     assert!(!rows.keys().any(|key| metadata_key(key)));
-    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 75);
+    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 76);
     drop(rows);
     let packets = backend.packets.lock().await;
     let (checks, writes) = packets.last().unwrap();
@@ -331,7 +331,7 @@ async fn native_metadata_short_pages_require_real_empty_pages() {
     let (backend, target) = catalog(3).await;
     backend.short_pages.store(true, Ordering::SeqCst);
     finish(&backend, target).await;
-    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 8);
+    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 9);
     assert!(backend.page_calls.load(Ordering::SeqCst) >= 20);
 }
 
@@ -359,7 +359,7 @@ async fn native_metadata_unknown_reply_and_cancel_resume_committed_progress() {
         );
         backend.cancelled.store(false, Ordering::SeqCst);
         finish(&backend, target).await;
-        assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 50);
+        assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 51);
     }
 }
 
@@ -530,7 +530,7 @@ async fn native_metadata_unrelated_inventory_birth_and_death_do_not_stall_resume
         );
     }
     finish(&backend, target).await;
-    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 50);
+    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 51);
 }
 
 #[tokio::test]
@@ -604,7 +604,7 @@ async fn native_metadata_legacy_deleting_identity_is_explicit_and_survives_resum
         .await
         .unwrap();
     finish(&backend, target).await;
-    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 8);
+    assert_eq!(backend.metadata_deleted.load(Ordering::SeqCst), 9);
 }
 
 #[test]

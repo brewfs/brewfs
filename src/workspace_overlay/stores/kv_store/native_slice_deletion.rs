@@ -22,6 +22,7 @@ pub(super) fn layer_extent_generation_key(layer: LayerId) -> Vec<u8> {
 fn extent_layer_of_key(key: &[u8]) -> Result<LayerId, WorkspaceError> {
     let rest = key
         .strip_prefix(EXTENT_PREFIX)
+        .or_else(|| key.strip_prefix(EXTENT_OWNER_PREFIX))
         .ok_or_else(|| error("native extent key prefix"))?;
     let end = rest
         .iter()
@@ -63,7 +64,7 @@ fn error(message: &str) -> WorkspaceError {
     WorkspaceError::CorruptMetadata(message.into())
 }
 
-fn extent_generation(raw: &Option<Vec<u8>>) -> Result<u64, WorkspaceError> {
+pub(super) fn extent_generation(raw: &Option<Vec<u8>>) -> Result<u64, WorkspaceError> {
     match raw {
         None => Ok(0),
         Some(raw) => {
@@ -179,7 +180,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             .iter()
             .filter(|write| match write {
                 KvWrite::Put { key, .. } | KvWrite::Delete { key } => {
-                    key.starts_with(EXTENT_PREFIX)
+                    key.starts_with(EXTENT_PREFIX) || key.starts_with(EXTENT_OWNER_PREFIX)
                 }
             })
             .count();
@@ -210,21 +211,16 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             let key = match write {
                 KvWrite::Put { key, .. } | KvWrite::Delete { key } => key,
             };
-            if !key.starts_with(EXTENT_PREFIX) {
+            if !key.starts_with(EXTENT_PREFIX) && !key.starts_with(EXTENT_OWNER_PREFIX) {
                 continue;
             }
             if !primary_keys.insert(key.as_slice()) {
                 return Err(error("duplicate native extent packet key"));
             }
-            if let KvWrite::Put { value, .. } = write {
-                let row: DataExtentDelta = decode_open_value(value, 512)?;
-                row.validate()?;
-                if *key != extent_key(&row) {
-                    return Err(error("native extent packet key/row disagree"));
-                }
-                if let ExtentKind::Data { slice_id, .. } = row.kind {
-                    slices.insert(slice_id);
-                }
+            if let KvWrite::Put { value, .. } = write
+                && let Some(reference) = decode_extent_reference(key, value)?
+            {
+                slices.insert(reference.slice_id);
             }
         }
         let layers = primary_keys
@@ -580,81 +576,73 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         for (key, expected) in hot {
             merge(&mut checks, KvCheck { key, expected })?;
         }
-        // Scan the complete extent family once for the whole bounded batch.
+        // Scan active extents AND compacted slice ownership for the batch.
         // Never ignore an unselected layer, even if it currently appears
         // unreachable. The durable epoch closes phantom insertion, overwrites
         // and deletes between any pages and CAS.
-        let mut after = None;
         let mut rows = 0usize;
         let mut bytes = 0usize;
-        loop {
-            if self.native_auxiliary_budget().state().closed {
-                return Err(WorkspaceError::Busy);
-            }
-            let page = self
-                .backend
-                .scan_prefix_page_with_byte_limits(
-                    EXTENT_PREFIX,
-                    after.as_deref(),
-                    KvReadLimits {
-                        max_records: 4,
-                        max_key_bytes: 1024,
-                        max_value_bytes: 512,
-                        max_total_bytes: 8 << 10,
-                        max_response_bytes: 16 << 10,
-                        max_data_requests: 4,
-                    },
-                )
-                .await?;
-            if page.len() > 4 {
-                return Err(WorkspaceError::Busy);
-            }
-            if page.is_empty() {
-                break;
-            }
-            for entry in &page {
-                if !entry.key.starts_with(EXTENT_PREFIX)
-                    || entry.key.len() > 1024
-                    || entry.value.len() > 512
-                    || after.as_ref().is_some_and(|key| entry.key <= *key)
-                {
-                    return Err(WorkspaceError::Fenced);
-                }
-                rows = rows.checked_add(1).ok_or(WorkspaceError::Busy)?;
-                bytes = bytes
-                    .checked_add(entry.key.len())
-                    .and_then(|bytes| bytes.checked_add(entry.value.len()))
-                    .ok_or(WorkspaceError::Busy)?;
-                if rows > MAX_SCAN_ROWS || bytes > MAX_SCAN_BYTES {
+        for prefix in [EXTENT_PREFIX, EXTENT_OWNER_PREFIX] {
+            let mut after = None;
+            loop {
+                if self.native_auxiliary_budget().state().closed {
                     return Err(WorkspaceError::Busy);
                 }
-                let row: DataExtentDelta = decode_open_value(&entry.value, 512)?;
-                row.validate()?;
-                if entry.key != extent_key(&row) {
-                    return Err(error("GC extent key/row disagree"));
+                let page = self
+                    .backend
+                    .scan_prefix_page_with_byte_limits(
+                        prefix,
+                        after.as_deref(),
+                        KvReadLimits {
+                            max_records: 4,
+                            max_key_bytes: 1024,
+                            max_value_bytes: 512,
+                            max_total_bytes: 8 << 10,
+                            max_response_bytes: 16 << 10,
+                            max_data_requests: 4,
+                        },
+                    )
+                    .await?;
+                if page.len() > 4 {
+                    return Err(WorkspaceError::Busy);
                 }
-                if let ExtentKind::Data {
-                    slice_id,
-                    slice_offset,
-                } = row.kind
-                    && let Some(end) = requested.get(&slice_id)
-                {
-                    if !targets.contains(&row.layer_id) {
-                        return Err(WorkspaceError::Busy);
-                    }
-                    let index = requested
-                        .keys()
-                        .position(|candidate| *candidate == slice_id)
-                        .ok_or(WorkspaceError::Busy)?;
-                    if slice_offset
-                        .checked_add(row.length)
-                        .ok_or(WorkspaceError::Busy)?
-                        > (*end).max(old[index].as_ref().map_or(0, |row| row.end))
+                if page.is_empty() {
+                    break;
+                }
+                for entry in &page {
+                    if !entry.key.starts_with(prefix)
+                        || entry.key.len() > 1024
+                        || entry.value.len() > 512
+                        || after.as_ref().is_some_and(|key| entry.key <= *key)
                     {
+                        return Err(WorkspaceError::Fenced);
+                    }
+                    rows = rows.checked_add(1).ok_or(WorkspaceError::Busy)?;
+                    bytes = bytes
+                        .checked_add(entry.key.len())
+                        .and_then(|bytes| bytes.checked_add(entry.value.len()))
+                        .ok_or(WorkspaceError::Busy)?;
+                    if rows > MAX_SCAN_ROWS || bytes > MAX_SCAN_BYTES {
                         return Err(WorkspaceError::Busy);
                     }
+                    if let Some(reference) = decode_extent_reference(&entry.key, &entry.value)?
+                        && let Some(end) = requested.get(&reference.slice_id)
+                    {
+                        if !targets.contains(&reference.layer_id) {
+                            return Err(WorkspaceError::Busy);
+                        }
+                        let index = requested
+                            .keys()
+                            .position(|candidate| *candidate == reference.slice_id)
+                            .ok_or(WorkspaceError::Busy)?;
+                        if reference.slice_end
+                            > (*end).max(old[index].as_ref().map_or(0, |row| row.end))
+                        {
+                            return Err(WorkspaceError::Busy);
+                        }
+                    }
+                    after = Some(entry.key.clone());
                 }
-                after = Some(entry.key.clone());
             }
         }
         let mut writes = Vec::new();
