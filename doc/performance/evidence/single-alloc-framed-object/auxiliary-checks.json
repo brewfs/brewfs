@@ -1,0 +1,42 @@
+[
+  {
+    "check": "fmt",
+    "command": "cargo fmt --all --check",
+    "exit_code": 0
+  },
+  {
+    "check": "shell-run-perf",
+    "command": "bash -n docker/compose-xfstests/run_perf_in_container.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "shell-run-redis",
+    "command": "bash -n docker/compose-xfstests/run_redis_perf.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "shell-run-juicefs-container",
+    "command": "bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "shell-run-juicefs",
+    "command": "bash -n docker/compose-xfstests/run_juicefs_perf.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "perf-report-delta",
+    "command": "bash docker/compose-xfstests/test_perf_report_delta.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "juicefs-direct-matrix",
+    "command": "bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+    "exit_code": 0
+  },
+  {
+    "check": "juicefs-perf-report",
+    "command": "bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+    "exit_code": 0
+  }
+]

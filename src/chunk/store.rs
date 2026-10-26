@@ -6,7 +6,7 @@ use crate::cadapter::read_observer::{
 use crate::chunk::bandwidth::BandwidthLimiter;
 use crate::chunk::compress::{
     Compression, PERSISTED_HEADER_LEN, PersistedHeader, decompress_bytes, decompress_framed_bytes,
-    encode_persisted_block, parse_persisted_header,
+    encode_persisted_block_vectored, parse_persisted_header,
 };
 use crate::chunk::page_cache::{DEFAULT_PAGE_CAPACITY, DEFAULT_PAGE_SIZE, PageKey, ReadPageCache};
 use crate::chunk::singleflight::SingleFlight;
@@ -1030,21 +1030,6 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
 }
 
 impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
-    fn concat_bytes(parts: &[Bytes]) -> Bytes {
-        match parts {
-            [] => Bytes::new(),
-            [single] => single.clone(),
-            _ => {
-                let total_len = parts.iter().map(|part| part.len()).sum::<usize>();
-                let mut out = Vec::with_capacity(total_len);
-                for part in parts {
-                    out.extend_from_slice(part);
-                }
-                Bytes::from(out)
-            }
-        }
-    }
-
     async fn write_fresh_vectored_inner(
         &self,
         key: BlockKey,
@@ -1066,8 +1051,8 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         }
         parts.extend(chunks);
 
-        let cache_block = Self::concat_bytes(&parts);
-        let upload_bytes = encode_persisted_block(&cache_block, self.config.compression);
+        let (cache_block, upload_bytes) =
+            encode_persisted_block_vectored(&parts, self.config.compression);
         let stored_compression = match parse_persisted_header(upload_bytes.as_ref()) {
             PersistedHeader::Framed(compression) => compression,
             _ => unreachable!("newly encoded persisted blocks are always framed"),
@@ -1716,10 +1701,14 @@ pub type S3BlockStore = ObjectBlockStore<crate::cadapter::s3::S3Backend>;
 pub type LocalFsBlockStore = ObjectBlockStore<crate::cadapter::localfs::LocalFsBackend>;
 
 #[cfg(test)]
+mod framed_write_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::cadapter::client::ObjectClient;
     use crate::cadapter::localfs::LocalFsBackend;
+    use crate::chunk::compress::encode_persisted_block;
     use crate::chunk::layout::ChunkLayout;
 
     #[tokio::test]
