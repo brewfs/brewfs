@@ -400,6 +400,11 @@ pub struct KvWorkspaceStore<B> {
     /// Post-commit image of the packed writer's view keys; see
     /// `packed_permissions::CommitViewCache`. Shared with mutation drivers.
     commit_view: Arc<std::sync::Mutex<Option<packed_permissions::CommitViewCache>>>,
+    /// Serialize this store's packed commits with its joint lease renewal.
+    /// Both owned drivers retain the fair gate through their actual CAS,
+    /// even when their public callers disappear. Independent stores still
+    /// compete through the unchanged remote checks and bounded retries.
+    packed_mutation_gate: Arc<Mutex<()>>,
 }
 
 tokio::task_local! {
@@ -728,6 +733,7 @@ where
             inode_blocks: false,
             committed_head: Arc::default(),
             commit_view: Arc::default(),
+            packed_mutation_gate: Arc::default(),
         }
     }
 
@@ -748,6 +754,7 @@ where
             inode_blocks: false,
             committed_head: Arc::default(),
             commit_view: Arc::default(),
+            packed_mutation_gate: Arc::default(),
         }
     }
 
@@ -6778,6 +6785,11 @@ mod tests {
         let mut binding = install_open_binding_fixture(&store, &mut workspace, 1).await;
         binding.binding.binding_version = 2;
         let bytes = binding.encode().unwrap();
+        let mut expected = store.backend.records.lock().await.clone();
+        expected.insert(packed_current_key(workspace.workspace_id), bytes.clone());
+        expected.insert(packed_history_key(workspace.workspace_id, 2), bytes.clone());
+        store.backend.cas_checks.lock().await.clear();
+        store.backend.cas_write_keys.lock().await.clear();
         *store.backend.mutate_on_timed_read.lock().await = vec![
             KvWrite::Put {
                 key: packed_current_key(workspace.workspace_id),
@@ -6791,7 +6803,9 @@ mod tests {
         store
             .backend
             .timed_reads_until_mutation
-            .store(2, Ordering::SeqCst);
+            // Workspace routing is read 1; binding/history routing is read 2.
+            // Change the selected binding only before the final authority read.
+            .store(3, Ordering::SeqCst);
         assert!(matches!(
             store
                 .open_workspace_v3(workspace.workspace_id, "owner", Duration::from_secs(30))
@@ -6806,6 +6820,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(store.backend.mutate_on_timed_read.lock().await.is_empty());
+        assert_eq!(*store.backend.records.lock().await, expected);
+        assert!(store.backend.cas_checks.lock().await.is_empty());
+        assert!(store.backend.cas_write_keys.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -8595,6 +8613,21 @@ mod tests {
     #[tokio::test]
     async fn migration_marker_fences_entity_and_hot_native_packets_without_writes() {
         let (store, workspace, _, guard) = initialized().await;
+        // A raw entity read does not authorize a write. First prove this
+        // declared workspace update can commit in the initialized catalog.
+        let mut txn = store.topology_txn();
+        let mut row = txn
+            .read_workspace(workspace.workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        row.owner_id = Some("before-migration".into());
+        txn.put_workspace(&row).unwrap();
+        assert!(txn.commit().await.unwrap());
+        assert_eq!(
+            store.load_workspace(workspace.workspace_id).await.unwrap(),
+            row
+        );
         store
             .backend
             .records
@@ -8602,8 +8635,20 @@ mod tests {
             .await
             .insert(CONTROL_KEY.to_vec(), b"BWSMG002incomplete".to_vec());
         let before = store.backend.records.lock().await.clone();
+        store.backend.cas_checks.lock().await.clear();
+        store.backend.cas_write_keys.lock().await.clear();
         let mut txn = store.topology_txn();
-        assert!(txn.read_workspace(workspace.workspace_id).await.is_err());
+        let mut row = txn
+            .read_workspace(workspace.workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        row.owner_id = Some("during-migration".into());
+        txn.put_workspace(&row).unwrap();
+        assert!(matches!(
+            txn.commit().await,
+            Err(WorkspaceError::CorruptMetadata(ref message)) if message == "invalid control marker"
+        ));
         assert!(store.allocate_id("inode").await.is_err());
         assert!(
             store
@@ -8615,6 +8660,8 @@ mod tests {
                 .is_err()
         );
         assert_eq!(*store.backend.records.lock().await, before);
+        assert!(store.backend.cas_checks.lock().await.is_empty());
+        assert!(store.backend.cas_write_keys.lock().await.is_empty());
     }
 
     #[tokio::test]

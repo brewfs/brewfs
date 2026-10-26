@@ -827,6 +827,10 @@ impl<B: WorkspaceKvBackend> PackedMountedLease<B> {
             .budget
             .admit(&[(V3BudgetPool::Metadata, SOURCE_ADMISSION_BYTES)])
             .map_err(|error| WorkspaceError::InvalidReadPlan(error.to_string()))?;
+        // This future belongs to the admitted renewal driver. Cancellation
+        // of its receiver cannot release the gate before CAS completion.
+        // Queue fairly with local commits before capturing the exact head.
+        let _mutation_guard = self.store.packed_mutation_gate.lock().await;
         // A normal head-sequence mutation can invalidate this exact snapshot
         // without replacing the mounted owner. Only definite preparation Busy
         // or CAS false may rebuild the complete packet under the fixed cap.

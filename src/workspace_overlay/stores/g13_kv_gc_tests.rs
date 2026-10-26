@@ -4,8 +4,8 @@ use crate::meta::MetaLayer;
 use crate::workspace_overlay::catalog::{DeleteLayerMetadata, MarkDeleting, ReleaseLease};
 use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
 use crate::workspace_overlay::stores::g13_gc_contract_tests::{
-    BOUNDARIES, SHARED_BYTES, SHARED_SLICE, assert_child_reads_shared, assert_delete, assert_mark,
-    build_shared_base, collector,
+    BOUNDARIES, GRACE_NS, SHARED_BYTES, SHARED_SLICE, assert_child_reads_shared, assert_delete,
+    assert_mark, build_shared_base, collector,
 };
 use tokio::sync::Semaphore;
 
@@ -113,32 +113,52 @@ async fn g13a_kv_delete_revalidation_preserves_expired_base_until_grace() {
 }
 
 #[tokio::test]
-async fn g13a_kv_released_lease_is_not_an_expired_recovery_root() {
-    let (writer, peer, lease) = grace_fixture(false, true).await;
-    let now = lease.expires_at_ns - 1;
-    assert!(
-        !peer
-            .gc_snapshot(now, 200)
-            .await
-            .unwrap()
-            .root_layers
-            .contains(&lease.base_revision.layer_id)
-    );
-    writer
-        .delete_layer_metadata(DeleteLayerMetadata {
-            layer_ids: vec![lease.base_revision.layer_id],
-            now_ns: now,
-            lease_grace_ns: 200,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        peer.load_layer(lease.base_revision.layer_id)
-            .await
-            .unwrap()
-            .state,
-        LayerState::Deleting
-    );
+async fn g13a_kv_released_lease_uses_release_time_for_gc_grace() {
+    // KV catalogs conservatively retain Released roots too, using release
+    // time rather than the later expiry. Cover both mark and destructive
+    // revalidation at the exact boundary, including the old pre-expiry case.
+    for elapsed in BOUNDARIES.into_iter().chain([TTL_NS as i64 - 1]) {
+        let (writer, peer, lease) = grace_fixture(false, true).await;
+        assert!(lease.updated_at_ns < lease.expires_at_ns);
+        let now = lease.updated_at_ns.checked_add(elapsed).unwrap();
+        let base = lease.base_revision.layer_id;
+        let protected = elapsed < GRACE_NS as i64;
+        assert_eq!(
+            peer.gc_snapshot(now, GRACE_NS)
+                .await
+                .unwrap()
+                .root_layers
+                .contains(&base),
+            protected,
+            "released lease mark at elapsed={elapsed}",
+        );
+        let before = peer.backend.records.lock().await.clone();
+        let result = writer
+            .delete_layer_metadata(DeleteLayerMetadata {
+                layer_ids: vec![base],
+                now_ns: now,
+                lease_grace_ns: GRACE_NS,
+            })
+            .await;
+        if protected {
+            assert!(
+                matches!(result, Err(WorkspaceError::Busy)),
+                "released lease deletion at elapsed={elapsed}: {result:?}",
+            );
+            assert_eq!(*peer.backend.records.lock().await, before);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                peer.load_layer(base).await.unwrap().state,
+                LayerState::Deleting
+            );
+            writer.finalize_layer_metadata_deletion(vec![base]).await.unwrap();
+            assert!(matches!(
+                peer.load_layer(base).await,
+                Err(WorkspaceError::LayerNotFound(found)) if found == base,
+            ));
+        }
+    }
 }
 
 #[derive(Clone)]

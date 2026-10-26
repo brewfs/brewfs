@@ -396,7 +396,22 @@ async fn group_commit_refreshes_prefetched_inodes_after_head_conflict() {
         inode.data_version = 7;
         let mut mutation = VersionedMutation::empty(f.meta.guard().await, snapshot.layers, 4096);
         mutation.inodes.push(inode);
-        f.meta.commit_versioned_mutation(mutation).await.unwrap();
+        // Use an independent store for the remote actor. Local owned commits
+        // serialize with each other and with the mounted lease renewal.
+        let competing = KvWorkspaceStore::new(ValidationBackend {
+            inner: f.inner.clone(),
+            control: f.control.clone(),
+        })
+        .with_packed_reader_pin_budget(f.lower.mount_budget());
+        let binding = competing
+            .load_packed_lower_binding(mutation.guard.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        competing
+            .apply_packed_versioned_mutation(mutation, binding)
+            .await
+            .unwrap();
         control.resume.add_permits(1);
     };
     tokio::time::timeout(Duration::from_secs(10), async {

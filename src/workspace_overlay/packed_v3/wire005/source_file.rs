@@ -557,6 +557,15 @@ mod tests {
         )
     }
 
+    fn set_past_mtime(path: &Path) {
+        // The production fence compares stat tokens. Give the next mutation
+        // an observable mtime change even within one filesystem clock tick.
+        File::open(path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+    }
+
     #[test]
     fn source_root_pins_real_attributes_and_detects_namespace_changes_and_replacement() {
         use std::os::unix::fs::PermissionsExt;
@@ -564,6 +573,7 @@ mod tests {
         let path = temp.path().join("root");
         std::fs::create_dir(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+        set_past_mtime(&path);
         let meta = std::fs::symlink_metadata(&path).unwrap();
         let captured = CapturedV3SourceRoot::capture(&path, 1).unwrap();
         assert_eq!(
@@ -584,6 +594,14 @@ mod tests {
         );
         captured.validate_unchanged().unwrap();
         std::fs::write(path.join("new-entry"), b"x").unwrap();
+        assert_ne!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            meta.modified().unwrap(),
+            "namespace mutation must change the fixture's stat token",
+        );
         assert!(captured.validate_unchanged().is_err());
         let captured = CapturedV3SourceRoot::capture(&path, 1).unwrap();
         std::fs::rename(&path, temp.path().join("old-root")).unwrap();
@@ -645,6 +663,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("file");
         std::fs::write(&path, b"original").unwrap();
+        set_past_mtime(&path);
         let source = capture(&path).unwrap();
         OpenOptions::new()
             .write(true)
@@ -652,6 +671,14 @@ mod tests {
             .unwrap()
             .write_all_at(b"changed!", 0)
             .unwrap();
+        assert_ne!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            source.source_metadata().modified().unwrap(),
+            "content mutation must change the fixture's stat token",
+        );
         assert!(source.validate_unchanged().is_err());
         let source = capture(&path).unwrap();
         std::fs::rename(&path, temp.path().join("old")).unwrap();

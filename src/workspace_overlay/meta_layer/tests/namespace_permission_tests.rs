@@ -249,8 +249,8 @@ async fn namespace_permission_batches_reauthorize_after_commit_conflict() {
         scope_namespace_actor(Some(actor()), f.meta.create_file(inodes[7], "raced".into()));
     let revoke = async {
         control.reached.acquire().await.unwrap().forget();
-        // Bypass this wrapper's mutation gate, as an independent writer would.
-        // Its real versioned commit makes the prepared create's CAS conflict.
+        // An independent store models the remote writer. Local owned commits
+        // now serialize, including the one paused at the prepared create CAS.
         let snapshot = f
             .meta
             .permission_snapshot(vec![inodes[3]], None)
@@ -265,8 +265,23 @@ async fn namespace_permission_batches_reauthorize_after_commit_conflict() {
         .unwrap()
         .inode;
         inode.mode = 0o700;
-        f.meta
-            .mutate_inode(&snapshot.layers, inode, Vec::new())
+        let guard = f.meta.guard().await;
+        inode.layer_id = guard.expected_head_layer_id;
+        inode.sequence = 0;
+        let mut mutation = VersionedMutation::empty(guard, snapshot.layers, 4096);
+        mutation.inodes.push(inode);
+        let competing = KvWorkspaceStore::new(ValidationBackend {
+            inner: f.inner.clone(),
+            control: f.control.clone(),
+        })
+        .with_packed_reader_pin_budget(f.lower.mount_budget());
+        let binding = competing
+            .load_packed_lower_binding(mutation.guard.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        competing
+            .apply_packed_versioned_mutation(mutation, binding)
             .await
             .unwrap();
         control.resume.add_permits(1);

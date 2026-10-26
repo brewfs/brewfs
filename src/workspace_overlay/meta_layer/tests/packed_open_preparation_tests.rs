@@ -35,6 +35,9 @@ mod group_commit_tests;
 #[path = "namespace_permission_tests.rs"]
 mod namespace_permission_tests;
 
+#[path = "renewal_mutation_tests.rs"]
+mod renewal_mutation_tests;
+
 const IDLE: u8 = 0;
 const RENEW_ONCE: u8 = 1;
 const ALWAYS_BUSY: u8 = 2;
@@ -60,6 +63,7 @@ const BACKEND_MESSAGE: &str = "record_open preparation injected backend response
 
 struct ValidationControl {
     group_commit: group_commit_tests::Control,
+    renewal_mutation: renewal_mutation_tests::Control,
     mode: AtomicU8,
     target: AtomicUsize,
     calls: AtomicUsize,
@@ -78,6 +82,7 @@ impl ValidationControl {
     fn new() -> Self {
         Self {
             group_commit: group_commit_tests::Control::new(),
+            renewal_mutation: renewal_mutation_tests::Control::default(),
             mode: AtomicU8::new(IDLE),
             target: AtomicUsize::new(1),
             calls: AtomicUsize::new(0),
@@ -276,6 +281,7 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for ValidationBackend<B> {
         expires_at_ns: i64,
     ) -> Result<bool, WorkspaceError> {
         self.control.group_commit.before_commit(writes).await;
+        let local_mutation = self.control.renewal_mutation.before_commit(writes).await;
         self.control.validations.fetch_add(1, Ordering::SeqCst);
         let mode = self.control.mode.load(Ordering::SeqCst);
         let renewal_tracked = mounted_renewal_mode(mode) && mounted_renewal_packet(checks, writes);
@@ -320,6 +326,9 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for ValidationBackend<B> {
             .inner
             .compare_and_swap_before(checks, writes, expires_at_ns)
             .await;
+        if local_mutation && matches!(result, Ok(true)) {
+            self.control.renewal_mutation.committed.add_permits(1);
+        }
         if (tracked || renewal_tracked) && matches!(result, Ok(false)) {
             self.control.conflicts.fetch_add(1, Ordering::SeqCst);
         }
@@ -505,8 +514,10 @@ fn observed_native_record<T: serde::de::DeserializeOwned>(raw: &Option<Vec<u8>>)
     .unwrap()
 }
 
-async fn real_single_inode_permission_mutation<B: WorkspaceKvBackend>(f: &Fixture<B>) {
-    let view = f.authority.view();
+async fn real_single_inode_permission_mutation<B: WorkspaceKvBackend>(
+    view: crate::workspace_overlay::model::ViewContext,
+    store: &KvWorkspaceStore<B>,
+) {
     let guard = HeadGuard {
         workspace_id: view.workspace_id,
         expected_head_layer_id: view.head_layer_id,
@@ -514,7 +525,6 @@ async fn real_single_inode_permission_mutation<B: WorkspaceKvBackend>(f: &Fixtur
         lease_id: view.lease_id,
         holder_generation: view.holder_generation,
     };
-    let store = f.meta.store();
     let binding = store
         .load_packed_lower_binding(guard.clone())
         .await
@@ -571,7 +581,15 @@ async fn packed_mount_renewal_restarts_after_real_head_permission_mutation() {
     let mutating = async {
         f.control.reached.acquire().await.unwrap().forget();
         let captured = f.control.packets.lock().await[0].clone();
-        real_single_inode_permission_mutation(&f).await;
+        // An independent store models a competing remote actor. Local mutation
+        // drivers must serialize with renewal, but remote conflicts must still
+        // rebuild and authenticate every exact check under the original cap.
+        let competing = KvWorkspaceStore::new(ValidationBackend {
+            inner: f.inner.clone(),
+            control: f.control.clone(),
+        })
+        .with_packed_reader_pin_budget(f.lower.mount_budget());
+        real_single_inode_permission_mutation(f.authority.view(), &competing).await;
         let keys = captured
             .iter()
             .map(|check| check.key.clone())

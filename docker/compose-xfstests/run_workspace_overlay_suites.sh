@@ -37,7 +37,7 @@ Options:
   --skip-pjdfstest          do not run pjdfstest
   --reuse-images            reuse existing feature-enabled images
   --parallel-suites         run workspace A and B suites concurrently
-  --single-workspace        run suites only on workspace A
+  --single-workspace        run suites on the initialized packed workspace
   --meta-backend BACKEND    workspace catalog: redis or tikv (default: $META_BACKEND)
   -h, --help                show this help
 EOF
@@ -303,6 +303,8 @@ run_suite() {
     if [[ "$image" == "$XFSTESTS_IMAGE" && -z "$fuse_writeback" ]]; then
         fuse_writeback=1
     fi
+    # The base image declares /mnt/brewfs as a Docker volume. Packed startup
+    # correctly refuses to cover an existing kernel mount; use a child path.
     docker run --rm \
         --network "$network" \
         --privileged \
@@ -313,6 +315,7 @@ run_suite() {
         -v "$artifacts:/artifacts" \
         -e BREWFS_VOLUME_FORMAT=workspace-v1 \
         -e BREWFS_WORKSPACE_ID="$workspace" \
+        -e BREWFS_MOUNT_POINT=/mnt/brewfs/workspace \
         -e BREWFS_META_BACKEND="$META_BACKEND" \
         -e BREWFS_META_URL="$catalog_url" \
         -e BREWFS_META_TIKV_PD_ENDPOINTS="$catalog_tikv_endpoints" \
@@ -340,13 +343,21 @@ run_cli "${catalog_cli_args[@]}" init-packed-volume \
     >"$run_dir/init.json"
 base_revision="$(extract_revision "$run_dir/init.json")"
 
-log "creating $WORKSPACE_COUNT O(1) fork(s) of $base_revision"
-run_cli "${catalog_cli_args[@]}" fork "$base_revision" --count "$WORKSPACE_COUNT" \
-    --owner workspace-harness >"$run_dir/fork.json"
-mapfile -t fork_ids < <(extract_fork_ids "$run_dir/fork.json")
-[[ ${#fork_ids[@]} -eq "$WORKSPACE_COUNT" ]] \
-    || die "expected exactly $WORKSPACE_COUNT forked workspace(s)"
-workspace_a="${fork_ids[0]}"
+if (( WORKSPACE_COUNT == 1 )); then
+    # init-packed-volume installs the packed binding on this workspace.
+    # fork_base still identifies its original native base; an ordinary fork
+    # of that revision has no packed binding and never exercises joint renewal.
+    workspace_a="$(extract_workspace_id "$run_dir/init.json")"
+    log "using initialized packed workspace $workspace_a"
+else
+    log "creating $WORKSPACE_COUNT O(1) fork(s) of $base_revision"
+    run_cli "${catalog_cli_args[@]}" fork "$base_revision" --count "$WORKSPACE_COUNT" \
+        --owner workspace-harness >"$run_dir/fork.json"
+    mapfile -t fork_ids < <(extract_fork_ids "$run_dir/fork.json")
+    [[ ${#fork_ids[@]} -eq "$WORKSPACE_COUNT" ]] \
+        || die "expected exactly $WORKSPACE_COUNT forked workspace(s)"
+    workspace_a="${fork_ids[0]}"
+fi
 printf '%s\n' "$workspace_a" >"$run_dir/workspace-a.id"
 if (( WORKSPACE_COUNT == 2 )); then
     workspace_b="${fork_ids[1]}"

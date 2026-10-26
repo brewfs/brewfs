@@ -395,10 +395,12 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         let backend = self.backend.clone();
         let committed_head = self.committed_head.clone();
         let commit_view = self.commit_view.clone();
+        let mutation_gate = self.packed_mutation_gate.clone();
         let recovery_owner = packed_admin::capture_mounted_recovery_owner();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _permit = permit;
+            let _mutation_guard = mutation_gate.lock().await;
             let mut store =
                 KvWorkspaceStore::from_arc(backend).with_packed_reader_pin_budget(budget);
             store.commit_view = commit_view;
