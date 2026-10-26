@@ -127,6 +127,8 @@ pub fn compress<'a>(data: &'a [u8], algo: Compression) -> Cow<'a, [u8]> {
     result.push(algo.algo_byte());
     result.push(0); // reserved
     result.extend_from_slice(&compressed_body);
+    #[cfg(test)]
+    copy_probe::record(compressed_body.len(), PERSISTED_HEADER_LEN);
     Cow::Owned(result)
 }
 
@@ -144,8 +146,68 @@ pub fn encode_persisted_block(data: &[u8], compression: Compression) -> Bytes {
             encoded.push(Compression::None.algo_byte());
             encoded.push(0);
             encoded.extend_from_slice(raw);
+            #[cfg(test)]
+            copy_probe::record(raw.len(), PERSISTED_HEADER_LEN);
             Bytes::from(encoded)
         }
+    }
+}
+
+/// Prepare raw cache bytes and a persisted frame from ordered block fragments.
+///
+/// A fragmented raw block needs only one payload allocation: reserve the frame
+/// header before appending the fragments, then freeze it before sharing the body
+/// with the cache. Compression still sees exactly the raw body and retains its
+/// existing beneficial-size decision. A single fragment keeps the borrowed raw
+/// cache buffer, avoiding an extra assembly copy on that path.
+pub(crate) fn encode_persisted_block_vectored(
+    parts: &[Bytes],
+    compression: Compression,
+) -> (Bytes, Bytes) {
+    if let [single] = parts {
+        return (single.clone(), encode_persisted_block(single, compression));
+    }
+
+    let total_len = parts.iter().map(|part| part.len()).sum::<usize>();
+    let mut framed = Vec::with_capacity(PERSISTED_HEADER_LEN + total_len);
+    framed.extend_from_slice(&[MAGIC[0], MAGIC[1], Compression::None.algo_byte(), 0]);
+    #[cfg(test)]
+    copy_probe::record(0, PERSISTED_HEADER_LEN);
+    for part in parts {
+        framed.extend_from_slice(part);
+        #[cfg(test)]
+        copy_probe::record(part.len(), 0);
+    }
+
+    let framed = Bytes::from(framed);
+    let raw = framed.slice(PERSISTED_HEADER_LEN..);
+    let encoded = match compress(&raw, compression) {
+        Cow::Owned(encoded) => Bytes::from(encoded),
+        Cow::Borrowed(_) => framed,
+    };
+    (raw, encoded)
+}
+
+/// Counts the bytes appended by object preparation, excluding codec internals,
+/// callers' staging buffers, and backend/transport copies. Thread-local because
+/// preparation is synchronous; the store evidence tests use a current-thread runtime.
+#[cfg(test)]
+pub(crate) mod copy_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COPIED: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    pub fn record(payload: usize, header: usize) {
+        COPIED.with(|counter| {
+            let (old_payload, old_header) = counter.get();
+            counter.set((old_payload + payload, old_header + header));
+        });
+    }
+
+    pub fn take() -> (usize, usize) {
+        COPIED.with(|counter| counter.replace((0, 0)))
     }
 }
 

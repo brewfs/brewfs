@@ -1,0 +1,32 @@
+    Finished `test` profile [unoptimized] target(s) in 17m 54s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (target/debug/deps/brewfs-af23b568091b1640)
+
+running 2 tests
+
+thread 'chunk::store::framed_write_tests::fragmented_raw_frame_shares_immutable_cache_and_releases_charge' (36088) panicked at src/chunk/store/framed_write_tests.rs:289:5:
+assertion `left == right` failed
+  left: 0x724b2f3fd010
+ right: 0x724b2effc014
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chunk::store::framed_write_tests::fragmented_raw_frame_shares_immutable_cache_and_releases_charge ... FAILED
+FRAMED_OBJECT_EVIDENCE {"case":"raw-4m","fragments":32,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":8388608,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"raw-4m-no-cache","fragments":32,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":8388608,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":0,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"raw-4m-create-only","fragments":32,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":8388608,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"raw-single","fragments":1,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":4194304,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"raw-sparse-tail","fragments":17,"header_bytes_written":4,"header_hex":"53460000","object_bytes":135172,"payload_bytes":131071,"payload_bytes_copied":270336,"sha256":"8e58b26839aa363cdf48e62f9c44aa675648ead7c068182d4480b74f7e278389","write_hot_bytes":135168,"zero_prefix_bytes":4097}
+FRAMED_OBJECT_EVIDENCE {"case":"lz4-fallback","fragments":32,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":8388608,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"zstd-fallback","fragments":32,"header_bytes_written":4,"header_hex":"53460000","object_bytes":4194308,"payload_bytes":4194304,"payload_bytes_copied":8388608,"sha256":"322bdf05f5cb1bec9bfee06baa029a94983c7f9f34da9ad6c127ac49752f1e3f","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"lz4-compressed","fragments":32,"header_bytes_written":4,"header_hex":"53460100","object_bytes":16468,"payload_bytes":4194304,"payload_bytes_copied":4210768,"sha256":"325d0ce77e01202c16b7f0d61e1de7a30208a5451bf00af4faba009fbe5908cd","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+FRAMED_OBJECT_EVIDENCE {"case":"zstd-compressed","fragments":32,"header_bytes_written":4,"header_hex":"53460200","object_bytes":151,"payload_bytes":4194304,"payload_bytes_copied":4194451,"sha256":"a8ce17f845d3eefa03e8cef07d8ba63200cb66e5a2771b1ee8e4c2daeececa72","write_hot_bytes":4194304,"zero_prefix_bytes":0}
+test chunk::store::framed_write_tests::persisted_object_copy_evidence ... ok
+
+failures:
+
+failures:
+    chunk::store::framed_write_tests::fragmented_raw_frame_shares_immutable_cache_and_releases_charge
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2983 filtered out; finished in 1.01s
+
+error: test failed, to rerun pass `--lib`
