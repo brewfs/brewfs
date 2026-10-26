@@ -385,6 +385,7 @@ meta:
 |---|---:|---|
 | `fuse.workers` | `clamp(2 × available_parallelism, 1, 64)` | 根据 CPU affinity / cgroup quota 可用并行度计算，探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `fuse.max_background` | `512` | asyncfuse worker 模式下最大 queued/running 请求数。 |
+| `fuse.cache_ttl_ms` | `0` | 显式放宽可写 POSIX ACL 挂载的内核权限/属性/目录项缓存 TTL；CLI `--fuse-cache-ttl-ms` 优先，含显式 `0`。详见 [CONFIG.md](../../CONFIG.md) 中的性能和权限陈旧窗口。 |
 | `fuse.privileged` | `false` | 直接使用 `/dev/fuse`，通常用于 root/systemd/container。 |
 
 优先级为 `--fuse-workers` > YAML `fuse.workers` > 自动计算的默认值。perf runner 和 installer 将 `BREWFS_FUSE_WORKERS` 写入 YAML；挂载程序不直接读取这个环境变量。显式配置的 worker 数不受默认值的 `64` 上限限制。

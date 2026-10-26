@@ -63,11 +63,12 @@ impl AsRef<[u8]> for MetadataReplyOwner {
     }
 }
 
-/// Runtime-configurable kernel attribute/entry cache TTL.
+/// Legacy kernel attribute/entry cache TTL for backends without writable ACLs.
 /// Non-zero lets the kernel serve repeated getattr/lookup from its own cache
 /// without round-tripping to userspace.  Default: 1s, matching JuiceFS' usual
 /// metadata cache balance.  Override via BREWFS_CACHE_TTL_MS=0 for strict
-/// multi-client coherency or targeted debugging.
+/// multi-client coherency or targeted debugging. Writable ACL mounts instead
+/// use the explicit per-mount --fuse-cache-ttl-ms policy (default: zero).
 fn fuse_cache_ttl() -> Duration {
     static TTL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *TTL.get_or_init(|| {
@@ -3774,7 +3775,10 @@ where
         if self.meta_layer().posix_acl_capability()
             == crate::meta::layer::PosixAclCapability::ReadWrite
         {
-            Duration::ZERO
+            // The ABI has one attr_valid for the entire permission-bearing
+            // attribute snapshot. Only an explicit operator choice may relax
+            // the zero-TTL permission consistency policy.
+            self.configured_fuse_cache_ttl()
         } else {
             fuse_cache_ttl()
         }
@@ -4792,6 +4796,18 @@ mod fuse_init_tests {
         let store = InMemoryBlockStore::new();
         let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
         VFS::new(layout, store, meta_handle.store()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn fuse_cache_ttl_override_preserves_legacy_backend_policy() {
+        let fs = new_fuse_test_vfs().await;
+        assert_eq!(
+            fs.meta_layer().posix_acl_capability(),
+            crate::meta::layer::PosixAclCapability::Unsupported
+        );
+        let before = fs.permission_cache_ttl();
+        fs.set_fuse_cache_ttl(Duration::from_millis(7));
+        assert_eq!(fs.permission_cache_ttl(), before);
     }
 
     #[derive(Debug)]

@@ -314,6 +314,15 @@ pub struct MountArgs {
     #[arg(long)]
     pub fuse_max_background: Option<usize>,
 
+    /// Kernel permission/entry cache TTL for writable POSIX ACL mounts (default: 0).
+    /// With 1,000 ms the warm stat loop drops from 10,000 FUSE LOOKUP + 20,000 GETATTR
+    /// requests to 0, and the cost is a permission-staleness window of up to 0.876 s
+    /// (measured: 86 stale access checks after an external chmod 000, denial delayed
+    /// 0.876 s versus 0.0006 s at TTL 0). This is an explicit operator choice and the
+    /// default preserves strong consistency. Other backends retain their legacy TTL.
+    #[arg(long, value_name = "MILLIS")]
+    pub fuse_cache_ttl_ms: Option<u64>,
+
     /// Use privileged mount mode (requires root or fuse group membership).
     /// Uses /dev/fuse directly instead of fusermount3.
     #[arg(long, default_value_t = false)]
@@ -991,6 +1000,7 @@ pub struct LayoutFileConfig {
 pub struct FuseFileConfig {
     pub workers: Option<usize>,
     pub max_background: Option<usize>,
+    pub cache_ttl_ms: Option<u64>,
     pub privileged: Option<bool>,
 }
 
@@ -1064,6 +1074,7 @@ pub struct MountConfig {
     pub block_size: u32,
     pub fuse_workers: usize,
     pub fuse_max_background: usize,
+    pub fuse_cache_ttl_ms: u64,
     pub privileged: bool,
     pub cache: VfsCacheConfig,
     pub compact: CompactConfig,
@@ -1375,6 +1386,10 @@ impl MountConfig {
                 .fuse_max_background
                 .or(fuse_cfg.max_background)
                 .unwrap_or(DEFAULT_FUSE_MAX_BACKGROUND),
+            fuse_cache_ttl_ms: args
+                .fuse_cache_ttl_ms
+                .or(fuse_cfg.cache_ttl_ms)
+                .unwrap_or(0),
             privileged: args.privileged || fuse_cfg.privileged.unwrap_or(false),
             cache,
             compact,
@@ -1710,6 +1725,7 @@ mod tests {
             block_size: None,
             fuse_workers: None,
             fuse_max_background: None,
+            fuse_cache_ttl_ms: None,
             privileged: false,
         }
     }
@@ -2161,6 +2177,56 @@ mod tests {
     }
 
     #[test]
+    fn mount_config_fuse_cache_ttl_defaults_and_overrides() {
+        let config =
+            MountConfig::from_sources(empty_mount_args(None, Some(PathBuf::from("/mnt/slayer"))))
+                .unwrap();
+        assert_eq!(config.fuse_cache_ttl_ms, 0);
+
+        for yaml_ttl in [None, Some(0), Some(1000), Some(u64::MAX)] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let section = yaml_ttl
+                .map(|ttl| format!("fuse:\n  cache_ttl_ms: {ttl}\n"))
+                .unwrap_or_default();
+            std::fs::write(file.path(), format!("mount_point: /mnt/slayer\n{section}")).unwrap();
+            for cli_ttl in [None, Some(0), Some(7), Some(1000)] {
+                let mut args = empty_mount_args(Some(file.path().to_path_buf()), None);
+                args.fuse_cache_ttl_ms = cli_ttl;
+                let config = MountConfig::from_sources(args).unwrap();
+                assert_eq!(config.fuse_cache_ttl_ms, cli_ttl.or(yaml_ttl).unwrap_or(0));
+            }
+        }
+    }
+
+    #[test]
+    fn mount_subcommand_accepts_explicit_fuse_cache_ttl() {
+        for millis in ["0", "1000", "18446744073709551615"] {
+            assert!(
+                Cli::try_parse_from([
+                    "brewfs",
+                    "mount",
+                    "/mnt/slayer",
+                    "--fuse-cache-ttl-ms",
+                    millis,
+                ])
+                .is_ok()
+            );
+        }
+        for millis in ["-1", "1.5", "18446744073709551616"] {
+            assert!(
+                Cli::try_parse_from([
+                    "brewfs",
+                    "mount",
+                    "/mnt/slayer",
+                    "--fuse-cache-ttl-ms",
+                    millis,
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn mount_subcommand_parses_fuse_worker_args() {
         let cli = Cli::parse_from([
             "brewfs",
@@ -2237,6 +2303,7 @@ mod tests {
             block_size: None,
             fuse_workers: None,
             fuse_max_background: None,
+            fuse_cache_ttl_ms: None,
             privileged: false,
         })
         .unwrap();
@@ -2317,6 +2384,7 @@ mod tests {
             block_size: None,
             fuse_workers: None,
             fuse_max_background: None,
+            fuse_cache_ttl_ms: None,
             privileged: false,
         })
         .unwrap();

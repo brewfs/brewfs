@@ -18,6 +18,9 @@ use super::WorkspaceMetaLayer;
 #[path = "tests/existing_api_contract_tests.rs"]
 mod existing_api_contract_tests;
 
+#[path = "tests/fuse_cache_ttl_tests.rs"]
+mod fuse_cache_ttl_tests;
+
 #[path = "tests/packed_lower_tests.rs"]
 mod packed_lower_tests;
 

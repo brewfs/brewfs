@@ -988,6 +988,7 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     meta_layer.initialize().await?;
     let config = crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone());
     let fs = VFS::from_workspace_components(config, store, Arc::clone(&meta_layer))?;
+    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
     meta_layer.install_v3_stats(fs.stats());
     let concurrency = FuseConcurrencyConfig {
         worker_count: args.fuse_workers,
@@ -1144,6 +1145,7 @@ async fn mount_native_placement_readonly<B: ObjectBackend + Clone + Send + Sync 
     let provider: Arc<dyn crate::chunk::read_plan::WorkspaceReadPlanProvider> = metadata.clone();
     let fs =
         VFS::from_readonly_components_with_provider(config, store, metadata.clone(), provider)?;
+    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
     metadata.install_stats(fs.stats());
     metadata.start_runtime();
     let concurrency = FuseConcurrencyConfig {
@@ -1357,6 +1359,7 @@ where
             .workspace_writer_epoch(session.view.holder_generation);
     phase.store(1, std::sync::atomic::Ordering::Release);
     let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer)?;
+    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
     fs.stats().set_extension(Arc::new(
         crate::cadapter::read_observer::NativeReadStatsExtension(observer),
     ));
@@ -1716,6 +1719,7 @@ where
     )
     .map_err(anyhow::Error::from)?;
     tracing::info!("mount startup vfs create complete");
+    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
     let concurrency = FuseConcurrencyConfig {
         worker_count: args.fuse_workers,
         max_background: args.fuse_max_background,
@@ -2032,6 +2036,7 @@ where
                 .workspace_writer_epoch(mount_view.holder_generation);
         session.as_ref().expect("mount session retained").initialize_packed_writeback_identity(&vfs_config).await?;
         let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer.clone())?;
+        fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
         if packed {
             meta_layer.install_packed_lower_stats(fs.stats());
             packed_vfs = Some(fs.clone());

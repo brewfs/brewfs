@@ -368,6 +368,7 @@ where
     fuse_write_order: Arc<FuseWriteOrder>,
     fuse_read_cancel: crate::vfs::fuse_read_cancel::ReadRegistry,
     fuse_notify: StdMutex<Option<FuseNotify>>,
+    fuse_cache_ttl: std::sync::OnceLock<Duration>,
     #[cfg(target_os = "linux")]
     fuse_mount_device: StdMutex<Option<(u32, u32)>>,
     statfs_cache: StdMutex<Option<StatFsCache>>,
@@ -774,6 +775,7 @@ where
             fuse_write_order: Arc::new(FuseWriteOrder::default()),
             fuse_read_cancel,
             fuse_notify: StdMutex::new(None),
+            fuse_cache_ttl: std::sync::OnceLock::new(),
             #[cfg(target_os = "linux")]
             fuse_mount_device: StdMutex::new(None),
             statfs_cache: StdMutex::new(None),
@@ -1957,6 +1959,18 @@ where
             .fuse_notify
             .lock()
             .expect("fuse notify lock poisoned") = Some(notify);
+    }
+
+    /// Set once before mounting; all VFS clones share the same explicit policy.
+    pub(crate) fn set_fuse_cache_ttl(&self, ttl: Duration) {
+        self.state
+            .fuse_cache_ttl
+            .set(ttl)
+            .expect("FUSE cache TTL already configured");
+    }
+
+    pub(crate) fn configured_fuse_cache_ttl(&self) -> Duration {
+        self.state.fuse_cache_ttl.get().copied().unwrap_or_default()
     }
 
     fn fuse_notify(&self) -> Option<FuseNotify> {
