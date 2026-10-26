@@ -316,12 +316,14 @@ impl LeaseHeartbeat {
                     _ = task_cancel.cancelled() => break,
                     _ = timer.tick() => {
                         let started = Instant::now();
-                        if store.renew_lease(RenewLease {
+                        if let Err(error) = store.renew_lease(RenewLease {
                             lease_id,
                             holder_generation,
                             ttl_ns,
-                        }).await.is_err() {
+                        }).await {
                             validity.revoke();
+                            tracing::warn!(?error, %lease_id, holder_generation,
+                                "workspace lease heartbeat failed");
                             break;
                         }
                         validity.extend(started, ttl);

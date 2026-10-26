@@ -1412,7 +1412,17 @@ where
             let packet = self
                 .prepare_topology_packet(checks, writes, deadline)
                 .await?;
-            let committed = self.commit_prepared_topology_packet(&packet).await?;
+            let committed = match self.commit_prepared_topology_packet(&packet).await {
+                Ok(committed) => committed,
+                // The temporal CAS rejected this packet without writing. Its
+                // captured deadline can expire while our own lease is renewed.
+                // Re-resolve the complete workspace/head/lease snapshot under
+                // the existing retry cap. checked_hot_guard still rejects a
+                // truly expired, released, replaced or deleted owner; changed
+                // inode/permission versions go back to the caller as Busy.
+                Err(WorkspaceError::Fenced) => false,
+                Err(error) => return Err(error),
+            };
             if committed {
                 return Ok(result);
             }
@@ -3262,60 +3272,75 @@ where
                 "lease TTL must be positive".into(),
             ));
         }
-        self.current_control().await?;
-        let workspace_id: WorkspaceId = self
-            .load_hot(lease_index_key(request.lease_id))
-            .await?
-            .1
-            .ok_or(WorkspaceError::Fenced)?;
-        let key = lease_key(workspace_id, request.lease_id);
         for attempt in 0..CAS_MAX_RETRIES {
-            let (values, now) = self
-                .backend
-                .get_many_consistent_with_time_bounded(
-                    std::slice::from_ref(&key),
-                    topology_point_limits(1),
-                )
-                .await?;
-            let raw = values
-                .into_iter()
-                .next()
-                .ok_or_else(|| WorkspaceError::Backend("lease lookup returned no values".into()))?;
-            let lease: Option<SnapshotLease> = raw.as_deref().map(decode).transpose()?;
-            let mut lease = lease.ok_or(WorkspaceError::Fenced)?;
-            if lease.holder_generation != request.holder_generation
-                || lease.state != LeaseState::Active
-                || lease.expires_at_ns <= now
-            {
-                return Err(WorkspaceError::Fenced);
+            // A read/derived-proof conflict has submitted no mutation. Rebuild
+            // the entire renewal, including its live lease deadline, rather
+            // than letting a transient Busy stop the heartbeat permanently.
+            let prepared = async {
+                self.current_control().await?;
+                let workspace_id: WorkspaceId = self
+                    .load_hot(lease_index_key(request.lease_id))
+                    .await?
+                    .1
+                    .ok_or(WorkspaceError::Fenced)?;
+                let key = lease_key(workspace_id, request.lease_id);
+                let (values, now) = self
+                    .backend
+                    .get_many_consistent_with_time_bounded(
+                        std::slice::from_ref(&key),
+                        topology_point_limits(1),
+                    )
+                    .await?;
+                let raw = values.into_iter().next().ok_or_else(|| {
+                    WorkspaceError::Backend("lease lookup returned no values".into())
+                })?;
+                let lease: Option<SnapshotLease> = raw.as_deref().map(decode).transpose()?;
+                let mut lease = lease.ok_or(WorkspaceError::Fenced)?;
+                if lease.holder_generation != request.holder_generation
+                    || lease.state != LeaseState::Active
+                    || lease.expires_at_ns <= now
+                {
+                    return Err(WorkspaceError::Fenced);
+                }
+                let original = lease.clone();
+                lease.expires_at_ns = checked_expiry(now, request.ttl_ns)?;
+                lease.updated_at_ns = now;
+                let writes = [put(key.clone(), &lease)?];
+                let mut checks = vec![
+                    KvCheck {
+                        key: key.clone(),
+                        expected: raw,
+                    },
+                    KvCheck {
+                        key: lease_index_key(request.lease_id),
+                        expected: Some(encode(&workspace_id)?),
+                    },
+                ];
+                let mut writes = writes.to_vec();
+                let writer = self
+                    .prepare_plain_lease_transition(&original, &mut checks, &mut writes, false)
+                    .await?;
+                let packet = self
+                    .prepare_topology_packet(
+                        checks,
+                        writes,
+                        Some(writer.deadline.map_or(original.expires_at_ns, |deadline| {
+                            deadline.min(original.expires_at_ns)
+                        })),
+                    )
+                    .await?;
+                Ok::<_, WorkspaceError>((lease, packet, writer))
             }
-            let original = lease.clone();
-            lease.expires_at_ns = checked_expiry(now, request.ttl_ns)?;
-            lease.updated_at_ns = now;
-            let writes = [put(key.clone(), &lease)?];
-            let mut checks = vec![
-                KvCheck {
-                    key: key.clone(),
-                    expected: raw,
-                },
-                KvCheck {
-                    key: lease_index_key(request.lease_id),
-                    expected: Some(encode(&workspace_id)?),
-                },
-            ];
-            let mut writes = writes.to_vec();
-            let writer = self
-                .prepare_plain_lease_transition(&original, &mut checks, &mut writes, false)
-                .await?;
-            let packet = self
-                .prepare_topology_packet(
-                    checks,
-                    writes,
-                    Some(writer.deadline.map_or(original.expires_at_ns, |deadline| {
-                        deadline.min(original.expires_at_ns)
-                    })),
-                )
-                .await?;
+            .await;
+            let (lease, packet, _writer) = match prepared {
+                Err(WorkspaceError::Busy) => {
+                    retry_backoff(attempt).await;
+                    continue;
+                }
+                other => other?,
+            };
+            // Keep all preparation permits through the submitted CAS. An
+            // uncertain backend result must propagate without replay.
             if self.commit_prepared_topology_packet(&packet).await? {
                 return Ok(lease);
             }
