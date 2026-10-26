@@ -418,6 +418,8 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     /// to a single prefetch worker; foreground reads are still allowed to use
     /// read_flight directly and are not throttled by this semaphore.
     range_prefetch_limit: Arc<Semaphore>,
+    /// Runtime fetch/prefetch override; never part of the persisted layout.
+    read_fetch_policy: ReadFetchPolicy,
     /// Configuration for read strategy
     config: BlockStoreConfig,
     /// Network bandwidth rate limiter for uploads/downloads
@@ -427,6 +429,20 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     /// Native-v2 volumes must route private deletion through the lifecycle
     /// cleaner, so the legacy block-range entry point is fail-closed.
     legacy_delete_allowed: bool,
+}
+
+/// Read-side policy, independent of object encoding and EC write geometry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadFetchPolicy {
+    /// Preserve the backend's existing fetch and prefetch behavior.
+    #[default]
+    BackendDefault,
+    /// Coalesce misses into whole-object downloads.
+    WholeObject,
+    /// Fetch small uncompressed misses in pages, without speculative full GETs.
+    /// Compressed objects and large reads still use the whole-object flight.
+    Sparse,
 }
 
 /// Configuration for ObjectBlockStore read strategy
@@ -554,6 +570,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            read_fetch_policy: ReadFetchPolicy::default(),
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -604,6 +621,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            read_fetch_policy: ReadFetchPolicy::default(),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -632,6 +650,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             format_flight: SingleFlight::new(),
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
+            read_fetch_policy: ReadFetchPolicy::default(),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -643,6 +662,13 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     #[allow(unused)]
     pub fn with_bandwidth(mut self, limiter: BandwidthLimiter) -> Self {
         self.bandwidth = limiter;
+        self
+    }
+
+    /// Select read fetch/prefetch behavior independently of EC write geometry.
+    /// This preserves the backend's existing block-cache admission policy.
+    pub fn with_read_fetch_policy(mut self, policy: ReadFetchPolicy) -> Self {
+        self.read_fetch_policy = policy;
         self
     }
 
@@ -1211,7 +1237,16 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         // byte as well.  Requiring offset > 0 made every small-file read at
         // the beginning of a block download the complete block, which is
         // especially costly when the data cache is intentionally cold.
-        let prefer_full_objects = self.client.prefers_full_object_reads();
+        let prefer_full_objects = match self.read_fetch_policy {
+            ReadFetchPolicy::BackendDefault => self.client.prefers_full_object_reads(),
+            ReadFetchPolicy::WholeObject => true,
+            ReadFetchPolicy::Sparse => false,
+        };
+        // Explicit policies can classify a full response from its own header.
+        // In particular, opting into sparse misses must not add a header GET
+        // to complete-object scans. Preserve the legacy default exactly.
+        let skip_full_read_probe =
+            prefer_full_objects || self.read_fetch_policy == ReadFetchPolicy::Sparse;
         let can_try_object_ranges = len > 0 && len <= range_size_threshold && !prefer_full_objects;
 
         if can_try_object_ranges
@@ -1407,6 +1442,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 require_complete_read(key, offset, len, total_read)?;
                 if self.config.range_background_prefetch
                     && !self.try_promote_page_cache_to_block_cache(key).await
+                    && self.read_fetch_policy != ReadFetchPolicy::Sparse
                 {
                     self.prefetch_full_block_background(key, key_str, object_key, layout);
                 }
@@ -1539,6 +1575,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             if range_missed
                 && self.config.range_background_prefetch
                 && !self.try_promote_page_cache_to_block_cache(key).await
+                && self.read_fetch_policy != ReadFetchPolicy::Sparse
             {
                 self.prefetch_full_block_background(key, key_str, object_key, layout);
             }
@@ -1562,7 +1599,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                     Some(layout) => layout,
                     // The full response carries its own frame header. A
                     // separate probe would read the same EC frame twice.
-                    None if prefer_full_objects => self
+                    None if skip_full_read_probe => self
                         .format_cache
                         .get(&key)
                         .await
@@ -1585,7 +1622,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 .await?;
                 object_metrics.record_read_full_get();
                 if fetched.is_none()
-                    && prefer_full_objects
+                    && skip_full_read_probe
                     && !self.config.versioned_objects_only
                     && matches!(layout, ObjectLayout::Versioned(_))
                 {
@@ -1702,6 +1739,12 @@ pub type LocalFsBlockStore = ObjectBlockStore<crate::cadapter::localfs::LocalFsB
 
 #[cfg(test)]
 mod framed_write_tests;
+
+#[cfg(test)]
+mod read_policy_tests;
+
+#[cfg(all(test, feature = "rustfs-ec-block-size-hint"))]
+mod read_policy_s3_evidence;
 
 #[cfg(test)]
 mod tests {

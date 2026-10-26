@@ -9,6 +9,7 @@ use crate::chunk::bandwidth::BandwidthConfig;
 use crate::chunk::cache_integrity::CacheIntegrityMode;
 use crate::chunk::compress::Compression;
 use crate::chunk::layout::{DEFAULT_BLOCK_SIZE, DEFAULT_CHUNK_SIZE};
+use crate::chunk::store::ReadFetchPolicy;
 use crate::meta::config::CompactConfig;
 use crate::vfs::cache::config::{CacheConfig as VfsCacheConfig, WriteBackMode};
 
@@ -243,6 +244,12 @@ pub struct MountArgs {
     /// S3 bucket name (only for s3 backend).
     #[arg(long, value_name = "BUCKET")]
     pub s3_bucket: Option<String>,
+
+    /// Object read policy, independent of the EC write hint. Sparse disables
+    /// speculative full-object prefetch for small uncompressed reads.
+    /// Omit to preserve the backend's current behavior.
+    #[arg(long, value_enum)]
+    pub read_fetch_policy: Option<ReadFetchPolicy>,
 
     /// S3-compatible endpoint URL (only for s3 backend).
     #[arg(long, value_name = "URL")]
@@ -1019,6 +1026,7 @@ pub struct CacheFileConfig {
     pub prefetch_max_bytes: Option<u64>,
     pub prefetch_concurrency: Option<usize>,
     pub range_background_prefetch: Option<bool>,
+    pub read_fetch_policy: Option<ReadFetchPolicy>,
     pub populate_write_cache_after_upload: Option<bool>,
     pub persist_write_cache_after_upload: Option<bool>,
     pub memory_budget_bytes: Option<u64>,
@@ -1227,7 +1235,10 @@ impl MountConfig {
         {
             anyhow::bail!("native volume controls require volume.format=workspace-native-v2");
         }
-        let cache = cache_cfg.into_cache_config()?;
+        let mut cache = cache_cfg.into_cache_config()?;
+        if let Some(policy) = args.read_fetch_policy {
+            cache.read_fetch_policy = policy;
+        }
         let data_backend = args
             .data_backend
             .or(data_cfg.backend)
@@ -1589,6 +1600,9 @@ impl CacheFileConfig {
         if let Some(range_background_prefetch) = self.range_background_prefetch {
             cache.range_background_prefetch = range_background_prefetch;
         }
+        if let Some(policy) = self.read_fetch_policy {
+            cache.read_fetch_policy = policy;
+        }
         if let Some(populate_write_cache_after_upload) = self.populate_write_cache_after_upload {
             cache.populate_write_cache_after_upload = populate_write_cache_after_upload;
         }
@@ -1695,6 +1709,46 @@ mod tests {
     use clap::Parser;
     use clap::error::ErrorKind;
 
+    #[test]
+    fn read_fetch_policy_is_opt_in_and_cli_overrides_yaml() {
+        let config =
+            MountConfig::from_sources(empty_mount_args(None, Some("/mnt/test".into()))).unwrap();
+        assert_eq!(
+            config.cache.read_fetch_policy,
+            ReadFetchPolicy::BackendDefault
+        );
+        assert_eq!(config.s3_rustfs_ec_block_size_hint, None);
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "mount_point: /mnt/test\ncache:\n  read_fetch_policy: sparse\n",
+        )
+        .unwrap();
+        let args = empty_mount_args(Some(file.path().into()), None);
+        let config = MountConfig::from_sources(args).unwrap();
+        assert_eq!(config.cache.read_fetch_policy, ReadFetchPolicy::Sparse);
+        // Selecting sparse must not need a second prefetch flag.
+        assert!(config.cache.range_background_prefetch);
+
+        let cli = Cli::try_parse_from([
+            "brewfs",
+            "mount",
+            "--config",
+            file.path().to_str().unwrap(),
+            "--read-fetch-policy",
+            "whole-object",
+        ])
+        .unwrap();
+        let Command::Mount(args) = cli.cmd else {
+            panic!("expected mount")
+        };
+        let config = MountConfig::from_sources(*args).unwrap();
+        assert_eq!(config.cache.read_fetch_policy, ReadFetchPolicy::WholeObject);
+        assert_eq!(config.s3_rustfs_ec_block_size_hint, None);
+        assert!(serde_yaml::from_str::<CacheFileConfig>("read_fetch_policy: invalid").is_err());
+    }
+
     fn empty_mount_args(config: Option<PathBuf>, mount_point: Option<PathBuf>) -> MountArgs {
         MountArgs {
             config,
@@ -1709,6 +1763,7 @@ mod tests {
             data_backend: None,
             data_dir: None,
             s3_bucket: None,
+            read_fetch_policy: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,
@@ -2287,6 +2342,7 @@ mod tests {
             data_backend: None,
             data_dir: None,
             s3_bucket: None,
+            read_fetch_policy: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,
@@ -2368,6 +2424,7 @@ mod tests {
             data_backend: None,
             data_dir: None,
             s3_bucket: None,
+            read_fetch_policy: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,

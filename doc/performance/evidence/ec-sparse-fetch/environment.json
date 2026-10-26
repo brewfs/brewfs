@@ -1,0 +1,27 @@
+{
+  "health": {
+    "status": "ok",
+    "service": "rustfs-endpoint",
+    "timestamp": "2026-10-26T18:04:39.512609268Z[Etc/Unknown]",
+    "version": "1.0.0"
+  },
+  "image_id": "sha256:1e81764caba3be454540c061eb50beeb7706b3c46ecec9b4243498b585760c1b",
+  "image_labels": {
+    "build-date": "",
+    "description": "RustFS is a distributed object storage system written in Rust, supporting erasure coding, multi-tenant management, and observability.",
+    "license": "Apache-2.0",
+    "maintainer": "RustFS Team <dev@rustfs.com>",
+    "name": "RustFS",
+    "org.opencontainers.image.title": "RustFS,org.opencontainers.image.description=RustFS distributed object storage system,org.opencontainers.image.version=1.0.0,org.opencontainers.image.revision=d47f54bfb2f39f48bd1adda334bd27e151fe85b8,org.opencontainers.image.source=https://github.com/rustfs/rustfs,org.opencontainers.image.created=2026-09-16T10:05:14Z,org.opencontainers.image.build-type=release",
+    "release": "1.0.0",
+    "summary": "High-performance distributed object storage system compatible with S3 API",
+    "url": "https://rustfs.com",
+    "vcs-ref": "",
+    "vendor": "RustFS Team",
+    "version": "v1.0.0"
+  },
+  "geometry": "four directories on one local Docker disk; disk check bypassed",
+  "profile": "debug=0, unoptimized Rust test executable; warm server caches",
+  "requested_ec_hint_bytes": 262144,
+  "test_binary_sha256": "7e5d44c814a10dbacc19d4e786f6f68ce1a784804fdc5f8b397ec4af19d19ed6"
+}

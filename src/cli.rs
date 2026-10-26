@@ -1453,7 +1453,8 @@ where
     Ok(
         ObjectBlockStore::new_with_configs_async(client, chunks_cache_config, block_store_config)
             .await?
-            .with_bandwidth(bandwidth),
+            .with_bandwidth(bandwidth)
+            .with_read_fetch_policy(cache.read_fetch_policy),
     )
 }
 

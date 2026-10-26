@@ -1,0 +1,17 @@
+running 1 test
+
+thread 'chunk::store::read_policy_tests::sparse_fetch_policy_overrides_backend_and_both_prefetch_paths' (61815) panicked at src/chunk/store/read_policy_tests.rs:73:13:
+assertion `left == right` failed: sparse must override the EC hint
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chunk::store::read_policy_tests::sparse_fetch_policy_overrides_backend_and_both_prefetch_paths ... FAILED
+
+failures:
+
+failures:
+    chunk::store::read_policy_tests::sparse_fetch_policy_overrides_backend_and_both_prefetch_paths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1526 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`

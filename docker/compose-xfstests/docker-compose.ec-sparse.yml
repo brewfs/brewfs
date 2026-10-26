@@ -1,0 +1,23 @@
+# Dedicated four-drive EC fixture for the opt-in read-policy byte experiment.
+# Override RUSTFS_IMAGE to compare server revisions; audit xl.meta, not metadata.
+services:
+  rustfs:
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:latest}
+    ports:
+      - "127.0.0.1:${EC_SPARSE_PORT:-19300}:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "false"
+      # This fixture measures HTTP bodies, not independent physical-drive throughput.
+      RUSTFS_UNSAFE_BYPASS_DISK_CHECK: "true"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mkdir -p /data/disk1 /data/disk2 /data/disk3 /data/disk4;
+        exec /entrypoint.sh --address :9000 --access-key rustfsadmin
+        --secret-key rustfsadmin /data/disk1 /data/disk2 /data/disk3 /data/disk4
+    volumes:
+      - ec-sparse-data:/data
+volumes:
+  ec-sparse-data:

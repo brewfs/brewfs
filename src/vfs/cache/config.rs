@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::chunk::bandwidth::BandwidthConfig;
 use crate::chunk::cache_integrity::CacheIntegrityMode;
 use crate::chunk::compress::Compression;
+use crate::chunk::store::ReadFetchPolicy;
 
 #[cfg(test)]
 static TEST_CACHE_ROOT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -71,6 +72,7 @@ pub struct CacheConfig {
     pub prefetch_max_bytes: u64,
     pub prefetch_concurrency: usize,
     pub range_background_prefetch: bool,
+    pub read_fetch_policy: ReadFetchPolicy,
     pub populate_write_cache_after_upload: bool,
     pub persist_write_cache_after_upload: bool,
 
@@ -116,6 +118,7 @@ impl Default for CacheConfig {
             prefetch_max_bytes: 128 * 1024 * 1024,
             prefetch_concurrency: 64,
             range_background_prefetch: true,
+            read_fetch_policy: ReadFetchPolicy::default(),
             populate_write_cache_after_upload: true,
             persist_write_cache_after_upload: false,
             strict_posix: true,

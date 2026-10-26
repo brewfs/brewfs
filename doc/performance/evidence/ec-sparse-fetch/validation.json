@@ -1,0 +1,197 @@
+{
+  "required_gates": [
+    {
+      "check": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 3.34
+    },
+    {
+      "check": "check-workspace",
+      "command": [
+        "cargo",
+        "check",
+        "-j",
+        "1",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "seconds": 42.21
+    },
+    {
+      "check": "build-workspace",
+      "command": [
+        "cargo",
+        "build",
+        "-j",
+        "1",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "seconds": 124.4
+    },
+    {
+      "check": "check-fuse-tokio",
+      "command": [
+        "cargo",
+        "check",
+        "-j",
+        "1",
+        "-p",
+        "brewfs",
+        "--no-default-features",
+        "--features",
+        "fuse-tokio-runtime"
+      ],
+      "exit_code": 0,
+      "seconds": 39.22
+    },
+    {
+      "check": "check-fuse-io-uring",
+      "command": [
+        "cargo",
+        "check",
+        "-j",
+        "1",
+        "-p",
+        "brewfs",
+        "--no-default-features",
+        "--features",
+        "fuse-io-uring-runtime"
+      ],
+      "exit_code": 0,
+      "seconds": 38.7
+    },
+    {
+      "check": "test-workspace",
+      "command": [
+        "cargo",
+        "test",
+        "-j",
+        "1",
+        "--workspace",
+        "--lib",
+        "--bins"
+      ],
+      "exit_code": 0,
+      "seconds": 357.32
+    },
+    {
+      "check": "clippy-workspace",
+      "command": [
+        "cargo",
+        "clippy",
+        "-j",
+        "1",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 123.1
+    },
+    {
+      "check": "test-hint-library",
+      "command": [
+        "cargo",
+        "test",
+        "-j",
+        "1",
+        "--lib",
+        "--features",
+        "rustfs-ec-block-size-hint"
+      ],
+      "exit_code": 0,
+      "seconds": 239.59
+    }
+  ],
+  "resource_limited_attempts": [
+    {
+      "check": "test-native-packed-and-hint",
+      "command": [
+        "cargo",
+        "test",
+        "-j",
+        "2",
+        "--workspace",
+        "--lib",
+        "--bins",
+        "--features",
+        "native-packed-base,rustfs-ec-block-size-hint"
+      ],
+      "exit_code": 101,
+      "seconds": 751.72
+    },
+    {
+      "check": "test-native-packed-contracts",
+      "command": [
+        "cargo",
+        "test",
+        "-j",
+        "1",
+        "--test",
+        "ec_sparse_contracts",
+        "--features",
+        "native-packed-base,rustfs-ec-block-size-hint"
+      ],
+      "exit_code": -15,
+      "seconds": 205.24
+    }
+  ],
+  "contracts": {
+    "tests": 2,
+    "passed": 2,
+    "failed": 0,
+    "method": "rustc --test linked to the successfully compiled native-packed-base + rustfs-ec-block-size-hint library",
+    "test_binary_sha256": "9b03b8e607535f81857c6f99b4a69093b1b9c976335885903c2d559ca7b6f162",
+    "source_sha256": "d71c6bbbcf4ea37d59582f7573516d6879bd49c6c23debcb9a45f741a65d5c24",
+    "full_feature_unit_build": "Stopped the test compiler after swap exceeded 2 GiB; remaining builds use -j 1."
+  },
+  "shell_gates": [
+    {
+      "command": "bash -n docker/compose-xfstests/run_perf_in_container.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash -n docker/compose-xfstests/run_redis_perf.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash -n docker/compose-xfstests/run_juicefs_perf.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash docker/compose-xfstests/test_perf_report_delta.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+      "exit_code": 0
+    },
+    {
+      "command": "bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+      "exit_code": 0
+    }
+  ],
+  "test_results": {
+    "test-workspace": [
+      "test result: ok. 1269 passed; 0 failed; 262 ignored; 0 measured; 0 filtered out; finished in 34.70s",
+      "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+    ],
+    "test-hint-library": [
+      "test result: ok. 1277 passed; 0 failed; 265 ignored; 0 measured; 0 filtered out; finished in 35.06s"
+    ]
+  }
+}
