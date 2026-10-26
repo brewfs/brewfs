@@ -1,0 +1,4 @@
+system	create_1t_ops	stat_1t_ops	unlink_1t_ops	create_8t_ops	stat_8t_ops	unlink_8t_ops
+native	417.2	937.1	456.7	738.6	2910.7	792.5
+overlay	598.1	1836.6	850.6	1107.3	4903.1	1666.7
+juicefs	1688.3	353109.4	2230.6	6758.2	81483.3	8903.5

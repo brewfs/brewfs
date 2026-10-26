@@ -1,0 +1,73 @@
+{
+  "test_kind": "standalone Linux FUSE protocol diagnostic, not BrewFS end-to-end",
+  "kernel": "6.8.0-139-generic",
+  "caller_uid": 1000,
+  "caller_gid": 1000,
+  "cases": [
+    {
+      "ttl_ms": 0,
+      "mountpoint_verified": true,
+      "mount_identity": "fuse   attr-cache-kernel-probe rw,nosuid,nodev,relatime,user_id=0,group_id=0,default_permissions,allow_other",
+      "warm_stat_iterations": 10000,
+      "warm_stat_elapsed_seconds": 2.661248672004149,
+      "warm_stat_fuse_requests": {
+        "lookup": 10000,
+        "getattr": 20000,
+        "access": 0,
+        "getxattr": 0
+      },
+      "file_read_after_external_revoke": false,
+      "mode_after_external_revoke_octal": "0o0",
+      "file_read_after_metadata_notification": false,
+      "child_stat_after_directory_search_revoke": false,
+      "child_stat_after_metadata_notification": false,
+      "notification": {
+        "opcode": "FUSE_NOTIFY_INVAL_INODE",
+        "offset": -1,
+        "length": 0,
+        "acknowledgement": "successful synchronous writev(/dev/fuse)"
+      },
+      "missed_notification_stale_accesses": 0,
+      "missed_notification_recovery_seconds": 0.00046690199815202504,
+      "final_fuse_requests": {
+        "lookup": 10014,
+        "getattr": 20027,
+        "access": 0,
+        "getxattr": 0
+      }
+    },
+    {
+      "ttl_ms": 2000,
+      "mountpoint_verified": true,
+      "mount_identity": "fuse   attr-cache-kernel-probe rw,nosuid,nodev,relatime,user_id=0,group_id=0,default_permissions,allow_other",
+      "warm_stat_iterations": 10000,
+      "warm_stat_elapsed_seconds": 0.031806367995159235,
+      "warm_stat_fuse_requests": {
+        "lookup": 0,
+        "getattr": 0,
+        "access": 0,
+        "getxattr": 0
+      },
+      "file_read_after_external_revoke": true,
+      "mode_after_external_revoke_octal": "0o644",
+      "file_read_after_metadata_notification": false,
+      "child_stat_after_directory_search_revoke": true,
+      "child_stat_after_metadata_notification": false,
+      "notification": {
+        "opcode": "FUSE_NOTIFY_INVAL_INODE",
+        "offset": -1,
+        "length": 0,
+        "acknowledgement": "successful synchronous writev(/dev/fuse)"
+      },
+      "missed_notification_stale_accesses": 185,
+      "missed_notification_recovery_seconds": 1.883389166003326,
+      "final_fuse_requests": {
+        "lookup": 4,
+        "getattr": 6,
+        "access": 0,
+        "getxattr": 0
+      }
+    }
+  ],
+  "all_assertions_passed": true
+}
