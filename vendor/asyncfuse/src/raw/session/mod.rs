@@ -124,7 +124,7 @@ use tracing::{debug, debug_span, error, instrument, warn};
 #[cfg(all(target_os = "linux", feature = "unprivileged"))]
 use crate::find_fusermount3;
 use crate::helper::*;
-use crate::notify::Notify;
+use crate::notify::{Notification, Notify};
 use crate::raw::abi::*;
 use crate::raw::buffer_pool::AlignedBuffer;
 #[cfg(all(
@@ -143,6 +143,15 @@ use crate::raw::filesystem::Filesystem;
 use crate::raw::request::Request;
 use crate::raw::FuseData;
 use crate::{MountOptions, SetAttr};
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "tokio-runtime",
+    not(feature = "io-uring-runtime"),
+    not(feature = "async-io-runtime")
+))]
+mod notification_tests;
 
 /// Header, channel node and the synchronous readonly control operation state.
 const CONTROL_REPLY_MEMORY_BYTES: u64 = 1024;
@@ -672,6 +681,8 @@ pub struct Session<FS: Filesystem + Send + Sync + 'static> {
     filesystem: Option<Arc<FS>>,
     response_senders: Vec<UnboundedSender<FuseData>>,
     response_receivers: Vec<Option<UnboundedReceiver<FuseData>>>,
+    notification_sender: UnboundedSender<Notification>,
+    notification_receiver: Option<UnboundedReceiver<Notification>>,
     mount_options: MountOptions,
     kernel_writeback_permissions: bool,
     // ---- Concurrency configuration ----
@@ -734,12 +745,15 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
     /// new a fuse filesystem session.
     pub fn new(mount_options: MountOptions) -> Self {
         let (sender, receiver) = unbounded();
+        let (notification_sender, notification_receiver) = unbounded();
 
         Self {
             fuse_connection: None,
             filesystem: None,
             response_senders: vec![sender],
             response_receivers: vec![Some(receiver)],
+            notification_sender,
+            notification_receiver: Some(notification_receiver),
             mount_options,
             kernel_writeback_permissions: false,
             // default to legacy behaviour (no explicit pool)
@@ -872,6 +886,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             let ctx = Arc::new(DispatchCtx {
                 fs,
                 resp: self.response_senders.clone(),
+                notifications: self.notification_sender.clone(),
                 direct_io: self.mount_options.direct_io,
                 force_readdir_plus: self.mount_options.force_readdir_plus,
                 kernel_writeback_permissions: self.kernel_writeback_permissions,
@@ -897,7 +912,10 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
     ///
     /// [`notify`]: Notify
     fn get_notify(&self) -> Notify {
-        Notify::new(self.response_senders[0].clone())
+        Notify::new(
+            self.response_senders[0].clone(),
+            self.notification_sender.clone(),
+        )
     }
 }
 
@@ -1184,6 +1202,29 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             .map(|r| r.take().unwrap())
             .collect();
 
+        // Invalidation can wait for kernel locks held by a pending request.
+        // Keep its writes separate from the tasks that deliver request replies.
+        let notification_connection = Arc::new(fuse_write_connection.try_clone()?);
+        let notification_receiver = self.notification_receiver.take().unwrap();
+        #[cfg(all(
+            not(feature = "tokio-runtime"),
+            not(feature = "io-uring-runtime"),
+            feature = "async-io-runtime"
+        ))]
+        task::spawn(Self::notify_fuse(
+            notification_connection,
+            notification_receiver,
+        ))
+        .detach();
+        #[cfg(any(
+            all(not(feature = "async-io-runtime"), feature = "tokio-runtime"),
+            feature = "io-uring-runtime"
+        ))]
+        task::spawn(Self::notify_fuse(
+            notification_connection,
+            notification_receiver,
+        ));
+
         // Spawn reply tasks independently — they live for the lifetime of the
         // runtime and stop naturally when their channels close. We intentionally
         // do NOT use select_all here: if any reply task exits early (e.g. due to
@@ -1222,11 +1263,43 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         }
 
         let result = self.dispatch(ready_sender).await;
+        self.notification_sender.close_channel();
         if teardown_diag {
             tracing::info!(target: "asyncfuse::teardown", event="dispatch_returned",
                 ok=result.is_ok(), inflight=self.inflight.load(Ordering::Acquire));
         }
         result
+    }
+
+    async fn notify_fuse(
+        fuse_connection: Arc<FuseConnection>,
+        mut receiver: UnboundedReceiver<Notification>,
+    ) {
+        while let Some(notification) = receiver.next().await {
+            let (mut data, mut body) = match notification.data {
+                Either::Left(data) => (crate::raw::reply::ReplyBytes::from(data), None),
+                Either::Right((data, body)) => {
+                    (crate::raw::reply::ReplyBytes::from(data), Some(body))
+                }
+            };
+            let actual_len = data.len() + body.as_ref().map_or(0, |body| body.len());
+            let result = loop {
+                let ((ret_data, ret_body), result) =
+                    fuse_connection.write_vectored(data, body).await;
+                match result {
+                    Ok(written) if written == actual_len => break Ok(()),
+                    Ok(_) => break Err(IoError::from(std::io::ErrorKind::WriteZero)),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        data = ret_data;
+                        body = ret_body;
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
+            // A canceled caller must not keep the writer alive or affect
+            // subsequent notifications.
+            let _ = notification.completion.send(result);
+        }
     }
 
     async fn reply_fuse(

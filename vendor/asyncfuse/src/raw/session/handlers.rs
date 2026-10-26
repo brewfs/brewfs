@@ -14,7 +14,6 @@ use futures_util::stream::StreamExt;
 use tracing::{debug, error};
 
 use crate::helper::*;
-use crate::notify::Notify;
 use crate::raw::abi::*;
 use crate::raw::filesystem::Filesystem;
 use crate::raw::request::Request;
@@ -139,6 +138,7 @@ mod budget_reply_tests {
         let ctx = Arc::new(DispatchCtx {
             fs,
             resp: vec![sender],
+            notifications: futures_channel::mpsc::unbounded().0,
             direct_io: false,
             force_readdir_plus: false,
             kernel_writeback_permissions: false,
@@ -431,6 +431,7 @@ mod umask_tests {
         let context = DispatchCtx {
             fs: Arc::new(fs),
             resp: vec![tx],
+            notifications: futures_channel::mpsc::unbounded().0,
             direct_io: false,
             force_readdir_plus: false,
             kernel_writeback_permissions: false,
@@ -2840,7 +2841,7 @@ pub(super) async fn handle_poll_inline<FS: Filesystem + Send + Sync + 'static>(
         "poll (worker)"
     );
 
-    let notify = Notify::new(ctx.notification_sender(item.unique));
+    let notify = ctx.get_notify(item.unique);
     let reply_poll = match ctx
         .fs
         .poll(

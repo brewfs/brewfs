@@ -58,6 +58,11 @@ io-uring = { version = "0.7", optional = true }
 clap = { version = "4.5.49", features = ["derive"] }
 tracing-subscriber = "0.3.20"
 
+[[example]]
+name = "notify_invalidation"
+path = "examples/notify_invalidation.rs"
+required-features = ["tokio-runtime"]
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
 features = ["file-lock", "unprivileged", "tokio-runtime"]

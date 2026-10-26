@@ -91,6 +91,11 @@ path = "examples/benchmark_filesystem.rs"
 name = "minimal_filesystem_example"
 path = "examples/minimal_filesystem_example.rs"
 
+[[example]]
+name = "notify_invalidation"
+path = "examples/notify_invalidation.rs"
+required-features = ["tokio-runtime"]
+
 [dependencies.aligned_box]
 version = "0.3.0"
 

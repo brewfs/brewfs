@@ -354,6 +354,7 @@ impl Drop for InflightGuard {
 pub(crate) struct DispatchCtx<FS: Filesystem + Send + Sync + 'static> {
     pub(crate) fs: Arc<FS>,
     pub(crate) resp: Vec<UnboundedSender<FuseData>>,
+    pub(crate) notifications: UnboundedSender<crate::notify::Notification>,
     pub(crate) direct_io: bool,
     pub(crate) force_readdir_plus: bool,
     pub(crate) kernel_writeback_permissions: bool,
@@ -375,8 +376,11 @@ impl<FS: Filesystem + Send + Sync + 'static> DispatchCtx<FS> {
             unique,
         }
     }
-    pub(crate) fn notification_sender(&self, unique: u64) -> UnboundedSender<FuseData> {
-        self.resp[unique as usize % self.resp.len()].clone()
+    pub(crate) fn get_notify(&self, unique: u64) -> crate::notify::Notify {
+        crate::notify::Notify::new(
+            self.resp[unique as usize % self.resp.len()].clone(),
+            self.notifications.clone(),
+        )
     }
     pub(crate) fn register_memory(&self, item: &mut WorkItem) {
         if let Some(tracker) = &self.readonly_reply_tracker {
