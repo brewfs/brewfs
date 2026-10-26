@@ -186,4 +186,5 @@ measurement window. Its completed library executable passed separately with
 were not completed. This does not replace the full workspace gate. Full clippy/check/runtime-feature
 gates, release compose acceptance (including mixed read/write), real TiKV/etcd,
 and concurrent packed publication/GC against a cached kernel mount are **not
-verified**. Keep this PR draft and the feature opt-in until those gates pass.
+verified**. PR #357 merged before these gates completed. The feature remains
+opt-in; release performance acceptance is still pending.
