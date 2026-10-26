@@ -45,6 +45,7 @@ use super::resolver::{
     resolve_extents, resolve_inode, resolve_inode_state, resolve_xattr, resolve_xattr_state,
 };
 
+mod kernel_cache;
 mod packed_enumeration;
 pub mod packed_lower;
 mod packed_paths;
@@ -75,6 +76,7 @@ pub struct WorkspaceMetaLayer<W> {
     store: Arc<W>,
     view: Arc<RwLock<ViewContext>>,
     layer_pair: RwLock<Option<(LayerId, u64, Vec<LayerRecord>)>>,
+    kernel_cache: Mutex<kernel_cache::KernelCache>,
     root_ino: AtomicI64,
     chunk_size: u64,
     open_counts: DashMap<i64, u64>,
@@ -247,6 +249,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             store,
             view: Arc::new(RwLock::new(view)),
             layer_pair: RwLock::new(None),
+            kernel_cache: Mutex::new(kernel_cache::KernelCache::default()),
             root_ino: AtomicI64::new(1),
             chunk_size: DEFAULT_CHUNK_SIZE,
             open_counts: DashMap::new(),
@@ -2017,6 +2020,12 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
 
 #[async_trait]
 impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
+    async fn kernel_metadata_cache_deadline(
+        &self,
+        ttl: std::time::Duration,
+    ) -> Result<Option<std::time::Instant>, MetaError> {
+        self.kernel_cache_deadline(ttl).await
+    }
     fn reserve_memory(
         &self,
         kind: crate::meta::layer::MetadataMemoryKind,

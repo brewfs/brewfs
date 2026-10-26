@@ -1,0 +1,218 @@
+[
+  {
+    "label": "off",
+    "trial": "stat-1p-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 16384, \"3\": 24576}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "stat-8p-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 131072, \"3\": 196608}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "create-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"35\": 256, \"25\": 256, \"1\": 512, \"3\": 1024}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "unlink-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"1\": 512, \"3\": 768}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_write_MBps-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"35\": 1, \"20\": 1, \"25\": 1, \"1\": 2, \"3\": 5, \"22\": 256, \"16\": 256}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_read_warm_MBps-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"3\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "stat-1p-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 16384, \"3\": 24576}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "stat-8p-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"17\": 1, \"44\": 3, \"29\": 3, \"27\": 3, \"28\": 5, \"1\": 131335, \"3\": 197139}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "create-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"35\": 256, \"25\": 256, \"1\": 512, \"3\": 1024}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "unlink-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"1\": 512, \"3\": 768}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_write_MBps-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"14\": 1, \"25\": 1, \"20\": 1, \"1\": 2, \"3\": 4, \"16\": 256, \"22\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_read_warm_MBps-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"3\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "stat-1p-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 16384, \"3\": 24576}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "stat-8p-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 131072, \"3\": 196608}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "create-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"25\": 256, \"35\": 256, \"1\": 512, \"3\": 1024}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "unlink-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"1\": 512, \"3\": 768}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_write_MBps-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"20\": 1, \"25\": 1, \"14\": 1, \"1\": 2, \"3\": 4, \"16\": 256, \"22\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "off",
+    "trial": "seq_read_warm_MBps-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"3\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2240086/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2240086) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 51) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-1p-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 69}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-8p-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "create-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"25\": 256, \"35\": 256, \"1\": 260, \"3\": 511}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "unlink-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"3\": 256, \"1\": 260}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_write_MBps-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"20\": 1, \"25\": 1, \"35\": 1, \"3\": 1, \"1\": 2, \"16\": 256, \"22\": 256}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_read_warm_MBps-1.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-1p-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-8p-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "create-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"25\": 256, \"35\": 256, \"1\": 261, \"3\": 512}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "unlink-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"3\": 257, \"1\": 259}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_write_MBps-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"25\": 1, \"3\": 1, \"20\": 1, \"14\": 1, \"1\": 2, \"16\": 256, \"22\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_read_warm_MBps-2.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"3\": 1}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-1p-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"1\": 40}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "stat-8p-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "create-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"18\": 255, \"25\": 256, \"35\": 256, \"1\": 260, \"3\": 511}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "unlink-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"10\": 256, \"3\": 256, \"1\": 259}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_write_MBps-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n{\"type\": \"map\", \"data\": {\"@requests\": {\"25\": 1, \"20\": 1, \"3\": 1, \"14\": 1, \"1\": 2, \"16\": 256, \"22\": 257}}}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  },
+  {
+    "label": "on",
+    "trial": "seq_read_warm_MBps-3.bpf.jsonl",
+    "raw": "{\"type\": \"printf\", \"data\": \"ready\\n\"}\n\n\n",
+    "program": "\nBEGIN { printf(\"ready\\n\"); }\ntracepoint:syscalls:sys_enter_getpgid /pid == 2241860/ {\n    if (args->pid == 0) { @active = 1; }\n    if (args->pid == 2241860) { @active = 0; }\n}\nkprobe:fuse_request_end /@active/ {\n    $r = (struct fuse_req *)arg0;\n    if ($r->fm->sb->s_dev == 46) { @requests[$r->in.h.opcode] = count(); }\n}\nEND { print(@requests); clear(@requests); clear(@active); }\n"
+  }
+]

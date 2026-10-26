@@ -1,0 +1,8 @@
+
+running 1 test
+test two_mounts_observe_external_metadata_after_cache_expiry ... external chmod/truncate visible after 879.704652ms
+external same-mode ACL revocation visible after 996.197028ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 5.56s
+

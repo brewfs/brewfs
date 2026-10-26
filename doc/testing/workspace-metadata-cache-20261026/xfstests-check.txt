@@ -1,0 +1,10 @@
+FSTYP         -- fuse
+PLATFORM      -- Linux/x86_64 FthBiu1008926 6.8.0-36-generic #36-Ubuntu SMP PREEMPT_DYNAMIC Mon Jun 10 10:49:14 UTC 2024
+
+generic/014        233s
+generic/087        1s
+generic/097        2s
+generic/100        221s
+Ran: generic/014 generic/087 generic/097 generic/100
+Passed all 4 tests
+

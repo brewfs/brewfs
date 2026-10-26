@@ -1,0 +1,8 @@
+{
+  "status": "incomplete",
+  "reason": "reserve measurements within user 90-minute timebox",
+  "stopped_compiler_pids": [
+    2237800
+  ],
+  "time": "2026-10-26T16:27:00.185407+00:00"
+}

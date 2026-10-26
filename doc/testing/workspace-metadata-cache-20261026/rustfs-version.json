@@ -1,0 +1,26 @@
+{
+  "rustfs_binary_sha256": "8f45a5ec97c65f9b9fe2caf97fbe218c63334e2dfb0a1a451542384f06a5af01",
+  "rustfs_version": "rustfs @ceddcdd87\nbuild time   : 2026-10-25 16:35:12 +00:00\nbuild profile: release\nbuild os     : linux-x86_64\nbuild target : x86_64-unknown-linux-gnu\nrust version : rustc 1.99.1 (58cf8f9c3 2026-10-13)\nrust channel : stable-x86_64-unknown-linux-gnu\ngit branch   : \ngit commit   : ceddcdd878d21829eb6f9b08153632e4fce026b5\ngit tag      : \ngit status   :\n\n",
+  "rustfs_env": {
+    "RUSTFS_CONSOLE_ENABLE": "false",
+    "RUSTFS_REGION": "us-east-1",
+    "RUSTFS_UNSAFE_BYPASS_DISK_CHECK": "true",
+    "RUSTFS_STORAGE_CLASS_STANDARD": "EC:2",
+    "RUSTFS_STORAGE_CLASS_RRS": "EC:2",
+    "RUSTFS_COMPRESS_ENABLE": "off",
+    "RUSTFS_COMPRESSION_ENABLED": "false",
+    "RUSTFS_OBJECT_DATA_CACHE_ENABLE": "false",
+    "RUSTFS_OBJECT_DIRECT_IO_READ_ENABLE": "false",
+    "RUSTFS_OBJECT_DIRECT_IO_WRITE_ENABLE": "false",
+    "RUSTFS_OBJECT_FILE_CACHE_RECLAIM_READ_ENABLE": "false",
+    "RUSTFS_OBJECT_FILE_CACHE_RECLAIM_WRITE_ENABLE": "false",
+    "RUSTFS_OBS_LOGGER_LEVEL": "warn",
+    "RUSTFS_OBS_LOG_STDOUT_ENABLED": "true",
+    "RUSTFS_OBS_LOG_DIRECTORY": "/data/readcache/artifacts/services/server-logs",
+    "RUSTFS_OBS_LOGS_EXPORT_ENABLED": "false",
+    "RUSTFS_OBS_METRICS_EXPORT_ENABLED": "false",
+    "RUSTFS_OBS_TRACES_EXPORT_ENABLED": "false",
+    "NO_PROXY": "127.0.0.1,localhost",
+    "no_proxy": "127.0.0.1,localhost"
+  }
+}

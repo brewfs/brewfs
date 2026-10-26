@@ -1,0 +1,21 @@
+{
+  "time_utc": "2026-10-26T16:24:45.001664+00:00",
+  "kernel": "6.8.0-36-generic",
+  "cpu_count": 32,
+  "memory": "               total        used        free      shared  buff/cache   available\nMem:     33646485504  9081389056 21040545792      868352  4008030208 24565096448\nSwap:    17179865088     5877760 17173987328\n",
+  "git_head": "7e73a9c88831c56aefe502f44a437d551f96c22f",
+  "binary_sha256": "70610b43234c3bacfc9d41175310ffe19cea893f89647eb476bb643b75f647a9",
+  "build": "dev, unoptimized, CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0, workspace-overlay, -j 2",
+  "redis": "7.2-alpine, Redis DB 4, namespace metacache-perf",
+  "object_store": "RustFS ceddd...; exact service version copied separately",
+  "corpus": 256,
+  "compression": "none",
+  "read_memory_bytes": 314572800,
+  "read_ssd_bytes": 1073741824,
+  "chunk_bytes": 67108864,
+  "block_bytes": 4194304,
+  "fuse_cache_ttl_ms": [
+    0,
+    1000
+  ]
+}
