@@ -5928,6 +5928,7 @@ mod tests {
         mutate_on_cas: Arc<Mutex<Vec<KvWrite>>>,
         timed_reads_until_mutation: Arc<AtomicU64>,
         mutate_on_timed_read: Arc<Mutex<Vec<KvWrite>>>,
+        mutate_on_bounded_read_key: Arc<Mutex<Option<Vec<u8>>>>,
         mutate_after_extent_page: Arc<Mutex<Vec<KvWrite>>>,
     }
 
@@ -6131,12 +6132,22 @@ mod tests {
                 return Err(WorkspaceError::Busy);
             }
             let mut records = self.records.lock().await;
+            let at_mutation_key = {
+                let mut trigger = self.mutate_on_bounded_read_key.lock().await;
+                if trigger.as_ref().is_some_and(|key| keys.contains(key)) {
+                    trigger.take();
+                    true
+                } else {
+                    false
+                }
+            };
             let remaining = self.timed_reads_until_mutation.load(Ordering::SeqCst);
-            if remaining > 0
-                && self
-                    .timed_reads_until_mutation
-                    .fetch_sub(1, Ordering::SeqCst)
-                    == 1
+            if at_mutation_key
+                || (remaining > 0
+                    && self
+                        .timed_reads_until_mutation
+                        .fetch_sub(1, Ordering::SeqCst)
+                        == 1)
             {
                 for write in self.mutate_on_timed_read.lock().await.drain(..) {
                     apply_memory_write(&mut records, write);
@@ -6339,7 +6350,18 @@ mod tests {
         SnapshotLease,
         HeadGuard,
     ) {
-        let store = budgeted_kv_store(MemoryBackend::default());
+        initialized_with_backend(MemoryBackend::default()).await
+    }
+
+    async fn initialized_with_backend(
+        backend: MemoryBackend,
+    ) -> (
+        KvWorkspaceStore<MemoryBackend>,
+        WorkspaceRecord,
+        SnapshotLease,
+        HeadGuard,
+    ) {
+        let store = budgeted_kv_store(backend);
         store.initialize_workspace_schema().await.unwrap();
         let workspace = store.create_volume_root(create_request(0)).await.unwrap();
         let lease = store
@@ -6806,49 +6828,75 @@ mod tests {
 
     #[tokio::test]
     async fn kv_v3_open_topology_rejects_binding_change_between_routing_and_final_read() {
-        let (store, mut workspace, _lease, _guard) = initialized().await;
-        let mut binding = install_open_binding_fixture(&store, &mut workspace, 1).await;
-        binding.binding.binding_version = 2;
-        let bytes = binding.encode().unwrap();
-        let mut expected = store.backend.records.lock().await.clone();
-        expected.insert(packed_current_key(workspace.workspace_id), bytes.clone());
-        expected.insert(packed_history_key(workspace.workspace_id, 2), bytes.clone());
-        store.backend.cas_checks.lock().await.clear();
-        store.backend.cas_write_keys.lock().await.clear();
-        *store.backend.mutate_on_timed_read.lock().await = vec![
-            KvWrite::Put {
-                key: packed_current_key(workspace.workspace_id),
-                value: bytes.clone(),
-            },
-            KvWrite::Put {
-                key: packed_history_key(workspace.workspace_id, 2),
-                value: bytes,
-            },
-        ];
-        store
-            .backend
-            .timed_reads_until_mutation
-            // Workspace routing is read 1; binding/history routing is read 2.
-            // Change the selected binding only before the final authority read.
-            .store(3, Ordering::SeqCst);
-        assert!(matches!(
-            store
+        for before_binding_routing in [true, false] {
+            let backend = MemoryBackend::default();
+            backend.clock.store(1_000_000_000, Ordering::SeqCst);
+            let (store, mut workspace, _lease, _guard) = initialized_with_backend(backend).await;
+            let mut binding = install_open_binding_fixture(&store, &mut workspace, 1).await;
+            binding.binding.binding_version = 2;
+            let bytes = binding.encode().unwrap();
+            let current_key = packed_current_key(workspace.workspace_id);
+            let history_key = packed_history_key(workspace.workspace_id, 2);
+            let sidecar_key = open_v3_key(workspace.workspace_id);
+            let mut expected = store.backend.records.lock().await.clone();
+            expected.insert(current_key.clone(), bytes.clone());
+            expected.insert(history_key.clone(), bytes.clone());
+            *store.backend.mutate_on_timed_read.lock().await = vec![
+                KvWrite::Put {
+                    key: current_key.clone(),
+                    value: bytes.clone(),
+                },
+                KvWrite::Put {
+                    key: history_key.clone(),
+                    value: bytes.clone(),
+                },
+            ];
+            // Workspace routing precedes binding routing. Select the actual
+            // authority read by its key, independently of earlier read counts.
+            *store.backend.mutate_on_bounded_read_key.lock().await =
+                Some(if before_binding_routing {
+                    current_key.clone()
+                } else {
+                    sidecar_key.clone()
+                });
+            store.backend.cas_checks.lock().await.clear();
+            store.backend.cas_write_keys.lock().await.clear();
+            let result = store
                 .open_workspace_v3(workspace.workspace_id, "owner", Duration::from_secs(30))
-                .await,
-            Err(WorkspaceError::Busy)
-        ));
-        assert!(
-            store
-                .backend
-                .get(&open_v3_key(workspace.workspace_id))
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(store.backend.mutate_on_timed_read.lock().await.is_empty());
-        assert_eq!(*store.backend.records.lock().await, expected);
-        assert!(store.backend.cas_checks.lock().await.is_empty());
-        assert!(store.backend.cas_write_keys.lock().await.is_empty());
+                .await;
+            assert!(
+                store
+                    .backend
+                    .mutate_on_bounded_read_key
+                    .lock()
+                    .await
+                    .is_none()
+            );
+            assert!(store.backend.mutate_on_timed_read.lock().await.is_empty());
+            assert_eq!(store.backend.get(&current_key).await.unwrap(), Some(bytes));
+            if before_binding_routing {
+                // Both authority reads see v2, so the original counter=2
+                // schedule is a valid open, not a binding race.
+                assert_eq!(result.unwrap().state, V3OpenState::Ready);
+                assert!(store.backend.get(&sidecar_key).await.unwrap().is_some());
+                assert!(
+                    store
+                        .backend
+                        .cas_checks
+                        .lock()
+                        .await
+                        .last()
+                        .unwrap()
+                        .contains(&history_key)
+                );
+            } else {
+                assert!(matches!(result, Err(WorkspaceError::Busy)), "{result:?}");
+                assert!(store.backend.get(&sidecar_key).await.unwrap().is_none());
+                assert_eq!(*store.backend.records.lock().await, expected);
+                assert!(store.backend.cas_checks.lock().await.is_empty());
+                assert!(store.backend.cas_write_keys.lock().await.is_empty());
+            }
+        }
     }
 
     #[tokio::test]
@@ -8637,56 +8685,82 @@ mod tests {
 
     #[tokio::test]
     async fn migration_marker_fences_entity_and_hot_native_packets_without_writes() {
-        let (store, workspace, _, guard) = initialized().await;
-        // A raw entity read does not authorize a write. First prove this
-        // declared workspace update can commit in the initialized catalog.
-        let mut txn = store.topology_txn();
-        let mut row = txn
-            .read_workspace(workspace.workspace_id)
-            .await
-            .unwrap()
-            .unwrap();
-        row.owner_id = Some("before-migration".into());
-        txn.put_workspace(&row).unwrap();
-        assert!(txn.commit().await.unwrap());
-        assert_eq!(
-            store.load_workspace(workspace.workspace_id).await.unwrap(),
-            row
-        );
-        store
-            .backend
-            .records
-            .lock()
-            .await
-            .insert(CONTROL_KEY.to_vec(), b"BWSMG002incomplete".to_vec());
-        let before = store.backend.records.lock().await.clone();
-        store.backend.cas_checks.lock().await.clear();
-        store.backend.cas_write_keys.lock().await.clear();
-        let mut txn = store.topology_txn();
-        let mut row = txn
-            .read_workspace(workspace.workspace_id)
-            .await
-            .unwrap()
-            .unwrap();
-        row.owner_id = Some("during-migration".into());
-        txn.put_workspace(&row).unwrap();
-        assert!(matches!(
-            txn.commit().await,
-            Err(WorkspaceError::CorruptMetadata(ref message)) if message == "invalid control marker"
-        ));
-        assert!(store.allocate_id("inode").await.is_err());
-        assert!(
-            store
-                .hot_mutation(&guard, |layer, _| {
-                    allocate_layer_sequences(layer, 1)?;
-                    Ok(())
-                })
+        fn assert_migration_fenced<T: std::fmt::Debug>(result: Result<T, WorkspaceError>) {
+            assert!(
+                matches!(result, Err(WorkspaceError::CorruptMetadata(ref message))
+                if message == "invalid control marker"),
+                "{result:?}"
+            );
+        }
+
+        for marker_before_read in [true, false] {
+            let backend = MemoryBackend::default();
+            backend.clock.store(1_000_000_000, Ordering::SeqCst);
+            let (store, workspace, _, guard) = initialized_with_backend(backend).await;
+            // First prove the declared entity update commits before migration.
+            let mut txn = store.topology_txn();
+            let mut row = txn
+                .read_workspace(workspace.workspace_id)
                 .await
-                .is_err()
-        );
-        assert_eq!(*store.backend.records.lock().await, before);
-        assert!(store.backend.cas_checks.lock().await.is_empty());
-        assert!(store.backend.cas_write_keys.lock().await.is_empty());
+                .unwrap()
+                .unwrap();
+            row.owner_id = Some("before-migration".into());
+            txn.put_workspace(&row).unwrap();
+            assert!(txn.commit().await.unwrap());
+            assert_eq!(
+                store.load_workspace(workspace.workspace_id).await.unwrap(),
+                row
+            );
+            let workspace = row;
+            let marker = b"BWSMG002incomplete".to_vec();
+            if marker_before_read {
+                store
+                    .backend
+                    .records
+                    .lock()
+                    .await
+                    .insert(CONTROL_KEY.to_vec(), marker.clone());
+            }
+            // Entity reads collect exact CAS conditions; the catalog marker
+            // is validated when the transaction prepares its write packet.
+            let mut txn = store.topology_txn();
+            let mut changed = txn
+                .read_workspace(workspace.workspace_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(changed, workspace);
+            changed.owner_id = Some("must-not-commit".into());
+            txn.put_workspace(&changed).unwrap();
+            if !marker_before_read {
+                store
+                    .backend
+                    .records
+                    .lock()
+                    .await
+                    .insert(CONTROL_KEY.to_vec(), marker);
+            }
+            let before = store.backend.records.lock().await.clone();
+            store.backend.cas_checks.lock().await.clear();
+            store.backend.cas_write_keys.lock().await.clear();
+
+            assert_migration_fenced(txn.commit().await);
+            assert_migration_fenced(store.allocate_id("inode").await);
+            let mut operation_called = false;
+            assert_migration_fenced(
+                store
+                    .hot_mutation(&guard, |layer, _| {
+                        operation_called = true;
+                        allocate_layer_sequences(layer, 1)?;
+                        Ok(())
+                    })
+                    .await,
+            );
+            assert!(operation_called);
+            assert_eq!(*store.backend.records.lock().await, before);
+            assert!(store.backend.cas_checks.lock().await.is_empty());
+            assert!(store.backend.cas_write_keys.lock().await.is_empty());
+        }
     }
 
     #[tokio::test]
