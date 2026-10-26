@@ -1,0 +1,39 @@
+{
+  "schema": "observation-matrix-campaign-v1",
+  "name": "fio-matrix-r1",
+  "required_observations": 3,
+  "builds": {
+    "brewfs": "BrewFS 0.1.2; commit d13365c83971419b8bfc4ce3a47850acb7c6a07e; dirty build; dynamic-block feature absent, other compiled features not recorded; binary SHA-256 9766dee2129250245b1ec94b03a3c188a999fc41bb2b3fe5ccec8c8237fa9fd5",
+    "juicefs": "JuiceFS 1.3.1+2025-12-02.e0032b2; binary SHA-256 a9e5fcb0278df96de366f99ded6e347e64fcb2230d97d3ce61816cc54eefdab5"
+  },
+  "cache_policy": "Metadata-throughput-profile; no cache eviction or remount during measurements; warm client/backend caches may contribute. BrewFS used 8 GiB read RAM and SSD limits, 768 MiB write RAM, 8 GiB write SSD limit, and LZ4. Its workspace-v1 open-cache settings were requested but not wired into the workspace path, and its kernel permission-cache TTL was 0. JuiceFS used an 8192 MiB cache, a 1 s open cache, and 1 s attribute, entry, and directory-entry cache TTLs. Buffered fio may use the kernel page cache; direct=1 bypasses that data-cache path but can still use client and backend caches. Prefills were retained through measurement.",
+  "rows": [
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-bigread", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-bigwrite", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-randread", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-randrw", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-randwrite", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-seqread", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "1", "tool": "fio-seqread", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "0", "tool": "fio-seqwrite", "metric": "MiB/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "bench2", "metric": "create_1t_ops", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "bench2", "metric": "stat_1t_ops", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "bench2", "metric": "unlink_1t_ops", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "dirperf", "metric": "seconds", "direction": "elapsed"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "dirstress", "metric": "seconds", "direction": "elapsed"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "looptest", "metric": "seconds", "direction": "elapsed"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "metaperf", "metric": "create_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "metaperf", "metric": "open_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "metaperf", "metric": "readdir_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "metaperf", "metric": "rename_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "metaperf", "metric": "stat_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "smallfiles-read", "metric": "files/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "smallfiles-stat", "metric": "files/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "stress-ng", "metric": "dentry_bogo_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "stress-ng", "metric": "dir_bogo_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "stress-ng", "metric": "hdd_bogo_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "stress-ng", "metric": "rename_bogo_ops/s", "direction": "rate"},
+    {"preset": "metadata-throughput-profile", "direct": "NA", "tool": "stress-ng", "metric": "unlink_bogo_ops/s", "direction": "rate"}
+  ]
+}
