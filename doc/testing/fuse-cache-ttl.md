@@ -1,5 +1,10 @@
 # Explicit FUSE cache TTL
 
+This is the historical #349 TTL-only experiment. The option now uses
+[workspace generation/authority refresh](workspace-metadata-cache.md); the
+permission trade-off and missing INVAL_ENTRY discussion below describe the
+earlier implementation and are not its current coherence contract.
+
 `--fuse-cache-ttl-ms` (YAML `fuse.cache_ttl_ms`) defaults to zero. It replaces the
 forced-zero TTL only for metadata layers advertising writable POSIX ACLs. The
 default column below uses neither the CLI flag nor the YAML field. Its TTL and

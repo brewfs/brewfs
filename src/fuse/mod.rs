@@ -743,94 +743,15 @@ where
 
     // Call into VFS to resolve parent inode + name → child inode; if found, build ReplyEntry
     async fn lookup(&self, req: Request, parent: u64, name: &OsStr) -> FuseResult<ReplyEntry> {
-        let raw_name = raw_os_str_bytes(name);
-        let name_str = name.to_string_lossy();
-        debug!(
-            unique = req.unique,
-            parent,
-            name = %name_str,
-            "fuse.lookup"
-        );
-
-        // Preserve an actual source entry named `.stats`. Expose the virtual
-        // file only when that name is absent, with the same parent search
-        // check as an ordinary lookup; backend failures must not hide a file.
-        if parent as i64 == self.root_ino() && raw_name == STATS_FILENAME.as_bytes() {
-            self.ensure_access_allowed(parent as i64, req.uid, req.gid, req.pid, libc::X_OK as u32)
-                .await?;
-            if let Some((_, vattr)) = self.child_attr_of_bytes(parent as i64, raw_name).await? {
-                return Ok(ReplyEntry {
-                    ttl: self.permission_cache_ttl(),
-                    attr: vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr)),
-                    generation: 0,
-                });
-            }
-            let snapshot = self.create_virtual_stats_snapshot(false)?;
-            let now: Timestamp = std::time::SystemTime::now().into();
-            let attr = asyncfuse::raw::reply::FileAttr {
-                ino: STATS_INODE,
-                size: snapshot.len() as u64,
-                blocks: (snapshot.len() as u64).div_ceil(512),
-                atime: now,
-                mtime: now,
-                ctime: now,
-                kind: FuseFileType::RegularFile,
-                perm: 0o444,
-                nlink: 1,
-                uid: req.uid,
-                gid: req.gid,
-                rdev: 0,
-                blksize: STATS_FILE_BLOCK_SIZE,
-                #[cfg(target_os = "macos")]
-                crtime: now,
-                #[cfg(target_os = "macos")]
-                flags: 0,
-            };
-            return Ok(ReplyEntry {
-                ttl: Duration::ZERO,
-                attr,
-                generation: 0,
-            });
+        let (mut reply, ttl) = self
+            .fenced_metadata_read(|| self.lookup_uncached(req, parent, name))
+            .await?;
+        if reply.attr.ino != STATS_INODE
+            && let Some(ttl) = ttl
+        {
+            reply.ttl = ttl;
         }
-
-        validate_fuse_name_bytes(raw_name)?;
-
-        let _timer = crate::vfs::stats::OpTimer::new(
-            &self.stats().fuse_lookup_ops,
-            &self.stats().fuse_lookup_lat_us,
-        );
-
-        self.ensure_access_allowed(parent as i64, req.uid, req.gid, req.pid, libc::X_OK as u32)
-            .await
-            .inspect_err(|_error| {
-                #[cfg(test)]
-                eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-access unique={} parent={parent} error={_error}",
-                    req.unique,
-                );
-            })?;
-
-        let Some((_child_ino, vattr)) = self
-            .child_attr_of_bytes(parent as i64, raw_name)
-            .await
-            .inspect_err(|_error| {
-                #[cfg(test)]
-                eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-child unique={} parent={parent} error={_error}",
-                    req.unique,
-                );
-            })?
-        else {
-            info!(parent, name = %name_str, "fuse.lookup ENOENT");
-            return Err(libc::ENOENT.into());
-        };
-        let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
-        // Keep generation at 0 and set TTL to 1s (tunable)
-        Ok(ReplyEntry {
-            ttl: self.permission_cache_ttl(),
-            attr,
-            generation: 0,
-        })
+        Ok(reply)
     }
 
     // Open file: allocate a handle for read/write operations.
@@ -1136,76 +1057,18 @@ where
         req: Request,
         ino: u64,
         fh: Option<u64>,
-        _flags: u32,
+        flags: u32,
     ) -> FuseResult<ReplyAttr> {
-        // Virtual .stats file
         if ino == STATS_INODE {
-            let snapshot = match fh {
-                Some(fh) => self
-                    .virtual_stats_snapshot(fh)
-                    .ok_or(Errno::from(libc::EBADF))?,
-                None => self.create_virtual_stats_snapshot(false)?,
-            };
-            let now: Timestamp = std::time::SystemTime::now().into();
-            let attr = asyncfuse::raw::reply::FileAttr {
-                ino: STATS_INODE,
-                size: snapshot.len() as u64,
-                blocks: (snapshot.len() as u64).div_ceil(512),
-                atime: now,
-                mtime: now,
-                ctime: now,
-                kind: FuseFileType::RegularFile,
-                perm: 0o444,
-                nlink: 1,
-                uid: req.uid,
-                gid: req.gid,
-                rdev: 0,
-                blksize: STATS_FILE_BLOCK_SIZE,
-                #[cfg(target_os = "macos")]
-                crtime: now,
-                #[cfg(target_os = "macos")]
-                flags: 0,
-            };
-            return Ok(ReplyAttr {
-                ttl: Duration::ZERO,
-                attr,
-            });
+            return self.getattr_uncached(req, ino, fh, flags).await;
         }
-
-        debug!(unique = req.unique, ino, fh = ?fh, "fuse.getattr");
-        // Only genuine absence permits the attributes of an unlinked handle.
-        // Authentication or backend failures must not become successful stats.
-        let vattr_opt = self
-            .stat_ino_checked(ino as i64)
-            .await
-            .inspect_err(|_error| {
-                #[cfg(test)]
-                eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-getattr unique={} inode={ino} fh={fh:?} error={_error:?}",
-                    req.unique,
-                );
-            })
-            .map_err(Errno::from)?;
-        let vattr = if let Some(vattr) = vattr_opt {
-            vattr
-        } else if let Some(fh_value) = fh {
-            let mut fallback_attr = self
-                .handle_attr(fh_value)
-                .ok_or_else(|| Errno::from(libc::ENOENT))?;
-            fallback_attr.nlink = 0;
-            fallback_attr
-        } else if let Some(mut fallback_attr) = self.handle_attr_by_ino(ino as i64) {
-            fallback_attr.nlink = 0;
-            fallback_attr
-        } else {
-            return Err(libc::ENOENT.into());
-        };
-
-        let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
-        Ok(ReplyAttr {
-            ttl: self.permission_cache_ttl(),
-            attr,
-        })
+        let (mut reply, ttl) = self
+            .fenced_metadata_read(|| self.getattr_uncached(req, ino, fh, flags))
+            .await?;
+        if let Some(ttl) = ttl {
+            reply.ttl = ttl;
+        }
+        Ok(reply)
     }
 
     // Set attributes: delegate to metadata layer for mode/uid/gid/size/timestamps.
@@ -3769,14 +3632,213 @@ where
             })
     }
 
+    async fn lookup_uncached(
+        &self,
+        req: Request,
+        parent: u64,
+        name: &OsStr,
+    ) -> FuseResult<ReplyEntry> {
+        let raw_name = raw_os_str_bytes(name);
+        let name_str = name.to_string_lossy();
+        debug!(
+            unique = req.unique,
+            parent,
+            name = %name_str,
+            "fuse.lookup"
+        );
+
+        // Preserve an actual source entry named `.stats`. Expose the virtual
+        // file only when that name is absent, with the same parent search
+        // check as an ordinary lookup; backend failures must not hide a file.
+        if parent as i64 == self.root_ino() && raw_name == STATS_FILENAME.as_bytes() {
+            self.ensure_access_allowed(parent as i64, req.uid, req.gid, req.pid, libc::X_OK as u32)
+                .await?;
+            if let Some((_, vattr)) = self.child_attr_of_bytes(parent as i64, raw_name).await? {
+                return Ok(ReplyEntry {
+                    ttl: self.permission_cache_ttl(),
+                    attr: vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr)),
+                    generation: 0,
+                });
+            }
+            let snapshot = self.create_virtual_stats_snapshot(false)?;
+            let now: Timestamp = std::time::SystemTime::now().into();
+            let attr = asyncfuse::raw::reply::FileAttr {
+                ino: STATS_INODE,
+                size: snapshot.len() as u64,
+                blocks: (snapshot.len() as u64).div_ceil(512),
+                atime: now,
+                mtime: now,
+                ctime: now,
+                kind: FuseFileType::RegularFile,
+                perm: 0o444,
+                nlink: 1,
+                uid: req.uid,
+                gid: req.gid,
+                rdev: 0,
+                blksize: STATS_FILE_BLOCK_SIZE,
+                #[cfg(target_os = "macos")]
+                crtime: now,
+                #[cfg(target_os = "macos")]
+                flags: 0,
+            };
+            return Ok(ReplyEntry {
+                ttl: Duration::ZERO,
+                attr,
+                generation: 0,
+            });
+        }
+
+        validate_fuse_name_bytes(raw_name)?;
+
+        let _timer = crate::vfs::stats::OpTimer::new(
+            &self.stats().fuse_lookup_ops,
+            &self.stats().fuse_lookup_lat_us,
+        );
+
+        self.ensure_access_allowed(parent as i64, req.uid, req.gid, req.pid, libc::X_OK as u32)
+            .await
+            .inspect_err(|_error| {
+                #[cfg(test)]
+                eprintln!(
+                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-access unique={} parent={parent} error={_error}",
+                    req.unique,
+                );
+            })?;
+
+        let Some((_child_ino, vattr)) = self
+            .child_attr_of_bytes(parent as i64, raw_name)
+            .await
+            .inspect_err(|_error| {
+                #[cfg(test)]
+                eprintln!(
+                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-child unique={} parent={parent} error={_error}",
+                    req.unique,
+                );
+            })?
+        else {
+            info!(parent, name = %name_str, "fuse.lookup ENOENT");
+            return Err(libc::ENOENT.into());
+        };
+        let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
+        // Keep generation at 0 and set TTL to 1s (tunable)
+        Ok(ReplyEntry {
+            ttl: self.permission_cache_ttl(),
+            attr,
+            generation: 0,
+        })
+    }
+
+    async fn getattr_uncached(
+        &self,
+        req: Request,
+        ino: u64,
+        fh: Option<u64>,
+        _flags: u32,
+    ) -> FuseResult<ReplyAttr> {
+        // Virtual .stats file
+        if ino == STATS_INODE {
+            let snapshot = match fh {
+                Some(fh) => self
+                    .virtual_stats_snapshot(fh)
+                    .ok_or(Errno::from(libc::EBADF))?,
+                None => self.create_virtual_stats_snapshot(false)?,
+            };
+            let now: Timestamp = std::time::SystemTime::now().into();
+            let attr = asyncfuse::raw::reply::FileAttr {
+                ino: STATS_INODE,
+                size: snapshot.len() as u64,
+                blocks: (snapshot.len() as u64).div_ceil(512),
+                atime: now,
+                mtime: now,
+                ctime: now,
+                kind: FuseFileType::RegularFile,
+                perm: 0o444,
+                nlink: 1,
+                uid: req.uid,
+                gid: req.gid,
+                rdev: 0,
+                blksize: STATS_FILE_BLOCK_SIZE,
+                #[cfg(target_os = "macos")]
+                crtime: now,
+                #[cfg(target_os = "macos")]
+                flags: 0,
+            };
+            return Ok(ReplyAttr {
+                ttl: Duration::ZERO,
+                attr,
+            });
+        }
+
+        debug!(unique = req.unique, ino, fh = ?fh, "fuse.getattr");
+        // Only genuine absence permits the attributes of an unlinked handle.
+        // Authentication or backend failures must not become successful stats.
+        let vattr_opt = self
+            .stat_ino_checked(ino as i64)
+            .await
+            .inspect_err(|_error| {
+                #[cfg(test)]
+                eprintln!(
+                    "[packed-v3-native-kernel-read-diag] stage=fuse-getattr unique={} inode={ino} fh={fh:?} error={_error:?}",
+                    req.unique,
+                );
+            })
+            .map_err(Errno::from)?;
+        let vattr = if let Some(vattr) = vattr_opt {
+            vattr
+        } else if let Some(fh_value) = fh {
+            let mut fallback_attr = self
+                .handle_attr(fh_value)
+                .ok_or_else(|| Errno::from(libc::ENOENT))?;
+            fallback_attr.nlink = 0;
+            fallback_attr
+        } else if let Some(mut fallback_attr) = self.handle_attr_by_ino(ino as i64) {
+            fallback_attr.nlink = 0;
+            fallback_attr
+        } else {
+            return Err(libc::ENOENT.into());
+        };
+
+        let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
+        Ok(ReplyAttr {
+            ttl: self.permission_cache_ttl(),
+            attr,
+        })
+    }
+
+    /// Only LOOKUP/GETATTR refill positive writable-workspace cache entries.
+    /// Other reply paths keep zero TTL until they carry the same read fence.
+    async fn fenced_metadata_read<R, F, Fut>(&self, read: F) -> FuseResult<(R, Option<Duration>)>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = FuseResult<R>>,
+    {
+        let configured = self.configured_fuse_cache_ttl();
+        if configured.is_zero()
+            || self.meta_layer().posix_acl_capability()
+                != crate::meta::layer::PosixAclCapability::ReadWrite
+        {
+            return read().await.map(|reply| (reply, None));
+        }
+        let to_errno = |error| Errno::from(VfsError::from_meta(PathHint::none(), error));
+        let deadline = self
+            .meta_layer()
+            .kernel_metadata_cache_deadline(configured)
+            .await
+            .map_err(to_errno)?;
+        let reply = read().await?;
+        // A slow read must not restart the lifetime of its checked generation.
+        let ttl =
+            deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+        Ok((reply, ttl))
+    }
+
     fn permission_cache_ttl(&self) -> Duration {
         if self.meta_layer().posix_acl_capability()
             == crate::meta::layer::PosixAclCapability::ReadWrite
         {
-            // The ABI has one attr_valid for the entire permission-bearing
-            // attribute snapshot. Only an explicit operator choice may relax
-            // the zero-TTL permission consistency policy.
-            self.configured_fuse_cache_ttl()
+            // Positive TTLs require the complete generation/authority fence
+            // in fenced_metadata_read; unguarded replies cannot populate it.
+            Duration::ZERO
         } else {
             fuse_cache_ttl()
         }

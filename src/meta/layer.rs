@@ -50,6 +50,16 @@ pub enum MetadataMemoryKind {
 #[async_trait]
 #[allow(dead_code)]
 pub trait MetaLayer: Send + Sync {
+    /// Deadline of a remotely checked metadata generation. All replies share
+    /// the deadline: cache hits must never slide it forward. Refreshing an
+    /// expired generation must discard stale mutable rows before returning.
+    /// None means that positive kernel metadata TTLs are not supported.
+    async fn kernel_metadata_cache_deadline(
+        &self,
+        _ttl: std::time::Duration,
+    ) -> Result<Option<std::time::Instant>, MetaError> {
+        Ok(None)
+    }
     /// Opt in only when dropping a read future cannot leave mutable work.
     fn supports_fuse_read_cancellation(&self) -> bool {
         false

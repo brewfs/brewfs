@@ -386,6 +386,49 @@ async fn fixture() -> Fixture {
 }
 
 #[tokio::test]
+async fn kernel_cache_refill_discards_external_upper_rows_and_checks_binding() {
+    let mut f = fixture().await;
+    f.meta = f
+        .meta
+        .with_upper_row_cache(std::time::Duration::from_secs(60));
+    f.copy_up(Vec::new()).await;
+    f.set_native_file_size(123).await;
+    let ttl = std::time::Duration::from_millis(20);
+    let before = f
+        .meta
+        .kernel_metadata_cache_deadline(ttl)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.meta.stat(400).await.unwrap().unwrap().size, 123);
+    f.set_native_file_size(456).await;
+    assert_eq!(
+        f.meta.kernel_metadata_cache_deadline(ttl).await.unwrap(),
+        Some(before)
+    );
+    assert_eq!(
+        f.meta.stat(400).await.unwrap().unwrap().size,
+        123,
+        "fixture reproduces an upper-row hit without writer notification"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let after = f
+        .meta
+        .kernel_metadata_cache_deadline(ttl)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.meta.stat(400).await.unwrap().unwrap().size, 456);
+    assert!(after > before);
+    f.authority.valid.store(false, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert!(
+        f.meta.kernel_metadata_cache_deadline(ttl).await.is_err(),
+        "old immutable binding cannot refill a kernel cache entry"
+    );
+}
+
+#[tokio::test]
 async fn public_catalog_binding_attach_requires_persisted_binding() {
     let f = fixture().await;
     let view = f.meta.view_context().await;
