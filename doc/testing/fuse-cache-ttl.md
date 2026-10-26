@@ -59,7 +59,9 @@ and traversal can complete without checking the daemon's current authority.
 Existing local INVAL_INODE calls for chmod/chown, POSIX ACL and xattr set/remove,
 truncate, fallocate and copy remain reachable and unchanged. They queue a
 notification for one mounted VFS; they do not acknowledge application by the
-kernel or broadcast to other mounts. INVAL_ENTRY is not added for create,
+kernel or broadcast to other mounts. Entry invalidation is unavailable until
+the separate asyncfuse notification PR lands; `vendor/asyncfuse` is unchanged.
+INVAL_ENTRY is not added for create,
 mkdir, mknod, symlink, link, unlink, rmdir or rename: a notification can wait on
 locks held until that request's reply, and the current asyncfuse notification
 sender shares a response queue. There is no safe post-reply hook. Ordinary

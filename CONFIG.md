@@ -46,7 +46,9 @@ paths. These notifications belong to one mounted VFS. The asyncfuse API queues
 them without acknowledging that the kernel applied them; they are not a
 cross-mount permission-revocation barrier.
 
-`FUSE_NOTIFY_INVAL_ENTRY` cannot safely be added to the current create, mkdir,
+Entry invalidation is unavailable until the separate asyncfuse notification PR
+lands; this change does not modify `vendor/asyncfuse`. `FUSE_NOTIFY_INVAL_ENTRY`
+cannot safely be added to the current create, mkdir,
 mknod, symlink, link, unlink, rmdir or rename callbacks: Linux may wait for
 directory locks held by the triggering request, while the notification shares
 the response queue needed to finish that request. There is no safe post-reply

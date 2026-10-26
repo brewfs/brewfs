@@ -3483,11 +3483,9 @@ where
         .await
         .map_err(Into::<Errno>::into)?;
         Ok(ReplyCreated {
-            ttl: if writable_acl {
-                self.permission_cache_ttl()
-            } else {
-                fuse_create_cache_ttl()
-            },
+            // A positive permission TTL must not cache a new file's initial
+            // size across writes; retain the existing creation policy.
+            ttl: fuse_create_cache_ttl(),
             attr,
             generation: 0,
             fh,

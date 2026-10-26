@@ -1314,6 +1314,19 @@ where
         Self::from_components_with_backend(config, store, meta_layer, background_tasks, backend)
     }
 
+    /// Create a workspace VFS with the default cache configuration.
+    #[cfg(feature = "workspace-overlay")]
+    pub fn new_workspace(
+        layout: ChunkLayout,
+        store: S,
+        meta_layer: Arc<M>,
+    ) -> Result<Self, VfsError>
+    where
+        M: crate::chunk::read_plan::WorkspaceReadPlanProvider,
+    {
+        Self::from_workspace_components(VFSConfig::new(layout), Arc::new(store), meta_layer)
+    }
+
     #[cfg(feature = "workspace-overlay")]
     pub(crate) fn from_workspace_components(
         config: VFSConfig,
@@ -1962,7 +1975,11 @@ where
     }
 
     /// Set once before mounting; all VFS clones share the same explicit policy.
-    pub(crate) fn set_fuse_cache_ttl(&self, ttl: Duration) {
+    /// This overrides the zero permission TTL only on writable POSIX ACL mounts.
+    ///
+    /// # Panics
+    /// Panics if the TTL has already been configured on this VFS or a clone.
+    pub fn set_fuse_cache_ttl(&self, ttl: Duration) {
         self.state
             .fuse_cache_ttl
             .set(ttl)
