@@ -1,0 +1,493 @@
+{
+  "status": "diagnostic only; no filesystem optimization accepted",
+  "reads": [
+    {
+      "label": "off",
+      "operation": "seq_read_evicted_MBps",
+      "n": 3,
+      "median_MBps": 69.32532207080872,
+      "median_trial": 3,
+      "fuse_requests_at_median": {
+        "25": 1,
+        "14": 1,
+        "1": 2,
+        "3": 261,
+        "15": 2048
+      },
+      "fuse_read_size_histogram": {
+        "131072": 2048
+      },
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 8.0,
+      "samples_MBps": [
+        71.24337111099139,
+        66.4180611034686,
+        69.32532207080872
+      ]
+    },
+    {
+      "label": "off",
+      "operation": "seq_read_reopen_MBps",
+      "n": 3,
+      "median_MBps": 69.27593844082318,
+      "median_trial": 3,
+      "fuse_requests_at_median": {
+        "14": 1,
+        "25": 1,
+        "1": 2,
+        "3": 261,
+        "15": 2048
+      },
+      "fuse_read_size_histogram": {
+        "131072": 2048
+      },
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 8.0,
+      "samples_MBps": [
+        75.04207885747144,
+        63.759484974652786,
+        69.27593844082318
+      ]
+    },
+    {
+      "label": "off",
+      "operation": "seq_read_warm_MBps",
+      "n": 3,
+      "median_MBps": 843.901492093287,
+      "median_trial": 1,
+      "fuse_requests_at_median": {
+        "3": 257
+      },
+      "fuse_read_size_histogram": {},
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 0.0,
+      "samples_MBps": [
+        843.901492093287,
+        781.2147624495409,
+        872.6994483981147
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "seq_read_evicted_MBps",
+      "n": 3,
+      "median_MBps": 69.0877752332481,
+      "median_trial": 2,
+      "fuse_requests_at_median": {
+        "25": 1,
+        "14": 1,
+        "3": 3,
+        "15": 2048
+      },
+      "fuse_read_size_histogram": {
+        "131072": 2048
+      },
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 8.0,
+      "samples_MBps": [
+        57.779025548145476,
+        69.0877752332481,
+        78.74038000156226
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "seq_read_reopen_MBps",
+      "n": 3,
+      "median_MBps": 65.18954074809263,
+      "median_trial": 2,
+      "fuse_requests_at_median": {
+        "25": 1,
+        "14": 1,
+        "1": 2,
+        "3": 4,
+        "15": 2048
+      },
+      "fuse_read_size_histogram": {
+        "131072": 2048
+      },
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 8.0,
+      "samples_MBps": [
+        61.974830007449654,
+        65.18954074809263,
+        70.0688784346943
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "seq_read_warm_MBps",
+      "n": 3,
+      "median_MBps": 4922.411407381288,
+      "median_trial": 3,
+      "fuse_requests_at_median": {},
+      "fuse_read_size_histogram": {},
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 0.0,
+      "samples_MBps": [
+        5150.798316044925,
+        4750.799176455514,
+        4922.411407381288
+      ]
+    },
+    {
+      "label": "juicefs",
+      "operation": "seq_read_evicted_MBps",
+      "n": 3,
+      "median_MBps": 1072.7707989293006,
+      "median_trial": 1,
+      "fuse_requests_at_median": {
+        "25": 1,
+        "14": 1,
+        "1": 2,
+        "15": 2048
+      },
+      "fuse_read_size_histogram": {
+        "131072": 2048
+      },
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 8.0,
+      "samples_MBps": [
+        1072.7707989293006,
+        1150.3814411028352,
+        978.4477630242998
+      ]
+    },
+    {
+      "label": "juicefs",
+      "operation": "seq_read_reopen_MBps",
+      "n": 3,
+      "median_MBps": 5673.680928086097,
+      "median_trial": 2,
+      "fuse_requests_at_median": {
+        "18": 1,
+        "14": 1,
+        "25": 1,
+        "1": 2
+      },
+      "fuse_read_size_histogram": {},
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 0.0,
+      "samples_MBps": [
+        6002.849405622112,
+        5673.680928086097,
+        5457.91081323166
+      ]
+    },
+    {
+      "label": "juicefs",
+      "operation": "seq_read_warm_MBps",
+      "n": 3,
+      "median_MBps": 6120.587689242159,
+      "median_trial": 2,
+      "fuse_requests_at_median": {},
+      "fuse_read_size_histogram": {},
+      "client_read_request_histogram": {
+        "1048576": 257
+      },
+      "client_read_return_histogram": {
+        "0": 1,
+        "1048576": 256
+      },
+      "client_read_syscalls_per_mib": 1.00390625,
+      "client_nonempty_reads_per_mib": 1,
+      "fuse_read_requests_per_mib": 0.0,
+      "samples_MBps": [
+        4806.78499508374,
+        6120.587689242159,
+        6335.1904412998865
+      ]
+    }
+  ],
+  "guardrails": [
+    {
+      "label": "off",
+      "operation": "stat-1p",
+      "n": 3,
+      "baseline_ops_s": 226.00064162925045,
+      "current_ops_s": 225.2918100929549,
+      "ratio": 0.996863586177519,
+      "request_counts": [
+        {
+          "1": 16384,
+          "3": 24576
+        },
+        {
+          "1": 16384,
+          "3": 24576
+        },
+        {
+          "17": 1,
+          "29": 3,
+          "27": 3,
+          "44": 3,
+          "28": 5,
+          "1": 16647,
+          "3": 25110
+        }
+      ]
+    },
+    {
+      "label": "off",
+      "operation": "stat-8p",
+      "n": 3,
+      "baseline_ops_s": 522.2834842811866,
+      "current_ops_s": 532.2315789635179,
+      "ratio": 1.0190473085627487,
+      "request_counts": [
+        {
+          "1": 131072,
+          "3": 196608
+        },
+        {
+          "1": 131072,
+          "3": 196608
+        },
+        {
+          "1": 131072,
+          "3": 196608
+        }
+      ]
+    },
+    {
+      "label": "off",
+      "operation": "create",
+      "n": 3,
+      "baseline_ops_s": 57.701801927524585,
+      "current_ops_s": 57.04460864097308,
+      "ratio": 0.9886105240287476,
+      "request_counts": [
+        {
+          "18": 255,
+          "25": 256,
+          "35": 256,
+          "1": 512,
+          "3": 1024
+        },
+        {
+          "18": 255,
+          "25": 256,
+          "35": 256,
+          "1": 512,
+          "3": 1024
+        },
+        {
+          "18": 255,
+          "25": 256,
+          "35": 256,
+          "1": 512,
+          "3": 1024
+        }
+      ]
+    },
+    {
+      "label": "off",
+      "operation": "unlink",
+      "n": 3,
+      "baseline_ops_s": 74.90179865710623,
+      "current_ops_s": 80.65793128253175,
+      "ratio": 1.076849057414183,
+      "request_counts": [
+        {
+          "10": 256,
+          "1": 512,
+          "3": 768
+        },
+        {
+          "10": 256,
+          "1": 512,
+          "3": 768
+        },
+        {
+          "10": 256,
+          "1": 512,
+          "3": 768
+        }
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "stat-1p",
+      "n": 3,
+      "baseline_ops_s": 132903.63547132604,
+      "current_ops_s": 73474.82756106026,
+      "ratio": 0.5528428722095601,
+      "request_counts": [
+        {
+          "1": 98
+        },
+        {
+          "1": 105
+        },
+        {}
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "stat-8p",
+      "n": 3,
+      "baseline_ops_s": 2393385.3185481415,
+      "current_ops_s": 2297555.690400919,
+      "ratio": 0.9599606350868092,
+      "request_counts": [
+        {},
+        {},
+        {}
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "create",
+      "n": 3,
+      "baseline_ops_s": 68.5745429950287,
+      "current_ops_s": 66.97530041413017,
+      "ratio": 0.976678771581249,
+      "request_counts": [
+        {
+          "18": 255,
+          "35": 256,
+          "25": 256,
+          "1": 261,
+          "3": 512
+        },
+        {
+          "18": 255,
+          "25": 256,
+          "35": 256,
+          "1": 260,
+          "3": 511
+        },
+        {
+          "18": 255,
+          "35": 256,
+          "25": 256,
+          "1": 260,
+          "3": 512
+        }
+      ]
+    },
+    {
+      "label": "on",
+      "operation": "unlink",
+      "n": 3,
+      "baseline_ops_s": 96.74966177943594,
+      "current_ops_s": 96.74791757796024,
+      "ratio": 0.9999819720147479,
+      "request_counts": [
+        {
+          "3": 255,
+          "10": 256,
+          "1": 259
+        },
+        {
+          "10": 256,
+          "3": 256,
+          "1": 260
+        },
+        {
+          "3": 256,
+          "10": 256,
+          "1": 260
+        }
+      ]
+    }
+  ],
+  "supplemental": [
+    {
+      "label": "off",
+      "operation": "smallfiles-stat",
+      "n": 3,
+      "median_seconds": 34.763292522053234,
+      "historical_baseline": null,
+      "reason": "No entry for this named workload exists in the supplied historical measurement-summary.json"
+    },
+    {
+      "label": "off",
+      "operation": "dirperf",
+      "n": 3,
+      "median_seconds": 10.601948508992791,
+      "historical_baseline": null,
+      "reason": "No entry for this named workload exists in the supplied historical measurement-summary.json"
+    },
+    {
+      "label": "on",
+      "operation": "smallfiles-stat",
+      "n": 3,
+      "median_seconds": 0.9190643629990518,
+      "historical_baseline": null,
+      "reason": "No entry for this named workload exists in the supplied historical measurement-summary.json"
+    },
+    {
+      "label": "on",
+      "operation": "dirperf",
+      "n": 3,
+      "median_seconds": 6.089245948998723,
+      "historical_baseline": null,
+      "reason": "No entry for this named workload exists in the supplied historical measurement-summary.json"
+    }
+  ]
+}

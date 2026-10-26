@@ -1,0 +1,55 @@
+[
+  {
+    "command": [
+      "bash",
+      "-n",
+      "docker/compose-xfstests/run_perf_in_container.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "-n",
+      "docker/compose-xfstests/run_redis_perf.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "-n",
+      "docker/compose-xfstests/run_juicefs_perf_in_container.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "-n",
+      "docker/compose-xfstests/run_juicefs_perf.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "docker/compose-xfstests/test_perf_report_delta.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "docker/compose-xfstests/test_juicefs_direct_matrix.sh"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "bash",
+      "docker/compose-xfstests/test_juicefs_perf_report.sh"
+    ],
+    "returncode": 0
+  }
+]

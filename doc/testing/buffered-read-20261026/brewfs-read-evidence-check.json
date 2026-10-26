@@ -1,0 +1,24 @@
+{
+  "off": {
+    "trials": 9,
+    "client_data_reads_per_mib": 1,
+    "client_reads_including_eof_per_mib": 1.00390625,
+    "warm_fuse_reads_per_mib": 0,
+    "reopen_fuse_reads_per_mib": 8,
+    "evicted_fuse_reads_per_mib": 8,
+    "fuse_read_size_bytes": 131072,
+    "bytes_verified_each_repetition": 268435456,
+    "sha256": "0c12521f55bab050d1a29f6fc490ba3f2c475c7d5ecff8d27b2f10d6cc0d3441"
+  },
+  "on": {
+    "trials": 9,
+    "client_data_reads_per_mib": 1,
+    "client_reads_including_eof_per_mib": 1.00390625,
+    "warm_fuse_reads_per_mib": 0,
+    "reopen_fuse_reads_per_mib": 8,
+    "evicted_fuse_reads_per_mib": 8,
+    "fuse_read_size_bytes": 131072,
+    "bytes_verified_each_repetition": 268435456,
+    "sha256": "036f2a0f7b22626e100085d3b792110d08f9049fa9d0a3ad641afb684e1c7e31"
+  }
+}

@@ -1,0 +1,8 @@
+test_failed_tracer_cannot_be_reported_as_zero_fuse_requests (test_workspace_metadata_cache.ReadEvidenceTests.test_failed_tracer_cannot_be_reported_as_zero_fuse_requests) ... ok
+test_trace_keeps_syscalls_eof_and_fuse_sizes (test_workspace_metadata_cache.ReadEvidenceTests.test_trace_keeps_syscalls_eof_and_fuse_sizes) ... ok
+test_verify_rejects_same_length_corruption_after_multiple_blocks (test_workspace_metadata_cache.ReadEvidenceTests.test_verify_rejects_same_length_corruption_after_multiple_blocks) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.038s
+
+OK

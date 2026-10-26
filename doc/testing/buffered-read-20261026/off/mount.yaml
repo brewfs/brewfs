@@ -1,0 +1,25 @@
+cache:
+  compression: none
+  read_memory_bytes: 314572800
+  read_ssd_bytes: 1073741824
+  root: /data/metacache/artifacts/volume/cache
+data:
+  backend: s3
+  s3:
+    bucket: metacache-20261026-perf
+    endpoint: http://127.0.0.1:19090
+    force_path_style: true
+    region: us-east-1
+fuse:
+  cache_ttl_ms: 0
+layout:
+  block_size: 4194304
+  chunk_size: 67108864
+meta:
+  backend: redis
+  redis:
+    url: redis://127.0.0.1:16389/4
+mount_point: /data/metacache/artifacts/buffered-read-20261026/off/mnt
+volume_format: workspace-v1
+workspace: 01a178e8-a01e-7f61-84bd-61440c63a5a3
+workspace_namespace: metacache-perf

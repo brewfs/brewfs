@@ -1,0 +1,5 @@
+
+running 1 test
+test vfs::io::writer::tests::test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2986 filtered out; finished in 0.10s
