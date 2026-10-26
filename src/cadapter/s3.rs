@@ -1122,6 +1122,9 @@ impl Drop for MultipartCleanupGuard {
 impl ObjectBackend for S3Backend {
     #[cfg(feature = "rustfs-ec-block-size-hint")]
     fn prefers_full_object_reads(&self) -> bool {
+        // Compatibility default only. ObjectBlockStore's read_fetch_policy
+        // can override fetching/prefetching without changing this write hint
+        // or the existing block-cache admission policy.
         self.config.rustfs_ec_block_size_hint.is_some()
     }
 

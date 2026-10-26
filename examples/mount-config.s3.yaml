@@ -16,6 +16,12 @@ data:
     # Fixed bytes: 65536, 262144, 1048576, 4194304; independent of layout.block_size.
     # rustfs_ec_block_size_hint: auto
 
+# Optional read-side override, independent of the EC write hint:
+# cache:
+#   read_fetch_policy: sparse  # backend-default (default), whole-object, or sparse
+# Sparse suppresses full-object prefetch for small uncompressed misses.
+# Compressed objects and large requests still need whole-object reads.
+
 meta:
   backend: etcd
   etcd:
