@@ -16,7 +16,8 @@ mod tests {
             return;
         };
         let runtime = super::build().unwrap();
-        assert_eq!(runtime.metrics().num_workers(), expected.parse().unwrap());
+        let expected_workers: usize = expected.parse().unwrap();
+        assert_eq!(runtime.metrics().num_workers(), expected_workers);
         assert_eq!(
             runtime.block_on(async { tokio::spawn(async { 42 }).await.unwrap() }),
             42
