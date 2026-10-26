@@ -156,6 +156,96 @@ mod ordinary_worker_join_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_worker_reaps_10000_completed_tasks_and_keeps_pending_join() {
+        const COMPLETED: usize = 10_000;
+        let (sender, mut receiver) = unbounded();
+        let mut owned = FuturesUnordered::<BoxFuture<'static, ()>>::new();
+        let (release, wait) = oneshot::channel::<()>();
+        let pending = tokio::spawn(async move { wait.await.unwrap() });
+        owned.push(Box::pin(async move { pending.await.unwrap() }));
+        let mut max_retained = 0;
+
+        for unique in 1..=COMPLETED {
+            let child = tokio::spawn(async {});
+            while !child.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            owned.push(Box::pin(async move { child.await.unwrap() }));
+            // Keep input ready: receiving more work must not starve reaping.
+            sender
+                .unbounded_send(WorkItem {
+                    unique: unique as u64,
+                    opcode: fuse_opcode::FUSE_GETATTR as u32,
+                    in_header: InHeaderLite {
+                        nodeid: 1,
+                        uid: 0,
+                        gid: 0,
+                        pid: 0,
+                    },
+                    data: Bytes::from_static(&[0; 16]),
+                    _inflight_guard: None,
+                    _memory_guard: None,
+                    _response_registration: None,
+                })
+                .unwrap();
+            let item = next_ordinary_work_item(&mut receiver, &mut owned)
+                .await
+                .unwrap();
+            assert_eq!(item.unique, unique as u64);
+            max_retained = max_retained.max(owned.len());
+        }
+
+        println!(
+            "completed={COMPLETED} retained={} max_retained={max_retained} pending=1",
+            owned.len()
+        );
+        assert_eq!(max_retained, 1, "completed join bookkeeping must be reaped");
+        assert_eq!(owned.len(), 1, "the unfinished join must remain owned");
+
+        // Closing input must leave the pending join available for shutdown.
+        drop(sender);
+        assert!(next_ordinary_work_item(&mut receiver, &mut owned)
+            .await
+            .is_none());
+        assert_eq!(owned.len(), 1);
+        assert!(owned.next().now_or_never().is_none());
+        release.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), owned.next())
+                .await
+                .expect("shutdown must join the pending task"),
+            Some(())
+        );
+        assert!(owned.is_empty());
+        println!("after pending task completes: retained={}", owned.len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_worker_reaps_completed_tasks_while_input_is_idle() {
+        let (sender, mut receiver) = unbounded();
+        let mut owned = FuturesUnordered::<BoxFuture<'static, ()>>::new();
+        let (release, wait) = oneshot::channel::<()>();
+        let child = tokio::spawn(async move { wait.await.unwrap() });
+        let (reaped, reaped_wait) = oneshot::channel();
+        owned.push(Box::pin(async move {
+            child.await.unwrap();
+            reaped.send(()).unwrap();
+        }));
+        let mut receive = Box::pin(next_ordinary_work_item(&mut receiver, &mut owned));
+        assert!(receive.as_mut().now_or_never().is_none());
+        release.send(()).unwrap();
+        tokio::select! {
+            _ = &mut receive => panic!("the input channel is still open and empty"),
+            result = tokio::time::timeout(Duration::from_secs(1), reaped_wait) => {
+                result.expect("idle worker must reap the completed join").unwrap();
+            }
+        }
+        drop(receive);
+        assert!(!sender.is_closed());
+        assert!(owned.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn ordinary_worker_shutdown_joins_spawned_handler_before_return() {
         let fs = Arc::new(PendingFs {
             entered: AtomicUsize::new(0),
@@ -242,6 +332,13 @@ mod ordinary_worker_join_tests {
         })
         .await
         .expect("ordinary panic handler did not start");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers.join_ledger.errors.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("ordinary JoinError must be recorded before shutdown");
         let error = workers
             .shutdown()
             .await
@@ -450,7 +547,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Workers<FS> {
                     return;
                 }
                 let mut owned = FuturesUnordered::<BoxFuture<'static, ()>>::new();
-                while let Some(item) = rx.next().await {
+                while let Some(item) = next_ordinary_work_item(&mut rx, &mut owned).await {
                     // Keep every spawned ordinary handler owned by the worker
                     // until its JoinHandle is Ready. Dropping the handle here
                     // would let Session shutdown return while the handler
@@ -493,7 +590,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Workers<FS> {
                     return;
                 }
                 let mut owned = FuturesUnordered::<BoxFuture<'static, ()>>::new();
-                while let Some(item) = rx.next().await {
+                while let Some(item) = next_ordinary_work_item(&mut rx, &mut owned).await {
                     let ctx = ctx_clone.clone();
                     // Preserve the mutable cache-hit inline fast path.
                     if item.opcode == fuse_opcode::FUSE_READ as u32 {
@@ -617,6 +714,20 @@ impl<FS: Filesystem + Send + Sync + 'static> Drop for Workers<FS> {
             self.senders.clear();
         }
     }
+}
+
+async fn next_ordinary_work_item(
+    receiver: &mut UnboundedReceiver<WorkItem>,
+    owned: &mut FuturesUnordered<BoxFuture<'static, ()>>,
+) -> Option<WorkItem> {
+    futures_util::future::poll_fn(|cx| {
+        // Reap ready joins before accepting more work, and register child
+        // wakeups even while input is idle. Pending joins remain owned for
+        // the shutdown drain.
+        while let Poll::Ready(Some(())) = owned.poll_next_unpin(cx) {}
+        receiver.poll_next_unpin(cx)
+    })
+    .await
 }
 
 // This is the exact outer future stored by the ordinary readonly queue.
