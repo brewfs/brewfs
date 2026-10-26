@@ -46,9 +46,12 @@ paths. These notifications belong to one mounted VFS. The asyncfuse API queues
 them without acknowledging that the kernel applied them; they are not a
 cross-mount permission-revocation barrier.
 
-Entry invalidation is unavailable until the separate asyncfuse notification PR
-lands; this change does not modify `vendor/asyncfuse`. `FUSE_NOTIFY_INVAL_ENTRY`
-cannot safely be added to the current create, mkdir,
+Entry invalidation is unavailable in the notification path at this change's
+tested base (`b21654e`); it requires the separate asyncfuse notification PR
+[#346](https://github.com/brewfs/brewfs/pull/346). That PR has since merged
+upstream. This change does not modify `vendor/asyncfuse` or wire the new API into
+namespace callbacks. `FUSE_NOTIFY_INVAL_ENTRY` cannot safely be added to the
+tested create, mkdir,
 mknod, symlink, link, unlink, rmdir or rename callbacks: Linux may wait for
 directory locks held by the triggering request, while the notification shares
 the response queue needed to finish that request. There is no safe post-reply
