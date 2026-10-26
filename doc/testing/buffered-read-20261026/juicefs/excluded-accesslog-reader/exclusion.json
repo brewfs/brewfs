@@ -1,0 +1,3 @@
+{
+  "reason": "External recursive grep held .accesslog open and contributed unrelated READs. All nine rows excluded; clean replay is in ../reads."
+}

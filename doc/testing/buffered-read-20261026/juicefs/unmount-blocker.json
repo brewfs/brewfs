@@ -1,0 +1,5 @@
+{
+  "pid": 2256025,
+  "command": "grep -alrE size.*count|io_size|req_size /data/metacache/artifacts/buffered-read-20261026/ ",
+  "fd3": "/data/metacache/artifacts/buffered-read-20261026/juicefs/mnt/.accesslog"
+}

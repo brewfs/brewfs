@@ -1,0 +1,140 @@
+[
+  {
+    "name": "workspace-tests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--lib",
+      "--bins",
+      "--features",
+      "workspace-overlay"
+    ],
+    "returncode": 101,
+    "seconds": 1013.0443814679747
+  },
+  {
+    "name": "workspace-tests-retry",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--lib",
+      "--bins",
+      "--features",
+      "workspace-overlay",
+      "--",
+      "--test-threads=4"
+    ],
+    "returncode": 0,
+    "seconds": 172.72227300098166
+  },
+  {
+    "name": "cache-ttl-tests",
+    "command": [
+      "cargo",
+      "test",
+      "--features",
+      "workspace-overlay",
+      "--test",
+      "fuse_cache_ttl",
+      "--",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "returncode": -2,
+    "seconds": 173.82823129504686
+  },
+  {
+    "name": "cache-ttl-tests-workspace",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--features",
+      "workspace-overlay",
+      "--test",
+      "fuse_cache_ttl",
+      "--",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "returncode": -2,
+    "seconds": 114.80246365000494
+  },
+  {
+    "name": "chunk-tests",
+    "command": [
+      "/data/asyncfuse/target-workspace/debug/deps/brewfs-d5c845e45acd23e9",
+      "chunk::"
+    ],
+    "returncode": 0,
+    "seconds": 5.61,
+    "test_threads": 4,
+    "result": "188 passed; 3 ignored"
+  },
+  {
+    "name": "cache-ttl-tests-workspace",
+    "command": [
+      "/data/asyncfuse/target-workspace/debug/deps/fuse_cache_ttl-c28bcdda00656114",
+      "--include-ignored",
+      "--nocapture",
+      "--test-threads=4"
+    ],
+    "build_command": "cargo test --workspace --lib --bins --test fuse_cache_ttl --features workspace-overlay --no-run",
+    "returncode": 0,
+    "seconds": 5.578381252998952
+  },
+  {
+    "name": "workspace-check",
+    "command": [
+      "cargo",
+      "check",
+      "--workspace"
+    ],
+    "returncode": 0,
+    "seconds": 191.65799594996497
+  },
+  {
+    "name": "tokio-check",
+    "command": [
+      "cargo",
+      "check",
+      "-p",
+      "brewfs",
+      "--no-default-features",
+      "--features",
+      "fuse-tokio-runtime"
+    ],
+    "returncode": 0,
+    "seconds": 115.92242124601034
+  },
+  {
+    "name": "io-uring-check",
+    "command": [
+      "cargo",
+      "check",
+      "-p",
+      "brewfs",
+      "--no-default-features",
+      "--features",
+      "fuse-io-uring-runtime"
+    ],
+    "returncode": -2,
+    "status": "interrupted for the user 70-minute timebox"
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "returncode": null,
+    "status": "not run: timebox"
+  }
+]

@@ -1,0 +1,48 @@
+Validation environment: CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=4
+Target: /data/asyncfuse/target-workspace; all Cargo jobs serialized, with pgrep -a rustc before each.
+Build: cargo build --workspace --features workspace-overlay -j 2 (passed).
+A separate default-only workspace test run was not performed; the complete workspace test run enabled workspace-overlay.
+Full local CI gate is incomplete: io-uring check interrupted, Clippy not run. Draft instrumentation PR; no optimization accepted.
+
+workspace-tests: cargo test --workspace --lib --bins --features workspace-overlay
+exit=101
+workspace-tests-retry: cargo test --workspace --lib --bins --features workspace-overlay -- --test-threads=4
+exit=0
+cache-ttl-tests: cargo test --features workspace-overlay --test fuse_cache_ttl -- --include-ignored --nocapture
+exit=-2
+cache-ttl-tests-workspace: cargo test --workspace --features workspace-overlay --test fuse_cache_ttl -- --include-ignored --nocapture
+exit=-2
+chunk-tests: /data/asyncfuse/target-workspace/debug/deps/brewfs-d5c845e45acd23e9 chunk::
+exit=0
+cache-ttl-tests-workspace: /data/asyncfuse/target-workspace/debug/deps/fuse_cache_ttl-c28bcdda00656114 --include-ignored --nocapture --test-threads=4
+exit=0
+workspace-check: cargo check --workspace
+exit=0
+tokio-check: cargo check -p brewfs --no-default-features --features fuse-tokio-runtime
+exit=0
+io-uring-check: cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime
+exit=-2 interrupted for the user 70-minute timebox
+clippy: cargo clippy --workspace --all-targets -- -D warnings
+exit=None not run: timebox
+
+Excerpt: build.log
+    Finished `dev` profile [unoptimized] target(s) in 7m 05s
+
+Excerpt: workspace-tests.log
+    Finished `test` profile [unoptimized] target(s) in 15m 37s
+test vfs::io::writer::tests::test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch ... FAILED
+test workspace_overlay::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::native_effective_export_tests::actual_native_effective_roundtrip_preserves_ids_hardlinks_holes_cold_and_native_hash ... FAILED
+test result: FAILED. 2534 passed; 2 failed; 451 ignored; 0 measured; 0 filtered out; finished in 75.44s
+
+Excerpt: workspace-tests-retry.log
+    Finished `test` profile [unoptimized] target(s) in 2.57s
+test result: ok. 2536 passed; 0 failed; 451 ignored; 0 measured; 0 filtered out; finished in 169.92s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Excerpt: workspace-check.log
+    Finished `dev` profile [unoptimized] target(s) in 3m 11s
+
+Excerpt: tokio-check.log
+    Finished `dev` profile [unoptimized] target(s) in 1m 55s

@@ -1,0 +1,34 @@
+test_failed_tracer_cannot_be_reported_as_zero_fuse_requests (__main__.ReadEvidenceTests.test_failed_tracer_cannot_be_reported_as_zero_fuse_requests) ... FAIL
+test_trace_keeps_syscalls_eof_and_fuse_sizes (__main__.ReadEvidenceTests.test_trace_keeps_syscalls_eof_and_fuse_sizes) ... ERROR
+test_verify_rejects_same_length_corruption_after_multiple_blocks (__main__.ReadEvidenceTests.test_verify_rejects_same_length_corruption_after_multiple_blocks) ... ERROR
+
+======================================================================
+ERROR: test_trace_keeps_syscalls_eof_and_fuse_sizes (__main__.ReadEvidenceTests.test_trace_keeps_syscalls_eof_and_fuse_sizes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/metacache/artifacts/buffered-read-20261026/base-harness/test_workspace_metadata_cache.py", line 32, in test_trace_keeps_syscalls_eof_and_fuse_sizes
+    self.assertEqual(trace.maps, maps)
+                     ^^^^^^^^^^
+AttributeError: 'RequestCounts' object has no attribute 'maps'
+
+======================================================================
+ERROR: test_verify_rejects_same_length_corruption_after_multiple_blocks (__main__.ReadEvidenceTests.test_verify_rejects_same_length_corruption_after_multiple_blocks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/metacache/artifacts/buffered-read-20261026/base-harness/test_workspace_metadata_cache.py", line 52, in test_verify_rejects_same_length_corruption_after_multiple_blocks
+    runner.verify_contents(path, expected, len(data))
+    ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'workspace_metadata_cache' has no attribute 'verify_contents'
+
+======================================================================
+FAIL: test_failed_tracer_cannot_be_reported_as_zero_fuse_requests (__main__.ReadEvidenceTests.test_failed_tracer_cannot_be_reported_as_zero_fuse_requests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/metacache/artifacts/buffered-read-20261026/base-harness/test_workspace_metadata_cache.py", line 43, in test_failed_tracer_cannot_be_reported_as_zero_fuse_requests
+    with self.assertRaisesRegex(RuntimeError, "BPF"):
+AssertionError: RuntimeError not raised
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.017s
+
+FAILED (failures=1, errors=2)

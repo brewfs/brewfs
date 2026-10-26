@@ -1,0 +1,20 @@
+[
+  {
+    "label": "off",
+    "mounted": false,
+    "pid": 2257211,
+    "process_state": null
+  },
+  {
+    "label": "on",
+    "mounted": false,
+    "pid": 2259078,
+    "process_state": null
+  },
+  {
+    "label": "juicefs",
+    "mounted": false,
+    "pid": 2259854,
+    "process_state": null
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "git_head": "1ad4c99b2e59adc262649da238b6545bcf1f88cb",
+  "kernel": "6.8.0-36-generic",
+  "build": "CARGO_TARGET_DIR=/data/asyncfuse/target-workspace CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo build --workspace --features workspace-overlay -j 2",
+  "compression": "none",
+  "memory_cache_bytes": 314572800,
+  "ssd_cache_bytes": 1073741824,
+  "chunk_bytes": 67108864,
+  "block_bytes": 4194304,
+  "read_corpus_bytes": 268435456,
+  "syscall_request_bytes": 1048576,
+  "brewfs_ttl_ms": [
+    0,
+    1000
+  ],
+  "juicefs_version": "juicefs version 1.3.1+2025-12-02.e0032b2",
+  "read_semantics": [
+    "same warmed fd",
+    "open+read+close; retained daemon cache",
+    "POSIX_FADV_DONTNEED then open+read+close; retained daemon cache"
+  ],
+  "scope": "local diagnostic; not a replacement for the release/compose matrix",
+  "brewfs_default_s3_multipart_concurrency": 32,
+  "brewfs_upload_concurrency": 10,
+  "brewfs_prefetch_concurrency": 64,
+  "juicefs_max_uploads": 20,
+  "juicefs_prefetch_blocks": 1,
+  "juicefs_writeback": false,
+  "juicefs_attr_entry_dir_ttl_seconds": 1,
+  "preflight": {
+    "bytes": 67108864,
+    "timed": false,
+    "included_in_comparisons": false,
+    "binary_sha256": "70610b43234c3bacfc9d41175310ffe19cea893f89647eb476bb643b75f647a9"
+  },
+  "trial_order": "off, on, JuiceFS; initial JuiceFS trials excluded because an external grep read .accesslog; clean JuiceFS replay after guardrails",
+  "no_concurrent_compiler_or_test_suite": true
+}

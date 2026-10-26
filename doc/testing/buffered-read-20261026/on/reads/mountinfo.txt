@@ -1,0 +1,1 @@
+380 24 0:47 / /data/metacache/artifacts/buffered-read-20261026/on/mnt rw,nosuid,nodev,relatime shared:358 - fuse brewfs rw,user_id=0,group_id=0,default_permissions,allow_other,max_read=4194304

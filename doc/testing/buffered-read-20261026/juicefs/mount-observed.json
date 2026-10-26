@@ -1,0 +1,9 @@
+{
+  "mountpoint": "/data/metacache/artifacts/buffered-read-20261026/juicefs/mnt",
+  "device": "0:46",
+  "read_ahead_kb": 128,
+  "mountinfo": [
+    "371 24 0:46 / /data/metacache/artifacts/buffered-read-20261026/juicefs/mnt rw,nosuid,nodev,relatime shared:331 - fuse.juicefs JuiceFS:readcache rw,user_id=0,group_id=0,default_permissions,allow_other,max_read=131072"
+  ],
+  "traced": false
+}
