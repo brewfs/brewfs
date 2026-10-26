@@ -1,0 +1,607 @@
+{
+  "schema_version": 1,
+  "title": "FUSE read-cache supplemental local evidence, 2026-10-26",
+  "overall_status": "candidate_pending_and_baseline_overlay_guard_failed",
+  "performance_acceptance": "not_claimed",
+  "report": "fuse-read-cache-2026-10-26.md",
+  "requested_protocol": {
+    "status": "unavailable",
+    "missing_files": [
+      "/home/hxy/spot/STANDARD.md",
+      "/home/hxy/bench2.py"
+    ],
+    "is_bench2_reproduction": false,
+    "historical_user_numbers": "Reported separately in the companion Markdown; not mixed with local results."
+  },
+  "protocol": {
+    "runner": "tools/perf/fuse_read_cache.py",
+    "host_logical_cpus": 32,
+    "units": "MiB/s (1048576 bytes/s)",
+    "array_order": "repetitions 1, 2, 3; scalar per-operation flags and readahead are identical for all three",
+    "file_bytes": 268435456,
+    "page_bytes": 4096,
+    "pages_per_file": 65536,
+    "sequential_read_bytes_per_call": 1048576,
+    "sequential_timer": "read calls only; excludes open, close and mincore",
+    "cold_definition": "fsync + POSIX_FADV_DONTNEED + mincore verifies zero resident pages; userspace and object-store caches remain warm",
+    "warm_definition": "close and reopen; mincore after OPEN and before read",
+    "fio_version": "fio-3.36",
+    "fio_read": {
+      "ioengine": "sync",
+      "block_bytes": 1048576,
+      "numjobs": 1,
+      "iodepth": 1,
+      "runtime_seconds": 10,
+      "time_based": true,
+      "invalidate": 0
+    },
+    "fio_guard": {
+      "ioengine": "sync",
+      "block_bytes": 4096,
+      "read_percent": 70,
+      "numjobs": 1,
+      "iodepth": 1,
+      "runtime_seconds": 10,
+      "end_fsync": true
+    },
+    "mountpoint_assertion": "mountpoint -q before every operation",
+    "compiler_watch_interval_seconds": 0.1,
+    "fopen_flag_bits": {
+      "DIRECT_IO": 1,
+      "KEEP_CACHE": 2
+    },
+    "readahead_note": "FUSE INIT bytes, BDI read_ahead_kb and JuiceFS userspace --max-readahead are separate quantities."
+  },
+  "backend_provenance": {
+    "redis": "Redis 7.2 Alpine; isolated localhost service",
+    "rustfs_commit": "ceddcdd878d21829eb6f9b08153632e4fce026b5",
+    "rustfs_binary_sha256": "8f45a5ec97c65f9b9fe2caf97fbe218c63334e2dfb0a1a451542384f06a5af01",
+    "rustfs_setup": "four task-owned directories, EC:2, compression off; object data cache/direct-I/O/reclaim overrides disabled for all arms",
+    "brewfs_mount_format": "workspace-v1; overlay initialized with init-packed-volume, timed files in writable upper",
+    "compression": "none",
+    "block_bytes": 4194304,
+    "brewfs_read_memory_bytes": 314572800,
+    "brewfs_read_ssd_bytes": 1073741824,
+    "juicefs_buffer_MiB": 300,
+    "juicefs_cache_MiB": 1024,
+    "budget_caveat": "These controls have different meanings; identical total memory use is not claimed.",
+    "juicefs_version": "1.3.1+2025-12-02.e0032b2"
+  },
+  "baseline_build": {
+    "source_commit": "b21654e13b1ae1716e7e6d842f414eb4fe09bacd",
+    "binary_sha256": "ec55e3f4b8b88c2f013501a5a8bb9258e82a07c195ac2630b701f4b59fcebdcd",
+    "command": "cargo build --release -j 4 --features workspace-overlay --bin brewfs",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "successful_build_peak_RSS_KiB": 19807012,
+    "fixture_build_peak_RSS_KiB": 873800,
+    "oom_killed": false,
+    "earlier_interrupted_build": {
+      "peak_RSS_KiB": 20295404,
+      "termination": "deliberate SIGTERM to release memory after external Cargo activity; not OOM"
+    }
+  },
+  "baseline": {
+    "native": {
+      "artifact_label": "before-native",
+      "phase_status": "complete",
+      "performance_acceptance": "not_claimed",
+      "phase_evidence": "before-native-phase.json",
+      "measurements_evidence": "before-native-measurements/measurements-with-open-flags.jsonl",
+      "init_request_max_readahead_bytes": 131072,
+      "init_reply_max_readahead_bytes": 16777216,
+      "timed_mount_bdi": "0:46",
+      "fopen_observer": {
+        "probe": "kprobe:fuse_finish_open",
+        "status": "complete",
+        "kernel_event_count": 55,
+        "delivered_event_count": 55
+      },
+      "read_metrics": {
+        "seq_read_cold": {
+          "throughput_MiBps": [
+            111.45801067310242,
+            108.26996640381422,
+            95.07918527073396
+          ],
+          "median_MiBps": 108.26996640381422,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "No cached pages at read start; buffered readahead can populate pages during the read.",
+          "fuse_read_request_deltas": [
+            2048,
+            2048,
+            2048
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": [
+            0,
+            0,
+            0
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "seq_read_warm": {
+          "throughput_MiBps": [
+            227.34094469304065,
+            213.26035048241272,
+            189.38101626543371
+          ],
+          "median_MiBps": 213.26035048241272,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Inspect resident_pages_before_read: baseline BrewFS discarded prior pages on reopen; JuiceFS retained them.",
+          "fuse_read_request_deltas": [
+            2048,
+            2048,
+            2048
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": [
+            0,
+            0,
+            0
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "fio_seqread_direct0": {
+          "throughput_MiBps": [
+            911.4088582992554,
+            849.9150075912476,
+            859.0140981674194
+          ],
+          "median_MiBps": 859.0140981674194,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Buffered; pages can be reused within the fio open. Pre-open seeding does not imply retained pages after OPEN.",
+          "fuse_read_request_deltas": [
+            1024,
+            1024,
+            1024
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            880.7929541654452,
+            820.6733546951652,
+            833.6080913393705
+          ]
+        },
+        "fio_seqread_direct1": {
+          "throughput_MiBps": [
+            450.5549440383911,
+            423.01539611816406,
+            417.45825386047363
+          ],
+          "median_MiBps": 423.01539611816406,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": false,
+          "kernel_cache_interpretation": "Application O_DIRECT bypasses kernel data pages even if FOPEN_KEEP_CACHE is set.",
+          "fuse_read_request_deltas": [
+            4506,
+            4231,
+            4175
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            435.5923847647803,
+            408.8798922267704,
+            403.55318419808606
+          ]
+        }
+      },
+      "mixed_io_guard": {
+        "status": "passed",
+        "attempted_repetitions": 3,
+        "throughput_MiBps": [
+          0.8263492584228516,
+          0.8121786117553711,
+          0.8146076202392578
+        ],
+        "median_MiBps": 0.8146076202392578,
+        "fopen_flags": 0,
+        "fopen_flags_source": "observed_during_each_operation",
+        "read_ahead_kb": 128,
+        "kernel_page_cache_eligible": true,
+        "kernel_cache_interpretation": "Buffered mixed I/O; page-cache hits are possible, and writes still cross FUSE.",
+        "fuse_read_request_deltas": [
+          1572,
+          1516,
+          1530
+        ],
+        "fuse_read_counter": "brewfs_fuse_read_ops_total",
+        "resident_pages_before_read": null,
+        "resident_pages_after_read": null,
+        "compiler_or_monitor_errors": false,
+        "effective_wall_MiBps": [
+          0.8022328445921336,
+          0.787663423232648,
+          0.7903735396864204
+        ]
+      },
+      "init_evidence": "before-native-diagnostic/mount.log",
+      "mounted_correctness": {
+        "status": "passed",
+        "three_warm_4MiB_reopens_fuse_reads": 96,
+        "evidence": "before-native-diagnostic/correctness.log"
+      },
+      "mount_command_evidence": "before-native/mount-command.json"
+    },
+    "overlay": {
+      "artifact_label": "before-overlay-complete",
+      "phase_status": "failed",
+      "performance_acceptance": "not_claimed",
+      "phase_evidence": "before-overlay-complete-phase.json",
+      "measurements_evidence": "before-overlay-complete-measurements/measurements-with-open-flags.jsonl",
+      "init_request_max_readahead_bytes": 131072,
+      "init_reply_max_readahead_bytes": 16777216,
+      "timed_mount_bdi": "0:46",
+      "fopen_observer": {
+        "probe": "kprobe:fuse_finish_open",
+        "status": "complete",
+        "kernel_event_count": 51,
+        "delivered_event_count": 51
+      },
+      "read_metrics": {
+        "seq_read_cold": {
+          "throughput_MiBps": [
+            150.30918726034974,
+            136.66677003058578,
+            143.71577741677999
+          ],
+          "median_MiBps": 143.71577741677999,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "No cached pages at read start; buffered readahead can populate pages during the read.",
+          "fuse_read_request_deltas": [
+            2048,
+            2048,
+            2048
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": [
+            0,
+            0,
+            0
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "seq_read_warm": {
+          "throughput_MiBps": [
+            163.44814381955092,
+            135.4418267232539,
+            137.83177889179734
+          ],
+          "median_MiBps": 137.83177889179734,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Inspect resident_pages_before_read: baseline BrewFS discarded prior pages on reopen; JuiceFS retained them.",
+          "fuse_read_request_deltas": [
+            2048,
+            2048,
+            2048
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": [
+            0,
+            0,
+            0
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "fio_seqread_direct0": {
+          "throughput_MiBps": [
+            1374.2625732421875,
+            1322.767723083496,
+            1297.4810075759888
+          ],
+          "median_MiBps": 1322.767723083496,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Buffered; pages can be reused within the fio open. Pre-open seeding does not imply retained pages after OPEN.",
+          "fuse_read_request_deltas": [
+            1024,
+            1024,
+            1024
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            1327.7942305076235,
+            1277.4051956858032,
+            1254.5571796839017
+          ]
+        },
+        "fio_seqread_direct1": {
+          "throughput_MiBps": [
+            386.28411388397217,
+            367.10631465911865,
+            392.1215753555298
+          ],
+          "median_MiBps": 386.28411388397217,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": false,
+          "kernel_cache_interpretation": "Application O_DIRECT bypasses kernel data pages even if FOPEN_KEEP_CACHE is set.",
+          "fuse_read_request_deltas": [
+            3864,
+            3674,
+            3922
+          ],
+          "fuse_read_counter": "brewfs_fuse_read_ops_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            373.4364857982046,
+            354.59473538185347,
+            379.124513709777
+          ]
+        }
+      },
+      "mixed_io_guard": {
+        "status": "failed",
+        "attempted_repetitions": 3,
+        "fio_error_by_repetition": [
+          5,
+          5,
+          5
+        ],
+        "error_name": "EIO",
+        "throughput_MiBps": null,
+        "rejected_evidence": "before-overlay-complete-measurements/rejected-measurements.jsonl",
+        "result_status_evidence": "before-overlay-complete-measurements/result-status.json",
+        "diagnosis": "Unchanged baseline packed_pending_overlay returns raw WorkspaceError::Busy during ambiguous publication; the typed ReadViewChanged retry does not handle that error. Existing fail-closed test remains intact."
+      },
+      "init_evidence": "before-overlay-complete-diagnostic/mount.log",
+      "mounted_correctness": {
+        "status": "passed",
+        "three_warm_4MiB_reopens_fuse_reads": 96,
+        "evidence": "before-overlay-complete-diagnostic/correctness.log"
+      },
+      "mount_command_evidence": "before-overlay-complete/mount-command.json"
+    },
+    "juicefs": {
+      "artifact_label": "juicefs",
+      "phase_status": "complete",
+      "performance_acceptance": "not_claimed",
+      "phase_evidence": "juicefs-phase.json",
+      "measurements_evidence": "juicefs-measurements/measurements-with-open-flags.jsonl",
+      "init_request_max_readahead_bytes": 131072,
+      "init_reply_max_readahead_bytes": 131072,
+      "timed_mount_bdi": "0:47",
+      "fopen_observer": {
+        "probe": "kprobe:fuse_finish_open",
+        "status": "complete",
+        "kernel_event_count": 55,
+        "delivered_event_count": 55
+      },
+      "read_metrics": {
+        "seq_read_cold": {
+          "throughput_MiBps": [
+            562.7773915740074,
+            537.3458380216674,
+            561.5727589285152
+          ],
+          "median_MiBps": 561.5727589285152,
+          "fopen_flags": 0,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "No cached pages at read start; buffered readahead can populate pages during the read.",
+          "fuse_read_request_deltas": [
+            2048,
+            2048,
+            2048
+          ],
+          "fuse_read_counter": "juicefs_fuse_read_size_bytes_total",
+          "resident_pages_before_read": [
+            0,
+            0,
+            0
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "seq_read_warm": {
+          "throughput_MiBps": [
+            4585.705101491049,
+            4398.927083928734,
+            4200.084543717396
+          ],
+          "median_MiBps": 4398.927083928734,
+          "fopen_flags": 2,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Inspect resident_pages_before_read: baseline BrewFS discarded prior pages on reopen; JuiceFS retained them.",
+          "fuse_read_request_deltas": [
+            0,
+            0,
+            0
+          ],
+          "fuse_read_counter": "juicefs_fuse_read_size_bytes_total",
+          "resident_pages_before_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "resident_pages_after_read": [
+            65536,
+            65536,
+            65536
+          ],
+          "compiler_or_monitor_errors": false
+        },
+        "fio_seqread_direct0": {
+          "throughput_MiBps": [
+            5895.010498046875,
+            6006.099390029907,
+            5560.843914985657
+          ],
+          "median_MiBps": 5895.010498046875,
+          "fopen_flags": 2,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": true,
+          "kernel_cache_interpretation": "Buffered; pages can be reused within the fio open. Pre-open seeding does not imply retained pages after OPEN.",
+          "fuse_read_request_deltas": [
+            0,
+            0,
+            0
+          ],
+          "fuse_read_counter": "juicefs_fuse_read_size_bytes_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            5722.25913244049,
+            5803.895373701532,
+            5374.962659522215
+          ]
+        },
+        "fio_seqread_direct1": {
+          "throughput_MiBps": [
+            741.6258373260498,
+            722.7277269363403,
+            714.6285362243652
+          ],
+          "median_MiBps": 722.7277269363403,
+          "fopen_flags": 2,
+          "fopen_flags_source": "observed_during_each_operation",
+          "read_ahead_kb": 128,
+          "kernel_page_cache_eligible": false,
+          "kernel_cache_interpretation": "Application O_DIRECT bypasses kernel data pages even if FOPEN_KEEP_CACHE is set.",
+          "fuse_read_request_deltas": [
+            59336,
+            57824,
+            57176
+          ],
+          "fuse_read_counter": "juicefs_fuse_read_size_bytes_total",
+          "resident_pages_before_read": null,
+          "resident_pages_after_read": null,
+          "compiler_or_monitor_errors": false,
+          "effective_wall_MiBps": [
+            719.8862649127173,
+            700.6140148432254,
+            690.3398184592612
+          ]
+        }
+      },
+      "mixed_io_guard": {
+        "status": "passed",
+        "attempted_repetitions": 3,
+        "throughput_MiBps": [
+          0.14119815826416016,
+          0.15933513641357422,
+          0.1866922378540039
+        ],
+        "median_MiBps": 0.15933513641357422,
+        "fopen_flags": 2,
+        "fopen_flags_source": "observed_during_each_operation",
+        "read_ahead_kb": 128,
+        "kernel_page_cache_eligible": true,
+        "kernel_cache_interpretation": "Buffered mixed I/O; page-cache hits are possible, and writes still cross FUSE.",
+        "fuse_read_request_deltas": [
+          171,
+          164,
+          180
+        ],
+        "fuse_read_counter": "juicefs_fuse_read_size_bytes_total",
+        "resident_pages_before_read": null,
+        "resident_pages_after_read": null,
+        "compiler_or_monitor_errors": false,
+        "effective_wall_MiBps": [
+          0.13646791228009555,
+          0.15381936746168437,
+          0.18008703158658862
+        ]
+      },
+      "init_evidence": "juicefs/initial-diagnostic/fuse-wire-decoded.json",
+      "mount_command_evidence": "juicefs/mount-command.json"
+    }
+  },
+  "candidate": {
+    "status": "pending",
+    "source_commit": null,
+    "binary_sha256": null,
+    "build_peak_RSS_KiB": null,
+    "native": null,
+    "overlay": null
+  },
+  "artifact_provenance": {
+    "local_root": "/data/readcache/artifacts",
+    "files_sha256": {
+      "before-native-phase.json": "1d64a4996002ffa431353be7c4c97b96b5b533040958c225f83a62acc3515f29",
+      "before-native-measurements/measurements-with-open-flags.jsonl": "b57451e32b8be7589bb511b6642000798a60f435b1b5590f5377e45444c30a87",
+      "before-native-diagnostic/mount.log": "a0099add1a62ebd2b88c4a4ed5cace9434271c66dda6552804fb5133c6ffd225",
+      "before-native-diagnostic/correctness.log": "86bcd3718ddb41f822e8d3d8c1c7748439a7e194c61fc3a2032b2334e484cee7",
+      "before-native/mount-command.json": "392c89863b4a62c1555153e3c7c29bfe14f7d589626ea76688175343ddbe81e6",
+      "before-overlay-complete-phase.json": "89924981a8e410be99489d0f51e6063ca53e60b161e7d20a6ed9ce8a33b3dae3",
+      "before-overlay-complete-measurements/measurements-with-open-flags.jsonl": "8f2a6f8843c2fdd14c6e804f749391defdc0a512ec35dbc714f83578ae7000b6",
+      "before-overlay-complete-measurements/fio-randrw-1.json": "a75a653f1466da8742fdc47b4016e21ccc6f769c590a99b42c45610569223e2f",
+      "before-overlay-complete-measurements/fio-randrw-2.json": "252770245d8671e9133820c82377c4aef57c8fb1de726552073d9ad8ca6983c1",
+      "before-overlay-complete-measurements/fio-randrw-3.json": "698f33595ba974b10830af8c40974742607ed672e6f2f7cd2767ee9ccdc9c160",
+      "before-overlay-complete-measurements/rejected-measurements.jsonl": "4a35a57c6760f448181bcd8307e655e07b1050e6d831198d1ed6a669262c0ec9",
+      "before-overlay-complete-measurements/result-status.json": "c21544fed47f6a0eb6811e004c4f56dc67eb9ffad9cfe9e7ff278a8f8a4eed25",
+      "before-overlay-complete-diagnostic/mount.log": "2a428987b92ed490cd68a355ddcf6f54959a5e756f7794b2f9a270df5f4a5969",
+      "before-overlay-complete-diagnostic/correctness.log": "f4b8acc6ce900378ad6cf90ed95daeef9407ba9b10aba26cd88bd2aee9382b8c",
+      "before-overlay-complete/mount-command.json": "335f6a130f43f1ea35cc23009f1bce90f7beecd344ed9804b6b67003054c1d13",
+      "juicefs-phase.json": "22af97e01b5abbc04a1702ab8b5084328e9f36b3f51d3b4ac6b2b06fa894f84b",
+      "juicefs-measurements/measurements-with-open-flags.jsonl": "e4ba7d7576c86c966ae3a41de421024cbe90e2b2f7549580102e77ed3a947e9c",
+      "juicefs/initial-diagnostic/fuse-wire-decoded.json": "0ee12ce464ff1487a7bcaf0b4ac6328520f4427787e550d004e8512e84b0d824",
+      "juicefs/mount-command.json": "b29f9207be808db9b5af47460a744bea160135cae4d8569ba3caf34981fc2551",
+      "baseline-summary.json": "405e72f0577697ce9076f4868b05fafcf36588ee0f259f5dd0837ef1f9163d9d",
+      "baseline-build-resume.log": "31993b2afd9a3e764e62c0a93e6fdb13b68d701737e7318e941b486525628555",
+      "baseline-fixture-build.log": "526ddad1f90d35108d4d011f60d90136cfbad744dcd2f6826c7aca93059d90ea",
+      "services/setup.json": "855dc97eaef3f7933903ff96bfae885f08db3267ffef6253c14be5869e230ab0",
+      "juicefs/mount-help.txt": "775cfb04bc4eadd65bcb6427d5bec756a2716042fa402af3c50529320661d5c8"
+    }
+  }
+}

@@ -329,6 +329,11 @@ pub struct MountArgs {
     /// default preserves strong consistency. Other backends retain their legacy TTL.
     #[arg(long, value_name = "MILLIS")]
     pub fuse_cache_ttl_ms: Option<u64>,
+    /// Retain kernel data pages across opens on regular VFS mounts (default: false).
+    /// Enable only when file contents change through this mount: external changes
+    /// with unchanged size/mtime may remain cached. Does not change permission caching.
+    #[arg(long, value_name = "BOOL")]
+    pub fuse_keep_cache: Option<bool>,
 
     /// Use privileged mount mode (requires root or fuse group membership).
     /// Uses /dev/fuse directly instead of fusermount3.
@@ -1008,6 +1013,7 @@ pub struct FuseFileConfig {
     pub workers: Option<usize>,
     pub max_background: Option<usize>,
     pub cache_ttl_ms: Option<u64>,
+    pub keep_cache: Option<bool>,
     pub privileged: Option<bool>,
 }
 
@@ -1083,6 +1089,7 @@ pub struct MountConfig {
     pub fuse_workers: usize,
     pub fuse_max_background: usize,
     pub fuse_cache_ttl_ms: u64,
+    pub fuse_keep_cache: Option<bool>,
     pub privileged: bool,
     pub cache: VfsCacheConfig,
     pub compact: CompactConfig,
@@ -1170,6 +1177,11 @@ impl MountConfig {
         }
         if workspace.is_none() && volume_format == VolumeFormat::WorkspaceEntityV1 {
             anyhow::bail!("workspace id is required with volume_format=workspace-entity-v1");
+        }
+        if volume_format == VolumeFormat::WorkspaceEntityV1
+            && args.fuse_keep_cache.or(fuse_cfg.keep_cache) == Some(true)
+        {
+            anyhow::bail!("fuse.keep_cache is unsupported by the direct-I/O entity adapter");
         }
         if (args.experimental_entity_mount || args.entity_volume_id.is_some())
             && volume_format != VolumeFormat::WorkspaceEntityV1
@@ -1401,6 +1413,7 @@ impl MountConfig {
                 .fuse_cache_ttl_ms
                 .or(fuse_cfg.cache_ttl_ms)
                 .unwrap_or(0),
+            fuse_keep_cache: args.fuse_keep_cache.or(fuse_cfg.keep_cache),
             privileged: args.privileged || fuse_cfg.privileged.unwrap_or(false),
             cache,
             compact,
@@ -1781,6 +1794,7 @@ mod tests {
             fuse_workers: None,
             fuse_max_background: None,
             fuse_cache_ttl_ms: None,
+            fuse_keep_cache: None,
             privileged: false,
         }
     }
@@ -2254,6 +2268,45 @@ mod tests {
     }
 
     #[test]
+    fn fuse_keep_cache_is_opt_in_and_cli_overrides_yaml() {
+        let defaults =
+            MountConfig::from_sources(empty_mount_args(None, Some(PathBuf::from("/mnt/slayer"))))
+                .unwrap();
+        assert_eq!(defaults.fuse_keep_cache, None);
+
+        for configured in [false, true] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                file.path(),
+                format!("mount_point: /mnt/slayer\nfuse:\n  keep_cache: {configured}\n"),
+            )
+            .unwrap();
+            let args = empty_mount_args(Some(file.path().to_path_buf()), None);
+            assert_eq!(
+                MountConfig::from_sources(args).unwrap().fuse_keep_cache,
+                Some(configured)
+            );
+            for explicit in ["false", "true"] {
+                let cli = Cli::parse_from([
+                    "brewfs",
+                    "mount",
+                    "--config",
+                    file.path().to_str().unwrap(),
+                    "--fuse-keep-cache",
+                    explicit,
+                ]);
+                let Command::Mount(args) = cli.cmd else {
+                    panic!("expected mount command");
+                };
+                assert_eq!(
+                    MountConfig::from_sources(*args).unwrap().fuse_keep_cache,
+                    Some(explicit == "true")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn mount_subcommand_accepts_explicit_fuse_cache_ttl() {
         for millis in ["0", "1000", "18446744073709551615"] {
             assert!(
@@ -2279,6 +2332,16 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn entity_mount_rejects_kernel_data_cache_opt_in() {
+        let mut args = empty_mount_args(None, Some(PathBuf::from("/mnt/entity")));
+        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.workspace = Some(uuid::Uuid::from_u128(77));
+        args.fuse_keep_cache = Some(true);
+        let error = MountConfig::from_sources(args).unwrap_err().to_string();
+        assert!(error.contains("fuse.keep_cache is unsupported"), "{error}");
     }
 
     #[test]
@@ -2360,6 +2423,7 @@ mod tests {
             fuse_workers: None,
             fuse_max_background: None,
             fuse_cache_ttl_ms: None,
+            fuse_keep_cache: None,
             privileged: false,
         })
         .unwrap();
@@ -2442,6 +2506,7 @@ mod tests {
             fuse_workers: None,
             fuse_max_background: None,
             fuse_cache_ttl_ms: None,
+            fuse_keep_cache: None,
             privileged: false,
         })
         .unwrap();
