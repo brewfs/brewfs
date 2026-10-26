@@ -1,0 +1,1 @@
+371 24 0:46 / /data/metacache/artifacts/on/mnt rw,nosuid,nodev,relatime shared:331 - fuse brewfs rw,user_id=0,group_id=0,default_permissions,allow_other,max_read=4194304

@@ -34,6 +34,9 @@ replies, READDIRPLUS, and virtual `.stats` retain zero TTL on writable workspace
 Backends without writable POSIX ACL support retain their legacy
 `BREWFS_CACHE_TTL_MS` policy. Values are unsigned 64-bit milliseconds; a deadline
 that cannot be represented disables caching.
+The requested value is the maximum checked interval: `3600000`, for example,
+allows up to one hour of metadata and permission staleness plus reply delivery
+delay. There is no implicit one-second cap; use `1000` for the one-second policy.
 
 The FUSE ABI has one `attr_valid` for the entire attribute snapshot. Caching
 size/timestamps also caches permissions. `ReplyEntry` uses the same lifetime

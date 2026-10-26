@@ -1,0 +1,8 @@
+running 4 tests
+test cache_fill_detects_other_writer_and_forced_discard ... ok
+test cache_fill_rejects_released_lease_but_default_reply_is_unchanged ... ok
+test two_mounts_observe_external_metadata_after_cache_expiry ... ignored, requires /dev/fuse and mount permission; run explicitly
+test writable_acl_fuse_replies_use_only_explicit_cache_ttl ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.62s
+

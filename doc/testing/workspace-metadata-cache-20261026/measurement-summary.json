@@ -1,0 +1,177 @@
+[
+  {
+    "operation": "stat-1p",
+    "off": {
+      "throughput": 226.00064162925045,
+      "seconds": 36.247684700996615,
+      "lookups_per_op": 2.0,
+      "getattrs_per_op": 3.0,
+      "total_requests_per_op": 5.0,
+      "request_counts": {
+        "1": 16384,
+        "3": 24576
+      }
+    },
+    "on": {
+      "throughput": 132903.63547132604,
+      "seconds": 0.06163864495465532,
+      "lookups_per_op": 0.0048828125,
+      "getattrs_per_op": 0.0,
+      "total_requests_per_op": 0.0048828125,
+      "request_counts": {
+        "1": 40
+      }
+    },
+    "ratio": 588.0675139380878
+  },
+  {
+    "operation": "stat-8p",
+    "off": {
+      "throughput": 522.2834842811866,
+      "seconds": 125.47974801500095,
+      "lookups_per_op": 2.0,
+      "getattrs_per_op": 3.0,
+      "total_requests_per_op": 5.0,
+      "request_counts": {
+        "1": 131072,
+        "3": 196608,
+        "17": 0,
+        "27": 0,
+        "28": 0,
+        "29": 0,
+        "44": 0
+      }
+    },
+    "on": {
+      "throughput": 2393385.3185481415,
+      "seconds": 0.027382135041989386,
+      "lookups_per_op": 0.0,
+      "getattrs_per_op": 0.0,
+      "total_requests_per_op": 0.0,
+      "request_counts": {}
+    },
+    "ratio": 4582.540690219475
+  },
+  {
+    "operation": "create",
+    "off": {
+      "throughput": 57.701801927524585,
+      "seconds": 4.436603215988725,
+      "lookups_per_op": 2.0,
+      "getattrs_per_op": 4.0,
+      "total_requests_per_op": 8.99609375,
+      "request_counts": {
+        "1": 512,
+        "3": 1024,
+        "18": 255,
+        "25": 256,
+        "35": 256
+      }
+    },
+    "on": {
+      "throughput": 68.5745429950287,
+      "seconds": 3.7331637779716402,
+      "lookups_per_op": 1.015625,
+      "getattrs_per_op": 1.99609375,
+      "total_requests_per_op": 6.0078125,
+      "request_counts": {
+        "1": 260,
+        "3": 511,
+        "18": 255,
+        "25": 256,
+        "35": 256
+      }
+    },
+    "ratio": 1.1884298358855523
+  },
+  {
+    "operation": "unlink",
+    "off": {
+      "throughput": 74.90179865710623,
+      "seconds": 3.4178084450541064,
+      "lookups_per_op": 2.0,
+      "getattrs_per_op": 3.0,
+      "total_requests_per_op": 6.0,
+      "request_counts": {
+        "1": 512,
+        "3": 768,
+        "10": 256
+      }
+    },
+    "on": {
+      "throughput": 96.74966177943594,
+      "seconds": 2.646004081994761,
+      "lookups_per_op": 1.01171875,
+      "getattrs_per_op": 1.0,
+      "total_requests_per_op": 3.015625,
+      "request_counts": {
+        "1": 259,
+        "3": 256,
+        "10": 256
+      }
+    },
+    "ratio": 1.291686762054237
+  },
+  {
+    "operation": "seq_read_warm_MBps",
+    "off": {
+      "throughput": 740.522243838997,
+      "seconds": 0.3624947909847833,
+      "lookups_per_op": 0.0,
+      "getattrs_per_op": 0.9573996067047119,
+      "total_requests_per_op": 0.9573996067047119,
+      "request_counts": {
+        "3": 257
+      }
+    },
+    "on": {
+      "throughput": 4739.736342219408,
+      "seconds": 0.05663510301383212,
+      "lookups_per_op": 0.0,
+      "getattrs_per_op": 0.0,
+      "total_requests_per_op": 0.0,
+      "request_counts": {
+        "3": 0
+      }
+    },
+    "ratio": 6.400532032161228
+  },
+  {
+    "operation": "seq_write_MBps",
+    "off": {
+      "throughput": 121.31673196680254,
+      "seconds": 2.212682880985085,
+      "lookups_per_op": 0.007450580596923828,
+      "getattrs_per_op": 0.014901161193847656,
+      "total_requests_per_op": 1.9446015357971191,
+      "request_counts": {
+        "1": 2,
+        "3": 4,
+        "14": 1,
+        "16": 256,
+        "20": 1,
+        "22": 257,
+        "25": 1,
+        "35": 0
+      }
+    },
+    "on": {
+      "throughput": 127.51159933280447,
+      "seconds": 2.1051846059854142,
+      "lookups_per_op": 0.007450580596923828,
+      "getattrs_per_op": 0.003725290298461914,
+      "total_requests_per_op": 1.9334256649017334,
+      "request_counts": {
+        "1": 2,
+        "3": 1,
+        "14": 1,
+        "16": 256,
+        "20": 1,
+        "22": 257,
+        "25": 1,
+        "35": 0
+      }
+    },
+    "ratio": 1.0510635859173747
+  }
+]
