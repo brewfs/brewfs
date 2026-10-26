@@ -93,6 +93,41 @@ and magic-like user bytes also pass.
 The complete `workspace_overlay::` run passed 1,138 tests, with 0 failures and
 161 ignored; ignored external-backend tests are not counted as passes.
 
+The first full workspace test attempt used the inherited shell proxy variables
+and failed three local S3 mock-server tests (1,261 passed, 3 failed, 262 ignored).
+Using the **same compiled workspace test binary**, the S3 module passed 14 tests
+with 0 failures and 1 ignored after removing `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY` and their lowercase equivalents. Restoring the proxy environment
+reproduced exactly the same three failures (11 passed, 3 failed, 1 ignored).
+The full workspace gate was then rerun with those variables unset for the
+validation process; no source change or test exclusion was made. The initial
+failure and subsequent results are retained in the check history. A diagnostic
+single-package Cargo build was canceled in favor of reusing the existing
+workspace test binary for this control experiment.
+
+The full workspace rerun passed **1,266 tests, 0 failures, 262 ignored**
+(1,264 library tests and 2 binary tests). Workspace check/build and the
+`fuse-tokio-runtime` / `fuse-io-uring-runtime` feature checks also passed.
+Formatting, four perf-runner shell syntax checks, and all three required
+perf-report shell tests passed; their individual exit codes are recorded in
+`auxiliary-checks.json`. `rfuse3` is not a workspace member, so its conditional
+feature matrix does not apply.
+
+Both strict clippy runs passed: `cargo clippy -j 2 --workspace --all-targets --
+-D warnings` and the same command with `--features workspace-overlay` before
+`--`. The complete Rust command/exit-code history is in `ci-results.json`,
+including the initial proxy-related test failure and the successful rerun.
+The final staged diff also passed `git diff --cached --check`.
+
+Before clippy, the build guard detected another checkout compiling against the
+shared target directory. It refused to start another build, then resumed after
+that compiler exited.
+
+No matched release compose throughput/drain comparison was run within this
+75-minute task. This is a measured copy reduction with correctness evidence;
+broader performance acceptance remains pending, and the PR is left in draft.
+No README performance comparison table was updated.
+
 The exact baseline patch, measurements, and test result are retained in
 [`evidence/single-alloc-framed-object/`](evidence/single-alloc-framed-object/).
 Full local captures and build logs are preserved under
