@@ -16,3 +16,9 @@ test result: ok. 188 passed; 0 failed; 3 ignored; 0 measured; 2795 filtered out;
 workspace_overlay::
     Finished `test` profile [unoptimized] target(s) in 2.25s
 test result: ok. 1138 passed; 0 failed; 161 ignored; 0 measured; 1687 filtered out; finished in 45.19s
+
+Full workspace gate, proxy variables unset:
+    Finished `test` profile [unoptimized] target(s) in 3m 03s
+test result: ok. 1264 passed; 0 failed; 262 ignored; 0 measured; 0 filtered out; finished in 41.21s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

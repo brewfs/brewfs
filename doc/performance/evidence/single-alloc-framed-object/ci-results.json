@@ -1,0 +1,159 @@
+[
+  {
+    "check": "test-overlay",
+    "command": [
+      "cargo",
+      "test",
+      "-j",
+      "2",
+      "--lib",
+      "--features",
+      "workspace-overlay",
+      "workspace_overlay::"
+    ],
+    "exit_code": 0,
+    "seconds": 47.6
+  },
+  {
+    "check": "check-workspace",
+    "command": [
+      "cargo",
+      "check",
+      "-j",
+      "2",
+      "--workspace"
+    ],
+    "exit_code": 0,
+    "seconds": 136.53
+  },
+  {
+    "check": "build-workspace",
+    "command": [
+      "cargo",
+      "build",
+      "-j",
+      "2",
+      "--workspace"
+    ],
+    "exit_code": 0,
+    "seconds": 203.61
+  },
+  {
+    "check": "check-fuse-tokio",
+    "command": [
+      "cargo",
+      "check",
+      "-j",
+      "2",
+      "-p",
+      "brewfs",
+      "--no-default-features",
+      "--features",
+      "fuse-tokio-runtime"
+    ],
+    "exit_code": 0,
+    "seconds": 86.28
+  },
+  {
+    "check": "check-fuse-io-uring",
+    "command": [
+      "cargo",
+      "check",
+      "-j",
+      "2",
+      "-p",
+      "brewfs",
+      "--no-default-features",
+      "--features",
+      "fuse-io-uring-runtime"
+    ],
+    "exit_code": 0,
+    "seconds": 44.81
+  },
+  {
+    "check": "test-workspace",
+    "command": [
+      "cargo",
+      "test",
+      "-j",
+      "2",
+      "--workspace",
+      "--lib",
+      "--bins"
+    ],
+    "exit_code": 101,
+    "seconds": 283.11
+  },
+  {
+    "check": "test-workspace",
+    "command": [
+      "cargo",
+      "test",
+      "-j",
+      "2",
+      "--workspace",
+      "--lib",
+      "--bins"
+    ],
+    "exit_code": 0,
+    "seconds": 224.56,
+    "proxy_variables_unset": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy"
+    ]
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "-j",
+      "2",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 143.04,
+    "proxy_variables_unset": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy"
+    ]
+  },
+  {
+    "check": "clippy-overlay",
+    "command": [
+      "cargo",
+      "clippy",
+      "-j",
+      "2",
+      "--workspace",
+      "--all-targets",
+      "--features",
+      "workspace-overlay",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 225.49,
+    "proxy_variables_unset": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy"
+    ]
+  }
+]

@@ -1,0 +1,17 @@
+s3-unproxied-test-binary.log
+test cadapter::s3::gc_replay_tests::gc_factory_never_replays_retryable_or_lost_delete_reply ... ok
+test cadapter::s3::tests::rustfs_ec_hint_is_absent_by_default_on_all_upload_paths ... ok
+test cadapter::s3::tests::rustfs_ec_hint_is_absent_without_compiled_feature_on_all_upload_paths ... ok
+test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 1511 filtered out; finished in 0.27s
+
+s3-proxied-test-binary.log
+thread 'cadapter::s3::tests::rustfs_ec_hint_is_absent_without_compiled_feature_on_all_upload_paths' (56398) panicked at src/cadapter/s3.rs:2011:51:
+test cadapter::s3::tests::rustfs_ec_hint_is_absent_without_compiled_feature_on_all_upload_paths ... FAILED
+thread 'cadapter::s3::gc_replay_tests::gc_factory_never_replays_retryable_or_lost_delete_reply' (56391) panicked at src/cadapter/s3.rs:226:13:
+test cadapter::s3::gc_replay_tests::gc_factory_never_replays_retryable_or_lost_delete_reply ... FAILED
+thread 'cadapter::s3::tests::rustfs_ec_hint_is_absent_by_default_on_all_upload_paths' (56397) panicked at src/cadapter/s3.rs:2011:51:
+test cadapter::s3::tests::rustfs_ec_hint_is_absent_by_default_on_all_upload_paths ... FAILED
+    cadapter::s3::gc_replay_tests::gc_factory_never_replays_retryable_or_lost_delete_reply
+    cadapter::s3::tests::rustfs_ec_hint_is_absent_by_default_on_all_upload_paths
+    cadapter::s3::tests::rustfs_ec_hint_is_absent_without_compiled_feature_on_all_upload_paths
+test result: FAILED. 11 passed; 3 failed; 1 ignored; 0 measured; 1511 filtered out; finished in 0.16s
