@@ -1,0 +1,5 @@
+Command: /data/metacache/artifacts/brewfs-lib-tests --test-threads=1
+test result: ok. 2533 passed; 0 failed; 451 ignored; 0 measured; 0 filtered out; finished in 590.71s
+Full local output: /data/metacache/artifacts/library-tests.log
+Output SHA256: 22666db99ea369f1b1051f0eaabc1f0c5f6939db177934042a8f3f7aab29fcbe
+Binary SHA256: f65cc3405b296e24f85df5135cd34677eec65ec7484ed00ad8072047028b5c46

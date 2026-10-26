@@ -31,8 +31,8 @@ Numbered writer references (all under `src/workspace_overlay/` unless qualified)
   `stores/kv_store.rs:3680`, `:3779`, `:3854`, `:4041`, `:4093`, `:4141`,
   `:4203`, `:4225`; SQLite equivalents at `stores/database.rs:2516`, `:2533`,
   `:2803`, `:2864`, `:2928`, `:3014`, `:3038`.
-  Extent append dispatch is `stores/kv_store.rs:4111` and delegates to the
-  versioned data mutation path.
+  Extent append dispatch is `stores/kv_store.rs:4111` and
+  `stores/database.rs:2884`; it delegates to the versioned data mutation path.
 - Lease acquire/renew/release/reap: `stores/kv_store.rs:3183`, `:3276`, `:3366`,
   `:3418`; SQLite `stores/database.rs:1848`, `:2006`, `:2042`, `:2074`.
   The live-lease exclusion is `stores/kv_store.rs:3221`; the writer guard is
@@ -164,6 +164,7 @@ Verification:
 | Workspace build with `workspace-overlay`, `-j 2`, both debug profiles 0 | Pass |
 | Focused `fuse_cache_ttl` tests | 3 passed; mounted test run separately |
 | Packed upper-row expiry and independent binding regression | Pass; external size change replaces a stale daemon row after expiry; revoked binding rejects refill |
+| Completed library executable, run separately after measurements | 2533 passed, 0 failed, 451 ignored; 590.71 s; not the full workspace Cargo gate |
 | Two FUSE mounts, same test lease, TTL 1000 | Pass; 1000 warm stats added no LOOKUPs; chmod/truncate visible after 0.879705 s; same-mode named-user ACL revocation after 0.996197 s; rename/unlink visible after expiry |
 | `generic/014` | Pass, 233 s |
 | `generic/087` | Pass, 1 s |
@@ -180,8 +181,9 @@ The performance fixture uses a separate Redis DB 4 / RustFS S3 bucket.
 
 The full `cargo test --workspace --lib --bins --features workspace-overlay`
 command did not finish: compilation was stopped to preserve the requested
-measurement window. Its completed library executable is being run separately;
-this does not replace the full workspace gate. Full clippy/check/runtime-feature
+measurement window. Its completed library executable passed separately with
+2533 passed and 451 ignored; the binary targets and other workspace test targets
+were not completed. This does not replace the full workspace gate. Full clippy/check/runtime-feature
 gates, release compose acceptance (including mixed read/write), real TiKV/etcd,
 and concurrent packed publication/GC against a cached kernel mount are **not
 verified**. Keep this PR draft and the feature opt-in until those gates pass.

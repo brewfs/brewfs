@@ -1,0 +1,10 @@
+{
+  "off": {
+    "unmounted": true,
+    "measured_binary_sha256": "70610b43234c3bacfc9d41175310ffe19cea893f89647eb476bb643b75f647a9"
+  },
+  "on": {
+    "unmounted": true,
+    "measured_binary_sha256": "70610b43234c3bacfc9d41175310ffe19cea893f89647eb476bb643b75f647a9"
+  }
+}
