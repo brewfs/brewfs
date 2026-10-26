@@ -49,27 +49,6 @@ The refresh/deadline mechanism does not depend on one. No synchronous entry
 notification is sent from a namespace callback: it can wait on a directory lock
 held by the request whose reply shares the notification queue.
 
-Entry invalidation is unavailable in the notification path at this change's
-tested base (`b21654e`); it requires the separate asyncfuse notification PR
-[#346](https://github.com/brewfs/brewfs/pull/346). That PR has since merged
-upstream. This change does not modify `vendor/asyncfuse` or wire the new API into
-namespace callbacks. `FUSE_NOTIFY_INVAL_ENTRY` cannot safely be added to the
-tested create, mkdir,
-mknod, symlink, link, unlink, rmdir or rename callbacks: Linux may wait for
-directory locks held by the triggering request, while the notification shares
-the response queue needed to finish that request. There is no safe post-reply
-notification hook here. The initiating kernel updates its namespace through
-the ordinary FUSE replies. See the [libfuse notification API's deadlock
-restrictions](https://github.com/libfuse/libfuse/blob/master/include/fuse_lowlevel.h#L1810).
-Mutations from other mounts, direct metadata edits,
-and workspace lease revocation do not broadcast inode or entry invalidations
-to this mount. Normal write/SETATTR/FALLOCATE replies retain their existing
-kernel-update behavior; this option adds no new page-cache invalidation or
-data-consistency guarantee.
-
-For measured throughput and acceptance results, see
-[FUSE cache TTL measurements](doc/testing/fuse-cache-ttl.md).
-
 Raw database/object edits that bypass catalog transactions and generation
 increments are outside the supported protocol. Data/page-cache coherence,
 shared dirty writeback across clients using copied lease credentials, and
