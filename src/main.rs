@@ -1,3 +1,5 @@
+mod cli_runtime;
+
 #[cfg(all(feature = "jemalloc", target_os = "linux"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -5,7 +7,6 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    brewfs::cli::run().await
+fn main() -> anyhow::Result<()> {
+    cli_runtime::build()?.block_on(brewfs::cli::run())
 }

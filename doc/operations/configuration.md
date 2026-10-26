@@ -391,6 +391,11 @@ meta:
 
 非特权挂载依赖 `fusermount3`；特权挂载依赖进程有权限访问 `/dev/fuse`。
 
+The `brewfs` executable uses one Tokio worker thread by default. Set
+`TOKIO_WORKER_THREADS` to a positive integer (for example, `8`) to override
+the executor size. This is separate from `fuse.workers`; blocking I/O still
+uses Tokio's blocking pool. See [the measured scope and caveats](../testing/tokio-worker-default.md).
+
 ### cache
 
 | 字段 | 默认值 | 说明 |
