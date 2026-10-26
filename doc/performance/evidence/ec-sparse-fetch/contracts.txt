@@ -1,0 +1,6 @@
+
+running 2 tests
+test native_p1_publication_readback_still_verifies_length_and_hash ... ok
+test sparse_store_and_packed_authenticated_ranges_keep_distinct_contracts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

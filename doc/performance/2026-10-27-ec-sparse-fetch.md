@@ -84,6 +84,47 @@ The 4 MiB raw payload is a 4,194,308-byte stored object including its unchanged
 four-byte frame header. A 65,536-byte known-format fetch would reduce body bytes
 by about 64 times; that ratio is not a throughput multiplier.
 
+## Measured results and acceptance status
+
+The [full medians table](evidence/ec-sparse-fetch/results.md) and
+[raw trials](evidence/ec-sparse-fetch/results.json) contain all seven cases,
+including HTTP body bytes, GET counts, cache hits, logical throughput, and
+p95/p99. Each row is the median of three trials of 64 isolated misses.
+
+| 4 KiB miss | Default body bytes / GETs | Sparse body bytes / GETs | Default / sparse MiB/s | Default / sparse p95 ms | Default / sparse p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Known format | 4,194,308 / 1 | 65,536 / 1 | 0.115 / 0.612 | 40.591 / 7.523 | 41.769 / 8.060 |
+| Cold format | 4,194,308 / 1 | 65,540 / 2 | 0.109 / 0.324 | 42.302 / 14.440 | 44.078 / 15.230 |
+
+Both arms had zero data-cache hits during these misses and 64/64 cache hits on
+the separate immediate rereads. The approximately 64-fold reduction applies
+to HTTP body bytes. These local timings do not establish a production
+throughput multiplier.
+
+Both arms read the same persisted objects. All 16 audited records (four objects
+on four directories) report `V2Obj.EcBSize=1048576`, with `EcM=2` and `EcN=2`,
+despite the configured 262,144-byte hint. The
+[layout audit](evidence/ec-sparse-fetch/summary.json) includes file hashes, and
+the original [xl.meta files](evidence/ec-sparse-fetch/xl-meta/) are preserved.
+The fixture reports RustFS 1.0.0; this does not re-derive or replace the supplied
+RustFS 1.0.4 versus rebased `a87e8f94` hardware evidence.
+
+Complete-object reads retained one GET and identical body bytes, with median
+throughput 114.469 versus 113.436 MiB/s (about 0.9% lower for sparse). LZ4 and
+Zstd retained one GET, identical body bytes, and 64/64 reread cache hits.
+
+The partial-tail case exposes an acceptance gap. Sparse fetched 65,519 bytes
+instead of 4,194,291 on the miss and returned correct data, but the existing
+page-cache admission rule does not retain the incomplete last page. Immediate
+rereads therefore changed from 64/64 cache hits to 0/64, adding 64 GETs and
+4,193,216 body bytes per trial. Reread latency was not measured, so this run
+cannot establish tail performance non-regression. The PR remains draft:
+tail caching and fragmented complete-file scans need further evaluation,
+along with the broad compose/FUSE mixed-workload gate. These measurements are
+diagnostic evidence, not an accepted general performance improvement. The
+70-minute experiment timebox ended before these gaps could be resolved.
+The dedicated compose services and volume were removed after preserving data.
+
 ## Reproduction
 
 Build after checking for an active compiler, using the same environment as the
@@ -113,6 +154,9 @@ build, Tokio/io_uring checks, strict Clippy on all targets, formatting, and the
 three existing perf-report shell tests also passed. The final gate used
 `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0` and
 one build job after the memory limit described below.
+The final EC-hint library suite passed 1,277 tests, with zero failures and 265
+ignored. [Validation records](evidence/ec-sparse-fetch/validation.json) include
+commands, exit codes, test counts, and the resource-limited attempts.
 
 The regression test first failed on the original dispatch: the sparse request
 still performed one whole-object GET. The final tests exercise partial-page
