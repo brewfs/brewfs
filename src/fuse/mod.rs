@@ -751,7 +751,13 @@ where
         {
             reply.ttl = ttl;
         }
-        self.stats().record_fuse_entry_valid(reply.ttl);
+        // Reading the virtual `.stats` file itself must not overwrite the
+        // last real entry TTL with its intentional zero TTL. Otherwise the
+        // observer cannot report the policy used by the workload it just
+        // measured.
+        if reply.attr.ino != STATS_INODE {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
         Ok(reply)
     }
 
@@ -1075,7 +1081,11 @@ where
             }
             reply
         };
-        self.stats().record_fuse_attr_valid(reply.ttl);
+        // The virtual `.stats` inode deliberately has TTL=0. Keep the last
+        // real inode reply visible while the stats file is being read.
+        if ino != STATS_INODE {
+            self.stats().record_fuse_attr_valid(reply.ttl);
+        }
         Ok(reply)
     }
 

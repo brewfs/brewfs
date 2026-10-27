@@ -74,6 +74,38 @@ pub(super) struct UpperRowCache {
     /// A canceled/uncertain backend write can still complete after the caller
     /// drops. No later refill may claim local authority in that mount.
     disabled: AtomicBool,
+    counters: Arc<RowCacheCounters>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RowCacheCounters {
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+}
+
+#[derive(Debug)]
+pub(super) struct RowCacheStatsExtension {
+    pub counters: Arc<RowCacheCounters>,
+}
+
+impl crate::vfs::stats::FsStatsExtension for RowCacheStatsExtension {
+    fn render_max_bytes(&self) -> usize {
+        256
+    }
+
+    fn render_into(&self, output: &mut dyn std::fmt::Write) {
+        let hits = self.counters.hits.load(Ordering::Relaxed);
+        let misses = self.counters.misses.load(Ordering::Relaxed);
+        let total = hits.saturating_add(misses);
+        let ratio = if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        };
+        let _ = writeln!(output, "brewfs_workspace_row_cache_hits_total {hits}");
+        let _ = writeln!(output, "brewfs_workspace_row_cache_misses_total {misses}");
+        let _ = writeln!(output, "brewfs_workspace_row_cache_hit_ratio {ratio:.6}");
+    }
 }
 
 /// Retain across the complete backend commit and both invalidations. An
@@ -121,6 +153,10 @@ pub(super) struct RowTicket(u64);
 
 impl UpperRowCache {
     pub(super) fn new(ttl: Duration) -> Self {
+        Self::new_with_counters(ttl, Arc::new(RowCacheCounters::default()))
+    }
+
+    pub(super) fn new_with_counters(ttl: Duration, counters: Arc<RowCacheCounters>) -> Self {
         Self {
             rows: Cache::builder()
                 .max_capacity(CAPACITY)
@@ -128,6 +164,7 @@ impl UpperRowCache {
                 .build(),
             generation: AtomicU64::new(0),
             disabled: AtomicBool::new(false),
+            counters,
         }
     }
 
@@ -137,12 +174,19 @@ impl UpperRowCache {
 
     pub(super) fn get(&self, key: &RowKey) -> Option<RowValue> {
         if self.disabled.load(Ordering::Acquire) {
+            self.counters.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         let value = self.rows.get(key);
         if self.disabled.load(Ordering::Acquire) {
+            self.counters.misses.fetch_add(1, Ordering::Relaxed);
             None
         } else {
+            if value.is_some() {
+                self.counters.hits.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.counters.misses.fetch_add(1, Ordering::Relaxed);
+            }
             value
         }
     }

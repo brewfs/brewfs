@@ -58,6 +58,7 @@ pub use packed_lower::{
 };
 use packed_lower::{WorkspaceLower, WorkspacePackedLower};
 use packed_permissions::MutationVersion;
+use row_cache::{RowCacheCounters, RowCacheStatsExtension};
 
 type PermissionInode = (
     InodeDelta,
@@ -98,6 +99,7 @@ pub struct WorkspaceMetaLayer<W> {
     /// Data writes waiting for the next group commit (see `write`).
     write_queue: std::sync::Mutex<WriteQueue>,
     metrics: Arc<WorkspaceMetrics>,
+    row_cache_counters: Arc<RowCacheCounters>,
     lower: WorkspaceLower,
 }
 
@@ -271,6 +273,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             mutation_gate: Mutex::new(()),
             write_queue: std::sync::Mutex::new(WriteQueue::default()),
             metrics: global_workspace_metrics(),
+            row_cache_counters: Arc::new(RowCacheCounters::default()),
             lower: WorkspaceLower::Native,
         }
     }
@@ -287,10 +290,24 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// require an explicit local lease proof before serving cached rows.
     pub fn with_upper_row_cache(mut self, ttl: std::time::Duration) -> Self {
         if !ttl.is_zero() {
-            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::new(ttl)));
-            self.namespace_rows = Some(row_cache::UpperRowCache::new(ttl));
+            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::new_with_counters(
+                ttl,
+                self.row_cache_counters.clone(),
+            )));
+            self.namespace_rows = Some(row_cache::UpperRowCache::new_with_counters(
+                ttl,
+                self.row_cache_counters.clone(),
+            ));
         }
         self
+    }
+
+    /// Install mount-local row-cache counters into the FUSE `.stats` file so
+    /// metadata experiments can separate cache hits from backend fills.
+    pub fn install_row_cache_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
+        stats.set_extension(Arc::new(RowCacheStatsExtension {
+            counters: self.row_cache_counters.clone(),
+        }))
     }
 
     /// Discard upper-row and namespace caches without changing directory
