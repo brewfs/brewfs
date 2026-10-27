@@ -2719,7 +2719,7 @@ where
         // ReplyOpen.flags carries FUSE FOPEN_* bits, not the caller's O_* flags.
         Ok(ReplyOpen {
             fh,
-            flags: fuse_open_reply_flags(read, write),
+            flags: self.open_reply_flags(read, write),
         })
     }
 
@@ -3352,7 +3352,7 @@ where
             attr,
             generation: 0,
             fh,
-            flags: fuse_open_reply_flags(read, write),
+            flags: self.open_reply_flags(read, write),
         })
     }
 
@@ -3830,6 +3830,15 @@ where
         let ttl =
             deadline.map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
         Ok((reply, ttl))
+    }
+
+    fn open_reply_flags(&self, read: bool, write: bool) -> u32 {
+        let flags = fuse_open_reply_flags(read, write);
+        match self.fuse_keep_cache_setting() {
+            Some(true) => flags | FOPEN_KEEP_CACHE,
+            Some(false) => flags & !FOPEN_KEEP_CACHE,
+            None => flags,
+        }
     }
 
     fn permission_cache_ttl(&self) -> Duration {
@@ -7251,6 +7260,85 @@ mod fuse_init_tests {
         assert_eq!(fuse_open_reply_flags(true, false), 0);
         assert_eq!(fuse_open_reply_flags(true, true), 0);
         assert_eq!(fuse_open_reply_flags(false, true), 0);
+    }
+
+    #[tokio::test]
+    async fn mount_keep_cache_policy_applies_to_create_open_and_clones() {
+        let uncached = new_fuse_test_vfs().await.with_fuse_keep_cache(Some(false));
+        let cached = new_fuse_test_vfs().await.with_fuse_keep_cache(Some(true));
+        for (fs, expected) in [(&uncached, 0), (&cached, FOPEN_KEEP_CACHE)] {
+            let created = Filesystem::create(
+                fs,
+                Request::default(),
+                fs.root_ino() as u64,
+                OsStr::new("private"),
+                0o600,
+                libc::O_RDWR as u32,
+            )
+            .await
+            .unwrap();
+            println!("fopen_flags=0x{:x} expected_keep_cache=0x{:x}", created.flags, expected);
+            assert_eq!(created.flags & FOPEN_KEEP_CACHE, expected);
+            fs.close(created.fh).await.unwrap();
+            let clone = fs.clone();
+            for flags in [libc::O_RDONLY, libc::O_WRONLY, libc::O_RDWR] {
+                let opened =
+                    Filesystem::open(&clone, Request::default(), created.attr.ino, flags as u32)
+                        .await
+                        .unwrap();
+                println!("fopen_flags=0x{:x} open_flags=0x{:x}", opened.flags, flags);
+                assert_eq!(opened.flags & FOPEN_KEEP_CACHE, expected);
+                clone.close(opened.fh).await.unwrap();
+            }
+            let denied =
+                Filesystem::open(fs, user_request(), created.attr.ino, libc::O_RDONLY as u32)
+                    .await
+                    .unwrap_err();
+            assert_eq!(denied, Errno::from(libc::EACCES));
+            let stats =
+                Filesystem::open(fs, Request::default(), STATS_INODE, libc::O_RDONLY as u32)
+                    .await
+                    .unwrap();
+            assert_eq!(stats.flags, FOPEN_DIRECT_IO);
+            fs.release_virtual_stats(stats.fh);
+        }
+    }
+
+    #[tokio::test]
+    async fn mount_keep_cache_overrides_environment_without_changing_direct_io() {
+        let fs = new_fuse_test_vfs().await;
+        let enabled = fs.clone().with_fuse_keep_cache(Some(true));
+        let disabled = fs.clone().with_fuse_keep_cache(Some(false));
+        let _guard = env_lock().lock().unwrap();
+        let previous_direct = std::env::var_os("BREWFS_FUSE_DIRECT_IO");
+        let previous_keep = std::env::var_os("BREWFS_FUSE_KEEP_CACHE");
+        for (direct, direct_flag) in [("0", 0), ("1", FOPEN_DIRECT_IO)] {
+            for (keep, keep_flag) in [("0", 0), ("1", FOPEN_KEEP_CACHE)] {
+                unsafe {
+                    std::env::set_var("BREWFS_FUSE_DIRECT_IO", direct);
+                    std::env::set_var("BREWFS_FUSE_KEEP_CACHE", keep);
+                }
+                for (read, write) in [(true, false), (false, true), (true, true)] {
+                    assert_eq!(fs.open_reply_flags(read, write), direct_flag | keep_flag);
+                    assert_eq!(
+                        enabled.open_reply_flags(read, write),
+                        direct_flag | FOPEN_KEEP_CACHE
+                    );
+                    assert_eq!(disabled.open_reply_flags(read, write), direct_flag);
+                }
+            }
+        }
+        for (name, previous) in [
+            ("BREWFS_FUSE_DIRECT_IO", previous_direct),
+            ("BREWFS_FUSE_KEEP_CACHE", previous_keep),
+        ] {
+            unsafe {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
     }
 
     #[test]

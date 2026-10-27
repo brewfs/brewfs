@@ -1120,6 +1120,8 @@ where
 {
     core: Arc<VfsCore<S, M>>,
     state: Arc<VfsState<S, M>>,
+    /// Mount-local override; None preserves the legacy environment setting.
+    fuse_keep_cache: Option<bool>,
     /// Background tasks (compaction and gc) - only present when enabled
     #[allow(dead_code)]
     background_tasks: Option<VfsBackgroundTasks>,
@@ -1155,6 +1157,7 @@ where
         Self {
             core: Arc::clone(&self.core),
             state: Arc::clone(&self.state),
+            fuse_keep_cache: self.fuse_keep_cache,
             // Note: background tasks are not cloned as they should be unique per VFS instance
             background_tasks: None,
         }
@@ -1674,8 +1677,21 @@ where
         Ok(Self {
             core,
             state,
+            fuse_keep_cache: None,
             background_tasks,
         })
+    }
+
+    /// Configure kernel data-page retention before mounting this VFS.
+    /// None keeps the legacy BREWFS_FUSE_KEEP_CACHE fallback. Explicit values
+    /// apply only to this mount and are inherited by its session clones.
+    pub(crate) fn with_fuse_keep_cache(mut self, keep_cache: Option<bool>) -> Self {
+        self.fuse_keep_cache = keep_cache;
+        self
+    }
+
+    pub(crate) fn fuse_keep_cache_setting(&self) -> Option<bool> {
+        self.fuse_keep_cache
     }
 
     pub(crate) fn root_ino(&self) -> i64 {

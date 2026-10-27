@@ -211,6 +211,7 @@ brewfs console [OPTIONS]
 | `--block-size <BYTES>` | block 大小，默认 4 MiB。 |
 | `--fuse-workers <N>` | FUSE worker 数；默认 `clamp(2 × available_parallelism, 1, 64)`，CPU 探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `--fuse-max-background <N>` | FUSE 最大 in-flight 请求数，默认 512。 |
+| `--fuse-keep-cache <true|false>` | 跨 open 保留内核数据页；默认 `false`，适合所有数据写入均经过本挂载的工作负载。 |
 | `--privileged` | 直接打开 `/dev/fuse`，适合 systemd/root/container。 |
 
 `console` 子命令：
@@ -386,11 +387,60 @@ meta:
 | `fuse.workers` | `clamp(2 × available_parallelism, 1, 64)` | 根据 CPU affinity / cgroup quota 可用并行度计算，探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `fuse.max_background` | `512` | asyncfuse worker 模式下最大 queued/running 请求数。 |
 | `fuse.cache_ttl_ms` | `0` | 显式放宽可写 POSIX ACL 挂载的内核权限/属性/目录项缓存 TTL；CLI `--fuse-cache-ttl-ms` 优先，含显式 `0`。详见 [CONFIG.md](../../CONFIG.md) 中的性能和权限陈旧窗口。 |
+| `fuse.keep_cache` | `false` | 为普通文件 open/create reply 设置 `FOPEN_KEEP_CACHE`，保留跨 open 的内核数据页。 |
 | `fuse.privileged` | `false` | 直接使用 `/dev/fuse`，通常用于 root/systemd/container。 |
 
 优先级为 `--fuse-workers` > YAML `fuse.workers` > 自动计算的默认值。perf runner 和 installer 将 `BREWFS_FUSE_WORKERS` 写入 YAML；挂载程序不直接读取这个环境变量。显式配置的 worker 数不受默认值的 `64` 上限限制。
 
 非特权挂载依赖 `fusermount3`；特权挂载依赖进程有权限访问 `/dev/fuse`。
+
+For repeated buffered reads of files written through this mount, opt into
+retaining kernel data pages across close/open:
+
+```bash
+brewfs mount --config /etc/brewfs/mount.yaml --fuse-keep-cache true
+```
+
+The equivalent YAML setting is:
+
+```yaml
+fuse:
+  keep_cache: true
+```
+
+The safe default is `false`: reopening a regular file discards its cached data
+pages. With `true`, a repeated buffered read can use pages populated by a prior
+read or write. This setting does not enable kernel writeback caching, change
+attribute/entry TTLs, or change permission checks. Same-mount buffered writes
+continue through the existing write-through path and update the kernel's data
+pages. An application using `O_DIRECT`, or a FUSE direct-I/O override, still
+bypasses the page cache.
+
+If a benchmark profile sets `BREWFS_FUSE_READ_DIRECT_IO=1`, clear that override
+or set `BREWFS_FUSE_DIRECT_IO=0` before testing buffered reads. KEEP_CACHE does
+not override direct I/O; applications using `O_DIRECT` still bypass the cache
+with `BREWFS_FUSE_DIRECT_IO=0`.
+
+Use this opt-in when data mutations go through the same mount. The operator
+gives up unconditional data-cache invalidation on reopen: writes from another
+mount or through an external API can leave cached data stale. Negotiated
+`FUSE_AUTO_INVAL_DATA` still allows invalidation when revalidated attributes
+show a changed mtime, but it is not a strict freshness guarantee for external
+mutations. The existing `BREWFS_FUSE_KEEP_CACHE` environment variable remains
+available for compatibility. Precedence is CLI > YAML > environment > `false`;
+an explicit CLI or YAML `false` overrides an enabled environment variable.
+The experimental `workspace-entity-v1` adapter does not support this opt-in.
+
+A kernel cache hit also avoids the userspace read path's backend and lease
+checks. A successful cached read is therefore not proof of current backend
+availability or a valid workspace lease, and immediate read failure after
+lease loss is not guaranteed. Buffered reads can already behave this way
+within one open file descriptor; KEEP_CACHE extends page reuse across reopen.
+Write authorization and lease fencing remain unchanged. This additional data
+retention is why the setting defaults to `false`.
+
+See the [read-cache investigation](../performance/fuse-read-cache-2026-10-26.md)
+for the open flags, readahead, and measurement protocol.
 
 The `brewfs` executable uses one Tokio worker thread by default. Set
 `TOKIO_WORKER_THREADS` to a positive integer (for example, `8`) to override
@@ -480,7 +530,7 @@ compact:
 | `BREWFS_FUSE_DIRECT_IO` | 无 | 对所有 open reply 启用或关闭 direct IO。 |
 | `BREWFS_FUSE_READ_DIRECT_IO` | `false` | 只对只读 open 启用 direct IO。 |
 | `BREWFS_FUSE_WRITE_DIRECT_IO` | `false` | 只对只写 open 启用 direct IO。 |
-| `BREWFS_FUSE_KEEP_CACHE` | `false` | open reply 加 `FOPEN_KEEP_CACHE`。 |
+| `BREWFS_FUSE_KEEP_CACHE` | `false` | 兼容开关；未显式设置 CLI/YAML 时为 open/create reply 加 `FOPEN_KEEP_CACHE`。一致性约束见上文。 |
 | `BREWFS_FUSE_COPY_FILE_RANGE` | `true` | 控制 FUSE `copy_file_range` 支持。 |
 | `BREWFS_CACHED_BLOCK_ASSEMBLER` | `false` | 实验性 cached block assembler。 |
 | `BREWFS_TRACE_CHROME` | 无 | profiling build 下输出 Chrome trace。 |
