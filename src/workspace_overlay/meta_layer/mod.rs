@@ -45,6 +45,7 @@ use super::resolver::{
     resolve_extents, resolve_inode, resolve_inode_state, resolve_xattr, resolve_xattr_state,
 };
 
+mod namespace_epoch;
 mod packed_enumeration;
 pub mod packed_lower;
 mod packed_paths;
@@ -82,6 +83,8 @@ pub struct WorkspaceMetaLayer<W> {
     upper_rows: Option<Arc<row_cache::UpperRowCache>>,
     /// Path/alias results; invalidated only by namespace-changing commits.
     namespace_rows: Option<row_cache::UpperRowCache>,
+    /// Directory cookies depend on namespace changes, not file-data commits.
+    namespace_epoch: Arc<namespace_epoch::NamespaceEpoch>,
     /// Advisory read selection only. Fresh snapshots, never these hints,
     /// determine the ancestry and permissions checked by a mutation.
     directory_hints: moka::sync::Cache<i64, i64>,
@@ -124,6 +127,9 @@ fn validate_fixed_layer_pair(chain: &[LayerRecord]) -> Result<(), WorkspaceError
 /// ACL rows have no per-key mapping, so they clear the whole row cache.
 pub(super) struct RowsWritten {
     row_keys: Option<Vec<row_cache::RowKey>>,
+    /// Only dentry changes alter directory ordinals. Reclaiming an already
+    /// unlinked inode still invalidates row/path caches, but not cookies.
+    directory_entries: bool,
     /// Any dentry row or inode deletion: paths/aliases may change.
     namespace: bool,
     /// Complete affected set for a fresh create or file-only namespace
@@ -133,7 +139,8 @@ pub(super) struct RowsWritten {
 
 impl RowsWritten {
     pub(super) fn of(request: &VersionedMutation) -> Self {
-        let namespace = !request.dentries.is_empty()
+        let directory_entries = !request.dentries.is_empty();
+        let namespace = directory_entries
             || request
                 .inodes
                 .iter()
@@ -163,6 +170,7 @@ impl RowsWritten {
         });
         Self {
             row_keys,
+            directory_entries,
             namespace,
             namespace_inodes: None,
         }
@@ -253,6 +261,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             resolver_cache: WorkspaceResolverCache::default(),
             upper_rows: None,
             namespace_rows: None,
+            namespace_epoch: Arc::new(namespace_epoch::NamespaceEpoch::default()),
             directory_hints: moka::sync::Cache::new(4096),
             lease_validity: None,
             locks: Mutex::new(WorkspaceLocks::default()),
@@ -271,7 +280,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
 
     /// Serve read-only upper-row lookups from a short-lived cache. Only valid
     /// while this mount holds the exclusive workspace lease and is the sole
-    /// writer; every local commit invalidates it. Frozen packed base only.
+    /// writer; every local commit invalidates it. Native overlays additionally
+    /// require an explicit local lease proof before serving cached rows.
     pub fn with_upper_row_cache(mut self, ttl: std::time::Duration) -> Self {
         if !ttl.is_zero() {
             self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::new(ttl)));
@@ -280,8 +290,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         self
     }
 
-    /// Every view change. Clears namespace results too; commits use
-    /// `invalidate_rows_written`.
+    /// Discard upper-row and namespace caches without changing directory
+    /// cookies. Namespace mutations and view replacement have their own
+    /// guards; a freshness refresh can clear rows after a data-only commit.
     pub(crate) fn invalidate_upper_rows(&self) {
         if let Some(cache) = &self.upper_rows {
             cache.invalidate_all();
@@ -419,7 +430,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     fn upper_row_cache(&self) -> Option<&row_cache::UpperRowCache> {
         self.upper_rows
             .as_ref()
-            .filter(|_| self.packed_lower().is_some() && self.row_caches_authoritative())
+            .filter(|_| {
+                (self.packed_lower().is_some() || self.lease_validity.is_some())
+                    && self.row_caches_authoritative()
+            })
             .map(|cache| cache.as_ref())
     }
 
@@ -662,12 +676,23 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     }
 
     pub async fn replace_view_context(&self, view: ViewContext) {
+        // Fence snapshots before the first await, including those captured
+        // during replacement. A canceled replacement cannot certify a view.
+        let namespace_write = self.namespace_epoch.begin_write();
+        let cache_commit = row_cache::CacheCommitGuard::new(
+            self.upper_rows.as_deref(),
+            self.namespace_rows.as_ref(),
+        );
         let old_workspace = self.view.read().await.workspace_id;
         self.resolver_cache.invalidate_workspace(old_workspace);
         self.invalidate_upper_rows();
         self.directory_hints.invalidate_all();
         *self.view.write().await = view;
         *self.layer_pair.write().await = None;
+        // Discard any row read/refilled across the awaited replacement.
+        self.invalidate_upper_rows();
+        cache_commit.resolved();
+        namespace_write.committed();
     }
 
     async fn chain(&self) -> Result<Vec<LayerRecord>, MetaError> {
