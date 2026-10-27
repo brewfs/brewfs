@@ -5,6 +5,232 @@ use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
 use futures::{FutureExt, StreamExt};
 
 #[tokio::test]
+async fn packed_directory_lease_fence_ignores_attribute_commits_but_not_namespace_changes() {
+    use crate::workspace_overlay::lifecycle::LeaseValidity;
+    let lease = Arc::new(LeaseValidity::new(
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(60),
+    ));
+    let f = fixture_with_lease(false, packed().await, Some(lease.clone())).await;
+    for index in 0..73 {
+        f.meta
+            .create_file(1, format!("native-{index:03}"))
+            .await
+            .unwrap();
+    }
+    let directory = f.meta.opendir(1).await.unwrap();
+    // A first metadata-freshness check may discard cached rows without
+    // changing any directory entry or the meaning of a published cookie.
+    f.meta.invalidate_upper_rows();
+    assert_eq!(
+        directory
+            .get_entries_page_raw_owned(0, 1)
+            .await
+            .unwrap()
+            .entries[0]
+            .name,
+        b"native-000"
+    );
+    for offset in 0..74 {
+        // Each chmod advances the writable head, but cannot change a cookie's
+        // meaning. Include more than one merge page and checkpoint eviction.
+        f.meta
+            .chmod(1, if offset % 2 == 0 { 0o755 } else { 0o777 })
+            .await
+            .unwrap();
+        f.meta.invalidate_upper_rows();
+        let page = directory
+            .get_entries_page_raw_owned(offset, 1)
+            .await
+            .expect("an attribute-only commit must not invalidate directory cookies");
+        assert_eq!(page.entries.len(), 1);
+        let expected = if offset == 73 {
+            b"nonzero".to_vec()
+        } else {
+            format!("native-{offset:03}").into_bytes()
+        };
+        assert_eq!(page.entries[0].name, expected);
+    }
+    assert!(
+        directory
+            .get_entries_page_raw_owned(74, 1)
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    assert_eq!(
+        directory
+            .get_entries_page_raw_owned(2, 1)
+            .await
+            .unwrap()
+            .entries[0]
+            .name,
+        b"native-002"
+    );
+    f.meta.create_file(1, "later".into()).await.unwrap();
+    assert!(matches!(directory.get_entries_page_raw_owned(3, 1).await,
+        Err(crate::meta::store::MetaError::Io(error)) if error.raw_os_error() == Some(libc::EBUSY)));
+    let reopened = f.meta.opendir(1).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_entries_page_raw_owned(0, 1)
+            .await
+            .unwrap()
+            .entries[0]
+            .name,
+        b"later"
+    );
+    lease.revoke();
+    assert!(
+        reopened.get_entries_page_raw_owned(1, 1).await.is_err(),
+        "a locally unchanged namespace is insufficient after losing the lease"
+    );
+    drop(reopened);
+    drop(directory);
+    f.reader.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn packed_directory_lease_fence_survives_lower_file_copy_up_and_data_commit() {
+    use crate::workspace_overlay::lifecycle::LeaseValidity;
+    let lease = Arc::new(LeaseValidity::new(
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(60),
+    ));
+    let f = fixture_with_lease(false, packed().await, Some(lease)).await;
+    let ino = f.meta.lookup(1, "nonzero").await.unwrap().unwrap();
+    let directory = f.meta.opendir(1).await.unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    f.meta
+        .write(
+            ino,
+            chunk_id,
+            crate::chunk::SliceDesc {
+                slice_id: 50_000,
+                chunk_id,
+                offset: 0,
+                length: 64,
+            },
+            64,
+        )
+        .await
+        .unwrap();
+    // A freshness refresh after this head-sequence change still must not
+    // invalidate directory cookies: no dentry changed.
+    f.meta.invalidate_upper_rows();
+    // Opening saw no native dentries. Copying up the file's data/inode must
+    // preserve both the first page and EOF of the captured directory view.
+    assert_eq!(
+        directory
+            .get_entries_page_raw_owned(0, 1)
+            .await
+            .unwrap()
+            .entries[0]
+            .name,
+        b"nonzero"
+    );
+    assert!(
+        directory
+            .get_entries_page_raw_owned(1, 1)
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    let view = f.meta.view_context().await;
+    f.meta.replace_view_context(view).await;
+    assert!(
+        directory.get_entries_page_raw_owned(0, 1).await.is_err(),
+        "an explicit view replacement must invalidate captured local authority"
+    );
+    drop(directory);
+    f.reader.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn packed_directory_lease_fence_survives_last_close_of_an_unlinked_inode() {
+    use crate::workspace_overlay::lifecycle::LeaseValidity;
+    let lease = Arc::new(LeaseValidity::new(
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(60),
+    ));
+    let f = fixture_with_lease(false, packed().await, Some(lease)).await;
+    let ino = f.meta.create_file(1, "orphan".into()).await.unwrap();
+    let attr = f.meta.stat(ino).await.unwrap().unwrap();
+    f.meta
+        .record_open(ino, attr, true, false, false)
+        .await
+        .unwrap();
+    f.meta.unlink(1, "orphan").await.unwrap();
+    assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().nlink, 0);
+    // The name has already disappeared before this handle captures its
+    // namespace. Reclaiming the remaining open inode changes no cookie.
+    let directory = f.meta.opendir(1).await.unwrap();
+    assert_eq!(
+        directory
+            .get_entries_page_raw_owned(0, 1)
+            .await
+            .unwrap()
+            .entries[0]
+            .name,
+        b"nonzero"
+    );
+    f.meta.record_close(ino).await.unwrap();
+    assert!(f.meta.stat(ino).await.unwrap().is_none());
+    let page = directory
+        .get_entries_page_raw_owned(0, 1)
+        .await
+        .expect("orphan reclamation must not invalidate unchanged directory cookies");
+    assert_eq!(page.entries[0].name, b"nonzero");
+    assert!(
+        directory
+            .get_entries_page_raw_owned(1, 1)
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    drop(page);
+    drop(directory);
+    f.reader.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn packed_workspace_opendir_retries_a_concurrent_head_change() {
+    let f = fixture(false).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *f.backend.page_barrier.lock().await = Some((entered.clone(), resume.clone()));
+    let meta = f.meta.clone();
+    let opening = tokio::spawn(async move { meta.opendir(1).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .expect("opendir reached the native directory page");
+    // A metadata commit can race a multi-step open even when the captured
+    // application's requests are serialized (for example, a delayed flush).
+    f.meta.create_file(1, "during-open".into()).await.unwrap();
+    resume.notify_one();
+    let directory = tokio::time::timeout(std::time::Duration::from_secs(2), opening)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("opendir must rebuild a changed view before publishing a handle");
+    let page = directory.get_entries_page_raw_owned(0, 256).await.unwrap();
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.name == b"during-open")
+    );
+    drop(page);
+    drop(directory);
+    tokio::time::timeout(std::time::Duration::from_secs(2), f.reader.shutdown())
+        .await
+        .expect("discarded attempts must release their reader owners")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn packed_workspace_fuse_readdir_stream_retains_page_and_reply_until_final_drop() {
     use asyncfuse::raw::{Filesystem, Request};
     let f = fixture(false).await;

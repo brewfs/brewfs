@@ -253,6 +253,13 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         // Before and after: an uncertain/failed commit may still have
         // applied, and no concurrent read may cache pre-commit rows. Only
         // the keys this commit writes are dropped.
+        let cache_commit = row_cache::CacheCommitGuard::new(
+            self.upper_rows.as_deref(),
+            self.namespace_rows.as_ref(),
+        );
+        let namespace_write = written
+            .directory_entries
+            .then(|| self.namespace_epoch.begin_write());
         self.invalidate_rows_written(&written);
         let result = if let Some(lower) = self.packed_lower() {
             self.store
@@ -262,6 +269,17 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             self.store.apply_versioned_mutation(request).await
         };
         self.invalidate_rows_written(&written);
+        if matches!(&result, Ok(_) | Err(WorkspaceError::Busy)) {
+            cache_commit.resolved();
+        }
+        if let Some(namespace_write) = namespace_write {
+            match &result {
+                Ok(_) => namespace_write.committed(),
+                Err(WorkspaceError::Busy) => namespace_write.unchanged(),
+                // Drop disables local authority: the backend may still write.
+                Err(_) => {}
+            }
+        }
         result
     }
 }

@@ -1,6 +1,7 @@
 //! Bounded three-way merge of head/base raw deltas and immutable packed lower.
-//! Cookies remain visible child ordinals; a changed native version fences the
-//! handle, and the existing FUSE rewind path opens a new generation.
+//! Cookies remain visible child ordinals. A lease-proven local namespace
+//! generation tolerates data-only commits; otherwise use the remote head fence.
+//! Namespace changes fence the handle; FUSE rewind opens a new generation.
 
 use std::collections::VecDeque;
 
@@ -38,9 +39,23 @@ struct EnumerationView<W> {
     lower: Arc<WorkspacePackedLower>,
     guard: HeadGuard,
     layers: [LayerRecord; 2],
+    local_namespace: Option<(
+        namespace_epoch::NamespaceSnapshot,
+        Arc<crate::workspace_overlay::lifecycle::LeaseValidity>,
+    )>,
 }
 impl<W: WorkspaceStore + 'static> EnumerationView<W> {
     async fn validate(&self) -> Result<(), MetaError> {
+        if let Some((namespace, lease)) = &self.local_namespace {
+            if !lease.authoritative() {
+                return Err(workspace_to_meta(WorkspaceError::Fenced));
+            }
+            return if namespace.unchanged() {
+                Ok(())
+            } else {
+                Err(workspace_to_meta(WorkspaceError::Busy))
+            };
+        }
         // The immutable lower needs no binding authentication. The writable
         // head/lease fence (one MGET per page) detects same-epoch upper mutation.
         self.store
@@ -339,6 +354,36 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     }
 
     pub(super) async fn packed_opendir(&self, ino: i64) -> Result<DirHandle, MetaError> {
+        // No handle/cookie has escaped yet. A concurrent upper commit can
+        // invalidate any of the preparation reads, so rebuild the whole view
+        // rather than exposing a transient version conflict as opendir EBUSY.
+        // Published handles still fence changes in read_page_owned.
+        for _ in 0..64 {
+            match self.packed_opendir_once(ino).await {
+                Err(MetaError::Io(ref error)) if error.raw_os_error() == Some(libc::EBUSY) => {
+                    tokio::task::yield_now().await;
+                }
+                result => return result,
+            }
+        }
+        Err(MetaError::Io(std::io::Error::from_raw_os_error(
+            libc::EBUSY,
+        )))
+    }
+
+    async fn packed_opendir_once(&self, ino: i64) -> Result<DirHandle, MetaError> {
+        // Capture before any preparation await. Every local namespace commit
+        // and view replacement fences this token; data/attribute writes do
+        // not change the directory's names or ordinal cookies. The exclusive
+        // lease rules out another upper writer for the token's whole lifetime.
+        let local_namespace = self.lease_validity.as_ref().and_then(|lease| {
+            if !lease.authoritative() {
+                return None;
+            }
+            self.namespace_epoch
+                .capture()
+                .map(|namespace| (namespace, lease.clone()))
+        });
         let lower = self
             .packed_lower()
             .ok_or_else(|| MetaError::Internal("packed directory without lower".into()))?
@@ -376,6 +421,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             lower,
             guard,
             layers,
+            local_namespace,
         };
         view.validate().await?;
         let source = WorkspaceDirectory {

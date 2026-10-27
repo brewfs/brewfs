@@ -5,12 +5,12 @@
 //! the only writer of upper rows; every local commit invalidates the keys of
 //! the rows it writes, every view change invalidates the whole cache, and a
 //! generation counter keeps a read that raced any invalidation from leaving
-//! pre-commit rows behind. The TTL bounds staleness for anything outside
-//! this mount, matching the native metadata client's inode/path cache.
-//! Mutation paths never read through this cache.
+//! pre-commit rows behind. Under a proven lease the TTL bounds retention,
+//! not staleness. Canceled or uncertain commits permanently disable cached
+//! authority. Conditional mutations still authenticate their committed view.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use moka::sync::Cache;
@@ -71,6 +71,47 @@ impl LeaseLocalFence {
 pub(super) struct UpperRowCache {
     rows: Cache<RowKey, RowValue>,
     generation: AtomicU64,
+    /// A canceled/uncertain backend write can still complete after the caller
+    /// drops. No later refill may claim local authority in that mount.
+    disabled: AtomicBool,
+}
+
+/// Retain across the complete backend commit and both invalidations. An
+/// unresolved drop cannot be repaired by clearing once: the server may write
+/// after that clear. Disable cached authority until this mount is replaced.
+pub(super) struct CacheCommitGuard<'a> {
+    upper: Option<&'a UpperRowCache>,
+    namespace: Option<&'a UpperRowCache>,
+    resolved: bool,
+}
+
+impl<'a> CacheCommitGuard<'a> {
+    pub(super) fn new(
+        upper: Option<&'a UpperRowCache>,
+        namespace: Option<&'a UpperRowCache>,
+    ) -> Self {
+        Self {
+            upper,
+            namespace,
+            resolved: false,
+        }
+    }
+
+    /// Call only after a confirmed commit or a definite no-write rejection,
+    /// and after invalidating the affected rows for the second time.
+    pub(super) fn resolved(mut self) {
+        self.resolved = true;
+    }
+}
+
+impl Drop for CacheCommitGuard<'_> {
+    fn drop(&mut self) {
+        if !self.resolved {
+            for cache in [self.upper, self.namespace].into_iter().flatten() {
+                cache.disable();
+            }
+        }
+    }
 }
 
 /// Captured before a backend read; the insert is dropped if any
@@ -86,6 +127,7 @@ impl UpperRowCache {
                 .time_to_live(ttl)
                 .build(),
             generation: AtomicU64::new(0),
+            disabled: AtomicBool::new(false),
         }
     }
 
@@ -94,11 +136,21 @@ impl UpperRowCache {
     }
 
     pub(super) fn get(&self, key: &RowKey) -> Option<RowValue> {
-        self.rows.get(key)
+        if self.disabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let value = self.rows.get(key);
+        if self.disabled.load(Ordering::Acquire) {
+            None
+        } else {
+            value
+        }
     }
 
     pub(super) fn insert(&self, ticket: RowTicket, key: RowKey, value: RowValue) {
-        if self.generation.load(Ordering::SeqCst) != ticket.0 {
+        if self.disabled.load(Ordering::Acquire)
+            || self.generation.load(Ordering::SeqCst) != ticket.0
+        {
             return;
         }
         self.rows.insert(key.clone(), value);
@@ -106,9 +158,16 @@ impl UpperRowCache {
         // Every invalidation bumps the generation before removing, so an
         // insert landing after that removal sees the bump and drops itself;
         // one landing before it is removed by the invalidation.
-        if self.generation.load(Ordering::SeqCst) != ticket.0 {
+        if self.disabled.load(Ordering::Acquire)
+            || self.generation.load(Ordering::SeqCst) != ticket.0
+        {
             self.rows.invalidate(&key);
         }
+    }
+
+    fn disable(&self) {
+        self.disabled.store(true, Ordering::Release);
+        self.invalidate_all();
     }
 
     pub(super) fn invalidate_all(&self) {
@@ -125,6 +184,10 @@ impl UpperRowCache {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "row_cache_cancellation_tests.rs"]
+mod cancellation_tests;
 
 #[cfg(test)]
 mod tests {

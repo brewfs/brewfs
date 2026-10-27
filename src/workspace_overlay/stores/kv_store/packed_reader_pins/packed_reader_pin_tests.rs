@@ -26,6 +26,9 @@ struct PinMemoryBackend {
     lose_reply: Arc<AtomicBool>,
     validation_clock: Arc<Mutex<Option<i64>>>,
     cas_barrier: SharedTestBarrier,
+    /// Pauses dispatched writes before taking the server's rows lock, allowing
+    /// a concurrent reader to observe the old committed state.
+    pre_cas_barrier: SharedTestBarrier,
     reply_barrier: SharedTestBarrier,
     page_prefixes: Arc<Mutex<Vec<Vec<u8>>>>,
     page_size: Arc<AtomicI64>,
@@ -37,6 +40,8 @@ struct PinMemoryBackend {
     timed_reads: Arc<AtomicI64>,
     /// Consistent untimed multi-key reads (permission snapshots and rows).
     consistent_reads: Arc<AtomicI64>,
+    /// Ordinary point reads, including the default get_many implementation.
+    point_reads: Arc<AtomicI64>,
     /// Packed mutation view reads: bounded reads of the workspace record
     /// together with at least ten more view keys.
     view_reads: Arc<AtomicI64>,
@@ -53,6 +58,7 @@ impl Default for PinMemoryBackend {
             lose_reply: Default::default(),
             validation_clock: Default::default(),
             cas_barrier: Default::default(),
+            pre_cas_barrier: Default::default(),
             reply_barrier: Default::default(),
             page_prefixes: Default::default(),
             page_size: Default::default(),
@@ -60,6 +66,7 @@ impl Default for PinMemoryBackend {
             short_page_is_end: Default::default(),
             timed_reads: Default::default(),
             consistent_reads: Default::default(),
+            point_reads: Default::default(),
             view_reads: Default::default(),
             bounded_reads: Default::default(),
         }
@@ -85,6 +92,13 @@ impl PinMemoryBackend {
         upper: Option<i64>,
         authentication_limits: Option<crate::workspace_overlay::stores::kv_backend::KvReadLimits>,
     ) -> Result<bool, WorkspaceError> {
+        if !writes.is_empty() {
+            let barrier = self.pre_cas_barrier.lock().await.take();
+            if let Some((entered, resume)) = barrier {
+                entered.notify_waiters();
+                resume.notified().await;
+            }
+        }
         let mut rows = self.rows.lock().await;
         if let Some(limits) = authentication_limits {
             let mut authentication_total = 0usize;
@@ -180,6 +194,7 @@ impl WorkspaceKvBackend for PinMemoryBackend {
         self.short_page_is_end.load(Ordering::SeqCst)
     }
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        self.point_reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.rows.lock().await.get(key).cloned())
     }
     async fn get_many_consistent(
