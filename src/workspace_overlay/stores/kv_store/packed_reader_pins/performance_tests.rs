@@ -3,6 +3,135 @@
 use super::*;
 use crate::meta::layer::{NamespaceActor, scope_namespace_actor};
 
+pub(super) async fn native_cached_meta(
+    bound: bool,
+) -> (
+    NativeMeta,
+    PinMemoryBackend,
+    Arc<crate::workspace_overlay::lifecycle::LeaseValidity>,
+) {
+    use crate::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot};
+    use crate::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
+    let backend = PinMemoryBackend::default();
+    backend.now.store(1_000_000_000, Ordering::SeqCst);
+    let store = Arc::new(KvWorkspaceStore::new(backend.clone()));
+    store.initialize_workspace_schema().await.unwrap();
+    let workspace_id = WorkspaceId::from_uuid(Uuid::new_v4());
+    let workspace = store
+        .create_volume_root(CreateVolumeRoot {
+            volume_format: "workspace-v1".into(),
+            schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
+            volume_id: Uuid::new_v4(),
+            workspace_id,
+            root_layer_id: LayerId::from_uuid(Uuid::new_v4()),
+            writable_layer_id: LayerId::from_uuid(Uuid::new_v4()),
+            owner_id: Some("native-cache-test".into()),
+        })
+        .await
+        .unwrap();
+    let lease = store
+        .acquire_lease(AcquireLease {
+            workspace_id,
+            lease_id: LeaseId::from_uuid(Uuid::new_v4()),
+            holder_generation: 1,
+            ttl_ns: 60_000_000_000,
+        })
+        .await
+        .unwrap();
+    let validity = Arc::new(crate::workspace_overlay::lifecycle::LeaseValidity::new(
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(60),
+    ));
+    let mut meta = WorkspaceMetaLayer::with_chunk_size(
+        store,
+        ViewContext {
+            workspace_id,
+            head_layer_id: workspace.head_layer_id,
+            head_epoch: workspace.head_epoch,
+            lease_id: lease.lease_id,
+            holder_generation: lease.holder_generation,
+        },
+        CHUNK,
+    )
+    .with_upper_row_cache(std::time::Duration::from_secs(60));
+    if bound {
+        meta = meta.with_lease_bound_row_cache(validity.clone());
+    }
+    meta.initialize().await.unwrap();
+    (meta, backend, validity)
+}
+
+#[tokio::test]
+async fn native_overlay_lease_cache_eliminates_repeated_permission_reads() {
+    let (meta, backend, _) = native_cached_meta(true).await;
+    let ino = meta
+        .create_file(meta.root_ino(), "cached".into())
+        .await
+        .unwrap();
+    let expected = meta.inode_permissions(ino).await.unwrap().unwrap();
+    backend.consistent_reads.store(0, Ordering::SeqCst);
+    for _ in 0..16 {
+        assert_eq!(
+            meta.inode_permissions(ino)
+                .await
+                .unwrap()
+                .unwrap()
+                .attr
+                .mode,
+            expected.attr.mode
+        );
+    }
+    assert_eq!(
+        backend.consistent_reads.load(Ordering::SeqCst),
+        0,
+        "an independently optional packed lower must not be required for lease-proven native row caching"
+    );
+}
+
+#[tokio::test]
+async fn native_overlay_lease_cache_observes_local_mutations_and_revocation() {
+    let (meta, backend, validity) = native_cached_meta(true).await;
+    let root = meta.root_ino();
+    let ino = meta.create_file(root, "before".into()).await.unwrap();
+    assert_eq!(meta.lookup(root, "before").await.unwrap(), Some(ino));
+    assert!(meta.inode_permissions(ino).await.unwrap().is_some());
+    meta.chmod(ino, 0o600).await.unwrap();
+    assert_eq!(
+        meta.inode_permissions(ino)
+            .await
+            .unwrap()
+            .unwrap()
+            .attr
+            .mode
+            & 0o777,
+        0o600
+    );
+    meta.rename(root, "before", root, "after".into())
+        .await
+        .unwrap();
+    assert!(meta.lookup(root, "before").await.unwrap().is_none());
+    assert_eq!(meta.lookup(root, "after").await.unwrap(), Some(ino));
+    validity.revoke();
+    backend.consistent_reads.store(0, Ordering::SeqCst);
+    assert!(meta.inode_permissions(ino).await.unwrap().is_some());
+    assert!(
+        backend.consistent_reads.load(Ordering::SeqCst) > 0,
+        "lost lease proof must bypass warmed rows"
+    );
+    meta.unlink(root, "after").await.unwrap();
+    assert!(meta.inode_permissions(ino).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn native_overlay_without_lease_proof_does_not_cache_permission_rows() {
+    let (meta, backend, _) = native_cached_meta(false).await;
+    let root = meta.root_ino();
+    meta.inode_permissions(root).await.unwrap();
+    backend.consistent_reads.store(0, Ordering::SeqCst);
+    meta.inode_permissions(root).await.unwrap();
+    assert!(backend.consistent_reads.load(Ordering::SeqCst) > 0);
+}
+
 #[tokio::test]
 async fn packed_create_reuses_fresh_parent_permission_snapshot() {
     let f = fixture(false).await;

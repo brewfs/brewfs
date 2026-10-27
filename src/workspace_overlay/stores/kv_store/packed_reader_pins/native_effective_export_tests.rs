@@ -16,6 +16,9 @@ mod packed_enumeration_tests;
 #[path = "performance_tests.rs"]
 mod performance_tests;
 
+#[path = "cache_commit_regression_tests.rs"]
+mod cache_commit_regression_tests;
+
 use super::*;
 use crate::cadapter::client::ObjectClient;
 use crate::cadapter::localfs::LocalFsBackend;
