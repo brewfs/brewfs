@@ -751,6 +751,7 @@ where
         {
             reply.ttl = ttl;
         }
+        self.stats().record_fuse_entry_valid(reply.ttl);
         Ok(reply)
     }
 
@@ -1059,15 +1060,22 @@ where
         fh: Option<u64>,
         flags: u32,
     ) -> FuseResult<ReplyAttr> {
-        if ino == STATS_INODE {
-            return self.getattr_uncached(req, ino, fh, flags).await;
-        }
-        let (mut reply, ttl) = self
-            .fenced_metadata_read(|| self.getattr_uncached(req, ino, fh, flags))
-            .await?;
-        if let Some(ttl) = ttl {
-            reply.ttl = ttl;
-        }
+        let _timer = crate::vfs::stats::OpTimer::new(
+            &self.stats().fuse_getattr_ops,
+            &self.stats().fuse_getattr_lat_us,
+        );
+        let reply = if ino == STATS_INODE {
+            self.getattr_uncached(req, ino, fh, flags).await?
+        } else {
+            let (mut reply, ttl) = self
+                .fenced_metadata_read(|| self.getattr_uncached(req, ino, fh, flags))
+                .await?;
+            if let Some(ttl) = ttl {
+                reply.ttl = ttl;
+            }
+            reply
+        };
+        self.stats().record_fuse_attr_valid(reply.ttl);
         Ok(reply)
     }
 
@@ -1104,10 +1112,12 @@ where
                 return Err(libc::ENOENT.into());
             };
             let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
-            return Ok(ReplyAttr {
+            let reply = ReplyAttr {
                 ttl: self.permission_cache_ttl(),
                 attr,
-            });
+            };
+            self.stats().record_fuse_attr_valid(reply.ttl);
+            return Ok(reply);
         }
         if fh.is_none() {
             self.ensure_inode_paths_search_allowed(ino as i64, req.uid, req.gid, req.pid)
@@ -1225,6 +1235,7 @@ where
         } else {
             self.permission_cache_ttl()
         };
+        self.stats().record_fuse_attr_valid(ttl);
         Ok(ReplyAttr { ttl, attr })
     }
 
@@ -1602,11 +1613,15 @@ where
         } else {
             None
         };
-        crate::meta::layer::scope_namespace_actor(
+        let result = crate::meta::layer::scope_namespace_actor(
             actor,
             self.mknod_with_umask_with_actor(req, parent, name, mode, umask, rdev),
         )
-        .await
+        .await;
+        if let Ok(reply) = &result {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
+        result
     }
 
     // Create a single-level directory; return EEXIST if it already exists.
@@ -1635,11 +1650,15 @@ where
         } else {
             None
         };
-        crate::meta::layer::scope_namespace_actor(
+        let result = crate::meta::layer::scope_namespace_actor(
             actor,
             self.mkdir_with_actor(req, parent, name, mode, umask),
         )
-        .await
+        .await;
+        if let Ok(reply) = &result {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
+        result
     }
 
     // Create and open a file
@@ -1681,12 +1700,16 @@ where
         } else {
             None
         };
-        crate::meta::layer::scope_open_actor(
+        let result = crate::meta::layer::scope_open_actor(
             actor,
             open_flags_access_mask(flags),
             self.create_with_umask_with_actor(req, parent, name, mode, umask, flags),
         )
-        .await
+        .await;
+        if let Ok(reply) = &result {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
+        result
     }
 
     async fn link(
@@ -1713,11 +1736,15 @@ where
         } else {
             None
         };
-        crate::meta::layer::scope_namespace_actor(
+        let result = crate::meta::layer::scope_namespace_actor(
             actor,
             self.link_with_actor(req, ino, new_parent, new_name),
         )
-        .await
+        .await;
+        if let Ok(reply) = &result {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
+        result
     }
 
     async fn symlink(
@@ -1744,11 +1771,15 @@ where
         } else {
             None
         };
-        crate::meta::layer::scope_namespace_actor(
+        let result = crate::meta::layer::scope_namespace_actor(
             actor,
             self.symlink_with_actor(req, parent, name, link),
         )
-        .await
+        .await;
+        if let Ok(reply) = &result {
+            self.stats().record_fuse_entry_valid(reply.ttl);
+        }
+        result
     }
 
     // Remove a file
@@ -4879,6 +4910,25 @@ mod fuse_init_tests {
         assert_eq!(fs.permission_cache_ttl(), before);
     }
 
+    #[tokio::test]
+    async fn getattr_updates_fuse_stats_once_with_nonzero_latency() {
+        let fs = new_fuse_test_vfs().await;
+        let before = fs.stats().snapshot();
+        assert_eq!(before.fuse_getattr_ops, 0);
+        assert_eq!(before.fuse_getattr_lat_us, 0);
+
+        fs.create_file("/getattr-stats").await.unwrap();
+        let ino = fs.stat("/getattr-stats").await.unwrap().ino as u64;
+        let reply = Filesystem::getattr(&fs, Request::default(), ino, None, 0)
+            .await
+            .unwrap();
+
+        let after = fs.stats().snapshot();
+        assert_eq!(after.fuse_getattr_ops, 1);
+        assert!(after.fuse_getattr_lat_us > 0);
+        assert_eq!(after.fuse_attr_valid_ns, reply.ttl.as_nanos() as u64);
+    }
+
     #[derive(Debug)]
     struct LargeChangingStatsExtension {
         generation: Arc<std::sync::atomic::AtomicU64>,
@@ -7277,7 +7327,10 @@ mod fuse_init_tests {
             )
             .await
             .unwrap();
-            println!("fopen_flags=0x{:x} expected_keep_cache=0x{:x}", created.flags, expected);
+            println!(
+                "fopen_flags=0x{:x} expected_keep_cache=0x{:x}",
+                created.flags, expected
+            );
             assert_eq!(created.flags & FOPEN_KEEP_CACHE, expected);
             fs.close(created.fh).await.unwrap();
             let clone = fs.clone();

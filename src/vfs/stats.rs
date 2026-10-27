@@ -103,6 +103,10 @@ pub struct FsStatsSnapshot {
     pub fuse_lookup_lat_us: u64,
     pub fuse_getattr_ops: u64,
     pub fuse_getattr_lat_us: u64,
+    /// Most recently observed FUSE attribute reply validity in nanoseconds.
+    pub fuse_attr_valid_ns: u64,
+    /// Most recently observed FUSE entry reply validity in nanoseconds.
+    pub fuse_entry_valid_ns: u64,
     pub fuse_open_ops: u64,
     pub fuse_create_ops: u64,
     pub fuse_unlink_ops: u64,
@@ -351,6 +355,10 @@ pub struct FsStats {
     pub fuse_getattr_ops: AtomicU64,
     /// Total FUSE getattr latency in microseconds
     pub fuse_getattr_lat_us: AtomicU64,
+    /// Most recently observed FUSE attribute reply validity in nanoseconds.
+    pub fuse_attr_valid_ns: AtomicU64,
+    /// Most recently observed FUSE entry reply validity in nanoseconds.
+    pub fuse_entry_valid_ns: AtomicU64,
     /// Total FUSE open operations
     pub fuse_open_ops: AtomicU64,
     /// Total FUSE create operations
@@ -713,6 +721,8 @@ impl FsStats {
             fuse_lookup_lat_us: AtomicU64::new(0),
             fuse_getattr_ops: AtomicU64::new(0),
             fuse_getattr_lat_us: AtomicU64::new(0),
+            fuse_attr_valid_ns: AtomicU64::new(0),
+            fuse_entry_valid_ns: AtomicU64::new(0),
             fuse_open_ops: AtomicU64::new(0),
             fuse_create_ops: AtomicU64::new(0),
             fuse_unlink_ops: AtomicU64::new(0),
@@ -902,6 +912,8 @@ impl FsStats {
             fuse_lookup_lat_us: self.fuse_lookup_lat_us.load(ORD),
             fuse_getattr_ops: self.fuse_getattr_ops.load(ORD),
             fuse_getattr_lat_us: self.fuse_getattr_lat_us.load(ORD),
+            fuse_attr_valid_ns: self.fuse_attr_valid_ns.load(ORD),
+            fuse_entry_valid_ns: self.fuse_entry_valid_ns.load(ORD),
             fuse_open_ops: self.fuse_open_ops.load(ORD),
             fuse_create_ops: self.fuse_create_ops.load(ORD),
             fuse_unlink_ops: self.fuse_unlink_ops.load(ORD),
@@ -1666,6 +1678,18 @@ impl FsStats {
             .store(lookup_attr_fused_error, ORD);
     }
 
+    /// Record the validity supplied with the most recent FUSE attribute reply.
+    pub fn record_fuse_attr_valid(&self, valid: Duration) {
+        self.fuse_attr_valid_ns
+            .store(valid.as_nanos().min(u128::from(u64::MAX)) as u64, ORD);
+    }
+
+    /// Record the validity supplied with the most recent FUSE entry reply.
+    pub fn record_fuse_entry_valid(&self, valid: Duration) {
+        self.fuse_entry_valid_ns
+            .store(valid.as_nanos().min(u128::from(u64::MAX)) as u64, ORD);
+    }
+
     pub fn set_extension(&self, extension: std::sync::Arc<dyn FsStatsExtension>) -> bool {
         self.extension.set(extension).is_ok()
     }
@@ -1740,6 +1764,14 @@ impl FsStats {
         out.push_str(&format!(
             "brewfs_fuse_getattr_lat_us_total {}\n",
             self.fuse_getattr_lat_us.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_fuse_attr_valid_ns {}\n",
+            self.fuse_attr_valid_ns.load(ORD)
+        ));
+        out.push_str(&format!(
+            "brewfs_fuse_entry_valid_ns {}\n",
+            self.fuse_entry_valid_ns.load(ORD)
         ));
         out.push_str(&format!(
             "brewfs_fuse_open_ops_total {}\n",
@@ -2620,6 +2652,8 @@ mod tests {
         stats.fuse_read_ops.store(42, ORD);
         stats.fuse_read_bytes.store(1024 * 1024, ORD);
         stats.fuse_read_lat_us.store(840, ORD);
+        stats.record_fuse_attr_valid(Duration::from_secs(1));
+        stats.record_fuse_entry_valid(Duration::from_millis(250));
         stats.s3_put_ops.store(10, ORD);
         stats.s3_put_lat_us.store(250, ORD);
         stats.s3_put_prepare_lat_us.store(500, ORD);
@@ -2817,6 +2851,22 @@ mod tests {
         assert!(output.contains("brewfs_vfs_read_dirty_probe_ops_total 0"));
         assert!(output.contains("brewfs_vfs_read_handle_ops_total 0"));
         assert!(output.contains("brewfs_vfs_read_overlay_ops_total 0"));
+        assert!(output.contains("brewfs_fuse_attr_valid_ns 1000000000"));
+        assert!(output.contains("brewfs_fuse_entry_valid_ns 250000000"));
+    }
+
+    #[test]
+    fn reply_validity_observation_starts_at_zero_and_keeps_latest_value() {
+        let stats = FsStats::new();
+        let initial = stats.snapshot();
+        assert_eq!(initial.fuse_attr_valid_ns, 0);
+        assert_eq!(initial.fuse_entry_valid_ns, 0);
+
+        stats.record_fuse_attr_valid(Duration::from_nanos(17));
+        stats.record_fuse_entry_valid(Duration::from_nanos(23));
+        let observed = stats.snapshot();
+        assert_eq!(observed.fuse_attr_valid_ns, 17);
+        assert_eq!(observed.fuse_entry_valid_ns, 23);
     }
 
     #[test]
