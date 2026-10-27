@@ -2043,6 +2043,7 @@ where
         let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer.clone())?
             .with_fuse_keep_cache(args.fuse_keep_cache);
         fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
+        meta_layer.install_row_cache_stats(fs.stats());
         if packed {
             meta_layer.install_packed_lower_stats(fs.stats());
             packed_vfs = Some(fs.clone());

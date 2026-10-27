@@ -1341,6 +1341,17 @@ impl MountConfig {
             }
         }
 
+        // Workspace-v1 metadata reads carry the namespace/authority fence used
+        // by `fenced_metadata_read`, so a one-second kernel TTL is safe by
+        // default and avoids a userspace round trip for every repeated stat.
+        // Keep the legacy flat-v1 default strict (zero) unless explicitly
+        // configured; callers can still set zero for workspace-v1 as well.
+        let default_fuse_cache_ttl_ms = if volume_format == VolumeFormat::WorkspaceV1 {
+            1_000
+        } else {
+            0
+        };
+
         Ok(Self {
             mount_point,
             volume_format,
@@ -1412,7 +1423,7 @@ impl MountConfig {
             fuse_cache_ttl_ms: args
                 .fuse_cache_ttl_ms
                 .or(fuse_cfg.cache_ttl_ms)
-                .unwrap_or(0),
+                .unwrap_or(default_fuse_cache_ttl_ms),
             fuse_keep_cache: args.fuse_keep_cache.or(fuse_cfg.keep_cache),
             privileged: args.privileged || fuse_cfg.privileged.unwrap_or(false),
             cache,
@@ -2252,6 +2263,13 @@ mod tests {
                 .unwrap();
         assert_eq!(config.fuse_cache_ttl_ms, 0);
 
+        let mut workspace_args =
+            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
+        workspace_args.volume_format = Some(VolumeFormat::WorkspaceV1);
+        workspace_args.workspace = Some(uuid::Uuid::now_v7());
+        let workspace_config = MountConfig::from_sources(workspace_args).unwrap();
+        assert_eq!(workspace_config.fuse_cache_ttl_ms, 1_000);
+
         for yaml_ttl in [None, Some(0), Some(1000), Some(u64::MAX)] {
             let file = tempfile::NamedTempFile::new().unwrap();
             let section = yaml_ttl
@@ -2265,6 +2283,20 @@ mod tests {
                 assert_eq!(config.fuse_cache_ttl_ms, cli_ttl.or(yaml_ttl).unwrap_or(0));
             }
         }
+
+        let mut explicit_workspace = empty_mount_args(
+            None,
+            Some(PathBuf::from("/mnt/workspace-explicit")),
+        );
+        explicit_workspace.volume_format = Some(VolumeFormat::WorkspaceV1);
+        explicit_workspace.workspace = Some(uuid::Uuid::now_v7());
+        explicit_workspace.fuse_cache_ttl_ms = Some(0);
+        assert_eq!(
+            MountConfig::from_sources(explicit_workspace)
+                .unwrap()
+                .fuse_cache_ttl_ms,
+            0
+        );
     }
 
     #[test]
