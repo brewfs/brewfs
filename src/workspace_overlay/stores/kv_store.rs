@@ -2329,59 +2329,7 @@ where
                 "invalid bounded extent query".into(),
             ));
         }
-        if request.range_start > request.range_end {
-            return Err(WorkspaceError::InvalidReadPlan(
-                "extent query starts after its end".into(),
-            ));
-        }
-        if request.range_start == request.range_end {
-            return Ok(Vec::new());
-        }
-
-        let mut rows = Vec::with_capacity(max_rows);
-        let mut scanned_rows = 0;
-        for layer in request.layer_ids {
-            let remaining = max_rows - scanned_rows;
-            let entries = self
-                .backend
-                .scan_prefix_bounded(
-                    &extent_chunk_prefix(layer, request.ino, request.chunk_index),
-                    remaining + 1,
-                )
-                .await?;
-            if entries.len() > remaining {
-                return Err(WorkspaceError::InvalidReadPlan(
-                    "upper extent row limit exceeded".into(),
-                ));
-            }
-            scanned_rows += entries.len();
-            let mut found = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let row: DataExtentDelta = decode(&entry.value)?;
-                row.validate()?;
-                if row.layer_id != layer
-                    || row.ino != request.ino
-                    || row.chunk_index != request.chunk_index
-                    || entry.key != extent_key(&row)
-                {
-                    return Err(WorkspaceError::CorruptMetadata(
-                        "bounded extent key/record identity mismatch".into(),
-                    ));
-                }
-                let row_end = row.logical_offset + row.length;
-                if row.logical_offset < request.range_end && row_end > request.range_start {
-                    found.push(row);
-                }
-            }
-            found.sort_by_key(|row| std::cmp::Reverse(row.sequence));
-            if found.len() > remaining {
-                return Err(WorkspaceError::InvalidReadPlan(
-                    "upper extent row limit exceeded".into(),
-                ));
-            }
-            rows.extend(found);
-        }
-        Ok(rows)
+        self.read_extent_deltas_consistent(request, max_rows).await
     }
 
     async fn load_packed_lower_binding(
@@ -3864,7 +3812,8 @@ where
         &self,
         request: ExtentQuery,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
-        self.read_extent_deltas_consistent(request).await
+        self.read_extent_deltas_consistent(request, DELTA_SCAN_MAX_ROWS)
+            .await
     }
 
     async fn get_xattr_deltas(
@@ -6210,6 +6159,31 @@ mod tests {
                 return Err(WorkspaceError::InvalidReadPlan(
                     "bounded prefix scan requires a positive row limit".into(),
                 ));
+            }
+            // Model a remote bounded scan's multiple responses when the
+            // compaction race hook is armed. A row cap does not make the
+            // complete scan atomic.
+            if prefix.starts_with(b"delta/extent/")
+                && !self.mutate_after_extent_page.lock().await.is_empty()
+            {
+                let mut entries = Vec::new();
+                while entries.len() < max_records {
+                    let page = self
+                        .scan_prefix_page_with_byte_limits(
+                            prefix,
+                            entries.last().map(|entry: &KvEntry| entry.key.as_slice()),
+                            KvReadLimits {
+                                max_records: (max_records - entries.len()).min(32),
+                                ..delta_scan_limits()
+                            },
+                        )
+                        .await?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    entries.extend(page);
+                }
+                return Ok(entries);
             }
             self.scans.fetch_add(1, Ordering::Relaxed);
             Ok(self

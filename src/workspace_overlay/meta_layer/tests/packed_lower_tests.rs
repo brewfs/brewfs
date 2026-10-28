@@ -1062,9 +1062,10 @@ async fn namespace_cache_survives_data_commits_and_clears_on_namespace_commits()
         .namespace_row_cache()
         .expect("frozen namespace cache");
     let seed = |cache: &super::super::row_cache::UpperRowCache| {
+        let key = RowKey::Aliases(400);
         cache.insert(
-            cache.ticket(),
-            RowKey::Aliases(400),
+            cache.ticket(&key),
+            key,
             RowValue::Aliases(std::sync::Arc::new(vec![(1, b"nonzero".to_vec())])),
         );
     };
@@ -1147,14 +1148,16 @@ async fn create_keeps_existing_paths_cached_but_other_namespace_commits_clear_th
         .expect("frozen namespace cache");
     let head = f.head().await;
     let seed = |cache: &super::super::row_cache::UpperRowCache| {
+        let paths = RowKey::Paths(400);
         cache.insert(
-            cache.ticket(),
-            RowKey::Paths(400),
+            cache.ticket(&paths),
+            paths,
             RowValue::Paths(std::sync::Arc::new(vec![b"/file".to_vec()])),
         );
+        let aliases = RowKey::Aliases(400);
         cache.insert(
-            cache.ticket(),
-            RowKey::Aliases(400),
+            cache.ticket(&aliases),
+            aliases,
             RowValue::Aliases(std::sync::Arc::new(vec![(1, b"file".to_vec())])),
         );
     };
@@ -1244,10 +1247,12 @@ async fn commit_invalidates_only_the_row_cache_keys_it_writes() {
     assert!(cache.get(&RowKey::Inode(400)).is_some());
     assert!(cache.get(&RowKey::Permission(400)).is_some());
     let unrelated = || RowValue::Inode(std::sync::Arc::new(Vec::new()));
-    cache.insert(cache.ticket(), RowKey::Inode(1), unrelated());
+    let inode_key = RowKey::Inode(1);
+    cache.insert(cache.ticket(&inode_key), inode_key, unrelated());
+    let dentry_key = RowKey::Dentry(1, b"other".to_vec());
     cache.insert(
-        cache.ticket(),
-        RowKey::Dentry(1, b"other".to_vec()),
+        cache.ticket(&dentry_key),
+        dentry_key,
         RowValue::Dentry(std::sync::Arc::new(Vec::new())),
     );
     // A real mount commit writing inode 400.
@@ -1315,8 +1320,10 @@ async fn unsupported_packed_commit_permanently_disables_cached_authority() {
         .expect("frozen namespace cache");
     let inode = || RowValue::Inode(Arc::new(Vec::new()));
     let paths = || RowValue::Paths(Arc::new(vec![b"/file".to_vec()]));
-    upper.insert(upper.ticket(), RowKey::Inode(1), inode());
-    namespace.insert(namespace.ticket(), RowKey::Paths(400), paths());
+    let inode_key = RowKey::Inode(1);
+    let paths_key = RowKey::Paths(400);
+    upper.insert(upper.ticket(&inode_key), inode_key.clone(), inode());
+    namespace.insert(namespace.ticket(&paths_key), paths_key.clone(), paths());
     assert!(upper.get(&RowKey::Inode(1)).is_some());
     assert!(namespace.get(&RowKey::Paths(400)).is_some());
     // This adapter deliberately lacks packed commit support. An error other
@@ -1329,8 +1336,8 @@ async fn unsupported_packed_commit_permanently_disables_cached_authority() {
     ));
     assert!(upper.get(&RowKey::Inode(1)).is_none());
     assert!(namespace.get(&RowKey::Paths(400)).is_none());
-    upper.insert(upper.ticket(), RowKey::Inode(1), inode());
-    namespace.insert(namespace.ticket(), RowKey::Paths(400), paths());
+    upper.insert(upper.ticket(&inode_key), inode_key, inode());
+    namespace.insert(namespace.ticket(&paths_key), paths_key, paths());
     assert!(upper.get(&RowKey::Inode(1)).is_none());
     assert!(namespace.get(&RowKey::Paths(400)).is_none());
 }

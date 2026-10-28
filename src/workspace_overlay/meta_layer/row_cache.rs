@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use dashmap::DashMap;
 use moka::sync::Cache;
 
 use crate::workspace_overlay::catalog::PermissionSnapshot;
@@ -70,7 +71,11 @@ impl LeaseLocalFence {
 
 pub(super) struct UpperRowCache {
     rows: Cache<RowKey, RowValue>,
+    /// Bumped only by a full-cache invalidation. Key invalidations use the
+    /// per-key generations below so an unrelated commit does not discard
+    /// in-flight refills for every other row.
     generation: AtomicU64,
+    key_generations: DashMap<RowKey, u64>,
     /// A canceled/uncertain backend write can still complete after the caller
     /// drops. No later refill may claim local authority in that mount.
     disabled: AtomicBool,
@@ -146,10 +151,13 @@ impl Drop for CacheCommitGuard<'_> {
     }
 }
 
-/// Captured before a backend read; the insert is dropped if any
-/// invalidation happened in between.
+/// Captured before a backend read; the insert is dropped if the cache or this
+/// key was invalidated in between.
 #[derive(Clone, Copy)]
-pub(super) struct RowTicket(u64);
+pub(super) struct RowTicket {
+    generation: u64,
+    key_generation: u64,
+}
 
 impl UpperRowCache {
     pub(super) fn new(ttl: Duration) -> Self {
@@ -163,13 +171,20 @@ impl UpperRowCache {
                 .time_to_live(ttl)
                 .build(),
             generation: AtomicU64::new(0),
+            key_generations: DashMap::new(),
             disabled: AtomicBool::new(false),
             counters,
         }
     }
 
-    pub(super) fn ticket(&self) -> RowTicket {
-        RowTicket(self.generation.load(Ordering::Acquire))
+    pub(super) fn ticket(&self, key: &RowKey) -> RowTicket {
+        RowTicket {
+            generation: self.generation.load(Ordering::Acquire),
+            key_generation: self
+                .key_generations
+                .get(key)
+                .map_or(0, |generation| *generation),
+        }
     }
 
     pub(super) fn get(&self, key: &RowKey) -> Option<RowValue> {
@@ -192,21 +207,23 @@ impl UpperRowCache {
     }
 
     pub(super) fn insert(&self, ticket: RowTicket, key: RowKey, value: RowValue) {
-        if self.disabled.load(Ordering::Acquire)
-            || self.generation.load(Ordering::SeqCst) != ticket.0
-        {
+        if self.disabled.load(Ordering::Acquire) || !self.ticket_is_current(&ticket, &key) {
             return;
         }
         self.rows.insert(key.clone(), value);
         // An invalidation that ran concurrently with this insert must win.
-        // Every invalidation bumps the generation before removing, so an
-        // insert landing after that removal sees the bump and drops itself;
-        // one landing before it is removed by the invalidation.
-        if self.disabled.load(Ordering::Acquire)
-            || self.generation.load(Ordering::SeqCst) != ticket.0
-        {
+        if self.disabled.load(Ordering::Acquire) || !self.ticket_is_current(&ticket, &key) {
             self.rows.invalidate(&key);
         }
+    }
+
+    fn ticket_is_current(&self, ticket: &RowTicket, key: &RowKey) -> bool {
+        self.generation.load(Ordering::SeqCst) == ticket.generation
+            && self
+                .key_generations
+                .get(key)
+                .map_or(0, |generation| *generation)
+                == ticket.key_generation
     }
 
     fn disable(&self) {
@@ -216,14 +233,25 @@ impl UpperRowCache {
 
     pub(super) fn invalidate_all(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.clear_rows_and_key_generations();
+    }
+
+    fn clear_rows_and_key_generations(&self) {
+        self.key_generations.clear();
+        // Clearing can reset a concurrently invalidated key back to zero.
+        // Fence tickets captured since the first bump, before that reset,
+        // so they cannot match their old zero key generation again.
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.rows.invalidate_all();
     }
 
-    /// Only these keys; unrelated cached rows stay. Still bumps the
-    /// generation so any read in flight drops its insert.
+    /// Only these keys; unrelated cached rows and in-flight refills stay.
     pub(super) fn invalidate_keys(&self, keys: &[RowKey]) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
         for key in keys {
+            self.key_generations
+                .entry(key.clone())
+                .and_modify(|generation| *generation = generation.wrapping_add(1))
+                .or_insert(1);
             self.rows.invalidate(key);
         }
     }
@@ -240,41 +268,61 @@ mod tests {
     #[test]
     fn racing_invalidation_drops_stale_insert() {
         let cache = UpperRowCache::new(Duration::from_secs(60));
-        let ticket = cache.ticket();
+        let key = RowKey::Inode(5);
+        let ticket = cache.ticket(&key);
         cache.invalidate_all();
-        cache.insert(
-            ticket,
-            RowKey::Inode(5),
-            RowValue::Inode(Arc::new(Vec::new())),
-        );
-        assert!(cache.get(&RowKey::Inode(5)).is_none());
-        let fresh = cache.ticket();
-        cache.insert(
-            fresh,
-            RowKey::Inode(5),
-            RowValue::Inode(Arc::new(Vec::new())),
-        );
-        assert!(cache.get(&RowKey::Inode(5)).is_some());
+        cache.insert(ticket, key.clone(), RowValue::Inode(Arc::new(Vec::new())));
+        assert!(cache.get(&key).is_none());
+        let fresh = cache.ticket(&key);
+        cache.insert(fresh, key.clone(), RowValue::Inode(Arc::new(Vec::new())));
+        assert!(cache.get(&key).is_some());
         cache.invalidate_all();
-        assert!(cache.get(&RowKey::Inode(5)).is_none());
+        assert!(cache.get(&key).is_none());
     }
 
     #[test]
     fn key_invalidation_keeps_unrelated_rows_and_drops_racing_insert() {
         let cache = UpperRowCache::new(Duration::from_secs(60));
         let row = || RowValue::Inode(Arc::new(Vec::new()));
-        let ticket = cache.ticket();
-        cache.insert(ticket, RowKey::Inode(5), row());
-        cache.insert(ticket, RowKey::Inode(6), row());
-        let racing = cache.ticket();
-        cache.invalidate_keys(&[RowKey::Inode(5)]);
-        assert!(cache.get(&RowKey::Inode(5)).is_none());
-        assert!(cache.get(&RowKey::Inode(6)).is_some());
-        // A read that started before the commit must not re-insert the
-        // pre-commit row of any key.
-        cache.insert(racing, RowKey::Inode(5), row());
-        cache.insert(racing, RowKey::Inode(7), row());
-        assert!(cache.get(&RowKey::Inode(5)).is_none());
-        assert!(cache.get(&RowKey::Inode(7)).is_none());
+        let key5 = RowKey::Inode(5);
+        let key6 = RowKey::Inode(6);
+        let key7 = RowKey::Inode(7);
+        cache.insert(cache.ticket(&key5), key5.clone(), row());
+        cache.insert(cache.ticket(&key6), key6.clone(), row());
+        let racing5 = cache.ticket(&key5);
+        let racing7 = cache.ticket(&key7);
+        cache.invalidate_keys(std::slice::from_ref(&key5));
+        assert!(cache.get(&key5).is_none());
+        assert!(cache.get(&key6).is_some());
+        // An invalidation drops only the affected key. A refill that raced
+        // an unrelated commit remains valid.
+        cache.insert(racing5, key5.clone(), row());
+        cache.insert(racing7, key7.clone(), row());
+        assert!(cache.get(&key5).is_none());
+        assert!(cache.get(&key7).is_some());
+    }
+
+    #[test]
+    fn clearing_key_generations_cannot_revive_a_racing_refill_ticket() {
+        let cache = UpperRowCache::new(Duration::from_secs(60));
+        let key = RowKey::Inode(5);
+        // Pause a full invalidation immediately after its first epoch bump.
+        cache.generation.fetch_add(1, Ordering::SeqCst);
+        let stale = cache.ticket(&key);
+        // A local write invalidates the old backend read, then the full
+        // clear removes that key's nonzero generation (the ABA window).
+        cache.invalidate_keys(std::slice::from_ref(&key));
+        cache.clear_rows_and_key_generations();
+        cache.insert(stale, key.clone(), RowValue::Inode(Arc::new(Vec::new())));
+        assert!(
+            cache.get(&key).is_none(),
+            "clearing versions cannot revive a stale ticket"
+        );
+        cache.insert(
+            cache.ticket(&key),
+            key.clone(),
+            RowValue::Inode(Arc::new(Vec::new())),
+        );
+        assert!(cache.get(&key).is_some(), "a fresh refill must still work");
     }
 }

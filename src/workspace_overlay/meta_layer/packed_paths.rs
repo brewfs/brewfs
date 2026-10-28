@@ -82,14 +82,15 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             }
             return Ok((*aliases).clone());
         }
-        let ticket = cache.map(super::row_cache::UpperRowCache::ticket);
+        let key = super::row_cache::RowKey::Aliases(inode);
+        let ticket = cache.map(|cache| cache.ticket(&key));
         let effective = self
             .packed_reverse_aliases_uncached(lower, authority, inode, limits)
             .await?;
         if let (Some(cache), Some(ticket)) = (cache, ticket) {
             cache.insert(
                 ticket,
-                super::row_cache::RowKey::Aliases(inode),
+                key,
                 super::row_cache::RowValue::Aliases(Arc::new(effective.clone())),
             );
         }
@@ -196,7 +197,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 guard: None,
             });
         }
-        let ticket = cache.map(super::row_cache::UpperRowCache::ticket);
+        let key = super::row_cache::RowKey::Paths(target);
+        let ticket = cache.map(|cache| cache.ticket(&key));
         const ATTEMPTS: usize = 64;
         for attempt in 1..=ATTEMPTS {
             match self.packed_paths_bytes_owned_attempt(target).await {
@@ -204,7 +206,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                     if let (Some(cache), Some(ticket)) = (cache, ticket) {
                         cache.insert(
                             ticket,
-                            super::row_cache::RowKey::Paths(target),
+                            key,
                             super::row_cache::RowValue::Paths(Arc::new(owned.paths.clone())),
                         );
                     }

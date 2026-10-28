@@ -491,6 +491,66 @@ async fn writes_build_read_plans_and_truncate_holes_prevent_data_revival() {
 }
 
 #[tokio::test]
+async fn bounded_extent_snapshot_reuses_a_chunk_and_is_dropped_by_data_commit() {
+    let meta = test_meta().await;
+    let file = meta
+        .create_file(meta.root_ino(), "snapshot-read".into())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(file, 0).unwrap();
+    meta.write(
+        file,
+        chunk_id,
+        SliceDesc {
+            slice_id: 77,
+            chunk_id,
+            offset: 0,
+            length: 8,
+        },
+        8,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(meta.resolver_cache.extent_snapshot_len(), 0);
+    assert_eq!(
+        meta.read_plan(file, 0, 0, 4).await.unwrap().segments,
+        vec![ReadPlanSegment::Data {
+            logical_offset: 0,
+            length: 4,
+            slice_id: 77,
+            slice_offset: 0,
+        }]
+    );
+    assert_eq!(meta.resolver_cache.extent_snapshot_len(), 1);
+    assert_eq!(
+        meta.read_plan(file, 0, 4, 4).await.unwrap().segments,
+        vec![ReadPlanSegment::Data {
+            logical_offset: 4,
+            length: 4,
+            slice_id: 77,
+            slice_offset: 4,
+        }]
+    );
+    assert_eq!(meta.resolver_cache.extent_snapshot_len(), 1);
+
+    meta.write(
+        file,
+        chunk_id,
+        SliceDesc {
+            slice_id: 78,
+            chunk_id,
+            offset: 8,
+            length: 4,
+        },
+        12,
+    )
+    .await
+    .unwrap();
+    assert_eq!(meta.resolver_cache.extent_snapshot_len(), 0);
+}
+
+#[tokio::test]
 async fn aligned_physical_slice_is_clipped_to_logical_eof() {
     let meta = test_meta().await;
     let file = meta
