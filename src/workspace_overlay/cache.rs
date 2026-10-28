@@ -1,5 +1,7 @@
 //! Epoch- and inode-version-scoped resolver caches.
 
+use std::sync::Arc;
+
 use moka::sync::Cache;
 
 use crate::chunk::read_plan::ResolvedReadPlan;
@@ -21,8 +23,21 @@ pub struct ReadPlanCacheKey {
     pub range_end: u64,
 }
 
+/// One immutable upper extent view for a complete chunk.  The request range
+/// is deliberately absent: callers clip the resolved plan in memory so
+/// adjacent/random reads of the same chunk share one backend extent scan.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ExtentSnapshotCacheKey {
+    pub workspace_id: WorkspaceId,
+    pub head_epoch: u64,
+    pub ino: i64,
+    pub chunk_index: u64,
+    pub inode_data_version: u64,
+}
+
 pub struct WorkspaceResolverCache {
     read_plans: Cache<ReadPlanCacheKey, ResolvedReadPlan>,
+    extent_snapshots: Cache<ExtentSnapshotCacheKey, Arc<ResolvedReadPlan>>,
 }
 
 impl Default for WorkspaceResolverCache {
@@ -44,7 +59,23 @@ impl WorkspaceResolverCache {
                     .unwrap_or(u32::MAX)
             })
             .build();
-        Self { read_plans }
+        let extent_snapshots = Cache::builder()
+            .max_capacity(max_weight.max(1))
+            .support_invalidation_closures()
+            .weigher(
+                |_key: &ExtentSnapshotCacheKey, plan: &Arc<ResolvedReadPlan>| {
+                    plan.segments
+                        .len()
+                        .saturating_add(1)
+                        .try_into()
+                        .unwrap_or(u32::MAX)
+                },
+            )
+            .build();
+        Self {
+            read_plans,
+            extent_snapshots,
+        }
     }
 
     pub fn get_read_plan(&self, key: &ReadPlanCacheKey) -> Option<ResolvedReadPlan> {
@@ -55,12 +86,27 @@ impl WorkspaceResolverCache {
         self.read_plans.insert(key, plan);
     }
 
+    pub fn get_extent_snapshot(
+        &self,
+        key: &ExtentSnapshotCacheKey,
+    ) -> Option<Arc<ResolvedReadPlan>> {
+        self.extent_snapshots.get(key)
+    }
+
+    pub fn insert_extent_snapshot(&self, key: ExtentSnapshotCacheKey, plan: Arc<ResolvedReadPlan>) {
+        self.extent_snapshots.insert(key, plan);
+    }
+
     pub fn invalidate_inode(&self, workspace_id: WorkspaceId, ino: i64) {
         self.invalidate_matching(move |key| key.workspace_id == workspace_id && key.ino == ino);
+        self.invalidate_extent_matching(move |key| {
+            key.workspace_id == workspace_id && key.ino == ino
+        });
     }
 
     pub fn invalidate_workspace(&self, workspace_id: WorkspaceId) {
         self.invalidate_matching(move |key| key.workspace_id == workspace_id);
+        self.invalidate_extent_matching(move |key| key.workspace_id == workspace_id);
     }
 
     fn invalidate_matching(
@@ -73,15 +119,32 @@ impl WorkspaceResolverCache {
         self.read_plans.run_pending_tasks();
     }
 
+    fn invalidate_extent_matching(
+        &self,
+        predicate: impl Fn(&ExtentSnapshotCacheKey) -> bool + Send + Sync + 'static,
+    ) {
+        self.extent_snapshots
+            .invalidate_entries_if(move |key, _| predicate(key))
+            .expect("extent snapshot cache invalidation predicates are enabled");
+        self.extent_snapshots.run_pending_tasks();
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.read_plans.run_pending_tasks();
         self.read_plans.entry_count() as usize
     }
 
+    #[cfg(test)]
+    pub fn extent_snapshot_len(&self) -> usize {
+        self.extent_snapshots.run_pending_tasks();
+        self.extent_snapshots.entry_count() as usize
+    }
+
     pub fn is_empty(&self) -> bool {
         self.read_plans.run_pending_tasks();
-        self.read_plans.entry_count() == 0
+        self.extent_snapshots.run_pending_tasks();
+        self.read_plans.entry_count() == 0 && self.extent_snapshots.entry_count() == 0
     }
 }
 
@@ -111,6 +174,16 @@ mod tests {
                 slice_id,
                 slice_offset: 0,
             }],
+        }
+    }
+
+    fn snapshot_key(workspace_id: WorkspaceId, ino: i64) -> ExtentSnapshotCacheKey {
+        ExtentSnapshotCacheKey {
+            workspace_id,
+            head_epoch: 1,
+            ino,
+            chunk_index: 0,
+            inode_data_version: 1,
         }
     }
 
@@ -160,5 +233,26 @@ mod tests {
         invalidation_cache.invalidate_workspace(other_workspace_id);
         assert!(invalidation_cache.get_read_plan(&other_key).is_none());
         assert!(invalidation_cache.is_empty());
+    }
+
+    #[test]
+    fn extent_snapshot_cache_is_inode_scoped_and_invalidated_with_the_view() {
+        let cache = WorkspaceResolverCache::with_capacity(8);
+        let workspace_id = WorkspaceId::new();
+        let other_workspace_id = WorkspaceId::new();
+        let key = snapshot_key(workspace_id, 7);
+        let other_key = snapshot_key(other_workspace_id, 8);
+        let cached = Arc::new(plan(17));
+        cache.insert_extent_snapshot(key, cached.clone());
+        cache.insert_extent_snapshot(other_key, Arc::new(plan(18)));
+
+        assert_eq!(cache.get_extent_snapshot(&key), Some(cached));
+        assert_eq!(cache.extent_snapshot_len(), 2);
+        cache.invalidate_inode(workspace_id, 7);
+        assert!(cache.get_extent_snapshot(&key).is_none());
+        assert!(cache.get_extent_snapshot(&other_key).is_some());
+
+        cache.invalidate_workspace(other_workspace_id);
+        assert!(cache.is_empty());
     }
 }

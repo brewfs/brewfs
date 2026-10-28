@@ -1,12 +1,13 @@
 use super::*;
 
 fn warm(cache: &UpperRowCache, ino: i64) {
+    let key = RowKey::Inode(ino);
     cache.insert(
-        cache.ticket(),
-        RowKey::Inode(ino),
+        cache.ticket(&key),
+        key.clone(),
         RowValue::Inode(Arc::new(Vec::new())),
     );
-    assert!(cache.get(&RowKey::Inode(ino)).is_some());
+    assert!(cache.get(&key).is_some());
 }
 
 #[test]
@@ -15,18 +16,15 @@ fn unresolved_commit_disables_both_caches_and_later_refills() {
     let namespace = UpperRowCache::new(Duration::from_secs(60));
     warm(&upper, 1);
     warm(&namespace, 1);
-    let in_flight = upper.ticket();
+    let key = RowKey::Inode(1);
+    let in_flight = upper.ticket(&key);
     drop(CacheCommitGuard::new(Some(&upper), Some(&namespace)));
     for cache in [&upper, &namespace] {
         assert!(cache.get(&RowKey::Inode(1)).is_none());
         // A later backend read can observe the old server state while an
         // uncertain request is still executing. It must never become cached.
-        for ticket in [in_flight, cache.ticket()] {
-            cache.insert(
-                ticket,
-                RowKey::Inode(1),
-                RowValue::Inode(Arc::new(Vec::new())),
-            );
+        for ticket in [in_flight, cache.ticket(&key)] {
+            cache.insert(ticket, key.clone(), RowValue::Inode(Arc::new(Vec::new())));
             assert!(cache.get(&RowKey::Inode(1)).is_none());
         }
         cache.invalidate_all();
@@ -73,7 +71,7 @@ async fn canceling_the_await_disables_authority_even_with_a_live_lease() {
     );
     assert!(!fence.unchanged(1, &[]));
     cache.insert(
-        cache.ticket(),
+        cache.ticket(&RowKey::Inode(1)),
         RowKey::Inode(1),
         RowValue::Inode(Arc::new(Vec::new())),
     );

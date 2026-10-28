@@ -28,10 +28,11 @@ use crate::meta::store::{
 };
 use crate::vfs::handles::DirHandle;
 
-use super::cache::{ReadPlanCacheKey, WorkspaceResolverCache};
+use super::cache::{ExtentSnapshotCacheKey, ReadPlanCacheKey, WorkspaceResolverCache};
 use super::catalog::{
-    AclQuery, DentryQuery, ExtentQuery, HeadGuard, InodeQuery, PermissionSnapshot,
-    PermissionSnapshotQuery, RecordOrphanSlice, VersionedMutation, WorkspaceStore, XattrQuery,
+    AclQuery, DentryQuery, ExtentQuery, HeadGuard, InodeQuery, MAX_UPPER_EXTENT_ROWS,
+    PermissionSnapshot, PermissionSnapshotQuery, RecordOrphanSlice, VersionedMutation,
+    WorkspaceStore, XattrQuery,
 };
 use super::error::WorkspaceError;
 use super::ids::LayerId;
@@ -139,6 +140,67 @@ pub(super) struct RowsWritten {
     /// Complete affected set for a fresh create or file-only namespace
     /// mutation. Directory moves can change descendant paths and use None.
     namespace_inodes: Option<Vec<i64>>,
+}
+
+/// Clip a complete-chunk resolved plan without touching the metadata store.
+/// The snapshot was validated by `resolve_extents`; the checked arithmetic
+/// here keeps a corrupt or future hand-built cache value from turning into a
+/// slice-offset wraparound.
+fn clip_extent_snapshot(
+    snapshot: &ResolvedReadPlan,
+    range_start: u64,
+    range_end: u64,
+) -> Result<ResolvedReadPlan, MetaError> {
+    if range_start > range_end {
+        return Err(MetaError::Internal(
+            "extent snapshot clip starts after its end".into(),
+        ));
+    }
+    let mut segments = Vec::new();
+    for segment in &snapshot.segments {
+        let (logical_offset, length) = match segment {
+            ReadPlanSegment::Data {
+                logical_offset,
+                length,
+                ..
+            }
+            | ReadPlanSegment::Zero {
+                logical_offset,
+                length,
+            } => (*logical_offset, *length),
+        };
+        let segment_end = logical_offset
+            .checked_add(length)
+            .ok_or_else(|| MetaError::Internal("extent snapshot segment range overflows".into()))?;
+        let start = logical_offset.max(range_start);
+        let end = segment_end.min(range_end);
+        if start >= end {
+            continue;
+        }
+        let clipped_length = end - start;
+        let segment = match segment {
+            ReadPlanSegment::Data {
+                slice_id,
+                slice_offset,
+                ..
+            } => ReadPlanSegment::Data {
+                logical_offset: start,
+                length: clipped_length,
+                slice_id: *slice_id,
+                slice_offset: slice_offset
+                    .checked_add(start - logical_offset)
+                    .ok_or_else(|| {
+                        MetaError::Internal("extent snapshot slice offset overflows".into())
+                    })?,
+            },
+            ReadPlanSegment::Zero { .. } => ReadPlanSegment::Zero {
+                logical_offset: start,
+                length: clipped_length,
+            },
+        };
+        segments.push(segment);
+    }
+    Ok(ResolvedReadPlan { segments })
 }
 
 impl RowsWritten {
@@ -405,7 +467,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let rows = match cache.get(&row_cache::RowKey::Inode(ino)) {
             Some(row_cache::RowValue::Inode(rows)) => rows,
             _ => {
-                let ticket = cache.ticket();
+                let key = row_cache::RowKey::Inode(ino);
+                let ticket = cache.ticket(&key);
                 let rows = Arc::new(
                     self.store
                         .get_inode_deltas(InodeQuery {
@@ -415,11 +478,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                         .await
                         .map_err(workspace_to_meta)?,
                 );
-                cache.insert(
-                    ticket,
-                    row_cache::RowKey::Inode(ino),
-                    row_cache::RowValue::Inode(rows.clone()),
-                );
+                cache.insert(ticket, key, row_cache::RowValue::Inode(rows.clone()));
                 rows
             }
         };
@@ -757,7 +816,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let rows = match cache.and_then(|cache| cache.get(&row_cache::RowKey::Inode(ino))) {
             Some(row_cache::RowValue::Inode(rows)) => rows,
             _ => {
-                let ticket = cache.map(row_cache::UpperRowCache::ticket);
+                let key = row_cache::RowKey::Inode(ino);
+                let ticket = cache.map(|cache| cache.ticket(&key));
                 let rows = std::sync::Arc::new(
                     self.store
                         .get_inode_deltas(InodeQuery {
@@ -768,11 +828,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                         .map_err(workspace_to_meta)?,
                 );
                 if let (Some(cache), Some(ticket)) = (cache, ticket) {
-                    cache.insert(
-                        ticket,
-                        row_cache::RowKey::Inode(ino),
-                        row_cache::RowValue::Inode(rows.clone()),
-                    );
+                    cache.insert(ticket, key, row_cache::RowValue::Inode(rows.clone()));
                 }
                 rows
             }
@@ -952,7 +1008,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let Some(cache) = self.namespace_row_cache() else {
             return;
         };
-        let ticket = cache.ticket();
+        let key = row_cache::RowKey::Paths(ino);
+        let ticket = cache.ticket(&key);
         let parent_paths = if parent == self.root_ino() {
             Arc::new(vec![b"/".to_vec()])
         } else {
@@ -975,11 +1032,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 child
             })
             .collect::<Vec<_>>();
-        cache.insert(
-            ticket,
-            row_cache::RowKey::Paths(ino),
-            row_cache::RowValue::Paths(Arc::new(paths)),
-        );
+        cache.insert(ticket, key, row_cache::RowValue::Paths(Arc::new(paths)));
     }
 
     /// One inode's permission snapshot. While the exclusive lease is proven
@@ -996,7 +1049,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         {
             return Ok((*snapshot).clone());
         }
-        let ticket = cache.map(row_cache::UpperRowCache::ticket);
+        let ticket = cache.map(|cache| cache.ticket(&key));
         let snapshot = self.permission_snapshot(vec![ino], None).await?;
         if let (Some(cache), Some(ticket)) = (cache, ticket) {
             cache.insert(
@@ -1020,7 +1073,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let rows = match cache.and_then(|cache| cache.get(&key)) {
             Some(row_cache::RowValue::Dentry(rows)) => rows,
             _ => {
-                let ticket = cache.map(row_cache::UpperRowCache::ticket);
+                let ticket = cache.map(|cache| cache.ticket(&key));
                 let rows = std::sync::Arc::new(
                     self.store
                         .get_dentry_deltas(DentryQuery {
@@ -1345,7 +1398,15 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             });
         let mut inodes = vec![ino];
         inodes.extend(companion);
-        let ticket = self.upper_row_cache().map(row_cache::UpperRowCache::ticket);
+        let permission_key = row_cache::RowKey::Permission(ino);
+        let companion_key = companion.map(row_cache::RowKey::Permission);
+        let ticket = self
+            .upper_row_cache()
+            .map(|cache| cache.ticket(&permission_key));
+        let companion_ticket = self
+            .upper_row_cache()
+            .zip(companion_key.as_ref())
+            .map(|(cache, key)| cache.ticket(key));
         let snapshot = match self.permission_snapshot(inodes, None).await {
             // Corrupt/unavailable speculative rows must not fail an otherwise
             // valid operation. Read the required inode alone on this path.
@@ -1369,15 +1430,20 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             let snapshot = Arc::new(snapshot);
             cache.insert(
                 ticket,
-                row_cache::RowKey::Permission(ino),
+                permission_key,
                 row_cache::RowValue::Permission(snapshot.clone()),
             );
             if let Some(companion) = companion {
-                cache.insert(
-                    ticket,
-                    row_cache::RowKey::Permission(companion),
-                    row_cache::RowValue::Permission(snapshot),
-                );
+                if let (Some(companion_key), Some(companion_ticket)) =
+                    (companion_key, companion_ticket)
+                {
+                    debug_assert_eq!(companion_key, row_cache::RowKey::Permission(companion));
+                    cache.insert(
+                        companion_ticket,
+                        companion_key,
+                        row_cache::RowValue::Permission(snapshot),
+                    );
+                }
             }
         }
         if let Some(slot) = read_ahead
@@ -2229,7 +2295,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         let snapshot = match cache.and_then(|cache| cache.get(&key)) {
             Some(row_cache::RowValue::Permission(snapshot)) => (*snapshot).clone(),
             _ => {
-                let ticket = cache.map(row_cache::UpperRowCache::ticket);
+                let ticket = cache.map(|cache| cache.ticket(&key));
                 let snapshot = self.permission_snapshot(vec![ino], None).await?;
                 if let (Some(cache), Some(ticket)) = (cache, ticket) {
                     cache.insert(
@@ -3760,7 +3826,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         let rows = match cache.and_then(|cache| cache.get(&key)) {
             Some(row_cache::RowValue::Xattr(rows)) => rows,
             _ => {
-                let ticket = cache.map(row_cache::UpperRowCache::ticket);
+                let ticket = cache.map(|cache| cache.ticket(&key));
                 let rows = std::sync::Arc::new(
                     self.store
                         .get_xattr_deltas(XattrQuery {
@@ -4133,44 +4199,108 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
         if let Some(plan) = self.resolver_cache.get_read_plan(&cache_key) {
             return Ok(plan);
         }
+        let snapshot_key = ExtentSnapshotCacheKey {
+            workspace_id: view.workspace_id,
+            head_epoch: view.head_epoch,
+            ino,
+            chunk_index,
+            inode_data_version: inode.data_version,
+        };
+        if let Some(snapshot) = self.resolver_cache.get_extent_snapshot(&snapshot_key) {
+            let plan = clip_extent_snapshot(&snapshot, offset, end)?;
+            self.metrics
+                .add_extent_plan_segments(plan.segments.len() as u64);
+            return Ok(plan);
+        }
         let chain = self.chain().await?;
-        let rows = self
+        let layer_ids = chain.iter().map(|layer| layer.layer_id).collect();
+        let full_query = ExtentQuery {
+            layer_ids,
+            ino,
+            chunk_index,
+            range_start: 0,
+            range_end: self.chunk_size,
+        };
+        match self
             .store
-            .get_extent_deltas(ExtentQuery {
-                layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
-                ino,
-                chunk_index,
-                range_start: offset,
-                range_end: end,
-            })
+            .get_extent_deltas_bounded(full_query.clone(), MAX_UPPER_EXTENT_ROWS)
             .await
-            .map_err(workspace_to_meta)?;
-        let extents = resolve_extents(&chain, &rows, ino, chunk_index, offset..end)
-            .map_err(workspace_to_meta)?;
-        let segments = extents
-            .into_iter()
-            .map(|extent| match extent.kind {
-                super::model::ExtentKind::Data {
-                    slice_id,
-                    slice_offset,
-                } => ReadPlanSegment::Data {
-                    logical_offset: extent.logical_offset,
-                    length: extent.length,
-                    slice_id,
-                    slice_offset,
-                },
-                super::model::ExtentKind::Hole => ReadPlanSegment::Zero {
-                    logical_offset: extent.logical_offset,
-                    length: extent.length,
-                },
-            })
-            .collect();
-        let plan = ResolvedReadPlan { segments };
-        self.metrics
-            .add_extent_plan_segments(plan.segments.len() as u64);
-        self.resolver_cache
-            .insert_read_plan(cache_key, plan.clone());
-        Ok(plan)
+        {
+            Ok(rows) => {
+                let extents = resolve_extents(&chain, &rows, ino, chunk_index, 0..self.chunk_size)
+                    .map_err(workspace_to_meta)?;
+                let full_plan = Arc::new(ResolvedReadPlan {
+                    segments: extents
+                        .into_iter()
+                        .map(|extent| match extent.kind {
+                            super::model::ExtentKind::Data {
+                                slice_id,
+                                slice_offset,
+                            } => ReadPlanSegment::Data {
+                                logical_offset: extent.logical_offset,
+                                length: extent.length,
+                                slice_id,
+                                slice_offset,
+                            },
+                            super::model::ExtentKind::Hole => ReadPlanSegment::Zero {
+                                logical_offset: extent.logical_offset,
+                                length: extent.length,
+                            },
+                        })
+                        .collect(),
+                });
+                self.resolver_cache
+                    .insert_extent_snapshot(snapshot_key, full_plan.clone());
+                let plan = clip_extent_snapshot(&full_plan, offset, end)?;
+                self.metrics
+                    .add_extent_plan_segments(plan.segments.len() as u64);
+                Ok(plan)
+            }
+            // Test/delegating stores and older implementations may not expose
+            // the bounded primitive.  Keep their exact-range behavior and do
+            // not retain a snapshot whose allocation was not bounded.
+            Err(WorkspaceError::UnsupportedCapability(_) | WorkspaceError::InvalidReadPlan(_)) => {
+                let rows = self
+                    .store
+                    .get_extent_deltas(ExtentQuery {
+                        layer_ids: full_query.layer_ids,
+                        ino,
+                        chunk_index,
+                        range_start: offset,
+                        range_end: end,
+                    })
+                    .await
+                    .map_err(workspace_to_meta)?;
+                let extents = resolve_extents(&chain, &rows, ino, chunk_index, offset..end)
+                    .map_err(workspace_to_meta)?;
+                let plan = ResolvedReadPlan {
+                    segments: extents
+                        .into_iter()
+                        .map(|extent| match extent.kind {
+                            super::model::ExtentKind::Data {
+                                slice_id,
+                                slice_offset,
+                            } => ReadPlanSegment::Data {
+                                logical_offset: extent.logical_offset,
+                                length: extent.length,
+                                slice_id,
+                                slice_offset,
+                            },
+                            super::model::ExtentKind::Hole => ReadPlanSegment::Zero {
+                                logical_offset: extent.logical_offset,
+                                length: extent.length,
+                            },
+                        })
+                        .collect(),
+                };
+                self.metrics
+                    .add_extent_plan_segments(plan.segments.len() as u64);
+                self.resolver_cache
+                    .insert_read_plan(cache_key, plan.clone());
+                Ok(plan)
+            }
+            Err(error) => Err(workspace_to_meta(error)),
+        }
     }
 
     async fn range_has_data(&self, ino: i64, offset: u64, len: u64) -> Result<bool, MetaError> {
