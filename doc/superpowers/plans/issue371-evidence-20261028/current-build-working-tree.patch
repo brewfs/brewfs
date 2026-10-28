@@ -1,0 +1,117 @@
+diff --git a/src/cli.rs b/src/cli.rs
+index a476cdd..ebbe930 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -1333,6 +1333,20 @@ where
+     if let Some(max_weight) = args.meta_read_plan_cache_max_weight {
+         meta_layer = meta_layer.with_read_plan_cache_max_weight(max_weight);
+     }
++    // The native mount also holds the exclusive workspace lease and is the
++    // only upper writer. Bind its row caches to that lease so repeated
++    // writeback permission/inode reads do not round-trip through Redis. The
++    // cache is cleared and bypassed as soon as the lease proof is lost, and
++    // local mutations invalidate the rows they write.
++    let row_cache_ttl = std::env::var("BREWFS_WORKSPACE_ROW_CACHE_TTL_MS")
++        .ok()
++        .and_then(|value| value.parse::<u64>().ok())
++        .map(Duration::from_millis)
++        .unwrap_or(LEASE_BOUND_ROW_CACHE_TTL);
++    let lease_validity = session.lease_validity();
++    meta_layer = meta_layer
++        .with_upper_row_cache(row_cache_ttl)
++        .with_lease_bound_row_cache(lease_validity);
+     let meta_layer = Arc::new(meta_layer);
+     meta_layer.initialize().await?;
+     let overlay = Arc::new(WriteOverlay::new(control.clone(), sink, params));
+diff --git a/src/config.rs b/src/config.rs
+index eec00ae..c836dd4 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -2263,8 +2263,7 @@ mod tests {
+                 .unwrap();
+         assert_eq!(config.fuse_cache_ttl_ms, 0);
+ 
+-        let mut workspace_args =
+-            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
++        let mut workspace_args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
+         workspace_args.volume_format = Some(VolumeFormat::WorkspaceV1);
+         workspace_args.workspace = Some(uuid::Uuid::now_v7());
+         let workspace_config = MountConfig::from_sources(workspace_args).unwrap();
+@@ -2284,10 +2283,8 @@ mod tests {
+             }
+         }
+ 
+-        let mut explicit_workspace = empty_mount_args(
+-            None,
+-            Some(PathBuf::from("/mnt/workspace-explicit")),
+-        );
++        let mut explicit_workspace =
++            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace-explicit")));
+         explicit_workspace.volume_format = Some(VolumeFormat::WorkspaceV1);
+         explicit_workspace.workspace = Some(uuid::Uuid::now_v7());
+         explicit_workspace.fuse_cache_ttl_ms = Some(0);
+diff --git a/src/workspace_overlay/meta_layer/tests.rs b/src/workspace_overlay/meta_layer/tests.rs
+index 7e38f33..9ad52a5 100644
+--- a/src/workspace_overlay/meta_layer/tests.rs
++++ b/src/workspace_overlay/meta_layer/tests.rs
+@@ -1900,6 +1900,60 @@ async fn writeback_timestamp_authority_requires_live_exclusive_lease() {
+     assert!(!meta.kernel_timestamp_permissions_authoritative());
+ }
+ 
++#[tokio::test]
++async fn native_lease_bound_row_cache_reuses_rows_and_invalidates_mutations() {
++    use super::row_cache::RowKey;
++    use crate::workspace_overlay::lifecycle::LeaseValidity;
++    use std::time::{Duration, Instant};
++
++    // test_meta uses the native workspace lower (there is no packed binding),
++    // matching workspace-native-v2's metadata shape.
++    let meta = test_meta()
++        .await
++        .with_upper_row_cache(Duration::from_secs(60))
++        .with_lease_bound_row_cache(Arc::new(LeaseValidity::new(
++            Instant::now(),
++            Duration::from_secs(60),
++        )));
++    let ino = meta
++        .create_file(meta.root_ino(), "native-cache".into())
++        .await
++        .unwrap();
++    let cache = meta
++        .upper_row_cache()
++        .expect("native row cache is installed");
++    let hits_before = meta
++        .row_cache_counters
++        .hits
++        .load(std::sync::atomic::Ordering::Relaxed);
++    meta.stat(ino).await.unwrap().expect("created inode");
++    meta.stat(ino).await.unwrap().expect("created inode");
++    assert!(
++        meta.row_cache_counters
++            .hits
++            .load(std::sync::atomic::Ordering::Relaxed)
++            > hits_before,
++        "repeated native stat should hit the lease-bound inode-row cache"
++    );
++    assert!(cache.get(&RowKey::Inode(ino)).is_some());
++
++    meta.set_attr(
++        ino,
++        &SetAttrRequest {
++            mode: Some(0o100600),
++            ..SetAttrRequest::default()
++        },
++        SetAttrFlags::empty(),
++    )
++    .await
++    .unwrap();
++    assert!(
++        cache.get(&RowKey::Inode(ino)).is_none(),
++        "a local mutation must invalidate the changed native inode row"
++    );
++    assert_eq!(meta.stat(ino).await.unwrap().unwrap().mode, 0o100600);
++}
++
+ #[tokio::test]
+ async fn writeback_timestamp_rechecks_current_groups_mode_and_acl() {
+     let meta = test_meta().await;

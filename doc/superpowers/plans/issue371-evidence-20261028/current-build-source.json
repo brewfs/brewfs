@@ -1,0 +1,31 @@
+{
+  "build_start": {
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--features",
+      "workspace-overlay",
+      "--bin",
+      "brewfs",
+      "-j",
+      "1"
+    ],
+    "environment": {
+      "CARGO_TARGET_DIR": "/work/target",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_RELEASE_DEBUG": "0"
+    },
+    "head": "975deacc13131335b60a4c72de4ed781bbfe7154",
+    "started_utc": "2026-10-28T11:37:03.373589+00:00"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "rust_source_sha256": {
+    "src/cli.rs": "311fcf8d5087b51caff52c0646ef32c8be86b46bb9b64413e142d401c3b3bab4",
+    "src/config.rs": "4c98051975974590f5e1f5278865cbd392fe9b8d4ac75c3f275e34cc78a72be6",
+    "src/workspace_overlay/meta_layer/tests.rs": "eecc1780fb5d5f4610960c10152a6fc77d594adc48ab25305f66fed8dab57f89",
+    "src/vfs/write_timing.rs": "1f1f26aa45557eecaccb1410ccd85c5d4874f7e4ed61ecfb8a119edee8e8fd69"
+  },
+  "note": "Inherited working-tree changes are recorded for provenance, not applied as production changes by this PR. write_timing.rs is untracked and not connected."
+}

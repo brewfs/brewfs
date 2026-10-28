@@ -26,5 +26,26 @@
   "id-block-before-test-excerpt.txt": {
     "source": ".issue371/id-block-before-test.log",
     "full_source_sha256": "77dbecdce05b4e840950d33be7461ebad0a1d54d9097004cdd79b3618fd9da4a"
+  },
+  "current-build-working-tree.patch": {
+    "source": ".issue371/round-20261028-1136/source.patch",
+    "sha256": "fb5e5b2dc4c31d5d319cbf532f277d39f9c75ed0ac78d8235fd48ac099dfcad7"
+  },
+  "current-build.json": {
+    "source": ".issue371/round-20261028-1136/build.json",
+    "sha256": "c8c83b948643d93c8a275f5f0b4fbf058cd39baaa02548a1fffdeb0e980fc4f2"
+  },
+  "current-build-cancellation.json": {
+    "source": ".issue371/round-20261028-1136/cancellation.json",
+    "sha256": "df5573fd8716eabd6dedeb1277bff242d86db6844b21afe4119d79c6c8b3f572"
+  },
+  "current-build-compiler-cleanup.json": {
+    "source": ".issue371/round-20261028-1136/compiler-cleanup.json",
+    "sha256": "71fc70ba71c2beee8cbcc6e651f3b3ce805ffb92659c67fb4f3653ed6ff48825"
+  },
+  "current-build-last20.txt": {
+    "source": ".issue371/round-20261028-1136/build.log",
+    "full_source_sha256": "ebc1cd19c3d90526c683f4f841b3d854913f45330c65fa93b2402fde0c0ff01c",
+    "excerpt": "Last 20 lines; no compiler error emitted before the explicit time-budget SIGTERM"
   }
 }

@@ -2,7 +2,10 @@
 
 关联 issue：https://github.com/brewfs/brewfs/issues/371
 工作目录：`/work/brewfs`；分支：`perf/issue-371-native-write-latency`。
-本轮从 2026-10-28 11:36 UTC 开始，40 分钟内收口并创建本分支的 draft PR。
+本轮从 2026-10-28 11:36 UTC 开始，截止 12:16 UTC（北京时间 20:16）。
+本分支的 draft PR 已创建：https://github.com/brewfs/brewfs/pull/376 。
+
+**本轮收口：唯一一次构建因时间预算主动停止，direct=1 三次均未测；没有可报告的本轮性能数字。**
 
 ## 范围与口径
 
@@ -31,7 +34,7 @@ packed-v3 lower。两种 lower 均只有根目录；4 个 64 MiB 工作文件在
 
 ## 本机基线
 
-### 本轮：当前工作树构建与 direct=1 三次测量
+### 本轮：唯一构建因时限停止，direct=1 未测
 
 只执行一次：
 
@@ -40,13 +43,41 @@ CARGO_TARGET_DIR=/work/target CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0 
   cargo build --release --features workspace-overlay --bin brewfs -j 1
 ```
 
-构建从 11:37:03 UTC 开始。状态：进行中。
+构建于 11:37:03 UTC 开始，12:08:29 UTC 因本轮 40 分钟预算主动停止，
+耗时 **1886.514 秒（31 分 26 秒）**。Cargo 退出码为 -15（SIGTERM）；
+这是主动停止，不是已确认的 Rust 编译错误。未进行第二次构建，未启动 fio。
 记录：`.issue371/round-20261028-1136/build.json`、`build.log`、
 `build-memory.log`、`source.patch`、`status-before.txt`。
 源 HEAD 为 `975deacc13131335b60a4c72de4ed781bbfe7154`，构建包含已有工作树改动；
 不能将此构建声称为原始 main 或已验证的优化版本。
 
-构建成功后使用本轮二进制，按以下命令执行 native 三次：
+停止前没有 Rust 编译错误，无法提供不存在的“编译错误前 20 行”。以下为构建日志末 20 行原文；
+完整日志保留在本机，PR 中附 `current-build-last20.txt`、最终构建 JSON、停止原因及来源哈希。
+
+```text
+   |
+31 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/tsopb.rs:63:12
+   |
+63 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> vendor/tikv-client/src/region_cache.rs:64:12
+   |
+63 | impl<Client> RegionCache<Client> {
+   | -------------------------------- associated function in this implementation
+64 |     pub fn new(inner_client: Arc<Client>) -> RegionCache<Client> {
+   |            ^^^
+
+warning: `tikv-client` (lib) generated 26 warnings
+   Compiling brewfs v0.1.2 (/work/brewfs)
+```
+
+以下是**未执行**的计划命令，不表示已测量三次：
 
 ```bash
 python3 -u tools/perf/issue371_local.py \
@@ -58,16 +89,16 @@ python3 -u tools/perf/issue371_local.py \
 
 fio 参数为 `randwrite / bs=4k / direct=1 / libaio / numjobs=4 / iodepth=32 / runtime=20`。
 FUSE 的 `BREWFS_FUSE_DIRECT_IO=0` 与 fio 的 O_DIRECT 分别记录，不混同二者。
-每轮保留 fio JSON、命令、Redis commandstats、写回债务、fsync 和卸载结果。
-p99 取 fio `write.lat_ns.percentile["99.000000"]`，是总 I/O 延迟；
-每轮先求 p99，再报告三个 p99 的 min/median/max，不冒充合并样本的 p99。
+计划每轮保留 fio JSON、命令、Redis commandstats、写回债务、fsync 和卸载结果。
+计划取 fio `write.lat_ns.percentile["99.000000"]` 作为总 I/O 延迟 p99，
+先求每轮 p99，再报告三个 p99 的 min/median/max；本轮没有产生这些样本。
 
 | 本轮 native direct=1 | 吞吐 MiB/s min / median / max | p99 ms min / median / max | 有效次数 |
 |---|---|---|---|
-| 当前工作树 | 未测 / 未测 / 未测 | 未测 / 未测 / 未测 | 0/3（等待构建） |
+| 当前工作树 | 未测 / 未测 / 未测 | 未测 / 未测 / 未测 | 0/3（构建未完成，实际执行 0 次） |
 
-当前尚不能计算与 3.7 MiB/s / p99 4280 ms 的差距。若本次构建失败，
-原样记录首个编译错误起的前 20 行并停止实验，不重试构建。
+与原 issue 的 3.7 MiB/s / p99 4280 ms 对照：本轮吞吐及 p99 均未测，差距与收益均不能计算。
+未达到 issue 的吞吐至少翻倍、p99 至少减半的验收要求；不据旧的无效样本声称达到目标。
 
 ### 此前 buffered 诊断：六个样本全部无效
 
@@ -145,7 +176,8 @@ native r3 的 240 行 MONITOR 短采样包含 20 次 allocator CAS，
   因而不能仅凭 packed 的额外 gate 断言 native 提交没有串行化。
   这是两条提交路径的代码差异，尚无本轮分段计时或竞争率证明。
 
-已有确定性测试曾暂停 allocator 读，让 64 个调用者到达第一次挂起点。
+已有内存后端确定性单元测试曾暂停 allocator 读，让 64 个调用者到达第一次挂起点；
+它不使用 Redis，也不是 fio 重放。
 旧实现实测失败：并发 allocator 读 64 次，durable next-ID 为 4097，
 预期为 65；这证明了本地重复预留，不证明修复后 fio 会变快。
 来源：`.issue371/id-block-before-test.log`，0 passed / 1 failed。
@@ -164,7 +196,8 @@ after-test 编译曾被中断，没有通过结果，本轮不重新启用候选
 Python 语法编译、`--help`、`cargo fmt --all --check`、`git diff --check` 已通过。
 
 PR 内的 `doc/superpowers/plans/issue371-evidence-20261028/` 保存关键历史摘要、
-MONITOR 原始短采样、失败测试摘录和来源 SHA256；完整原始大日志仍保留在本机 `.issue371/`。
+MONITOR 原始短采样、失败测试摘录，以及本轮构建状态、停止原因、编译器版本、
+构建时工作树补丁和来源 SHA256；完整原始大日志仍保留在本机 `.issue371/`。
 
 本轮构建仅一次，`-j 1`，目标目录 `/work/target`，每 30 秒记录 `free -m`。
 按本轮明确限制，不跑全量 cargo test。若执行 Rust 测试，仅允许

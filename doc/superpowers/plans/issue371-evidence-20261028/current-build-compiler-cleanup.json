@@ -1,0 +1,5 @@
+{
+  "utc": "2026-10-28T12:09:03.664715+00:00",
+  "reason": "Ensure compiler spawned by a Cargo worker thread is stopped after terminating the sole build.",
+  "signaled": []
+}
