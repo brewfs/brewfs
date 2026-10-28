@@ -1,0 +1,8 @@
+{
+  "command": "cargo build --release --features workspace-overlay --bin brewfs -j 1",
+  "head": "975deacc13131335b60a4c72de4ed781bbfe7154",
+  "sha256": {
+    "brewfs": "b706d6ac81ebba4c2824d8d977995a3541d60f6ee542e26dc4cb982b56f964b2",
+    "packed_v3_snapshot_fixture": "c65f2787af3a63db1dabbc53e5ba6fc85cc140b4f3cea4808eaff937f44b87ac"
+  }
+}

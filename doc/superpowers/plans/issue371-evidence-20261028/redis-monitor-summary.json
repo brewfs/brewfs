@@ -1,0 +1,32 @@
+{
+  "lines": 240,
+  "commands": {
+    "EVALSHA": 60,
+    "TYPE": 40,
+    "GET": 59,
+    "STRLEN": 40,
+    "TIME": 40
+  },
+  "scripts": {
+    "3ae769456555ba6ea9875a24d3ccd72b5e341ae6": {
+      "calls": 20,
+      "key_counts": [
+        3
+      ],
+      "example_keys": [
+        "{brewfs-ws-v1}:issue371-before-v1-native-3:ws:v1/alloc/slice",
+        "{brewfs-ws-v1}:issue371-before-v1-native-3:ws:v1/alloc/slice",
+        "{brewfs-ws-v1}:issue371-before-v1-native-3:ws:v1/__index/keys"
+      ]
+    },
+    "a6629f26be46452571002eb8385464eab5e8a842": {
+      "calls": 40,
+      "key_counts": [
+        1
+      ],
+      "example_keys": [
+        "{brewfs-ws-v1}:issue371-before-v1-native-3:ws:v1/control"
+      ]
+    }
+  }
+}

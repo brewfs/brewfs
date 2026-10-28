@@ -1,0 +1,134 @@
+{
+  "native": {
+    "count": 2048,
+    "user_mean_us": 601.1176381835937,
+    "user_total_us": 1231088.923,
+    "fuse_count": 2048.0,
+    "fuse_total_us": 198361.0,
+    "stages": {
+      "src/vfs/fs/mod.rs:2366 brewfs::vfs::fs::stat_ino_checked": {
+        "count": 2048,
+        "sum_us": 14710.766999999987,
+        "max_us": 76.7,
+        "mean_us": 7.182991699218744
+      },
+      "src/vfs/cache/page.rs:206 brewfs::vfs::cache::page::append": {
+        "count": 2048,
+        "sum_us": 17419.00400000003,
+        "max_us": 72.85600000000001,
+        "mean_us": 8.505373046875015
+      },
+      "src/vfs/io/writer.rs:520 brewfs::vfs::io::writer::write": {
+        "count": 2048,
+        "sum_us": 30731.563000000002,
+        "max_us": 81.175,
+        "mean_us": 15.005645996093751
+      },
+      "src/vfs/io/writer.rs:1540 brewfs::vfs::io::writer::write_at": {
+        "count": 2048,
+        "sum_us": 149858.8470000001,
+        "max_us": 170.295,
+        "mean_us": 73.1732651367188
+      },
+      "src/vfs/io/writer.rs:2776 brewfs::vfs::io::writer::write_at": {
+        "count": 2048,
+        "sum_us": 161928.65499999997,
+        "max_us": 176.555,
+        "mean_us": 79.06672607421874
+      },
+      "src/vfs/fs/mod.rs:5423 brewfs::vfs::fs::write": {
+        "count": 2048,
+        "sum_us": 191493.02599999972,
+        "max_us": 2841.89,
+        "mean_us": 93.50245410156236
+      },
+      "src/vfs/io/writer.rs:4917 brewfs::vfs::io::writer::commit_chunk.wait_upload": {
+        "count": 8,
+        "sum_us": 810015.6229999999,
+        "max_us": 102008.05,
+        "mean_us": 101251.95287499999
+      }
+    },
+    "fsync_ns": [
+      6036812473,
+      646892702,
+      20912352,
+      11234506
+    ],
+    "fsync_errors": [
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')"
+    ],
+    "stats_delta": {
+      "brewfs_fuse_getattr_lat_us_total": 122.0
+    }
+  },
+  "packed": {
+    "count": 2048,
+    "user_mean_us": 661.8252768554687,
+    "user_total_us": 1355418.167,
+    "fuse_count": 2048.0,
+    "fuse_total_us": 238143.0,
+    "stages": {
+      "src/vfs/fs/mod.rs:2366 brewfs::vfs::fs::stat_ino_checked": {
+        "count": 2048,
+        "sum_us": 16762.41500000002,
+        "max_us": 31.67,
+        "mean_us": 8.18477294921876
+      },
+      "src/vfs/cache/page.rs:206 brewfs::vfs::cache::page::append": {
+        "count": 2048,
+        "sum_us": 17366.20600000001,
+        "max_us": 144.56,
+        "mean_us": 8.479592773437505
+      },
+      "src/vfs/io/writer.rs:520 brewfs::vfs::io::writer::write": {
+        "count": 2048,
+        "sum_us": 31505.486999999965,
+        "max_us": 152.318,
+        "mean_us": 15.383538574218733
+      },
+      "src/vfs/io/writer.rs:1540 brewfs::vfs::io::writer::write_at": {
+        "count": 2048,
+        "sum_us": 156491.1560000003,
+        "max_us": 208.388,
+        "mean_us": 76.41169726562515
+      },
+      "src/vfs/io/writer.rs:2776 brewfs::vfs::io::writer::write_at": {
+        "count": 2048,
+        "sum_us": 169766.50200000053,
+        "max_us": 218.593,
+        "mean_us": 82.89379980468776
+      },
+      "src/vfs/fs/mod.rs:5423 brewfs::vfs::fs::write": {
+        "count": 2048,
+        "sum_us": 228004.9000000004,
+        "max_us": 5076.8,
+        "mean_us": 111.3305175781252
+      },
+      "src/vfs/io/writer.rs:4917 brewfs::vfs::io::writer::commit_chunk.wait_upload": {
+        "count": 12,
+        "sum_us": 1213021.347,
+        "max_us": 102002.09,
+        "mean_us": 101085.11225
+      }
+    },
+    "fsync_ns": [
+      4032242026,
+      537446122,
+      11035256,
+      1057176
+    ],
+    "fsync_errors": [
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')",
+      "OSError(5, 'Input/output error')"
+    ],
+    "stats_delta": {
+      "brewfs_fuse_getattr_lat_us_total": 115.0
+    }
+  }
+}
