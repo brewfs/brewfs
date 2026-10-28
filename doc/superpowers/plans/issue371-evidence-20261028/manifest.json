@@ -29,7 +29,8 @@
   },
   "current-build-working-tree.patch": {
     "source": ".issue371/round-20261028-1136/source.patch",
-    "sha256": "fb5e5b2dc4c31d5d319cbf532f277d39f9c75ed0ac78d8235fd48ac099dfcad7"
+    "sha256": "61e493c4f556692467c0391363acd71740572c1cda4bcd0cd75447fb82c87e5f",
+    "sanitized_from_sha256": "fb5e5b2dc4c31d5d319cbf532f277d39f9c75ed0ac78d8235fd48ac099dfcad7"
   },
   "current-build.json": {
     "source": ".issue371/round-20261028-1136/build.json",

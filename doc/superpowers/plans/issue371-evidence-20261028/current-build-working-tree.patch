@@ -30,7 +30,7 @@ index eec00ae..c836dd4 100644
 @@ -2263,8 +2263,7 @@ mod tests {
                  .unwrap();
          assert_eq!(config.fuse_cache_ttl_ms, 0);
- 
+
 -        let mut workspace_args =
 -            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
 +        let mut workspace_args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
@@ -40,7 +40,7 @@ index eec00ae..c836dd4 100644
 @@ -2284,10 +2283,8 @@ mod tests {
              }
          }
- 
+
 -        let mut explicit_workspace = empty_mount_args(
 -            None,
 -            Some(PathBuf::from("/mnt/workspace-explicit")),
@@ -57,7 +57,7 @@ index 7e38f33..9ad52a5 100644
 @@ -1900,6 +1900,60 @@ async fn writeback_timestamp_authority_requires_live_exclusive_lease() {
      assert!(!meta.kernel_timestamp_permissions_authoritative());
  }
- 
+
 +#[tokio::test]
 +async fn native_lease_bound_row_cache_reuses_rows_and_invalidates_mutations() {
 +    use super::row_cache::RowKey;
