@@ -8847,6 +8847,7 @@ mod tests {
     }
 
     include!("kv_store/extent_compaction_tests.rs");
+    include!("kv_store/read_plan_cache_tests.rs");
     include!("kv_store/pr141_entity_cas_tests.rs");
 
     include!("kv_store/topology_write_order_tests.rs");

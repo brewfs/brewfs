@@ -28,7 +28,7 @@ use crate::meta::store::{
 };
 use crate::vfs::handles::DirHandle;
 
-use super::cache::{ReadPlanCacheKey, WorkspaceResolverCache};
+use super::cache::{ReadPlanCacheKey, WorkspaceResolverCache, clip_read_plan};
 use super::catalog::{
     AclQuery, DentryQuery, ExtentQuery, HeadGuard, InodeQuery, PermissionSnapshot,
     PermissionSnapshotQuery, RecordOrphanSlice, VersionedMutation, WorkspaceStore, XattrQuery,
@@ -4120,6 +4120,14 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
         if len == 0 {
             return Ok(ResolvedReadPlan::default());
         }
+        // Reuse the already scanned chunk for small random reads. Larger
+        // requests retain range plans to bound cold-miss materialization.
+        let reuse_chunk_plan = len <= 4096;
+        let plan_range = if reuse_chunk_plan {
+            0..self.chunk_size
+        } else {
+            offset..end
+        };
         let view = self.view_context().await;
         let cache_key = ReadPlanCacheKey {
             workspace_id: view.workspace_id,
@@ -4127,11 +4135,15 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
             ino,
             chunk_index,
             inode_data_version: inode.data_version,
-            range_start: offset,
-            range_end: end,
+            range_start: plan_range.start,
+            range_end: plan_range.end,
         };
         if let Some(plan) = self.resolver_cache.get_read_plan(&cache_key) {
-            return Ok(plan);
+            return if reuse_chunk_plan {
+                clip_read_plan(&plan, offset..end)
+            } else {
+                Ok((*plan).clone())
+            };
         }
         let chain = self.chain().await?;
         let rows = self
@@ -4140,12 +4152,12 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
                 layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
                 ino,
                 chunk_index,
-                range_start: offset,
-                range_end: end,
+                range_start: plan_range.start,
+                range_end: plan_range.end,
             })
             .await
             .map_err(workspace_to_meta)?;
-        let extents = resolve_extents(&chain, &rows, ino, chunk_index, offset..end)
+        let extents = resolve_extents(&chain, &rows, ino, chunk_index, plan_range)
             .map_err(workspace_to_meta)?;
         let segments = extents
             .into_iter()
@@ -4168,9 +4180,13 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
         let plan = ResolvedReadPlan { segments };
         self.metrics
             .add_extent_plan_segments(plan.segments.len() as u64);
-        self.resolver_cache
-            .insert_read_plan(cache_key, plan.clone());
-        Ok(plan)
+        let requested = if reuse_chunk_plan {
+            clip_read_plan(&plan, offset..end)?
+        } else {
+            plan.clone()
+        };
+        self.resolver_cache.insert_read_plan(cache_key, plan);
+        Ok(requested)
     }
 
     async fn range_has_data(&self, ino: i64, offset: u64, len: u64) -> Result<bool, MetaError> {
