@@ -1433,17 +1433,16 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 permission_key,
                 row_cache::RowValue::Permission(snapshot.clone()),
             );
-            if let Some(companion) = companion {
-                if let (Some(companion_key), Some(companion_ticket)) =
+            if let Some(companion) = companion
+                && let (Some(companion_key), Some(companion_ticket)) =
                     (companion_key, companion_ticket)
-                {
-                    debug_assert_eq!(companion_key, row_cache::RowKey::Permission(companion));
-                    cache.insert(
-                        companion_ticket,
-                        companion_key,
-                        row_cache::RowValue::Permission(snapshot),
-                    );
-                }
+            {
+                debug_assert_eq!(companion_key, row_cache::RowKey::Permission(companion));
+                cache.insert(
+                    companion_ticket,
+                    companion_key,
+                    row_cache::RowValue::Permission(snapshot),
+                );
             }
         }
         if let Some(slot) = read_ahead

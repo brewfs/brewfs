@@ -35,9 +35,25 @@ pub struct ExtentSnapshotCacheKey {
     pub inode_data_version: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ResolverCacheKey {
+    Range(ReadPlanCacheKey),
+    Chunk(ExtentSnapshotCacheKey),
+}
+
+impl ResolverCacheKey {
+    fn workspace_inode(&self) -> (WorkspaceId, i64) {
+        match self {
+            Self::Range(key) => (key.workspace_id, key.ino),
+            Self::Chunk(key) => (key.workspace_id, key.ino),
+        }
+    }
+}
+
 pub struct WorkspaceResolverCache {
-    read_plans: Cache<ReadPlanCacheKey, ResolvedReadPlan>,
-    extent_snapshots: Cache<ExtentSnapshotCacheKey, Arc<ResolvedReadPlan>>,
+    // Both representations share the configured budget; adding chunk
+    // snapshots must not silently double the mount's metadata allowance.
+    plans: Cache<ResolverCacheKey, Arc<ResolvedReadPlan>>,
 }
 
 impl Default for WorkspaceResolverCache {
@@ -48,10 +64,10 @@ impl Default for WorkspaceResolverCache {
 
 impl WorkspaceResolverCache {
     pub fn with_capacity(max_weight: u64) -> Self {
-        let read_plans = Cache::builder()
+        let plans = Cache::builder()
             .max_capacity(max_weight.max(1))
             .support_invalidation_closures()
-            .weigher(|_key: &ReadPlanCacheKey, plan: &ResolvedReadPlan| {
+            .weigher(|_key: &ResolverCacheKey, plan: &Arc<ResolvedReadPlan>| {
                 plan.segments
                     .len()
                     .saturating_add(1)
@@ -59,92 +75,70 @@ impl WorkspaceResolverCache {
                     .unwrap_or(u32::MAX)
             })
             .build();
-        let extent_snapshots = Cache::builder()
-            .max_capacity(max_weight.max(1))
-            .support_invalidation_closures()
-            .weigher(
-                |_key: &ExtentSnapshotCacheKey, plan: &Arc<ResolvedReadPlan>| {
-                    plan.segments
-                        .len()
-                        .saturating_add(1)
-                        .try_into()
-                        .unwrap_or(u32::MAX)
-                },
-            )
-            .build();
-        Self {
-            read_plans,
-            extent_snapshots,
-        }
+        Self { plans }
     }
 
     pub fn get_read_plan(&self, key: &ReadPlanCacheKey) -> Option<ResolvedReadPlan> {
-        self.read_plans.get(key)
+        self.plans
+            .get(&ResolverCacheKey::Range(*key))
+            .map(|plan| plan.as_ref().clone())
     }
 
     pub fn insert_read_plan(&self, key: ReadPlanCacheKey, plan: ResolvedReadPlan) {
-        self.read_plans.insert(key, plan);
+        self.plans
+            .insert(ResolverCacheKey::Range(key), Arc::new(plan));
     }
 
     pub fn get_extent_snapshot(
         &self,
         key: &ExtentSnapshotCacheKey,
     ) -> Option<Arc<ResolvedReadPlan>> {
-        self.extent_snapshots.get(key)
+        self.plans.get(&ResolverCacheKey::Chunk(*key))
     }
 
     pub fn insert_extent_snapshot(&self, key: ExtentSnapshotCacheKey, plan: Arc<ResolvedReadPlan>) {
-        self.extent_snapshots.insert(key, plan);
+        self.plans.insert(ResolverCacheKey::Chunk(key), plan);
     }
 
     pub fn invalidate_inode(&self, workspace_id: WorkspaceId, ino: i64) {
-        self.invalidate_matching(move |key| key.workspace_id == workspace_id && key.ino == ino);
-        self.invalidate_extent_matching(move |key| {
-            key.workspace_id == workspace_id && key.ino == ino
-        });
+        self.invalidate_matching(move |key| key.workspace_inode() == (workspace_id, ino));
     }
 
     pub fn invalidate_workspace(&self, workspace_id: WorkspaceId) {
-        self.invalidate_matching(move |key| key.workspace_id == workspace_id);
-        self.invalidate_extent_matching(move |key| key.workspace_id == workspace_id);
+        self.invalidate_matching(move |key| key.workspace_inode().0 == workspace_id);
     }
 
     fn invalidate_matching(
         &self,
-        predicate: impl Fn(&ReadPlanCacheKey) -> bool + Send + Sync + 'static,
+        predicate: impl Fn(&ResolverCacheKey) -> bool + Send + Sync + 'static,
     ) {
-        self.read_plans
+        self.plans
             .invalidate_entries_if(move |key, _| predicate(key))
             .expect("read-plan cache invalidation predicates are enabled");
-        self.read_plans.run_pending_tasks();
-    }
-
-    fn invalidate_extent_matching(
-        &self,
-        predicate: impl Fn(&ExtentSnapshotCacheKey) -> bool + Send + Sync + 'static,
-    ) {
-        self.extent_snapshots
-            .invalidate_entries_if(move |key, _| predicate(key))
-            .expect("extent snapshot cache invalidation predicates are enabled");
-        self.extent_snapshots.run_pending_tasks();
+        self.plans.run_pending_tasks();
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.read_plans.run_pending_tasks();
-        self.read_plans.entry_count() as usize
+        self.plans.run_pending_tasks();
+        self.plans
+            .iter()
+            .filter(|(key, _)| matches!(key.as_ref(), ResolverCacheKey::Range(_)))
+            .count()
     }
 
     #[cfg(test)]
     pub fn extent_snapshot_len(&self) -> usize {
-        self.extent_snapshots.run_pending_tasks();
-        self.extent_snapshots.entry_count() as usize
+        self.plans.run_pending_tasks();
+        self.plans
+            .iter()
+            .filter(|(key, _)| matches!(key.as_ref(), ResolverCacheKey::Chunk(_)))
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.read_plans.run_pending_tasks();
-        self.extent_snapshots.run_pending_tasks();
-        self.read_plans.entry_count() == 0 && self.extent_snapshots.entry_count() == 0
+        self.plans.run_pending_tasks();
+        self.plans.entry_count() == 0
     }
 }
 
@@ -253,6 +247,24 @@ mod tests {
         assert!(cache.get_extent_snapshot(&other_key).is_some());
 
         cache.invalidate_workspace(other_workspace_id);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn ranges_and_chunk_snapshots_share_one_retained_weight_budget() {
+        let cache = WorkspaceResolverCache::with_capacity(8);
+        let workspace_id = WorkspaceId::new();
+        for ino in 1..=8 {
+            cache.insert_read_plan(key(workspace_id, ino, 0), plan(ino as u64));
+            cache.insert_extent_snapshot(
+                snapshot_key(workspace_id, ino),
+                Arc::new(plan(ino as u64)),
+            );
+        }
+        let retained = cache.len() + cache.extent_snapshot_len();
+        assert!(retained > 0);
+        assert!(retained * 2 <= 8, "both representations consume one budget");
+        cache.invalidate_workspace(workspace_id);
         assert!(cache.is_empty());
     }
 }

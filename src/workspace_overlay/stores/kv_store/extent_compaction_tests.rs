@@ -310,8 +310,8 @@ mod extent_compaction_tests {
             ExtentKind::Data { slice_id: 777, .. }
         ));
 
-        *store.backend.records.lock().await = before;
-        *store.backend.mutate_after_extent_page.lock().await = commit;
+        *store.backend.records.lock().await = before.clone();
+        *store.backend.mutate_after_extent_page.lock().await = commit.clone();
         let observed = rows(&store, head).await;
         assert_eq!(observed, compacted, "discard the mixed pages and retry");
         assert_eq!(
@@ -326,6 +326,30 @@ mod extent_compaction_tests {
                 .await
                 .is_empty()
         );
+
+        // Full-chunk snapshots must fence the same race as ordinary reads.
+        // A bounded API promises finite allocation, not an atomic history.
+        *store.backend.records.lock().await = before;
+        *store.backend.mutate_after_extent_page.lock().await = commit;
+        let observed = store
+            .get_extent_deltas_bounded(
+                ExtentQuery {
+                    layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
+                    ino: 2,
+                    chunk_index: 0,
+                    range_start: 0,
+                    range_end: 64,
+                },
+                MAX_UPPER_EXTENT_ROWS,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resolve_extent_coverage(&chain, &observed, 2, 0, 1..2).unwrap(),
+            expected,
+            "bounded snapshot must not revive data masked by a compacted hole"
+        );
+        assert_eq!(observed, compacted, "bounded fill must retry mixed pages");
     }
 
     #[tokio::test]

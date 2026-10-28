@@ -1,8 +1,9 @@
-//! Ordinary paged reads must not mix histories from either side of compaction.
+//! Extent reads must not mix histories from either side of compaction.
 use super::*;
 use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
 
-// Each attempt retains the ordinary row/byte limits. Under sustained writes,
+// Each attempt retains the caller's row limit and the ordinary byte limits.
+// Under sustained writes,
 // return a retryable error instead of scanning without a finite work bound.
 const MAX_EXTENT_READ_ATTEMPTS: usize = 3;
 
@@ -41,6 +42,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
     pub(super) async fn read_extent_deltas_consistent(
         &self,
         request: ExtentQuery,
+        max_rows: usize,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
         if request.range_start > request.range_end {
             return Err(WorkspaceError::InvalidReadPlan(
@@ -70,7 +72,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             // A merge can rewrite an old sequence and delete a later mask.
             // Even a transient over-budget result needs its final fence: a
             // concurrent compaction may already have repaired that history.
-            let result = self.scan_extent_deltas(&request).await;
+            let result = self.scan_extent_deltas(&request, max_rows).await;
             let after = self.extent_read_generations(&keys).await?;
             if before == after {
                 return result;
@@ -82,6 +84,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
     async fn scan_extent_deltas(
         &self,
         request: &ExtentQuery,
+        max_rows: usize,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
         let mut rows = Vec::new();
         let mut scanned_rows_total = 0usize;
@@ -91,16 +94,26 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             let mut after = None;
             let mut found = Vec::new();
             loop {
+                // Fetch one overflow sentinel, including in the next layer.
+                // Count raw rows before range filtering or decoding; a small
+                // snapshot query must not materialize the ordinary 4096 rows.
+                let page_rows = DELTA_SCAN_PAGE_RECORDS.min(max_rows - scanned_rows_total + 1);
                 let page = self
                     .backend
                     .scan_prefix_page_with_byte_limits(
                         &prefix,
                         after.as_deref(),
-                        delta_scan_limits(),
+                        KvReadLimits {
+                            max_records: page_rows,
+                            ..delta_scan_limits()
+                        },
                     )
                     .await?;
                 if page.is_empty() {
                     break;
+                }
+                if page.len() > page_rows {
+                    return Err(WorkspaceError::Fenced);
                 }
                 let next = page.last().map(|entry| entry.key.clone());
                 scanned_rows_total = scanned_rows_total
@@ -109,9 +122,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 scanned_bytes_total = scanned_bytes_total
                     .checked_add(validate_delta_scan_page(&page, &prefix, after.as_deref())?)
                     .ok_or(WorkspaceError::Fenced)?;
-                if scanned_rows_total > DELTA_SCAN_MAX_ROWS
-                    || scanned_bytes_total > DELTA_SCAN_MAX_BYTES
-                {
+                if scanned_rows_total > max_rows || scanned_bytes_total > DELTA_SCAN_MAX_BYTES {
                     return Err(WorkspaceError::InvalidReadPlan(
                         "extent delta scan exceeds bounded metadata budget".into(),
                     ));

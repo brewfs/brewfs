@@ -233,7 +233,15 @@ impl UpperRowCache {
 
     pub(super) fn invalidate_all(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.clear_rows_and_key_generations();
+    }
+
+    fn clear_rows_and_key_generations(&self) {
         self.key_generations.clear();
+        // Clearing can reset a concurrently invalidated key back to zero.
+        // Fence tickets captured since the first bump, before that reset,
+        // so they cannot match their old zero key generation again.
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.rows.invalidate_all();
     }
 
@@ -292,5 +300,29 @@ mod tests {
         cache.insert(racing7, key7.clone(), row());
         assert!(cache.get(&key5).is_none());
         assert!(cache.get(&key7).is_some());
+    }
+
+    #[test]
+    fn clearing_key_generations_cannot_revive_a_racing_refill_ticket() {
+        let cache = UpperRowCache::new(Duration::from_secs(60));
+        let key = RowKey::Inode(5);
+        // Pause a full invalidation immediately after its first epoch bump.
+        cache.generation.fetch_add(1, Ordering::SeqCst);
+        let stale = cache.ticket(&key);
+        // A local write invalidates the old backend read, then the full
+        // clear removes that key's nonzero generation (the ABA window).
+        cache.invalidate_keys(std::slice::from_ref(&key));
+        cache.clear_rows_and_key_generations();
+        cache.insert(stale, key.clone(), RowValue::Inode(Arc::new(Vec::new())));
+        assert!(
+            cache.get(&key).is_none(),
+            "clearing versions cannot revive a stale ticket"
+        );
+        cache.insert(
+            cache.ticket(&key),
+            key.clone(),
+            RowValue::Inode(Arc::new(Vec::new())),
+        );
+        assert!(cache.get(&key).is_some(), "a fresh refill must still work");
     }
 }
