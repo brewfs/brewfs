@@ -10,8 +10,28 @@ format is workspace-v1. No remote benchmark machine was used.
 The initial 1,000-file, 8-KiB/file fixture wrote 8,192,000 bytes in 1.880098 s
 (531.887 files/s). Redis had 3,022 delta keys (1,012 inode, 1,010 dentry,
 1,000 extent), with 845,840 bytes of summed `MEMORY USAGE`. The per-file
-three-key shape reproduces. The issue's 100,000-file / 8-GiB / 192-MB result
-has **not yet been reproduced at that scale**.
+three-key delta shape reproduces. Including indexes and auxiliary records,
+the same volume has 4,051 keys / 1,848,843 bytes; delta-only counts must not
+be compared to whole-volume counts.
+
+A second volume populated with the baseline binary has 100,000 files of
+85,900 bytes each (8,590,000,000 bytes, approximately 8 GiB), in 1,000
+directories. The large-workload amplification is reproduced locally:
+
+| Family | Keys | Summed Redis MEMORY USAGE (bytes) |
+| --- | ---: | ---: |
+| delta/inode | 101,002 | 28,280,560 |
+| delta/dentry | 101,000 | 26,648,000 |
+| delta/extent | 100,000 | 29,600,000 |
+| packed auxiliary records | 101,008 | 36,313,696 |
+| key indexes | 2 | 65,454,296 |
+| remaining control/lease/catalog keys | 10 | 2,272 |
+| **Total** | **403,022** | **186,298,824** |
+
+This is not the exact original corpus (373,040 keys / 192 MB); it reproduces
+the approximately four-key/file and large memory footprint on this machine.
+Large-fixture creation took 440.699 s while release compilation was active,
+so that creation time is preparation telemetry, not an acceptance baseline.
 
 Initial MONITOR/strace samples (different cache/warmup state from the explicit
 uncached profile below):
@@ -87,6 +107,8 @@ Local raw evidence and scripts: `/work/issue-370/artifacts/` and
 binary is preserved as `/work/issue-370/brewfs-baseline`, SHA-256
 `c673a43296b2ff9051d3a2ee26b616026ccd0a4d58b038bad5821c6d0765df4c`.
 
-Unverified: 100k/8-GiB workload, >=3 matched untraced repetitions, full
+Draft PR: https://github.com/brewfs/brewfs/pull/374
+
+Unverified: >=3 matched untraced repetitions, full
 workspace tests, feature-enabled complete tests, compose/S3 guard runs
 (Docker is unavailable on this host), TiKV and packed-lower mounted performance.
