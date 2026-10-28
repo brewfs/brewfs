@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "build",
+    "--release",
+    "--features",
+    "workspace-overlay",
+    "--bin",
+    "brewfs",
+    "-j",
+    "1"
+  ],
+  "environment": {
+    "CARGO_TARGET_DIR": "/work/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_RELEASE_DEBUG": "0"
+  },
+  "head": "975deacc13131335b60a4c72de4ed781bbfe7154",
+  "started_utc": "2026-10-28T11:37:03.373589+00:00",
+  "exit": -15,
+  "elapsed_s": 1886.5141370000001,
+  "finished_utc": "2026-10-28T12:08:29.904949+00:00"
+}

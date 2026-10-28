@@ -1,0 +1,16 @@
+{
+  "before": {
+    "source": ".issue371/before-v1/r1-native/redis-before.txt",
+    "evalsha_line": "cmdstat_evalsha:calls=167664,usec=1221769,usec_per_call=7.29,rejected_calls=0,failed_calls=3",
+    "calls": 167664,
+    "sha256": "ea58b77a2b335a428bb13996f236c9387d8f10221b3f939a23c526015b36e8e1"
+  },
+  "after": {
+    "source": ".issue371/before-v1/r1-native/redis-after.txt",
+    "evalsha_line": "cmdstat_evalsha:calls=7070691,usec=45498783,usec_per_call=6.43,rejected_calls=0,failed_calls=3",
+    "calls": 7070691,
+    "sha256": "473d0629d712e88635d897e8ddae27e012d66403636355ec4f53b1e7afa9d07e"
+  },
+  "delta_calls": 6903027,
+  "scope": "Whole Redis instance; fio plus drain interval; not allocator-specific"
+}

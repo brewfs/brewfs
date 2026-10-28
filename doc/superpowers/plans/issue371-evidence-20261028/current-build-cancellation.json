@@ -1,0 +1,7 @@
+{
+  "requested_utc": "2026-10-28T12:08:29.861424+00:00",
+  "reason": "Stop the sole unfinished release build at the declared 12:08 UTC cutoff to finish REPORT and draft PR within the user's 40-minute limit; no Rust compiler error had been emitted before this intervention.",
+  "cargo_pid": 23441,
+  "signaled_descendants": [],
+  "signal": "SIGTERM"
+}

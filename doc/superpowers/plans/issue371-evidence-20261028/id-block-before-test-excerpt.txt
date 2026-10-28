@@ -1,0 +1,17 @@
+running 1 test
+
+thread 'workspace_overlay::stores::kv_store::tests::id_block_concurrency::concurrent_slice_id_requests_share_one_durable_block_refill' (20915) panicked at src/workspace_overlay/stores/kv_store/id_block_concurrency_tests.rs:104:5:
+assertion `left == right` failed: one cohort must reserve one block; concurrent allocator reads: 64
+  left: 4097
+ right: 65
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workspace_overlay::stores::kv_store::tests::id_block_concurrency::concurrent_slice_id_requests_share_one_durable_block_refill ... FAILED
+
+failures:
+
+failures:
+    workspace_overlay::stores::kv_store::tests::id_block_concurrency::concurrent_slice_id_requests_share_one_durable_block_refill
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3016 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p brewfs --lib`
