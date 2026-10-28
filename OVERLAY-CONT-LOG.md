@@ -347,10 +347,15 @@ and supplied artifacts were preserved.
 ### PR
 
 Stage 1 is the inherited WIP commit `0f2d665`, containing per-key row versions
-and chunk extent plans. Stage 2 hardens it with the two demonstrated race
-fixes and one shared resolver budget, after the final local gates above.
-This is a **draft performance PR, not an accepted optimization**. Its body
+and chunk extent plans. Stage 2 is `fa56fa5` (`fix(overlay): fence extent
+snapshots and cache version resets`): the two demonstrated race fixes and
+one shared resolver budget, after the final local gates above.
+
+[Draft PR #375](https://github.com/brewfs/brewfs/pull/375),
+`perf(overlay): cache native extent plans by chunk`, targets `main` from
+`perf/overlay-cont`. This is **not an accepted optimization**. Its body
 records the architecture, baseline min/median/max, missing candidate numbers,
-correctness evidence, and remaining risks. PR URL and stage-2 commit will be
-recorded after creation; the prepared description is
-`/home/hxy/overlay-refactor-evidence-20261028/PR-DRAFT.md`.
+correctness evidence, and remaining risks. The exact description is also
+retained at `/home/hxy/overlay-refactor-evidence-20261028/PR-DRAFT.md`.
+README performance tables remain unchanged; matched performance acceptance
+and a mountable packed fixture are still outstanding.
