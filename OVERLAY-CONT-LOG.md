@@ -276,9 +276,25 @@ is kept separate. The current build host is `brewfs-singapore-v2`, with no
 compose invocation was stopped during compilation before any fio run because
 it would have built flat-v1 and used the wrong workload. It yields no perf data.
 
-### 改后（待同机测量）
+### 改后测量
 
-Candidate min/median/max throughput, p99 and 100k-stat wall are **未测**.
+本轮没有启动改后 fio：当前构建主机 `brewfs-singapore-v2` 没有原 C3
+的 `/work/d1`–`/work/d4`、catalog 或 data。对已知 us-east-1 C3 实例和
+磁盘 ID 的只读云查询均返回空；`/home/hxy/target-opt/release/brewfs`
+也不存在（只有 release 中间产物）。因此没有把其他主机、旧候选或不同
+工作负载当作改后结果。
+
+| 指标 | 改前 C3 min | 改前 C3 median | 改前 C3 max | 改后候选 min | 改后候选 median | 改后候选 max | 倍率/判定 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 4 KiB randread throughput (MiB/s) | 66.934348 | 67.432175 | 68.055190 | 未测 | 未测 | 未测 | 不可计算 |
+| p99 (ms) | 160.432128 | 160.432128 | 162.529280 | 未测 | 未测 | 未测 | 不可计算 |
+| 100k-file stat wall (µs) | 未测 | 未测 | 未测 | 未测 | 未测 | 未测 | 不可计算 |
+
+存档基线的真实参数是 fio 3.36、`libaio`、`direct=1`、`numjobs=8`、
+`iodepth=32`、共享 1 GiB 文件、20 秒；本轮用户指定候选为 4 jobs，
+所以即便候选可运行，也不能把它与 67.432175 MiB/s 宣称为同参数倍率。
+本轮缺少原 C3 主机（或等价的同机 catalog/data 与挂载权限）和可运行的
+候选 binary，改后 throughput、p99、100k-stat wall 及倍率均保持未测。
 
 Final local gates, run after the correctness fixes and with the source frozen:
 
