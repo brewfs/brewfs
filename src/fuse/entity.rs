@@ -16,6 +16,7 @@ use asyncfuse::raw::flags::{FOPEN_DIRECT_IO, FUSE_WRITE_CACHE};
 use asyncfuse::raw::reply::{
     DirectoryEntry, DirectoryEntryPlus, FileAttr, ReplyAttr, ReplyCreated, ReplyData,
     ReplyDirectory, ReplyDirectoryPlus, ReplyEntry, ReplyInit, ReplyLock, ReplyOpen, ReplyWrite,
+    ReplyXAttr,
 };
 use asyncfuse::raw::{Filesystem, Request};
 use asyncfuse::{Errno, FileType, Result as FuseResult, SetAttr};
@@ -539,6 +540,44 @@ where
             ttl: Duration::ZERO,
             attr: self.attr(&attr),
         })
+    }
+
+    async fn readlink(&self, request: Request, inode: u64) -> FuseResult<ReplyData> {
+        let inode = self
+            .state
+            .namespace
+            .getattr(self.ino(inode)?, &credentials(request, 0)?)
+            .await
+            .map_err(errno)?;
+        if inode.kind != EntityKind::Symlink {
+            return Err(libc::EINVAL.into());
+        }
+        Ok(ReplyData {
+            data: Bytes::from(inode.symlink_target.ok_or(Errno::from(libc::EIO))?),
+        })
+    }
+
+    async fn getxattr(
+        &self,
+        request: Request,
+        inode: u64,
+        name: &OsStr,
+        size: u32,
+    ) -> FuseResult<ReplyXAttr> {
+        let value = self
+            .state
+            .namespace
+            .get_xattr(self.ino(inode)?, name.as_bytes(), &credentials(request, 0)?)
+            .await
+            .map_err(errno)?
+            .ok_or(Errno::from(libc::ENODATA))?;
+        if size == 0 {
+            return Ok(ReplyXAttr::Size(value.len() as u32));
+        }
+        if (size as usize) < value.len() {
+            return Err(libc::ERANGE.into());
+        }
+        Ok(ReplyXAttr::Data(Bytes::from(value)))
     }
 
     async fn setattr(

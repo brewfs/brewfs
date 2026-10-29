@@ -59,6 +59,10 @@ impl EntityKeys {
     pub fn maintenance(&self) -> Vec<u8> {
         self.key("maintenance")
     }
+    /// Present while immutable upper objects still depend on one local spool.
+    pub fn remote_pending(&self) -> Vec<u8> {
+        self.key("remote-pending")
+    }
     /// Changed atomically whenever maintenance introduces a Deleting slice.
     pub fn slice_delete_fence(&self) -> Vec<u8> {
         self.key("slice-delete-fence")

@@ -12,9 +12,11 @@ use super::keys::EntityKeys;
 use super::lifecycle::{Lifecycle, WriterSession};
 use super::model::LowerBinding;
 use super::namespace::EntityNamespace;
+use super::native_lower::NativeLower;
 use super::packed_lower::PackedLower;
 use super::redis::RedisEntityBackend;
-use super::resolver::ImmutableLower;
+use super::resolver::{ImmutableLower, ImmutableLowerData};
+use super::writeback::WritebackConfig;
 use super::{EntityError, Result};
 use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::cadapter::read_observer::ReadClass;
@@ -34,7 +36,58 @@ use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
 
 const SETUP_TTL_NS: u64 = 300_000_000_000;
 
-pub(crate) type ExperimentalLower<O> = PackedLower<O, RedisWorkspaceBackend>;
+pub(crate) enum ExperimentalLower<O: ObjectBackend + Clone> {
+    Packed(Box<PackedLower<O, RedisWorkspaceBackend>>),
+    Native(NativeLower<RedisEntityBackend, O>),
+}
+impl<O: ObjectBackend + Clone + 'static> ExperimentalLower<O> {
+    fn view(&self) -> &dyn ImmutableLowerData {
+        match self {
+            Self::Packed(lower) => lower.as_ref(),
+            Self::Native(lower) => lower,
+        }
+    }
+}
+#[async_trait::async_trait]
+impl<O: ObjectBackend + Clone + 'static> ImmutableLower for ExperimentalLower<O> {
+    fn binding(&self) -> &LowerBinding {
+        self.view().binding()
+    }
+    async fn inode(&self, ino: i64) -> Result<Option<super::model::EntityInode>> {
+        self.view().inode(ino).await
+    }
+    async fn dentry(&self, ino: i64, name: &[u8]) -> Result<Option<super::model::EntityDentry>> {
+        self.view().dentry(ino, name).await
+    }
+    async fn xattr(&self, ino: i64, name: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.view().xattr(ino, name).await
+    }
+    async fn chunk(
+        &self,
+        ino: i64,
+        index: u64,
+        size: u64,
+    ) -> Result<Option<super::model::ChunkMap>> {
+        self.view().chunk(ino, index, size).await
+    }
+    async fn readdir(&self, ino: i64) -> Result<Vec<(Vec<u8>, super::model::EntityDentry)>> {
+        self.view().readdir(ino).await
+    }
+    async fn readdir_page(
+        &self,
+        ino: i64,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, super::model::EntityDentry)>> {
+        self.view().readdir_page(ino, offset, limit).await
+    }
+}
+#[async_trait::async_trait]
+impl<O: ObjectBackend + Clone + 'static> ImmutableLowerData for ExperimentalLower<O> {
+    async fn read_range(&self, ino: i64, offset: u64, length: usize) -> Result<Vec<u8>> {
+        self.view().read_range(ino, offset, length).await
+    }
+}
 pub(crate) type ExperimentalNamespace<O> =
     EntityNamespace<RedisEntityBackend, ExperimentalLower<O>>;
 pub(crate) type ExperimentalData<O> = EntityData<RedisEntityBackend, ExperimentalLower<O>, O>;
@@ -43,6 +96,7 @@ pub(crate) struct FreshMountOptions {
     pub namespace_id: Option<Uuid>,
     pub lease_ttl_ns: i64,
     pub chunk_size: u64,
+    pub writeback: Option<WritebackConfig>,
 }
 
 pub(crate) struct RedisEntityExperiment<O: ObjectBackend + Clone> {
@@ -73,6 +127,76 @@ fn catalog_error(error: WorkspaceError) -> EntityError {
 }
 
 impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
+    pub async fn create_fresh_from_native(
+        &self,
+        source: Option<&std::path::Path>,
+        manifest: Option<&str>,
+        options: FreshMountOptions,
+    ) -> Result<Arc<ExperimentalEntityMount<O>>> {
+        let lower = match (source, manifest) {
+            (Some(source), None) => {
+                NativeLower::capture(
+                    self.entity.clone(),
+                    Arc::new(self.objects.clone()),
+                    self.volume_id,
+                    source,
+                    options.chunk_size,
+                )
+                .await?
+            }
+            (None, Some(key)) => {
+                NativeLower::open(
+                    self.entity.clone(),
+                    Arc::new(self.objects.clone()),
+                    self.volume_id,
+                    key,
+                )
+                .await?
+            }
+            _ => {
+                return Err(EntityError::Invalid(
+                    "select one native source or native manifest".into(),
+                ));
+            }
+        };
+        let namespace_id = options.namespace_id.unwrap_or_else(Uuid::new_v4);
+        if namespace_id.is_nil() {
+            return Err(EntityError::Invalid("nil entity namespace".into()));
+        }
+        Ok(Arc::new(
+            self.finish_entity(ExperimentalLower::Native(lower), namespace_id, options)
+                .await?,
+        ))
+    }
+
+    /// Restart recovery is deliberately upload-only. It neither takes over an
+    /// expired writer nor reconstructs metadata publications from a local log.
+    pub async fn recover_uploads(
+        &self,
+        namespace_id: Uuid,
+        config: WritebackConfig,
+    ) -> Result<super::writeback::WritebackStatus> {
+        let keys = EntityKeys::new(self.volume_id, namespace_id);
+        let descriptor = Lifecycle::new(self.entity.clone(), keys.clone())
+            .descriptor()
+            .await?;
+        if descriptor.format != super::model::ENTITY_WRITEBACK_FORMAT
+            || descriptor.state != super::lifecycle::NamespaceState::Active
+        {
+            return Err(EntityError::Fenced);
+        }
+        let queue = super::writeback::EntityWriteback::open(
+            self.entity.clone(),
+            Arc::new(self.objects.clone()),
+            keys,
+            config,
+        )?;
+        queue.upload_pass().await?;
+        while queue.status().await?.pending_objects > 0 {
+            queue.upload_pass().await?;
+        }
+        queue.status().await
+    }
     pub async fn connect(
         redis_url: &str,
         catalog_namespace: &str,
@@ -277,31 +401,49 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
             .release_packed_reader_pin(&source, Uuid::new_v4())
             .await
             .map_err(catalog_error);
-        let lower = Arc::new(result?);
+        let lower = result?;
         released?;
+        self.finish_entity(
+            ExperimentalLower::Packed(Box::new(lower)),
+            namespace_id,
+            options,
+        )
+        .await
+    }
+
+    async fn finish_entity(
+        &self,
+        lower: ExperimentalLower<O>,
+        namespace_id: Uuid,
+        options: FreshMountOptions,
+    ) -> Result<ExperimentalEntityMount<O>> {
+        let binding = lower.binding().clone();
         let keys = EntityKeys::new(self.volume_id, namespace_id);
         let lifecycle = Arc::new(Lifecycle::new(self.entity.clone(), keys.clone()));
         lifecycle.provision(&binding).await?;
         let session = lifecycle
             .acquire(Uuid::new_v4(), options.lease_ttl_ns)
             .await?;
-        if let Err(error) = lower
-            .bind_session(&session, &keys, options.chunk_size)
-            .await
+        if let ExperimentalLower::Packed(packed) = &lower
+            && let Err(error) = packed
+                .bind_session(&session, &keys, options.chunk_size)
+                .await
         {
             let _ = lifecycle.enter_maintenance(&session).await;
             return Err(error);
         }
+        let lower = Arc::new(lower);
         let namespace = EntityNamespace::new(
             self.entity.clone(),
             lower.clone(),
             keys.clone(),
             session.clone(),
         );
-        let data = match EntityData::new(
+        let data = match EntityData::new_with_writeback(
             namespace.clone(),
             Arc::new(self.objects.clone()),
             options.chunk_size,
+            options.writeback,
         )
         .await
         {
@@ -321,6 +463,9 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
 }
 
 impl<O: ObjectBackend + Clone + 'static> ExperimentalEntityMount<O> {
+    pub fn lower_binding(&self) -> &LowerBinding {
+        self.namespace.lower.binding()
+    }
     pub fn namespace(&self) -> &Arc<ExperimentalNamespace<O>> {
         &self.namespace
     }
@@ -340,6 +485,9 @@ impl<O: ObjectBackend + Clone + 'static> ExperimentalEntityMount<O> {
     /// The caller first stops external request admission and drops its file
     /// registry. This waits for every retained entity handle/read/upload.
     pub async fn orderly_close(&self) -> Result<()> {
+        self.data
+            .drain_remote(std::time::Duration::from_secs(60))
+            .await?;
         self.lifecycle.enter_maintenance(&self.session).await?;
         Ok(())
     }

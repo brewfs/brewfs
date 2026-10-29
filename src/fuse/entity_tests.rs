@@ -205,6 +205,86 @@ async fn opening_directory_still_requires_ancestor_search_permission() {
     );
 }
 
+#[tokio::test]
+async fn entity_metadata_reads_enforce_xattr_bounds_permissions_and_fencing() {
+    let (_temp, fuse, node, backend) = fixture().await;
+    let namespace = &fuse.state.namespace;
+    let ino = fuse.ino(node).unwrap();
+    let link = namespace
+        .create(
+            CreateRequest {
+                parent: ino,
+                name: b"link".to_vec(),
+                kind: EntityKind::Symlink,
+                mode: 0o777,
+                rdev: 0,
+                symlink_target: Some(b"child".to_vec()),
+            },
+            owner(),
+        )
+        .await
+        .unwrap();
+    let link_node = fuse.node(link.ino);
+    assert_eq!(
+        fuse.readlink(request(), link_node).await.unwrap().data,
+        b"child"[..]
+    );
+    assert_eq!(
+        fuse.readlink(request(), node).await.err(),
+        Some(libc::EINVAL.into())
+    );
+
+    let name = OsStr::new("user.metadata-test");
+    assert_eq!(
+        fuse.getxattr(request(), node, name, 0).await.err(),
+        Some(libc::ENODATA.into())
+    );
+    namespace
+        .set_xattr(
+            ino,
+            name.as_bytes().to_vec(),
+            Some(b"value".to_vec()),
+            owner(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        fuse.getxattr(request(), node, name, 0).await.unwrap(),
+        ReplyXAttr::Size(5)
+    ));
+    assert_eq!(
+        fuse.getxattr(request(), node, name, 4).await.err(),
+        Some(libc::ERANGE.into())
+    );
+    let ReplyXAttr::Data(value) = fuse.getxattr(request(), node, name, 5).await.unwrap() else {
+        panic!("xattr data");
+    };
+    assert_eq!(value, b"value"[..]);
+    namespace.chmod(ino, 0, owner()).await.unwrap();
+    assert_eq!(
+        fuse.getxattr(request(), node, name, 5).await.err(),
+        Some(libc::EACCES.into())
+    );
+    namespace.chmod(ino, 0o700, owner()).await.unwrap();
+    namespace
+        .set_xattr(ino, name.as_bytes().to_vec(), None, owner())
+        .await
+        .unwrap();
+    assert_eq!(
+        fuse.getxattr(request(), node, name, 0).await.err(),
+        Some(libc::ENODATA.into())
+    );
+    backend.set_time(2_000_000).unwrap();
+    assert_eq!(
+        fuse.readlink(request(), link_node).await.err(),
+        Some(libc::ESTALE.into())
+    );
+    assert_eq!(
+        fuse.getxattr(request(), node, name, 0).await.err(),
+        Some(libc::ESTALE.into())
+    );
+}
+
 async fn directory_entries(
     fuse: &EntityFuse<MemoryEntityBackend, MemoryLower, LocalFsBackend>,
     node: u64,

@@ -150,7 +150,7 @@ pub struct UploadToken {
     _admission: Arc<OperationGuard>,
 }
 
-/// Local evidence that the storage adapter acknowledged the durable PUT. The
+/// Local evidence of a durable PUT or a fsynced spool with persistent remote debt. The
 /// durable row stays Pending until its first map publication consumes this token.
 pub struct DurableUpload {
     token: UploadToken,
@@ -170,6 +170,11 @@ impl UploadToken {
     }
     /// Call only after a successful durable create-only object PUT.
     pub(super) fn confirm_durable_put(self) -> DurableUpload {
+        DurableUpload { token: self }
+    }
+    /// Only EntityData calls this after stage() has persisted both bytes and
+    /// remote debt. Debt excludes every maintenance/retirement path.
+    pub(super) fn confirm_local_stage(self) -> DurableUpload {
         DurableUpload { token: self }
     }
 }

@@ -15,7 +15,7 @@ use super::backend::{
 };
 use super::codec::{decode, encode};
 use super::keys::EntityKeys;
-use super::model::{ENTITY_FORMAT, LowerBinding};
+use super::model::{ENTITY_FORMAT, ENTITY_WRITEBACK_FORMAT, LowerBinding};
 use super::ownership::{SliceCensus, SliceState};
 use super::{EntityError, Result};
 
@@ -166,7 +166,7 @@ impl WriterSession {
             admission: self.admission.clone(),
         })
     }
-    async fn close_and_drain(&self) {
+    pub(super) async fn close_and_drain(&self) {
         loop {
             // Register the waiter before inspecting the count, avoiding the
             // last guard's notification racing the first await.
@@ -246,7 +246,7 @@ impl<B: EntityBackend> Lifecycle<B> {
     fn decode_descriptor(&self, bytes: &[u8]) -> Result<NamespaceDescriptor> {
         let row: NamespaceDescriptor = decode(bytes)?;
         row.lower.validate()?;
-        if row.format != ENTITY_FORMAT
+        if !matches!(row.format.as_str(), ENTITY_FORMAT | ENTITY_WRITEBACK_FORMAT)
             || row.namespace_id != self.keys.namespace_id()
             || (row.state == NamespaceState::Active) != row.active_lease.is_some()
             || row.active_lease.is_some_and(|lease| {
@@ -525,7 +525,8 @@ impl<B: EntityBackend> Lifecycle<B> {
     }
 
     pub async fn renew(&self, session: &WriterSession, ttl_ns: i64) -> Result<()> {
-        let _guard = session.admit()?;
+        // Draining closes new admission, but the exact writer must keep its
+        // lease alive until retained operations and remote debt have drained.
         if ttl_ns <= 0 {
             return Err(EntityError::Invalid("invalid lease duration".into()));
         }
@@ -577,6 +578,13 @@ impl<B: EntityBackend> Lifecycle<B> {
             return Ok(token);
         }
         let (mut descriptor, lease, mut checks, _) = self.runtime_rows(session).await?;
+        if self.backend.read(&[self.keys.remote_pending()]).await?.rows[0].is_some() {
+            return Err(EntityError::Busy);
+        }
+        checks.push(RowCheck {
+            key: self.keys.remote_pending(),
+            expected: None,
+        });
         let record = MaintenanceRecord {
             namespace_id: self.keys.namespace_id(),
             lease: session.identity,
@@ -632,8 +640,12 @@ impl<B: EntityBackend> Lifecycle<B> {
             self.keys
                 .lower_owner(&binding.manifest_digest, self.keys.namespace_id()),
             self.keys.lower_registry(&binding.manifest_digest),
+            self.keys.remote_pending(),
         ];
         let snapshot = self.backend.read(&keys).await?;
+        if snapshot.rows[6].is_some() {
+            return Err(EntityError::Busy);
+        }
         let descriptor =
             self.decode_descriptor(snapshot.rows[0].as_deref().ok_or(EntityError::Fenced)?)?;
         if !matches!(

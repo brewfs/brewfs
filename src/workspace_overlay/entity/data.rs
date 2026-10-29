@@ -1,7 +1,8 @@
-//! Write-through file I/O for the experimental current-entity namespace.
+//! File I/O for the experimental current-entity namespace.
 //!
 //! A file operation retains the namespace's inode lock through transport and
-//! publication. Other inodes remain independent. Uploads precede visibility;
+//! publication. Other inodes remain independent. Uploads precede visibility by
+//! default; opt-in local writeback persists staging and remote debt first.
 //! each bounded group publishes its inode/maps/memberships and authenticated
 //! object descriptors atomically. Mount admission remains a separate qualification.
 
@@ -29,6 +30,7 @@ use super::ownership::{
     DurableUpload, Ownership, SliceOwnership, plan_chunk_memberships_from_rows,
 };
 use super::recovery::{DiscardProgress, Recovery, absent_intent_check, prepare_resize};
+use super::writeback::{EntityWriteback, WritebackConfig, WritebackStatus};
 use super::{EntityError, Result};
 
 pub use super::resolver::ImmutableLowerData;
@@ -53,6 +55,8 @@ pub struct WriteOutcome {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct DataConfig {
     chunk_size: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    local_writeback: bool,
 }
 
 /// Immutable metadata committed with the first visible reference. The object
@@ -73,6 +77,7 @@ pub struct EntityData<B, L, O> {
     config_bytes: Vec<u8>,
     // Only identities that nominate keys, never cached metadata or authority.
     slice_hints: moka::sync::Cache<(i64, u64), Arc<[u64]>>,
+    writeback: Option<Arc<EntityWriteback<B, O>>>,
 }
 
 struct UploadedRange {
@@ -94,12 +99,34 @@ where
         objects: Arc<O>,
         chunk_size: u64,
     ) -> Result<Arc<Self>> {
+        Self::new_with_writeback(namespace, objects, chunk_size, None).await
+    }
+
+    pub async fn new_with_writeback(
+        namespace: Arc<EntityNamespace<B, L>>,
+        objects: Arc<O>,
+        chunk_size: u64,
+        config: Option<WritebackConfig>,
+    ) -> Result<Arc<Self>> {
         if chunk_size == 0 || chunk_size > MAX_IO_BYTES as u64 {
             return Err(EntityError::Invalid("invalid entity chunk size".into()));
         }
         let _admission = namespace.session.admit()?;
         let config_key = [namespace.keys.prefix(), b"data-config"].concat();
-        let config_bytes = codec::encode(&DataConfig { chunk_size })?;
+        let config_bytes = codec::encode(&DataConfig {
+            chunk_size,
+            local_writeback: config.is_some(),
+        })?;
+        let writeback = config
+            .map(|config| {
+                EntityWriteback::open(
+                    namespace.backend.clone(),
+                    objects.clone(),
+                    namespace.keys.clone(),
+                    config,
+                )
+            })
+            .transpose()?;
         for _ in 0..MAX_RETRIES {
             let authority = namespace.authority().await?;
             let snapshot = namespace
@@ -139,6 +166,10 @@ where
                 .await?
                 == CommitOutcome::Committed
             {
+                if let Some(queue) = &writeback {
+                    queue.enable(&namespace.session).await?;
+                    queue.start();
+                }
                 return Ok(Arc::new(Self {
                     namespace,
                     objects,
@@ -146,6 +177,7 @@ where
                     config_key,
                     config_bytes,
                     slice_hints: moka::sync::Cache::new(4096),
+                    writeback,
                 }));
             }
         }
@@ -481,20 +513,30 @@ where
                 size: length as u64,
                 sha256: Sha256::digest(bytes).into(),
             };
-            if let Err(error) = self
-                .objects
-                .put_object_create_only_durable(
-                    &self.namespace.keys.object(token.slice_id()),
-                    bytes,
-                )
-                .await
-            {
-                upload_error = Some(EntityError::Backend(format!(
-                    "entity object PUT failed: {error}"
-                )));
-                break;
+            let durable = if let Some(queue) = &self.writeback {
+                queue
+                    .stage(&self.namespace.session, &descriptor, bytes)
+                    .await
+                    .map(|()| token.confirm_local_stage())
+            } else {
+                self.objects
+                    .put_object_create_only_durable(
+                        &self.namespace.keys.object(token.slice_id()),
+                        bytes,
+                    )
+                    .await
+                    .map(|()| token.confirm_durable_put())
+                    .map_err(|error| {
+                        EntityError::Backend(format!("entity object PUT failed: {error}"))
+                    })
+            };
+            match durable {
+                Ok(receipt) => receipts.push(receipt),
+                Err(error) => {
+                    upload_error = Some(error);
+                    break;
+                }
             }
-            receipts.push(token.confirm_durable_put());
             uploaded.push(UploadedRange {
                 offset: offset + written as u64,
                 length,
@@ -955,6 +997,11 @@ where
     }
 
     async fn read_object(&self, descriptor: &ObjectDescriptor) -> Result<Vec<u8>> {
+        if let Some(queue) = &self.writeback
+            && let Some(bytes) = queue.read(descriptor).await?
+        {
+            return Ok(bytes);
+        }
         let key = self.namespace.keys.object(descriptor.slice_id);
         // Probe one byte past the authenticated length: an exact-size range
         // would hide an appended suffix. Short EOF is checked below as well.
@@ -989,6 +1036,25 @@ where
             ));
         }
         Ok(bytes)
+    }
+
+    pub async fn writeback_status(&self) -> Result<WritebackStatus> {
+        match &self.writeback {
+            Some(queue) => queue.status().await,
+            None => Ok(WritebackStatus::default()),
+        }
+    }
+
+    /// Local fsync acknowledges the durable spool. Migration and teardown use
+    /// this stronger barrier after external admission and handles are stopped.
+    pub async fn drain_remote(&self, timeout: std::time::Duration) -> Result<()> {
+        tokio::time::timeout(timeout, self.namespace.session.close_and_drain())
+            .await
+            .map_err(|_| EntityError::Busy)?;
+        if let Some(queue) = &self.writeback {
+            queue.drain(timeout).await?;
+        }
+        Ok(())
     }
 
     pub async fn truncate(

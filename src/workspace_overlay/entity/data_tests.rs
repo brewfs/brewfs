@@ -3,6 +3,9 @@
 //! separately exercises authenticated packed objects through EntityData.
 //! Metadata-only checks use a capability stub that panics on any object I/O.
 
+#[path = "data_writeback_tests.rs"]
+mod writeback;
+
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;

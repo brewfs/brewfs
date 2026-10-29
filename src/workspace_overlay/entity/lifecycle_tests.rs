@@ -525,6 +525,148 @@ async fn maintenance_waits_for_retained_read_or_handle_guards() {
 }
 
 #[tokio::test]
+async fn remote_debt_prevents_maintenance_without_local_upload_guards() {
+    let (backend, lifecycle, session) = fixture().await;
+    let authority = lifecycle.authority(&session).await.unwrap();
+    backend
+        .commit(
+            &authority,
+            &EntityPlan {
+                checks: Vec::new(),
+                writes: vec![RowWrite::Put {
+                    key: lifecycle.keys().remote_pending(),
+                    value: b"source-only object or unknown recovery record".to_vec(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        lifecycle.enter_maintenance(&session).await,
+        Err(EntityError::Busy | EntityError::Conflict)
+    ));
+    assert_eq!(
+        lifecycle.descriptor().await.unwrap().state,
+        NamespaceState::Active
+    );
+    assert!(
+        backend
+            .read(&[lifecycle.keys().lease()])
+            .await
+            .unwrap()
+            .rows[0]
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn remote_debt_invalidates_existing_maintenance_and_resume_authority() {
+    let (backend, lifecycle, session) = fixture().await;
+    let token = lifecycle.enter_maintenance(&session).await.unwrap();
+    let authority = lifecycle.maintenance_authority(&token).await.unwrap();
+    backend
+        .commit(
+            &authority,
+            &EntityPlan {
+                checks: Vec::new(),
+                writes: vec![RowWrite::Put {
+                    key: lifecycle.keys().remote_pending(),
+                    value: b"unverified recovery debt".to_vec(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        lifecycle.maintenance_authority(&token).await,
+        Err(EntityError::Busy | EntityError::Fenced)
+    ));
+    assert!(
+        lifecycle
+            .resume_after_maintenance(&token, Uuid::new_v4(), 100)
+            .await
+            .is_err()
+    );
+    assert!(lifecycle.begin_discard(&token).await.is_err());
+}
+
+struct RemoteDebtRaceBackend {
+    inner: Arc<MemoryEntityBackend>,
+    injection: Mutex<Option<(TransactionAuthority, Vec<u8>)>>,
+}
+
+#[async_trait::async_trait]
+impl EntityBackend for RemoteDebtRaceBackend {
+    async fn read(&self, keys: &[Vec<u8>]) -> Result<RowSnapshot> {
+        self.inner.read(keys).await
+    }
+    async fn commit(
+        &self,
+        authority: &TransactionAuthority,
+        plan: &EntityPlan,
+    ) -> Result<CommitOutcome> {
+        let injection = self.injection.lock().unwrap().take();
+        if let Some((writer, key)) = injection {
+            assert_eq!(
+                self.inner
+                    .commit(
+                        &writer,
+                        &EntityPlan {
+                            checks: Vec::new(),
+                            writes: vec![RowWrite::Put {
+                                key,
+                                value: b"late staged object".to_vec()
+                            }],
+                        }
+                    )
+                    .await?,
+                CommitOutcome::Committed
+            );
+        }
+        self.inner.commit(authority, plan).await
+    }
+    async fn scan_keys_page(
+        &self,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys_page(prefix, after, limit).await
+    }
+    async fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_prefix(prefix, limit).await
+    }
+    async fn scan_prefix_batch(
+        &self,
+        prefix: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.inner.scan_prefix_batch(prefix, limit).await
+    }
+}
+
+#[tokio::test]
+async fn remote_debt_racing_final_maintenance_commit_is_fenced_atomically() {
+    let (backend, lifecycle, session) = fixture().await;
+    let authority = lifecycle.authority(&session).await.unwrap();
+    let racing = Lifecycle::new(
+        Arc::new(RemoteDebtRaceBackend {
+            inner: backend,
+            injection: Mutex::new(Some((authority, lifecycle.keys().remote_pending()))),
+        }),
+        lifecycle.keys().clone(),
+    );
+    assert!(matches!(
+        racing.enter_maintenance(&session).await,
+        Err(EntityError::Conflict)
+    ));
+    assert_eq!(
+        lifecycle.descriptor().await.unwrap().state,
+        NamespaceState::Active
+    );
+}
+
+#[tokio::test]
 async fn one_hundred_lower_owners_minus_ninety_nine_preserves_the_last_owner() {
     let backend = Arc::new(MemoryEntityBackend::new(10));
     let volume = Uuid::new_v4();
