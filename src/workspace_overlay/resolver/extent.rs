@@ -163,6 +163,62 @@ pub fn resolve_extent_coverage(
     })
 }
 
+/// Clip a previously resolved upper coverage without consulting the catalog.
+/// `absent` remains distinct from an explicit Hole: packed lower bytes may
+/// fill an absent interval, while an upper Hole must mask the lower.
+pub fn clip_extent_coverage(
+    coverage: &ResolvedCoverage,
+    requested: Range<u64>,
+) -> Result<ResolvedCoverage, WorkspaceError> {
+    if requested.start > requested.end {
+        return Err(WorkspaceError::InvalidReadPlan(
+            "coverage range starts after its end".into(),
+        ));
+    }
+    if requested.is_empty() {
+        return Ok(ResolvedCoverage::default());
+    }
+    let mut covered = Vec::new();
+    for extent in &coverage.covered {
+        let extent_end = extent.end()?;
+        let start = extent.logical_offset.max(requested.start);
+        let end = extent_end.min(requested.end);
+        if start >= end {
+            continue;
+        }
+        let kind = match extent.kind {
+            ExtentKind::Data {
+                slice_id,
+                slice_offset,
+            } => ExtentKind::Data {
+                slice_id,
+                slice_offset: slice_offset
+                    .checked_add(start - extent.logical_offset)
+                    .ok_or_else(|| {
+                        WorkspaceError::CorruptMetadata(
+                            "clipped resolved slice offset overflows".into(),
+                        )
+                    })?,
+            },
+            ExtentKind::Hole => ExtentKind::Hole,
+        };
+        covered.push(ResolvedExtent {
+            logical_offset: start,
+            length: end - start,
+            kind,
+        });
+    }
+    let mut absent = Vec::new();
+    for gap in &coverage.absent {
+        let start = gap.start.max(requested.start);
+        let end = gap.end.min(requested.end);
+        if start < end {
+            absent.push(start..end);
+        }
+    }
+    Ok(ResolvedCoverage { covered, absent })
+}
+
 fn merge_adjacent(extents: Vec<ResolvedExtent>) -> Result<Vec<ResolvedExtent>, WorkspaceError> {
     let mut merged: Vec<ResolvedExtent> = Vec::with_capacity(extents.len());
     for extent in extents {

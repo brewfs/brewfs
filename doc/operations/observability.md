@@ -46,6 +46,41 @@ brewfs_fuse_lookup_ops_total 789012
 
 目前已打点的 FUSE 操作：read、write、lookup。其余操作（getattr、open、create、unlink 等）以及 meta/S3 层指标待补充。
 
+## 读路径分段计时
+
+设置 `BREWFS_STAGE_TIMING=1` 启用累计 wall-time 探针，并通过
+`BREWFS_STAGE_TIMING_PATH=/absolute/path/stages.json` 指定 JSON 输出文件
+（默认 `stage-timing.json`）。开关在进程内由 `OnceLock` 固定；修改环境变量后
+需要重启进程。关闭时只检查开关，不读取时钟或更新计数。
+
+在 Unix 上向启用了探针的 brewfs 进程发送 `SIGUSR1` 可保存快照；CLI 正常
+退出也会保存。文件通过临时文件加 rename 替换。累计字段为 `count`、
+`sum_us`、`max_us`，微秒保留小数。例如：
+
+```json
+{"enabled":true,"stages":{"fuse_dispatch":{"count":100,"sum_us":1250.5,"max_us":21.2}}}
+```
+
+实际文件始终包含以下六段：
+
+| 段 | 当前探针边界 |
+|---|---|
+| `fuse_dispatch` | FUSE read handler，排除 `.stats` 等内部虚拟文件 |
+| `resolve` | workspace inode delta 解析，包括 row cache 和必要的后端读取 |
+| `row_cache` | workspace upper row cache 的 get |
+| `meta_backend` | flat TiKV 事务包装，以及 workspace TiKV get / 批量读取 / scan |
+| `extent_plan` | native workspace 的 read_plan 构造 |
+| `data_path` | flat slice 读取，或 native / unified plan 的数据执行 |
+
+对测量前后的累计快照做差，再除以该轮完成的 FUSE read 数。占比使用
+`stage.sum_us / fuse_dispatch.sum_us`；span 可以嵌套、并发，不能相加。
+快照的各原子字段逐个读取，应在 fio 停止后采集；它不是一次全局一致性切片。
+元数据段包含挂载后台维护与非 read 操作，不等同于单次 read 的因果追踪，
+也不代表 Redis/SQLx 等尚未在此探针覆盖的后端。flat 不经过 workspace 的
+三个探针，对应的零不代表其等价处理免费。`fuse_dispatch` 不包含 handler
+之前的内核排队，不能替代 fio clat。探针开启时有时钟和共享原子操作开销，
+应在需要严格比较时做独立的 off/on 对照。
+
 ## 性能基准测试
 
 `benches/` 目录下的 Criterion benchmark，复现 `juicefs bench` 的工作负载模式。

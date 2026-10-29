@@ -9,7 +9,10 @@ pub use dentry::{
     ResolvedDentry, resolve_dentry, resolve_dentry_state, resolve_directory,
     resolve_directory_state,
 };
-pub use extent::{ResolvedCoverage, ResolvedExtent, resolve_extent_coverage, resolve_extents};
+pub use extent::{
+    ResolvedCoverage, ResolvedExtent, clip_extent_coverage, resolve_extent_coverage,
+    resolve_extents,
+};
 pub use inode::{ResolvedInode, resolve_inode, resolve_inode_state};
 pub use xattr::{
     ResolvedAcl, ResolvedXattr, resolve_acl, resolve_acl_state, resolve_xattr, resolve_xattr_state,
