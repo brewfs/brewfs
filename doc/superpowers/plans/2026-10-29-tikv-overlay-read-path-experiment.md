@@ -69,6 +69,58 @@ process and object-service caches are retained. Each phase checks that no
 compiler is running. Completed fio reads equal FUSE reads and fuse_dispatch
 counts, with fio errors zero.
 
+## Primary validation with historical fio 3.36
+
+The formal repeated comparison uses the host fio 3.36 binary and its
+libraries mounted read-only into the same Compose container. BrewFS, the
+corpus, TiKV/S3 namespaces, cache budgets, and W/C procedure are unchanged.
+The four current rows below share fio 3.36. Historical Redis still has
+unverified corpus/binary/object-service parity; do not attribute the full
+difference to the metadata backend. W is the median of three runs; C is one
+kernel-cache-drop run retaining the client caches.
+
+| Backend / policy / arm | W MiB/s | W p99 ms | C MiB/s | C p99 ms |
+|---|---:|---:|---:|---:|
+| Redis historical flat | 214.263 | 4.293 | 73.110 | 80.216 |
+| Redis historical native | 188.630 | 5.079 | 102.223 | 52.691 |
+| TiKV default flat | 27.407 | 46.399 | 9.941 | 233.832 |
+| TiKV default native | 21.107 | 46.399 | 9.272 | 214.958 |
+| TiKV whole-object flat | 43.317 | 18.219 | 42.106 | 18.481 |
+| TiKV whole-object native | 39.317 | 20.840 | 40.128 | 19.268 |
+
+All W samples (MiB/s), preserving every sample:
+
+- default flat: 27.407 / 31.830 / 16.135.
+- default native: 26.342 / 21.107 / 14.462.
+- whole-object flat: 44.257 / 43.066 / 43.317.
+- whole-object native: 38.673 / 41.395 / 39.317.
+
+| Stage, median us/read | Default flat | Default native | Whole flat | Whole native |
+|---|---:|---:|---:|---:|
+| fuse_dispatch | 152.046 | 238.916 | 21.378 | 31.251 |
+| resolve | 0.000 | 5.119 | 0.000 | 3.640 |
+| row_cache | 0.000 | 2.525 | 0.000 | 1.652 |
+| meta_backend | 0.480 | 5.301 | 0.200 | 1.886 |
+| extent_plan | 0.000 | 9.171 | 0.000 | 6.687 |
+| data_path | 132.202 | 209.977 | 5.935 | 9.729 |
+
+| W median counter/read | Default flat | Default native | Whole flat | Whole native |
+|---|---:|---:|---:|---:|
+| tikv_rpc_per_read | 0.000204277 | 0.001511208 | 0.000129251 | 0.000808041 |
+| tikv_read_rpc_per_read | 0.000204277 | 0.000993079 | 0.000129251 | 0.000579537 |
+| tikv_read_keys_per_read | 0.000209027 | 0.000962238 | 0.000126246 | 0.000509993 |
+
+Native W improves 86.3% in this measured working set. Whole-object W
+has zero additional object GETs in every arm/run; the full-block cache holds
+the corpus. Decreased RPC/read partly reflects more reads amortizing the
+same maintenance work, not new metadata RPC coalescing. Default W has large
+variance, so its arm medians do not isolate a fixed overlay penalty.
+Spans are nested and include background metadata work; do not add them.
+This remains a scoped configuration result, not acceptance of a new default.
+Cold sparse remote read amplification and complete candidate broad guards
+remain separate requirements. Exact artifacts: `fio336-default/` and
+`fio336-whole-object/` under the evidence directory.
+
 ## Initial fio 3.39 results and historical reference
 
 The first Compose image used fio 3.39, while historical raw JSON identifies
