@@ -6,6 +6,10 @@ This experiment adds opt-in read-stage observability and records a local TiKV
 read-policy experiment. It does not change metadata transactions, ACL caching,
 key layout, or the default data-fetch policy.
 
+The single configuration candidate was rejected for general use: mixed-I/O
+p99 regressed and most active-bandwidth gains disappeared when including the
+tool wall tail. The committed code adds diagnostics only.
+
 The source starts at `2b85a38` (open PR #380, packed unified read-plan cache).
 The draft PR targets main and therefore includes that prerequisite commit.
 Do not interpret the combined main diff as entirely new work from this task.
@@ -127,8 +131,8 @@ The first Compose image used fio 3.39, while historical raw JSON identifies
 fio 3.36. The initial self-comparison below has matching versions before/after,
 but is not a version-matched historical comparison. The host fio 3.36 binary
 and its libraries can be mounted read-only into the same Compose container
-using `compose-fio336.yaml`; version-aligned primary results are recorded
-separately when completed. Do not silently combine samples from these runs.
+using `compose-fio336.yaml`; completed version-aligned primary results are above.
+Do not silently combine samples from these runs.
 
 | Backend / arm | W median MiB/s | W p99 median ms | C MiB/s | C p99 ms |
 |---|---:|---:|---:|---:|
@@ -199,8 +203,8 @@ python3 /home/hxy/evidence-tikv/analyze.py \
   --root /home/hxy/evidence-tikv/whole-object
 ```
 
-Candidate and broad/mixed guard results will be recorded below. README
-performance tables are not changed by this experiment.
+The candidate's rejection and broad/mixed guard results are recorded below.
+README performance tables are not changed by this experiment.
 
 ## Build and validation
 
@@ -225,3 +229,52 @@ Remaining CI results are preserved in `gates-remaining.json`.
 Packed, multi-store TiKV, remote network latency, production seal lifecycle,
 and historical byte-for-byte corpus parity are unverified. Probe off/on
 overhead is unverified unless an independent overhead artifact is present.
+
+## Rejection, mixed guard, and final integrity
+
+Reject `whole-object` as a general performance optimization. Its warm-read
+gain does not satisfy the first-class mixed-I/O latency and tail requirements.
+The matched guard uses fio 3.39, direct libaio, depth 32, one job, 512 MiB,
+20 seconds, 4 KiB randrw, 70% reads, identical budgets, strict zero-byte drain,
+and fresh namespaces/buckets. This guard is separate from primary fio 3.36.
+
+| Mixed metric | Default | Whole-object |
+|---|---:|---:|
+| Read active MiB/s | 0.786 | 1.909 |
+| Write active MiB/s | 0.350 | 0.824 |
+| Read p99 ms | 173.015 | 244.318 |
+| Write p99 ms | 177.209 | 244.318 |
+| Fio active seconds | 20.003 | 20.001 |
+| Tool wall seconds | 27 | 62 |
+| Read effective wall MiB/s | 0.582 | 0.616 |
+| Write effective wall MiB/s | 0.259 | 0.266 |
+| Post-write drain seconds | 0 | 0 |
+
+Read/write p99 regress by 41.2%/37.9%. Effective wall read/write bandwidth
+improves only 5.8%/2.5%, despite active gains of 142.9%/135.5%. This is a single
+regression screen, sufficient to withhold acceptance, not repeatability proof.
+The complete artifact comparator output is `guard/comparison.{md,tsv}`.
+PUT/GiB is 261,998/261,398; average PUT and upload batch size are about 4 KiB,
+with partial-tail ratio 1 in both arms.
+
+The default guard passes all seven core fio scenes and metaperf/dirstress/
+dirperf, with zero dirty/pending/buffer tails and normal teardown. Default
+randwrite wall is 210 seconds; its 209.338 seconds is already included in fio
+runtime/BW. The candidate's remaining metaperf and directory guards were
+intentionally stopped after the completed randrw rejection; exit 143 is not
+reported as a natural pass. Candidate metadata/directory and remaining broad
+scenes are unverified. The exact stop reason and diagnostics are preserved in
+`guard/rejection.json`. No second optimization was attempted, and no failed
+new performance algorithm or default-policy change remains in the tree.
+
+All 55 primary phases pass fio error/count/version checks and do not overlap
+the recorded CI commands; source/binary hashes match the release build.
+After primary measurements the sealed lower fingerprint remains unchanged,
+upper delta/extent rows and owned bytes/slices remain zero, and both original
+512-object S3 inventories retain identical keys, sizes, and ETags. See
+`measurement-validity.json` and `final-integrity.json`.
+
+All required local CI gates pass, including both FUSE runtime checks,
+workspace check/build/test, shell checks, and all-target Clippy with warnings
+denied. The separate overlay-feature lib-test build interruption remains
+unverified as described above. Draft PR: https://github.com/brewfs/brewfs/pull/381.
