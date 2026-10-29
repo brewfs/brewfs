@@ -288,6 +288,7 @@ impl TiKvMetaStore {
     where
         F: for<'txn> FnMut(&'txn TiKvMetaStore, &'txn mut Transaction) -> TiKvTxnFuture<'txn, T>,
     {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         for attempt in 0..TXN_MAX_RETRIES {
             let mut txn = match mode {
                 TiKvTxnMode::Read => self.begin_read(operation).await?,

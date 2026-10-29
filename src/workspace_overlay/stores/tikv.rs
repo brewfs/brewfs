@@ -528,6 +528,7 @@ impl TiKvWorkspaceBackend {
         limits: KvReadLimits,
         allow_short_page: bool,
     ) -> Result<Vec<KvEntry>, WorkspaceError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         limits.validate()?;
         let _operation = self.operations.enter()?;
         if prefix.len() > limits.max_key_bytes
@@ -641,6 +642,7 @@ impl TiKvWorkspaceBackend {
         prefix: &[u8],
         max_records: Option<usize>,
     ) -> Result<Vec<KvEntry>, WorkspaceError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         let _operation = self.operations.enter()?;
         if max_records == Some(0) {
             return Err(WorkspaceError::InvalidReadPlan(
@@ -770,6 +772,7 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
     }
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         let _operation = self.operations.enter()?;
         let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
         let mut transaction = self
@@ -809,6 +812,7 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         keys: &[Vec<u8>],
         limits: KvReadLimits,
     ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         limits.validate_keys(keys)?;
         let _operation = self.operations.enter()?;
         if keys.len() > BOUNDED_READ_MAX_POINT_KEYS || keys.len() > limits.max_data_requests {
@@ -858,6 +862,7 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         &self,
         keys: &[Vec<u8>],
     ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::MetaBackend);
         let _operation = self.operations.enter()?;
         if keys.is_empty() {
             let timestamp = self

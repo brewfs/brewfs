@@ -587,6 +587,7 @@ pub async fn execute_unified_into<F: UnifiedReadSourceFetcher + ?Sized>(
     plan: &UnifiedReadPlan,
     output: &mut [u8],
 ) -> Result<(), ReadPlanError> {
+    let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::DataPath);
     let requested_len = u64::try_from(output.len())
         .map_err(|_| ReadPlanError::Invalid("output length exceeds u64".into()))?;
     plan.validate(requested_offset, requested_len)?;
@@ -821,6 +822,7 @@ pub async fn execute_into<B: BlockStore + Sync>(
     plan: &ResolvedReadPlan,
     output: &mut [u8],
 ) -> Result<(), ReadPlanError> {
+    let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::DataPath);
     let requested_len = u64::try_from(output.len())
         .map_err(|_| ReadPlanError::Invalid("output length exceeds u64".into()))?;
     let requested_end = requested_offset

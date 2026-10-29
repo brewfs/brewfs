@@ -752,6 +752,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         &self,
         ino: i64,
     ) -> Result<Resolution<InodeDelta>, MetaError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::Resolve);
         let chain = self.chain().await?;
         let cache = self.upper_row_cache();
         let rows = match cache.and_then(|cache| cache.get(&row_cache::RowKey::Inode(ino))) {
@@ -4099,6 +4100,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceReadPlanProvider for WorkspaceMetaLay
         offset: u64,
         len: u64,
     ) -> Result<ResolvedReadPlan, MetaError> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::ExtentPlan);
         if self.packed_lower().is_some() {
             return Err(MetaError::NotSupported(
                 "packed workspace requires prepared unified read".into(),

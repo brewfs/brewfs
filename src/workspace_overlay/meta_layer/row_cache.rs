@@ -173,6 +173,7 @@ impl UpperRowCache {
     }
 
     pub(super) fn get(&self, key: &RowKey) -> Option<RowValue> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::RowCache);
         if self.disabled.load(Ordering::Acquire) {
             self.counters.misses.fetch_add(1, Ordering::Relaxed);
             return None;
