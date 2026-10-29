@@ -18,6 +18,7 @@ use crate::meta::layer::MetaLayer;
 use crate::meta::store::{FileType, MetaError};
 
 use super::{WorkspaceMetaLayer, validate_fixed_layer_pair};
+use crate::workspace_overlay::cache::UnifiedReadPlanCacheKey;
 use crate::workspace_overlay::catalog::{
     ExtentQuery, HeadGuard, InodeQuery, MAX_UPPER_EXTENT_ROWS, PackedLowerBinding, WorkspaceStore,
 };
@@ -28,7 +29,7 @@ use crate::workspace_overlay::packed_v3::wire005::{
     V3BudgetPool, V3MountBudget, V3ObjectKind, V3OwnedPermit,
 };
 use crate::workspace_overlay::resolver::{
-    Resolution, resolve_extent_coverage, resolve_inode_state,
+    Resolution, clip_extent_coverage, resolve_extent_coverage, resolve_inode_state,
 };
 
 // 8 x 16 MiB walk arenas = half of the default 256 MiB Metadata pool.
@@ -1033,6 +1034,26 @@ pub(super) async fn prepare<W: WorkspaceStore + 'static>(
     ];
     let fence_rows = inodes.clone();
     let inode_state = resolve_inode_state(&layers, &inodes, ino).map_err(read_workspace_to_meta)?;
+    let inode_data_version = match &inode_state {
+        Resolution::Present(inode) => inode.inode.data_version,
+        Resolution::Masked | Resolution::Absent => 0,
+    };
+    let generation = ReadGeneration {
+        workspace_head_epoch: guard.expected_head_epoch,
+        // Frozen base: this inode's upper mutation fence identifies its view;
+        // unrelated upper writes do not invalidate the read.
+        workspace_mutation_sequence: if fused {
+            inodes
+                .iter()
+                .filter(|row| row.layer_id == layers[0].layer_id)
+                .map(|row| row.sequence)
+                .max()
+                .unwrap_or(0)
+        } else {
+            layers[0].next_sequence
+        },
+        lower_snapshot: lower.binding.manifest.digest,
+    };
     let mut lower_attr = None;
     let visible_size = match inode_state {
         Resolution::Present(inode) => {
@@ -1066,26 +1087,53 @@ pub(super) async fn prepare<W: WorkspaceStore + 'static>(
             crate::chunk::read_plan::ReadRequestBeyondView.into(),
         ));
     }
-    let rows = meta
-        .store
-        .get_extent_deltas_bounded(
-            ExtentQuery {
-                layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
-                ino,
-                chunk_index,
-                range_start: offset,
-                range_end: end,
-            },
-            MAX_UPPER_EXTENT_ROWS,
-        )
-        .await
-        .map_err(read_workspace_to_meta)?;
-    let coverage = resolve_extent_coverage(&layers, &rows, ino, chunk_index, offset..end)
-        .map_err(read_workspace_to_meta)?;
-    // Backend rows are dropped here. Only resolved upper segments, their gaps
-    // and per-gap bookkeeping stay live; each segment yields at most one gap.
-    let retained_rows = rows.len() as u64 + 2;
-    drop(rows);
+    // Match the native resolver cache: small random reads memoize the whole
+    // chunk, while larger requests retain a bounded range-specific coverage.
+    // Cached values contain only upper coverage; absent gaps remain eligible
+    // for the authenticated packed lower and never become masking holes.
+    let reuse_chunk_plan = len <= 4096;
+    let plan_range = if reuse_chunk_plan {
+        0..meta.chunk_size
+    } else {
+        offset..end
+    };
+    let cache_key = UnifiedReadPlanCacheKey {
+        workspace_id: guard.workspace_id,
+        head_epoch: guard.expected_head_epoch,
+        ino,
+        chunk_index,
+        inode_data_version,
+        mutation_sequence: generation.workspace_mutation_sequence,
+        lower_snapshot: generation.lower_snapshot,
+        range_start: plan_range.start,
+        range_end: plan_range.end,
+    };
+    let coverage = if let Some(cached) = meta.resolver_cache.get_unified_read_plan(&cache_key) {
+        clip_extent_coverage(&cached, offset..end).map_err(read_workspace_to_meta)?
+    } else {
+        let rows = meta
+            .store
+            .get_extent_deltas_bounded(
+                ExtentQuery {
+                    layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
+                    ino,
+                    chunk_index,
+                    range_start: plan_range.start,
+                    range_end: plan_range.end,
+                },
+                MAX_UPPER_EXTENT_ROWS,
+            )
+            .await
+            .map_err(read_workspace_to_meta)?;
+        let resolved = resolve_extent_coverage(&layers, &rows, ino, chunk_index, plan_range)
+            .map_err(read_workspace_to_meta)?;
+        meta.resolver_cache
+            .insert_unified_read_plan(cache_key, resolved.clone());
+        clip_extent_coverage(&resolved, offset..end).map_err(read_workspace_to_meta)?
+    };
+    // Backend rows are dropped before lower preparation. Retain only bounded
+    // resolved segments, absent gaps and per-gap bookkeeping.
+    let retained_rows = coverage.covered.len().saturating_add(coverage.absent.len()) as u64 + 2;
     arena
         .shrink(
             V3BudgetPool::Plans,
@@ -1110,22 +1158,6 @@ pub(super) async fn prepare<W: WorkspaceStore + 'static>(
             },
         },
     });
-    let generation = ReadGeneration {
-        workspace_head_epoch: guard.expected_head_epoch,
-        // Frozen base: this inode's upper data version identifies its view;
-        // unrelated upper writes do not invalidate the read.
-        workspace_mutation_sequence: if fused {
-            inodes
-                .iter()
-                .filter(|row| row.layer_id == layers[0].layer_id)
-                .map(|row| row.sequence)
-                .max()
-                .unwrap_or(0)
-        } else {
-            layers[0].next_sequence
-        },
-        lower_snapshot: lower.binding.manifest.digest,
-    };
     let preparation = prepare_overlay_plan(generation, logical_size, offset, len, upper)
         .map_err(|error| MetaError::Internal(error.to_string()))?;
     let mut children = Vec::new();
