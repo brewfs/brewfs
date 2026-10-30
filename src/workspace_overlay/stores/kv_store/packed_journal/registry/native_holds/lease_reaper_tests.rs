@@ -337,6 +337,7 @@ impl Fixture {
         };
         let revision = revision_from_layer(&base).unwrap();
         let mut workspace = WorkspaceRecord {
+            upper_bucket: None,
             workspace_id: WorkspaceId::new(),
             head_layer_id: LayerId::new(),
             head_epoch: 1,

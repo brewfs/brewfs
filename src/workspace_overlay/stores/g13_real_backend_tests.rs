@@ -367,6 +367,7 @@ impl<B: WorkspaceKvBackend + Clone> WorkspaceKvBackend for ScheduledRealBackend<
 
 fn fresh_root_request() -> CreateVolumeRoot {
     CreateVolumeRoot {
+        upper_bucket: None,
         volume_format: "workspace-v1".into(),
         schema_version: WORKSPACE_SCHEMA_VERSION,
         volume_id: Uuid::new_v4(),
@@ -383,6 +384,7 @@ fn fresh_fork_request(base_revision: BaseRevision) -> CreateWorkspace {
         workspace_id: WorkspaceId::new(),
         head_layer_id: LayerId::new(),
         owner_id: Some("g13-real-backend-child".into()),
+        upper_bucket: None,
     }
 }
 

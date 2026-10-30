@@ -113,6 +113,7 @@ async fn workspace_keyset_skips_active_rows_and_retains_deleting_route() {
     let mut expected = Vec::new();
     for (number, state) in [(1, WorkspaceState::Active), (2, WorkspaceState::Deleting)] {
         let row = WorkspaceRecord {
+            upper_bucket: None,
             workspace_id: WorkspaceId::from_uuid(uuid::Uuid::from_u128(number)),
             head_layer_id: LayerId::new(),
             head_epoch: 1,

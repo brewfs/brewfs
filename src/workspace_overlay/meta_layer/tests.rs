@@ -34,6 +34,7 @@ async fn test_meta() -> WorkspaceMetaLayer<SqliteWorkspaceStore> {
     let workspace_id = WorkspaceId::from_uuid(Uuid::from_u128(100));
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(101),
@@ -1421,6 +1422,7 @@ async fn writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_wr
     let workspace_id = WorkspaceId::new();
     let workspace = first
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
@@ -2375,6 +2377,7 @@ async fn writable_acl_independent_store_revoke_after_precheck_denies_open_trunc_
     let workspace_id = WorkspaceId::new();
     let workspace = first
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),

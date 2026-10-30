@@ -26,6 +26,7 @@ fn id(value: u128) -> Uuid {
 
 fn create_request() -> CreateVolumeRoot {
     CreateVolumeRoot {
+        upper_bucket: None,
         volume_format: "workspace-v1".into(),
         schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
         volume_id: id(1),
@@ -55,6 +56,39 @@ async fn uninitialized_catalog_header_probe_does_not_create_schema() {
     let workspace = store.create_volume_root(create_request()).await.unwrap();
     assert_eq!(workspace.workspace_id, create_request().workspace_id);
     assert!(store.load_volume_header().await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn sqlite_legacy_workspace_reopens_without_bucket_column_or_migration() {
+    let (temp, store, pool, request) = v3_open_file_fixture().await;
+    drop(store);
+    sea_orm::sqlx::query("ALTER TABLE ws_v1_workspaces DROP COLUMN upper_bucket")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = SqliteWorkspaceStore::connect(&format!(
+        "sqlite://{}",
+        temp.path().join("catalog.db").display()
+    ))
+    .await
+    .unwrap();
+    let workspace = store.load_workspace(request.workspace_id).await.unwrap();
+    assert_eq!(workspace.upper_bucket, None);
+    assert_eq!(
+        store
+            .allocate_id_for_workspace(workspace.workspace_id, "slice")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(store.allocate_id("slice").await.unwrap(), 2);
+    let count: i64 = sea_orm::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('ws_v1_workspaces') WHERE name = 'upper_bucket'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0, "reading old workspaces must not migrate them");
 }
 
 // A separate connection corrupts an isolated durable catalog to exercise the
@@ -1217,6 +1251,51 @@ async fn workspace_allocators_are_monotonic_and_reject_unknown_names() {
 }
 
 #[tokio::test]
+async fn workspace_slice_allocators_are_scoped_by_upper_bucket() {
+    let store = initialized_store().await;
+    let mut root_request = create_request();
+    root_request.upper_bucket = Some("brewfs-upper-a".into());
+    let root = store.create_volume_root(root_request).await.unwrap();
+    let base = root.fork_base.clone().unwrap();
+    let second = store
+        .create_workspace(CreateWorkspace {
+            workspace_id: WorkspaceId::from_uuid(id(10)),
+            head_layer_id: LayerId::from_uuid(id(11)),
+            base_revision: base,
+            owner_id: None,
+            upper_bucket: Some("brewfs-upper-b".into()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .allocate_id_for_workspace(root.workspace_id, "slice")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .allocate_id_for_workspace(second.workspace_id, "slice")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .allocate_id_for_workspace(root.workspace_id, "slice")
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(matches!(
+        store.gc_snapshot(i64::MAX / 2, 0).await,
+        Err(WorkspaceError::UnsupportedCapability(_))
+    ));
+}
+
+#[tokio::test]
 async fn sqlite_concurrent_forks_from_one_revision_keep_distinct_heads() {
     let store = Arc::new(initialized_store().await);
     let root = store.create_volume_root(create_request()).await.unwrap();
@@ -1237,6 +1316,7 @@ async fn sqlite_concurrent_forks_from_one_revision_keep_distinct_heads() {
                     head_layer_id,
                     base_revision,
                     owner_id: None,
+                    upper_bucket: None,
                 })
                 .await?;
             assert_eq!(store.load_workspace(workspace_id).await?, workspace);
@@ -1281,6 +1361,7 @@ async fn independent_store_instances_serialize_concurrent_workspace_writers() {
     assert_eq!(store_b.journal_mode().await.unwrap(), "wal");
     let second = store_b
         .create_workspace(CreateWorkspace {
+            upper_bucket: None,
             workspace_id: WorkspaceId::from_uuid(id(80)),
             head_layer_id: LayerId::from_uuid(id(81)),
             base_revision,

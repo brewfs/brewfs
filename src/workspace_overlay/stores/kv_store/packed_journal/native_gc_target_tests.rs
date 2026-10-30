@@ -144,6 +144,7 @@ async fn orphan(
     if store.load_volume_header().await.unwrap().is_none() {
         store
             .create_volume_root(CreateVolumeRoot {
+                upper_bucket: None,
                 volume_format: "workspace-v1".into(),
                 schema_version: WORKSPACE_SCHEMA_VERSION,
                 volume_id: Uuid::from_u128(901),
@@ -212,6 +213,7 @@ async fn targeted_native_gc_keeps_a_reachable_selected_layer_and_issues_no_delet
     let blocks = Arc::new(ObservedBlocks::default());
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(151),
@@ -329,6 +331,7 @@ async fn targeted_native_gc_never_deletes_slice_published_after_bound_retention(
     );
     let workspace = writer
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: VOLUME_FORMAT.into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(191),

@@ -469,6 +469,7 @@ async fn fresh_guard<B: WorkspaceKvBackend>(store: &KvWorkspaceStore<B>) -> Head
     store.initialize_workspace_schema().await.unwrap();
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: 1,
             volume_id: Uuid::new_v4(),

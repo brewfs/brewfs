@@ -5,6 +5,7 @@ use crate::workspace_overlay::stores::kv_store::packed_reader_pins::AcquirePacke
 
 fn workspace(binding: &PackedLowerBindingRecord, state: WorkspaceState) -> WorkspaceRecord {
     WorkspaceRecord {
+        upper_bucket: None,
         workspace_id: binding.workspace_id,
         head_layer_id: binding.head_layer_id,
         head_epoch: binding.head_epoch,

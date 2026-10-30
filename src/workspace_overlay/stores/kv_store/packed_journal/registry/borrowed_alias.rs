@@ -370,6 +370,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 head_epoch: u64::from(packed_fork.binding.is_some()),
                 fork_base: Some(request.base_revision.clone()),
                 owner_id: request.owner_id.clone(),
+                upper_bucket: request.upper_bucket.clone(),
                 state: WorkspaceState::Active,
                 active_lease: None,
                 created_at_ns: now,
@@ -491,6 +492,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                         head_layer_id: LayerId::new(),
                         base_revision: revision.clone(),
                         owner_id: owner_id.clone(),
+                        upper_bucket: None,
                     },
                     true,
                 )

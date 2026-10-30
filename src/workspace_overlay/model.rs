@@ -99,6 +99,10 @@ pub struct WorkspaceRecord {
     pub active_lease: Option<LeaseId>,
     pub created_at_ns: i64,
     pub updated_at_ns: i64,
+    /// Writable object bucket; absent in legacy rows, which retain the
+    /// configured shared bucket. Never inferred or changed on remount.
+    #[serde(default)]
+    pub upper_bucket: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

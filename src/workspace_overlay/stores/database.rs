@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS ws_v1_volume_header (
 );
 CREATE TABLE IF NOT EXISTS ws_v1_workspaces (
     workspace_id BLOB PRIMARY KEY,
+    upper_bucket TEXT,
     head_layer_id BLOB NOT NULL,
     head_epoch INTEGER NOT NULL,
     fork_base_layer_id BLOB,
@@ -497,12 +498,13 @@ impl SqliteWorkspaceStore {
 
         sea_orm::sqlx::query(
             "INSERT INTO ws_v1_workspaces
-             (workspace_id, head_layer_id, head_epoch,
+             (workspace_id, upper_bucket, head_layer_id, head_epoch,
               fork_base_layer_id, fork_base_version, fork_base_root_hash,
               owner_id, state, created_at_ns, updated_at_ns)
-             VALUES (?, ?, 0, ?, 1, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?)",
         )
         .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(request.upper_bucket.as_deref())
         .bind(request.writable_layer_id.as_bytes().as_slice())
         .bind(request.root_layer_id.as_bytes().as_slice())
         .bind(root_hash.as_slice())
@@ -544,6 +546,7 @@ impl SqliteWorkspaceStore {
 
         Ok(WorkspaceRecord {
             workspace_id: request.workspace_id,
+            upper_bucket: request.upper_bucket,
             head_layer_id: request.writable_layer_id,
             head_epoch: 0,
             fork_base: Some(BaseRevision {
@@ -1251,6 +1254,12 @@ impl SqliteWorkspaceStore {
             .map(|row| row.try_get::<String, _>("name").map_err(backend))
             .collect::<Result<Vec<_>, _>>()?;
         let has_active_lease = names.iter().any(|name| name == "active_lease");
+        if !names.iter().any(|name| name == "upper_bucket") {
+            sea_orm::sqlx::query("ALTER TABLE ws_v1_workspaces ADD COLUMN upper_bucket TEXT")
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+        }
         if !has_active_lease {
             sea_orm::sqlx::query("ALTER TABLE ws_v1_workspaces ADD COLUMN active_lease BLOB")
                 .execute(&mut *tx)
@@ -1772,9 +1781,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
 
     async fn load_workspace(&self, id: WorkspaceId) -> Result<WorkspaceRecord, WorkspaceError> {
         let row = sea_orm::sqlx::query(
-            "SELECT workspace_id, head_layer_id, head_epoch,
-                    fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                    owner_id, state, active_lease, created_at_ns, updated_at_ns
+            "SELECT *
              FROM ws_v1_workspaces WHERE workspace_id = ?",
         )
         .bind(id.as_bytes().as_slice())
@@ -1841,6 +1848,41 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         })
     }
 
+    async fn allocate_id_for_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        name: &str,
+    ) -> Result<i64, WorkspaceError> {
+        if name != "slice" {
+            return self.allocate_id(name).await;
+        }
+        let workspace = self.load_workspace(workspace_id).await?;
+        let Some(bucket) = workspace.upper_bucket else {
+            return self.allocate_id(name).await;
+        };
+        let allocator = format!("slice/{bucket}");
+        let _guard = self.write_gate.lock().await;
+        sea_orm::sqlx::query(
+            "INSERT OR IGNORE INTO ws_v1_allocators(name, next_value) VALUES (?, 1)",
+        )
+        .bind(&allocator)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        sea_orm::sqlx::query_scalar::<_, i64>(
+            "UPDATE ws_v1_allocators SET next_value = next_value + 1
+             WHERE name = ? AND next_value < ? RETURNING next_value - 1",
+        )
+        .bind(&allocator)
+        .bind(i64::MAX)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| {
+            WorkspaceError::CorruptMetadata("workspace slice allocator is exhausted".into())
+        })
+    }
+
     async fn create_volume_root(
         &self,
         request: CreateVolumeRoot,
@@ -1852,6 +1894,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         &self,
         request: CreateWorkspace,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
+        Self::migrate_workspace_columns(&self.pool).await?;
         let _guard = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
         let base = load_revision_tx(&mut tx, request.base_revision.layer_id).await?;
@@ -1898,12 +1941,13 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .await?;
         sea_orm::sqlx::query(
             "INSERT INTO ws_v1_workspaces
-             (workspace_id, head_layer_id, head_epoch, fork_base_layer_id,
+             (workspace_id, upper_bucket, head_layer_id, head_epoch, fork_base_layer_id,
               fork_base_version, fork_base_root_hash, owner_id, state,
               created_at_ns, updated_at_ns)
-             VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(request.upper_bucket.as_deref())
         .bind(request.head_layer_id.as_bytes().as_slice())
         .bind(request.base_revision.layer_id.as_bytes().as_slice())
         .bind(to_i64(
@@ -1930,6 +1974,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         tx.commit().await.map_err(backend)?;
         Ok(WorkspaceRecord {
             workspace_id: request.workspace_id,
+            upper_bucket: request.upper_bucket,
             head_layer_id: request.head_layer_id,
             head_epoch: 0,
             fork_base: Some(request.base_revision),
@@ -1943,9 +1988,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
 
     async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, WorkspaceError> {
         let rows = sea_orm::sqlx::query(
-            "SELECT workspace_id, head_layer_id, head_epoch,
-                    fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                    owner_id, state, active_lease, created_at_ns, updated_at_ns
+            "SELECT *
              FROM ws_v1_workspaces ORDER BY created_at_ns, workspace_id",
         )
         .fetch_all(&self.pool)
@@ -3393,17 +3436,15 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         let grace = to_i64(lease_grace_ns, "lease grace")?;
         let lease_cutoff = now_ns.saturating_sub(grace);
         let mut roots = BTreeSet::new();
-        let workspace_roots =
-            sea_orm::sqlx::query("SELECT head_layer_id FROM ws_v1_workspaces WHERE state != ?")
-                .bind(WorkspaceState::Deleting.discriminant() as i64)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(backend)?;
-        for row in workspace_roots {
-            roots.insert(LayerId::from_uuid(uuid_from_blob(
-                row.try_get("head_layer_id").map_err(backend)?,
-                "workspace GC root",
-            )?));
+        for workspace in self.list_workspaces().await? {
+            if workspace.upper_bucket.is_some() {
+                return Err(WorkspaceError::UnsupportedCapability(
+                    "legacy GC cannot collect bucket-isolated workspaces; use explicit upper bucket cleanup",
+                ));
+            }
+            if workspace.state != WorkspaceState::Deleting {
+                roots.insert(workspace.head_layer_id);
+            }
         }
         let lease_roots = sea_orm::sqlx::query(
             "SELECT base_layer_id FROM ws_v1_snapshot_leases
@@ -3917,9 +3958,7 @@ async fn load_workspace_tx(
     workspace_id: WorkspaceId,
 ) -> Result<WorkspaceRecord, WorkspaceError> {
     let row = sea_orm::sqlx::query(
-        "SELECT workspace_id, head_layer_id, head_epoch,
-                fork_base_layer_id, fork_base_version, fork_base_root_hash,
-                owner_id, state, active_lease, created_at_ns, updated_at_ns
+        "SELECT *
          FROM ws_v1_workspaces WHERE workspace_id = ?",
     )
     .bind(workspace_id.as_bytes().as_slice())
@@ -4269,6 +4308,11 @@ fn decode_workspace(row: &SqliteRow) -> Result<WorkspaceRecord, WorkspaceError> 
             row.try_get("workspace_id").map_err(backend)?,
             "workspace ID",
         )?),
+        upper_bucket: match row.try_get("upper_bucket") {
+            Ok(value) => value,
+            Err(sea_orm::sqlx::Error::ColumnNotFound(_)) => None,
+            Err(error) => return Err(backend(error)),
+        },
         head_layer_id: LayerId::from_uuid(uuid_from_blob(
             row.try_get("head_layer_id").map_err(backend)?,
             "head layer ID",

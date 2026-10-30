@@ -15,6 +15,12 @@ pub type ObjectByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
 
 #[async_trait]
 pub trait ObjectBackend: Send + Sync {
+    /// Switch the writable object bucket for a workspace mount. Backends that
+    /// do not support bucket selection keep their existing behavior.
+    fn set_bucket(&self, _bucket: &str) -> anyhow::Result<()> {
+        anyhow::bail!("object backend does not support bucket selection")
+    }
+
     /// Coalesce cold block reads when the backend layout favors whole objects.
     fn prefers_full_object_reads(&self) -> bool {
         false
@@ -331,6 +337,9 @@ pub struct ObjectClient<B: ObjectBackend> {
 }
 
 impl<B: ObjectBackend> ObjectClient<B> {
+    pub fn set_bucket(&self, bucket: &str) -> anyhow::Result<()> {
+        self.backend.set_bucket(bucket)
+    }
     pub(crate) fn prefers_full_object_reads(&self) -> bool {
         self.backend.prefers_full_object_reads()
     }

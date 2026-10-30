@@ -3482,7 +3482,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
             }
         };
         self.store
-            .allocate_id(allocator)
+            .allocate_id_for_workspace(self.view_context().await.workspace_id, allocator)
             .await
             .map_err(workspace_to_meta)
     }

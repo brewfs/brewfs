@@ -240,6 +240,7 @@ pub(super) async fn consume<B, F>(
     let fork_id = crate::workspace_overlay::ids::WorkspaceId::new();
     observer
         .create_workspace_from_packed_carrier(crate::workspace_overlay::catalog::CreateWorkspace {
+            upper_bucket: None,
             workspace_id: fork_id,
             head_layer_id: LayerId::new(),
             base_revision: result.packed_carrier_revision.clone(),

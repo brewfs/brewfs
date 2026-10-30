@@ -242,6 +242,7 @@ where
     let scratch = Arc::new(tempfile::tempdir().unwrap());
     let cache = tempfile::tempdir().unwrap();
     let volume = CreateVolumeRoot {
+        upper_bucket: None,
         volume_format: "workspace-v1".into(),
         schema_version: 1,
         volume_id: uuid::Uuid::new_v4(),
@@ -441,6 +442,7 @@ where
     // then authenticates the child's durable binding through production pins.
     let child = store
         .create_workspace_from_packed_carrier(CreateWorkspace {
+            upper_bucket: None,
             workspace_id: WorkspaceId::new(),
             head_layer_id: LayerId::new(),
             base_revision: persisted.revision.clone(),
@@ -601,6 +603,7 @@ where
         let store = KvWorkspaceStore::from_arc(backend.clone())
             .with_packed_reader_pin_budget(budget.clone());
         let volume = CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: uuid::Uuid::new_v4(),

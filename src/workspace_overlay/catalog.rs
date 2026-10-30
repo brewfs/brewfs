@@ -71,6 +71,9 @@ pub struct CreateVolumeRoot {
     pub root_layer_id: LayerId,
     pub writable_layer_id: LayerId,
     pub owner_id: Option<String>,
+    /// Optional writable-object bucket. `None` retains the legacy shared
+    /// bucket behavior.
+    pub upper_bucket: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +103,9 @@ pub struct CreateWorkspace {
     pub head_layer_id: LayerId,
     pub base_revision: BaseRevision,
     pub owner_id: Option<String>,
+    /// Optional writable-object bucket. `None` retains the legacy shared
+    /// bucket behavior.
+    pub upper_bucket: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -641,6 +647,19 @@ pub trait WorkspaceStore: Send + Sync {
     async fn load_layer(&self, id: LayerId) -> Result<LayerRecord, WorkspaceError>;
     async fn load_layer_chain(&self, head: LayerId) -> Result<Vec<LayerRecord>, WorkspaceError>;
     async fn allocate_id(&self, name: &str) -> Result<i64, WorkspaceError>;
+    /// Allocate an ID in the writable object's workspace scope. Legacy
+    /// records without an upper bucket use the original catalog allocator.
+    async fn allocate_id_for_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        name: &str,
+    ) -> Result<i64, WorkspaceError> {
+        let workspace = self.load_workspace(workspace_id).await?;
+        match (name, workspace.upper_bucket.as_deref()) {
+            ("slice", Some(bucket)) => self.allocate_id(&format!("slice/{bucket}")).await,
+            _ => self.allocate_id(name).await,
+        }
+    }
     async fn create_volume_root(
         &self,
         request: CreateVolumeRoot,

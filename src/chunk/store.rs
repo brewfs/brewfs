@@ -41,6 +41,11 @@ use tokio::{
 #[async_trait]
 // ensure offset_in_block + data.len() <= block_size
 pub trait BlockStore {
+    /// Select the object bucket for this store's writable namespace.
+    fn set_data_bucket(&self, _bucket: &str) -> anyhow::Result<()> {
+        anyhow::bail!("block store does not support bucket selection")
+    }
+
     /// Write a new block without reading any existing data.
     ///
     /// All writes use copy-on-write semantics: every write targets a fresh
@@ -531,6 +536,10 @@ impl BlockStoreConfig {
 }
 
 impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
+    pub fn set_data_bucket(&self, bucket: &str) -> anyhow::Result<()> {
+        self.client.set_bucket(bucket)
+    }
+
     async fn cache_for_client(
         client: &ObjectClient<B>,
         config: ChunksCacheConfig,
@@ -1124,6 +1133,10 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
 
 #[async_trait]
 impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B> {
+    fn set_data_bucket(&self, bucket: &str) -> anyhow::Result<()> {
+        ObjectBlockStore::set_data_bucket(self, bucket)
+    }
+
     #[tracing::instrument(name = "ObjectBlockStore.write_fresh_vectored", level = "trace", skip(self, chunks), fields(key = ?key, offset, chunk_count = chunks.len()))]
     async fn write_fresh_vectored(
         &self,

@@ -149,6 +149,7 @@ async fn catalog() -> (
     setup.initialize_workspace_schema().await.unwrap();
     setup
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: uuid::Uuid::from_u128(801),

@@ -282,6 +282,7 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
         let workspace = self
             .packed
             .create_volume_root(CreateVolumeRoot {
+                upper_bucket: None,
                 volume_format: "workspace-v1".into(),
                 schema_version: WORKSPACE_SCHEMA_VERSION,
                 volume_id: self.volume_id,

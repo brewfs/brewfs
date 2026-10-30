@@ -1,6 +1,6 @@
 # Issue 382: shared-bucket upper object collision
 
-Status: reproduced on `80ddaf7`; no production fix accepted. The one namespace-prefix candidate was reverted after a cold-remount regression. This investigation does not close #382.
+Status: reproduced on `80ddaf7`; phase 2 implements one upper bucket per workspace. Real dual-write and legacy cold-remount checks pass; final local CI is recorded below. The earlier namespace-prefix candidate remains rejected. The first-stage sections below are preserved as historical evidence.
 
 ## Reproduction
 
@@ -96,3 +96,55 @@ The restored-baseline checks finished at 09:17:11 UTC on 2026-10-30. Rust compil
 | `cargo fmt --all --check` | Exit 1: two pre-existing formatting differences in `src/config.rs`, at lines 2263 and 2284 |
 
 `rfuse3` is not a workspace member, so the conditional rfuse3 feature matrix does not apply. ACL `permission_cache_ttl()` remains `Duration::ZERO`, and existing assertions and ignore attributes are unchanged. These results validate the restored baseline; no candidate test result is counted as an accepted-fix gate. There is no production-code change in this investigation.
+
+## Phase 2: independent upper buckets
+
+New S3 workspaces persist `upper_bucket` and create that bucket before writing the workspace record. Packed lower objects stay in the configured base bucket. Writable keys remain `chunks-v2/<slice-id>/<block-index>`; no prefix or object migration is introduced. The default `data.workspace_bucket_template` is `{bucket}-{workspace_id}`, where `{bucket}` is `data.s3.bucket`. The template must include `{workspace_id}` and render a valid S3 name of at most 63 bytes. A long base bucket name can use a shorter template such as `ws-{workspace_id}`.
+
+```yaml
+data:
+  backend: s3
+  workspace_bucket_template: "{bucket}-{workspace_id}"
+  s3:
+    bucket: brewfs-data
+    region: us-east-1
+```
+
+`init-volume`, `create`, and `fork` require `--data-config <yaml>`; `init-packed-volume` already takes that argument. CreateBucket accepts success, `BucketAlreadyOwnedByYou`, and HTTP 409, except that explicit `BucketAlreadyExists` returns a naming-conflict error. Regions other than `us-east-1` supply a LocationConstraint. Failed metadata creation leaves the bucket intact.
+
+SQLite and KV slice allocators use `slice/<upper_bucket>`; each KV scope reserves 64 IDs at a time. Legacy records without the field retain the original catalog allocator and shared bucket. SQLite can read an old schema without adding the column. Creating a new workspace may add the nullable metadata column, while old rows remain null. KV decoding accepts the old record envelope and supplies `None` in memory; the new envelope prevents an old binary from silently discarding the bucket field.
+
+Mount and packed recovery select the stored upper bucket, with independent clients for the shared lower. Clean block caches include the workspace identity; durable writeback ownership directories retain their existing layout. The legacy GC cannot identify physical objects by bucket and therefore rejects destructive scans in catalogs containing isolated upper buckets. This deliberately retains objects and metadata until explicit cleanup; automatic GC for these catalogs is not implemented here.
+
+Discard retains the bucket and prints its name. Inspect remains usable after discard, returning the durable identity with live layer/lease counters zero or absent; those counters do not imply an empty bucket. Explicit cleanup requires a discarded workspace and `--force`:
+
+```bash
+brewfs workspace <metadata-options> inspect <workspace-id>
+brewfs workspace <metadata-options> discard <workspace-id>
+brewfs workspace <metadata-options> drop-upper-bucket <workspace-id> \
+  --data-config <yaml> --force
+```
+
+Cleanup refuses legacy shared buckets and the configured lower bucket. It deletes current objects in batches and then deletes the bucket; versioned or protected contents require explicit S3 administration.
+
+### Real backend acceptance
+
+TiKV 8.5.0, RustFS 1.0.4 and real FUSE mounts shared the original physical packed lower. Separate catalogs recreated the confirmed failing configuration. A barrier started both 41-byte writers concurrently.
+
+| Check | Before | Independent upper buckets |
+| --- | --- | --- |
+| Write / fsync / sync / readback | A passes; B fsync EIO | Both write 41B, fsync errno 0, sync exit 0, exact readback |
+| A upper bucket | `issue382` | `issue382-01a18c94-c380-7341-ad71-91d33bd8c3ec` |
+| B upper bucket | `issue382` | `issue382-01a18c94-ca01-7f73-98a0-c2704cf06a1f` |
+| First key, both writers | `chunks-v2/1/0` | `chunks-v2/1/0` |
+| HTTP result | B receives 412 | Both PUTs 200; zero 412 |
+| Existing upper, cold remount | 41B readable | Same old workspace and fresh cache: 41B readable |
+| New upper, cold remount | Not applicable | 41B readable |
+| Whiteout / open-unlink / lease revocation / naming isolation | Pass | 4/4 pass |
+| Single-workspace smoke | 41B write/fsync/sync/readback passes | Same smoke passes; no fio throughput claim |
+
+Evidence is under `/work/issue382/phase2-final/artifacts/`: `acceptance.json`, `probe.jsonl`, `probe.log`, `s3.pcap`, `s3-http.txt`, `upper-bucket-objects.json`, and both `*-cold.log` files. Packet text lines 656/676 and 698/718 pair the two PUTs with HTTP 200. The two objects contain different 41-byte payloads in 45-byte frames. The base bucket's 277 key/ETag pairs remained identical, including all 270 packed-lower objects. Lease revocation rejects a subsequent create with EIO, matching the original smoke's EIO-or-ESTALE contract.
+
+The first three acceptance checks completed at 2026-10-30 11:32:50 UTC, about 2h09m after phase 2 started, exceeding the requested two-hour window. An earlier `strace -f -yy` run blocked while the tracer resolved a FUSE fd path; the saved kernel stack is `/work/issue382/phase2/artifacts/tracer-stack.log`. Subsequent probes used direct syscall return values and independent tcpdump capture; stale disconnected mounts were removed after preserving diagnostics.
+
+The first phase-2 library run found two failures (2574 passed / 2 failed / 451 ignored): an extra GC scan shifted an existing concurrent-revalidation probe, and the SQLite old-schema fixture reused a connection after changing its schema. The GC check now uses the existing workspace root scan, and the fixture opens a fresh store. Existing assertions remain intact. Final CI logs and exit codes are in `/work/issue382/phase2-final/artifacts/ci/`: overlay **2577 passed / 0 failed / 451 ignored**, overlay build, workspace check/build, tokio/uring, workspace lib/bin tests, clippy, shell checks, fmt and diff all exit 0. The final binary repeat is under `/work/issue382/phase2-head/artifacts/`.
