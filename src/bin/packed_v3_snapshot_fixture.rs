@@ -49,6 +49,10 @@ struct Args {
     /// Fixed targets or deterministic size-only selection, applied at build time.
     #[arg(long, default_value = "size-only", value_parser = ["size-only", "static-256kib", "static-1mib", "static-4mib", "p90-training"])]
     frame_policy: String,
+    /// Build-time random/mixed frame cap in bytes (power of two, at most 4 MiB).
+    /// The minimum stays 256 KiB and the sequential cap stays 8 MiB.
+    #[arg(long, conflicts_with = "raw_only", value_parser = clap::value_parser!(u64).range(1..=4 * 1024 * 1024))]
+    max_random_frame_raw_bytes: Option<u64>,
     /// Authenticated offline p90 policy JSON. Required by p90-training.
     #[arg(long, requires = "frame_policy")]
     p90_policy: Option<PathBuf>,
@@ -175,6 +179,17 @@ fn fixture_build_policy(
     })
 }
 
+fn fixture_size_classes(args: &Args) -> Result<SizeClassTable> {
+    SizeClassTable {
+        max_random_frame_raw_bytes: args
+            .max_random_frame_raw_bytes
+            .unwrap_or_else(|| SizeClassTable::default().max_random_frame_raw_bytes),
+        ..SizeClassTable::default()
+    }
+    .validate()
+    .context("invalid fixture frame size table")
+}
+
 fn read_p90_policy(
     path: &std::path::Path,
 ) -> Result<brewfs::workspace_overlay::packed_v3::wire005::V3P90Policy> {
@@ -283,12 +298,20 @@ fn read_p90_policy(
 async fn authenticated_build<B: ObjectBackend + Clone>(
     client: &ObjectClient<B>,
     reference: &brewfs::workspace_overlay::packed_v3::wire005::V3ObjectRef,
-) -> Result<brewfs::workspace_overlay::packed_v3::wire005::V3BuildProvenance> {
+) -> Result<serde_json::Value> {
     let snapshot = brewfs::workspace_overlay::packed_v3::wire005::AuthenticatedV3Snapshot::open(
         client, reference,
     )
     .await?;
-    Ok(snapshot.manifest().build.clone())
+    let manifest = snapshot.manifest();
+    let mut build = serde_json::to_value(&manifest.build)?;
+    // These values come from the authenticated PM11, not the CLI intent.
+    build["size_classes"] = serde_json::json!({
+        "min_frame_raw_bytes": manifest.size_classes.min_frame_raw_bytes,
+        "max_random_frame_raw_bytes": manifest.size_classes.max_random_frame_raw_bytes,
+        "max_sequential_frame_raw_bytes": manifest.size_classes.max_sequential_frame_raw_bytes,
+    });
+    Ok(build)
 }
 
 fn access_profile(value: &str) -> Result<AccessProfile> {
@@ -436,6 +459,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
     use brewfs::workspace_overlay::packed_v3::wire005::{V3ProducerOptions, V3SnapshotProducer};
     let provenance_client = client.clone();
     let build_policy = fixture_build_policy(args)?;
+    let size_classes = fixture_size_classes(args)?;
     let (minimum, maximum) = file_size_range(args)?;
     let profile = access_profile(&args.access_profile)?;
     let snapshot_id: [u8; 32] = Sha256::digest(b"brewfs-packed-v3-fixture").into();
@@ -445,7 +469,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
         root_dir_key: root_key,
         root_inode: 1,
         profile,
-        size_classes: SizeClassTable::default(),
+        size_classes,
         build_policy,
         metadata_codec: fixture_codec(args.metadata_codec.as_deref())?,
         data_codec: fixture_codec(args.data_codec.as_deref())?,
@@ -549,7 +573,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                 &std::env::temp_dir(),
                 2,
                 profile,
-                SizeClassTable::default(),
+                size_classes,
                 V3SourceFileLimits::default(),
                 build_policy,
             )
@@ -797,7 +821,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                             key,
                             std::mem::take(&mut files),
                             profile,
-                            SizeClassTable::default(),
+                            size_classes,
                             build_policy,
                         )?;
                     apply_cold_targets(&mut group, &cold_attributes)?;
@@ -818,7 +842,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                     key,
                     files,
                     profile,
-                    SizeClassTable::default(),
+                    size_classes,
                     build_policy,
                 )?;
             apply_cold_targets(&mut group, &cold_attributes)?;
@@ -910,6 +934,7 @@ async fn main() -> Result<()> {
     }
     file_size_range(&args)?;
     access_profile(&args.access_profile)?;
+    fixture_size_classes(&args)?;
     if args.chunk_size < u64::from(args.block_size) || args.block_size == 0 {
         bail!("chunk-size must be >= block-size and block-size must be non-zero");
     }
@@ -978,6 +1003,114 @@ fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod codec_control_tests {
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn random_frame_cap_reaches_every_fixture_source_and_authenticated_provenance() {
+        use brewfs::workspace_overlay::packed_v3::wire005::{
+            AuthenticatedV3Snapshot, V3ObjectKind, V3ObjectRef,
+        };
+        for mode in ["directory", "file", "generated"] {
+            for cap in [Some(512 * 1024), None] {
+                let temporary = tempfile::tempdir().unwrap();
+                let source = temporary.path().join("source");
+                let objects = temporary.path().join("objects");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::create_dir(&objects).unwrap();
+                let file = source.join("file");
+                std::fs::write(&file, vec![7; 1024 * 1024]).unwrap();
+                let mut arguments = vec![
+                    "fixture".to_owned(),
+                    "--dir-levels".to_owned(),
+                    "0".to_owned(),
+                    "--files-per-dir".to_owned(),
+                    "1".to_owned(),
+                    "--small-file-size".to_owned(),
+                    (1024 * 1024).to_string(),
+                    "--metadata-codec".to_owned(),
+                    "raw".to_owned(),
+                    "--data-codec".to_owned(),
+                    "raw".to_owned(),
+                ];
+                if let Some(cap) = cap {
+                    arguments.extend(["--max-random-frame-raw-bytes".to_owned(), cap.to_string()]);
+                }
+                let mut args = Args::try_parse_from(arguments).expect("random frame cap CLI");
+                args.manifest_output = temporary.path().join("manifest.txt");
+                match mode {
+                    "directory" => {
+                        args.source_directory = Some(source);
+                        args.source_consistency = Some("best-effort-detected".into());
+                        args.source_hardlink_policy = Some("visible-links".into());
+                    }
+                    "file" => args.source_file = Some(file),
+                    _ => {}
+                }
+                let client = ObjectClient::new(LocalFsBackend::new(&objects));
+                build_v3_fixture(&args, client.clone(), "cap-test")
+                    .await
+                    .unwrap();
+                let key = std::fs::read_to_string(&args.manifest_output).unwrap();
+                let bytes = std::fs::read(objects.join(key.trim())).unwrap();
+                let reference =
+                    V3ObjectRef::from_bytes(key.trim().into(), V3ObjectKind::Manifest, &bytes)
+                        .unwrap();
+                let snapshot = AuthenticatedV3Snapshot::open(&client, &reference)
+                    .await
+                    .unwrap();
+                let manifest = snapshot.manifest();
+                assert_eq!(manifest.size_classes.min_frame_raw_bytes, 256 * 1024);
+                assert_eq!(
+                    manifest.size_classes.max_random_frame_raw_bytes,
+                    cap.unwrap_or(4 * 1024 * 1024)
+                );
+                assert_eq!(
+                    manifest.size_classes.max_sequential_frame_raw_bytes,
+                    8 * 1024 * 1024
+                );
+                assert_eq!(
+                    manifest.build.frame_count,
+                    if cap.is_some() { 2 } else { 1 }
+                );
+                assert_eq!(manifest.build.frame_raw_bytes, 1024 * 1024);
+                assert_eq!(manifest.build.frame_stored_bytes, 1024 * 1024);
+                assert!(manifest.build.p90.is_none());
+                let provenance: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(args.manifest_output.with_extension("source.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    provenance["build_provenance"]["size_classes"]["max_random_frame_raw_bytes"],
+                    manifest.size_classes.max_random_frame_raw_bytes
+                );
+                assert!(provenance["build_provenance"]["p90"].is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn random_frame_cap_rejects_invalid_tables_and_raw_corpora() {
+        for value in ["0", "4194305", "8388608"] {
+            assert!(
+                Args::try_parse_from(["fixture", "--max-random-frame-raw-bytes", value]).is_err()
+            );
+        }
+        for value in ["65536", "393216"] {
+            let args =
+                Args::try_parse_from(["fixture", "--max-random-frame-raw-bytes", value]).unwrap();
+            assert!(fixture_size_classes(&args).is_err());
+        }
+        assert!(
+            Args::try_parse_from([
+                "fixture",
+                "--raw-only",
+                "true",
+                "--max-random-frame-raw-bytes",
+                "524288"
+            ])
+            .is_err()
+        );
+    }
+
     #[test]
     fn p90_policy_rejects_sample_count_above_bound_before_rank_calculation() {
         let mut policy = serde_json::json!({
