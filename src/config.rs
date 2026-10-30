@@ -2263,8 +2263,7 @@ mod tests {
                 .unwrap();
         assert_eq!(config.fuse_cache_ttl_ms, 0);
 
-        let mut workspace_args =
-            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
+        let mut workspace_args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
         workspace_args.volume_format = Some(VolumeFormat::WorkspaceV1);
         workspace_args.workspace = Some(uuid::Uuid::now_v7());
         let workspace_config = MountConfig::from_sources(workspace_args).unwrap();
@@ -2284,10 +2283,8 @@ mod tests {
             }
         }
 
-        let mut explicit_workspace = empty_mount_args(
-            None,
-            Some(PathBuf::from("/mnt/workspace-explicit")),
-        );
+        let mut explicit_workspace =
+            empty_mount_args(None, Some(PathBuf::from("/mnt/workspace-explicit")));
         explicit_workspace.volume_format = Some(VolumeFormat::WorkspaceV1);
         explicit_workspace.workspace = Some(uuid::Uuid::now_v7());
         explicit_workspace.fuse_cache_ttl_ms = Some(0);
