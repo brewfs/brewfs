@@ -290,6 +290,7 @@ moka = { workspace = true, features = ["future", "sync"] }
 dashmap = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
+ring = { workspace = true, optional = true }
 hyper = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true, features = ["fs", "trace"] }
@@ -346,7 +347,7 @@ gateway-s3 = ["dep:s3s", "dep:tower"]
 gateway-webdav = ["dep:dav-server", "dep:axum-server", "dep:rustls"]
 hdfs-sdk = []
 rustfs-ec-block-size-hint = []
-workspace-overlay = ["dep:bincode", "dep:blake3", "dep:tempfile"]
+workspace-overlay = ["dep:bincode", "dep:blake3", "dep:tempfile", "dep:ring"]
 native-packed-base = ["workspace-overlay"]
 frozen-base-metadata = ["native-packed-base"]
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]

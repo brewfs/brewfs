@@ -4,6 +4,7 @@ use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadClass, ReadObser
 use crate::workspace_overlay::packed_v3::wire005::{V3ObjectKind, encode_v3_object};
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, stream};
+use sha2::{Digest, Sha256};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
