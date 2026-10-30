@@ -91,9 +91,74 @@ The old release CLI first failed this contract with exit 2 (`unexpected
 argument`); the implementation then passes all 11 fixture tests. The current
 workspace lib/bins gate and overlay gate pass (2578 passed, zero failed,
 451 ignored). Full local checks are rerun before committing the entry point.
-The 512 KiB performance measurement is pending; the 256 KiB numbers above
-must not be attributed to it.
+The exact current-source A-only release has a separate matched comparison:
+
+| Three W runs | 4 MiB | 512 KiB |
+| --- | --- | --- |
+| MiB/s | 0.181770 / 0.175277 / 0.176027 | 0.909601 / 0.928701 / 0.905396 |
+| p99 seconds | 3.070231 / 3.204448 / 3.103785 | 0.633340 / 0.599785 / 0.624951 |
+| Received B/read | 4,194,304 each | 524,137.97 / 524,067.59 / 524,288 |
+| GET/read | 1.000 each | 0.999714 / 0.999720 / 1.000 |
+
+All three 512 KiB runs meet the design intervals. Median throughput improves
+5.167 times; all fio and captured HTTP errors are zero. Run 2 misses the final
+GET response header, so its received-byte value is an observed lower bound;
+an independent capture with a longer tail is required for complete byte counts.
+That confirmation is complete: W retains two warmups and three 30-second runs,
+with passive capture extended to five seconds after fio. All response headers
+and wire tails are complete. Each run receives **524,288 B/read at 1.000 GET/read**;
+throughput is 0.868619/0.864122/0.863688 MiB/s, p99 is
+0.616563/0.624951/0.624951 s. All fit the design intervals. Median throughput
+improves 4.909 times over the matched 4 MiB control. These complete counts are
+the confirmation result; the faster original samples remain preserved.
+The slight GET/read reduction is reported as observed, not attributed to a new
+GET optimization. Inventory has 4,096 frames/FD records/external extents, still
+128 data and 128 FD objects. Total stored growth over this matched control is
+526,344 B (0.024510%); FD+extent records alone add 458,752 B.
+
+This control is slower than the historical step-0 binary; the cause is not
+established. It passes 60 direct content/boundary reads but fails sequential
+warmup with EIO at r.0 offset 65,011,712, length 1 MiB. All 936 HTTP GETs have
+responses, no HTTP errors; mount exit is zero with complete unmount. The failure
+is retained in `control4m-final-readguard` and is not classified as a harness
+race. The old manifest with this new reader also fails on its third sequential
+pass (r.2 offset 235,929,600, length 1 MiB), so the failure is not confined to
+the new fixture. The reader cause remains unverified. The 512 KiB arm passes
+60 content reads, sequential 134,041/132,971/129,118 KiB/s and metadata rounds
+14.747/15.058/14.874 s with clean teardown; mixed still fails with EIO.
 
 Rollback: omit the new parameter or retain the old immutable manifest. No
 default cap changes. 64 KiB frames and small-file bundles remain separate
 experiments; Merkle and new wire semantics are outside this change.
+
+## Step 2: rejected 64 KiB complete frames
+
+The conditional experiment used min=random=64 KiB, sequential=8 MiB. The
+complete local gate passed, including 2578/0/451 overlay tests and 13 fixture
+tests. New build/readback tests verified exactly 256 extents stay in GroupMeta,
+while a 17 MiB file and 300 sparse extents use existing external placement,
+preserving holes and hardlinks. No existing limit or assertion was increased.
+
+| W run | MiB/s | p99 seconds | Received B/read | GET/read |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1.760396 | 0.329253 | 65,536 | 1.000 |
+| 2 | 1.772195 | 0.325059 | 65,536 | 1.000 |
+| 3 | 1.752194 | 0.333447 | 65,536 | 1.000 |
+
+All headers and response tails are captured. Actual frame/FD/external extent
+counts are 32,768 each, with 128 data and 128 FD objects. Records grow by
+3.9375 MiB (0.192261%); total stored growth including pages/routing is
+4,684,171 B (4.46717 MiB, 0.218124%). Random-read estimates hold, but the
+candidate is **rejected**: sequential reads fall to 48,552/48,715/48,183 KiB/s
+from 134,041/132,971/129,118 KiB/s at 512 KiB, a 63.49% median regression.
+
+The sequential cost assumption was wrong: capture shows about 16 GETs per
+1 MiB read at 64 KiB, versus two at 512 KiB, with approximately the same total
+received bytes. The available coalescing did not take effect in this FUSE
+workload; the exact planner cause remains unverified. Metadata rounds pass in
+14.292/14.362/14.517 s, but mixed still fails with EIO. Both mounts unmount.
+
+The added minimum-size CLI and its new tests are reverted together; existing
+tests are unchanged. The complete candidate patch and measurements remain in
+`rejected-64-source.diff` and `cap64k-*` on the experiment host. The validated
+512 KiB entry point stays. Merkle remains a separate future investigation.
