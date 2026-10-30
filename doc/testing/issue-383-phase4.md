@@ -269,6 +269,15 @@ SHA-256 digests match the source, as do 21 O_DIRECT boundary/EOF checks per arm.
 | New executable, no size/policy arguments | 262144 / 262144 / 8388608 | 90 | SHA-256 match; 21 checks; exit 0 |
 | New executable, explicit 64 KiB | 65536 / 65536 / 8388608 | 354 | SHA-256 match; 21 checks; exit 0 |
 
+The same three arms also pass with the release reader
+`6ce7893887254339edda07323ff5f34fa836f4c97b2b7cba7818f680451a4b5e`
+and release fixture
+`701ab27602139425f12a56d2b324f3f74aba928dbd96443e80f441850040b458`.
+`/work/issue383-phase6/compat` retains those release artifacts: all full-file
+hashes match, all 63 direct checks pass, and all three mounts exit zero without
+remaining mounted. The legacy arm again uses the pre-change fixture, not the
+new fixture with a synthetic in-memory manifest.
+
 All local commands listed in `AGENTS.md` pass in this iteration (completed
 2026-10-31 05:48 CST; logs in `/work/issue383-phase6/logs`). In particular,
 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
@@ -278,3 +287,54 @@ workspace check/build/clippy, and the Tokio/io-uring feature checks all pass.
 `rfuse3` is not a workspace member, so its conditional checks do not apply.
 The extra overlay library/fixture clippy check with `-D warnings` also passes.
 Long commands run in tmux with `CARGO_BUILD_JOBS=2`.
+
+### No-argument default-path W
+
+The phase-6 release fixture packs the same SHA-256-verified four 512 MiB files
+without either a frame-size or frame-policy argument. Authenticated provenance
+reports `size-only`, min/random/sequential = 262144/262144/8388608 and 8,192
+frames. The independent inventory confirms 8,192 FD and external-extent records,
+all with raw/stored length 262144/262144. This is a default-cap build, distinct
+from the historical static-256kib policy experiment.
+
+The runner retains two warmups and three 30-second W samples, 4 KiB direct I/O,
+four jobs at depth 32, and the original random seed. Cache budgets remain
+300 MiB RAM / 1 GiB SSD, no prefetch, and upper 64 MiB / 4 MiB. TiKV 8.5.0 and
+RustFS 1.0.4 run in the dedicated `issue383phase6` compose project; historical
+volumes are preserved. Before any fio ran, workspace initialization hit TiKV
+`AlmostFull` on the 40 GiB root disk (2.7 GiB free). Only this project's TiKV
+data was moved to `/work` (127 GiB free), without changing capacity protection
+or backend parameters. A subsequent startup transport error was retried once
+the service was ready. Both failed initialization logs remain as
+`workspace-phase6-default.diskfull.raw` and `.transport-error.raw`; RustFS and
+the already published default manifest were retained.
+
+| Default W run | MiB/s | p99 ms | fio / HTTP errors | Complete GET responses |
+| --- | ---: | ---: | --- | ---: |
+| 1 | 1.282425 | 450.888 | 0 / 0 | 9851 / 9851 |
+| 2 | 1.305207 | 442.499 | 0 / 0 | 10027 / 10027 |
+| 3 | 1.305250 | 425.722 | 0 / 0 | 10027 / 10027 |
+
+The median is 1.305207 MiB/s / 442.499 ms. Both warmups completed before these
+three samples; none was discarded. Every response body is fully captured and
+W exits zero with a complete unmount. The no-argument default therefore delivers
+the intended approximately 1.2–1.3 MiB/s / 455 ms benefit. Detailed commands,
+hashes, counts and raw per-run summaries are recorded in
+[`issue-383-phase6-evidence.json`](issue-383-phase6-evidence.json).
+
+Each W sample receives exactly 262,144 B/read at 1.000 GET/read. The generated
+wall-bandwidth estimates are 1.282682 / 1.305599 / 1.305599 MiB/s (the runner's
+wall timestamps have one-second resolution); the active gain is not deferred
+into teardown. The subsequent read guard passes all 60 content/boundary/EOF
+reads, sequential 113.202836 / 114.395565 / 112.631053 MiB/s, and three
+128-file metadata rounds in 14.530 / 14.500 / 14.558 s. Its mount exits zero
+and fully unmounts.
+
+The mixed warmup still fails with fio EIO (driver exit 4). Mount diagnostics
+show create-only PUT `PreconditionFailed` on `chunks-v2/1/0`, `chunks-v2/2/0`,
+etc., matching the existing upper object-key collision tracked in #382/#386.
+The mount exits 1 and fully unmounts; no mixed throughput or drain result is
+accepted. This remains outside the default-frame change and is not hidden by
+the passing read guards. The final compose services and named volumes are
+removed after preserving their data under `/work/issue383-phase6`; historical
+baseline volumes and artifacts are untouched.
