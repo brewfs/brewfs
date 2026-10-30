@@ -716,7 +716,10 @@ mod tests {
             17,
             91,
             AccessProfile::RandomSmallFile,
-            SizeClassTable::default(),
+            SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             (codec, codec),
             &[group],
             &[frame],
@@ -730,7 +733,10 @@ mod tests {
             400,
             999,
             AccessProfile::RandomSmallFile,
-            SizeClassTable::default(),
+            SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             codec,
             &[frame()],
         )

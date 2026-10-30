@@ -1163,7 +1163,11 @@ mod tests {
             root_dir_key: [2; 32],
             root_inode: 7,
             profile: AccessProfile::RandomSmallFile,
-            size_classes: SizeClassTable::default(),
+            // These fixtures exercise legacy size classes and static targets.
+            size_classes: SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             build_policy: Default::default(),
             metadata_codec: codec,
             data_codec: codec,

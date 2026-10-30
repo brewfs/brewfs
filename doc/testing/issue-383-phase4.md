@@ -75,10 +75,11 @@ Run3 CPU sampling estimates SHA work at 11.665 versus 0.797 ms/read.
 ## Step 1: explicit random frame cap
 
 The fixture accepts `--max-random-frame-raw-bytes 524288`. It validates the
-wire limit and `SizeClassTable::validate` before creating the backend. The
-minimum remains 256 KiB and the sequential maximum remains 8 MiB. Omitting
-the option preserves the existing 4 MiB random cap. The same table reaches
-directory capture, single-file capture, and generated corpus packing.
+wire limit and `SizeClassTable::validate` before creating the backend. In this
+step the minimum stayed 256 KiB, the default random cap stayed 4 MiB and the
+sequential maximum stayed 8 MiB. The same table reaches directory capture,
+single-file capture, and generated corpus packing. Phase 6 below changes the
+default and restores the explicit 64 KiB experiment.
 
 `build_provenance.size_classes` is read back from the authenticated manifest,
 so recorded sizes describe the published layout. PM11 already authenticates
@@ -127,9 +128,9 @@ the new fixture. The reader cause remains unverified. The 512 KiB arm passes
 60 content reads, sequential 134,041/132,971/129,118 KiB/s and metadata rounds
 14.747/15.058/14.874 s with clean teardown; mixed still fails with EIO.
 
-Rollback: omit the new parameter or retain the old immutable manifest. No
-default cap changes. 64 KiB frames and small-file bundles remain separate
-experiments; Merkle and new wire semantics are outside this change.
+Rollback: pass `--max-random-frame-raw-bytes 4194304` or retain the old
+immutable manifest. The 64 KiB experiment and small-file bundles are measured
+separately below; Merkle and new wire semantics are outside this change.
 
 ## Step 2: rejected 64 KiB complete frames
 
@@ -158,7 +159,122 @@ received bytes. The available coalescing did not take effect in this FUSE
 workload; the exact planner cause remains unverified. Metadata rounds pass in
 14.292/14.362/14.517 s, but mixed still fails with EIO. Both mounts unmount.
 
-The added minimum-size CLI and its new tests are reverted together; existing
-tests are unchanged. The complete candidate patch and measurements remain in
+At this step the added minimum-size CLI and its new tests were reverted
+together; existing tests were unchanged. The complete candidate patch and measurements remain in
 `rejected-64-source.diff` and `cap64k-*` on the experiment host. The validated
 512 KiB entry point stays. Merkle remains a separate future investigation.
+
+## Phase 6: default random frame decision
+
+New volumes now default to 256 KiB random/mixed frames. The library behavior
+change is one constant in `layout.rs`; the default minimum stays 256 KiB and
+the sequential maximum stays 8 MiB. PM11 persists the table and frame directories
+persist actual lengths. Reader logic, wire format, validation upper bounds,
+ACL TTL (`ZERO`) and upper 64 MiB chunks / 4 MiB blocks are unchanged.
+
+The fixture also permits an explicit `--max-random-frame-raw-bytes 65536`:
+this lowers its build-time minimum to 64 KiB. The prior entry point rejected
+that value after the step-2 rollback; phase 6 restores it only as an explicit
+experiment, as requested. The default minimum remains 256 KiB. Existing tests
+whose assertions require legacy frame shapes now request the old table
+explicitly; their layout, budget and cancellation assertions are retained.
+
+### Four-size evidence and decision
+
+Values below are medians of three runs: random is 4 KiB direct I/O W (two
+warmups and 3×30 s); sequential is 1 MiB direct I/O (3×20 s). Reader A is the
+historical phase-2 executable with its rejected frame cache disabled. Reader B
+is the phase-4 A-only build (`ed24ff6f…`). **These are two matched pairs, not
+one four-arm matched benchmark.** Each row keeps random and sequential evidence
+from its stated reader; no faster numbers are spliced between readers.
+The historical 256 KiB arm used `static-256kib` with a legacy 4 MiB manifest
+cap; its actual 8,192 frames are all 256 KiB. Phase 6 separately checks the
+no-argument `size-only` policy and the new persisted 256 KiB cap.
+
+| Actual random frame size | Reader | Random MiB/s | Random p99 ms | Sequential MiB/s | Mixed read/write |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 4 MiB | A | 0.205606 | 2701.132 | 48.034 | EIO; no accepted throughput |
+| 512 KiB | B, complete-capture rerun | 0.864122 | 624.951 | 129.854 | EIO; no accepted throughput |
+| 256 KiB | A | 1.241820 | 455.082 | 109.352 | EIO; no accepted throughput |
+| 64 KiB | B | 1.760396 | 329.253 | 47.414 | EIO; no accepted throughput |
+
+The matched A comparison gives 6.04× random throughput and 83.15% lower p99.
+The B 4 MiB random control is 0.176027 MiB/s / 3103.785 ms, but its sequential
+guard fails with EIO, as preserved above. A bridge using the old 256 KiB
+manifest with reader B reports 1.185452 / 1.188626 / 1.176509 MiB/s and
+459.276 / 463.471 / 492.831 ms; its sequential run used DEBUG logging and is
+not a matching throughput control. A universal 6.9× / −85% claim would mix
+reader provenance and is therefore not used for this change.
+
+The decision is 256 KiB: random reads improve while sequential performance
+stays well above the 64 KiB experiment. **64 KiB is rejected as a default:**
+its approximately 47 MiB/s sequential result is effectively tied with the
+historical 4 MiB result and 63.49% below its matched 512 KiB control. It also
+needs 16 GETs per 1 MiB read and more frame/index records. Mixed-write EIO
+remains an unresolved guard, not a passed performance gate; this decision
+does not claim broad mixed-workload acceptance.
+
+### Reproducing the CLI/FUSE compatibility regression
+
+`tools/testing/packed_frame_default_compat.py` packs real LocalFS objects on disk,
+launches the supplied reader as a separate FUSE process, checks complete SHA-256
+contents plus direct boundary/EOF reads, and requires clean unmount. Its corpus
+has a 5 MiB+123 B file, a 17 MiB+7 B file and an empty file. The three arms use
+an explicit old 4 MiB table, no frame-size/policy arguments, and explicit
+64 KiB. The manifest table and actual FD records are checked against expected
+frame counts 7, 90 and 354, respectively. Both nonempty files have partial
+tail frames; the 64 KiB arm also exercises external extent placement.
+
+```bash
+cargo build --release --features workspace-overlay \
+  --bin brewfs --bin packed_v3_snapshot_fixture
+python3 tools/testing/packed_frame_default_compat.py \
+  --fixture target/release/packed_v3_snapshot_fixture \
+  --legacy-fixture /path/to/pre-change/packed_v3_snapshot_fixture \
+  --reader target/release/brewfs \
+  --artifact /tmp/packed-default-compat-new-directory
+```
+
+Linux FUSE and `fusermount3` are required. The artifact directory must not
+already exist. Omitting `--legacy-fixture` tests an explicitly requested old
+table produced by the current fixture; supplying the old executable additionally
+proves cross-binary compatibility. Artifacts retain binary hashes, commands,
+manifest/object bytes, full file hashes, direct-read results and teardown status.
+
+The pre-change executable supplies the red check: it successfully packs and
+mounts the explicit 4 MiB arm, then the no-argument arm fails the new table
+assertion with `(262144, 4194304, 8388608)`. The retained log is
+`/work/issue383-phase6/logs/compat-before.log`; its objects are in
+`/work/issue383-phase6/before`. This checks that the process-level regression
+detects the old default rather than merely reopening a synthetic fixture.
+
+The overlay suite passes **2580 / 0 / 451** (passed / failed / ignored), and
+the fixture binary suite passes **13 / 0 / 0**. Both legacy and new manifests
+call `validate()` and pass authenticated encode/decode roundtrips. Directory,
+single-file and generated-corpus tests all verify no-argument 256 KiB frame
+counts and authenticated provenance. The initial default change exposed
+legacy-shape assumptions in 33 existing tests; those fixtures now select the
+legacy table explicitly while retaining their assertions. No test was ignored.
+
+The real FUSE regression passes with the new dev binaries in
+`/work/issue383-phase6/compat-debug`: the **pre-change fixture executable**
+(`906bda2f…`) packs the legacy arm with `--max-random-frame-raw-bytes 4194304`;
+the new reader (`1a5a355e…`) mounts and reads it. Its largest actual frame is
+4,194,304 B, not merely a 4 MiB table over small frames. All three full-file
+SHA-256 digests match the source, as do 21 O_DIRECT boundary/EOF checks per arm.
+
+| Actual CLI arm | Manifest min / random / sequential bytes | Actual frames | Readback / unmount |
+| --- | --- | ---: | --- |
+| Old executable, explicit 4 MiB | 262144 / 4194304 / 8388608 | 7 | SHA-256 match; 21 checks; exit 0 |
+| New executable, no size/policy arguments | 262144 / 262144 / 8388608 | 90 | SHA-256 match; 21 checks; exit 0 |
+| New executable, explicit 64 KiB | 65536 / 65536 / 8388608 | 354 | SHA-256 match; 21 checks; exit 0 |
+
+All local commands listed in `AGENTS.md` pass in this iteration (completed
+2026-10-31 05:48 CST; logs in `/work/issue383-phase6/logs`). In particular,
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
+passes 1275 library tests (0 failed, 262 ignored) and 2 binary tests (0 failed).
+Formatting, the four shell syntax checks, three report/matrix shell tests,
+workspace check/build/clippy, and the Tokio/io-uring feature checks all pass.
+`rfuse3` is not a workspace member, so its conditional checks do not apply.
+The extra overlay library/fixture clippy check with `-D warnings` also passes.
+Long commands run in tmux with `CARGO_BUILD_JOBS=2`.

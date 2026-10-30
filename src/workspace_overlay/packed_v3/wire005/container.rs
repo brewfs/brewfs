@@ -613,6 +613,9 @@ mod tests {
     use crate::cadapter::localfs::LocalFsBackend;
     use crate::workspace_overlay::packed_v3::{PackedFileInput, pack_group_files};
     fn inputs() -> (PackedGroupInput, Vec<PackedFrameInput>) {
+        inputs_with_classes(SizeClassTable::default())
+    }
+    fn inputs_with_classes(classes: SizeClassTable) -> (PackedGroupInput, Vec<PackedFrameInput>) {
         pack_group_files(
             1,
             [2; 32],
@@ -632,7 +635,7 @@ mod tests {
                 data: vec![0x57; 512 * 1024],
             }],
             AccessProfile::RandomSmallFile,
-            SizeClassTable::default(),
+            classes,
             None,
         )
         .unwrap()
@@ -868,13 +871,17 @@ mod tests {
 
     #[tokio::test]
     async fn v3_container_roundtrip_compresses_metadata_and_frames_independently() {
-        let (group, frames) = inputs();
+        let classes = SizeClassTable {
+            max_random_frame_raw_bytes: 4 * 1024 * 1024,
+            ..SizeClassTable::default()
+        };
+        let (group, frames) = inputs_with_classes(classes);
         for codec in [PackedCodec::Raw, PackedCodec::Zstd] {
             let built = build_v3_container(
                 0,
                 1,
                 AccessProfile::RandomSmallFile,
-                SizeClassTable::default(),
+                classes,
                 (codec, codec),
                 std::slice::from_ref(&group),
                 &frames,

@@ -1852,6 +1852,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pm11_accepts_legacy_and_new_random_frame_caps() {
+        for max_random in [4 * 1024 * 1024, 256 * 1024] {
+            let mut value = manifest();
+            value.size_classes.max_random_frame_raw_bytes = max_random;
+            value.validate().unwrap();
+            let bytes = value
+                .encode()
+                .expect("both bounded random frame tables must validate");
+            let reference = V3ObjectRef::from_bytes(
+                format!("manifest-{max_random}"),
+                V3ObjectKind::Manifest,
+                &bytes,
+            )
+            .unwrap();
+            let decoded = AuthenticatedV3Snapshot::decode(&reference, &bytes)
+                .expect("encoded manifest must pass authenticated validation");
+            assert_eq!(decoded.manifest().size_classes, value.size_classes);
+        }
+    }
+
     fn source_attributes(allocations: V3ObjectRef) -> super::super::V3SourceAttributes {
         super::super::V3SourceAttributes {
             placement_contract: false,
@@ -2453,7 +2474,10 @@ mod tests {
                     data: data.clone(),
                 }],
                 AccessProfile::RandomSmallFile,
-                SizeClassTable::default(),
+                SizeClassTable {
+                    max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                    ..SizeClassTable::default()
+                },
                 None,
             )
             .unwrap();
@@ -2470,7 +2494,10 @@ mod tests {
                 0,
                 8,
                 AccessProfile::RandomSmallFile,
-                SizeClassTable::default(),
+                SizeClassTable {
+                    max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                    ..SizeClassTable::default()
+                },
                 (codec, codec),
                 &[group.clone()],
                 &frames,
@@ -2554,6 +2581,10 @@ mod tests {
                 });
             }
             let mut manifest = manifest();
+            manifest.size_classes = SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            };
             for (kind, records) in ROOT_KINDS.into_iter().zip(rows) {
                 let mut builder = V3IndexBuilder::new(
                     client.clone(),
