@@ -94,6 +94,74 @@ async fn entity_commit_before_upload_publishes_while_remote_is_blocked() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn local_writeback_overlaps_bounded_uploads_without_blocking_publication() {
+    let remote = tempfile::tempdir().unwrap();
+    let spool = tempfile::tempdir().unwrap();
+    let objects = Arc::new(BlockedObjects {
+        inner: LocalFsBackend::new(remote.path()),
+        release: tokio::sync::Semaphore::new(0),
+        started: AtomicUsize::new(0),
+    });
+    let fixture = local_fixture(objects.clone(), spool.path(), 1 << 20).await;
+    // Blocked PUTs must not prevent new local receipts. A full discovery batch
+    // must overlap up to eight PUTs once the initial batch completes.
+    for index in 0..20 {
+        let handle = new_file(&fixture, format!("parallel-{index}").as_bytes()).await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture
+                .data
+                .write(handle, 0, Bytes::from_static(b"parallel"), false),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if index == 0 {
+            // Fix the first discovery batch at one object before adding debt.
+            // Otherwise a partially filled initial batch could remain blocked
+            // after the single permit below, depending on task scheduling.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while objects.started.load(Ordering::SeqCst) == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+    // Complete the single-object discovery batch, then observe a full window.
+    objects.release.add_permits(1);
+    let overlapped = tokio::time::timeout(Duration::from_secs(2), async {
+        while objects.started.load(Ordering::SeqCst) < 9 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok();
+    let in_flight = objects.started.load(Ordering::SeqCst) - 1;
+    objects.release.add_permits(32);
+    fixture
+        .data
+        .drain_remote(Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(overlapped, "independent immutable uploads must overlap");
+    assert_eq!(
+        in_flight, 8,
+        "the uploader must bound retained payloads and PUTs"
+    );
+    assert_eq!(
+        fixture
+            .data
+            .writeback_status()
+            .await
+            .unwrap()
+            .pending_objects,
+        0
+    );
+}
+
 async fn local_fixture(
     objects: Arc<BlockedObjects>,
     path: &std::path::Path,

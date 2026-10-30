@@ -8,8 +8,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -38,6 +39,11 @@ pub struct WritebackStatus {
     pub uploaded_bytes: u64,
     pub retries: u64,
     pub last_error: Option<String>,
+    pub staging_file_syncs: u64,
+    pub staging_io_ns: u64,
+    pub stage_debt_attempts: u64,
+    pub completion_debt_attempts: u64,
+    pub completed_batches: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,8 +59,21 @@ pub struct EntityWriteback<B, O> {
     config: WritebackConfig,
     // Lifetime lock prevents a second process from replaying/removing this spool.
     _lock: File,
-    local: tokio::sync::Mutex<()>,
+    // Shared by independent staging/read operations; exclusive only for final
+    // orphan reconciliation. No directory scan runs in the steady-state loop.
+    local: Arc<tokio::sync::RwLock<()>>,
+    // Serializes only this process's counter transactions, never filesystem or
+    // object transport I/O. Redis CAS still fences other processes/maintenance.
+    debt: tokio::sync::Mutex<()>,
     uploader: tokio::sync::Mutex<()>,
+    changed: tokio::sync::Notify,
+    used: AtomicU64,
+    staging_reservations: AtomicU64,
+    staging_file_syncs: AtomicU64,
+    staging_io_ns: AtomicU64,
+    stage_debt_attempts: AtomicU64,
+    completion_debt_attempts: AtomicU64,
+    completed_batches: AtomicU64,
     uploaded: AtomicU64,
     retries: AtomicU64,
     last_error: Mutex<Option<String>>,
@@ -62,6 +81,22 @@ pub struct EntityWriteback<B, O> {
 
 fn io(error: impl std::fmt::Display) -> EntityError {
     EntityError::Backend(format!("entity spool: {error}"))
+}
+
+struct DiskReservation<'a> {
+    used: &'a AtomicU64,
+    pending: &'a AtomicU64,
+    bytes: u64,
+    retain: bool,
+}
+
+impl Drop for DiskReservation<'_> {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(self.bytes, Ordering::AcqRel);
+        if !self.retain {
+            self.used.fetch_sub(self.bytes, Ordering::AcqRel);
+        }
+    }
 }
 fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)
@@ -117,14 +152,29 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
             .open(config.directory.join("lock"))
             .map_err(io)?;
         lock.try_lock().map_err(|_| EntityError::Busy)?;
+        let mut used = 0u64;
+        for entry in std::fs::read_dir(&config.directory).map_err(io)? {
+            used = used
+                .checked_add(entry.map_err(io)?.metadata().map_err(io)?.len())
+                .ok_or(EntityError::Overflow)?;
+        }
         Ok(Arc::new(Self {
             backend,
             objects,
             keys,
             config,
             _lock: lock,
-            local: tokio::sync::Mutex::new(()),
+            local: Arc::new(tokio::sync::RwLock::new(())),
+            debt: tokio::sync::Mutex::new(()),
             uploader: tokio::sync::Mutex::new(()),
+            changed: tokio::sync::Notify::new(),
+            used: AtomicU64::new(used),
+            staging_reservations: AtomicU64::new(0),
+            staging_file_syncs: AtomicU64::new(0),
+            staging_io_ns: AtomicU64::new(0),
+            stage_debt_attempts: AtomicU64::new(0),
+            completion_debt_attempts: AtomicU64::new(0),
+            completed_batches: AtomicU64::new(0),
             uploaded: AtomicU64::new(0),
             retries: AtomicU64::new(0),
             last_error: Mutex::new(None),
@@ -136,12 +186,25 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
         tokio::spawn(async move {
             loop {
                 let Some(queue) = weak.upgrade() else { break };
-                if let Err(error) = queue.upload_pass().await {
-                    queue.retries.fetch_add(1, Ordering::Relaxed);
-                    *queue.last_error.lock().unwrap() = Some(error.to_string());
+                match queue.upload_batch().await {
+                    Ok(count) if count != 0 => {
+                        // A busy queue must not pay a fixed sleep per 64 objects.
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    Err(error) => {
+                        queue.retries.fetch_add(1, Ordering::Relaxed);
+                        *queue.last_error.lock().unwrap() = Some(error.to_string());
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok(_) => {
+                        tokio::select! {
+                            _ = queue.changed.notified() => {},
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+                        }
+                    }
                 }
                 drop(queue);
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         });
     }
@@ -213,9 +276,19 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
         Ok(Some((descriptor, bytes)))
     }
 
-    pub async fn read(&self, descriptor: &ObjectDescriptor) -> Result<Option<Vec<u8>>> {
-        let _local = self.local.lock().await;
-        match self.load(descriptor.slice_id)? {
+    async fn load_async(self: &Arc<Self>, sid: u64) -> Result<Option<(ObjectDescriptor, Vec<u8>)>> {
+        let local = self.local.clone().read_owned().await;
+        let queue = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _local = local;
+            queue.load(sid)
+        })
+        .await
+        .map_err(io)?
+    }
+
+    pub async fn read(self: &Arc<Self>, descriptor: &ObjectDescriptor) -> Result<Option<Vec<u8>>> {
+        match self.load_async(descriptor.slice_id).await? {
             Some((stored, bytes)) if stored == *descriptor => Ok(Some(bytes)),
             Some(_) => Err(EntityError::Corrupt("staging descriptor mismatch".into())),
             None => Ok(None),
@@ -223,7 +296,7 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
     }
 
     pub async fn stage(
-        &self,
+        self: &Arc<Self>,
         session: &WriterSession,
         descriptor: &ObjectDescriptor,
         bytes: &[u8],
@@ -234,78 +307,64 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
         {
             return Err(EntityError::Fenced);
         }
-        authenticate(descriptor, bytes)?;
-        let _local = self.local.lock().await;
-        let mut used = 0u64;
-        for entry in std::fs::read_dir(&self.config.directory).map_err(io)? {
-            used = used
-                .checked_add(entry.map_err(io)?.metadata().map_err(io)?.len())
-                .ok_or(EntityError::Overflow)?;
-        }
-        let required = bytes.len() as u64 + 4096;
-        let free = nix_free_bytes(&self.config.directory)?;
-        if used.saturating_add(required) > self.config.capacity_bytes
-            || free.saturating_sub(required) < self.config.min_free_bytes
-        {
-            return Err(EntityError::Busy);
-        }
-        let path = self.path(descriptor.slice_id);
-        let temporary = path.with_extension("tmp");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)
-            .map_err(io)?;
-        let header = encode(descriptor)?;
-        file.write_all(&(header.len() as u32).to_le_bytes())
-            .map_err(io)?;
-        file.write_all(&header).map_err(io)?;
-        file.write_all(bytes).map_err(io)?;
-        file.sync_all().map_err(io)?;
-        std::fs::rename(&temporary, &path).map_err(io)?;
-        sync_directory(&self.config.directory)?;
+        let local = self.local.clone().read_owned().await;
+        let queue = self.clone();
+        let stored = descriptor.clone();
+        let bytes = bytes.to_vec();
+        // Keep the shared reconciliation guard in the blocking task even if
+        // its caller is cancelled. File writes/fsync/hash must not stall the
+        // CLI's default single Tokio worker or unrelated inode operations.
+        let _local = tokio::task::spawn_blocking(move || {
+            let start = Instant::now();
+            queue.persist(&stored, &bytes)?;
+            queue
+                .staging_io_ns
+                .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            Ok::<_, EntityError>(local)
+        })
+        .await
+        .map_err(io)??;
+        let _debt = self.debt.lock().await;
         // Persist debt before issuing a publication receipt. Ambiguous commits
         // leave both file and marker intact for upload-only recovery.
         let lifecycle = Lifecycle::new(self.backend.clone(), self.keys.clone());
         for _ in 0..64 {
-            let authority = lifecycle.authority(session).await?;
+            let mut combined = lifecycle.authority_keys(session)?;
+            let authority_count = combined.len();
             let keys = [
                 self.keys.remote_pending(),
                 self.debt_key(descriptor.slice_id),
                 self.keys.slice(descriptor.slice_id),
             ];
-            let snapshot = self.backend.read(&keys).await?;
-            let owner: SliceOwnership =
-                decode(snapshot.rows[2].as_deref().ok_or(EntityError::Fenced)?)?;
+            combined.extend(keys.iter().cloned());
+            let mut snapshot = self.backend.read(&combined).await?;
+            let rows = snapshot.rows.split_off(authority_count);
+            let authority = lifecycle.authority_from_snapshot(session, snapshot)?;
+            let owner: SliceOwnership = decode(rows[2].as_deref().ok_or(EntityError::Fenced)?)?;
             owner.validate(&self.keys, descriptor.slice_id)?;
             if owner.size != descriptor.size
                 || !matches!(owner.state, SliceState::Pending { lease, .. } if lease == session.identity())
             {
                 return Err(EntityError::Fenced);
             }
-            if let Some(stored) = &snapshot.rows[1] {
+            if let Some(stored) = &rows[1] {
                 if decode::<ObjectDescriptor>(stored)? == *descriptor {
+                    self.changed.notify_one();
                     return Ok(());
                 }
                 return Err(EntityError::Corrupt("conflicting upload debt".into()));
             }
-            let mut debt: Debt = snapshot.rows[0]
-                .as_deref()
-                .map(decode)
-                .transpose()?
-                .unwrap_or(Debt {
-                    objects: 0,
-                    bytes: 0,
-                });
+            let mut debt: Debt = rows[0].as_deref().map(decode).transpose()?.unwrap_or(Debt {
+                objects: 0,
+                bytes: 0,
+            });
             debt.objects = debt.objects.checked_add(1).ok_or(EntityError::Overflow)?;
             debt.bytes = debt
                 .bytes
                 .checked_add(descriptor.size)
                 .ok_or(EntityError::Overflow)?;
             let plan = EntityPlan {
-                checks: super::lifecycle::checked_rows(&keys, snapshot.rows),
+                checks: super::lifecycle::checked_rows(&keys, rows),
                 writes: vec![
                     RowWrite::Put {
                         key: keys[0].clone(),
@@ -317,17 +376,91 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
                     },
                 ],
             };
+            self.stage_debt_attempts.fetch_add(1, Ordering::Relaxed);
             if self.backend.commit(&authority, &plan).await? == CommitOutcome::Committed {
+                self.changed.notify_one();
                 return Ok(());
             }
         }
         Err(EntityError::Busy)
     }
 
+    fn persist(&self, descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<()> {
+        authenticate(descriptor, bytes)?;
+        let header = encode(descriptor)?;
+        if header.len() + 4 > 4096 {
+            return Err(EntityError::Invalid("staging header bound".into()));
+        }
+        let required = bytes.len() as u64 + 4096;
+        if self
+            .used
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(required)
+                    .filter(|next| *next <= self.config.capacity_bytes)
+            })
+            .is_err()
+        {
+            return Err(EntityError::Busy);
+        }
+        let pending = self
+            .staging_reservations
+            .fetch_add(required, Ordering::AcqRel);
+        let mut reservation = DiskReservation {
+            used: &self.used,
+            pending: &self.staging_reservations,
+            bytes: required,
+            retain: false,
+        };
+        let free = nix_free_bytes(&self.config.directory)?;
+        // Reserve space for concurrent writes not yet reflected by statvfs.
+        if free.saturating_sub(pending.saturating_add(required)) < self.config.min_free_bytes {
+            return Err(EntityError::Busy);
+        }
+        let path = self.path(descriptor.slice_id);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(io)?;
+        reservation.retain = true;
+        // Once a file exists, errors retain its reservation conservatively.
+        // Reopen reconstructs usage from disk, including partial orphan files.
+        file.write_all(&(header.len() as u32).to_le_bytes())
+            .map_err(io)?;
+        file.write_all(&header).map_err(io)?;
+        file.write_all(bytes).map_err(io)?;
+        file.sync_all().map_err(io)?;
+        // No reader/uploader knows this fresh SID until debt is registered.
+        // create_new prevents replacing another object's immutable bytes. A
+        // pre-debt crash leaves only an unregistered, reclaimable orphan.
+        sync_directory(&self.config.directory)?;
+        self.used.fetch_sub(
+            required - (4 + header.len() + bytes.len()) as u64,
+            Ordering::AcqRel,
+        );
+        self.staging_file_syncs.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     /// The persistent upload row is a capability for this exact immutable PUT,
     /// independent of lease expiry. No inode/dentry/chunk mutation is authorized.
-    pub async fn upload_pass(&self) -> Result<()> {
+    pub async fn upload_pass(self: &Arc<Self>) -> Result<()> {
+        self.upload_batch().await?;
+        // Explicit upload-only recovery also reconciles a crash after debt
+        // completion but before file removal, including an initially empty
+        // queue. The live background loop deliberately calls upload_batch.
+        if self.status().await?.pending_objects == 0 {
+            let _uploader = self.uploader.lock().await;
+            self.cleanup_completed().await?;
+        }
+        Ok(())
+    }
+
+    async fn upload_batch(self: &Arc<Self>) -> Result<usize> {
         let _uploader = self.uploader.lock().await;
+        let debt = self.debt.lock().await;
         let prefix = [self.keys.prefix(), b"upload/"].concat();
         let rows = self.backend.scan_prefix_batch(&prefix, 64).await?;
         if rows.is_empty() && self.status().await?.pending_objects != 0 {
@@ -335,64 +468,121 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
                 "remote debt has no upload records".into(),
             ));
         }
-        for (_, stored) in rows {
-            let descriptor: ObjectDescriptor = decode(&stored)?;
-            self.validate_upload(&descriptor).await?;
-            let bytes = {
-                let _local = self.local.lock().await;
-                let (local, bytes) = self.load(descriptor.slice_id)?.ok_or_else(|| {
-                    EntityError::Corrupt("remote debt has no staging file".into())
-                })?;
-                if local != descriptor {
-                    return Err(EntityError::Corrupt("upload debt mismatch".into()));
+        drop(debt);
+        let descriptors = rows
+            .into_iter()
+            .map(|(_, stored)| decode(&stored))
+            .collect::<Result<Vec<ObjectDescriptor>>>()?;
+        let count = descriptors.len();
+        // At most eight authenticated payloads (8 * MAX_IO_BYTES) and PUTs are
+        // retained. Finish every submitted future, even when one object fails.
+        let results = stream::iter(descriptors.into_iter().map(|descriptor| async move {
+            let result = self.upload_one(&descriptor).await;
+            (descriptor, result)
+        }))
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+        let mut completed = Vec::new();
+        let mut failure = None;
+        for (descriptor, result) in results {
+            match result {
+                Ok(()) => completed.push(descriptor),
+                Err(error) => {
+                    failure.get_or_insert(error);
                 }
-                bytes
-            };
-            let key = self.keys.object(descriptor.slice_id);
-            // A successful prior PUT with a lost response is idempotent only
-            // after exact size and digest verification, never by existence.
-            match self
-                .objects
-                .get_object_size_bounded(&key)
-                .await
-                .map_err(io)?
-            {
-                Some(size) => {
-                    if size != descriptor.size {
-                        return Err(EntityError::Corrupt("remote upload size mismatch".into()));
-                    }
-                    use futures::StreamExt;
-                    let mut stream = self
-                        .objects
-                        .get_object_range_stream(&key, 0, descriptor.size + 1)
-                        .await
-                        .map_err(io)?;
-                    let mut remote = Vec::new();
-                    while let Some(part) = stream.next().await {
-                        let part = part.map_err(io)?;
-                        if remote.len().saturating_add(part.len()) as u64 > descriptor.size {
-                            return Err(EntityError::Corrupt(
-                                "oversized upload verification".into(),
-                            ));
-                        }
-                        remote.extend_from_slice(&part);
-                    }
-                    authenticate(&descriptor, &remote)?;
-                }
-                None => self
-                    .objects
-                    .put_object_create_only_durable(&key, &bytes)
-                    .await
-                    .map_err(io)?,
             }
-            self.finish(&descriptor).await?;
-            let _local = self.local.lock().await;
-            std::fs::remove_file(self.path(descriptor.slice_id)).map_err(io)?;
-            sync_directory(&self.config.directory)?;
-            self.uploaded.fetch_add(descriptor.size, Ordering::Relaxed);
+        }
+        if !completed.is_empty() {
+            self.finish_batch(&completed).await?;
+            let local = self.local.clone().read_owned().await;
+            let queue = self.clone();
+            tokio::task::spawn_blocking(move || {
+                let _local = local;
+                let mut result = Ok(());
+                for descriptor in completed {
+                    if let Err(error) = queue.remove_stage(descriptor.slice_id) {
+                        result = Err(error);
+                        break;
+                    }
+                    queue.uploaded.fetch_add(descriptor.size, Ordering::Relaxed);
+                }
+                // Completed objects are already remotely durable. One directory
+                // sync persists this entire reclamation batch; a crash earlier
+                // leaves only harmless files for final reconciliation.
+                sync_directory(&queue.config.directory)?;
+                result
+            })
+            .await
+            .map_err(io)??;
+            self.completed_batches.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         *self.last_error.lock().unwrap() = None;
-        self.cleanup_completed().await?;
+        Ok(count)
+    }
+
+    fn remove_stage(&self, sid: u64) -> Result<()> {
+        let path = self.path(sid);
+        let size = std::fs::metadata(&path).map_err(io)?.len();
+        std::fs::remove_file(path).map_err(io)?;
+        // Failed staging may have conservatively retained extra reservation;
+        // subtracting the actual file length cannot undercount retained files.
+        self.used.fetch_sub(size, Ordering::AcqRel);
+        Ok(())
+    }
+
+    async fn upload_one(self: &Arc<Self>, descriptor: &ObjectDescriptor) -> Result<()> {
+        self.validate_upload(descriptor).await?;
+        let (local, bytes) = self
+            .load_async(descriptor.slice_id)
+            .await?
+            .ok_or_else(|| EntityError::Corrupt("remote debt has no staging file".into()))?;
+        if local != *descriptor {
+            return Err(EntityError::Corrupt("upload debt mismatch".into()));
+        }
+        let key = self.keys.object(descriptor.slice_id);
+        // The transport guarantees create-only PUT without hidden replay.
+        // Fresh IDs need one request. A collision or lost response must be
+        // reconciled by exact size AND digest, never by existence alone.
+        let put_error = match self
+            .objects
+            .put_object_create_only_durable(&key, &bytes)
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        match self
+            .objects
+            .get_object_size_bounded(&key)
+            .await
+            .map_err(io)?
+        {
+            Some(size) => {
+                if size != descriptor.size {
+                    return Err(EntityError::Corrupt("remote upload size mismatch".into()));
+                }
+                use futures::StreamExt;
+                let mut stream = self
+                    .objects
+                    .get_object_range_stream(&key, 0, descriptor.size + 1)
+                    .await
+                    .map_err(io)?;
+                let mut remote = Vec::new();
+                while let Some(part) = stream.next().await {
+                    let part = part.map_err(io)?;
+                    if remote.len().saturating_add(part.len()) as u64 > descriptor.size {
+                        return Err(EntityError::Corrupt("oversized upload verification".into()));
+                    }
+                    remote.extend_from_slice(&part);
+                }
+                authenticate(descriptor, &remote)?;
+            }
+            None => return Err(io(put_error)),
+        }
         Ok(())
     }
 
@@ -400,7 +590,7 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
     /// original remote bytes before reclaiming it; never upload an unregistered
     /// orphan, since maintenance may already have retired its object identity.
     async fn cleanup_completed(&self) -> Result<()> {
-        let _local = self.local.lock().await;
+        let _local = self.local.write().await;
         for entry in std::fs::read_dir(&self.config.directory).map_err(io)? {
             let path = entry.map_err(io)?.path();
             if path.extension().and_then(|s| s.to_str()) != Some("stage") {
@@ -455,9 +645,9 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
             {
                 return Err(EntityError::Corrupt("unexplained staging file".into()));
             }
-            std::fs::remove_file(path).map_err(io)?;
-            sync_directory(&self.config.directory)?;
+            self.remove_stage(sid)?;
         }
+        sync_directory(&self.config.directory)?;
         Ok(())
     }
 
@@ -490,13 +680,22 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
         Ok(())
     }
 
-    async fn finish(&self, descriptor: &ObjectDescriptor) -> Result<()> {
+    async fn finish_batch(&self, descriptors: &[ObjectDescriptor]) -> Result<()> {
+        let _debt = self.debt.lock().await;
+        if descriptors.is_empty() || descriptors.len() > 64 {
+            return Err(EntityError::Invalid("upload completion batch bound".into()));
+        }
+        let mut keys = vec![self.keys.descriptor(), self.keys.remote_pending()];
+        let mut identities = std::collections::BTreeSet::new();
+        for descriptor in descriptors {
+            if descriptor.namespace_id != self.keys.namespace_id()
+                || !identities.insert(descriptor.slice_id)
+            {
+                return Err(EntityError::Corrupt("upload completion identities".into()));
+            }
+            keys.push(self.debt_key(descriptor.slice_id));
+        }
         for _ in 0..64 {
-            let keys = [
-                self.keys.descriptor(),
-                self.keys.remote_pending(),
-                self.debt_key(descriptor.slice_id),
-            ];
             let snapshot = self.backend.read(&keys).await?;
             let namespace: super::lifecycle::NamespaceDescriptor =
                 decode(snapshot.rows[0].as_deref().ok_or(EntityError::Fenced)?)?;
@@ -506,18 +705,27 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
             {
                 return Err(EntityError::Fenced);
             }
-            if snapshot.rows[2].is_none() {
+            if snapshot.rows[2..].iter().all(Option::is_none) {
                 return Ok(());
             }
-            if snapshot.rows[2].as_deref() != Some(encode(descriptor)?.as_slice()) {
-                return Err(EntityError::Corrupt("upload completion identity".into()));
-            }
             let mut debt: Debt = decode(snapshot.rows[1].as_deref().ok_or(EntityError::Fenced)?)?;
-            debt.objects = debt.objects.checked_sub(1).ok_or(EntityError::Overflow)?;
-            debt.bytes = debt
-                .bytes
-                .checked_sub(descriptor.size)
-                .ok_or(EntityError::Overflow)?;
+            let mut writes = Vec::new();
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                let Some(stored) = snapshot.rows[index + 2].as_deref() else {
+                    continue;
+                };
+                if stored != encode(descriptor)?.as_slice() {
+                    return Err(EntityError::Corrupt("upload completion identity".into()));
+                }
+                debt.objects = debt.objects.checked_sub(1).ok_or(EntityError::Overflow)?;
+                debt.bytes = debt
+                    .bytes
+                    .checked_sub(descriptor.size)
+                    .ok_or(EntityError::Overflow)?;
+                writes.push(RowWrite::Delete {
+                    key: keys[index + 2].clone(),
+                });
+            }
             let checks = super::lifecycle::checked_rows(&keys, snapshot.rows);
             let authority = TransactionAuthority::from_validated(checks, None)?;
             let counter = if debt.objects == 0 {
@@ -533,18 +741,16 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
                     value: encode(&debt)?,
                 }
             };
+            writes.push(counter);
+            self.completion_debt_attempts
+                .fetch_add(1, Ordering::Relaxed);
             if self
                 .backend
                 .commit(
                     &authority,
                     &EntityPlan {
                         checks: vec![],
-                        writes: vec![
-                            counter,
-                            RowWrite::Delete {
-                                key: keys[2].clone(),
-                            },
-                        ],
+                        writes,
                     },
                 )
                 .await?
@@ -572,14 +778,23 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
             uploaded_bytes: self.uploaded.load(Ordering::Relaxed),
             retries: self.retries.load(Ordering::Relaxed),
             last_error: self.last_error.lock().unwrap().clone(),
+            staging_file_syncs: self.staging_file_syncs.load(Ordering::Relaxed),
+            staging_io_ns: self.staging_io_ns.load(Ordering::Relaxed),
+            stage_debt_attempts: self.stage_debt_attempts.load(Ordering::Relaxed),
+            completion_debt_attempts: self.completion_debt_attempts.load(Ordering::Relaxed),
+            completed_batches: self.completed_batches.load(Ordering::Relaxed),
         })
     }
 
-    pub async fn drain(&self, timeout: Duration) -> Result<()> {
+    pub async fn drain(self: &Arc<Self>, timeout: Duration) -> Result<()> {
+        self.changed.notify_one();
         tokio::time::timeout(timeout, async {
             loop {
                 if self.status().await?.pending_objects == 0 {
                     let _uploader = self.uploader.lock().await;
+                    if self.status().await?.pending_objects != 0 {
+                        continue;
+                    }
                     self.cleanup_completed().await?;
                     return Ok(());
                 }
@@ -590,6 +805,10 @@ impl<B: EntityBackend + 'static, O: ObjectBackend + 'static> EntityWriteback<B, 
         .map_err(|_| EntityError::Busy)?
     }
 }
+
+#[cfg(test)]
+#[path = "writeback_tests.rs"]
+mod tests;
 
 fn nix_free_bytes(path: &Path) -> Result<u64> {
     use std::os::unix::ffi::OsStrExt;

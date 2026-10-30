@@ -47,6 +47,24 @@ reads authenticate staging data. A remote-only read of a missing object fails;
 it does not synthesize zeros. Losing the staging device before upload can lose
 acknowledged data.
 
+The opt-in uploader retains at most eight concurrent payloads/PUTs (each bounded
+by the 16 MiB entity I/O limit). It discovers up to 64 debt rows per batch,
+atomically clears successful rows and their aggregate counter, and persists
+completed-file removal with one directory fsync per batch. A failed object keeps
+its own debt and staging; successful peers can finish. A fresh object uses a
+create-only PUT directly; a failed/colliding PUT is reconciled only after exact
+remote size and digest verification. Uploads wake on new debt and continue
+without a fixed sleep while work remains; transport failures retain backoff.
+
+Independent staging files and reads share a reconciliation guard and run their
+blocking I/O in the blocking thread pool. Capacity is reserved atomically before
+writing and reconstructed once on open. The short debt mutex covers metadata
+transactions only. Staging still fsyncs every data file and its directory before
+registering debt; no local durability barrier is removed. Orphan scans and remote
+verification of completed leftovers run during final drain, after admission and
+retained operations stop, and in explicit upload-only recovery, including when
+debt is initially zero. They do not run in the steady-state background loop.
+
 `fsync` and release retain local durability semantics in this opt-in mode.
 Orderly unmount stops admission, drains retained operations and remote objects,
 then enters maintenance. A timeout returns failure, preserves debt and staging,
@@ -75,6 +93,9 @@ excludes concurrent users of the same staging directory.
 JSON records expose pending object/byte counts, successfully uploaded bytes,
 retry count and the most recent upload error. `remote_ready` is emitted only
 after the strong drain and maintenance transition succeed.
+Process-local diagnostics also expose `staging_file_syncs`, `staging_io_ns`,
+`stage_debt_attempts`, `completion_debt_attempts`, and `completed_batches`.
+The I/O duration is a sum across concurrent staging tasks, not elapsed wall time.
 
 Functional validation covers blocked uploads, local reads/fsync, capacity
 failure, overwrite/truncate/unlink before upload, restart with an expired lease,
@@ -111,3 +132,7 @@ performance results. Every entity stop must report `remote_ready`, and shutdown
 duration is recorded separately. In opt-in writeback mode, per-file fsync and
 phase throughput cover local durability and exclude the final remote drain;
 they must not be presented as end-to-end remote-durable throughput.
+
+The [WSL optimization measurements](entity-writeback-performance.md) include
+final drain, mixed read/write guards, independent sync controls, and JuiceFS
+comparisons with explicit durability and queue-scan differences.
