@@ -128,7 +128,7 @@ impl V3GroupRef {
         Ok(reference)
     }
 
-    fn validate_metadata_read(
+    pub(super) fn validate_metadata_read(
         &self,
         container: &V3ObjectRef,
         allocation_limit: usize,

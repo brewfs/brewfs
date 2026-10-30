@@ -3,6 +3,7 @@
 
 use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +79,7 @@ pub struct V3MountBudget {
     state: Mutex<V3BudgetState>,
     changed: tokio::sync::Notify,
     observer: Mutex<Weak<crate::cadapter::read_observer::ReadObserver>>,
+    read_cache_epoch: AtomicU64,
 }
 /// Longest a waiting arena admission queues behind sibling owners before it
 /// fails closed with the ordinary exhaustion error.
@@ -100,6 +102,7 @@ impl V3MountBudget {
             state: Mutex::new(V3BudgetState::default()),
             changed: tokio::sync::Notify::new(),
             observer: Mutex::new(Weak::new()),
+            read_cache_epoch: AtomicU64::new(0),
         }))
     }
     pub fn defaults() -> Arc<Self> {
@@ -200,7 +203,17 @@ impl V3MountBudget {
     }
     pub fn close(&self) {
         self.state.lock().unwrap().closed = true;
+        self.invalidate_read_caches();
         self.changed.notify_waiters();
+    }
+    /// A lease or view fence invalidates the entire mount's retained read
+    /// cache at once. Owners are reclaimed lazily on the next access/close;
+    /// old in-flight fills can never publish into the new epoch.
+    pub(crate) fn invalidate_read_caches(&self) {
+        self.read_cache_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+    pub(crate) fn read_cache_epoch(&self) -> u64 {
+        self.read_cache_epoch.load(Ordering::SeqCst)
     }
     /// Observe shutdown without retaining a memory permit while waiting.
     /// Register before inspecting state so a concurrent close cannot be lost.
