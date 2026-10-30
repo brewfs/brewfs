@@ -15,6 +15,13 @@ const MAX_KEY_BYTES: usize = 2048;
 const MAX_VALUE_BYTES: usize = 8192;
 const MAX_HEIGHT: u8 = 16;
 
+fn frame_directory_weight(page: &super::V3FrameDirectoryPage) -> u64 {
+    (std::mem::size_of::<V3Owned<super::V3FrameDirectoryPage>>()
+        + 64
+        + page.frames.capacity() * std::mem::size_of::<super::super::PackedFrameDescriptor>())
+        as u64
+}
+
 #[cfg(test)]
 tokio::task_local! {
     static GROUP_WEIGHT_DECODES: std::cell::Cell<usize>;
@@ -498,6 +505,8 @@ pub struct V3IndexReader<B: ObjectBackend + Clone> {
     configured_bytes: u64,
     budget: Arc<V3MountBudget>,
     demand_pipeline: tokio::sync::Mutex<V3ReaderRuntime<B>>,
+    group_metadata: super::read_cache::RetainedMetadata<V3Owned<Arc<super::super::GroupMeta>>>,
+    frame_directories: super::read_cache::RetainedMetadata<V3Owned<super::V3FrameDirectoryPage>>,
 }
 
 struct V3ReaderRuntime<B: ObjectBackend + Clone> {
@@ -630,6 +639,18 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 .build(),
             cache_ownership: Arc::new(V3IndexCacheOwnership::new(cache_bytes)),
             configured_bytes: cache_bytes,
+            group_metadata: super::read_cache::RetainedMetadata::new(
+                (cache_bytes / 16)
+                    .min(8 << 20)
+                    .min(budget.capacity(V3BudgetPool::Metadata) / 4),
+                budget.clone(),
+            ),
+            frame_directories: super::read_cache::RetainedMetadata::new(
+                (cache_bytes / 32)
+                    .min(4 << 20)
+                    .min(budget.capacity(V3BudgetPool::Metadata) / 8),
+                budget.clone(),
+            ),
             budget,
             demand_pipeline: tokio::sync::Mutex::new(V3ReaderRuntime {
                 closed: false,
@@ -640,6 +661,74 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
 
     pub fn budget(&self) -> &Arc<V3MountBudget> {
         &self.budget
+    }
+
+    pub(super) async fn group_metadata(
+        &self,
+        generation: crate::chunk::read_plan::ReadGeneration,
+        group: &super::V3GroupRef,
+        container: &V3ObjectRef,
+        allocation_limit: usize,
+    ) -> PackedResult<Arc<V3Owned<Arc<super::super::GroupMeta>>>> {
+        use sha2::{Digest, Sha256};
+        self.ensure_open().await?;
+        group.validate_metadata_read(container, allocation_limit)?;
+        // Admit before allocating canonical identity bytes. Include every
+        // authenticated group claim and the complete container reference.
+        let _request = self.budget.admit(&[
+            (V3BudgetPool::Plans, 16 << 10),
+            (V3BudgetPool::Control, 1024),
+        ])?;
+        let mut identity = Sha256::new();
+        identity.update(group.encode_value()?);
+        identity.update(container.encode_value()?);
+        self.group_metadata
+            .read(
+                generation,
+                identity.finalize().into(),
+                |value| value.owned_memory_bytes() as u64,
+                group.read_metadata_owned(&self.client, container, allocation_limit, &self.budget),
+            )
+            .await
+    }
+
+    pub(super) async fn frame_directory(
+        &self,
+        generation: crate::chunk::read_plan::ReadGeneration,
+        reference: &V3ObjectRef,
+        container_digest: [u8; 32],
+    ) -> PackedResult<Arc<V3Owned<super::V3FrameDirectoryPage>>> {
+        use sha2::{Digest, Sha256};
+        self.ensure_open().await?;
+        let _request = self.budget.admit(&[
+            (V3BudgetPool::Plans, 16 << 10),
+            (V3BudgetPool::Control, 1024),
+        ])?;
+        let key: [u8; 32] = Sha256::digest(reference.encode_value()?).into();
+        self.frame_directories
+            .read(
+                generation,
+                key,
+                |value| frame_directory_weight(value),
+                async {
+                    let mut permit = self.budget.admit(&[
+                        (V3BudgetPool::Metadata, 512 << 10),
+                        (V3BudgetPool::Stored, reference.object_len * 2),
+                        (V3BudgetPool::Control, 2048),
+                    ])?;
+                    let page = super::V3FrameDirectoryPage::read(
+                        &self.client,
+                        reference,
+                        container_digest,
+                    )
+                    .await?;
+                    permit.shrink(V3BudgetPool::Metadata, frame_directory_weight(&page))?;
+                    permit.shrink(V3BudgetPool::Stored, 0)?;
+                    permit.shrink(V3BudgetPool::Control, 0)?;
+                    Ok(Arc::new(V3Owned::new(page, permit)))
+                },
+            )
+            .await
     }
     /// Reader shutdown is a hard admission boundary. The mount budget is
     /// closed by the outer session after transport drain, so checking it
@@ -1314,6 +1403,9 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             pipeline.shutdown().await;
         }
         drop(runtime.coordinator.take());
+        self.budget.invalidate_read_caches();
+        self.group_metadata.clear();
+        self.frame_directories.clear();
         self.pages.invalidate_all();
         self.pages.run_pending_tasks().await;
     }

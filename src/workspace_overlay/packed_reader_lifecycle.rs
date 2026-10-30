@@ -348,6 +348,7 @@ impl<B: WorkspaceKvBackend> KvPackedReaderSession<B> {
         let cancel = session.cancel.clone();
         let runtime_permit = session._permit.clone();
         let recovery_owner = session._recovery.clone();
+        let cache_budget = session.budget.clone();
         let period = Duration::from_nanos(ttl_ns / 3);
         let task = tokio::spawn(async move {
             let _runtime_permit = runtime_permit;
@@ -381,6 +382,7 @@ impl<B: WorkspaceKvBackend> KvPackedReaderSession<B> {
                         state.fenced = true;
                         state.accepting = false;
                         drop(state);
+                        cache_budget.invalidate_read_caches();
                         local.changed.notify_waiters();
                         tracing::warn!(?error, "packed reader heartbeat lost authority");
                         break;
@@ -456,6 +458,7 @@ impl<B: WorkspaceKvBackend> PackedReaderSession for KvPackedReaderSession<B> {
             .validate_packed_reader_pin(&expected)
             .await
             .inspect_err(|_error| {
+                self.budget.invalidate_read_caches();
                 #[cfg(test)]
                 reader_lifecycle_diagnostic("validate-actual-pin", _error);
             })?;
@@ -472,6 +475,7 @@ impl<B: WorkspaceKvBackend> PackedReaderSession for KvPackedReaderSession<B> {
     }
     fn stop_admission(&self) {
         self.local.state.lock().unwrap().accepting = false;
+        self.budget.invalidate_read_caches();
         self.local.changed.notify_waiters();
     }
     async fn shutdown(&self) -> Result<(), WorkspaceError> {

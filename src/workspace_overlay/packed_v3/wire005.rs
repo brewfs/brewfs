@@ -20,11 +20,14 @@ mod index_builder;
 pub use index_builder::V3IndexBuilder;
 mod large_chunk;
 mod manifest;
+#[cfg(test)]
+mod metadata_cache_tests;
 mod native_placement;
 mod pipeline;
 mod placement;
 mod producer;
 mod publication;
+mod read_cache;
 pub use placement::{V3LargeExtent, V3Placement};
 #[cfg(target_os = "linux")]
 pub(crate) use publication::native_effective::NativeCaptureLimits;
