@@ -171,15 +171,18 @@ impl Drop for InlineRootPermit {
 pub(crate) struct ReplyBytes {
     bytes: Option<bytes::Bytes>,
     controller: super::session::owned_open_queue::ControllerHandle,
+    unique: Option<u64>,
 }
 impl ReplyBytes {
     pub(crate) fn tracked(
         bytes: bytes::Bytes,
         controller: super::session::owned_open_queue::ControllerHandle,
+        unique: Option<u64>,
     ) -> Self {
         Self {
             bytes: Some(bytes),
             controller,
+            unique,
         }
     }
     #[cfg(test)]
@@ -192,6 +195,7 @@ impl From<bytes::Bytes> for ReplyBytes {
         Self::tracked(
             bytes,
             super::session::owned_open_queue::ControllerHandle::empty(),
+            None,
         )
     }
 }
@@ -205,6 +209,7 @@ impl Clone for ReplyBytes {
         Self::tracked(
             self.bytes.as_ref().expect("live wire bytes").clone(),
             self.controller.clone(),
+            self.unique,
         )
     }
 }
@@ -236,7 +241,9 @@ impl Drop for ReplyBytes {
         // is now the sole actual Bytes owner, its subsequent Drop completes the
         // actual Vec buffer and Shared header deallocations before refunding.
         drop(self.bytes.take());
-        self.controller.reap();
+        if let Some(unique) = self.unique {
+            self.controller.reap(unique);
+        }
     }
 }
 

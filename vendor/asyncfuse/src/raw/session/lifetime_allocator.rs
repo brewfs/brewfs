@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
-static WATCH: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+// The table's buckets and lane heads add two actual allocations to witness.
+static WATCH: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 pub(crate) static DEALLOCATED: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXPECTED: AtomicUsize = AtomicUsize::new(0);
 std::thread_local! {
@@ -45,8 +46,8 @@ unsafe impl GlobalAlloc for WitnessAllocator {
 pub(crate) fn watch(pointers: [usize; 4]) {
     DEALLOCATED.store(0, Ordering::Release);
     EXPECTED.store(0, Ordering::Release);
-    for (address, pointer) in WATCH.iter().zip(pointers) {
-        address.store(pointer, Ordering::Release);
+    for (index, address) in WATCH.iter().enumerate() {
+        address.store(pointers.get(index).copied().unwrap_or(0), Ordering::Release);
     }
 }
 pub(crate) fn clear() {

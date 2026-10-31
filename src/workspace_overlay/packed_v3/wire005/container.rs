@@ -169,7 +169,7 @@ impl V3GroupRef {
                 u64::from(self.meta_stored_len),
                 allocation_limit as u64,
                 |stored| {
-                    self.decode_metadata_stored(&stored)
+                    self.decode_metadata_stored(client, &stored)
                         .map_err(super::observer_validation_error)
                 },
             )
@@ -181,7 +181,11 @@ impl V3GroupRef {
     /// larger, coalesced container range.  The caller has already validated
     /// the containing object and selected the exact metadata slice; the
     /// digest and all GroupMeta fences are still checked here.
-    pub(super) fn decode_metadata_stored(&self, stored: &[u8]) -> PackedResult<Arc<GroupMeta>> {
+    pub(super) fn decode_metadata_stored<B: ObjectBackend + Clone>(
+        &self,
+        client: &ObjectClient<B>,
+        stored: &[u8],
+    ) -> PackedResult<Arc<GroupMeta>> {
         if stored.len() != self.meta_stored_len as usize {
             return Err(PackedWireError::Truncated {
                 what: "wire 005 GroupMeta range",
@@ -189,7 +193,12 @@ impl V3GroupRef {
                 have: stored.len(),
             });
         }
+        let hash_timer = client.measure_read_work(
+            crate::cadapter::read_observer::ReadClass::GroupMetadata,
+            crate::cadapter::read_observer::ReadWork::Authentication,
+        );
         let computed: [u8; 32] = Sha256::digest(stored).into();
+        drop(hash_timer);
         if computed != self.meta_digest {
             return Err(PackedWireError::HashMismatch {
                 what: "wire 005 authenticated GroupMeta",
@@ -197,6 +206,10 @@ impl V3GroupRef {
                 computed: hex::encode(computed),
             });
         }
+        let decode_timer = client.measure_read_work(
+            crate::cadapter::read_observer::ReadClass::GroupMetadata,
+            crate::cadapter::read_observer::ReadWork::Decode,
+        );
         let raw = decode_block(
             self.meta_codec,
             stored,
@@ -205,6 +218,7 @@ impl V3GroupRef {
             self.meta_raw_len as usize,
         )?;
         let meta = GroupMeta::decode_restart(&raw)?;
+        drop(decode_timer);
         if meta.len() != self.entry_count as usize
             || meta.entries().first().map(|e| e.name.as_slice()) != Some(self.first_name.as_slice())
             || meta.entries().last().map(|e| e.name.as_slice()) != Some(self.last_name.as_slice())
@@ -230,8 +244,9 @@ impl V3GroupRef {
     /// Decode a GroupMeta slice while retaining the same budget ownership as
     /// the ordinary single-range path.  This is used by the container range
     /// cache after one coalesced GET has supplied several adjacent pages.
-    pub(super) fn decode_metadata_owned_from_stored(
+    pub(super) fn decode_metadata_owned_from_stored<B: ObjectBackend + Clone>(
         &self,
+        client: &ObjectClient<B>,
         stored: &[u8],
         allocation_limit: usize,
         budget: &Arc<super::V3MountBudget>,
@@ -247,7 +262,7 @@ impl V3GroupRef {
             (super::V3BudgetPool::Raw, u64::from(self.meta_raw_len)),
             (super::V3BudgetPool::Workspace, workspace as u64),
         ])?;
-        let metadata = self.decode_metadata_stored(stored)?;
+        let metadata = self.decode_metadata_stored(client, stored)?;
         let weight = metadata.owned_memory_bytes();
         permit.shrink(super::V3BudgetPool::Metadata, weight as u64)?;
         permit.shrink(super::V3BudgetPool::Stored, 0)?;

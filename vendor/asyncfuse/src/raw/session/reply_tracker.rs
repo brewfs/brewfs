@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::worker::InflightGuard;
 use crate::raw::reply::ReplyMemoryGuard;
+use crate::raw::RequestObserver;
 
 const PENDING: u8 = 0;
 const WRITTEN: u8 = 1;
@@ -23,6 +24,7 @@ pub(crate) struct ReplyTracker {
     failure: Mutex<Option<Failure>>,
     inflight: Arc<AtomicUsize>,
     notify: Arc<async_notify::Notify>,
+    request_observer: Option<Arc<dyn RequestObserver>>,
     // The reservation covers this Arc, its empty map, and preparation Box.
     // Each map node is covered by its Request or 1024-byte Control owner.
     _roots: Option<ReplyMemoryGuard>,
@@ -51,12 +53,14 @@ impl ReplyTracker {
         roots: Option<ReplyMemoryGuard>,
         inflight: Arc<AtomicUsize>,
         notify: Arc<async_notify::Notify>,
+        request_observer: Option<Arc<dyn RequestObserver>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             tickets: Mutex::new(BTreeMap::new()),
             failure: Mutex::new(None),
             inflight,
             notify,
+            request_observer,
             _roots: roots,
         })
     }
@@ -165,6 +169,14 @@ impl ReplyOwner {
 impl Drop for ReplyOwner {
     fn drop(&mut self) {
         if self.disposition.load(Ordering::Acquire) == PENDING {
+            if let Some(observer) = &self.tracker.request_observer {
+                // The reply owner is the final proof that a queued response
+                // reached the kernel. Dropping it while pending means the
+                // request was cancelled during teardown or admission failure.
+                // Request observations are idempotent, so a late pump error
+                // cannot create a second sample.
+                observer.request_cancelled(self.unique);
+            }
             self.tracker
                 .fail(&io::Error::from(io::ErrorKind::BrokenPipe));
         }

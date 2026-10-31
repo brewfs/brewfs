@@ -4,7 +4,9 @@ use crate::raw::reply::{InlineRootPermit, ReplyBytes, ReplyMemoryGuard};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use std::alloc::Layout;
+use std::collections::hash_map::RandomState;
 use std::future::Future;
+use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -91,9 +93,91 @@ impl Record {
     }
 }
 
+const NONE: usize = usize::MAX;
+
+#[derive(Debug)]
+struct Slot {
+    record: Option<Record>,
+    // Live slots form doubly linked hash chains. Free slots reuse `next` for
+    // their lane's free list. No insertion/removal allocates or moves a record.
+    next: usize,
+    previous: usize,
+}
+
+#[derive(Debug, Default)]
+struct RecordTable {
+    slots: Vec<Slot>,
+    buckets: Vec<usize>,
+    free_heads: Vec<usize>,
+    lane_capacity: usize,
+    hash: RandomState,
+}
+
+impl RecordTable {
+    fn bucket(&self, unique: u64) -> usize {
+        self.hash.hash_one(unique) as usize % self.buckets.len()
+    }
+
+    fn find(&self, unique: u64) -> Option<usize> {
+        if self.buckets.is_empty() {
+            return None;
+        }
+        let mut index = self.buckets[self.bucket(unique)];
+        while index != NONE {
+            let slot = &self.slots[index];
+            if slot.record.as_ref().expect("live hash entry").unique == unique {
+                return Some(index);
+            }
+            index = slot.next;
+        }
+        None
+    }
+
+    fn insert(&mut self, lane: usize, record: Record) -> usize {
+        let index = self.free_heads[lane];
+        assert_ne!(index, NONE, "fixed record slot checked before reservation");
+        let bucket = self.bucket(record.unique);
+        self.free_heads[lane] = self.slots[index].next;
+        let next = self.buckets[bucket];
+        self.slots[index] = Slot {
+            record: Some(record),
+            next,
+            previous: NONE,
+        };
+        if next != NONE {
+            self.slots[next].previous = index;
+        }
+        self.buckets[bucket] = index;
+        index
+    }
+
+    fn retire_if_ready(&mut self, index: usize) -> Option<Record> {
+        let slot = &self.slots[index];
+        if !slot.record.as_ref().is_some_and(Record::can_retire) {
+            return None;
+        }
+        let (next, previous) = (slot.next, slot.previous);
+        let record = self.slots[index].record.take().expect("live record");
+        if previous == NONE {
+            let bucket = self.bucket(record.unique);
+            self.buckets[bucket] = next;
+        } else {
+            self.slots[previous].next = next;
+        }
+        if next != NONE {
+            self.slots[next].previous = previous;
+        }
+        let lane = index / self.lane_capacity;
+        self.slots[index].next = self.free_heads[lane];
+        self.slots[index].previous = NONE;
+        self.free_heads[lane] = index;
+        Some(record)
+    }
+}
+
 #[derive(Debug)]
 struct Controller {
-    records: Mutex<Vec<Option<Record>>>,
+    records: Mutex<RecordTable>,
     base_roots: InlineRootPermit,
 }
 
@@ -108,32 +192,29 @@ impl ControllerHandle {
     pub(crate) fn empty() -> Self {
         Self { inner: None }
     }
-    pub(crate) fn reap(&self) {
+    pub(crate) fn reap(&self, unique: u64) {
         let Some(controller) = &self.inner else {
             return;
         };
-        loop {
-            // Move the record out under lock, but run every Drop/wake outside it.
-            let retired = {
-                let mut records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
-                records
-                    .iter_mut()
-                    .find(|record| record.as_ref().is_some_and(Record::can_retire))
-                    .and_then(Option::take)
-            };
-            let Some(record) = retired else {
-                return;
-            };
+        // A packet Drop identifies exactly the record whose ownership changed.
+        // Concurrent final-clone callbacks may find it already retired.
+        let retired = {
+            let mut records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
+            records
+                .find(unique)
+                .and_then(|index| records.retire_if_ready(index))
+        };
+        // Run every Drop/wake outside the table lock.
+        if let Some(record) = retired {
             record.retire();
         }
     }
     fn has_capacity(&self, first: usize, capacity: usize) -> bool {
-        self.reap();
         let Some(controller) = &self.inner else {
             return false;
         };
         let records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
-        records[first..first + capacity].iter().any(Option::is_none)
+        capacity != 0 && records.free_heads[first / capacity] != NONE
     }
     fn insert(
         &self,
@@ -145,43 +226,44 @@ impl ControllerHandle {
     ) -> usize {
         let controller = self.inner.as_ref().expect("admitted controller");
         let mut records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
-        let relative = records[first..first + capacity]
-            .iter()
-            .position(Option::is_none)
-            .expect("fixed record slot checked before reservation");
-        let index = first + relative;
-        records[index] = Some(Record {
-            unique,
-            box_retired: false,
-            packet: None,
-            request,
-            roots,
-        });
-        index
+        records.insert(
+            first / capacity,
+            Record {
+                unique,
+                box_retired: false,
+                packet: None,
+                request,
+                roots,
+            },
+        )
     }
     fn box_retired(&self, index: usize) {
-        {
+        let retired = {
             let controller = self.inner.as_ref().expect("admitted controller");
             let mut records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
-            records[index]
+            records.slots[index]
+                .record
                 .as_mut()
                 .expect("live Box record")
                 .box_retired = true;
+            records.retire_if_ready(index)
+        };
+        if let Some(record) = retired {
+            record.retire();
         }
-        self.reap();
     }
     pub(crate) fn wrap_packet(&self, unique: u64, packet: Vec<u8>) -> Result<ReplyBytes, Vec<u8>> {
         let Some(controller) = &self.inner else {
             return Err(packet);
         };
         let mut records = controller.records.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(record) = records
-            .iter_mut()
-            .filter_map(Option::as_mut)
-            .find(|record| record.unique == unique)
-        else {
+        let Some(index) = records.find(unique) else {
             return Err(packet);
         };
+        let record = records.slots[index]
+            .record
+            .as_mut()
+            .expect("live hash entry");
         assert!(
             record.packet.is_none(),
             "one actual reply per original request"
@@ -192,7 +274,7 @@ impl ControllerHandle {
         );
         let bytes = Bytes::from(packet);
         record.packet = Some(bytes.clone());
-        Ok(ReplyBytes::tracked(bytes, self.clone()))
+        Ok(ReplyBytes::tracked(bytes, self.clone(), Some(unique)))
     }
 }
 impl Clone for ControllerHandle {
@@ -217,12 +299,13 @@ impl Drop for ControllerHandle {
                 .records
                 .get_mut()
                 .unwrap_or_else(|e| e.into_inner())
+                .slots
                 .iter()
-                .all(Option::is_none),
+                .all(|slot| slot.record.is_none()),
             "live records own a real entry or packet handle"
         );
         // No controller Arc allocation exists now. Take the grant onto stack,
-        // deallocate the actual slot Vec (and all its records), then refund.
+        // deallocate the slots, hash buckets and free heads, then refund.
         let roots = std::mem::replace(&mut controller.base_roots, InlineRootPermit::empty());
         let records = controller
             .records
@@ -298,7 +381,6 @@ impl OpenLane {
         });
     }
     pub(super) fn poll_one_completion(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.controller.reap();
         let len = self.entries.len();
         if len == 0 {
             return Poll::Pending;
@@ -332,7 +414,6 @@ impl Drop for OpenLane {
         // Entry Drop marks retirement only AFTER actual Boxes deallocate.
         // This complete Vec deallocation precedes the lane handle's final Drop.
         drop(std::mem::take(&mut self.entries));
-        self.controller.reap();
     }
 }
 
@@ -352,13 +433,18 @@ impl OpenLanePlan {
             .pad_to_align();
         let plans = Layout::array::<Option<OpenLane>>(workers)
             .map_err(|_| crate::Errno::from(libc::ENOMEM))?;
-        let slots =
-            Layout::array::<Option<Record>>(count).map_err(|_| crate::Errno::from(libc::ENOMEM))?;
+        let slots = Layout::array::<Slot>(count).map_err(|_| crate::Errno::from(libc::ENOMEM))?;
+        let buckets =
+            Layout::array::<usize>(count).map_err(|_| crate::Errno::from(libc::ENOMEM))?;
+        let free_heads =
+            Layout::array::<usize>(workers).map_err(|_| crate::Errno::from(libc::ENOMEM))?;
         let entries = Layout::array::<OwnedOpenFuture>(capacity)
             .map_err(|_| crate::Errno::from(libc::ENOMEM))?;
         arc.size()
             .checked_add(plans.size())
             .and_then(|n| n.checked_add(slots.size()))
+            .and_then(|n| n.checked_add(buckets.size()))
+            .and_then(|n| n.checked_add(free_heads.size()))
             .and_then(|n| {
                 entries
                     .size()
@@ -381,9 +467,35 @@ impl OpenLanePlan {
         let roots = fs
             .reserve_inline_root_memory(bytes)?
             .unwrap_or_else(InlineRootPermit::empty);
-        let mut records = Vec::new();
-        reserve_fixed(&mut records, workers * capacity)?;
-        records.resize_with(workers * capacity, || None);
+        // Declare the admitted grant first: every partial allocation drops
+        // before the grant on any fallible startup path.
+        let count = workers * capacity;
+        let mut records = RecordTable {
+            lane_capacity: capacity,
+            ..RecordTable::default()
+        };
+        reserve_fixed(&mut records.slots, count)?;
+        for index in 0..count {
+            records.slots.push(Slot {
+                record: None,
+                next: if (index + 1) % capacity == 0 {
+                    NONE
+                } else {
+                    index + 1
+                },
+                previous: NONE,
+            });
+        }
+        reserve_fixed(&mut records.buckets, count)?;
+        records.buckets.resize(count, NONE);
+        reserve_fixed(&mut records.free_heads, workers)?;
+        records.free_heads.extend((0..workers).map(|lane| {
+            if capacity == 0 {
+                NONE
+            } else {
+                lane * capacity
+            }
+        }));
         let controller = ControllerHandle {
             inner: Some(Arc::new(Controller {
                 records: Mutex::new(records),

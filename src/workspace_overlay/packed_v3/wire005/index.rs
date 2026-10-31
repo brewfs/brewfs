@@ -829,6 +829,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                                     have: bundle.len(),
                                 })?;
                         group.decode_metadata_owned_from_stored(
+                            &self.client,
                             stored,
                             allocation_limit,
                             &self.budget,

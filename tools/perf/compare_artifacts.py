@@ -92,32 +92,50 @@ def format_delta(baseline: float | str, candidate: float | str) -> str:
     return f"{sign}{delta:.1f}"
 
 
-def percentile(op: dict, pct: int) -> float:
-    values = op.get("clat_ns", {}).get("percentile", {})
-    return as_float(values.get(f"{pct:.6f}") or values.get(str(pct)))
+def percentile(op: dict, field: str, pct: float) -> float | None:
+    values = op.get(f"{field}_ns", {}).get("percentile", {})
+    raw = values.get(f"{pct:.6f}")
+    if raw is None:
+        raw = values.get(str(pct))
+    if raw is None and float(pct).is_integer():
+        raw = values.get(str(int(pct)))
+    value = as_float(raw, -1.0)
+    return value if value >= 0 else None
+
+
+def latency_stats(ops: list[dict], field: str) -> dict[str, float | None]:
+    values = [op.get(f"{field}_ns", {}) for op in ops]
+    samples = [(as_float(value.get("mean"), -1.0), as_float(value.get("N"), -1.0)) for value in values]
+    weighted = [(mean, count) for mean, count in samples if mean >= 0 and count > 0]
+    total_n = sum(count for _, count in weighted)
+    mean = sum(value * count for value, count in weighted) / total_n if total_n else None
+    result: dict[str, float | None] = {"mean_ns": mean}
+    for pct, name in ((50.0, "p50_ns"), (95.0, "p95_ns"), (99.0, "p99_ns"), (99.9, "p999_ns")):
+        samples = [value for op in ops if (value := percentile(op, field, pct)) is not None]
+        # Pxx from multiple fio jobs cannot be averaged.  The worst group is
+        # retained, which is conservative and preserves the group boundary.
+        result[name] = max(samples) if samples else None
+    return result
 
 
 def op_totals(jobs: list[dict], op_name: str) -> dict[str, float]:
     ops = [job.get(op_name, {}) for job in jobs]
-    samples: list[tuple[float, float]] = []
-    for op in ops:
-        n = as_float(op.get("clat_ns", {}).get("N"))
-        if n > 0:
-            samples.append((as_float(op.get("clat_ns", {}).get("mean")), n))
-    total_n = sum(n for _, n in samples)
-    mean_ns = sum(mean * n for mean, n in samples) / total_n if total_n else 0.0
+    clat = latency_stats(ops, "clat")
+    slat = latency_stats(ops, "slat")
+    total = latency_stats(ops, "lat")
     runtimes = [as_float(op.get("runtime")) for op in ops if as_float(op.get("runtime")) > 0]
-    return {
+    result: dict[str, float] = {
         "io_bytes": sum(as_float(op.get("io_bytes")) for op in ops),
         "total_ios": sum(as_float(op.get("total_ios")) for op in ops),
         "bw_bytes": sum(as_float(op.get("bw_bytes")) for op in ops),
         "iops": sum(as_float(op.get("iops")) for op in ops),
-        "mean_ns": mean_ns,
-        "p95_ns": max((percentile(op, 95) for op in ops), default=0.0),
-        "p99_ns": max((percentile(op, 99) for op in ops), default=0.0),
-        "p999_ns": max((percentile(op, 99.9) for op in ops), default=0.0),
         "runtime_ms": max(runtimes) if runtimes else 0.0,
     }
+    for prefix, stats in (("clat", clat), ("slat", slat), ("total", total)):
+        for suffix, value in stats.items():
+            if value is not None:
+                result[f"{prefix}_{suffix}"] = value
+    return result
 
 
 def first_options(jobs: list[dict]) -> dict:
@@ -160,24 +178,59 @@ def load_fio_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
         for prefix, op in (("read", read), ("write", write)):
             if op["bw_bytes"] <= 0:
                 continue
-            metrics.extend(
-                [
-                    Metric("fio", item, f"{prefix}_io_mib", op["io_bytes"] / BYTES_PER_MIB, "MiB"),
-                    Metric("fio", item, f"{prefix}_total_ios", op["total_ios"], "ios"),
-                    Metric("fio", item, f"{prefix}_bw_mib_s", op["bw_bytes"] / BYTES_PER_MIB, "MiB/s"),
-                    Metric("fio", item, f"{prefix}_iops", op["iops"], "iops"),
-                    Metric("fio", item, f"{prefix}_mean_ms", op["mean_ns"] / 1_000_000.0, "ms"),
-                    Metric("fio", item, f"{prefix}_p95_ms", op["p95_ns"] / 1_000_000.0, "ms"),
-                    Metric("fio", item, f"{prefix}_p99_ms", op["p99_ns"] / 1_000_000.0, "ms"),
-                    Metric("fio", item, f"{prefix}_p999_ms", op["p999_ns"] / 1_000_000.0, "ms"),
-                ]
-            )
+            missing_latency = []
+            group_counts = []
+            for index, job in enumerate(jobs):
+                group = job.get(prefix, {})
+                if as_float(group.get("total_ios")) <= 0:
+                    continue
+                group_item = f"{item}/group-{index}"
+                count = as_float(group.get("total_ios"))
+                group_counts.append(count)
+                metrics.append(Metric("fio_group", group_item, f"{prefix}_total_ios", count, "ios"))
+                metrics.append(Metric("fio_group", group_item, f"{prefix}_p99_sample_sufficient", float(count >= 1000), "bool"))
+                for field in ("slat", "clat", "lat"):
+                    for pct, suffix in ((50.0, "p50"), (95.0, "p95"), (99.0, "p99"), (99.9, "p999")):
+                        value = percentile(group, field, pct)
+                        if value is None:
+                            missing_latency.append(f"group-{index}/{field}/{suffix}")
+                        else:
+                            metrics.append(Metric("fio_group", group_item, f"{prefix}_{field}_{suffix}_ms", value / 1_000_000.0, "ms"))
+            metrics.append(Metric("gap", item, f"{prefix}_missing_latency_percentiles", ",".join(missing_latency) if missing_latency else "none", ""))
+            metrics.append(Metric("fio", item, f"{prefix}_p99_sample_sufficient", float(bool(group_counts) and min(group_counts) >= 1000), "bool"))
+            metrics.extend([
+                Metric("fio", item, f"{prefix}_io_mib", op["io_bytes"] / BYTES_PER_MIB, "MiB"),
+                Metric("fio", item, f"{prefix}_total_ios", op["total_ios"], "ios"),
+                Metric("fio", item, f"{prefix}_bw_mib_s", op["bw_bytes"] / BYTES_PER_MIB, "MiB/s"),
+                Metric("fio", item, f"{prefix}_iops", op["iops"], "iops"),
+            ])
+            for latency in ("clat", "slat", "total"):
+                for suffix in ("mean_ms", "p50_ms", "p95_ms", "p99_ms", "p999_ms"):
+                    key = f"{latency}_{suffix[:-3]}_ns"
+                    if key not in op:
+                        continue
+                    metric_name = f"{prefix}_{latency}_{suffix}"
+                    metrics.append(Metric("fio", item, metric_name, op[key] / 1_000_000.0, "ms"))
+                    # Keep the historical clat names stable for existing
+                    # reports while exposing explicit slat/total distributions.
+                    if latency == "clat" and suffix in {"mean_ms", "p95_ms", "p99_ms", "p999_ms"}:
+                        metrics.append(Metric("fio", item, f"{prefix}_{suffix}", op[key] / 1_000_000.0, "ms"))
 
         if runtime_ms > 0:
             metrics.append(Metric("fio", item, "active_io_runtime_s", runtime_ms / 1000.0, "s"))
         if raw_job_runtime_ms > 0:
             metrics.append(Metric("fio", item, "raw_job_runtime_s", raw_job_runtime_ms / 1000.0, "s"))
-        for opt_name in ("rw", "bs", "numjobs", "direct"):
+        for opt_name in (
+            "rw",
+            "bs",
+            "numjobs",
+            "direct",
+            "lat_percentiles",
+            "clat_percentiles",
+            "percentile_list",
+            "randseed",
+            "randrepeat",
+        ):
             if opt_name in options:
                 metrics.append(Metric("fio_config", item, opt_name, str(options[opt_name]), ""))
     return metrics
@@ -227,11 +280,34 @@ def load_drain_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
         tool = row.get("tool", "")
         if not tool:
             continue
-        parsed = parse_seconds(row.get("post_write_drain_s") or row.get("post_fio_drain_s"))
+        # BrewFS artifacts record both the runner's first clear point and the
+        # extended strict-drain interval.  Effective bandwidth must use the
+        # latter; retain the old column names as a compatibility fallback for
+        # older artifacts and JuiceFS fixtures.
+        drain_value = (
+            row.get("extended_strict_drain_s")
+            or row.get("post_write_drain_s")
+            or row.get("post_fio_drain_s")
+        )
+        parsed = parse_seconds(drain_value)
         if parsed:
             seconds, timed_out = parsed
+            if row.get("extended_strict_drain_s"):
+                metrics.append(Metric("drain", tool, "extended_strict_drain_s", seconds, "s"))
+            metrics.append(Metric("drain", tool, "completion_evidence", "extended" if row.get("extended_strict_drain_s") else "legacy-unverified", ""))
+            if row.get("runner_drain_s"):
+                runner = parse_seconds(row.get("runner_drain_s"))
+                if runner:
+                    runner_seconds, runner_timed_out = runner
+                    metrics.append(Metric("drain", tool, "runner_drain_s", runner_seconds, "s"))
+                    timed_out = timed_out or runner_timed_out
+            # Keep the historical metric key so consumers that only know the
+            # old schema continue to see a value with the strict-drain
+            # semantics.
             metrics.append(Metric("drain", tool, "post_write_drain_s", seconds, "s"))
             metrics.append(Metric("drain", tool, "post_write_drain_timeout", 1.0 if timed_out else 0.0, "bool"))
+        elif drain_value:
+            metrics.append(Metric("gap", tool, "invalid_drain", str(drain_value), ""))
         for source, name in (
             ("pending_bytes", "drain_pending_mib"),
             ("dirty_bytes", "drain_dirty_mib"),
@@ -590,6 +666,9 @@ CRITICAL_STAT_METRICS = (
     "brewfs_fuse_read_bytes_total",
     "brewfs_writeback_recent_pending_upload_bytes",
     "brewfs_writeback_dirty_bytes",
+    "brewfs_writeback_metadata_inflight",
+    "brewfs_memory_cas_retries_total",
+    "brewfs_memory_allocation_rejections_total",
     "brewfs_writeback_backpressure_soft_sleep_ops",
     "brewfs_writeback_backpressure_soft_sleep_us",
     "brewfs_writeback_backpressure_hard_wait_ops",
@@ -598,6 +677,61 @@ CRITICAL_STAT_METRICS = (
     "brewfs_writeback_upload_batch_ops_total",
     "brewfs_writeback_upload_batch_bytes_total",
 )
+
+REQUEST_OBSERVATION_METRICS = (
+    "brewfs_request_observation_enabled",
+    "brewfs_request_observation_sample_rate",
+    "brewfs_request_observation_received_total",
+    "brewfs_request_observation_sampled_total",
+    "brewfs_request_observation_closed_total",
+    "brewfs_request_observation_cancelled_total",
+    "brewfs_request_observation_errors_total",
+    "brewfs_request_observation_dropped_total",
+    "brewfs_request_observation_active",
+    "brewfs_request_observation_closure_gap_ns_total",
+    "brewfs_request_observation_closure_gap_ns_max",
+    "brewfs_request_fuse_queue_depth",
+    "brewfs_request_fuse_queue_oldest_age_ns",
+)
+
+
+def request_observation_raw_names() -> tuple[str, ...]:
+    names = list(REQUEST_OBSERVATION_METRICS)
+    for segment in (
+        "fuse_queue_wait",
+        "file_lock_wait",
+        "chunk_lock_wait",
+        "dirty_merge",
+        "flush_wait",
+        "metadata_rpc_wait",
+        "metadata_commit",
+        "object_put_queue_wait",
+        "object_put",
+        "reply",
+        "handler",
+    ):
+        names.extend((f"brewfs_request_{segment}_ns_count", f"brewfs_request_{segment}_ns_sum"))
+    for segment in (
+        "file_lock_wait",
+        "chunk_lock_wait",
+        "flush_wait",
+        "metadata_rpc_wait",
+        "object_put_queue_wait",
+    ):
+        names.extend(
+            (
+                f"brewfs_request_{segment}_queue_depth",
+                f"brewfs_request_{segment}_queue_oldest_age_ns",
+            )
+        )
+    for operation in ("read", "write", "close", "fsync", "metadata"):
+        names.extend(
+            (
+                f"brewfs_request_operation_{operation}_ns_count",
+                f"brewfs_request_operation_{operation}_ns_sum",
+            )
+        )
+    return tuple(names)
 
 
 def raw_metric(raw_metrics: dict[str, float], name: str) -> float | None:
@@ -732,6 +866,52 @@ def stats_item_name(path: pathlib.Path) -> str:
     return name
 
 
+def append_request_observation_metrics(
+    metrics: list[Metric], item: str, raw_metrics: dict[str, float]
+) -> None:
+    required = request_observation_raw_names()
+    missing = [name for name in required if name not in raw_metrics]
+    metrics.append(
+        Metric(
+            "request_observation_gap",
+            item,
+            "missing_fields",
+            ",".join(missing) if missing else "none",
+            "",
+        )
+    )
+    for name in required:
+        value = raw_metrics.get(name)
+        if value is not None:
+            unit = "ns" if name.endswith(("_ns_sum", "_age_ns", "_gap_ns_total", "_gap_ns_max")) else "count"
+            metrics.append(Metric("request_observation", item, name, value, unit))
+
+    received = raw_metrics.get("brewfs_request_observation_received_total")
+    sampled = raw_metrics.get("brewfs_request_observation_sampled_total")
+    closed = raw_metrics.get("brewfs_request_observation_closed_total")
+    dropped = raw_metrics.get("brewfs_request_observation_dropped_total")
+    gap = raw_metrics.get("brewfs_request_observation_closure_gap_ns_total")
+    intervals = [raw_metrics.get(f"brewfs_request_{segment}_ns_sum") for segment in ("fuse_queue_wait", "handler", "reply")]
+    accounted = sum(intervals) if all(value is not None for value in intervals) else None
+    if sampled is not None and sampled > 0:
+        if closed is not None:
+            metrics.append(Metric("request_observation", item, "closure_rate", closed / sampled, "ratio"))
+        if dropped is not None:
+            metrics.append(Metric("request_observation", item, "dropped_rate", dropped / sampled, "ratio"))
+    if gap is not None and accounted is not None and accounted + gap > 0:
+        metrics.append(
+            Metric(
+                "request_observation",
+                item,
+                "closure_gap_ratio",
+                gap / (accounted + gap),
+                "ratio",
+            )
+        )
+    if received is not None and sampled is not None and received > 0:
+        metrics.append(Metric("request_observation", item, "sample_fraction", sampled / received, "ratio"))
+
+
 def load_stats_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
     diag_dir = artifact_dir / "diagnostics"
     if not diag_dir.exists():
@@ -747,6 +927,7 @@ def load_stats_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
                 metrics.append(Metric("stats", item, metric_name, raw_metrics[raw_name] / divisor, unit))
         append_stats_derived_metrics(metrics, item, raw_metrics)
         append_missing_stats_metric(metrics, item, raw_metrics)
+        append_request_observation_metrics(metrics, item, raw_metrics)
     return metrics
 
 
@@ -769,6 +950,8 @@ def append_artifact_gap_metrics(metrics: list[Metric], artifact_dir: pathlib.Pat
     if not diag_dir.exists() or not list(diag_dir.glob("stats-*-after.txt")):
         missing.append("diagnostics/stats-*-after.txt")
     metrics.append(Metric("gap", "__artifact__", "missing_artifact_sections", ",".join(missing) if missing else "none", ""))
+    invalid = sorted(path.name for path in artifact_dir.glob("*.invalid"))
+    metrics.append(Metric("gap", "__artifact__", "invalid_observation_markers", ",".join(invalid) if invalid else "none", ""))
 
 
 def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
@@ -779,7 +962,9 @@ def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
         wall_s = get_metric_value(metric_map, "summary", item, "tool_wall_s")
         active_s = get_metric_value(metric_map, "fio", item, "active_io_runtime_s")
         raw_job_s = get_metric_value(metric_map, "fio", item, "raw_job_runtime_s")
-        drain_s = get_metric_value(metric_map, "drain", item, "post_write_drain_s")
+        drain_s = get_metric_value(metric_map, "drain", item, "extended_strict_drain_s")
+        if drain_s is None:
+            drain_s = get_metric_value(metric_map, "drain", item, "post_write_drain_s")
 
         if wall_s is not None and active_s is not None:
             derived.append(Metric("runtime", item, "wall_active_tail_s", wall_s - active_s, "s"))
@@ -793,8 +978,13 @@ def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
             derived.append(Metric("runtime", item, "active_plus_drain_s", active_s + drain_s, "s"))
             if active_s > 0:
                 derived.append(Metric("runtime", item, "drain_active_ratio", drain_s / active_s, "ratio"))
-        for prefix in ("read", "write"):
-            io_mib = get_metric_value(metric_map, "fio", item, f"{prefix}_io_mib")
+        read_mib = get_metric_value(metric_map, "fio", item, "read_io_mib")
+        write_mib = get_metric_value(metric_map, "fio", item, "write_io_mib")
+        io_totals = {"read": read_mib, "write": write_mib}
+        if read_mib is not None and write_mib is not None:
+            io_totals["mixed"] = read_mib + write_mib
+            derived.append(Metric("fio", item, "mixed_io_mib", read_mib + write_mib, "MiB"))
+        for prefix, io_mib in io_totals.items():
             if io_mib is None:
                 continue
             if wall_s is not None and wall_s > 0:
@@ -820,6 +1010,37 @@ def append_runtime_metrics(metrics: list[Metric]) -> list[Metric]:
     return metrics + derived
 
 
+def load_maintenance_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
+    path = artifact_dir / "maintenance.tsv"
+    if not path.exists():
+        return []
+    metrics = []
+    with path.open(newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            try:
+                seconds = (int(row["ended_ns"]) - int(row["started_ns"])) / 1e9
+                if seconds < int(row["requested_observation_s"]):
+                    raise ValueError("short maintenance window")
+                metrics.append(Metric("runtime", row["tool"], "maintenance_wall_s", seconds, "s"))
+            except (KeyError, ValueError):
+                metrics.append(Metric("gap", row.get("tool", "unknown"), "invalid_maintenance", "invalid boundaries", ""))
+    return metrics
+
+
+def load_object_ledger_metrics(artifact_dir: pathlib.Path) -> list[Metric]:
+    from perf_lines_observe import object_ledger
+    metrics = []
+    for tool, evidence in object_ledger(artifact_dir)["tools"].items():
+        if evidence["status"] != "measured":
+            metrics.append(Metric("gap", tool, "object_ledger", evidence.get("reason", evidence["status"])))
+            continue
+        for window in ("active_close_drain", "maintenance", "between_drain_and_maintenance", "total"):
+            for name, value in evidence[window].items():
+                if value is not None:
+                    metrics.append(Metric("object_ledger", tool, f"{window}_{name}", float(value)))
+    return metrics
+
+
 def load_artifact(artifact_dir: pathlib.Path) -> dict[tuple[str, str, str], Metric]:
     if not artifact_dir.exists():
         die(f"missing artifact directory: {artifact_dir}")
@@ -831,6 +1052,8 @@ def load_artifact(artifact_dir: pathlib.Path) -> dict[tuple[str, str, str], Metr
     metrics.extend(load_summary_metrics(artifact_dir))
     metrics.extend(load_drain_metrics(artifact_dir))
     metrics.extend(load_stats_metrics(artifact_dir))
+    metrics.extend(load_maintenance_metrics(artifact_dir))
+    metrics.extend(load_object_ledger_metrics(artifact_dir))
 
     if not metrics:
         die(
@@ -926,10 +1149,13 @@ def emit_markdown(
         ("summary", "## Summary"),
         ("fio_config", "## Fio Config"),
         ("fio", "## Fio"),
+        ("fio_group", "## Fio Groups (P99 Requires At Least 1000 I/Os)"),
         ("runtime", "## Runtime And Tail"),
         ("drain", "## Drain And Backpressure"),
         ("stats", "## BrewFS Stats"),
         ("amplification", "## Object And Upload Amplification"),
+        ("request_observation", "## Request Observation"),
+        ("request_observation_gap", "## Request Observation Gaps"),
         ("gap", "## Metric Gaps"),
     ]
     for kind, heading in groups:
