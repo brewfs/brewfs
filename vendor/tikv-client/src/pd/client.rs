@@ -56,6 +56,9 @@ pub trait PdClient: Send + Sync + 'static {
     fn resource_owner(&self) -> Option<crate::ClientResourceOwner> {
         None
     }
+    fn resolve_txn_not_found(&self) -> bool {
+        false
+    }
 
     /// In transactional API, `region` is decoded (keys in raw format).
     async fn map_region_to_store(self: Arc<Self>, region: RegionWithLeader) -> Result<RegionStore>;
@@ -228,6 +231,9 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
     type KvClient = KvC::KvClient;
     fn resource_owner(&self) -> Option<crate::ClientResourceOwner> {
         self.config.resource_owner.clone()
+    }
+    fn resolve_txn_not_found(&self) -> bool {
+        self.config.resolve_txn_not_found
     }
 
     async fn map_region_to_store(self: Arc<Self>, region: RegionWithLeader) -> Result<RegionStore> {

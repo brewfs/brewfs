@@ -7,8 +7,15 @@ use tokio::task::JoinHandle;
 use super::{FuseConcurrencyConfig, MountConfig, S3Backend, S3Config, shutdown_signal};
 use crate::fuse::entity::{EntityFuse, mount_privileged, mount_unprivileged};
 use crate::vfs::cache::config::WriteBackMode;
-use crate::workspace_overlay::entity::experiment::{FreshMountOptions, RedisEntityExperiment};
+use crate::workspace_overlay::entity::experiment::{
+    EntityExperiment, FreshMountOptions, RedisEntityExperiment,
+};
 use crate::workspace_overlay::entity::writeback::WritebackConfig;
+use crate::workspace_overlay::entity::{backend::EntityBackend, tikv::TiKvEntityBackend};
+use crate::workspace_overlay::packed_v3::wire005::V3MountBudget;
+use crate::workspace_overlay::stores::{
+    kv_backend::WorkspaceKvBackend, kv_store::KvWorkspaceStore,
+};
 
 const LEASE_TTL_NS: i64 = 60_000_000_000;
 
@@ -51,14 +58,72 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
         ..Default::default()
     })
     .await?;
-    let factory = RedisEntityExperiment::connect(
-        &args.meta_url,
-        &args.workspace_namespace,
-        args.entity_volume_id
-            .context("entity volume UUID required")?,
-        objects,
-    )
-    .await?;
+    let volume = args
+        .entity_volume_id
+        .context("entity volume UUID required")?;
+    match args.meta_backend {
+        crate::config::MetaBackendKind::Redis => {
+            let factory = RedisEntityExperiment::connect(
+                &args.meta_url,
+                &args.workspace_namespace,
+                volume,
+                objects,
+            )
+            .await?;
+            run(args, factory).await
+        }
+        crate::config::MetaBackendKind::TiKv => {
+            let budget = V3MountBudget::defaults();
+            let catalog = super::connect_workspace_tikv(
+                args.meta_tikv_pd_endpoints.clone(),
+                &args.workspace_namespace,
+                budget.clone(),
+                args.meta_tikv_tls.as_ref(),
+            )
+            .await?;
+            let entity = match TiKvEntityBackend::connect(
+                args.meta_tikv_pd_endpoints.clone(),
+                volume,
+                args.meta_tikv_tls.as_ref(),
+            )
+            .await
+            {
+                Ok(entity) => entity,
+                Err(error) => {
+                    catalog.shutdown().await?;
+                    return Err(error.into());
+                }
+            };
+            let factory = EntityExperiment::from_backends(
+                std::sync::Arc::new(entity),
+                std::sync::Arc::new(
+                    KvWorkspaceStore::new(catalog).with_packed_reader_pin_budget(budget),
+                ),
+                objects,
+                volume,
+            )?;
+            run(args, factory).await
+        }
+        _ => anyhow::bail!("experimental entity mount requires Redis or TiKV metadata"),
+    }
+}
+
+async fn run<B: EntityBackend + 'static, K: WorkspaceKvBackend>(
+    args: MountConfig,
+    factory: EntityExperiment<S3Backend, B, K>,
+) -> anyhow::Result<()> {
+    let result = run_mount(args, &factory).await;
+    // Join backend-owned transactions and SDK tasks on success and error paths.
+    let shutdown = factory.shutdown().await;
+    result?;
+    shutdown?;
+    Ok(())
+}
+
+async fn run_mount<B: EntityBackend + 'static, K: WorkspaceKvBackend>(
+    args: MountConfig,
+    factory: &EntityExperiment<S3Backend, B, K>,
+) -> anyhow::Result<()> {
     let staging = WritebackConfig {
         directory: args.cache.cache_root.join("entity-writeback"),
         capacity_bytes: args.cache.write_ssd_bytes,
@@ -141,6 +206,7 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
                     "fresh_only": true,
                     "lower_manifest": String::from_utf8_lossy(&mounted.lower_binding().manifest_key),
                     "writeback_mode": format!("{:?}", args.cache.writeback_mode),
+                    "metadata_backend": format!("{:?}", args.meta_backend),
                 })
             );
             enum Stop {

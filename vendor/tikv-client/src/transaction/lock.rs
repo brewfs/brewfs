@@ -37,6 +37,30 @@ use crate::transaction::requests::TransactionStatusKind;
 use crate::Error;
 use crate::Result;
 
+#[cfg(test)]
+#[path = "txn_status_tests.rs"]
+mod txn_status_tests;
+
+// The status request's multi-region plan can extract the key error before
+// ExtractError runs, leaving a MultipleKeyErrors wrapper. Normalize only the
+// one unambiguous missing-primary response. Preserve mixed or aggregate errors.
+fn normalize_missing_primary(error: Error) -> Error {
+    match error {
+        Error::MultipleKeyErrors(mut errors) => {
+            if let [Error::KeyError(key)] = errors.as_mut_slice() {
+                if let Some(missing) = key.txn_not_found.take() {
+                    if **key == kvrpcpb::KeyError::default() {
+                        return Error::TxnNotFound(missing);
+                    }
+                    key.txn_not_found = Some(missing);
+                }
+            }
+            Error::MultipleKeyErrors(errors)
+        }
+        other => other,
+    }
+}
+
 fn format_key_for_log(key: &[u8]) -> String {
     let prefix_len = key.len().min(16);
     format!("len={}, prefix={:?}", key.len(), &key[..prefix_len])
@@ -477,6 +501,9 @@ impl LockResolver {
                 Some(err) => return Err(err),
                 None => unreachable!(),
             },
+            Err(err) if pd_client.resolve_txn_not_found() => {
+                return Err(normalize_missing_primary(err));
+            }
             Err(err) => return Err(err),
         };
 

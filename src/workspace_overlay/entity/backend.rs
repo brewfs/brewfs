@@ -130,6 +130,11 @@ impl TransactionAuthority {
 
 #[async_trait]
 pub trait EntityBackend: Send + Sync {
+    /// Stop admission and join backend-owned operations and SDK tasks.
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn read(&self, keys: &[Vec<u8>]) -> Result<RowSnapshot>;
     /// Read new rows and compare earlier observations in the same atomic view.
     /// Only `keys` are returned; the boolean reports whether every check matched,

@@ -29,6 +29,11 @@ pub struct Config {
     /// to bound decoded protobuf materialization under tonic 0.10.
     pub grpc_accept_gzip: bool,
     pub bounded_get_scan_schema: bool,
+    /// Interpret a single CheckTxnStatus TxnNotFound response using the
+    /// resolver's existing TTL-aware recovery. Explicit opt-in for new callers;
+    /// omitted/serialized configurations retain the legacy error behavior.
+    #[serde(skip)]
+    pub resolve_txn_not_found: bool,
     /// Classify strictly validated Get lock conflicts for an explicit caller
     /// policy. This does not dispatch retries or resolve locks.
     #[serde(skip)]
@@ -63,6 +68,7 @@ impl Default for Config {
             grpc_max_decoding_message_size: DEFAULT_GRPC_MAX_DECODING_MESSAGE_SIZE,
             grpc_accept_gzip: true,
             bounded_get_scan_schema: false,
+            resolve_txn_not_found: false,
             bounded_read_lock_conflict_key_bytes: None,
             pd_max_decoding_message_size: DEFAULT_GRPC_MAX_DECODING_MESSAGE_SIZE,
             max_cached_regions: usize::MAX,

@@ -1,12 +1,13 @@
 //! Minimal fresh fixture bootstrap for the opt-in entity mount benchmark.
 //!
-//! Callers provide dedicated Redis metadata scopes and an object bucket. This
+//! Callers provide dedicated Redis or TiKV metadata scopes and an object bucket. This
 //! wiring is not production admission, ownership transfer or crash recovery.
 
 use std::sync::Arc;
 
 use uuid::Uuid;
 
+use super::backend::EntityBackend;
 use super::data::EntityData;
 use super::keys::EntityKeys;
 use super::lifecycle::{Lifecycle, WriterSession};
@@ -30,17 +31,24 @@ use crate::workspace_overlay::packed_v3::wire005::{
     AuthenticatedV3Snapshot, V3IndexReader, V3MountBudget, V3ObjectKind, V3ObjectRef,
 };
 use crate::workspace_overlay::publish::binding::{InstallPackedLowerBinding, VerifiedPackedLower};
+use crate::workspace_overlay::stores::kv_backend::WorkspaceKvBackend;
 use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
 use crate::workspace_overlay::stores::kv_store::packed_reader_pins::AcquirePackedReaderPin;
 use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
 
 const SETUP_TTL_NS: u64 = 300_000_000_000;
 
-pub(crate) enum ExperimentalLower<O: ObjectBackend + Clone> {
-    Packed(Box<PackedLower<O, RedisWorkspaceBackend>>),
-    Native(NativeLower<RedisEntityBackend, O>),
+pub(crate) enum ExperimentalLower<
+    O: ObjectBackend + Clone,
+    B: EntityBackend = RedisEntityBackend,
+    K: WorkspaceKvBackend = RedisWorkspaceBackend,
+> {
+    Packed(Box<PackedLower<O, K>>),
+    Native(NativeLower<B, O>),
 }
-impl<O: ObjectBackend + Clone + 'static> ExperimentalLower<O> {
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    ExperimentalLower<O, B, K>
+{
     fn view(&self) -> &dyn ImmutableLowerData {
         match self {
             Self::Packed(lower) => lower.as_ref(),
@@ -49,7 +57,9 @@ impl<O: ObjectBackend + Clone + 'static> ExperimentalLower<O> {
     }
 }
 #[async_trait::async_trait]
-impl<O: ObjectBackend + Clone + 'static> ImmutableLower for ExperimentalLower<O> {
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    ImmutableLower for ExperimentalLower<O, B, K>
+{
     fn binding(&self) -> &LowerBinding {
         self.view().binding()
     }
@@ -83,14 +93,17 @@ impl<O: ObjectBackend + Clone + 'static> ImmutableLower for ExperimentalLower<O>
     }
 }
 #[async_trait::async_trait]
-impl<O: ObjectBackend + Clone + 'static> ImmutableLowerData for ExperimentalLower<O> {
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    ImmutableLowerData for ExperimentalLower<O, B, K>
+{
     async fn read_range(&self, ino: i64, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.view().read_range(ino, offset, length).await
     }
 }
-pub(crate) type ExperimentalNamespace<O> =
-    EntityNamespace<RedisEntityBackend, ExperimentalLower<O>>;
-pub(crate) type ExperimentalData<O> = EntityData<RedisEntityBackend, ExperimentalLower<O>, O>;
+pub(crate) type ExperimentalNamespace<O, B = RedisEntityBackend, K = RedisWorkspaceBackend> =
+    EntityNamespace<B, ExperimentalLower<O, B, K>>;
+pub(crate) type ExperimentalData<O, B = RedisEntityBackend, K = RedisWorkspaceBackend> =
+    EntityData<B, ExperimentalLower<O, B, K>, O>;
 
 pub(crate) struct FreshMountOptions {
     pub namespace_id: Option<Uuid>,
@@ -99,17 +112,28 @@ pub(crate) struct FreshMountOptions {
     pub writeback: Option<WritebackConfig>,
 }
 
-pub(crate) struct RedisEntityExperiment<O: ObjectBackend + Clone> {
-    packed: Arc<KvWorkspaceStore<RedisWorkspaceBackend>>,
-    entity: Arc<RedisEntityBackend>,
+pub(crate) type RedisEntityExperiment<O> =
+    EntityExperiment<O, RedisEntityBackend, RedisWorkspaceBackend>;
+
+pub(crate) struct EntityExperiment<
+    O: ObjectBackend + Clone,
+    B: EntityBackend,
+    K: WorkspaceKvBackend,
+> {
+    packed: Arc<KvWorkspaceStore<K>>,
+    entity: Arc<B>,
     objects: O,
     volume_id: Uuid,
 }
 
-pub(crate) struct ExperimentalEntityMount<O: ObjectBackend + Clone> {
-    namespace: Arc<ExperimentalNamespace<O>>,
-    data: Arc<ExperimentalData<O>>,
-    lifecycle: Arc<Lifecycle<RedisEntityBackend>>,
+pub(crate) struct ExperimentalEntityMount<
+    O: ObjectBackend + Clone,
+    B: EntityBackend = RedisEntityBackend,
+    K: WorkspaceKvBackend = RedisWorkspaceBackend,
+> {
+    namespace: Arc<ExperimentalNamespace<O, B, K>>,
+    data: Arc<ExperimentalData<O, B, K>>,
+    lifecycle: Arc<Lifecycle<B>>,
     session: WriterSession,
 }
 
@@ -126,13 +150,45 @@ fn catalog_error(error: WorkspaceError) -> EntityError {
     }
 }
 
-impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    EntityExperiment<O, B, K>
+{
+    pub(crate) fn from_backends(
+        entity: Arc<B>,
+        packed: Arc<KvWorkspaceStore<K>>,
+        objects: O,
+        volume_id: Uuid,
+    ) -> Result<Self> {
+        if volume_id.is_nil() {
+            return Err(EntityError::Invalid(
+                "entity experiment requires a volume UUID".into(),
+            ));
+        }
+        Ok(Self {
+            packed,
+            entity,
+            objects,
+            volume_id,
+        })
+    }
+
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        let entity = self.entity.shutdown().await;
+        let packed = self
+            .packed
+            .shutdown_metadata_backend()
+            .await
+            .map_err(catalog_error);
+        entity?;
+        packed
+    }
+
     pub async fn create_fresh_from_native(
         &self,
         source: Option<&std::path::Path>,
         manifest: Option<&str>,
         options: FreshMountOptions,
-    ) -> Result<Arc<ExperimentalEntityMount<O>>> {
+    ) -> Result<Arc<ExperimentalEntityMount<O, B, K>>> {
         let lower = match (source, manifest) {
             (Some(source), None) => {
                 NativeLower::capture(
@@ -197,6 +253,9 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
         }
         queue.status().await
     }
+}
+
+impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
     pub async fn connect(
         redis_url: &str,
         catalog_namespace: &str,
@@ -222,7 +281,11 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
             volume_id,
         })
     }
+}
 
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    EntityExperiment<O, B, K>
+{
     /// Attach a standalone immutable graph to a never-initialized private
     /// packed catalog and never-used entity namespace. This does not transfer
     /// ownership from an existing catalog or import a mutable workspace.
@@ -230,7 +293,7 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
         &self,
         manifest_key: &str,
         options: FreshMountOptions,
-    ) -> Result<Arc<ExperimentalEntityMount<O>>> {
+    ) -> Result<Arc<ExperimentalEntityMount<O, B, K>>> {
         let namespace_id = options.namespace_id.unwrap_or_else(Uuid::new_v4);
         if namespace_id.is_nil()
             || options.lease_ttl_ns <= 0
@@ -336,7 +399,7 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
         binding: LowerBinding,
         namespace_id: Uuid,
         options: FreshMountOptions,
-    ) -> Result<ExperimentalEntityMount<O>> {
+    ) -> Result<ExperimentalEntityMount<O, B, K>> {
         let layers: [LayerRecord; 2] = self
             .packed
             .load_layer_chain(guard.expected_head_layer_id)
@@ -414,10 +477,10 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
 
     async fn finish_entity(
         &self,
-        lower: ExperimentalLower<O>,
+        lower: ExperimentalLower<O, B, K>,
         namespace_id: Uuid,
         options: FreshMountOptions,
-    ) -> Result<ExperimentalEntityMount<O>> {
+    ) -> Result<ExperimentalEntityMount<O, B, K>> {
         let binding = lower.binding().clone();
         let keys = EntityKeys::new(self.volume_id, namespace_id);
         let lifecycle = Arc::new(Lifecycle::new(self.entity.clone(), keys.clone()));
@@ -463,14 +526,16 @@ impl<O: ObjectBackend + Clone + 'static> RedisEntityExperiment<O> {
     }
 }
 
-impl<O: ObjectBackend + Clone + 'static> ExperimentalEntityMount<O> {
+impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: WorkspaceKvBackend>
+    ExperimentalEntityMount<O, B, K>
+{
     pub fn lower_binding(&self) -> &LowerBinding {
         self.namespace.lower.binding()
     }
-    pub fn namespace(&self) -> &Arc<ExperimentalNamespace<O>> {
+    pub fn namespace(&self) -> &Arc<ExperimentalNamespace<O, B, K>> {
         &self.namespace
     }
-    pub fn data(&self) -> &Arc<ExperimentalData<O>> {
+    pub fn data(&self) -> &Arc<ExperimentalData<O, B, K>> {
         &self.data
     }
     pub fn keys(&self) -> &EntityKeys {

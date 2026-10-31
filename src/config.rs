@@ -1336,10 +1336,12 @@ impl MountConfig {
             .unwrap_or(MetaBackendKind::Sqlx);
 
         if args.experimental_entity_mount {
-            if !matches!(meta_backend, MetaBackendKind::Redis)
+            if !matches!(meta_backend, MetaBackendKind::Redis | MetaBackendKind::TiKv)
                 || !matches!(data_backend, DataBackendKind::S3)
             {
-                anyhow::bail!("experimental entity mount requires Redis metadata and S3 objects");
+                anyhow::bail!(
+                    "experimental entity mount requires Redis or TiKV metadata and S3 objects"
+                );
             }
             if args.workspace_operator_managed || file_cfg.workspace_operator_managed {
                 anyhow::bail!("experimental entity mount cannot use legacy operator management");
@@ -2807,7 +2809,7 @@ mod tests {
             MountConfig::from_sources(args.clone())
                 .unwrap_err()
                 .to_string()
-                .contains("Redis metadata and S3")
+                .contains("Redis or TiKV metadata and S3")
         );
         args.meta_backend = Some(MetaBackendKind::Redis);
         args.data_backend = Some(DataBackendKind::S3);
@@ -2817,6 +2819,36 @@ mod tests {
                 .unwrap()
                 .experimental_entity_mount
         );
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn entity_tikv_is_explicit_and_keeps_synchronous_upload_default() {
+        let mut args = empty_mount_args(None, Some("/unused-entity-tikv".into()));
+        args.experimental_entity_mount = true;
+        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.workspace = Some(uuid::Uuid::new_v4());
+        args.entity_volume_id = Some(uuid::Uuid::new_v4());
+        args.meta_backend = Some(MetaBackendKind::TiKv);
+        args.meta_tikv_pd_endpoints = Some(vec!["127.0.0.1:2379".into()]);
+        args.data_backend = Some(DataBackendKind::S3);
+        args.s3_bucket = Some("isolated-entity".into());
+        args.packed_manifest_key = Some("standalone/manifest".into());
+        for native in [false, true] {
+            if native {
+                args.packed_manifest_key = None;
+                args.entity_native_source = Some("/private-frozen-source".into());
+            }
+            let config = MountConfig::from_sources(args.clone()).unwrap();
+            assert_eq!(
+                config.cache.writeback_mode,
+                WriteBackMode::UploadBeforeCommit
+            );
+            assert!(matches!(config.meta_backend, MetaBackendKind::TiKv));
+            assert_eq!(config.meta_tikv_pd_endpoints, ["127.0.0.1:2379"]);
+        }
+        args.experimental_entity_mount = false;
+        assert!(MountConfig::from_sources(args).is_err());
     }
 
     #[cfg(feature = "workspace-overlay")]

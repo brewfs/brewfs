@@ -75,6 +75,8 @@ pub struct MockCluster;
 #[derive(new)]
 pub struct MockPdClient {
     client: MockKvClient,
+    #[new(default)]
+    resolve_txn_not_found: bool,
 }
 
 #[async_trait]
@@ -103,7 +105,13 @@ impl MockPdClient {
     pub fn default() -> MockPdClient {
         MockPdClient {
             client: MockKvClient::default(),
+            resolve_txn_not_found: false,
         }
+    }
+
+    pub fn with_txn_not_found_resolution(mut self) -> Self {
+        self.resolve_txn_not_found = true;
+        self
     }
 
     pub fn region1() -> RegionWithLeader {
@@ -167,6 +175,10 @@ impl MockPdClient {
 #[async_trait]
 impl PdClient for MockPdClient {
     type KvClient = MockKvClient;
+
+    fn resolve_txn_not_found(&self) -> bool {
+        self.resolve_txn_not_found
+    }
 
     async fn map_region_to_store(self: Arc<Self>, region: RegionWithLeader) -> Result<RegionStore> {
         Ok(RegionStore::new(region, Arc::new(self.client.clone())))

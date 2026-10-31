@@ -20,6 +20,10 @@ name = "packed_v3_snapshot_fixture"
 path = "src/bin/packed_v3_snapshot_fixture.rs"
 required-features = ["workspace-overlay"]
 
+[[example]]
+name = "entity_metadata_probe"
+required-features = ["workspace-overlay"]
+
 [workspace]
 members = [
     "tools/stats"
