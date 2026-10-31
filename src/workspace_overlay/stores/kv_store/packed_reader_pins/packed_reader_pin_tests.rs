@@ -944,6 +944,55 @@ async fn packed_reader_lifecycle_binding_open_shutdown_joins_and_drains_owners()
 }
 
 #[tokio::test]
+async fn reader_lease_loss_and_stop_advance_the_mount_cache_fence() {
+    use crate::workspace_overlay::packed_reader_lifecycle::PackedReaderLeaseOptions;
+    let backend = PinMemoryBackend::default();
+    let store = Arc::new(memory_store(backend.clone()));
+    let acquire = setup(&store).await;
+    let session = store
+        .clone()
+        .open_packed_reader_session(
+            acquire.guard,
+            V3MountBudget::defaults(),
+            PackedReaderLeaseOptions {
+                ttl_ns: 30_000_000,
+                gc_grace_ns: 10_000_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // The store's configured mount budget is authoritative for an opened
+    // session; the caller-supplied value is intentionally not replaceable.
+    let budget = session.mount_budget();
+    let before = budget.read_cache_epoch();
+    // Advance the actual backend clock beyond the session's retention lease.
+    // Observe the authoritative session budget, rather than the discarded
+    // preferred budget passed to open_packed_reader_session.
+    backend.now.store(100_000_000, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while budget.read_cache_epoch() == before {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        session.retain_request(),
+        Err(WorkspaceError::Fenced)
+    ));
+    let fenced = budget.read_cache_epoch();
+    session.stop_admission();
+    assert!(budget.read_cache_epoch() > before);
+    assert!(budget.read_cache_epoch() > fenced);
+    assert!(matches!(
+        session.validate().await,
+        Err(WorkspaceError::Fenced)
+    ));
+    session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn packed_reader_lifecycle_heartbeat_renews_an_old_binding_after_publication() {
     use crate::workspace_overlay::packed_reader_lifecycle::PackedReaderLeaseOptions;
     let backend = PinMemoryBackend::default();
