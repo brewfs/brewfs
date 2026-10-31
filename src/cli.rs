@@ -1259,6 +1259,10 @@ where
 }
 
 #[cfg(feature = "native-packed-base")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the native mount's explicit backend and observation handles together at admission"
+)]
 async fn mount_native_with_catalog<S, W>(
     layout: ChunkLayout,
     store: S,

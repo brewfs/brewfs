@@ -402,6 +402,58 @@ mod tests {
         assert_eq!(value["mount"], false);
         assert_eq!(value["remote_ready"], false);
         assert_eq!(value["enabled"], cfg!(feature = "workspace-overlay"));
+        assert_eq!(value["max_fork_count"], 100);
+        assert_eq!(value["max_pending_operations"], 128);
+        assert_eq!(value["pending_limit_applies_to"], "new_operations");
+        assert_eq!(value["max_concurrent_admissions"], 64);
+        assert_eq!(value["batch_execution"], "serial");
+        assert_eq!(value["batch_atomic"], false);
+        assert_eq!(value["overload_http_status"], 429);
+        assert_eq!(value["native_published_revision"], false);
+        assert_eq!(value["native_frozen_metadata"], false);
+        assert_eq!(value["workspace_entity"], false);
+        assert_eq!(value["redis_cluster"], false);
+        assert_eq!(value["redis_sentinel_discovery"], false);
+        assert_eq!(value["benchmark"], false);
+        assert_eq!(value["migration"], false);
+        let enabled = cfg!(feature = "workspace-overlay");
+        let native = cfg!(feature = "native-packed-base");
+        assert_eq!(value["native_p1_catalog"], native);
+        assert_eq!(
+            value["metadata_backends"],
+            serde_json::json!(if enabled {
+                vec!["sqlite", "redis", "tikv"]
+            } else {
+                vec![]
+            })
+        );
+        let formats = value["formats"].as_array().unwrap();
+        assert_eq!(
+            formats.contains(&serde_json::json!("workspace-v1")),
+            enabled
+        );
+        assert_eq!(
+            formats.contains(&serde_json::json!("workspace-native-v2")),
+            native
+        );
+        let profiles = value["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), usize::from(enabled) + usize::from(native));
+        if native {
+            let profile = profiles
+                .iter()
+                .find(|profile| profile["volume_format"] == "workspace-native-v2")
+                .unwrap();
+            assert_eq!(
+                profile["metadata_backends"],
+                serde_json::json!(["redis", "tikv"])
+            );
+            assert_eq!(profile["revision_kind"], "native_p1_catalog");
+            assert_eq!(profile["upper_bucket"], serde_json::Value::Null);
+            assert_eq!(
+                profile["object_storage"],
+                "shared_pool_with_workspace_key_isolation"
+            );
+        }
 
         let response = app
             .oneshot(
@@ -546,6 +598,87 @@ mod tests {
     }
 
     #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_rejects_native_revision_downgrades_and_connection_fields_before_storage() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let catalog_revision = serde_json::json!({
+            "layer_id": uuid::Uuid::new_v4(), "sealed_version": 1, "root_hash": vec![0; 32]
+        });
+        let native = serde_json::json!({
+            "kind": "native_p1_catalog", "volume_id": uuid::Uuid::new_v4(),
+            "storage_namespace_id": vec![0; 16], "catalog_revision": catalog_revision
+        });
+        let mut published = native.clone();
+        published["kind"] = "native_published".into();
+        let mut missing_namespace = native.clone();
+        missing_namespace
+            .as_object_mut()
+            .unwrap()
+            .remove("storage_namespace_id");
+        let mut nested_secret = native.clone();
+        nested_secret["catalog_revision"]["endpoint"] =
+            "redis://user:secret-marker@private-host/0".into();
+        let mut legacy_secret = catalog_revision;
+        legacy_secret["credential"] = "secret-marker".into();
+        for revision in [published, missing_namespace, nested_secret, legacy_secret] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/volumes/00000000-0000-0000-0000-000000000000/forks")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("Idempotency-Key", "reject-invalid-native")
+                        .body(Body::from(
+                            serde_json::json!({"revision": revision, "count": 1}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(!text.contains("secret-marker"));
+            assert!(!text.contains("private-host"));
+        }
+        for field in [
+            "url",
+            "url_env",
+            "pd_endpoints",
+            "namespace",
+            "stable_cluster_id",
+            "path",
+            "upper_bucket",
+        ] {
+            let mut request = serde_json::json!({"mode":"initialize", "catalog_ref":"local", "confirm_empty":true});
+            request[field] = "secret-marker".into();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/volumes")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header("Idempotency-Key", "reject-connection-field")
+                        .body(Body::from(request.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{field}");
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            assert!(
+                !String::from_utf8(body.to_vec())
+                    .unwrap()
+                    .contains("secret-marker")
+            );
+        }
+        assert!(!dir.path().join("state").exists());
+    }
+
+    #[cfg(feature = "workspace-overlay")]
     async fn manager_json(
         app: &Router,
         method: &str,
@@ -606,6 +739,64 @@ mod tests {
 
     #[cfg(feature = "workspace-overlay")]
     #[tokio::test]
+    async fn manager_operation_lookup_starts_without_resolving_missing_remote_credentials() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        let variable = format!("BREWFS_MANAGER_MISSING_{}", uuid::Uuid::new_v4().simple());
+        std::fs::write(
+            state_dir.join("manager-catalogs.json"),
+            serde_json::json!({"catalogs": {"remote": {
+                "backend": "redis", "url_env": variable,
+                "namespace": "offline-catalog", "stable_cluster_id": "offline-cluster"
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let (status, response) = manager_json(
+            &app,
+            "GET",
+            "/api/v1/operations/00000000-0000-0000-0000-000000000000",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+        assert_eq!(response["error"]["code"], "not_found");
+        assert!(!response.to_string().contains(&variable));
+        assert!(state_dir.join("manager.sqlite").is_file());
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_http_rejects_native_sqlite_before_creating_catalog_metadata() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        let catalog_path = dir.path().join("must-not-be-created.sqlite");
+        std::fs::write(
+            state_dir.join("manager-catalogs.json"),
+            serde_json::json!({
+                "catalogs":{"local":{"backend":"sqlite", "path":catalog_path}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let (status, response) = manager_json(&app, "POST", "/api/v1/volumes", Some("unsupported-native-sqlite"), Some(&serde_json::json!({
+            "mode":"initialize", "catalog_ref":"local", "confirm_empty":true, "volume_format":"workspace-native-v2"
+        }))).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{response}");
+        assert_eq!(response["error"]["code"], "unsupported");
+        assert!(!catalog_path.exists());
+        let (status, response) = manager_json(&app, "GET", "/api/v1/volumes", None, None).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        assert_eq!(response["volumes"], serde_json::json!([]));
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
     async fn manager_http_uses_real_catalog_and_scopes_forks_and_deletion() {
         let dir = tempdir().unwrap();
         let state_dir = dir.path().join("state");
@@ -659,6 +850,18 @@ mod tests {
         let root = roots[0]["workspace_id"].as_str().unwrap();
         let (_, inspected) =
             manager_json(&app, "GET", &format!("{workspaces_uri}/{root}"), None, None).await;
+        assert!(inspected.get("record").is_some());
+        assert!(inspected.get("layer_depth").is_some());
+        assert!(inspected["leases"].is_array());
+        assert!(inspected.get("native").is_none());
+        assert_eq!(inspected["mount_identity"]["catalog_ref"], "local");
+        assert_eq!(inspected["mount_identity"]["metadata_backend"], "sqlite");
+        assert_eq!(inspected["mount_identity"]["volume_format"], "workspace-v1");
+        assert_eq!(inspected["mount_identity"]["volume_id"], volume);
+        assert_eq!(inspected["mount_identity"]["workspace_id"], root);
+        assert!(inspected["mount_identity"]["upper_bucket"].is_null());
+        assert!(inspected["mount_identity"].get("path").is_none());
+        assert!(inspected["mount_identity"].get("url").is_none());
         let revision_uri = format!(
             "/api/v1/volumes/{volume}/revisions/{}",
             inspected["base_revision"]["layer_id"].as_str().unwrap()
@@ -668,6 +871,19 @@ mod tests {
         assert_eq!(revision, inspected["base_revision"]);
         let forks_uri = format!("/api/v1/volumes/{volume}/forks");
         let forks = serde_json::json!({"revision": inspected["base_revision"], "count": 2, "owner": "fork-owner"});
+        for count in [0, 101, 128] {
+            let mut excessive = forks.clone();
+            excessive["count"] = count.into();
+            let (status, rejected) = manager_json(
+                &app,
+                "POST",
+                &forks_uri,
+                Some("invalid-count"),
+                Some(&excessive),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+        }
         let (status, accepted) =
             manager_json(&app, "POST", &forks_uri, Some("fork-two"), Some(&forks)).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");

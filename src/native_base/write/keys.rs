@@ -115,6 +115,12 @@ impl Keys {
         self.join(&[b"head/", workspace_id.as_slice()])
     }
 
+    /// Permanent logical-deletion fence. Presence blocks native publication
+    /// and lazy initialization; it is never physical cleanup or drain proof.
+    pub fn workspace_deleted(&self, workspace_id: &[u8; 16]) -> Vec<u8> {
+        self.join(&[b"deleted/", workspace_id.as_slice()])
+    }
+
     /// Mutation result (BNCT kind 19), keyed by OperationId.
     pub fn mutation(&self, operation_id: &[u8; 16]) -> Vec<u8> {
         self.join(&[b"mut/", operation_id.as_slice()])

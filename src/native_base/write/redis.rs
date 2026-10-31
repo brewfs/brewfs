@@ -20,6 +20,20 @@ use super::store::{ControlStore, Expect, StoreError, Txn};
 /// than a backend failure.
 const CONFLICT_MARK: &str = "BREWFS_CONFLICT";
 
+// Seconds and fractional nanoseconds remain exact Lua integers. Comparing a
+// combined Unix nanosecond timestamp would lose precision in a Lua double.
+const DEADLINE_LUA: &str = r#"
+local before_seconds = tonumber(ARGV[#ARGV - 1])
+local before_nanos = tonumber(ARGV[#ARGV])
+local now = redis.call('TIME')
+local now_seconds = tonumber(now[1])
+local now_nanos = tonumber(now[2]) * 1000
+if now_seconds > before_seconds
+   or (now_seconds == before_seconds and now_nanos >= before_nanos) then
+  return redis.error_reply('BREWFS_CONFLICT')
+end
+"#;
+
 /// ARGV layout (KEYS = check keys, then write keys, in order):
 ///
 /// ```text
@@ -68,6 +82,7 @@ return 'OK'
 pub struct RedisControlStore {
     conn: MultiplexedConnection,
     txn_script: redis::Script,
+    deadline_script: redis::Script,
 }
 
 impl RedisControlStore {
@@ -81,7 +96,55 @@ impl RedisControlStore {
         Ok(Self {
             conn,
             txn_script: redis::Script::new(TXN_LUA),
+            deadline_script: redis::Script::new(&format!("{DEADLINE_LUA}\n{TXN_LUA}")),
         })
+    }
+
+    async fn run_transaction(&self, txn: Txn, before_ns: Option<i64>) -> Result<(), StoreError> {
+        if before_ns.is_some_and(|deadline| deadline <= 0) {
+            return Err(StoreError::Conflict);
+        }
+        let mut conn = self.conn.clone();
+        let script = if before_ns.is_some() {
+            &self.deadline_script
+        } else {
+            &self.txn_script
+        };
+        let mut invocation = script.prepare_invoke();
+        invocation.arg(txn.checks.len());
+        for (key, expect) in &txn.checks {
+            invocation.key(key.as_slice());
+            match expect {
+                Expect::Absent => {
+                    invocation.arg("A").arg(&[] as &[u8]);
+                }
+                Expect::Bytes(expected) => {
+                    invocation.arg("V").arg(expected.as_slice());
+                }
+            }
+        }
+        invocation.arg(txn.writes.len());
+        for (key, value) in &txn.writes {
+            invocation.key(key.as_slice());
+            match value {
+                Some(value) => {
+                    invocation.arg("S").arg(value.as_slice());
+                }
+                None => {
+                    invocation.arg("D").arg(&[] as &[u8]);
+                }
+            }
+        }
+        if let Some(deadline) = before_ns {
+            invocation
+                .arg(deadline / 1_000_000_000)
+                .arg(deadline % 1_000_000_000);
+        }
+        match invocation.invoke_async::<String>(&mut conn).await {
+            Ok(_) => Ok(()),
+            Err(error) if is_conflict(&error) => Err(StoreError::Conflict),
+            Err(error) => Err(backend(error)),
+        }
     }
 }
 
@@ -123,38 +186,11 @@ impl ControlStore for RedisControlStore {
     }
 
     async fn run(&self, txn: Txn) -> Result<(), StoreError> {
-        let mut conn = self.conn.clone();
-        let mut invocation = self.txn_script.prepare_invoke();
-        invocation.arg(txn.checks.len());
-        for (key, expect) in &txn.checks {
-            invocation.key(key.as_slice());
-            match expect {
-                Expect::Absent => {
-                    invocation.arg("A").arg(&[] as &[u8]);
-                }
-                Expect::Bytes(expected) => {
-                    invocation.arg("V").arg(expected.as_slice());
-                }
-            }
-        }
-        invocation.arg(txn.writes.len());
-        for (key, value) in &txn.writes {
-            invocation.key(key.as_slice());
-            match value {
-                Some(v) => {
-                    invocation.arg("S").arg(v.as_slice());
-                }
-                None => {
-                    invocation.arg("D").arg(&[] as &[u8]);
-                }
-            }
-        }
-        let outcome: Result<String, redis::RedisError> = invocation.invoke_async(&mut conn).await;
-        match outcome {
-            Ok(_) => Ok(()),
-            Err(err) if is_conflict(&err) => Err(StoreError::Conflict),
-            Err(err) => Err(backend(err)),
-        }
+        self.run_transaction(txn, None).await
+    }
+
+    async fn run_before(&self, txn: Txn, before_ns: i64) -> Result<(), StoreError> {
+        self.run_transaction(txn, Some(before_ns)).await
     }
 
     async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
@@ -210,5 +246,55 @@ mod tests {
             br"nb2/ab\*c\?\[d\]\\e".to_vec()
         );
         assert_eq!(glob_escape(b"nb2/0909/"), b"nb2/0909/".to_vec());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BREWFS_TEST_REDIS_URL"]
+    async fn real_redis_native_deadline_and_owner_are_checked_with_the_write() {
+        let store = RedisControlStore::connect(&std::env::var("BREWFS_TEST_REDIS_URL").unwrap())
+            .await
+            .unwrap();
+        let scope = uuid::Uuid::new_v4();
+        let owner = format!("{{brewfs-ws-v1}}:native-manager-{scope}:ws:v1/manager/controller")
+            .into_bytes();
+        let target = format!("nb2/{scope}/manager-deadline-test").into_bytes();
+        store
+            .run(
+                Txn::new()
+                    .check_absent(owner.clone())
+                    .put(owner.clone(), vec![1]),
+            )
+            .await
+            .unwrap();
+        let operation = || {
+            Txn::new()
+                .check_bytes(owner.clone(), vec![1])
+                .put(target.clone(), vec![7])
+        };
+        assert!(matches!(
+            store.run_before(operation(), 1).await,
+            Err(StoreError::Conflict)
+        ));
+        assert_eq!(store.get(&target).await.unwrap(), None);
+        store.run_before(operation(), i64::MAX).await.unwrap();
+        assert_eq!(store.get(&target).await.unwrap(), Some(vec![7]));
+        store
+            .run(
+                Txn::new()
+                    .check_bytes(owner.clone(), vec![1])
+                    .put(owner.clone(), vec![2])
+                    .delete(target.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.run_before(operation(), i64::MAX).await,
+            Err(StoreError::Conflict)
+        ));
+        assert_eq!(store.get(&target).await.unwrap(), None);
+        store
+            .run(Txn::new().delete(owner).delete(target))
+            .await
+            .unwrap();
     }
 }

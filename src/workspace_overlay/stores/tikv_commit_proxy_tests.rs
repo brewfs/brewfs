@@ -11,7 +11,9 @@ async fn proxy_control(
         .parse::<u16>()
         .expect("commit proxy control port was invalid");
     let method = if body.is_some() { "POST" } else { "GET" };
-    let payload = body.map(|body| serde_json::to_vec(&body).unwrap()).unwrap_or_default();
+    let payload = body
+        .map(|body| serde_json::to_vec(&body).unwrap())
+        .unwrap_or_default();
     assert!(payload.len() <= 4096);
     let request = format!(
         "{method} {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -24,12 +26,28 @@ async fn proxy_control(
         stream.write_all(request.as_bytes()).await.unwrap();
         stream.write_all(&payload).await.unwrap();
         let mut bytes = Vec::new();
-        stream.take((64 << 10) + 1).read_to_end(&mut bytes).await.unwrap();
-        assert!(bytes.len() <= 64 << 10, "commit proxy control response exceeded its bound");
-        assert!(bytes.starts_with(b"HTTP/1.1 200 "), "commit proxy control rejected the request");
-        let end = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap();
-        serde_json::from_slice(&bytes[end + 4..]).expect("commit proxy control receipt was not JSON")
-    }).await.expect("commit proxy control deadline exceeded")
+        stream
+            .take((64 << 10) + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        assert!(
+            bytes.len() <= 64 << 10,
+            "commit proxy control response exceeded its bound"
+        );
+        assert!(
+            bytes.starts_with(b"HTTP/1.1 200 "),
+            "commit proxy control rejected the request"
+        );
+        let end = bytes
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        serde_json::from_slice(&bytes[end + 4..])
+            .expect("commit proxy control receipt was not JSON")
+    })
+    .await
+    .expect("commit proxy control deadline exceeded")
 }
 
 async fn unknown_commit_case(
@@ -39,6 +57,7 @@ async fn unknown_commit_case(
     control_url: String,
     namespace: String,
 ) {
+    establish_catalog_namespace(&b).await;
     let checks = [
         KvCheck {
             key: GUARD.to_vec(),
@@ -191,12 +210,7 @@ async fn real_tikv_lost_successful_commit_reply_does_not_replay() {
         }
     };
     jobs.stop_and_wait().await;
-    proxy_control(
-        &control_url,
-        "/disarm",
-        Some(serde_json::json!({})),
-    )
-    .await;
+    proxy_control(&control_url, "/disarm", Some(serde_json::json!({}))).await;
     tokio::time::timeout(STEP_TIMEOUT, cleanup_namespace(&cleanup))
         .await
         .expect("proxy case namespace cleanup exceeded its overall deadline");

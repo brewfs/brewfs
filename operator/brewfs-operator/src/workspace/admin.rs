@@ -234,6 +234,7 @@ where
             None => {
                 self.store
                     .create_volume_root(CreateVolumeRoot {
+                        upper_bucket: None,
                         volume_format: OPERATOR_VOLUME_FORMAT.into(),
                         schema_version: WORKSPACE_SCHEMA_VERSION,
                         volume_id: identity.volume_id,
@@ -272,6 +273,7 @@ where
         Ok(catalog_admin::ensure_workspace_for_reconcile(
             self.store.as_ref(),
             CreateWorkspace {
+                upper_bucket: None,
                 workspace_id: request.workspace_id,
                 head_layer_id: request.head_layer_id,
                 base_revision: request.base_revision,
