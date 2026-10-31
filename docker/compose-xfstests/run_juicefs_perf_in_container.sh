@@ -899,6 +899,26 @@ print(f\"  write: bw={write.get('bw','?')} KiB/s  iops={write.get('iops','?'):.1
     fi
 }
 
+append_fio_observation_args() {
+    local -n fio_args_ref=$1
+    local arg
+    local has_lat=false has_clat=false has_slat=false has_list=false has_seed=false has_repeat=false
+    for arg in "${fio_args_ref[@]}"; do
+        [[ "$arg" == --lat_percentiles || "$arg" == --lat_percentiles=* ]] && has_lat=true
+        [[ "$arg" == --clat_percentiles || "$arg" == --clat_percentiles=* ]] && has_clat=true
+        [[ "$arg" == --slat_percentiles || "$arg" == --slat_percentiles=* ]] && has_slat=true
+        [[ "$arg" == --percentile_list || "$arg" == --percentile_list=* ]] && has_list=true
+        [[ "$arg" == --randseed || "$arg" == --randseed=* ]] && has_seed=true
+        [[ "$arg" == --randrepeat || "$arg" == --randrepeat=* ]] && has_repeat=true
+    done
+    [[ "$has_lat" == true ]] || fio_args_ref+=("--lat_percentiles=${PERF_FIO_LAT_PERCENTILES:-1}")
+    [[ "$has_clat" == true ]] || fio_args_ref+=("--clat_percentiles=${PERF_FIO_CLAT_PERCENTILES:-1}")
+    [[ "$has_slat" == true ]] || fio_args_ref+=(--slat_percentiles=1)
+    [[ "$has_list" == true ]] || fio_args_ref+=("--percentile_list=${PERF_FIO_PERCENTILE_LIST:-50:95:99:99.9}")
+    [[ "$has_seed" == true ]] || fio_args_ref+=("--randseed=${PERF_FIO_RANDSEED:-20261031}")
+    [[ "$has_repeat" == true ]] || fio_args_ref+=("--randrepeat=${PERF_FIO_RANDREPEAT:-1}")
+}
+
 run_fio_custom() {
     local work_dir="$mount_dir/.perf-fio"
     local json_path="$artifact_dir/results/fio.json"
@@ -933,7 +953,8 @@ run_fio_custom() {
         )
     fi
 
-    args+=(--output-format=json --output="$json_path")
+    append_fio_observation_args args
+    args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" --output="$json_path")
     run_logged_tool fio fio "${args[@]}"
     append_fio_log_summary "$json_path" "$artifact_dir/tools/fio.log" "fio"
 }
@@ -995,7 +1016,7 @@ run_repeated_bigread() {
     for ((i = 1; i <= warmup_count; i++)); do
         info "热身 Large read: $tool 第 ${i}/${warmup_count} 轮（不计入结果）"
         fio "${fio_args[@]}" \
-            --output-format=json \
+            "--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" \
             --output="$repeat_dir/warmup-${i}.json" \
             --write_lat_log="$repeat_dir/warmup-${i}_lat" \
             --log_avg_msec=1000 || return $?
@@ -1010,7 +1031,7 @@ run_repeated_bigread() {
         fi
         info "运行稳定 Large read: $tool 第 ${i}/${repeats} 轮"
         fio "${fio_args[@]}" \
-            --output-format=json \
+            "--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" \
             --output="$repeat_path" \
             --write_lat_log="$lat_prefix" \
             --log_avg_msec=1000 || return $?
@@ -1286,6 +1307,8 @@ run_fio_profile() {
         fi
     fi
 
+    append_fio_observation_args args
+
     if [[ "$needs_prefill" == true ]]; then
         prepare_fio_dataset "$tool" "$work_dir" "$name" "$size" "$direct" "$numjobs" "$bs" "$ioengine" "$iodepth" || return $?
         stats_snapshot_after_tool "${tool}-prefill"
@@ -1320,7 +1343,7 @@ run_fio_profile() {
         run_logged_tool "$tool" run_repeated_bigread \
             "$tool" "$json_path" "$warmup_count" "$repeat_count" "$repeat_cooldown_secs" "${args[@]}"
     else
-        args+=(--output-format=json --output="$json_path")
+        args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" --output="$json_path")
         args+=(--write_lat_log="$lat_log_prefix" --log_avg_msec=1000)
         run_logged_tool "$tool" fio "${args[@]}"
     fi

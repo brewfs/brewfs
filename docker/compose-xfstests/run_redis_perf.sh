@@ -63,6 +63,7 @@ usage() {
   BREWFS_DIRTY_SLICE_TARGET_SIZE BREWFS_DIRTY_SLICE_MAX_AGE_MS BREWFS_UPLOAD_CONCURRENCY
   BREWFS_PREFETCH_ENABLED BREWFS_PREFETCH_MAX_BYTES BREWFS_PREFETCH_CONCURRENCY BREWFS_RANGE_BACKGROUND_PREFETCH BREWFS_MEMORY_BUDGET_BYTES
   BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_DIRECT_IO BREWFS_FUSE_READ_DIRECT_IO BREWFS_FUSE_WRITE_DIRECT_IO BREWFS_FUSE_KEEP_CACHE BREWFS_FUSE_WRITEBACK
+  BREWFS_REQUEST_TRACE BREWFS_REQUEST_TRACE_SAMPLE_RATE TOKIO_WORKER_THREADS
   BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
   BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
   BREWFS_WRITEBACK_PERSIST_SYNC BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT
@@ -306,6 +307,15 @@ case "${BREWFS_VOLUME_FORMAT:-}" in
     packed-metadata-v3) PACKED_MODE=true ;;
     packed-*) err "unsupported packed volume format: $BREWFS_VOLUME_FORMAT (only packed-metadata-v3)"; exit 1 ;;
 esac
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" ]]; then
+    # workspace-v1 is a writable overlay and therefore needs the catalog
+    # feature in the binary. It shares this runner's Redis and S3 topology;
+    # no packed fixture or entity/native adapter is substituted.
+    export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features workspace-overlay}"
+fi
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+    export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features native-packed-base}"
+fi
 if [[ "$PACKED_MODE" == true ]]; then
     if [[ "$PERF_TOOLS_EXPLICIT" == false ]]; then
         PERF_TOOLS_VALUE="packed-tree packed-smallfiles"
@@ -453,8 +463,24 @@ runner_console_log="$host_artifact_dir/runner-console.log"
 runner_warning_summary="$host_artifact_dir/runner-warning-summary.tsv"
 : >"$runner_console_log"
 
+# Carry the exact source identity into the container manifest. The binary is
+# hashed inside the runner after it is copied into the image; this records the
+# corresponding source revision and whether local uncommitted work was used.
+if source_revision="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null)"; then
+    export BREWFS_SOURCE_REVISION="$source_revision"
+    if git -C "$PROJECT_DIR" diff --quiet --exit-code; then
+        export BREWFS_SOURCE_DIRTY=false
+    else
+        export BREWFS_SOURCE_DIRTY=true
+    fi
+    export BREWFS_SOURCE_DIFF_SHA256="$(git -C "$PROJECT_DIR" diff --binary | sha256sum | awk '{print $1}')"
+fi
+
 export BREWFS_ARTIFACT_DIR="/artifacts/perf-run-${ts}"
 export BREWFS_S3_BUCKET="${BREWFS_S3_BUCKET:-brewfs-data}"
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+    export BREWFS_WORKSPACE_NAMESPACE="${BREWFS_WORKSPACE_NAMESPACE:-brewfs-perf-${ts}}"
+fi
 
 # 根据存储后端设置 S3 相关变量
 case "$STORAGE_BACKEND" in
@@ -573,6 +599,12 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_TOOLS="$PERF_TOOLS_VALUE" \
     -e BREWFS_META_BACKEND \
     -e BREWFS_META_URL \
+    -e BREWFS_SOURCE_REVISION \
+    -e BREWFS_SOURCE_DIRTY \
+    -e BREWFS_SOURCE_DIFF_SHA256 \
+    -e BREWFS_VOLUME_FORMAT \
+    -e BREWFS_WORKSPACE_ID \
+    -e BREWFS_WORKSPACE_NAMESPACE \
     -e BREWFS_PACKED_MANIFEST_KEY \
     -e PERF_PACKED_DIR_LEVELS \
     -e PERF_PACKED_DIRS_PER_LEVEL \
@@ -694,6 +726,16 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS \
     -e PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS \
     -e PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES \
+    -e PERF_FIO_LAT_PERCENTILES \
+    -e PERF_FIO_OUTPUT_FORMAT \
+    -e PERF_FIO_SYSCALL_TAIL \
+    -e PERF_LINES_PROTOCOL \
+    -e PERF_BACKEND_METRICS_URL \
+    -e PERF_MAINTENANCE_OBSERVE_SECS \
+    -e PERF_FIO_CLAT_PERCENTILES \
+    -e PERF_FIO_PERCENTILE_LIST \
+    -e PERF_FIO_RANDSEED \
+    -e PERF_FIO_RANDREPEAT \
     -e PERF_METADATA_POST_TOOL_DRAIN \
     -e PERF_METADATA_POST_TOOL_DRAIN_TIMEOUT_SECS \
     -e PERF_METADATA_POST_TOOL_DRAIN_INTERVAL_SECS \
@@ -715,6 +757,9 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e BREWFS_FUSE_WRITE_DIRECT_IO \
     -e BREWFS_FUSE_KEEP_CACHE \
     -e BREWFS_FUSE_WRITEBACK \
+    -e BREWFS_REQUEST_TRACE \
+    -e BREWFS_REQUEST_TRACE_SAMPLE_RATE \
+    -e TOKIO_WORKER_THREADS \
     -e BREWFS_NOFILE_LIMIT \
     -e BREWFS_CHUNK_SIZE \
     -e BREWFS_BLOCK_SIZE \

@@ -8,12 +8,1049 @@
 //! The `stats` CLI tool reads this file periodically to display real-time
 //! throughput and latency in the terminal.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Relaxed ordering is sufficient for stats counters — we only need eventual
 /// visibility, not happens-before relationships.
 const ORD: Ordering = Ordering::Relaxed;
+
+thread_local! {
+    // Valid only during Future::poll; never held across an await. Include the
+    // observer address so independent mounts cannot borrow each other's IDs.
+    static REQUEST_POLL_CONTEXT: std::cell::Cell<Option<(usize, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+struct RequestPollContextGuard(Option<(usize, u64)>);
+impl Drop for RequestPollContextGuard {
+    fn drop(&mut self) {
+        REQUEST_POLL_CONTEXT.set(self.0);
+    }
+}
+
+/// Request-level timing segments.  The values are deliberately kept as a
+/// closed enum so that the detailed observer cannot grow an unbounded label
+/// set on a hot FUSE path.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(usize)]
+pub enum RequestSegment {
+    FuseQueueWait = 0,
+    FileLockWait = 1,
+    ChunkLockWait = 2,
+    DirtyMerge = 3,
+    FlushWait = 4,
+    MetadataRpcWait = 5,
+    MetadataCommit = 6,
+    ObjectPutQueueWait = 7,
+    ObjectPut = 8,
+    Reply = 9,
+    Handler = 10,
+    /// Wall time inside Future::poll, not a claim of on-CPU time.
+    HandlerPoll = 11,
+}
+
+/// Small fixed set of operation classes for the request-level latency
+/// summaries.  Keeping this separate from the FUSE opcode avoids exposing a
+/// high-cardinality label on the hot path while still giving close/fsync their
+/// own latency distributions.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum RequestOperation {
+    Read,
+    Write,
+    Close,
+    Fsync,
+    Metadata,
+}
+
+impl RequestOperation {
+    pub const ALL: [Self; 5] = [
+        Self::Read,
+        Self::Write,
+        Self::Close,
+        Self::Fsync,
+        Self::Metadata,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Close => "close",
+            Self::Fsync => "fsync",
+            Self::Metadata => "metadata",
+        }
+    }
+
+    fn from_opcode(opcode: u32) -> Self {
+        // Linux FUSE opcode values are stable across the supported ABI.  Keep
+        // this mapping local to the observer so the vendor crate does not
+        // need to depend on BrewFS's statistics module.
+        match opcode {
+            15 => Self::Read,            // FUSE_READ
+            16 => Self::Write,           // FUSE_WRITE
+            18 | 25 | 29 => Self::Close, // FUSE_RELEASE, FUSE_FLUSH, FUSE_RELEASEDIR
+            20 | 30 => Self::Fsync,      // FUSE_FSYNC, FUSE_FSYNCDIR
+            _ => Self::Metadata,
+        }
+    }
+}
+
+impl RequestSegment {
+    pub const ALL: [Self; 12] = [
+        Self::FuseQueueWait,
+        Self::FileLockWait,
+        Self::ChunkLockWait,
+        Self::DirtyMerge,
+        Self::FlushWait,
+        Self::MetadataRpcWait,
+        Self::MetadataCommit,
+        Self::ObjectPutQueueWait,
+        Self::ObjectPut,
+        Self::Reply,
+        Self::Handler,
+        Self::HandlerPoll,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FuseQueueWait => "fuse_queue_wait",
+            Self::FileLockWait => "file_lock_wait",
+            Self::ChunkLockWait => "chunk_lock_wait",
+            Self::DirtyMerge => "dirty_merge",
+            Self::FlushWait => "flush_wait",
+            Self::MetadataRpcWait => "metadata_rpc_wait",
+            Self::MetadataCommit => "metadata_commit",
+            Self::ObjectPutQueueWait => "object_put_queue_wait",
+            Self::ObjectPut => "object_put",
+            Self::Reply => "reply",
+            Self::Handler => "handler",
+            Self::HandlerPoll => "handler_poll",
+        }
+    }
+}
+
+const REQUEST_SEGMENT_COUNT: usize = RequestSegment::ALL.len();
+const REQUEST_OPERATION_COUNT: usize = RequestOperation::ALL.len();
+const REQUEST_HISTOGRAM_BUCKETS: usize = 32;
+const REQUEST_TRACE_RECORD_LIMIT: usize = 256;
+const REQUEST_INTERVAL_LIMIT: usize = 128;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RequestSegmentSnapshot {
+    pub count: u64,
+    pub total_ns: u64,
+    pub buckets: [u64; REQUEST_HISTOGRAM_BUCKETS],
+}
+
+/// Point-in-time state for a wait domain.  The queue state is kept separate
+/// from the latency histogram because a request can leave a queue before its
+/// segment timer is rendered in a stats snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RequestQueueSnapshot {
+    pub depth: u64,
+    pub oldest_age_ns: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RequestObservationSnapshot {
+    pub instance_id: String,
+    pub enabled: bool,
+    pub sample_rate: u64,
+    pub received: u64,
+    pub sampled: u64,
+    pub closed: u64,
+    pub cancelled: u64,
+    pub errors: u64,
+    pub dropped: u64,
+    pub active: u64,
+    pub closure_gap_ns_total: u64,
+    pub closure_gap_ns_max: u64,
+    pub fuse_queue_depth: u64,
+    pub fuse_queue_oldest_age_ns: u64,
+    pub segments: [RequestSegmentSnapshot; REQUEST_SEGMENT_COUNT],
+    pub queues: [RequestQueueSnapshot; REQUEST_SEGMENT_COUNT],
+    pub operations: [RequestSegmentSnapshot; REQUEST_OPERATION_COUNT],
+    pub trace_records: Vec<RequestTraceRecord>,
+    pub trace_records_dropped: u64,
+}
+
+/// A bounded, point-in-time request association record.  Records are emitted
+/// only when detailed observation is enabled and are intentionally kept out of
+/// metric labels.  They make it possible to attribute a slow sample to the
+/// file/chunk/slice/lease context without retaining an unbounded event log.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct RequestTraceRecord {
+    pub unique: u64,
+    pub opcode: u32,
+    pub terminal: &'static str,
+    pub total_ns: u64,
+    /// Wall-clock anchor plus monotonic elapsed time, for phase selection.
+    pub received_at_ns: u64,
+    /// Inclusive foreground durations retained for compatibility with the
+    /// aggregate histograms. Only `exclusive_ns` is additive within a request.
+    pub segments: [u64; REQUEST_SEGMENT_COUNT],
+    /// Disjoint wall time. Handler is the residual, not an explained wait.
+    pub exclusive_ns: [u64; REQUEST_SEGMENT_COUNT],
+    /// Independent causal work, excluded even when it overlaps the handler.
+    pub background_ns: [u64; REQUEST_SEGMENT_COUNT],
+    /// [start_ns, end_ns, segment_index], relative to request receipt.
+    pub intervals: Vec<[u64; 3]>,
+    pub intervals_truncated: bool,
+    pub ambiguous_ns: u64,
+    pub file_id: Option<i64>,
+    pub chunk_id: Option<u64>,
+    pub slice_id: Option<u64>,
+    pub lease_id: Option<u64>,
+}
+
+/// Named aliases of the inclusive foreground durations, created only while
+/// exporting a snapshot. Keep background work in `background_ns` and use
+/// `exclusive_ns` when adding durations within a request. This view adds no
+/// storage to the bounded request ring or work to the request hot path.
+#[derive(serde::Serialize)]
+struct RequestTraceExport<'a> {
+    #[serde(flatten)]
+    record: &'a RequestTraceRecord,
+    queue_wait_ns: u64,
+    file_lock_wait_ns: u64,
+    chunk_lock_wait_ns: u64,
+    dirty_merge_ns: u64,
+    flush_wait_ns: u64,
+    metadata_rpc_wait_ns: u64,
+    metadata_commit_ns: u64,
+    object_put_queue_wait_ns: u64,
+    object_put_ns: u64,
+    reply_ns: u64,
+}
+
+impl RequestTraceRecord {
+    fn export(&self) -> RequestTraceExport<'_> {
+        RequestTraceExport {
+            record: self,
+            queue_wait_ns: self.segments[RequestSegment::FuseQueueWait as usize],
+            file_lock_wait_ns: self.segments[RequestSegment::FileLockWait as usize],
+            chunk_lock_wait_ns: self.segments[RequestSegment::ChunkLockWait as usize],
+            dirty_merge_ns: self.segments[RequestSegment::DirtyMerge as usize],
+            flush_wait_ns: self.segments[RequestSegment::FlushWait as usize],
+            metadata_rpc_wait_ns: self.segments[RequestSegment::MetadataRpcWait as usize],
+            metadata_commit_ns: self.segments[RequestSegment::MetadataCommit as usize],
+            object_put_queue_wait_ns: self.segments[RequestSegment::ObjectPutQueueWait as usize],
+            object_put_ns: self.segments[RequestSegment::ObjectPut as usize],
+            reply_ns: self.segments[RequestSegment::Reply as usize],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AtomicRequestSegment {
+    count: AtomicU64,
+    total_ns: AtomicU64,
+    buckets: [AtomicU64; REQUEST_HISTOGRAM_BUCKETS],
+}
+
+impl AtomicRequestSegment {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    fn observe(&self, duration: Duration) {
+        let nanos = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        let bucket = if nanos == 0 {
+            0
+        } else {
+            (64 - (nanos - 1).leading_zeros() as usize).min(REQUEST_HISTOGRAM_BUCKETS - 1)
+        };
+        self.count.fetch_add(1, ORD);
+        self.total_ns.fetch_add(nanos, ORD);
+        self.buckets[bucket].fetch_add(1, ORD);
+    }
+
+    fn snapshot(&self) -> RequestSegmentSnapshot {
+        RequestSegmentSnapshot {
+            count: self.count.load(ORD),
+            total_ns: self.total_ns.load(ORD),
+            buckets: std::array::from_fn(|index| self.buckets[index].load(ORD)),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ActiveRequest {
+    opcode: u32,
+    received_at: Instant,
+    worker_at: Option<Instant>,
+    handler_at: Option<Instant>,
+    handler_done_at: Option<Instant>,
+    segments: [u64; REQUEST_SEGMENT_COUNT],
+    background_ns: [u64; REQUEST_SEGMENT_COUNT],
+    intervals: Vec<[u64; 3]>,
+    intervals_truncated: bool,
+    file_id: Option<i64>,
+    chunk_id: Option<u64>,
+    slice_id: Option<u64>,
+    lease_id: Option<u64>,
+}
+
+impl ActiveRequest {
+    fn new(opcode: u32) -> Self {
+        Self {
+            opcode,
+            received_at: Instant::now(),
+            worker_at: None,
+            handler_at: None,
+            handler_done_at: None,
+            segments: [0; REQUEST_SEGMENT_COUNT],
+            background_ns: [0; REQUEST_SEGMENT_COUNT],
+            intervals: Vec::new(),
+            intervals_truncated: false,
+            file_id: None,
+            chunk_id: None,
+            slice_id: None,
+            lease_id: None,
+        }
+    }
+}
+
+/// Partition a single request's wall clock; never sum inclusive spans. Nested
+/// intervals select the inner operation. Crossing intervals from different
+/// operations are explicitly ambiguous and cannot pass the attribution gate.
+fn partition_request(total: u64, intervals: &[[u64; 3]]) -> ([u64; REQUEST_SEGMENT_COUNT], u64) {
+    let mut boundaries = vec![0, total];
+    for &[start, end, _] in intervals {
+        boundaries.extend([start.min(total), end.min(total)]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut exclusive = [0; REQUEST_SEGMENT_COUNT];
+    let mut ambiguous = 0;
+    for pair in boundaries.windows(2) {
+        let (start, end) = (pair[0], pair[1]);
+        let covering: Vec<_> = intervals
+            .iter()
+            .filter(|interval| interval[0] <= start && interval[1] >= end)
+            .collect();
+        let selected = covering.iter().min_by_key(|interval| {
+            (
+                interval[2] == RequestSegment::HandlerPoll as u64,
+                interval[1] - interval[0],
+            )
+        });
+        let segment = selected.map_or(RequestSegment::Handler as usize, |interval| {
+            interval[2] as usize
+        });
+        exclusive[segment] += end - start;
+        if covering.iter().enumerate().any(|(index, a)| {
+            covering[index + 1..].iter().any(|b| {
+                a[2] != b[2]
+                    && a[2] != RequestSegment::HandlerPoll as u64
+                    && b[2] != RequestSegment::HandlerPoll as u64
+                    && !((a[0] <= b[0] && a[1] >= b[1]) || (b[0] <= a[0] && b[1] >= a[1]))
+            })
+        }) {
+            ambiguous += end - start;
+        }
+    }
+    (exclusive, ambiguous)
+}
+
+/// Optional request-level observer.  It is cheap when disabled: the session
+/// stores no request state and all callbacks return immediately.
+#[derive(Debug)]
+pub struct RequestObservation {
+    instance_id: String,
+    clock_anchor: (Instant, u64),
+    enabled: AtomicBool,
+    sample_rate: AtomicU64,
+    sample_counter: AtomicU64,
+    received: AtomicU64,
+    sampled: AtomicU64,
+    closed: AtomicU64,
+    cancelled: AtomicU64,
+    errors: AtomicU64,
+    dropped: AtomicU64,
+    queue_token: AtomicU64,
+    queue_waiters: Mutex<HashMap<u64, (RequestSegment, Instant)>>,
+    closure_gap_ns_total: AtomicU64,
+    closure_gap_ns_max: AtomicU64,
+    active: Mutex<HashMap<u64, ActiveRequest>>,
+    trace_records: Mutex<VecDeque<RequestTraceRecord>>,
+    trace_records_dropped: AtomicU64,
+    segments: [AtomicRequestSegment; REQUEST_SEGMENT_COUNT],
+    operations: [AtomicRequestSegment; REQUEST_OPERATION_COUNT],
+}
+
+impl RequestObservation {
+    fn with_request_context(self: &Arc<Self>, unique: u64, poll: &mut dyn FnMut()) {
+        let _poll_timer = self.segment_timer(unique, RequestSegment::HandlerPoll);
+        let _restore = RequestPollContextGuard(
+            REQUEST_POLL_CONTEXT.replace(Some((Arc::as_ptr(self) as usize, unique))),
+        );
+        poll();
+    }
+
+    pub fn contextual_segment_timer(
+        self: &Arc<Self>,
+        segment: RequestSegment,
+    ) -> Option<RequestSegmentTimer> {
+        if !self.enabled() {
+            return None;
+        }
+        match REQUEST_POLL_CONTEXT.get() {
+            Some((owner, unique)) if owner == Arc::as_ptr(self) as usize => {
+                self.segment_timer(unique, segment)
+            }
+            _ => self.unscoped_segment_timer(segment),
+        }
+    }
+
+    /// Start a sampled request explicitly for a caller that does not use the
+    /// asyncfuse session callback (for example a client-side metadata probe).
+    pub fn begin(&self, unique: u64, opcode: u32) {
+        self.request_received(unique, opcode);
+    }
+
+    /// Construct an observer with an explicit configuration.  Mounts use
+    /// `from_environment`, while tests and small diagnostic probes can avoid
+    /// process-global environment state.
+    pub fn new(enabled: bool, sample_rate: u64) -> Self {
+        Self::with_config(enabled, sample_rate)
+    }
+
+    fn with_config(enabled: bool, sample_rate: u64) -> Self {
+        Self {
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            clock_anchor: (
+                Instant::now(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+            ),
+            enabled: AtomicBool::new(enabled),
+            sample_rate: AtomicU64::new(sample_rate.max(1)),
+            sample_counter: AtomicU64::new(0),
+            received: AtomicU64::new(0),
+            sampled: AtomicU64::new(0),
+            closed: AtomicU64::new(0),
+            cancelled: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            queue_token: AtomicU64::new(0),
+            queue_waiters: Mutex::new(HashMap::new()),
+            closure_gap_ns_total: AtomicU64::new(0),
+            closure_gap_ns_max: AtomicU64::new(0),
+            active: Mutex::new(HashMap::new()),
+            trace_records: Mutex::new(VecDeque::with_capacity(REQUEST_TRACE_RECORD_LIMIT)),
+            trace_records_dropped: AtomicU64::new(0),
+            segments: std::array::from_fn(|_| AtomicRequestSegment::new()),
+            operations: std::array::from_fn(|_| AtomicRequestSegment::new()),
+        }
+    }
+
+    fn from_environment() -> Self {
+        let enabled = std::env::var("BREWFS_REQUEST_TRACE")
+            .or_else(|_| std::env::var("BREWFS_FUSE_REQUEST_TRACE"))
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let sample_rate = std::env::var("BREWFS_REQUEST_TRACE_SAMPLE_RATE")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        Self::with_config(enabled, sample_rate)
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(ORD)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, ORD);
+        if !enabled {
+            let mut active = self
+                .active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let dropped = active.len() as u64;
+            active.clear();
+            self.dropped.fetch_add(dropped, ORD);
+            self.queue_waiters
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+    }
+
+    pub fn set_sample_rate(&self, sample_rate: u64) {
+        self.sample_rate.store(sample_rate.max(1), ORD);
+    }
+
+    fn request_received(&self, unique: u64, opcode: u32) {
+        if !self.enabled() {
+            return;
+        }
+        self.received.fetch_add(1, ORD);
+        let sequence = self.sample_counter.fetch_add(1, ORD);
+        if !sequence.is_multiple_of(self.sample_rate.load(ORD).max(1)) {
+            // Unsampled requests intentionally have no lifecycle state. They
+            // are outside the sampled closure denominator, and their later
+            // worker/reply callbacks must therefore be no-ops rather than
+            // fabricated dropped samples.
+            return;
+        }
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if active.contains_key(&unique) {
+            self.errors.fetch_add(1, ORD);
+            self.dropped.fetch_add(1, ORD);
+            return;
+        }
+        active.insert(unique, ActiveRequest::new(opcode));
+        self.sampled.fetch_add(1, ORD);
+    }
+
+    fn record_at(&self, timer: &RequestSegmentTimer, finished: Instant) {
+        if !self.enabled() {
+            return;
+        }
+        let unique = timer.unique.expect("scoped timer");
+        let segment = timer.segment;
+        let duration = finished.saturating_duration_since(timer.started);
+        let nanos = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(request) = active.get_mut(&unique) {
+            if timer.background {
+                request.background_ns[segment as usize] =
+                    request.background_ns[segment as usize].saturating_add(nanos);
+            } else {
+                request.segments[segment as usize] =
+                    request.segments[segment as usize].saturating_add(nanos);
+                if let Some(index) = timer.interval_index {
+                    request.intervals[index][1] = finished
+                        .saturating_duration_since(request.received_at)
+                        .as_nanos()
+                        .min(u128::from(u64::MAX))
+                        as u64;
+                }
+            }
+            self.segments[segment as usize].observe(duration);
+            return;
+        }
+        drop(active);
+
+        // Foreground intervals are clipped at the terminal event. Only
+        // explicitly causal background work may update a closed record.
+        if !timer.background {
+            return;
+        }
+        let mut records = self
+            .trace_records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(record) = records
+            .iter_mut()
+            .rev()
+            .find(|record| record.unique == unique)
+        {
+            record.background_ns[segment as usize] =
+                record.background_ns[segment as usize].saturating_add(nanos);
+            self.segments[segment as usize].observe(duration);
+        }
+    }
+
+    const fn tracks_queue(segment: RequestSegment) -> bool {
+        matches!(
+            segment,
+            RequestSegment::FileLockWait
+                | RequestSegment::ChunkLockWait
+                | RequestSegment::FlushWait
+                | RequestSegment::MetadataRpcWait
+                | RequestSegment::ObjectPutQueueWait
+        )
+    }
+
+    fn begin_queue_wait(&self, segment: RequestSegment) -> u64 {
+        let token = self.queue_token.fetch_add(1, ORD).wrapping_add(1);
+        self.queue_waiters
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(token, (segment, Instant::now()));
+        token
+    }
+
+    fn end_queue_wait(&self, token: u64) {
+        self.queue_waiters
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&token);
+    }
+
+    fn worker_started(&self, unique: u64) {
+        let now = Instant::now();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(request) = active.get_mut(&unique) {
+            request.worker_at = Some(now);
+            let duration = now.saturating_duration_since(request.received_at);
+            request.segments[RequestSegment::FuseQueueWait as usize] =
+                duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+            self.segments[RequestSegment::FuseQueueWait as usize].observe(duration);
+        }
+    }
+
+    fn handler_started(&self, unique: u64) {
+        if let Some(request) = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&unique)
+        {
+            request.handler_at = Some(Instant::now());
+        }
+    }
+
+    fn handler_completed(&self, unique: u64) {
+        let now = Instant::now();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(request) = active.get_mut(&unique) {
+            if request.handler_done_at.is_some() {
+                return;
+            }
+            request.handler_done_at = Some(now);
+            if let Some(start) = request.handler_at {
+                let duration = now.saturating_duration_since(start);
+                request.segments[RequestSegment::Handler as usize] =
+                    duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+                self.segments[RequestSegment::Handler as usize].observe(duration);
+            }
+        }
+    }
+
+    fn completed_without_reply(&self, unique: u64) {
+        let _ = self.finish(unique, "no_reply", false, false);
+    }
+
+    /// Attach bounded causal identifiers to a sampled request. They are kept
+    /// in the in-memory lifecycle record and are never rendered as labels, so
+    /// enabling the observer cannot create an unbounded metric cardinality.
+    pub fn set_context(
+        &self,
+        unique: u64,
+        file_id: Option<i64>,
+        chunk_id: Option<u64>,
+        slice_id: Option<u64>,
+        lease_id: Option<u64>,
+    ) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(request) = active.get_mut(&unique) {
+            request.file_id = file_id;
+            request.chunk_id = chunk_id;
+            request.slice_id = slice_id;
+            request.lease_id = lease_id;
+            return true;
+        }
+        drop(active);
+        let mut records = self
+            .trace_records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(record) = records
+            .iter_mut()
+            .rev()
+            .find(|record| record.unique == unique)
+        else {
+            return false;
+        };
+        record.file_id = file_id;
+        record.chunk_id = chunk_id;
+        record.slice_id = slice_id;
+        record.lease_id = lease_id;
+        true
+    }
+
+    /// Add the identifiers that become known after a request has entered a
+    /// lower layer. `None` leaves an existing identifier intact, which lets a
+    /// writer attach a slice id without erasing the file/chunk context set by
+    /// the FUSE handler. No identifier is synthesized when a layer cannot
+    /// provide one.
+    pub fn update_context(
+        &self,
+        unique: u64,
+        file_id: Option<i64>,
+        chunk_id: Option<u64>,
+        slice_id: Option<u64>,
+        lease_id: Option<u64>,
+    ) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(request) = active.get_mut(&unique) {
+            if file_id.is_some() {
+                request.file_id = file_id;
+            }
+            if chunk_id.is_some() {
+                request.chunk_id = chunk_id;
+            }
+            if slice_id.is_some() {
+                request.slice_id = slice_id;
+            }
+            if lease_id.is_some() {
+                request.lease_id = lease_id;
+            }
+            return true;
+        }
+        drop(active);
+        let mut records = self
+            .trace_records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(record) = records
+            .iter_mut()
+            .rev()
+            .find(|record| record.unique == unique)
+        else {
+            return false;
+        };
+        if file_id.is_some() {
+            record.file_id = file_id;
+        }
+        if chunk_id.is_some() {
+            record.chunk_id = chunk_id;
+        }
+        if slice_id.is_some() {
+            record.slice_id = slice_id;
+        }
+        if lease_id.is_some() {
+            record.lease_id = lease_id;
+        }
+        true
+    }
+
+    fn reply_submitted(&self, unique: u64) {
+        let _ = self.finish(unique, "reply", false, false);
+    }
+
+    fn terminal(&self, unique: u64, cancelled: bool, error: bool) {
+        let terminal = if cancelled { "cancelled" } else { "error" };
+        let _ = self.finish(unique, terminal, cancelled, error);
+    }
+
+    fn finish(&self, unique: u64, terminal: &'static str, cancelled: bool, error: bool) -> bool {
+        let now = Instant::now();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|value| value.into_inner());
+        let Some(mut request) = active.remove(&unique) else {
+            return false;
+        };
+        // Release diagnostic state before partitioning; never hold an
+        // application lock or extend handler/reply lifetimes for observation.
+        drop(active);
+        let total = now
+            .saturating_duration_since(request.received_at)
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let offset = |instant: Instant| {
+            instant
+                .saturating_duration_since(request.received_at)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64
+        };
+        for interval in &mut request.intervals {
+            if interval[1] == u64::MAX {
+                interval[1] = total;
+            }
+            // The poll surrounds dispatch and enqueue callbacks. The queue
+            // and reply own those boundaries, rather than this residual span.
+            if interval[2] == RequestSegment::HandlerPoll as u64 {
+                interval[0] = interval[0].max(request.worker_at.map_or(0, offset));
+                interval[1] = interval[1].min(request.handler_done_at.map_or(total, offset));
+                interval[0] = interval[0].min(interval[1]);
+            }
+        }
+        request.intervals.push([
+            0,
+            request.worker_at.map_or(total, offset),
+            RequestSegment::FuseQueueWait as u64,
+        ]);
+        if let Some(start) = request.handler_done_at {
+            let duration = now.saturating_duration_since(start);
+            request.segments[RequestSegment::Reply as usize] =
+                duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+            self.segments[RequestSegment::Reply as usize].observe(duration);
+            request
+                .intervals
+                .push([offset(start), total, RequestSegment::Reply as u64]);
+        }
+        let (exclusive_ns, ambiguous_ns) = partition_request(total, &request.intervals);
+        let accounted = [
+            RequestSegment::FuseQueueWait,
+            RequestSegment::Handler,
+            RequestSegment::Reply,
+        ]
+        .into_iter()
+        .map(|segment| request.segments[segment as usize])
+        .sum::<u64>();
+        let gap = total.saturating_sub(accounted);
+        self.closure_gap_ns_total.fetch_add(gap, ORD);
+        self.closure_gap_ns_max.fetch_max(gap, ORD);
+        self.operations[RequestOperation::from_opcode(request.opcode) as usize]
+            .observe(Duration::from_nanos(total));
+        self.push_trace(RequestTraceRecord {
+            unique,
+            opcode: request.opcode,
+            terminal,
+            total_ns: total,
+            received_at_ns: self.clock_anchor.1.saturating_add(
+                request
+                    .received_at
+                    .saturating_duration_since(self.clock_anchor.0)
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+            ),
+            segments: request.segments,
+            exclusive_ns,
+            background_ns: request.background_ns,
+            intervals: request.intervals,
+            intervals_truncated: request.intervals_truncated,
+            ambiguous_ns,
+            file_id: request.file_id,
+            chunk_id: request.chunk_id,
+            slice_id: request.slice_id,
+            lease_id: request.lease_id,
+        });
+        if cancelled {
+            self.cancelled.fetch_add(1, ORD);
+        }
+        if error {
+            self.errors.fetch_add(1, ORD);
+        }
+        self.closed.fetch_add(1, ORD);
+        true
+    }
+
+    fn push_trace(&self, record: RequestTraceRecord) {
+        let mut records = self
+            .trace_records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if records.len() == REQUEST_TRACE_RECORD_LIMIT {
+            records.pop_front();
+            self.trace_records_dropped.fetch_add(1, ORD);
+        }
+        records.push_back(record);
+    }
+
+    pub fn snapshot(&self) -> RequestObservationSnapshot {
+        let now = Instant::now();
+        let active_guard = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let active = active_guard.len() as u64;
+        let mut fuse_queue_depth = 0;
+        let mut fuse_queue_oldest_age_ns = 0;
+        for request in active_guard
+            .values()
+            .filter(|request| request.worker_at.is_none())
+        {
+            fuse_queue_depth += 1;
+            fuse_queue_oldest_age_ns = fuse_queue_oldest_age_ns.max(
+                now.saturating_duration_since(request.received_at)
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+            );
+        }
+        drop(active_guard);
+        let trace_records = self
+            .trace_records
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        RequestObservationSnapshot {
+            instance_id: self.instance_id.clone(),
+            enabled: self.enabled(),
+            sample_rate: self.sample_rate.load(ORD).max(1),
+            received: self.received.load(ORD),
+            sampled: self.sampled.load(ORD),
+            closed: self.closed.load(ORD),
+            cancelled: self.cancelled.load(ORD),
+            errors: self.errors.load(ORD),
+            dropped: self.dropped.load(ORD),
+            active,
+            closure_gap_ns_total: self.closure_gap_ns_total.load(ORD),
+            closure_gap_ns_max: self.closure_gap_ns_max.load(ORD),
+            fuse_queue_depth,
+            fuse_queue_oldest_age_ns,
+            segments: std::array::from_fn(|index| self.segments[index].snapshot()),
+            queues: {
+                let queue_waiters = self
+                    .queue_waiters
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let mut queues = [RequestQueueSnapshot::default(); REQUEST_SEGMENT_COUNT];
+                for (segment, started) in queue_waiters.values() {
+                    let index = *segment as usize;
+                    queues[index].depth = queues[index].depth.saturating_add(1);
+                    queues[index].oldest_age_ns = queues[index].oldest_age_ns.max(
+                        now.saturating_duration_since(*started)
+                            .as_nanos()
+                            .min(u128::from(u64::MAX)) as u64,
+                    );
+                }
+                queues
+            },
+            operations: std::array::from_fn(|index| self.operations[index].snapshot()),
+            trace_records,
+            trace_records_dropped: self.trace_records_dropped.load(ORD),
+        }
+    }
+}
+
+/// A manually timed request segment.  It does not hold any application lock
+/// across an await; dropping it only publishes an atomic histogram sample.
+pub struct RequestSegmentTimer {
+    observation: Arc<RequestObservation>,
+    unique: Option<u64>,
+    segment: RequestSegment,
+    started: Instant,
+    queue_token: Option<u64>,
+    interval_index: Option<usize>,
+    background: bool,
+}
+
+impl Drop for RequestSegmentTimer {
+    fn drop(&mut self) {
+        let finished = Instant::now();
+        if self.unique.is_some() {
+            self.observation.record_at(self, finished);
+        } else {
+            self.observation.record_unscoped(
+                self.segment,
+                finished.saturating_duration_since(self.started),
+            );
+        }
+        if let Some(token) = self.queue_token {
+            self.observation.end_queue_wait(token);
+        }
+    }
+}
+
+impl RequestObservation {
+    pub fn segment_timer(
+        self: &Arc<Self>,
+        unique: u64,
+        segment: RequestSegment,
+    ) -> Option<RequestSegmentTimer> {
+        if !self.enabled() {
+            return None;
+        }
+        let started = Instant::now();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let request = active.get_mut(&unique)?;
+        let interval_index = if request.intervals.len() < REQUEST_INTERVAL_LIMIT {
+            let index = request.intervals.len();
+            let start = started
+                .saturating_duration_since(request.received_at)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64;
+            request.intervals.push([start, u64::MAX, segment as u64]);
+            Some(index)
+        } else {
+            request.intervals_truncated = true;
+            None
+        };
+        drop(active);
+        Some(RequestSegmentTimer {
+            observation: Arc::clone(self),
+            unique: Some(unique),
+            segment,
+            started,
+            queue_token: Self::tracks_queue(segment).then(|| self.begin_queue_wait(segment)),
+            interval_index,
+            background: false,
+        })
+    }
+
+    /// The ID is a cause, not the owner of this asynchronous wall time.
+    pub fn background_segment_timer(
+        self: &Arc<Self>,
+        unique: u64,
+        segment: RequestSegment,
+    ) -> Option<RequestSegmentTimer> {
+        self.enabled().then(|| RequestSegmentTimer {
+            observation: Arc::clone(self),
+            unique: Some(unique),
+            segment,
+            started: Instant::now(),
+            interval_index: None,
+            background: true,
+            queue_token: Self::tracks_queue(segment).then(|| self.begin_queue_wait(segment)),
+        })
+    }
+
+    /// Record a segment belonging to a background task that has no live FUSE
+    /// request owner. This updates the aggregate histogram without affecting
+    /// sampled request closure accounting.
+    pub fn unscoped_segment_timer(
+        self: &Arc<Self>,
+        segment: RequestSegment,
+    ) -> Option<RequestSegmentTimer> {
+        self.enabled().then(|| RequestSegmentTimer {
+            observation: Arc::clone(self),
+            unique: None,
+            segment,
+            started: Instant::now(),
+            queue_token: Self::tracks_queue(segment).then(|| self.begin_queue_wait(segment)),
+            interval_index: None,
+            background: true,
+        })
+    }
+
+    fn record_unscoped(&self, segment: RequestSegment, duration: Duration) {
+        if self.enabled() {
+            self.segments[segment as usize].observe(duration);
+        }
+    }
+}
 
 /// Optional mount-scoped backend statistics. Rendering must be synchronous and
 /// must not issue backend requests or retain an additional cache of data.
@@ -152,6 +1189,8 @@ pub struct FsStatsSnapshot {
     pub s3_del_ops: u64,
     pub buf_dirty_bytes: u64,
     pub buf_read_bytes: u64,
+    pub memory_cas_retries: u64,
+    pub memory_allocation_rejections: u64,
     pub writeback_live_dirty_bytes: u64,
     pub writeback_live_slices: u64,
     pub writeback_live_normal_only_bytes: u64,
@@ -178,6 +1217,7 @@ pub struct FsStatsSnapshot {
     pub writeback_buffer_hard_sleep_us: u64,
     pub writeback_stage_inflight_bytes: u64,
     pub writeback_remote_upload_inflight_bytes: u64,
+    pub writeback_metadata_inflight: u64,
     pub writeback_stage_ops: u64,
     pub writeback_stage_bytes: u64,
     pub writeback_stage_lat_us: u64,
@@ -333,6 +1373,7 @@ fn ratio(numerator: u64, denominator: u64) -> f64 {
 pub struct FsStats {
     pub start_time: Instant,
     extension: std::sync::OnceLock<std::sync::Arc<dyn FsStatsExtension>>,
+    request_observation: Arc<RequestObservation>,
 
     // ─── FUSE layer ───────────────────────────────────────────────
     /// Total FUSE read operations
@@ -457,6 +1498,10 @@ pub struct FsStats {
     pub buf_dirty_bytes: AtomicU64,
     /// Current reader cache bytes
     pub buf_read_bytes: AtomicU64,
+    /// Failed reader-budget reservation CAS attempts.
+    pub memory_cas_retries: AtomicU64,
+    /// Reader-budget reservations rejected at the critical watermark.
+    pub memory_allocation_rejections: AtomicU64,
     /// Dirty bytes in active writeback slices.
     pub writeback_live_dirty_bytes: AtomicU64,
     /// Active writeback slices currently visible to overlay/commit.
@@ -509,6 +1554,8 @@ pub struct FsStats {
     pub writeback_stage_inflight_bytes: AtomicU64,
     /// Bytes currently being uploaded from the writer pipeline to object storage.
     pub writeback_remote_upload_inflight_bytes: AtomicU64,
+    /// Metadata publication RPCs currently in flight.
+    pub writeback_metadata_inflight: AtomicU64,
     /// Total local writeback stage operations.
     pub writeback_stage_ops: AtomicU64,
     /// Total bytes persisted to the local writeback stage.
@@ -711,6 +1758,7 @@ impl FsStats {
         Self {
             start_time: Instant::now(),
             extension: std::sync::OnceLock::new(),
+            request_observation: Arc::new(RequestObservation::from_environment()),
             fuse_read_ops: AtomicU64::new(0),
             fuse_read_bytes: AtomicU64::new(0),
             fuse_read_lat_us: AtomicU64::new(0),
@@ -768,6 +1816,8 @@ impl FsStats {
             s3_del_ops: AtomicU64::new(0),
             buf_dirty_bytes: AtomicU64::new(0),
             buf_read_bytes: AtomicU64::new(0),
+            memory_cas_retries: AtomicU64::new(0),
+            memory_allocation_rejections: AtomicU64::new(0),
             writeback_live_dirty_bytes: AtomicU64::new(0),
             writeback_live_slices: AtomicU64::new(0),
             writeback_live_normal_only_bytes: AtomicU64::new(0),
@@ -794,6 +1844,7 @@ impl FsStats {
             writeback_buffer_hard_sleep_us: AtomicU64::new(0),
             writeback_stage_inflight_bytes: AtomicU64::new(0),
             writeback_remote_upload_inflight_bytes: AtomicU64::new(0),
+            writeback_metadata_inflight: AtomicU64::new(0),
             writeback_stage_ops: AtomicU64::new(0),
             writeback_stage_bytes: AtomicU64::new(0),
             writeback_stage_lat_us: AtomicU64::new(0),
@@ -959,6 +2010,8 @@ impl FsStats {
             s3_del_ops: self.s3_del_ops.load(ORD),
             buf_dirty_bytes: self.buf_dirty_bytes.load(ORD),
             buf_read_bytes: self.buf_read_bytes.load(ORD),
+            memory_cas_retries: self.memory_cas_retries.load(ORD),
+            memory_allocation_rejections: self.memory_allocation_rejections.load(ORD),
             writeback_live_dirty_bytes: self.writeback_live_dirty_bytes.load(ORD),
             writeback_live_slices: self.writeback_live_slices.load(ORD),
             writeback_live_normal_only_bytes: self.writeback_live_normal_only_bytes.load(ORD),
@@ -999,6 +2052,7 @@ impl FsStats {
             writeback_remote_upload_inflight_bytes: self
                 .writeback_remote_upload_inflight_bytes
                 .load(ORD),
+            writeback_metadata_inflight: self.writeback_metadata_inflight.load(ORD),
             writeback_stage_ops: self.writeback_stage_ops.load(ORD),
             writeback_stage_bytes: self.writeback_stage_bytes.load(ORD),
             writeback_stage_lat_us: self.writeback_stage_lat_us.load(ORD),
@@ -1216,6 +2270,12 @@ impl FsStats {
         self.buf_read_bytes.store(read_bytes, ORD);
     }
 
+    pub fn sync_memory_allocator_metrics(&self, cas_retries: u64, allocation_rejections: u64) {
+        self.memory_cas_retries.store(cas_retries, ORD);
+        self.memory_allocation_rejections
+            .store(allocation_rejections, ORD);
+    }
+
     pub fn sync_writeback_dirty_breakdown(
         &self,
         live_bytes: u64,
@@ -1340,6 +2400,14 @@ impl FsStats {
         self.writeback_stage_failures.store(stage_failures, ORD);
         self.writeback_commit_before_stage_ops
             .store(commit_before_stage_ops, ORD);
+    }
+
+    /// Synchronize the number of metadata publication calls currently in
+    /// flight. Kept separate from the long-standing phase method so adding
+    /// this diagnostic gauge does not change its public argument order.
+    pub fn sync_writeback_metadata_inflight(&self, metadata_inflight: u64) {
+        self.writeback_metadata_inflight
+            .store(metadata_inflight, ORD);
     }
 
     pub fn sync_writeback_commit_wait_metrics(
@@ -1694,10 +2762,49 @@ impl FsStats {
         self.extension.set(extension).is_ok()
     }
 
+    /// Shared request observer used by the FUSE session and VFS call sites.
+    /// The returned handle is stable for the lifetime of the mount.
+    pub fn request_observation(&self) -> Arc<RequestObservation> {
+        Arc::clone(&self.request_observation)
+    }
+
+    /// Attach request context without cloning the observer handle on the hot
+    /// FUSE path. Context is ignored while detailed observation is disabled.
+    pub fn set_request_context(
+        &self,
+        unique: u64,
+        file_id: Option<i64>,
+        chunk_id: Option<u64>,
+        slice_id: Option<u64>,
+        lease_id: Option<u64>,
+    ) -> bool {
+        self.request_observation
+            .set_context(unique, file_id, chunk_id, slice_id, lease_id)
+    }
+
+    /// Start a request segment timer without cloning an `Arc` when detailed
+    /// observation is disabled.
+    pub fn request_segment_timer(
+        &self,
+        unique: u64,
+        segment: RequestSegment,
+    ) -> Option<RequestSegmentTimer> {
+        self.request_observation.segment_timer(unique, segment)
+    }
+
+    pub fn request_observation_snapshot(&self) -> RequestObservationSnapshot {
+        self.request_observation.snapshot()
+    }
+
     /// Render all counters in Prometheus text format (one metric per line).
     /// Format: `metric_name value\n`
     pub fn render_allocation_limit(&self) -> usize {
         Self::BASE_RENDER_MAX_BYTES
+            .saturating_add(if self.request_observation.enabled() {
+                REQUEST_TRACE_RECORD_LIMIT * (4096 + REQUEST_INTERVAL_LIMIT * 64)
+            } else {
+                0
+            })
             .saturating_add(self.extension.get().map_or(0, |e| e.render_max_bytes()))
     }
 
@@ -1990,6 +3097,14 @@ impl FsStats {
             self.buf_read_bytes.load(ORD)
         ));
         out.push_str(&format!(
+            "brewfs_memory_cas_retries_total {}\n",
+            snapshot.memory_cas_retries
+        ));
+        out.push_str(&format!(
+            "brewfs_memory_allocation_rejections_total {}\n",
+            snapshot.memory_allocation_rejections
+        ));
+        out.push_str(&format!(
             "brewfs_writeback_dirty_bytes {}\n",
             snapshot.buf_dirty_bytes
         ));
@@ -2096,6 +3211,10 @@ impl FsStats {
         out.push_str(&format!(
             "brewfs_writeback_remote_upload_inflight_bytes {}\n",
             snapshot.writeback_remote_upload_inflight_bytes
+        ));
+        out.push_str(&format!(
+            "brewfs_writeback_metadata_inflight {}\n",
+            snapshot.writeback_metadata_inflight
         ));
         out.push_str(&format!(
             "brewfs_writeback_stage_ops_total {}\n",
@@ -2518,6 +3637,119 @@ impl FsStats {
             snapshot.meta_lookup_attr_fused_error
         ));
 
+        let request_observation = self.request_observation.snapshot();
+        out.push_str(&format!(
+            "# brewfs_request_trace_instance {}\n",
+            request_observation.instance_id
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_enabled {}\n",
+            u8::from(request_observation.enabled)
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_sample_rate {}\n",
+            request_observation.sample_rate
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_received_total {}\n",
+            request_observation.received
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_sampled_total {}\n",
+            request_observation.sampled
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_closed_total {}\n",
+            request_observation.closed
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_cancelled_total {}\n",
+            request_observation.cancelled
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_errors_total {}\n",
+            request_observation.errors
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_dropped_total {}\n",
+            request_observation.dropped
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_active {}\n",
+            request_observation.active
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_closure_gap_ns_total {}\n",
+            request_observation.closure_gap_ns_total
+        ));
+        out.push_str(&format!(
+            "brewfs_request_observation_closure_gap_ns_max {}\n",
+            request_observation.closure_gap_ns_max
+        ));
+        out.push_str(&format!(
+            "brewfs_request_fuse_queue_depth {}\n",
+            request_observation.fuse_queue_depth
+        ));
+        out.push_str(&format!(
+            "brewfs_request_fuse_queue_oldest_age_ns {}\n",
+            request_observation.fuse_queue_oldest_age_ns
+        ));
+        for (index, segment) in RequestSegment::ALL.into_iter().enumerate() {
+            let values = request_observation.segments[index];
+            let metric = format!("brewfs_request_{}_ns", segment.name());
+            out.push_str(&format!("{metric}_count {}\n", values.count));
+            out.push_str(&format!("{metric}_sum {}\n", values.total_ns));
+            let mut cumulative = 0;
+            for (bucket, count) in values.buckets.into_iter().enumerate() {
+                cumulative += count;
+                let upper = if bucket == REQUEST_HISTOGRAM_BUCKETS - 1 {
+                    "+Inf".to_owned()
+                } else {
+                    (1u64 << bucket).to_string()
+                };
+                out.push_str(&format!("{metric}_bucket{{le=\"{upper}\"}} {cumulative}\n"));
+            }
+            let queue = request_observation.queues[index];
+            out.push_str(&format!(
+                "brewfs_request_{}_queue_depth {}\n",
+                segment.name(),
+                queue.depth
+            ));
+            out.push_str(&format!(
+                "brewfs_request_{}_queue_oldest_age_ns {}\n",
+                segment.name(),
+                queue.oldest_age_ns
+            ));
+        }
+        for (index, operation) in RequestOperation::ALL.into_iter().enumerate() {
+            let values = request_observation.operations[index];
+            let metric = format!("brewfs_request_operation_{}_ns", operation.name());
+            out.push_str(&format!("{metric}_count {}\n", values.count));
+            out.push_str(&format!("{metric}_sum {}\n", values.total_ns));
+            let mut cumulative = 0;
+            for (bucket, count) in values.buckets.into_iter().enumerate() {
+                cumulative += count;
+                let upper = if bucket == REQUEST_HISTOGRAM_BUCKETS - 1 {
+                    "+Inf".to_owned()
+                } else {
+                    (1u64 << bucket).to_string()
+                };
+                out.push_str(&format!("{metric}_bucket{{le=\"{upper}\"}} {cumulative}\n"));
+            }
+        }
+        for record in request_observation.trace_records.iter() {
+            // Trace records are a bounded diagnostic stream, not Prometheus
+            // label dimensions. Include exact intervals for offline validation.
+            out.push_str(&format!(
+                "# brewfs_request_trace_v2 {}\n",
+                serde_json::to_string(&record.export()).expect("serializable request record")
+            ));
+        }
+        out.push_str(&format!(
+            "brewfs_request_trace_records_dropped_total {}\n",
+            request_observation.trace_records_dropped
+        ));
+
         if let Some(extension) = self.extension.get() {
             extension.render_into(&mut out);
         }
@@ -2531,6 +3763,65 @@ impl FsStats {
         let elapsed_us = duration.as_micros() as u64;
         ops_counter.fetch_add(1, ORD);
         lat_counter.fetch_add(elapsed_us, ORD);
+    }
+}
+
+impl asyncfuse::raw::RequestObserver for FsStats {
+    fn with_request_context(&self, unique: u64, poll: &mut dyn FnMut()) {
+        self.request_observation.with_request_context(unique, poll);
+    }
+    fn request_received(&self, unique: u64, opcode: u32) {
+        self.request_observation.request_received(unique, opcode);
+    }
+
+    fn request_received_on_inode(&self, unique: u64, opcode: u32, inode: u64) {
+        // An OPEN of .stats renders its snapshot before its own reply. Do not
+        // turn every collector read into an apparently unclosed workload
+        // sample. LOOKUP on the parent remains a real metadata request.
+        if inode != crate::fuse::STATS_INODE {
+            self.request_observation.request_received(unique, opcode);
+            if let Ok(inode) = i64::try_from(inode) {
+                self.request_observation
+                    .set_context(unique, Some(inode), None, None, None);
+            }
+        }
+    }
+
+    fn request_worker_started(&self, unique: u64) {
+        self.request_observation.worker_started(unique);
+    }
+
+    fn request_handler_started(&self, unique: u64) {
+        self.request_observation.handler_started(unique);
+    }
+
+    fn request_handler_completed(&self, unique: u64) {
+        self.request_observation.handler_completed(unique);
+    }
+
+    fn request_reply_submitted(&self, unique: u64) {
+        self.request_observation.reply_submitted(unique);
+    }
+
+    fn request_reply_submitted_result(&self, unique: u64, error: i32) {
+        self.request_observation.finish(
+            unique,
+            if error == 0 { "reply" } else { "reply_error" },
+            false,
+            error != 0,
+        );
+    }
+
+    fn request_completed_without_reply(&self, unique: u64) {
+        self.request_observation.completed_without_reply(unique);
+    }
+
+    fn request_cancelled(&self, unique: u64) {
+        self.request_observation.terminal(unique, true, false);
+    }
+
+    fn request_failed(&self, unique: u64) {
+        self.request_observation.terminal(unique, false, true);
     }
 }
 
@@ -2619,6 +3910,279 @@ macro_rules! timed_op {
 mod tests {
     use super::*;
 
+    #[test]
+    fn request_trace_exports_ten_named_nanosecond_fields() {
+        let stats = FsStats::new();
+        stats.request_observation.set_enabled(true);
+        let segments = std::array::from_fn(|index| (index as u64 + 1) * 123);
+        stats.request_observation.push_trace(RequestTraceRecord {
+            unique: 42,
+            segments,
+            background_ns: [999; REQUEST_SEGMENT_COUNT],
+            ..Default::default()
+        });
+        let output = stats.render();
+        let json = output
+            .lines()
+            .find_map(|line| line.strip_prefix("# brewfs_request_trace_v2 "))
+            .expect("request trace must be exported");
+        let record: serde_json::Value = serde_json::from_str(json).unwrap();
+        for (index, name) in [
+            "queue_wait_ns",
+            "file_lock_wait_ns",
+            "chunk_lock_wait_ns",
+            "dirty_merge_ns",
+            "flush_wait_ns",
+            "metadata_rpc_wait_ns",
+            "metadata_commit_ns",
+            "object_put_queue_wait_ns",
+            "object_put_ns",
+            "reply_ns",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(record[name].as_u64(), Some(segments[index]), "{name}");
+        }
+        assert_eq!(record["segments"], serde_json::json!(segments));
+        assert_eq!(record["background_ns"][8], 999);
+    }
+
+    #[test]
+    fn request_observation_is_disabled_by_default_configuration() {
+        let observation = RequestObservation::new(false, 1);
+        observation.request_received(1, 15);
+        observation.worker_started(1);
+        observation.reply_submitted(1);
+        let snapshot = observation.snapshot();
+        assert!(!snapshot.enabled);
+        assert_eq!(snapshot.received, 0);
+        assert_eq!(snapshot.active, 0);
+    }
+
+    #[test]
+    fn unsampled_requests_do_not_count_as_dropped() {
+        let observation = RequestObservation::new(true, 2);
+        observation.request_received(1, 15); // sampled
+        observation.request_received(2, 15); // deliberately unsampled
+        observation.worker_started(1);
+        observation.reply_submitted(1);
+        observation.worker_started(2);
+        observation.reply_submitted(2);
+        let snapshot = observation.snapshot();
+        assert_eq!(snapshot.received, 2);
+        assert_eq!(snapshot.sampled, 1);
+        assert_eq!(snapshot.closed, 1);
+        assert_eq!(snapshot.dropped, 0);
+        assert_eq!(snapshot.active, 0);
+    }
+
+    #[test]
+    fn terminal_callbacks_close_sampled_request_once() {
+        let observation = RequestObservation::new(true, 1);
+        observation.request_received(7, 16);
+        observation.worker_started(7);
+        observation.handler_started(7);
+        observation.handler_completed(7);
+        observation.terminal(7, true, false);
+        observation.terminal(7, false, true);
+        observation.reply_submitted(7);
+        let snapshot = observation.snapshot();
+        assert_eq!(snapshot.closed, 1);
+        assert_eq!(snapshot.cancelled, 1);
+        assert_eq!(snapshot.errors, 0);
+        assert_eq!(snapshot.active, 0);
+    }
+
+    #[test]
+    fn handler_completion_is_idempotent_before_reply() {
+        let observation = RequestObservation::new(true, 1);
+        observation.request_received(19, 16);
+        observation.worker_started(19);
+        observation.handler_started(19);
+        observation.handler_completed(19);
+        let completed = observation.active.lock().unwrap()[&19].handler_done_at;
+        observation.handler_completed(19);
+        assert_eq!(
+            observation.active.lock().unwrap()[&19].handler_done_at,
+            completed
+        );
+        assert_eq!(
+            observation.snapshot().segments[RequestSegment::Handler as usize].count,
+            1
+        );
+    }
+
+    #[test]
+    fn late_background_segment_updates_closed_trace_without_reopening_request() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        observation.request_received(9, 16);
+        observation.worker_started(9);
+        observation.handler_started(9);
+        observation.handler_completed(9);
+        observation.reply_submitted(9);
+        assert!(observation.update_context(9, Some(12), Some(34), Some(56), Some(78)));
+        let timer = observation
+            .background_segment_timer(9, RequestSegment::ObjectPut)
+            .expect("enabled observer should create timer");
+        drop(timer);
+
+        let snapshot = observation.snapshot();
+        assert_eq!(snapshot.active, 0);
+        assert_eq!(snapshot.trace_records.len(), 1);
+        let trace = &snapshot.trace_records[0];
+        assert_eq!(trace.file_id, Some(12));
+        assert_eq!(trace.chunk_id, Some(34));
+        assert_eq!(trace.slice_id, Some(56));
+        assert_eq!(trace.lease_id, Some(78));
+        assert!(trace.background_ns[RequestSegment::ObjectPut as usize] > 0);
+        assert_eq!(trace.segments[RequestSegment::ObjectPut as usize], 0);
+        assert_eq!(trace.exclusive_ns[RequestSegment::ObjectPut as usize], 0);
+        assert_eq!(
+            snapshot.segments[RequestSegment::ObjectPut as usize].count,
+            1
+        );
+    }
+
+    #[test]
+    fn unscoped_segment_updates_aggregate_without_active_request() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        let timer = observation
+            .unscoped_segment_timer(RequestSegment::ObjectPut)
+            .expect("enabled observer should create timer");
+        drop(timer);
+        let snapshot = observation.snapshot();
+        assert_eq!(
+            snapshot.segments[RequestSegment::ObjectPut as usize].count,
+            1
+        );
+    }
+
+    #[test]
+    fn queue_wait_snapshot_is_bounded_and_retires_on_timer_drop() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        observation.request_received(11, 16);
+        let timer = observation
+            .segment_timer(11, RequestSegment::ObjectPutQueueWait)
+            .expect("enabled observer should create timer");
+        let waiting = observation.snapshot();
+        let queue = waiting.queues[RequestSegment::ObjectPutQueueWait as usize];
+        assert_eq!(queue.depth, 1);
+        assert!(queue.oldest_age_ns < 1_000_000_000);
+        drop(timer);
+        let drained = observation.snapshot();
+        assert_eq!(
+            drained.queues[RequestSegment::ObjectPutQueueWait as usize].depth,
+            0
+        );
+    }
+
+    #[test]
+    fn partition_nested_waits_preserves_wall_time_and_residual() {
+        let intervals = [
+            [0, 10, RequestSegment::FuseQueueWait as u64],
+            [20, 80, RequestSegment::FlushWait as u64],
+            [30, 60, RequestSegment::MetadataRpcWait as u64],
+            [90, 100, RequestSegment::Reply as u64],
+        ];
+        let (parts, ambiguous) = partition_request(100, &intervals);
+        assert_eq!(parts.iter().sum::<u64>(), 100);
+        assert_eq!(parts[RequestSegment::FlushWait as usize], 30);
+        assert_eq!(parts[RequestSegment::MetadataRpcWait as usize], 30);
+        assert_eq!(parts[RequestSegment::Handler as usize], 20);
+        assert_eq!(ambiguous, 0);
+    }
+
+    #[test]
+    fn crossing_concurrent_spans_are_ambiguous_not_added() {
+        let intervals = [
+            [10, 70, RequestSegment::MetadataRpcWait as u64],
+            [40, 90, RequestSegment::ObjectPut as u64],
+        ];
+        let (parts, ambiguous) = partition_request(100, &intervals);
+        assert_eq!(parts.iter().sum::<u64>(), 100);
+        assert_eq!(ambiguous, 30);
+    }
+
+    #[test]
+    fn poll_wall_time_fills_residual_without_stealing_a_wait() {
+        let intervals = [
+            [0, 20, RequestSegment::HandlerPoll as u64],
+            [10, 70, RequestSegment::MetadataRpcWait as u64],
+            [60, 80, RequestSegment::HandlerPoll as u64],
+        ];
+        let (parts, ambiguous) = partition_request(100, &intervals);
+        assert_eq!(parts[RequestSegment::MetadataRpcWait as usize], 60);
+        assert_eq!(parts[RequestSegment::HandlerPoll as usize], 20);
+        assert_eq!(parts[RequestSegment::Handler as usize], 20);
+        assert_eq!(parts.iter().sum::<u64>(), 100);
+        assert_eq!(ambiguous, 0);
+    }
+
+    #[test]
+    fn cancellation_clips_open_timer_and_late_drop_cannot_change_wall_time() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        observation.request_received(42, 16);
+        observation.worker_started(42);
+        observation.handler_started(42);
+        let timer = observation
+            .segment_timer(42, RequestSegment::FileLockWait)
+            .unwrap();
+        observation.terminal(42, true, false);
+        let before = observation.snapshot().trace_records.remove(0);
+        drop(timer);
+        let after = observation.snapshot().trace_records.remove(0);
+        assert_eq!(before, after);
+        assert_eq!(after.exclusive_ns.iter().sum::<u64>(), after.total_ns);
+        assert!(
+            after
+                .intervals
+                .iter()
+                .all(|interval| interval[1] <= after.total_ns)
+        );
+    }
+
+    #[test]
+    fn unsampled_timer_has_no_state_and_interval_overflow_is_explicit() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        assert!(
+            observation
+                .segment_timer(1, RequestSegment::FileLockWait)
+                .is_none()
+        );
+        observation.request_received(2, 16);
+        for _ in 0..=REQUEST_INTERVAL_LIMIT {
+            drop(observation.segment_timer(2, RequestSegment::FileLockWait));
+        }
+        observation.reply_submitted(2);
+        let trace = observation.snapshot().trace_records.remove(0);
+        assert!(trace.intervals_truncated);
+        assert!(trace.intervals.len() <= REQUEST_INTERVAL_LIMIT + 2);
+    }
+
+    #[test]
+    fn poll_context_is_restored_on_nested_return_and_unwind() {
+        let observation = Arc::new(RequestObservation::new(true, 1));
+        let other = Arc::new(RequestObservation::new(true, 1));
+        observation.request_received(1, 16);
+        observation.request_received(2, 16);
+        observation.with_request_context(1, &mut || {
+            let timer = observation
+                .contextual_segment_timer(RequestSegment::MetadataRpcWait)
+                .unwrap();
+            assert_eq!(timer.unique, Some(1));
+            let unrelated = other
+                .contextual_segment_timer(RequestSegment::MetadataRpcWait)
+                .unwrap();
+            assert_eq!(unrelated.unique, None);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                observation.with_request_context(2, &mut || panic!("controlled poll unwind"));
+            }));
+            assert_eq!(REQUEST_POLL_CONTEXT.get().unwrap().1, 1);
+        });
+        assert_eq!(REQUEST_POLL_CONTEXT.get(), None);
+    }
+
     #[derive(Debug)]
     struct TestStatsExtension;
 
@@ -2666,6 +4230,7 @@ mod tests {
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(34));
         stats.sync_writeback_buffer_backpressure_metrics(70, 700, 80, 800, 90, 900);
         stats.sync_writeback_phase_metrics(1, 2, 3, 4, 5, 6, 7);
+        stats.sync_writeback_metadata_inflight(8);
         stats.sync_writeback_commit_wait_metrics(40, 41, 42, 43);
         stats.sync_writeback_flush_wait_metrics(64, 65, 66);
         stats.sync_writeback_flush_fragmentation_metrics(67, 68, 69, 70, 71, 72, 73);
@@ -2741,6 +4306,7 @@ mod tests {
         assert!(output.contains("brewfs_writeback_buffer_hard_sleep_us 900"));
         assert!(output.contains("brewfs_writeback_stage_inflight_bytes 1"));
         assert!(output.contains("brewfs_writeback_remote_upload_inflight_bytes 2"));
+        assert!(output.contains("brewfs_writeback_metadata_inflight 8"));
         assert!(output.contains("brewfs_writeback_stage_ops_total 3"));
         assert!(output.contains("brewfs_writeback_stage_bytes_total 4"));
         assert!(output.contains("brewfs_writeback_stage_lat_us_total 5"));
@@ -2886,7 +4452,8 @@ mod tests {
         stats.add_writeback_backpressure_hard_wait(Duration::from_micros(55));
         stats.sync_writeback_backpressure_metrics(66, 77, 88, 99);
         stats.sync_writeback_buffer_backpressure_metrics(166, 177, 188, 199, 200, 201);
-        stats.sync_writeback_phase_metrics(111, 222, 333, 444, 555, 666, 777);
+        stats.sync_writeback_phase_metrics(111, 222, 444, 555, 666, 777, 888);
+        stats.sync_writeback_metadata_inflight(333);
         stats.sync_writeback_commit_wait_metrics(778, 779, 780, 781);
         stats.sync_writeback_flush_wait_metrics(804, 805, 806);
         stats.sync_writeback_flush_fragmentation_metrics(807, 808, 809, 810, 811, 812, 813);
@@ -2942,11 +4509,12 @@ mod tests {
         assert_eq!(snapshot.writeback_buffer_hard_sleep_us, 201);
         assert_eq!(snapshot.writeback_stage_inflight_bytes, 111);
         assert_eq!(snapshot.writeback_remote_upload_inflight_bytes, 222);
-        assert_eq!(snapshot.writeback_stage_ops, 333);
-        assert_eq!(snapshot.writeback_stage_bytes, 444);
-        assert_eq!(snapshot.writeback_stage_lat_us, 555);
-        assert_eq!(snapshot.writeback_stage_failures, 666);
-        assert_eq!(snapshot.writeback_commit_before_stage_ops, 777);
+        assert_eq!(snapshot.writeback_metadata_inflight, 333);
+        assert_eq!(snapshot.writeback_stage_ops, 444);
+        assert_eq!(snapshot.writeback_stage_bytes, 555);
+        assert_eq!(snapshot.writeback_stage_lat_us, 666);
+        assert_eq!(snapshot.writeback_stage_failures, 777);
+        assert_eq!(snapshot.writeback_commit_before_stage_ops, 888);
         assert_eq!(snapshot.writeback_commit_wait_upload_ops, 778);
         assert_eq!(snapshot.writeback_commit_wait_upload_us, 779);
         assert_eq!(snapshot.writeback_commit_wait_upload_size_ops, 782);

@@ -189,7 +189,7 @@ fn can_access_trusted_xattr(uid: u32, name: impl AsRef<[u8]>) -> bool {
 
 /// Virtual inode for the `.stats` file exposed at the mount root.
 /// Uses a high inode number unlikely to collide with real inodes.
-const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
+pub(crate) const STATS_INODE: u64 = 0x7FFF_FFFF_0000_0003;
 /// Linux marks execve-driven FUSE open requests with this internal flag.
 /// It is not a public libc O_* bit, but it is visible in the FUSE open flags.
 const FUSE_OPEN_EXEC: u32 = 0x20;
@@ -328,12 +328,19 @@ where
             &self.stats().fuse_read_ops,
             &self.stats().fuse_read_lat_us,
         );
+        let _ = self
+            .stats()
+            .set_request_context(req.unique, Some(ino as i64), None, None, None);
         debug!(ino, fh, offset, size, "fuse.read");
         if self.has_posix_locks_for_inode(ino as i64) {
             tokio::time::sleep(FUSE_LOCKED_READ_ORDER_GRACE).await;
         }
+        let _lock_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FileLockWait);
         self.wait_for_prior_fuse_writes(ino as i64, req.unique)
             .await;
+        drop(_lock_wait);
         let data = if fh != 0 {
             match self.read_owned(fh, offset, size as usize).await {
                 Ok(data) => data,
@@ -919,6 +926,9 @@ where
         write_flags: u32,
         _flags: u32,
     ) -> FuseResult<ReplyWrite> {
+        let _ = self
+            .stats()
+            .set_request_context(req.unique, Some(ino as i64), None, None, None);
         #[cfg(test)]
         let diagnostic = |stage: &str, error: Option<Errno>| {
             if data.len() != 57 {
@@ -955,6 +965,10 @@ where
         if fh == 0 && !data.is_empty() {
             #[cfg(test)]
             diagnostic("fuse-stateless-access-before", None);
+            let _metadata_wait = self.stats().request_segment_timer(
+                req.unique,
+                crate::vfs::stats::RequestSegment::MetadataRpcWait,
+            );
             self.ensure_access_allowed(
                 ino as i64,
                 req.uid,
@@ -967,6 +981,7 @@ where
                 #[cfg(test)]
                 diagnostic("fuse-stateless-access-error", Some(*_error));
             })?;
+            drop(_metadata_wait);
             #[cfg(test)]
             diagnostic("fuse-stateless-access-after", None);
         }
@@ -1006,7 +1021,7 @@ where
                 write_flags,
                 "fuse.write -> write(fh)"
             );
-            self.write(fh, offset, data)
+            self.write_with_unique(fh, offset, data, req.unique)
                 .await
                 .map_err(Into::<Errno>::into)
                 .inspect_err(|_error| {
@@ -1024,7 +1039,7 @@ where
                 write_flags,
                 "fuse.write -> write_ino (no fh)"
             );
-            self.write_ino(ino as i64, offset, data)
+            self.write_ino_with_unique(ino as i64, offset, data, req.unique)
                 .await
                 .map_err(Into::<Errno>::into)
                 .inspect_err(|_error| {
@@ -1882,6 +1897,9 @@ where
         lock_owner: u64,
         flush: bool,
     ) -> FuseResult<()> {
+        let _ = self
+            .stats()
+            .set_request_context(req.unique, Some(inode as i64), None, None, None);
         let kind = if inode == STATS_INODE {
             crate::vfs::fuse_read_cancel::ClientKind::Stats
         } else {
@@ -1909,15 +1927,33 @@ where
             // kernel may request the final flush here instead of sending a
             // separate FLUSH operation.
             if flush {
+                let _lock_wait = self.stats().request_segment_timer(
+                    req.unique,
+                    crate::vfs::stats::RequestSegment::FileLockWait,
+                );
                 self.wait_for_prior_fuse_writes(inode as i64, req.unique)
                     .await;
+                drop(_lock_wait);
+                let _flush_wait = self.stats().request_segment_timer(
+                    req.unique,
+                    crate::vfs::stats::RequestSegment::FlushWait,
+                );
                 self.flush_inode_required(inode)
                     .await
                     .map_err(Errno::from)?;
+                drop(_flush_wait);
             }
             return Ok(());
         }
-        if let Err(error) = self.close(fh).await.map_err(Errno::from) {
+        // `close` may synchronously wait for the final writer snapshot and
+        // upload. Attribute that wait to the release request so close P99 can
+        // be compared with the explicit FLUSH/FSYNC paths.
+        let _flush_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FlushWait);
+        let close_result = self.close(fh).await.map_err(Errno::from);
+        drop(_flush_wait);
+        if let Err(error) = close_result {
             if let Some(client) = client {
                 client.fail(error);
             }
@@ -1932,13 +1968,20 @@ where
     // Flush file data to backend (called on every close of a file descriptor).
     // Must actually persist dirty data so that close() semantics are honored.
     async fn flush(&self, req: Request, inode: u64, fh: u64, lock_owner: u64) -> FuseResult<()> {
+        let _ = self
+            .stats()
+            .set_request_context(req.unique, Some(inode as i64), None, None, None);
         // Virtual .stats file: nothing to flush.
         if inode == STATS_INODE {
             return Ok(());
         }
         debug!(fh, inode, "fuse.flush");
+        let _lock_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FileLockWait);
         self.wait_for_prior_fuse_writes(inode as i64, req.unique)
             .await;
+        drop(_lock_wait);
         self.unlock_owner_locks(inode, lock_owner).await;
         if fh == 0 {
             // asyncfuse can issue a stateless flush for a read-only open. There
@@ -1950,18 +1993,34 @@ where
                 .map_err(Errno::from)?;
             return Ok(());
         }
+        let _flush_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FlushWait);
         self.flush_dirty_handle_snapshot(fh)
             .await
             .map_err(Errno::from)?;
+        drop(_flush_wait);
         Ok(())
     }
 
     // Sync file content to backend
     async fn fsync(&self, req: Request, inode: u64, fh: u64, datasync: bool) -> FuseResult<()> {
+        let _ = self
+            .stats()
+            .set_request_context(req.unique, Some(inode as i64), None, None, None);
         debug!(fh, datasync, "fuse.fsync");
+        let _lock_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FileLockWait);
         self.wait_for_prior_fuse_writes(inode as i64, req.unique)
             .await;
-        self.fsync_snapshot(fh, datasync).await.map_err(Errno::from)
+        drop(_lock_wait);
+        let _flush_wait = self
+            .stats()
+            .request_segment_timer(req.unique, crate::vfs::stats::RequestSegment::FlushWait);
+        let result = self.fsync_snapshot(fh, datasync).await.map_err(Errno::from);
+        drop(_flush_wait);
+        result
     }
 
     async fn fallocate(

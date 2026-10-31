@@ -86,6 +86,11 @@ PERF_FIO_COLD_READ=${PERF_FIO_COLD_READ:-false}
 PERF_FIO_COLD_READ_DROP_CACHES=${PERF_FIO_COLD_READ_DROP_CACHES:-true}
 PERF_FIO_REQUIRE_DROP_CACHES=${PERF_FIO_REQUIRE_DROP_CACHES:-false}
 PERF_FIO_POST_WRITE_DRAIN=${PERF_FIO_POST_WRITE_DRAIN:-false}
+PERF_FIO_LAT_PERCENTILES=${PERF_FIO_LAT_PERCENTILES:-1}
+PERF_FIO_CLAT_PERCENTILES=${PERF_FIO_CLAT_PERCENTILES:-1}
+PERF_FIO_PERCENTILE_LIST=${PERF_FIO_PERCENTILE_LIST:-50:95:99:99.9}
+PERF_FIO_RANDSEED=${PERF_FIO_RANDSEED:-20261031}
+PERF_FIO_RANDREPEAT=${PERF_FIO_RANDREPEAT:-1}
 PERF_FIO_DIRECT_MATRIX=${PERF_FIO_DIRECT_MATRIX:-}
 PERF_FIO_BIGREAD_REPEATS=${PERF_FIO_BIGREAD_REPEATS:-3}
 PERF_FIO_BIGREAD_COOLDOWN_SECS=${PERF_FIO_BIGREAD_COOLDOWN_SECS:-10}
@@ -131,6 +136,9 @@ BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES=${BREWFS_WRITEBACK_RECENT_PENDING_SOF
 BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES=${BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES:-}
 BREWFS_WRITEBACK_PERSIST_SYNC=${BREWFS_WRITEBACK_PERSIST_SYNC:-}
 BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT=${BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT:-}
+BREWFS_REQUEST_TRACE=${BREWFS_REQUEST_TRACE:-}
+BREWFS_REQUEST_TRACE_SAMPLE_RATE=${BREWFS_REQUEST_TRACE_SAMPLE_RATE:-}
+TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS:-}
 BREWFS_CACHED_BLOCK_ASSEMBLER=${BREWFS_CACHED_BLOCK_ASSEMBLER:-}
 BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD=${BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD:-}
 BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS=${BREWFS_CACHED_SUB_BLOCK_IDLE_GRACE_MS:-}
@@ -443,6 +451,11 @@ EOF
         if [[ -n "${BREWFS_FUSE_WORKERS:-}" || -n "${BREWFS_FUSE_MAX_BACKGROUND:-}" ]]; then
             echo
             echo "fuse:"
+            if [[ "${BREWFS_VOLUME_FORMAT:-}" == workspace-v1 ]]; then
+                echo "  cache_ttl_ms: 1000"
+            else
+                echo "  cache_ttl_ms: 0"
+            fi
             if [[ -n "${BREWFS_FUSE_WORKERS:-}" ]]; then
                 echo "  workers: ${BREWFS_FUSE_WORKERS}"
             fi
@@ -570,6 +583,9 @@ EOF
     append_env_export BREWFS_FUSE_READ_DIRECT_IO
     append_env_export BREWFS_FUSE_WRITE_DIRECT_IO
     append_env_export BREWFS_FUSE_KEEP_CACHE
+    append_env_export BREWFS_REQUEST_TRACE
+    append_env_export BREWFS_REQUEST_TRACE_SAMPLE_RATE
+    append_env_export TOKIO_WORKER_THREADS
     append_env_export BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
     append_env_export BREWFS_WRITEBACK_RECENT_PENDING_SOFT_BYTES
     append_env_export BREWFS_WRITEBACK_RECENT_PENDING_HARD_BYTES
@@ -596,6 +612,7 @@ fi
 
 /usr/local/bin/brewfs mount --privileged --config "$config_path" "$target" >>"$log_file" 2>&1 &
 brewfs_pid=$!
+printf '%s\n' "$brewfs_pid" >/run/brewfs/perf-mount.pid
 
 wait_secs="${BREWFS_MOUNT_WAIT_SECS:-60}"
 deadline=$((SECONDS + wait_secs))
@@ -630,11 +647,21 @@ prepare_artifacts() {
     mkdir -p "$artifact_dir/results" "$artifact_dir/tools" "$artifact_dir/diagnostics"
     touch "$artifact_dir/perf.log" "$artifact_dir/perf-summary.tsv" "$artifact_dir/report.md" >/dev/null 2>&1 || true
     printf 'tool\tstatus\tseconds\tlog\n' >"$artifact_dir/perf-summary.tsv"
-    printf 'tool\tpost_write_drain_s\tpending_bytes\tdirty_bytes\tbuffer_dirty_bytes\n' \
+    printf 'tool\trunner_drain_s\textended_strict_drain_s\tpending_bytes\tdirty_bytes\tbuffer_dirty_bytes\n' \
         >"$artifact_dir/post-write-drain.tsv"
-    printf 'ts\ttool\telapsed_s\tbuffer_dirty_bytes\tlive_dirty_bytes\tlive_slices\trecent_pending_upload_bytes\trecent_uploaded_bytes\tstage_inflight_bytes\tremote_upload_inflight_bytes\ts3_put_ops\ts3_put_bytes\tbuffer_soft_sleep_ops\tbuffer_moderate_sleep_ops\tbuffer_hard_sleep_ops\tfuse_write_bytes\tupload_batch_ops\n' \
+    printf 'ts\ttool\telapsed_s\tstats_valid\tbuffer_dirty_bytes\tlive_dirty_bytes\tlive_slices\trecent_pending_upload_bytes\trecent_pending_upload_slices\trecent_uploaded_bytes\tstage_inflight_bytes\tremote_upload_inflight_bytes\tmetadata_inflight\ts3_put_ops\ts3_put_bytes\trequest_active\trequest_fuse_queue_depth\trequest_fuse_queue_oldest_age_ns\trequest_file_lock_queue_depth\trequest_file_lock_queue_oldest_age_ns\trequest_chunk_lock_queue_depth\trequest_chunk_lock_queue_oldest_age_ns\trequest_flush_queue_depth\trequest_flush_queue_oldest_age_ns\trequest_metadata_rpc_queue_depth\trequest_metadata_rpc_queue_oldest_age_ns\trequest_object_put_queue_depth\trequest_object_put_queue_oldest_age_ns\trequest_dropped\tbuffer_soft_sleep_ops\tbuffer_moderate_sleep_ops\tbuffer_hard_sleep_ops\tfuse_write_bytes\tupload_batch_ops\n' \
         >"$artifact_dir/writeback-samples.tsv"
     write_perf_profile
+    if [[ -x /usr/local/bin/perf_manifest.py ]]; then
+        /usr/local/bin/perf_manifest.py \
+            --output "$artifact_dir/manifest.json" \
+            --binary /usr/local/bin/brewfs \
+            --profile "$artifact_dir/perf-profile.env"
+    else
+        err "perf_manifest.py 不存在，基线 manifest 缺少 binary/source 校验"
+        touch "$artifact_dir/manifest.invalid"
+        return 1
+    fi
     if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
         cat >"$artifact_dir/packed-runtime-proof.env" <<EOF
 volume_format=packed-metadata-v3
@@ -708,11 +735,57 @@ run_metadata_fallback() {
     local work_dir="$2"
     local fallback="${PERF_METADATA_FALLBACK_BIN:-/usr/local/bin/perf_metadata_fallback.py}"
 
+    printf '%s\tpython-fallback\t%s\n' "$tool" "$fallback" >>"$artifact_dir/metadata-implementations.tsv"
+    if [[ "${PERF_LINES_PROTOCOL:-}" == ws0 ]]; then
+        err "WS-0 requires the real xfstests $tool binary; Python fallback is unavailable as baseline evidence"
+        touch "$artifact_dir/metadata-implementation.invalid"
+        return 1
+    fi
+
     require_tool_bin "$fallback"
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
     info "使用 metadata fallback: $tool ($fallback)"
     run_logged_tool "$tool" python3 "$fallback" "$tool" "$work_dir"
+}
+
+append_fio_observation_args() {
+    local -n fio_args_ref=$1
+    local arg
+    local has_lat=false has_clat=false has_slat=false has_list=false has_seed=false has_repeat=false
+    for arg in "${fio_args_ref[@]}"; do
+        [[ "$arg" == --lat_percentiles || "$arg" == --lat_percentiles=* ]] && has_lat=true
+        [[ "$arg" == --clat_percentiles || "$arg" == --clat_percentiles=* ]] && has_clat=true
+        [[ "$arg" == --slat_percentiles || "$arg" == --slat_percentiles=* ]] && has_slat=true
+        [[ "$arg" == --percentile_list || "$arg" == --percentile_list=* ]] && has_list=true
+        [[ "$arg" == --randseed || "$arg" == --randseed=* ]] && has_seed=true
+        [[ "$arg" == --randrepeat || "$arg" == --randrepeat=* ]] && has_repeat=true
+    done
+    [[ "$has_lat" == true ]] || fio_args_ref+=("--lat_percentiles=${PERF_FIO_LAT_PERCENTILES:-1}")
+    [[ "$has_clat" == true ]] || fio_args_ref+=("--clat_percentiles=${PERF_FIO_CLAT_PERCENTILES:-1}")
+    [[ "$has_slat" == true ]] || fio_args_ref+=(--slat_percentiles=1)
+    [[ "$has_list" == true ]] || fio_args_ref+=("--percentile_list=${PERF_FIO_PERCENTILE_LIST:-50:95:99:99.9}")
+    [[ "$has_seed" == true ]] || fio_args_ref+=("--randseed=${PERF_FIO_RANDSEED:-20261031}")
+    [[ "$has_repeat" == true ]] || fio_args_ref+=("--randrepeat=${PERF_FIO_RANDREPEAT:-1}")
+}
+
+run_observed_fio() {
+    local observation_tool="$1"
+    shift
+    local -a command=(fio "$@")
+    if truthy_env "${PERF_FIO_SYSCALL_TAIL:-false}"; then
+        local strace_bin
+        strace_bin="$(command -v strace)" || { err "找不到可执行工具: strace"; return 1; }
+        require_tool_bin "$strace_bin"
+        mkdir -p "$artifact_dir/syscall-tail"
+        command=("$strace_bin" -ff -ttt -T -yy --seccomp-bpf -e trace=close,fsync,fdatasync \
+            -o "$artifact_dir/syscall-tail/${observation_tool}" "${command[@]}")
+    fi
+    python3 - "$artifact_dir/tools/${observation_tool}.effective-argv.json" "${command[@]}" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]) + "\n")
+PY
+    "${command[@]}"
 }
 
 redis_diag_enabled() {
@@ -807,15 +880,88 @@ brewfs_stats_dump() {
     timeout --foreground "$timeout_value" cat "$stats_path" | tr -d '\000'
 }
 
-numeric_stat_or_zero() {
+numeric_stat_required() {
     local metric="$1"
     local value
-    value="$(brewfs_stat_value "$metric" 2>/dev/null || true)"
+    if (( $# > 1 )); then
+        value="$(awk -v metric="$metric" '$1 == metric { print $2; found=1; exit } END { if (!found) exit 1 }' <<<"$2")" || return 1
+    else
+        value="$(brewfs_stat_value "$metric" 2>/dev/null)" || return 1
+    fi
     if [[ "$value" =~ ^[0-9]+$ ]]; then
         printf '%s' "$value"
     else
-        printf '0'
+        return 1
     fi
+}
+
+numeric_stat_or_zero() {
+    # Kept as a compatibility name for callers outside this runner.  A
+    # missing counter is an invalid observation and must never be represented
+    # by a fabricated zero.
+    numeric_stat_required "$@"
+}
+
+capture_backend_phase() {
+    local phase="$1"
+    [[ -n "${PERF_BACKEND_METRICS_URL:-}" ]] || return 0
+    python3 /usr/local/bin/perf_lines_observe.py backend-snapshot \
+        --url "$PERF_BACKEND_METRICS_URL" --output "$artifact_dir/diagnostics/backend-${phase}.json" \
+        --after-ns "$(date +%s%N)" --wait-secs 5 >/dev/null || {
+        touch "$artifact_dir/backend-samples.invalid"
+        return 1
+    }
+}
+
+required_drain_snapshot() {
+    local dump metric value
+    if (( $# > 0 )); then
+        dump="$1"
+    else
+        dump="$(brewfs_stats_dump)" || return 1
+    fi
+    for metric in \
+        brewfs_writeback_dirty_bytes \
+        brewfs_writeback_live_dirty_bytes \
+        brewfs_writeback_live_slices \
+        brewfs_writeback_recent_pending_upload_bytes \
+        brewfs_writeback_recent_pending_upload_slices \
+        brewfs_writeback_stage_inflight_bytes \
+        brewfs_writeback_remote_upload_inflight_bytes \
+        brewfs_writeback_metadata_inflight \
+        brewfs_buffer_dirty_bytes \
+        brewfs_s3_put_ops_total \
+        brewfs_s3_put_bytes_total; do
+        value="$(awk -v metric="$metric" '$1 == metric { print $2; found=1; exit } END { if (!found) exit 1 }' <<<"$dump")" || return 1
+        [[ "$value" =~ ^[0-9]+$ ]] || return 1
+        printf '%s=%s\n' "$metric" "$value"
+    done
+}
+
+drain_value() {
+    local name="$1"
+    awk -F= -v name="$name" '$1 == name { print $2; found=1; exit } END { if (!found) exit 1 }'
+}
+
+drain_is_clear() {
+    local snapshot="$1" threshold="$2" value
+    for metric in \
+        brewfs_writeback_dirty_bytes \
+        brewfs_writeback_live_dirty_bytes \
+        brewfs_writeback_recent_pending_upload_bytes \
+        brewfs_buffer_dirty_bytes; do
+        value="$(drain_value "$metric" <<<"$snapshot")" || return 1
+        (( value <= threshold )) || return 1
+    done
+    for metric in \
+        brewfs_writeback_live_slices \
+        brewfs_writeback_recent_pending_upload_slices \
+        brewfs_writeback_stage_inflight_bytes \
+        brewfs_writeback_remote_upload_inflight_bytes \
+        brewfs_writeback_metadata_inflight; do
+        value="$(drain_value "$metric" <<<"$snapshot")" || return 1
+        (( value == 0 )) || return 1
+    done
 }
 
 start_writeback_sampler() {
@@ -827,30 +973,100 @@ start_writeback_sampler() {
     WRITEBACK_SAMPLER_PID=""
     truthy_env "${PERF_WRITEBACK_SAMPLER:-true}" || return 0
 
+    mkdir -p "$artifact_dir/stats-timeseries/$tool"
     start_ts="$(date +%s)"
     (
         while true; do
-            local now elapsed
+            local now elapsed snapshot raw_dump
+            local recent_uploaded request_active request_queue_depth request_queue_age request_dropped
+            local file_lock_queue_depth file_lock_queue_age chunk_lock_queue_depth chunk_lock_queue_age
+            local flush_queue_depth flush_queue_age metadata_queue_depth metadata_queue_age
+            local object_put_queue_depth object_put_queue_age
+            local buffer_soft_ops buffer_moderate_ops buffer_hard_ops fuse_write_bytes upload_batch_ops
             now="$(date +%s)"
             elapsed="$((now - start_ts))"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            local read_status=0
+            raw_dump="$(brewfs_stats_dump)" || read_status=$?
+            printf '%s\n' "$raw_dump" >"$artifact_dir/stats-timeseries/$tool/$(date +%s%N).txt"
+            if (( read_status != 0 )) || ! snapshot="$(required_drain_snapshot "$raw_dump")"; then
+                printf '%s\t%s\t%s\tfalse\t%s\n' \
+                    "$(date -Iseconds)" "$tool" "$elapsed" "missing_required_stat" \
+                    >>"$sample_path"
+                touch "$artifact_dir/writeback-samples.invalid"
+                break
+            fi
+            if [[ -n "${PERF_BACKEND_METRICS_URL:-}" ]]; then
+                mkdir -p "$artifact_dir/backend-timeseries/$tool"
+                python3 /usr/local/bin/perf_lines_observe.py backend-snapshot \
+                    --url "$PERF_BACKEND_METRICS_URL" --output "$artifact_dir/backend-timeseries/$tool/$(date +%s%N).json" >/dev/null \
+                    || touch "$artifact_dir/backend-samples.invalid"
+            fi
+            if [[ -f /usr/local/bin/perf_lines_observe.py && -r /run/brewfs/perf-mount.pid ]]; then
+                mkdir -p "$artifact_dir/system-timeseries/$tool"
+                python3 /usr/local/bin/perf_lines_observe.py system-sample \
+                    --pid "$(cat /run/brewfs/perf-mount.pid)" \
+                    --output "$artifact_dir/system-timeseries/$tool/$(date +%s%N).json" \
+                    || touch "$artifact_dir/system-samples.invalid"
+            fi
+            if ! recent_uploaded="$(numeric_stat_required brewfs_writeback_recent_uploaded_bytes "$raw_dump")" \
+                || ! request_active="$(numeric_stat_required brewfs_request_observation_active "$raw_dump")" \
+                || ! request_queue_depth="$(numeric_stat_required brewfs_request_fuse_queue_depth "$raw_dump")" \
+                || ! request_queue_age="$(numeric_stat_required brewfs_request_fuse_queue_oldest_age_ns "$raw_dump")" \
+                || ! file_lock_queue_depth="$(numeric_stat_required brewfs_request_file_lock_wait_queue_depth "$raw_dump")" \
+                || ! file_lock_queue_age="$(numeric_stat_required brewfs_request_file_lock_wait_queue_oldest_age_ns "$raw_dump")" \
+                || ! chunk_lock_queue_depth="$(numeric_stat_required brewfs_request_chunk_lock_wait_queue_depth "$raw_dump")" \
+                || ! chunk_lock_queue_age="$(numeric_stat_required brewfs_request_chunk_lock_wait_queue_oldest_age_ns "$raw_dump")" \
+                || ! flush_queue_depth="$(numeric_stat_required brewfs_request_flush_wait_queue_depth "$raw_dump")" \
+                || ! flush_queue_age="$(numeric_stat_required brewfs_request_flush_wait_queue_oldest_age_ns "$raw_dump")" \
+                || ! metadata_queue_depth="$(numeric_stat_required brewfs_request_metadata_rpc_wait_queue_depth "$raw_dump")" \
+                || ! metadata_queue_age="$(numeric_stat_required brewfs_request_metadata_rpc_wait_queue_oldest_age_ns "$raw_dump")" \
+                || ! object_put_queue_depth="$(numeric_stat_required brewfs_request_object_put_queue_wait_queue_depth "$raw_dump")" \
+                || ! object_put_queue_age="$(numeric_stat_required brewfs_request_object_put_queue_wait_queue_oldest_age_ns "$raw_dump")" \
+                || ! request_dropped="$(numeric_stat_required brewfs_request_observation_dropped_total "$raw_dump")" \
+                || ! buffer_soft_ops="$(numeric_stat_required brewfs_writeback_buffer_soft_sleep_ops "$raw_dump")" \
+                || ! buffer_moderate_ops="$(numeric_stat_required brewfs_writeback_buffer_moderate_sleep_ops "$raw_dump")" \
+                || ! buffer_hard_ops="$(numeric_stat_required brewfs_writeback_buffer_hard_sleep_ops "$raw_dump")" \
+                || ! fuse_write_bytes="$(numeric_stat_required brewfs_fuse_write_bytes_total "$raw_dump")" \
+                || ! upload_batch_ops="$(numeric_stat_required brewfs_writeback_upload_batch_ops_total "$raw_dump")"; then
+                printf '%s\t%s\t%s\tfalse\tmissing_required_stat\n' \
+                    "$(date -Iseconds)" "$tool" "$elapsed" >>"$sample_path"
+                touch "$artifact_dir/writeback-samples.invalid"
+                break
+            fi
+            printf '%s\t%s\t%s\ttrue\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$(date -Iseconds)" \
                 "$tool" \
                 "$elapsed" \
-                "$(numeric_stat_or_zero brewfs_writeback_dirty_bytes)" \
-                "$(numeric_stat_or_zero brewfs_writeback_live_dirty_bytes)" \
-                "$(numeric_stat_or_zero brewfs_writeback_live_slices)" \
-                "$(numeric_stat_or_zero brewfs_writeback_recent_pending_upload_bytes)" \
-                "$(numeric_stat_or_zero brewfs_writeback_recent_uploaded_bytes)" \
-                "$(numeric_stat_or_zero brewfs_writeback_stage_inflight_bytes)" \
-                "$(numeric_stat_or_zero brewfs_writeback_remote_upload_inflight_bytes)" \
-                "$(numeric_stat_or_zero brewfs_s3_put_ops_total)" \
-                "$(numeric_stat_or_zero brewfs_s3_put_bytes_total)" \
-                "$(numeric_stat_or_zero brewfs_writeback_buffer_soft_sleep_ops)" \
-                "$(numeric_stat_or_zero brewfs_writeback_buffer_moderate_sleep_ops)" \
-                "$(numeric_stat_or_zero brewfs_writeback_buffer_hard_sleep_ops)" \
-                "$(numeric_stat_or_zero brewfs_fuse_write_bytes_total)" \
-                "$(numeric_stat_or_zero brewfs_writeback_upload_batch_ops_total)" \
+                "$(drain_value brewfs_buffer_dirty_bytes <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_live_dirty_bytes <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_live_slices <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_recent_pending_upload_bytes <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_recent_pending_upload_slices <<<"$snapshot")" \
+                "$recent_uploaded" \
+                "$(drain_value brewfs_writeback_stage_inflight_bytes <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_remote_upload_inflight_bytes <<<"$snapshot")" \
+                "$(drain_value brewfs_writeback_metadata_inflight <<<"$snapshot")" \
+                "$(drain_value brewfs_s3_put_ops_total <<<"$snapshot")" \
+                "$(drain_value brewfs_s3_put_bytes_total <<<"$snapshot")" \
+                "$request_active" \
+                "$request_queue_depth" \
+                "$request_queue_age" \
+                "$file_lock_queue_depth" \
+                "$file_lock_queue_age" \
+                "$chunk_lock_queue_depth" \
+                "$chunk_lock_queue_age" \
+                "$flush_queue_depth" \
+                "$flush_queue_age" \
+                "$metadata_queue_depth" \
+                "$metadata_queue_age" \
+                "$object_put_queue_depth" \
+                "$object_put_queue_age" \
+                "$request_dropped" \
+                "$buffer_soft_ops" \
+                "$buffer_moderate_ops" \
+                "$buffer_hard_ops" \
+                "$fuse_write_bytes" \
+                "$upload_batch_ops" \
                 >>"$sample_path"
             sleep "$interval"
         done
@@ -863,157 +1079,203 @@ stop_writeback_sampler() {
     [[ -n "$pid" ]] || return 0
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" >/dev/null 2>&1 || true
-}
-
-max_u64() {
-    local lhs="$1"
-    local rhs="$2"
-    if (( lhs >= rhs )); then
-        printf '%s' "$lhs"
-    else
-        printf '%s' "$rhs"
+    if [[ -e "$artifact_dir/writeback-samples.invalid" || -e "$artifact_dir/backend-samples.invalid" || -e "$artifact_dir/system-samples.invalid" ]]; then
+        err "写回时序采样缺少必需指标"
+        return 1
     fi
 }
 
-wait_for_fio_prefill_drain() {
+wait_for_strict_drain() {
     local tool="$1"
-    local timeout="${PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS:-600}"
-    local interval="${PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS:-2}"
-    local threshold="${PERF_FIO_PREFILL_DRAIN_PENDING_BYTES:-0}"
-    local start now elapsed pending dirty buffer_dirty drain_bytes put_bytes uploaded
+    local phase="$2"
+    local timeout="$3"
+    local interval="$4"
+    local threshold="$5"
+    local kind="$6"
+    local stable_required="${PERF_DRAIN_STABLE_SAMPLES:-3}"
+    local start now elapsed snapshot raw_dump previous_signature="" signature previous_put=-1 stable=0
+    local runner_drain_elapsed=""
+    local pending dirty buffer_dirty put_ops put_bytes uploaded
+    local backend_values backend_sequence="" backend_start="" backend_success="" backend_attempts=""
+    local previous_backend_sequence="" previous_backend_start="" previous_backend_counts="" backend_counts=""
+    local previous_backend_success="" previous_backend_attempts=""
+    local backend_url="${PERF_BACKEND_METRICS_URL:-}"
 
-    info "等待 fio 预填充写回完成: $tool (threshold=${threshold} bytes, timeout=${timeout}s)"
-    stats_snapshot_before_tool "${tool}-prefill-drained"
-    stats_snapshot_before_tool "${tool}-prefill-drain-timeout"
+    if [[ "${PERF_LINES_PROTOCOL:-}" == ws0 && -z "$backend_url" ]]; then
+        err "WS-0 strict drain requires actual backend PUT evidence (PERF_BACKEND_METRICS_URL)"
+        touch "$artifact_dir/backend-drain.invalid"
+        return 1
+    fi
+
+    info "等待 ${kind} 写回严格排空: $tool (threshold=${threshold} bytes, stable=${stable_required}, timeout=${timeout}s)"
+    [[ "$phase" == prefill ]] && stats_snapshot_before_tool "${tool}-prefill-drained"
+    [[ "$phase" == prefill ]] && stats_snapshot_before_tool "${tool}-prefill-drain-timeout"
+    [[ "$phase" == post-write ]] && stats_snapshot_before_tool "${tool}-post-write-drained"
+    [[ "$phase" == post-write ]] && stats_snapshot_before_tool "${tool}-post-write-drain-timeout"
     start="$(date +%s)"
+    printf '%s\t%s_drain_start\t%s\n' "$tool" "$phase" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+    mkdir -p "$artifact_dir/stats-timeseries/${tool}-${phase}"
+    mkdir -p "$artifact_dir/backend-timeseries/${tool}-${phase}"
 
     while true; do
-        pending="$(numeric_stat_or_zero brewfs_writeback_recent_pending_upload_bytes)"
-        dirty="$(numeric_stat_or_zero brewfs_writeback_dirty_bytes)"
-        buffer_dirty="$(numeric_stat_or_zero brewfs_buffer_dirty_bytes)"
-        put_bytes="$(numeric_stat_or_zero brewfs_s3_put_bytes_total)"
-        uploaded="$(numeric_stat_or_zero brewfs_writeback_recent_uploaded_bytes)"
-        drain_bytes="$(max_u64 "$pending" "$dirty")"
-        drain_bytes="$(max_u64 "$drain_bytes" "$buffer_dirty")"
-
-        now="$(date +%s)"
-        elapsed="$((now - start))"
-
-        if (( drain_bytes <= threshold )); then
-            ok "fio 预填充写回已完成: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty put_bytes=$put_bytes uploaded=$uploaded elapsed=${elapsed}s)"
-            stats_snapshot_after_tool "${tool}-prefill-drained"
-            return 0
-        fi
-
-        if (( elapsed >= timeout )); then
-            err "fio 预填充写回等待超时: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty put_bytes=$put_bytes uploaded=$uploaded elapsed=${elapsed}s)"
-            stats_snapshot_after_tool "${tool}-prefill-drain-timeout"
+        local read_status=0
+        raw_dump="$(brewfs_stats_dump)" || read_status=$?
+        printf '%s\n' "$raw_dump" >"$artifact_dir/stats-timeseries/${tool}-${phase}/$(date +%s%N).txt"
+        if (( read_status != 0 )) || ! snapshot="$(required_drain_snapshot "$raw_dump")"; then
+            err "${kind} 写回观测缺字段: $tool"
+            touch "$artifact_dir/writeback-samples.invalid"
+            printf '%s\tNA\tinvalid:missing_required_stat\tNA\tNA\tNA\n' "$tool" >>"$artifact_dir/post-write-drain.tsv"
+            [[ "$phase" == prefill ]] && stats_snapshot_after_tool "${tool}-prefill-drain-missing-stat"
+            [[ "$phase" == post-write ]] && stats_snapshot_after_tool "${tool}-post-write-drain-missing-stat"
             return 1
         fi
-
+        if [[ -n "$backend_url" ]]; then
+            backend_values="$(python3 /usr/local/bin/perf_lines_observe.py backend-snapshot \
+                --url "$backend_url" --output "$artifact_dir/backend-timeseries/${tool}-${phase}/$(date +%s%N).json")" || {
+                touch "$artifact_dir/backend-drain.invalid"
+                return 1
+            }
+            read -r backend_sequence backend_start backend_success backend_attempts <<<"$backend_values"
+            if [[ -n "$previous_backend_start" ]] && {
+                [[ "$backend_start" != "$previous_backend_start" ]] \
+                    || (( backend_sequence < previous_backend_sequence \
+                        || backend_success < previous_backend_success \
+                        || backend_attempts < previous_backend_attempts ));
+            }; then
+                err "backend PUT counter reset/decreased or sample time regressed during drain"
+                touch "$artifact_dir/backend-drain.invalid"
+                return 1
+            fi
+            backend_counts="$backend_success:$backend_attempts"
+        fi
+        pending="$(drain_value brewfs_writeback_recent_pending_upload_bytes <<<"$snapshot")"
+        dirty="$(drain_value brewfs_writeback_dirty_bytes <<<"$snapshot")"
+        buffer_dirty="$(drain_value brewfs_buffer_dirty_bytes <<<"$snapshot")"
+        put_ops="$(drain_value brewfs_s3_put_ops_total <<<"$snapshot")"
+        put_bytes="$(drain_value brewfs_s3_put_bytes_total <<<"$snapshot")"
+        uploaded="$(numeric_stat_required brewfs_writeback_recent_uploaded_bytes "$raw_dump")" || {
+            touch "$artifact_dir/writeback-samples.invalid"
+            return 1
+        }
+        now="$(date +%s)"
+        elapsed="$((now - start))"
+        if [[ -z "$runner_drain_elapsed" ]] \
+            && (( pending <= threshold && dirty <= threshold && buffer_dirty <= threshold )); then
+            runner_drain_elapsed="$elapsed"
+            printf '%s\t%s_runner_drained\t%s\n' "$tool" "$phase" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+            [[ "$phase" == prefill ]] && stats_snapshot_after_tool "${tool}-prefill-runner-drained"
+            [[ "$phase" == post-write ]] && stats_snapshot_after_tool "${tool}-post-write-runner-drained"
+        fi
+        signature="$pending/$dirty/$buffer_dirty/$(drain_value brewfs_writeback_live_dirty_bytes <<<"$snapshot")/$(drain_value brewfs_writeback_live_slices <<<"$snapshot")/$(drain_value brewfs_writeback_recent_pending_upload_slices <<<"$snapshot")/$(drain_value brewfs_writeback_stage_inflight_bytes <<<"$snapshot")/$(drain_value brewfs_writeback_remote_upload_inflight_bytes <<<"$snapshot")/$(drain_value brewfs_writeback_metadata_inflight <<<"$snapshot")"
+        if drain_is_clear "$snapshot" "$threshold"; then
+            if [[ "$signature" == "$previous_signature" && "$put_ops" == "$previous_put" \
+                && "$backend_counts" == "$previous_backend_counts" ]]; then
+                if [[ -z "$backend_url" || "$backend_sequence" != "$previous_backend_sequence" ]]; then
+                    stable=$((stable + 1))
+                fi
+            else
+                stable=1
+            fi
+        else
+            stable=0
+        fi
+        previous_signature="$signature"
+        previous_put="$put_ops"
+        previous_backend_sequence="$backend_sequence"
+        previous_backend_start="$backend_start"
+        previous_backend_success="$backend_success"
+        previous_backend_attempts="$backend_attempts"
+        previous_backend_counts="$backend_counts"
+        if (( stable >= stable_required )); then
+            printf '%s\t%s_extended_drained\t%s\n' "$tool" "$phase" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+            if [[ -z "$runner_drain_elapsed" ]]; then
+                runner_drain_elapsed="$elapsed"
+            fi
+            ok "${kind} 写回已严格排空: $tool (runner=${runner_drain_elapsed}s extended=${elapsed}s pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty put_bytes=$put_bytes uploaded=$uploaded stable=${stable}s)"
+            if [[ "$phase" == post-write || "$phase" == metadata ]]; then
+                printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$runner_drain_elapsed" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
+                    >>"$artifact_dir/post-write-drain.tsv"
+            fi
+            [[ "$phase" == prefill ]] && stats_snapshot_after_tool "${tool}-prefill-drained"
+            [[ "$phase" == post-write ]] && stats_snapshot_after_tool "${tool}-post-write-drained"
+            return 0
+        fi
+        if (( elapsed >= timeout )); then
+            touch "$artifact_dir/strict-drain.invalid"
+            err "${kind} 写回严格排空超时: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s)"
+            printf '%s\t%s\ttimeout:%s\t%s\t%s\t%s\n' "$tool" "${runner_drain_elapsed:-NA}" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
+                >>"$artifact_dir/post-write-drain.tsv"
+            [[ "$phase" == prefill ]] && stats_snapshot_after_tool "${tool}-prefill-drain-timeout"
+            [[ "$phase" == post-write ]] && stats_snapshot_after_tool "${tool}-post-write-drain-timeout"
+            return 1
+        fi
         if (( elapsed % 10 == 0 )); then
-            info "  写回等待中: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty put_bytes=$put_bytes uploaded=$uploaded elapsed=${elapsed}s"
+            info "  ${kind} 写回等待中: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty put_bytes=$put_bytes elapsed=${elapsed}s"
         fi
         sleep "$interval"
     done
+}
+
+wait_for_fio_prefill_drain() {
+    wait_for_strict_drain "$1" prefill \
+        "${PERF_FIO_PREFILL_DRAIN_TIMEOUT_SECS:-600}" \
+        "${PERF_FIO_PREFILL_DRAIN_INTERVAL_SECS:-2}" \
+        "${PERF_FIO_PREFILL_DRAIN_PENDING_BYTES:-0}" prefill
+    return $?
 }
 
 wait_for_fio_post_write_drain() {
-    local tool="$1"
-    local timeout="${PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS:-600}"
-    local interval="${PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS:-2}"
-    local threshold="${PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES:-0}"
-    local start now elapsed pending dirty buffer_dirty drain_bytes
-
     truthy_env "${PERF_FIO_POST_WRITE_DRAIN:-false}" || return 0
-    case "$tool" in
+    case "$1" in
         fio-seqwrite*|fio-randwrite*|fio-randrw*|fio-bigwrite*) ;;
         *) return 0 ;;
     esac
-
-    info "等待 fio 写入后写回完成: $tool (threshold=${threshold} bytes, timeout=${timeout}s)"
-    stats_snapshot_before_tool "${tool}-post-write-drained"
-    stats_snapshot_before_tool "${tool}-post-write-drain-timeout"
-    start="$(date +%s)"
-
-    while true; do
-        pending="$(numeric_stat_or_zero brewfs_writeback_recent_pending_upload_bytes)"
-        dirty="$(numeric_stat_or_zero brewfs_writeback_dirty_bytes)"
-        buffer_dirty="$(numeric_stat_or_zero brewfs_buffer_dirty_bytes)"
-        drain_bytes="$(max_u64 "$pending" "$dirty")"
-        drain_bytes="$(max_u64 "$drain_bytes" "$buffer_dirty")"
-
-        now="$(date +%s)"
-        elapsed="$((now - start))"
-
-        if (( drain_bytes <= threshold )); then
-            ok "fio 写入后写回已完成: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s)"
-            printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
-                >>"$artifact_dir/post-write-drain.tsv"
-            stats_snapshot_after_tool "${tool}-post-write-drained"
-            return 0
-        fi
-
-        if (( elapsed >= timeout )); then
-            err "fio 写入后写回等待超时: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s)"
-            printf '%s\ttimeout:%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
-                >>"$artifact_dir/post-write-drain.tsv"
-            stats_snapshot_after_tool "${tool}-post-write-drain-timeout"
-            return 1
-        fi
-
-        if (( elapsed % 10 == 0 )); then
-            info "  写后写回等待中: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s"
-        fi
-        sleep "$interval"
-    done
+    wait_for_strict_drain "$1" post-write \
+        "${PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS:-600}" \
+        "${PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS:-2}" \
+        "${PERF_FIO_POST_WRITE_DRAIN_PENDING_BYTES:-0}" post-write || return $?
+    capture_backend_phase "$1-post-write-drained-after" || return $?
+    observe_maintenance "$1"
 }
 
 wait_for_metadata_post_tool_drain() {
-    local tool="$1"
-    local timeout="${PERF_METADATA_POST_TOOL_DRAIN_TIMEOUT_SECS:-60}"
-    local interval="${PERF_METADATA_POST_TOOL_DRAIN_INTERVAL_SECS:-1}"
-    local threshold="${PERF_METADATA_POST_TOOL_DRAIN_PENDING_BYTES:-0}"
-    local start now elapsed pending dirty buffer_dirty drain_bytes
-
     truthy_env "${PERF_METADATA_POST_TOOL_DRAIN:-false}" || return 0
-    case "$tool" in
+    case "$1" in
         dirstress|dirperf|metaperf|looptest|stress-ng) ;;
         *) return 0 ;;
     esac
+    wait_for_strict_drain "$1" metadata \
+        "${PERF_METADATA_POST_TOOL_DRAIN_TIMEOUT_SECS:-600}" \
+        "${PERF_METADATA_POST_TOOL_DRAIN_INTERVAL_SECS:-1}" \
+        "${PERF_METADATA_POST_TOOL_DRAIN_PENDING_BYTES:-0}" metadata || return $?
+    observe_maintenance "$1"
 
-    info "等待 metadata 工具写回稳定: $tool (threshold=${threshold} bytes, timeout=${timeout}s)"
-    start="$(date +%s)"
+}
 
-    while true; do
-        pending="$(numeric_stat_or_zero brewfs_writeback_recent_pending_upload_bytes)"
-        dirty="$(numeric_stat_or_zero brewfs_writeback_dirty_bytes)"
-        buffer_dirty="$(numeric_stat_or_zero brewfs_buffer_dirty_bytes)"
-        drain_bytes="$(max_u64 "$pending" "$dirty")"
-        drain_bytes="$(max_u64 "$drain_bytes" "$buffer_dirty")"
-
-        now="$(date +%s)"
-        elapsed="$((now - start))"
-
-        if (( drain_bytes <= threshold )); then
-            ok "metadata 工具写回已稳定: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s)"
-            printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
-                >>"$artifact_dir/post-write-drain.tsv"
-            return 0
-        fi
-
-        if (( elapsed >= timeout )); then
-            err "metadata 工具写回等待超时: $tool (pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s)"
-            printf '%s\ttimeout:%s\t%s\t%s\t%s\n' "$tool" "$elapsed" "$pending" "$dirty" "$buffer_dirty" \
-                >>"$artifact_dir/post-write-drain.tsv"
-            return 1
-        fi
-
-        if (( elapsed % 10 == 0 )); then
-            info "  metadata 写回等待中: pending=$pending dirty=$dirty buffer_dirty=$buffer_dirty elapsed=${elapsed}s"
-        fi
-        sleep "$interval"
-    done
+observe_maintenance() {
+    local tool="$1" seconds="${PERF_MAINTENANCE_OBSERVE_SECS:-0}"
+    [[ "$seconds" =~ ^[0-9]+$ ]] || return 1
+    (( seconds > 0 )) || return 0
+    local started ended sampler_pid status=0 i
+    stats_snapshot_before_tool "${tool}-maintenance"
+    capture_backend_phase "${tool}-maintenance-before" || return $?
+    started="$(date +%s%N)"
+    printf '%s\tmaintenance_start\t%s\n' "$tool" "$started" >>"$artifact_dir/phase-boundaries.tsv"
+    start_writeback_sampler "${tool}-maintenance"
+    sampler_pid="$WRITEBACK_SAMPLER_PID"
+    info "观察停写后维护: $tool (${seconds}s)"
+    for ((i = 0; i < seconds; i++)); do sleep 1; done
+    stop_writeback_sampler "$sampler_pid" || status=1
+    wait_for_strict_drain "${tool}-maintenance" maintenance 600 1 0 maintenance || status=1
+    stats_snapshot_after_tool "${tool}-maintenance"
+    capture_backend_phase "${tool}-maintenance-after" || status=1
+    ended="$(date +%s%N)"
+    printf '%s\tmaintenance_end\t%s\n' "$tool" "$ended" >>"$artifact_dir/phase-boundaries.tsv"
+    if [[ ! -e "$artifact_dir/maintenance.tsv" ]]; then
+        printf 'tool\tstarted_ns\tended_ns\trequested_observation_s\n' >"$artifact_dir/maintenance.tsv"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$tool" "$started" "$ended" "$seconds" >>"$artifact_dir/maintenance.tsv"
+    return "$status"
 }
 
 drop_kernel_page_cache_if_requested() {
@@ -1082,10 +1344,12 @@ remount_brewfs_for_fio_profile() {
     local tool="$1"
 
     info "为 fio cold-read 重挂载 BrewFS: $tool"
+    printf '%s\tremount_start\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
     cleanup
     clear_brewfs_cache_root_if_requested
     drop_kernel_page_cache_if_requested
-    mount_brewfs
+    mount_brewfs || return $?
+    printf '%s\tremount_end\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
 }
 
 mount_brewfs() {
@@ -1100,6 +1364,16 @@ mount_brewfs() {
     local i=0
     for ((i = 0; i < 15; i++)); do
         if findmnt -rn --target "$mount_dir" --output FSTYPE 2>/dev/null | grep -Eq '^fuse(\.|$)'; then
+            if [[ -f /usr/local/bin/perf_lines_observe.py ]]; then
+                local -a capture_args=()
+                [[ "${PERF_LINES_PROTOCOL:-}" == ws0 ]] && capture_args+=(--require-protocol)
+                python3 /usr/local/bin/perf_lines_observe.py capture-mount \
+                    --pid "$(cat /run/brewfs/perf-mount.pid)" --config "$config_path" \
+                    --output "$artifact_dir/diagnostics/mount-$(date +%s%N).json" "${capture_args[@]}" || {
+                    touch "$artifact_dir/mount-environment.invalid"
+                    return 1
+                }
+            fi
             ok "BrewFS 已挂载"
             return 0
         fi
@@ -1116,16 +1390,24 @@ run_logged_tool() {
     local log_path="$artifact_dir/tools/${tool}.log"
     local start end elapsed status sampler_pid
 
+    # Keep the exact argument vector alongside the human log. This is the
+    # reviewable command envelope used to reproduce a baseline; shell quoting
+    # is emitted with printf %q so spaces and empty values remain unambiguous.
+    local argv_path="$artifact_dir/tools/${tool}.argv"
+    {
+        printf '%q ' "$@"
+        printf '\n'
+    } >"$argv_path"
+
     # Cold-read validation compares the counters immediately around each
     # measured tool.  Fio prefill paths have their own snapshots, while
     # metadata and packed scans previously had no canonical before snapshot,
     # which made an otherwise valid zero-hit run fail closed.
-    if truthy_env "${PERF_FIO_COLD_READ:-false}" \
-        || truthy_env "${PERF_FIO_COLD_READ_CLEAR_CACHE:-false}"; then
-        stats_snapshot_before_tool "$tool"
-    fi
+    stats_snapshot_before_tool "$tool"
+    capture_backend_phase "$tool-before" || return $?
 
     start="$(date +%s)"
+    printf '%s\ttool_start\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
     info "运行压力工具: $tool"
     info "  命令: $*"
     redis_diag_before_tool "$tool"
@@ -1151,7 +1433,8 @@ run_logged_tool() {
     else
         set +e
     fi
-    stop_writeback_sampler "$sampler_pid"
+    printf '%s\ttool_return\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+    stop_writeback_sampler "$sampler_pid" || status=1
     end="$(date +%s)"
     elapsed="$((end - start))"
     wait_for_metadata_post_tool_drain "$tool" || status=1
@@ -1539,11 +1822,21 @@ prepare_fio_dataset() {
     )
 
     info "预填充 fio 数据集: $tool"
+    local sampler_pid status=0
+    append_fio_observation_args prep_args
+    prep_args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" "--output=$artifact_dir/results/${tool}-prefill.json")
+    capture_backend_phase "$tool-prefill-before" || return $?
+    printf '%s\tprefill_start\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+    start_writeback_sampler "${tool}-prefill"
+    sampler_pid="$WRITEBACK_SAMPLER_PID"
     if [[ "${PERF_LOG_TO_CONSOLE:-false}" == "true" ]]; then
-        fio "${prep_args[@]}" 2>&1 | tee "$prep_log"
-        return "${PIPESTATUS[0]}"
+        run_observed_fio "${tool}-prefill" "${prep_args[@]}" 2>&1 | tee "$prep_log" || status="${PIPESTATUS[0]}"
+    else
+        run_observed_fio "${tool}-prefill" "${prep_args[@]}" >"$prep_log" 2>&1 || status=$?
     fi
-    fio "${prep_args[@]}" >"$prep_log" 2>&1
+    printf '%s\tprefill_end\t%s\n' "$tool" "$(date +%s%N)" >>"$artifact_dir/phase-boundaries.tsv"
+    stop_writeback_sampler "$sampler_pid" || status=1
+    return "$status"
 }
 
 run_fio_custom() {
@@ -1584,9 +1877,12 @@ run_fio_custom() {
         )
     fi
 
-    args+=(--output-format=json --output="$json_path")
-    run_logged_tool fio fio "${args[@]}"
-    append_fio_log_summary "$json_path" "$artifact_dir/tools/fio.log" "fio"
+    append_fio_observation_args args
+    args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" --output="$json_path")
+    local fio_status=0
+    run_logged_tool fio run_observed_fio fio "${args[@]}" || fio_status=$?
+    append_fio_log_summary "$json_path" "$artifact_dir/tools/fio.log" "fio" || fio_status=1
+    return "$fio_status"
 }
 
 evict_brewfs_local_cache_pages() {
@@ -1645,8 +1941,8 @@ run_repeated_bigread() {
     mkdir -p "$repeat_dir"
     for ((i = 1; i <= warmup_count; i++)); do
         info "热身 Large read: $tool 第 ${i}/${warmup_count} 轮（不计入结果）"
-        fio "${fio_args[@]}" \
-            --output-format=json \
+        run_observed_fio "${tool}-warmup-${i}" "${fio_args[@]}" \
+            "--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" \
             --output="$repeat_dir/warmup-${i}.json" \
             --write_lat_log="$repeat_dir/warmup-${i}_lat" \
             --log_avg_msec=1000 || return $?
@@ -1660,8 +1956,8 @@ run_repeated_bigread() {
             evict_brewfs_local_cache_pages || return $?
         fi
         info "运行稳定 Large read: $tool 第 ${i}/${repeats} 轮"
-        fio "${fio_args[@]}" \
-            --output-format=json \
+        run_observed_fio "${tool}-repeat-${i}" "${fio_args[@]}" \
+            "--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" \
             --output="$repeat_path" \
             --write_lat_log="$lat_prefix" \
             --log_avg_msec=1000 || return $?
@@ -1809,10 +2105,10 @@ run_fio_profile() {
     rm -rf "$work_dir"
     mkdir -p "$work_dir"
 
-    if [[ -n "${!profile_args_var:-}" ]]; then
-        read -r -a args <<<"${!profile_args_var}"
-    else
-        case "$mode" in
+    # Always resolve the mode defaults first. Named profile arguments are
+    # additive so the selected profile keeps its prefill, fsync/close and
+    # drain lifecycle.
+    case "$mode" in
             seqread)
                 name="$(env_or_default "$name_var" PERF_FIO_NAME brewfs-seqread)"
                 rw="$(env_or_default "$rw_var" PERF_FIO_RW read)"
@@ -1946,10 +2242,33 @@ run_fio_profile() {
 
         args+=(--group_reporting --eta=never)
 
+    if [[ -n "${rwmixread:-}" ]]; then
+        args+=(--rwmixread="$rwmixread")
+    fi
+
+    # A named profile may add fio-specific switches, but its lifecycle and
+    # dataset identity are restored last so a complete argv override cannot
+    # silently skip prefill or end_fsync.
+    if [[ -n "${!profile_args_var:-}" ]]; then
+        local -a profile_args=()
+        read -r -a profile_args <<<"${!profile_args_var}"
+        args+=("${profile_args[@]}")
+        args+=("--name=$name" "--directory=$work_dir" "--rw=$rw" "--size=$size"
+            "--bs=$bs" "--numjobs=$numjobs" "--ioengine=$ioengine" "--iodepth=$iodepth" "--direct=$direct")
+        if [[ "${use_time_based:-true}" == true ]]; then
+            args+=("--runtime=$runtime" "--time_based")
+        fi
+        if [[ "${use_end_fsync:-false}" == true ]]; then
+            args+=(--end_fsync=1)
+        fi
+        if [[ "${use_refill_buffers:-false}" == true ]]; then
+            args+=(--refill_buffers)
+        fi
         if [[ -n "${rwmixread:-}" ]]; then
             args+=(--rwmixread="$rwmixread")
         fi
     fi
+    append_fio_observation_args args
 
     if [[ "$needs_prefill" == true ]]; then
         stats_snapshot_before_tool "${tool}-prefill"
@@ -1983,16 +2302,18 @@ run_fio_profile() {
 
     # Collect per-second latency logs for time-series analysis
     local lat_log_prefix="$artifact_dir/results/${tool}_lat"
+    local fio_status=0
     if ((repeat_count > 1)); then
         run_logged_tool "$tool" run_repeated_bigread \
-            "$tool" "$json_path" "$warmup_count" "$repeat_count" "$repeat_cooldown_secs" "${args[@]}"
+            "$tool" "$json_path" "$warmup_count" "$repeat_count" "$repeat_cooldown_secs" "${args[@]}" || fio_status=$?
     else
-        args+=(--output-format=json --output="$json_path")
+        args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" --output="$json_path")
         args+=(--write_lat_log="$lat_log_prefix" --log_avg_msec=1000)
-        run_logged_tool "$tool" fio "${args[@]}"
+        run_logged_tool "$tool" run_observed_fio "$tool" "${args[@]}" || fio_status=$?
     fi
-    append_fio_log_summary "$json_path" "$artifact_dir/tools/${tool}.log" "$tool"
-    wait_for_fio_post_write_drain "$tool"
+    append_fio_log_summary "$json_path" "$artifact_dir/tools/${tool}.log" "$tool" || fio_status=1
+    wait_for_fio_post_write_drain "$tool" || fio_status=1
+    return "$fio_status"
 }
 
 run_object_put_bench() {
@@ -2091,14 +2412,14 @@ if post_write_drain_path.exists():
         ])
         for row in drain_rows:
             lines.append(
-                f"| {row.get('tool', '')} | {row.get('post_write_drain_s') or row.get('post_fio_drain_s', '')} | "
+                f"| {row.get('tool', '')} | {row.get('extended_strict_drain_s') or row.get('post_write_drain_s') or row.get('post_fio_drain_s', '')} | "
                 f"{row.get('pending_bytes', '')} | {row.get('dirty_bytes', '')} | "
                 f"{row.get('buffer_dirty_bytes', '')} |"
             )
 drain_by_tool = {
     row.get("tool", ""): value
     for row in drain_rows
-    if (value := row.get("post_write_drain_s") or row.get("post_fio_drain_s", ""))
+    if (value := row.get("extended_strict_drain_s") or row.get("post_write_drain_s") or row.get("post_fio_drain_s", ""))
 }
 
 if fio_json_paths:
@@ -2891,6 +3212,24 @@ run_perf_suite() {
             metaperf)
                 run_metaperf || status=1
                 ;;
+            ws0-io)
+                for every in 1 256; do
+                    local probe_name="ws0-io-fsync-${every}"
+                    run_logged_tool "$probe_name" python3 /usr/local/bin/perf_lines_observe.py probe "$mount_dir" \
+                        --kind io --fsync-every "$every" --output "$artifact_dir/results/${probe_name}.json" || status=1
+                    wait_for_strict_drain "$probe_name" metadata 600 1 0 client-probe || status=1
+                done
+                ;;
+            ws0-metadata)
+                for depth in 1 8; do
+                    for jobs in 1 4 16; do
+                        local probe_name="ws0-metadata-depth${depth}-jobs${jobs}"
+                        run_logged_tool "$probe_name" python3 /usr/local/bin/perf_lines_observe.py probe "$mount_dir" \
+                            --kind metadata --depth "$depth" --jobs "$jobs" --output "$artifact_dir/results/${probe_name}.json" || status=1
+                        wait_for_strict_drain "$probe_name" metadata 600 1 0 client-probe || status=1
+                    done
+                done
+                ;;
             looptest)
                 run_looptest || status=1
                 ;;
@@ -2981,6 +3320,197 @@ PY
     export PERF_PACKED_SMALLFILE_COUNT="$expected"
 }
 
+workspace_cli() {
+    case "$meta_backend" in
+        redis)
+            /usr/local/bin/brewfs workspace \
+                --meta-backend redis \
+                --meta-url "$meta_url" \
+                --workspace-namespace "${BREWFS_WORKSPACE_NAMESPACE}" \
+                "$@"
+            ;;
+        tikv)
+            /usr/local/bin/brewfs workspace \
+                --meta-backend tikv \
+                --meta-tikv-pd-endpoints "$meta_tikv_pd_endpoints" \
+                --workspace-namespace "${BREWFS_WORKSPACE_NAMESPACE}" \
+                "$@"
+            ;;
+        *)
+            err "workspace-v1 requires the same Redis/TiKV metadata topology as the mount; backend=$meta_backend"
+            return 1
+            ;;
+    esac
+}
+
+workspace_json_body() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+decoder = json.JSONDecoder()
+for index, char in enumerate(text):
+    if char not in "[{":
+        continue
+    try:
+        value, _ = decoder.raw_decode(text[index:])
+    except json.JSONDecodeError:
+        continue
+    print(json.dumps(value, indent=2, sort_keys=True))
+    break
+else:
+    raise SystemExit("workspace command did not emit JSON")
+PY
+}
+
+workspace_id_from_json() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+items = value if isinstance(value, list) else [value]
+for item in items:
+    state = item.get("state")
+    if state in (None, "Active", "active", 0):
+        print(item["workspace_id"])
+        break
+PY
+}
+
+write_workspace_lower_identity() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import hashlib
+import json
+import sys
+
+records = json.load(open(sys.argv[1], encoding="utf-8"))
+workspace_id = sys.argv[2]
+output = sys.argv[3]
+items = records if isinstance(records, list) else [records]
+record = next((item for item in items if item.get("workspace_id") == workspace_id), None)
+if record is None:
+    raise SystemExit(f"workspace {workspace_id} is absent from workspace list")
+lower = record.get("fork_base")
+canonical = json.dumps(lower, sort_keys=True, separators=(",", ":")).encode()
+identity = {
+    "workspace_id": workspace_id,
+    "volume_format": "workspace-v1",
+    "lower": lower,
+    "lower_manifest_hash": None,
+    "lower_manifest_status": "unavailable",
+    "fork_base_identity_sha256": hashlib.sha256(canonical).hexdigest(),
+    "hash_input": "canonical fork_base JSON",
+}
+with open(output, "w", encoding="utf-8") as stream:
+    json.dump(identity, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+with open(output + ".fork-base.sha256", "w", encoding="utf-8") as stream:
+    stream.write(identity["fork_base_identity_sha256"] + "\n")
+PY
+}
+
+initialize_workspace_volume() {
+    case "${BREWFS_VOLUME_FORMAT:-}" in
+        workspace-v1|workspace-native-v2) ;;
+        *) return 0 ;;
+    esac
+    if [[ -z "${BREWFS_WORKSPACE_NAMESPACE:-}" ]]; then
+        BREWFS_WORKSPACE_NAMESPACE="brewfs-perf-$(date +%s)-$RANDOM"
+        export BREWFS_WORKSPACE_NAMESPACE
+    fi
+    case "$meta_backend" in
+        redis|tikv) ;;
+        *) err "workspace-v1 requires BREWFS_META_BACKEND=redis or tikv"; return 1 ;;
+    esac
+
+    local init_raw="$artifact_dir/workspace-init.raw"
+    local init_json="$artifact_dir/workspace-init.json"
+    local list_raw="$artifact_dir/workspace-list.raw"
+    local list_json="$artifact_dir/workspace-list.json"
+    local inspect_raw="$artifact_dir/workspace-inspect-pre-mount.raw"
+    local inspect_json="$artifact_dir/workspace-inspect-pre-mount.json"
+    local command_status=0
+
+    if [[ -z "${BREWFS_WORKSPACE_ID:-}" ]]; then
+        set +e
+        workspace_cli init-volume --owner brewfs-perf >"$init_raw" 2>&1
+        command_status=$?
+        set -e
+        if (( command_status == 0 )); then
+            workspace_json_body "$init_raw" >"$init_json"
+            BREWFS_WORKSPACE_ID="$(workspace_id_from_json "$init_json")"
+        else
+            info "workspace catalog already initialized; resolving an existing workspace"
+        fi
+    else
+        printf 'workspace id supplied by caller: %s\n' "$BREWFS_WORKSPACE_ID" >"$init_raw"
+    fi
+
+    set +e
+    workspace_cli list >"$list_raw" 2>&1
+    command_status=$?
+    set -e
+    (( command_status == 0 )) || {
+        cat "$list_raw" >&2 || true
+        err "workspace list failed"
+        return 1
+    }
+    workspace_json_body "$list_raw" >"$list_json"
+    if [[ -z "${BREWFS_WORKSPACE_ID:-}" ]]; then
+        BREWFS_WORKSPACE_ID="$(workspace_id_from_json "$list_json")"
+    fi
+    [[ -n "${BREWFS_WORKSPACE_ID:-}" ]] || {
+        err "workspace catalog has no active workspace"
+        return 1
+    }
+    write_workspace_lower_identity "$list_json" "$BREWFS_WORKSPACE_ID" \
+        "$artifact_dir/workspace-lower-identity.json"
+
+    set +e
+    workspace_cli inspect "$BREWFS_WORKSPACE_ID" >"$inspect_raw" 2>&1
+    command_status=$?
+    set -e
+    (( command_status == 0 )) || {
+        cat "$inspect_raw" >&2 || true
+        err "workspace inspect failed for $BREWFS_WORKSPACE_ID"
+        return 1
+    }
+    workspace_json_body "$inspect_raw" >"$inspect_json"
+
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+        workspace_cli init-native \
+            >"$artifact_dir/native-init.raw" 2>&1 \
+            || info "native control header already exists"
+        if [[ -f "$artifact_dir/native-init.raw" ]]; then
+            workspace_json_body "$artifact_dir/native-init.raw" \
+                >"$artifact_dir/native-init.json" 2>/dev/null || true
+        fi
+    fi
+
+    export BREWFS_WORKSPACE_ID
+    info "workspace-v1 catalog: id=$BREWFS_WORKSPACE_ID namespace=$BREWFS_WORKSPACE_NAMESPACE"
+}
+
+verify_workspace_lease() {
+    [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" \
+        || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]] || return 0
+    local raw="$artifact_dir/workspace-inspect-post-mount.raw"
+    local json="$artifact_dir/workspace-inspect-post-mount.json"
+    workspace_cli inspect "$BREWFS_WORKSPACE_ID" >"$raw" 2>&1
+    workspace_json_body "$raw" >"$json"
+    python3 - "$json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if not value.get("lease_id"):
+    raise SystemExit("workspace mount did not acquire an active lease")
+PY
+    cp -f "$json" "$artifact_dir/workspace-lease.json"
+}
+
 main() {
     validate_packed_request || return 1
     if [[ -z "$artifact_dir" ]]; then
@@ -3004,27 +3534,9 @@ main() {
     info "写入 BrewFS 配置: $config_path"
     write_config
 
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
-        info "初始化 workspace-v1 catalog + native-v2 control header"
-        /usr/local/bin/brewfs workspace init-volume \
-            --meta-backend redis --meta-url "$meta_url" \
-            >"$artifact_dir/workspace-init.json" 2>&1 \
-            || info "workspace volume may already exist"
-        if [[ -z "${BREWFS_WORKSPACE_ID:-}" ]]; then
-            BREWFS_WORKSPACE_ID="$(sed -n '/^{/,$p' "$artifact_dir/workspace-init.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['workspace_id'])" 2>/dev/null || true)"
-        fi
-        if [[ -n "$BREWFS_WORKSPACE_ID" ]]; then
-            /usr/local/bin/brewfs workspace init-native \
-                --meta-backend redis --meta-url "$meta_url" \
-                >"$artifact_dir/native-init.json" 2>&1 \
-                || info "native control header may already exist"
-        fi
-        if [[ -z "$BREWFS_WORKSPACE_ID" ]]; then
-            err "无法获取 workspace ID，native-v2 挂载将失败"
-            exit 1
-        fi
-        info "native-v2 workspace: $BREWFS_WORKSPACE_ID"
-        export BREWFS_WORKSPACE_ID
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" \
+        || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+        initialize_workspace_volume
         write_config
     fi
 
@@ -3035,6 +3547,7 @@ main() {
     install_mount_helper
 
     mount_brewfs
+    verify_workspace_lease
 
     if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
         info "跳过写入型预检: packed-metadata-v3 是只读挂载"
@@ -3057,6 +3570,12 @@ main() {
         fi
         rm -rf "$preflight_dir"
         ok "预检通过: 写入/读取正常"
+    fi
+
+    if [[ "${PERF_LINES_PROTOCOL:-}" == ws0 ]]; then
+        # commit-before-upload can leave preflight debt after close/unlink.
+        # Finish it before taking the first measured numerator's baseline.
+        wait_for_strict_drain preflight preflight 600 1 0 preflight || return $?
     fi
 
     info "开始性能测试: tools=$perf_tools"

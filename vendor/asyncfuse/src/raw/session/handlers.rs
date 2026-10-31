@@ -146,6 +146,7 @@ mod budget_reply_tests {
             _inflight_notify: Arc::new(async_notify::Notify::new()),
             response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             readonly_reply_tracker: None,
+            request_observer: None,
             open_controller: crate::raw::session::owned_open_queue::ControllerHandle::empty(),
         });
         (ctx, receiver)
@@ -439,6 +440,7 @@ mod umask_tests {
             _inflight_notify: Arc::new(async_notify::Notify::new()),
             response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             readonly_reply_tracker: None,
+            request_observer: None,
             open_controller: crate::raw::session::owned_open_queue::ControllerHandle::empty(),
         };
         let item = |opcode, unique, data| WorkItem {
