@@ -63,6 +63,10 @@ pub(crate) struct V3ReadonlyBackend<B: ObjectBackend + Clone + 'static> {
 
 #[async_trait]
 impl<B: ObjectBackend + Clone + 'static> ObjectBackend for V3ReadonlyBackend<B> {
+    #[cfg(feature = "observability")]
+    fn object_metrics_owned_by_inner_client(&self) -> bool {
+        true
+    }
     async fn put_object(&self, _key: &str, _bytes: &[u8]) -> anyhow::Result<()> {
         anyhow::bail!(READ_ONLY_ERROR)
     }

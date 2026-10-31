@@ -28,7 +28,7 @@ use futures::stream;
 use if_addrs::get_if_addrs;
 use moka::future::Cache;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, process};
@@ -129,19 +129,19 @@ pub struct MetaClientMetricsSnapshot {
 
 #[derive(Debug, Default)]
 pub struct MetaClientMetrics {
-    stat_cache_hit: AtomicU64,
-    stat_cache_miss: AtomicU64,
-    stat_fresh_store_hit: AtomicU64,
-    lookup_cache_hit: AtomicU64,
-    lookup_cache_miss: AtomicU64,
-    get_slices_cache_hit: AtomicU64,
-    get_slices_cache_miss: AtomicU64,
-    open_fresh_stat: AtomicU64,
-    open_file_cache_hit: AtomicU64,
-    open_file_cache_miss: AtomicU64,
-    lookup_attr_fused_hit: AtomicU64,
-    lookup_attr_fused_miss: AtomicU64,
-    lookup_attr_fused_error: AtomicU64,
+    stat_cache_hit: crate::vfs::diagnostic::Counter,
+    stat_cache_miss: crate::vfs::diagnostic::Counter,
+    stat_fresh_store_hit: crate::vfs::diagnostic::Counter,
+    lookup_cache_hit: crate::vfs::diagnostic::Counter,
+    lookup_cache_miss: crate::vfs::diagnostic::Counter,
+    get_slices_cache_hit: crate::vfs::diagnostic::Counter,
+    get_slices_cache_miss: crate::vfs::diagnostic::Counter,
+    open_fresh_stat: crate::vfs::diagnostic::Counter,
+    open_file_cache_hit: crate::vfs::diagnostic::Counter,
+    open_file_cache_miss: crate::vfs::diagnostic::Counter,
+    lookup_attr_fused_hit: crate::vfs::diagnostic::Counter,
+    lookup_attr_fused_miss: crate::vfs::diagnostic::Counter,
+    lookup_attr_fused_error: crate::vfs::diagnostic::Counter,
 }
 
 impl MetaClientMetrics {
@@ -163,54 +163,67 @@ impl MetaClientMetrics {
         }
     }
 
+    #[inline(always)]
     fn record_stat_cache_hit(&self) {
         self.stat_cache_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_stat_cache_miss(&self) {
         self.stat_cache_miss.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_stat_fresh_store_hit(&self) {
         self.stat_fresh_store_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_lookup_cache_hit(&self) {
         self.lookup_cache_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_lookup_cache_miss(&self) {
         self.lookup_cache_miss.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_get_slices_cache_hit(&self) {
         self.get_slices_cache_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_get_slices_cache_miss(&self) {
         self.get_slices_cache_miss.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_open_fresh_stat(&self) {
         self.open_fresh_stat.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_open_file_cache_hit(&self) {
         self.open_file_cache_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_open_file_cache_miss(&self) {
         self.open_file_cache_miss.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_lookup_attr_fused_hit(&self) {
         self.lookup_attr_fused_hit.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_lookup_attr_fused_miss(&self) {
         self.lookup_attr_fused_miss.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_lookup_attr_fused_error(&self) {
         self.lookup_attr_fused_error.fetch_add(1, Ordering::Relaxed);
     }

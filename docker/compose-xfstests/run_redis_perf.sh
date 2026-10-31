@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER_DIR="$(realpath "$SCRIPT_DIR/..")"
 PROJECT_DIR="$(realpath "$DOCKER_DIR/..")"
 
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.redis-perf.yml"
+COMPOSE_FILE="${BREWFS_PERF_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.redis-perf.yml}"
 ARTIFACTS_DIR="$SCRIPT_DIR/artifacts"
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -817,6 +817,11 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e BREWFS_COMPACT_LOCK_MAX_TTL_SECS \
     -e BREWFS_WRITEBACK_MODE \
     -e BREWFS_VFS_TIMING \
+    -e BREWFS_METRICS \
+    -e BREWFS_METRICS_ADDR \
+    -e PERF_FIO_PREP_BS \
+    -e PERF_FIO_PREP_BUFFER_PATTERN \
+    -e PERF_FIO_PREP_VERIFY_SHA256 \
     -e PERF_LOG_TO_CONSOLE \
     perf 2>&1 | tee "$runner_console_log"
 container_status=${PIPESTATUS[0]}

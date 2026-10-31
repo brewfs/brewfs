@@ -8,10 +8,11 @@
 //! The `stats` CLI tool reads this file periodically to display real-time
 //! throughput and latency in the terminal.
 
+use super::diagnostic::{Counter as AtomicU64, Instant};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64 as RequestAtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant as RequestInstant};
 
 /// Relaxed ordering is sufficient for stats counters — we only need eventual
 /// visibility, not happens-before relationships.
@@ -245,17 +246,17 @@ impl RequestTraceRecord {
 
 #[derive(Debug)]
 struct AtomicRequestSegment {
-    count: AtomicU64,
-    total_ns: AtomicU64,
-    buckets: [AtomicU64; REQUEST_HISTOGRAM_BUCKETS],
+    count: RequestAtomicU64,
+    total_ns: RequestAtomicU64,
+    buckets: [RequestAtomicU64; REQUEST_HISTOGRAM_BUCKETS],
 }
 
 impl AtomicRequestSegment {
     fn new() -> Self {
         Self {
-            count: AtomicU64::new(0),
-            total_ns: AtomicU64::new(0),
-            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            count: RequestAtomicU64::new(0),
+            total_ns: RequestAtomicU64::new(0),
+            buckets: std::array::from_fn(|_| RequestAtomicU64::new(0)),
         }
     }
 
@@ -283,10 +284,10 @@ impl AtomicRequestSegment {
 #[derive(Debug)]
 struct ActiveRequest {
     opcode: u32,
-    received_at: Instant,
-    worker_at: Option<Instant>,
-    handler_at: Option<Instant>,
-    handler_done_at: Option<Instant>,
+    received_at: RequestInstant,
+    worker_at: Option<RequestInstant>,
+    handler_at: Option<RequestInstant>,
+    handler_done_at: Option<RequestInstant>,
     segments: [u64; REQUEST_SEGMENT_COUNT],
     background_ns: [u64; REQUEST_SEGMENT_COUNT],
     intervals: Vec<[u64; 3]>,
@@ -301,7 +302,7 @@ impl ActiveRequest {
     fn new(opcode: u32) -> Self {
         Self {
             opcode,
-            received_at: Instant::now(),
+            received_at: RequestInstant::now(),
             worker_at: None,
             handler_at: None,
             handler_done_at: None,
@@ -364,23 +365,23 @@ fn partition_request(total: u64, intervals: &[[u64; 3]]) -> ([u64; REQUEST_SEGME
 #[derive(Debug)]
 pub struct RequestObservation {
     instance_id: String,
-    clock_anchor: (Instant, u64),
+    clock_anchor: (RequestInstant, u64),
     enabled: AtomicBool,
-    sample_rate: AtomicU64,
-    sample_counter: AtomicU64,
-    received: AtomicU64,
-    sampled: AtomicU64,
-    closed: AtomicU64,
-    cancelled: AtomicU64,
-    errors: AtomicU64,
-    dropped: AtomicU64,
-    queue_token: AtomicU64,
-    queue_waiters: Mutex<HashMap<u64, (RequestSegment, Instant)>>,
-    closure_gap_ns_total: AtomicU64,
-    closure_gap_ns_max: AtomicU64,
+    sample_rate: RequestAtomicU64,
+    sample_counter: RequestAtomicU64,
+    received: RequestAtomicU64,
+    sampled: RequestAtomicU64,
+    closed: RequestAtomicU64,
+    cancelled: RequestAtomicU64,
+    errors: RequestAtomicU64,
+    dropped: RequestAtomicU64,
+    queue_token: RequestAtomicU64,
+    queue_waiters: Mutex<HashMap<u64, (RequestSegment, RequestInstant)>>,
+    closure_gap_ns_total: RequestAtomicU64,
+    closure_gap_ns_max: RequestAtomicU64,
     active: Mutex<HashMap<u64, ActiveRequest>>,
     trace_records: Mutex<VecDeque<RequestTraceRecord>>,
-    trace_records_dropped: AtomicU64,
+    trace_records_dropped: RequestAtomicU64,
     segments: [AtomicRequestSegment; REQUEST_SEGMENT_COUNT],
     operations: [AtomicRequestSegment; REQUEST_OPERATION_COUNT],
 }
@@ -426,7 +427,7 @@ impl RequestObservation {
         Self {
             instance_id: uuid::Uuid::new_v4().to_string(),
             clock_anchor: (
-                Instant::now(),
+                RequestInstant::now(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -434,21 +435,21 @@ impl RequestObservation {
                     .min(u128::from(u64::MAX)) as u64,
             ),
             enabled: AtomicBool::new(enabled),
-            sample_rate: AtomicU64::new(sample_rate.max(1)),
-            sample_counter: AtomicU64::new(0),
-            received: AtomicU64::new(0),
-            sampled: AtomicU64::new(0),
-            closed: AtomicU64::new(0),
-            cancelled: AtomicU64::new(0),
-            errors: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
-            queue_token: AtomicU64::new(0),
+            sample_rate: RequestAtomicU64::new(sample_rate.max(1)),
+            sample_counter: RequestAtomicU64::new(0),
+            received: RequestAtomicU64::new(0),
+            sampled: RequestAtomicU64::new(0),
+            closed: RequestAtomicU64::new(0),
+            cancelled: RequestAtomicU64::new(0),
+            errors: RequestAtomicU64::new(0),
+            dropped: RequestAtomicU64::new(0),
+            queue_token: RequestAtomicU64::new(0),
             queue_waiters: Mutex::new(HashMap::new()),
-            closure_gap_ns_total: AtomicU64::new(0),
-            closure_gap_ns_max: AtomicU64::new(0),
+            closure_gap_ns_total: RequestAtomicU64::new(0),
+            closure_gap_ns_max: RequestAtomicU64::new(0),
             active: Mutex::new(HashMap::new()),
             trace_records: Mutex::new(VecDeque::with_capacity(REQUEST_TRACE_RECORD_LIMIT)),
-            trace_records_dropped: AtomicU64::new(0),
+            trace_records_dropped: RequestAtomicU64::new(0),
             segments: std::array::from_fn(|_| AtomicRequestSegment::new()),
             operations: std::array::from_fn(|_| AtomicRequestSegment::new()),
         }
@@ -523,7 +524,7 @@ impl RequestObservation {
         self.sampled.fetch_add(1, ORD);
     }
 
-    fn record_at(&self, timer: &RequestSegmentTimer, finished: Instant) {
+    fn record_at(&self, timer: &RequestSegmentTimer, finished: RequestInstant) {
         if !self.enabled() {
             return;
         }
@@ -591,7 +592,7 @@ impl RequestObservation {
         self.queue_waiters
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(token, (segment, Instant::now()));
+            .insert(token, (segment, RequestInstant::now()));
         token
     }
 
@@ -603,7 +604,7 @@ impl RequestObservation {
     }
 
     fn worker_started(&self, unique: u64) {
-        let now = Instant::now();
+        let now = RequestInstant::now();
         let mut active = self
             .active
             .lock()
@@ -624,12 +625,12 @@ impl RequestObservation {
             .unwrap_or_else(|error| error.into_inner())
             .get_mut(&unique)
         {
-            request.handler_at = Some(Instant::now());
+            request.handler_at = Some(RequestInstant::now());
         }
     }
 
     fn handler_completed(&self, unique: u64) {
-        let now = Instant::now();
+        let now = RequestInstant::now();
         let mut active = self
             .active
             .lock()
@@ -768,7 +769,7 @@ impl RequestObservation {
     }
 
     fn finish(&self, unique: u64, terminal: &'static str, cancelled: bool, error: bool) -> bool {
-        let now = Instant::now();
+        let now = RequestInstant::now();
         let mut active = self
             .active
             .lock()
@@ -783,7 +784,7 @@ impl RequestObservation {
             .saturating_duration_since(request.received_at)
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        let offset = |instant: Instant| {
+        let offset = |instant: RequestInstant| {
             instant
                 .saturating_duration_since(request.received_at)
                 .as_nanos()
@@ -875,7 +876,7 @@ impl RequestObservation {
     }
 
     pub fn snapshot(&self) -> RequestObservationSnapshot {
-        let now = Instant::now();
+        let now = RequestInstant::now();
         let active_guard = self
             .active
             .lock()
@@ -948,7 +949,7 @@ pub struct RequestSegmentTimer {
     observation: Arc<RequestObservation>,
     unique: Option<u64>,
     segment: RequestSegment,
-    started: Instant,
+    started: RequestInstant,
     queue_token: Option<u64>,
     interval_index: Option<usize>,
     background: bool,
@@ -956,7 +957,7 @@ pub struct RequestSegmentTimer {
 
 impl Drop for RequestSegmentTimer {
     fn drop(&mut self) {
-        let finished = Instant::now();
+        let finished = RequestInstant::now();
         if self.unique.is_some() {
             self.observation.record_at(self, finished);
         } else {
@@ -980,7 +981,7 @@ impl RequestObservation {
         if !self.enabled() {
             return None;
         }
-        let started = Instant::now();
+        let started = RequestInstant::now();
         let mut active = self
             .active
             .lock()
@@ -1020,7 +1021,7 @@ impl RequestObservation {
             observation: Arc::clone(self),
             unique: Some(unique),
             segment,
-            started: Instant::now(),
+            started: RequestInstant::now(),
             interval_index: None,
             background: true,
             queue_token: Self::tracks_queue(segment).then(|| self.begin_queue_wait(segment)),
@@ -1038,7 +1039,7 @@ impl RequestObservation {
             observation: Arc::clone(self),
             unique: None,
             segment,
-            started: Instant::now(),
+            started: RequestInstant::now(),
             queue_token: Self::tracks_queue(segment).then(|| self.begin_queue_wait(segment)),
             interval_index: None,
             background: true,
@@ -2758,8 +2759,15 @@ impl FsStats {
             .store(valid.as_nanos().min(u128::from(u64::MAX)) as u64, ORD);
     }
 
+    #[cfg(any(test, feature = "observability"))]
     pub fn set_extension(&self, extension: std::sync::Arc<dyn FsStatsExtension>) -> bool {
         self.extension.set(extension).is_ok()
+    }
+
+    #[cfg(not(any(test, feature = "observability")))]
+    #[inline(always)]
+    pub fn set_extension(&self, _extension: std::sync::Arc<dyn FsStatsExtension>) -> bool {
+        false
     }
 
     /// Shared request observer used by the FUSE session and VFS call sites.
@@ -2817,6 +2825,13 @@ impl FsStats {
         self.render_with_limit(Some(limit))
     }
 
+    #[cfg(not(any(test, feature = "observability")))]
+    #[inline(always)]
+    fn render_with_limit(&self, _limit: Option<usize>) -> Result<String, StatsRenderLimit> {
+        Ok(String::new())
+    }
+
+    #[cfg(any(test, feature = "observability"))]
     fn render_with_limit(&self, limit: Option<usize>) -> Result<String, StatsRenderLimit> {
         let observation = self
             .extension
@@ -3833,12 +3848,14 @@ impl Default for FsStats {
 
 /// RAII guard for timing an operation and recording latency + count.
 /// Records stats on drop, so it can be used as `let _timer = OpTimer::new(...)`.
+#[cfg(any(test, feature = "observability"))]
 pub struct OpTimer<'a> {
     start: Instant,
     ops_counter: &'a AtomicU64,
     lat_counter: &'a AtomicU64,
 }
 
+#[cfg(any(test, feature = "observability"))]
 impl<'a> OpTimer<'a> {
     pub fn new(ops_counter: &'a AtomicU64, lat_counter: &'a AtomicU64) -> Self {
         Self {
@@ -3854,20 +3871,23 @@ impl<'a> OpTimer<'a> {
     }
 }
 
+#[cfg(any(test, feature = "observability"))]
 impl<'a> Drop for OpTimer<'a> {
     fn drop(&mut self) {
         FsStats::record_duration(self.ops_counter, self.lat_counter, self.start.elapsed());
     }
 }
 
-/// Optional timer for diagnostic hot-path stats. Disabled timers avoid
-/// `Instant::now()` so production hot paths only pay a cheap branch.
+/// Optional timer inside observability builds. Without the feature the type
+/// below is zero sized and its constructor has no runtime branch.
+#[cfg(any(test, feature = "observability"))]
 pub struct MaybeOpTimer<'a> {
     start: Option<Instant>,
     ops_counter: &'a AtomicU64,
     lat_counter: &'a AtomicU64,
 }
 
+#[cfg(any(test, feature = "observability"))]
 impl<'a> MaybeOpTimer<'a> {
     pub fn new(enabled: bool, ops_counter: &'a AtomicU64, lat_counter: &'a AtomicU64) -> Self {
         Self {
@@ -3878,11 +3898,36 @@ impl<'a> MaybeOpTimer<'a> {
     }
 }
 
+#[cfg(any(test, feature = "observability"))]
 impl<'a> Drop for MaybeOpTimer<'a> {
     fn drop(&mut self) {
         if let Some(start) = self.start {
             FsStats::record_duration(self.ops_counter, self.lat_counter, start.elapsed());
         }
+    }
+}
+
+#[cfg(not(any(test, feature = "observability")))]
+pub struct OpTimer<'a>(std::marker::PhantomData<&'a ()>);
+
+#[cfg(not(any(test, feature = "observability")))]
+impl<'a> OpTimer<'a> {
+    #[inline(always)]
+    pub fn new(_ops_counter: &'a AtomicU64, _lat_counter: &'a AtomicU64) -> Self {
+        Self(std::marker::PhantomData)
+    }
+    #[inline(always)]
+    pub fn finish(self) {}
+}
+
+#[cfg(not(any(test, feature = "observability")))]
+pub struct MaybeOpTimer<'a>(std::marker::PhantomData<&'a ()>);
+
+#[cfg(not(any(test, feature = "observability")))]
+impl<'a> MaybeOpTimer<'a> {
+    #[inline(always)]
+    pub fn new(_enabled: bool, _ops_counter: &'a AtomicU64, _lat_counter: &'a AtomicU64) -> Self {
+        Self(std::marker::PhantomData)
     }
 }
 
@@ -3895,6 +3940,7 @@ impl<'a> Drop for MaybeOpTimer<'a> {
 /// });
 /// ```
 #[macro_export]
+#[cfg(any(test, feature = "observability"))]
 macro_rules! timed_op {
     ($ops:expr, $lat:expr, $body:expr) => {{
         let __start = std::time::Instant::now();
@@ -3904,6 +3950,14 @@ macro_rules! timed_op {
         $lat.fetch_add(__elapsed_us, std::sync::atomic::Ordering::Relaxed);
         __result
     }};
+}
+
+#[macro_export]
+#[cfg(not(any(test, feature = "observability")))]
+macro_rules! timed_op {
+    ($ops:expr, $lat:expr, $body:expr) => {
+        $body
+    };
 }
 
 #[cfg(test)]

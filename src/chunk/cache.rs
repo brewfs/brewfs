@@ -2239,6 +2239,7 @@ impl ChunksCache {
 
     pub async fn get(&self, key: &String) -> Option<bytes::Bytes> {
         if let Some(value) = self.write_hot_cache.get(key) {
+            #[cfg(any(test, feature = "observability"))]
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
             trace!(
                 "Recent-write hot cache HIT: {} ({} bytes)",
@@ -2251,6 +2252,7 @@ impl ChunksCache {
 
         // Check hot cache first — fastest path, no promotion tracking needed.
         if let Some(value) = self.hot_cache.get(key).await {
+            #[cfg(any(test, feature = "observability"))]
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
             trace!("Hot cache HIT: {} ({} bytes)", key, value.len());
             self.policy.record_cache_request(true);
@@ -2264,6 +2266,7 @@ impl ChunksCache {
         // Keep this separate from the hot-cache admission check so a stale
         // file left by an earlier mount cannot silently warm a no-cache run.
         if self.config.max_disk_bytes == 0 {
+            #[cfg(any(test, feature = "observability"))]
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -2275,15 +2278,18 @@ impl ChunksCache {
         let value = match self.disk_storage.load_with_health(key).await {
             Ok(Some(value)) if !value.is_empty() => value,
             Ok(_) => {
+                #[cfg(any(test, feature = "observability"))]
                 self.cache_misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             Err(_) => {
+                #[cfg(any(test, feature = "observability"))]
                 self.cache_misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
         };
 
+        #[cfg(any(test, feature = "observability"))]
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
         debug!("Loaded {} bytes from disk for key: {}", value.len(), key);
 
@@ -2314,6 +2320,7 @@ impl ChunksCache {
             Some(value) => value,
             None => self.hot_cache.get(key).await.filter(covers)?,
         };
+        #[cfg(any(test, feature = "observability"))]
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
         self.policy.record_cache_request(true);
         Some(value.slice(offset..offset + len))
@@ -2331,6 +2338,7 @@ impl ChunksCache {
 
         if let Some(value) = self.write_hot_cache.get(key) {
             if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                #[cfg(any(test, feature = "observability"))]
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 trace!(
                     "Recent-write hot cache range HIT: {} ({} bytes)",
@@ -2352,6 +2360,7 @@ impl ChunksCache {
 
         if let Some(value) = self.hot_cache.get(key).await {
             if let Some(read_len) = copy_full_cached_range(&value, offset, buf) {
+                #[cfg(any(test, feature = "observability"))]
                 self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 trace!("Hot cache range HIT: {} ({} bytes)", key, value.len());
                 self.policy.record_cache_request(true);
@@ -2371,6 +2380,7 @@ impl ChunksCache {
         self.policy.record_cache_request(false);
 
         if self.config.max_disk_bytes == 0 {
+            #[cfg(any(test, feature = "observability"))]
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -2384,12 +2394,14 @@ impl ChunksCache {
         {
             Ok(Some(read_len)) => read_len,
             Ok(None) | Err(_) => {
+                #[cfg(any(test, feature = "observability"))]
                 self.cache_misses.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
         };
 
         if read_len != buf.len() {
+            #[cfg(any(test, feature = "observability"))]
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
             trace!(
                 "Disk cache range MISS: {} (read {} bytes, requested {})",
@@ -2402,6 +2414,7 @@ impl ChunksCache {
 
         buf.copy_from_slice(&disk_buf);
 
+        #[cfg(any(test, feature = "observability"))]
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
         debug!(
             "Loaded {} ranged bytes from disk for key: {}",

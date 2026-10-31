@@ -12,6 +12,7 @@ use crate::chunk::page_cache::{DEFAULT_PAGE_CAPACITY, DEFAULT_PAGE_SIZE, PageKey
 use crate::chunk::singleflight::SingleFlight;
 use crate::utils::NumCastExt;
 use crate::utils::zero::make_zero_bytes;
+use crate::vfs::diagnostic::Instant;
 use crate::{
     cadapter::client::{ObjectBackend, ObjectClient},
     chunk::cache::{ChunksCache, ChunksCacheConfig},
@@ -30,7 +31,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, LazyLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -215,23 +216,23 @@ pub struct ObjectStoreStatsSnapshot {
 
 #[derive(Debug, Default)]
 pub struct ObjectStoreMetrics {
-    get_ops: AtomicU64,
-    get_bytes: AtomicU64,
-    get_lat_us: AtomicU64,
-    put_ops: AtomicU64,
-    put_bytes: AtomicU64,
-    put_lat_us: AtomicU64,
-    put_prepare_lat_us: AtomicU64,
-    put_cache_lat_us: AtomicU64,
-    del_ops: AtomicU64,
-    read_block_cache_hits: AtomicU64,
-    read_page_cache_hits: AtomicU64,
-    read_page_cache_misses: AtomicU64,
-    read_range_gets: AtomicU64,
-    read_full_gets: AtomicU64,
-    read_piggyback_full: AtomicU64,
-    read_background_prefetches: AtomicU64,
-    read_background_prefetch_dropped: AtomicU64,
+    get_ops: crate::vfs::diagnostic::Counter,
+    get_bytes: crate::vfs::diagnostic::Counter,
+    get_lat_us: crate::vfs::diagnostic::Counter,
+    put_ops: crate::vfs::diagnostic::Counter,
+    put_bytes: crate::vfs::diagnostic::Counter,
+    put_lat_us: crate::vfs::diagnostic::Counter,
+    put_prepare_lat_us: crate::vfs::diagnostic::Counter,
+    put_cache_lat_us: crate::vfs::diagnostic::Counter,
+    del_ops: crate::vfs::diagnostic::Counter,
+    read_block_cache_hits: crate::vfs::diagnostic::Counter,
+    read_page_cache_hits: crate::vfs::diagnostic::Counter,
+    read_page_cache_misses: crate::vfs::diagnostic::Counter,
+    read_range_gets: crate::vfs::diagnostic::Counter,
+    read_full_gets: crate::vfs::diagnostic::Counter,
+    read_piggyback_full: crate::vfs::diagnostic::Counter,
+    read_background_prefetches: crate::vfs::diagnostic::Counter,
+    read_background_prefetch_dropped: crate::vfs::diagnostic::Counter,
 }
 
 impl ObjectStoreMetrics {
@@ -259,6 +260,7 @@ impl ObjectStoreMetrics {
         }
     }
 
+    #[inline(always)]
     fn record_get(&self, bytes: u64, duration: Duration) {
         self.get_ops.fetch_add(1, Ordering::Relaxed);
         self.get_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -266,6 +268,7 @@ impl ObjectStoreMetrics {
             .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_put(&self, bytes: u64, duration: Duration) {
         self.put_ops.fetch_add(1, Ordering::Relaxed);
         self.put_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -273,49 +276,60 @@ impl ObjectStoreMetrics {
             .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_put_prepare(&self, duration: Duration) {
         self.put_prepare_lat_us
             .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_put_cache(&self, duration: Duration) {
         self.put_cache_lat_us
             .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_delete(&self) {
         self.del_ops.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_block_cache_hit(&self) {
         self.read_block_cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_page_cache_hit(&self) {
         self.read_page_cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_page_cache_miss(&self) {
         self.read_page_cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_range_get(&self) {
         self.read_range_gets.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_full_get(&self) {
         self.read_full_gets.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_piggyback_full(&self) {
         self.read_piggyback_full.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_background_prefetch(&self) {
         self.read_background_prefetches
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_read_background_prefetch_dropped(&self) {
         self.read_background_prefetch_dropped
             .fetch_add(1, Ordering::Relaxed);
