@@ -128,7 +128,10 @@ fn errno(error: EntityError) -> Errno {
         EntityError::Overflow | EntityError::Exhausted => libc::EFBIG,
         EntityError::Invalid(_) => libc::EINVAL,
         EntityError::Unsupported(_) => libc::EOPNOTSUPP,
-        EntityError::Corrupt(_) | EntityError::Backend(_) => libc::EIO,
+        error @ (EntityError::Corrupt(_) | EntityError::Backend(_)) => {
+            tracing::error!(?error, "entity operation failed");
+            libc::EIO
+        }
     }
     .into()
 }

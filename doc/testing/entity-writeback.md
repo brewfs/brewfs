@@ -9,11 +9,11 @@ Select exactly one lower:
 
 * `--packed-manifest-key KEY` uses the existing authenticated packed-v3 graph.
 * `--entity-native-source DIR` captures a private, quiescent tree before mount.
-  Its frozen metadata consists of individually authenticated Redis rows; its
+  Its frozen metadata consists of individually authenticated metadata rows; its
   data consists of immutable raw S3 objects. It preserves hardlinks, symlinks,
   attributes and xattrs. The source can be an offline exported native tree or
   a drained native mount with all writers stopped. This is a fresh capture, not
-  an attachment to a live mutable Redis namespace. Source fingerprints are
+  an attachment to a live mutable namespace. Source fingerprints are
   rechecked, and detected concurrent changes fail capture.
 * `--entity-native-manifest-key KEY` reuses a captured native lower in the same
   entity volume. The first mount prints its key in `entity_experiment`.
@@ -27,6 +27,28 @@ and 4,096 names per directory. Exceeding a bound fails explicitly. Metadata and
 data live in separate new domains; legacy collectors cannot reclaim them.
 Native lower objects remain retained, including failed-capture objects; automatic
 native snapshot garbage collection is not introduced here.
+
+Select Redis or TiKV explicitly for the entity upper. Both lowers use the same
+namespace, data and writeback implementation. For TiKV, add this metadata
+section to the mount's YAML alongside its S3 configuration:
+
+```yaml
+meta:
+  backend: tikv
+  tikv:
+    pd_endpoints: ["127.0.0.1:2379"]
+```
+
+The existing `meta.tikv.tls` settings apply when the cluster requires TLS.
+Packed immutable metadata and data remain in object storage; writable directory
+entries, inodes, chunk maps, leases and upload debt use TiKV. The packed catalog
+also uses the selected TiKV cluster. This does not migrate existing Redis rows
+or change global backend defaults. Omitting the writeback override keeps
+`upload_before_commit` for either backend.
+
+See [entity TiKV cloud qualification](entity-tikv-performance.md) for the
+small-file and half-prewarm random-read comparison with JuiceFS, complete drain
+accounting, existing Redis regression controls and current performance limits.
 
 Example opt-in cache section (YAML):
 
@@ -73,7 +95,7 @@ resume and discard after a crash. Opt-in namespaces carry a distinct descriptor
 format so older clients cannot ignore that debt.
 
 After restarting on the same staging directory, use the same volume UUID,
-workspace UUID, Redis/S3 configuration and cache root:
+workspace UUID, selected metadata/S3 configuration and cache root:
 
 ```bash
 brewfs mount /unused --config entity.yaml \
@@ -122,6 +144,17 @@ same owned services first. The existing entity integration suite remains availab
 through `tools/testing/run_entity_data_tests.sh`.
 Set `ENTITY_SMOKE_TEST_ONLY=1` with `ENTITY_SMOKE_TEST_BINARY` to run just those
 integration tests without building the mount or fixture executables.
+
+For TiKV, also set `ENTITY_SMOKE_META=tikv` and
+`ENTITY_SMOKE_PROBE=/absolute/path/to/entity_metadata_probe`; build that observer
+with `cargo build --features workspace-overlay --example entity_metadata_probe`.
+The runner adds its own isolated PD/TiKV services and includes them in cleanup.
+It exports `BREWFS_TEST_TIKV_STATUS_ENDPOINT` for the lock-prefix regression,
+which observes the server's lock-wait queue while a mutation waits on a later
+key and checks that an earlier key remains locked. Run direct TiKV integration
+tests with one test thread and the isolated server's status endpoint.
+`ENTITY_DATA_TIKV=true bash tools/testing/run_entity_data_tests.sh` also runs the
+TiKV backend and shared native/packed correctness contracts without FUSE.
 
 The existing `tools/perf/run_entity_mount_comparison.sh` now wires all three
 arms: the unchanged flat native baseline, entity overlay-native, and entity

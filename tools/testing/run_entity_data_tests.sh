@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Functional entity-overlay gate against owned loopback Redis + real RustFS.
+# Functional entity-overlay gate against owned loopback Redis, optional TiKV,
+# and real RustFS.
 # No FUSE mount, release build, or performance workload is run.
 set -Eeuo pipefail
 umask 077
@@ -17,7 +18,9 @@ volumes, then removes them on exit. Builds/tests run sequentially with four
 Cargo jobs by default. No existing service or bucket is reused.
 
 Optional: CARGO_BUILD_JOBS and PACKED_LIFECYCLE_REDIS_IMAGE/
-PACKED_LIFECYCLE_RUSTFS_IMAGE. Other lifecycle backends are not started.
+PACKED_LIFECYCLE_RUSTFS_IMAGE. ENTITY_DATA_TIKV=true also starts isolated PD/TiKV
+and includes entity transaction, fault-boundary and both-lower integration tests.
+The default remains Redis only.
 EOF
 }
 
@@ -44,14 +47,16 @@ project="brewfs-entity-$run_uuid"
 env_file="$run_dir/.compose.env"
 test_pid=""
 filters=(packed_entity_lower workspace_overlay::entity)
+with_tikv="${ENTITY_DATA_TIKV:-false}"
+[[ "$with_tikv" == true || "$with_tikv" == false ]] || { echo "ENTITY_DATA_TIKV must be true or false" >&2; exit 2; }
 printf 'filter\tbucket\texit\tpassed\n' >"$run_dir/cases.tsv"
 
-# Hold both temporary sockets until the pair is selected, so they cannot be
+# Hold temporary sockets until all ports are selected, so they cannot be
 # assigned the same port. A competing bind after release fails Compose startup;
 # the gate never falls back to an existing host service.
-read -r redis_port rustfs_port < <(python3 - <<'PY'
+read -r redis_port rustfs_port pd_port pd_peer_port tikv_port tikv_status_port < <(python3 - <<'PY'
 import socket
-sockets = [socket.socket(), socket.socket()]
+sockets = [socket.socket() for _ in range(6)]
 for sock in sockets:
     sock.bind(('127.0.0.1', 0))
 print(*(sock.getsockname()[1] for sock in sockets))
@@ -66,8 +71,8 @@ printf '%s\n' \
     "PACKED_LIFECYCLE_RUSTFS_IMAGE=${PACKED_LIFECYCLE_RUSTFS_IMAGE:-w23geq7ncegg6etqsl.xuanyuan.run/rustfs/rustfs:latest}" \
     "PACKED_LIFECYCLE_RUSTFS_ROOT_ACCESS_KEY=$access" \
     "PACKED_LIFECYCLE_RUSTFS_ROOT_SECRET_KEY=$secret" \
-    PACKED_LIFECYCLE_PD_PORT=1 PACKED_LIFECYCLE_PD_PEER_PORT=1 \
-    PACKED_LIFECYCLE_TIKV_PORT=1 PACKED_LIFECYCLE_TIKV_STATUS_PORT=1 >"$env_file"
+    "PACKED_LIFECYCLE_PD_PORT=$pd_port" "PACKED_LIFECYCLE_PD_PEER_PORT=$pd_peer_port" \
+    "PACKED_LIFECYCLE_TIKV_PORT=$tikv_port" "PACKED_LIFECYCLE_TIKV_STATUS_PORT=$tikv_status_port" >"$env_file"
 # Compose gives ambient variables precedence over --env-file, including under
 # direct Docker access. Remove only this runner's interpolation names so it
 # always uses its newly selected ports and credentials.
@@ -78,6 +83,7 @@ unset PACKED_LIFECYCLE_REDIS_PORT PACKED_LIFECYCLE_RUSTFS_PORT \
     PACKED_LIFECYCLE_TIKV_PORT PACKED_LIFECYCLE_TIKV_STATUS_PORT
 compose=("${DOCKER[@]}" compose --env-file "$env_file" -f "$COMPOSE_FILE" \
     -p "$project" --profile redis --profile rustfs)
+if [[ "$with_tikv" == true ]]; then compose+=(--profile tikv); fi
 
 cleanup() {
     local status=$?
@@ -161,7 +167,15 @@ PY
 sha256sum "$ROOT/tools/testing/run_entity_data_tests.sh" "$COMPOSE_FILE" >"$run_dir/runner.sha256"
 printf '[entity-data] starting isolated services; artifacts=%s\n' "$run_dir"
 "${compose[@]}" up -d --wait --wait-timeout 180 redis rustfs >"$run_dir/backend-start.log" 2>&1
-service_ids="$("${compose[@]}" ps -q redis rustfs)"
+if [[ "$with_tikv" == true ]]; then
+    "${compose[@]}" up -d pd tikv >>"$run_dir/backend-start.log" 2>&1
+    python3 "$ROOT/tools/testing/wait_entity_tikv.py" "$pd_port"
+    export BREWFS_TEST_TIKV_PD_ENDPOINTS="127.0.0.1:$pd_port"
+    export BREWFS_TEST_TIKV_STATUS_ENDPOINT="http://127.0.0.1:$tikv_status_port"
+else
+    unset BREWFS_TEST_TIKV_PD_ENDPOINTS BREWFS_TEST_TIKV_STATUS_ENDPOINT
+fi
+service_ids="$("${compose[@]}" ps -q)"
 [[ -n "$service_ids" ]] || { echo "Compose started no backend containers" >&2; exit 1; }
 while IFS= read -r container; do
     "${DOCKER[@]}" inspect --format '{{.Name}} {{.Image}}' "$container"
@@ -175,6 +189,7 @@ for filter in "${filters[@]}"; do
     # produces a second full library test executable. Other targets have no
     # matching cases; the parser below permits their empty suite summaries.
     command=(cargo test --workspace --features workspace-overlay --lib --bins "$filter" -- --include-ignored --test-threads=1)
+    if [[ "$with_tikv" != true ]]; then command+=(--skip tikv_entity); fi
     printf '%q ' "${command[@]}" >>"$run_dir/commands.log"
     printf '\n' >>"$run_dir/commands.log"
     printf '[entity-data] running %s; log=%s/%s.log\n' "$filter" "$run_dir" "$slug"

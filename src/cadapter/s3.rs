@@ -2600,7 +2600,7 @@ mod tests {
                 let head = backend
                     .client
                     .head_object()
-                    .bucket(&backend.bucket_name())
+                    .bucket(backend.bucket_name())
                     .key(&key)
                     .customize()
                     .interceptor(effective.clone())
@@ -2682,7 +2682,7 @@ mod tests {
                 backend
                     .client
                     .head_object()
-                    .bucket(&backend.bucket_name())
+                    .bucket(backend.bucket_name())
                     .key(&key)
                     .customize()
                     .interceptor(effective.clone())

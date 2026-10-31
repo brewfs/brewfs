@@ -100,7 +100,7 @@ its own FUSE adapter and never falls back to the old workspace path.
 ## Experimental benchmark mount
 
 `entity/experiment.rs` wires a fresh packed catalog and fresh entity namespace
-to the existing Redis, packed-owner and file-I/O APIs. Its input is a standalone
+to the shared entity, packed-owner and file-I/O APIs. Its input is a standalone
 packed manifest in a dedicated experimental bucket and unused metadata scopes.
 The bootstrap authenticates the manifest through the existing packed reader,
 installs it under a temporary setup lease, promotes a source reader pin into
@@ -125,6 +125,43 @@ fixture scopes are a caller/harness precondition, not proof that unrelated
 catalogs sharing an object service have no writers. Enforced backend/owner
 pairing, combined-stack fault qualification and paginated production cleanup
 remain outside this benchmark wiring.
+
+The explicit experiment accepts Redis or TiKV metadata for both native and
+packed lowers. With `meta.backend: tikv`, set `meta.tikv.pd_endpoints` (and the
+existing TiKV TLS configuration when needed). `EntityExperiment` pairs a
+`TiKvEntityBackend` upper with a TiKV catalog; its namespace, file-I/O, lower
+adapters and durable upload layer are the same generic components used by Redis.
+Packed immutable metadata and payloads stay in the object store; writable
+directory entries, inode/chunk maps and lifecycle authority live in TiKV.
+This is an experimental hybrid, not a migration of legacy workspace rows.
+
+The entity TiKV adapter uses bounded MVCC reads and pessimistic mutations
+with exact byte predicates. Read-only validation checks all predicates at one
+fresh snapshot timestamp, including across batches, without taking shared
+authority rows as exclusive locks. A final PD clock check also rejects lease
+expiry during the read. Mutations lock affected keys one at a time in byte order,
+including absent rows. A single multi-key TiKV request can discard its earlier
+locks when a later key waits; sorting that request does not retain a lock prefix.
+Only after all keys are held are writes buffered in bounded batches. Mutations
+validate the writer deadline against PD time after locking and wait for secondary
+commit completion. Only definite pre-commit locking conflicts or deadlocks may be retried,
+after successful rollback; a commit error remains an unknown outcome and is
+never replayed. Cancelled callers do not abandon owned commits, and shutdown
+waits for admitted transactions and SDK tasks. This entity client explicitly
+enables the SDK's TTL-aware missing-primary lock resolution for a single
+unambiguous `CheckTxnStatus` error. Live pessimistic locks remain live; expired
+orphan locks use the existing resolver protocol. The SDK option defaults off,
+so legacy clients retain their existing behavior. The experiment requires explicit
+selection of a supported metadata backend; global metadata defaults are
+unchanged, and `upload_before_commit` remains the upload default.
+Legacy workspace-v1 and workspace-native-v2 dispatch are unchanged.
+
+Run `ENTITY_DATA_TIKV=true bash tools/testing/run_entity_data_tests.sh` for real
+backend conformance and shared native/packed COW checks. The FUSE smoke runner
+accepts `ENTITY_SMOKE_META=tikv` and an `ENTITY_SMOKE_PROBE` path built from
+`cargo build --features workspace-overlay --example entity_metadata_probe`.
+It checks both lowers in synchronous, durable asynchronous and killed-process
+upload recovery scenarios, using only isolated loopback services.
 
 ### Direct entity mount path and shared request execution
 
@@ -316,8 +353,8 @@ Use workspace prefixes in one volume metadata transaction domain, for example
 chunk references and shared-object ownership must participate in the same
 transaction. Redis Cluster keys involved in such transactions share a hash slot.
 This provides independent client operations, not parallel execution of Lua on
-one Redis server. TiKV support requires equivalent transactions and separate
-qualification; it is not assumed from Redis results.
+one Redis server. The experimental TiKV adapter uses equivalent predicates
+and separate qualification; its results are not inferred from Redis tests.
 
 | Entity | Current value |
 | --- | --- |

@@ -4,6 +4,8 @@
 set -Eeuo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+metadata="${ENTITY_SMOKE_META:-redis}"
+[[ "$metadata" == redis || "$metadata" == tikv ]] || { echo 'ENTITY_SMOKE_META must be redis or tikv' >&2; exit 2; }
 : "${ENTITY_SMOKE_ARTIFACTS:?set an absolute artifact directory}"
 [[ "$ENTITY_SMOKE_ARTIFACTS" == /* ]]
 if [[ "${ENTITY_SMOKE_TEST_ONLY:-0}" == 1 ]]; then
@@ -12,6 +14,10 @@ else
     : "${ENTITY_SMOKE_BINARY:?set the workspace-overlay brewfs binary}"
     : "${ENTITY_SMOKE_FIXTURE:?set the packed_v3_snapshot_fixture binary}"
     [[ -x "$ENTITY_SMOKE_BINARY" && -x "$ENTITY_SMOKE_FIXTURE" && -c /dev/fuse ]]
+    if [[ "$metadata" == tikv ]]; then
+        : "${ENTITY_SMOKE_PROBE:?TiKV smoke requires the entity_metadata_probe example}"
+        [[ -x "$ENTITY_SMOKE_PROBE" ]]
+    fi
 fi
 for tool in python3 docker fusermount3 mountpoint timeout; do command -v "$tool" >/dev/null; done
 DOCKER=(docker)
@@ -22,9 +28,9 @@ art="$ENTITY_SMOKE_ARTIFACTS/$run"
 mkdir -p "$art"
 work="$(mktemp -d /tmp/brewfs-entity-cbu.XXXXXXXX)"
 mount_pid="" mount_path="" paused_container=""
-read -r redis_port object_port < <(python3 - <<'PY'
+read -r redis_port object_port pd_port pd_peer_port tikv_port tikv_status_port < <(python3 - <<'PY'
 import socket
-s = [socket.socket(), socket.socket()]
+s = [socket.socket() for _ in range(6)]
 for x in s: x.bind(('127.0.0.1', 0))
 print(*(x.getsockname()[1] for x in s))
 PY
@@ -38,11 +44,13 @@ export PACKED_LIFECYCLE_REDIS_PORT="$redis_port" PACKED_LIFECYCLE_RUSTFS_PORT="$
 export PACKED_LIFECYCLE_REDIS_IMAGE="${ENTITY_SMOKE_REDIS_IMAGE:-redis:7.2-alpine}"
 export PACKED_LIFECYCLE_RUSTFS_IMAGE="${ENTITY_SMOKE_RUSTFS_IMAGE:-rustfs/rustfs:latest}"
 export PACKED_LIFECYCLE_RUSTFS_ROOT_ACCESS_KEY="$AWS_ACCESS_KEY_ID" PACKED_LIFECYCLE_RUSTFS_ROOT_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"
-export PACKED_LIFECYCLE_PD_PORT=1 PACKED_LIFECYCLE_PD_PEER_PORT=1 PACKED_LIFECYCLE_TIKV_PORT=1 PACKED_LIFECYCLE_TIKV_STATUS_PORT=1
+export PACKED_LIFECYCLE_PD_PORT="$pd_port" PACKED_LIFECYCLE_PD_PEER_PORT="$pd_peer_port"
+export PACKED_LIFECYCLE_TIKV_PORT="$tikv_port" PACKED_LIFECYCLE_TIKV_STATUS_PORT="$tikv_status_port"
 # Pinned minimal RustFS images need not contain curl. Probe their host endpoint
 # explicitly instead of depending on an executable inside the server image.
 printf 'services:\n  rustfs:\n    healthcheck:\n      disable: true\n' >"$work/health-override.yaml"
 compose=("${DOCKER[@]}" compose -f "$ROOT/docker/compose-xfstests/docker-compose.packed-lifecycle-backends.yml" -f "$work/health-override.yaml" -p "$project" --profile redis --profile rustfs)
+if [[ "$metadata" == tikv ]]; then compose+=(--profile tikv); fi
 cleanup() {
     status=$?
     trap - EXIT INT TERM
@@ -58,6 +66,17 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 "${compose[@]}" up -d --wait --wait-timeout 180 redis rustfs >"$art/services-start.log" 2>&1
+if [[ "$metadata" == tikv ]]; then
+    "${compose[@]}" up -d pd tikv >>"$art/services-start.log" 2>&1
+    python3 "$ROOT/tools/testing/wait_entity_tikv.py" "$pd_port" >>"$art/services-start.log" 2>&1
+    export BREWFS_TEST_TIKV_PD_ENDPOINTS="127.0.0.1:$pd_port"
+    export BREWFS_TEST_TIKV_STATUS_ENDPOINT="http://127.0.0.1:$tikv_status_port"
+else
+    unset BREWFS_TEST_TIKV_PD_ENDPOINTS BREWFS_TEST_TIKV_STATUS_ENDPOINT
+fi
+"${compose[@]}" ps -q | while IFS= read -r container; do
+    "${DOCKER[@]}" inspect --format '{{.Name}} {{.Image}}' "$container"
+done >"$art/backend-image-ids.txt"
 endpoint="http://127.0.0.1:$object_port"
 python3 - "$endpoint" "$("${compose[@]}" ps -q rustfs)" "${DOCKER[@]}" >"$art/health.log" 2>&1 <<'PY'
 import subprocess, sys, time, urllib.request
@@ -79,7 +98,9 @@ if [[ -n "${ENTITY_SMOKE_TEST_BINARY:-}" ]]; then
     export BREWFS_PACKED_GRAPH_TEST_S3_ENDPOINT="$endpoint"
     for filter in packed_entity_lower workspace_overlay::entity; do
         export BREWFS_PACKED_GRAPH_TEST_S3_BUCKET="brewfs-graph-test-$(python3 -c 'import uuid; print(uuid.uuid4())')"
-        "$ENTITY_SMOKE_TEST_BINARY" "$filter" --include-ignored --test-threads=1 >"$art/${filter//::/-}.log" 2>&1
+        test_args=("$filter" --include-ignored --test-threads=1)
+        if [[ "$metadata" != tikv ]]; then test_args+=(--skip tikv_entity); fi
+        "$ENTITY_SMOKE_TEST_BINARY" "${test_args[@]}" >"$art/${filter//::/-}.log" 2>&1
     done
 fi
 if [[ "${ENTITY_SMOKE_TEST_ONLY:-0}" == 1 ]]; then printf 'integration artifacts=%s\n' "$art"; exit 0; fi
@@ -103,6 +124,11 @@ PY
     --inline-data off --chunk-size 4194304 --block-size 4194304 >"$art/fixture.log" 2>&1
 manifest="$(cat "$art/manifest-key.txt")"
 snapshot_metadata() {
+    if [[ "$metadata" == tikv ]]; then
+        printf '{"op":"snapshot","namespace":"%s"}\n' "$namespace" | \
+            "$ENTITY_SMOKE_PROBE" --backend tikv --endpoint "127.0.0.1:$pd_port" --volume "$volume" >"$1"
+        return
+    fi
     python3 - "$1" "$redis_port" "$("${compose[@]}" ps -q redis)" "{brewfs-entity:$volume}/workspace/$namespace/" "${DOCKER[@]}" <<'PY'
 import json, pathlib, subprocess, sys
 output, port, container, prefix = sys.argv[1:5]
@@ -133,8 +159,8 @@ data:
     region: us-east-1
     force_path_style: true
 meta:
-  backend: redis
-  redis: { url: "redis://127.0.0.1:$redis_port/0" }
+  backend: $metadata
+  $metadata: $(if [[ "$metadata" == redis ]]; then printf '{ url: "redis://127.0.0.1:%s/0" }' "$redis_port"; else printf '{ pd_endpoints: ["127.0.0.1:%s"] }' "$pd_port"; fi)
 layout: { chunk_size: 4194304, block_size: 4194304 }
 fuse: { workers: 4, max_background: 64, privileged: false }
 cache:

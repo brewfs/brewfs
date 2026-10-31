@@ -5,6 +5,36 @@ use uuid::Uuid;
 use super::*;
 use crate::workspace_overlay::entity::{keys::EntityKeys, redis::RedisEntityBackend};
 
+#[tokio::test]
+#[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS pointing to isolated local PD/TiKV"]
+async fn tikv_entity_backend_and_allocator_conformance() {
+    use crate::workspace_overlay::entity::tikv::TiKvEntityBackend;
+    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
+        .expect("isolated TiKV endpoints")
+        .split(',')
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for case in 0..3 {
+        let volume = Uuid::new_v4();
+        let keys = EntityKeys::new(volume, Uuid::new_v4());
+        let backend = Arc::new(
+            TiKvEntityBackend::connect(endpoints.clone(), volume, None)
+                .await
+                .unwrap(),
+        );
+        match case {
+            0 => conformance(backend.clone(), keys).await,
+            1 => atomic_create_conformance(backend.clone(), keys).await,
+            _ => slice_reservation_conformance(backend.clone(), keys).await,
+        }
+        backend.shutdown().await.unwrap();
+        assert!(matches!(
+            backend.read(&[]).await,
+            Err(EntityError::Backend(_))
+        ));
+    }
+}
+
 fn check(key: Vec<u8>, expected: Option<&[u8]>) -> RowCheck {
     RowCheck {
         key,
@@ -134,6 +164,23 @@ async fn conformance<B: EntityBackend + 'static>(backend: Arc<B>, keys: EntityKe
         let (snapshot, actual) = backend.read_checked(&[], &checks).await.unwrap();
         assert_eq!(actual, matched);
         assert!(snapshot.rows.is_empty());
+        assert_eq!(
+            backend
+                .commit(
+                    &authority,
+                    &EntityPlan {
+                        checks: checks.to_vec(),
+                        writes: vec![]
+                    }
+                )
+                .await
+                .unwrap(),
+            if matched {
+                CommitOutcome::Committed
+            } else {
+                CommitOutcome::Conflict
+            }
+        );
     }
     for checks in [
         vec![check(foreign, None)],
@@ -307,6 +354,10 @@ async fn conformance<B: EntityBackend + 'static>(backend: Arc<B>, keys: EntityKe
         TransactionAuthority::from_validated(authority.checks.clone(), Some(snapshot.now_ns))
             .unwrap();
     assert_eq!(
+        backend.commit(&expired, &EntityPlan::default()).await,
+        Err(EntityError::Fenced)
+    );
+    assert_eq!(
         backend
             .commit(
                 &expired,
@@ -353,6 +404,10 @@ async fn conformance<B: EntityBackend + 'static>(backend: Arc<B>, keys: EntityKe
         Ok(CommitOutcome::Conflict)
     );
     // A heartbeat changes exact lease bytes without changing writer identity.
+    assert_eq!(
+        backend.commit(&authority, &EntityPlan::default()).await,
+        Ok(CommitOutcome::Conflict)
+    );
     // Only a fresh lifecycle read may create replacement authority; a caller
     // must never substitute a later deadline into the stale authority itself.
     let renewed = TransactionAuthority::from_validated(

@@ -18,6 +18,9 @@ pub mod packed_lower;
 pub mod recovery;
 pub mod redis;
 pub mod resolver;
+pub mod tikv;
+#[cfg(test)]
+mod tikv_mount_tests;
 pub mod writeback;
 
 #[cfg(test)]
