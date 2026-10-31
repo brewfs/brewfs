@@ -519,6 +519,13 @@ where
         fuse_read_cancel: crate::vfs::fuse_read_cancel::ReadRegistry,
         #[cfg(feature = "workspace-overlay")] packed_mutation_gate: Arc<PackedMutationGate>,
     ) -> Result<Self, VfsError> {
+        let stats = Arc::new(crate::vfs::stats::FsStats::new());
+        let request_observation = stats.request_observation();
+        if request_observation.enabled() {
+            backend
+                .meta()
+                .set_request_observation(request_observation.clone());
+        }
         let memory_budget = (config.cache.memory_budget_bytes > 0)
             .then(|| MemoryBudget::new(config.cache.memory_budget_bytes));
 
@@ -748,6 +755,9 @@ where
 
         let mut writer_builder =
             DataWriter::new(config.write.clone(), backend, reader.clone(), write_back);
+        if request_observation.enabled() {
+            writer_builder = writer_builder.with_request_observation(request_observation);
+        }
         #[cfg(feature = "workspace-overlay")]
         {
             writer_builder = writer_builder.with_writeback_epoch(config.workspace_writer_epoch);
@@ -782,7 +792,7 @@ where
             fallocate_statfs_cache: StdMutex::new(None),
             posix_lock_owners: DashMap::new(),
             fuse_lock_owners_by_handle: DashMap::new(),
-            stats: Arc::new(crate::vfs::stats::FsStats::new()),
+            stats,
             memory_budget,
             vfs_timing_enabled: vfs_timing_enabled_from_env(),
         })
@@ -1462,6 +1472,10 @@ where
                             memory_budget.writer_bytes(),
                             memory_budget.reader_bytes(),
                         );
+                        fuse_stats.sync_memory_allocator_metrics(
+                            memory_budget.cas_retries(),
+                            memory_budget.allocation_rejections(),
+                        );
                     }
                     let dirty = state.writer.dirty_breakdown().await;
                     fuse_stats.sync_writeback_dirty_breakdown(
@@ -1505,6 +1519,7 @@ where
                         dirty.stage_failures,
                         dirty.commit_before_stage_ops,
                     );
+                    fuse_stats.sync_writeback_metadata_inflight(dirty.metadata_inflight);
                     fuse_stats.sync_writeback_commit_wait_metrics(
                         dirty.commit_wait_upload_ops,
                         dirty.commit_wait_upload_us,
@@ -5422,6 +5437,20 @@ where
     /// Write data by file handle and offset.
     #[tracing::instrument(level = "trace", skip(self, data), fields(fh, offset, len = data.len()))]
     pub async fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<usize, VfsError> {
+        self.write_with_unique(fh, offset, data, 0).await
+    }
+
+    /// Write data by file handle while preserving the originating FUSE request
+    /// unique for request-level segment attribution.  The legacy `write`
+    /// entry point intentionally keeps unique=0 for non-FUSE callers.
+    #[tracing::instrument(level = "trace", skip(self, data), fields(fh, offset, len = data.len(), request_unique))]
+    pub async fn write_with_unique(
+        &self,
+        fh: u64,
+        offset: u64,
+        data: &[u8],
+        request_unique: u64,
+    ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-entry", 0, fh, offset, data.len());
         #[cfg(feature = "workspace-overlay")]
@@ -5430,10 +5459,14 @@ where
             let data = data.to_vec();
             let vfs = self.clone();
             return driver
-                .run(async move { vfs.packed_owned_write(fh, offset, &data).await })
+                .run(async move {
+                    vfs.packed_owned_write(fh, offset, &data, request_unique)
+                        .await
+                })
                 .await?;
         }
-        self.packed_owned_write(fh, offset, data).await
+        self.packed_owned_write(fh, offset, data, request_unique)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5442,6 +5475,7 @@ where
         fh: u64,
         offset: u64,
         data: &[u8],
+        request_unique: u64,
     ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-owned-entry", 0, fh, offset, data.len());
@@ -5503,11 +5537,16 @@ where
         let mutation_lock = self.state.append_lock(handle.ino);
         #[cfg(test)]
         write_diagnostic("vfs-append-lock-before", handle.ino, fh, offset, data.len());
+        let lock_wait = self.stats().request_segment_timer(
+            request_unique,
+            crate::vfs::stats::RequestSegment::FileLockWait,
+        );
         let _mutation_guard = mutation_lock.lock_owned().await;
+        drop(lock_wait);
         #[cfg(test)]
         write_diagnostic("vfs-append-lock-after", handle.ino, fh, offset, data.len());
 
-        self.write_with_inode_lock_held(handle, offset, data, true)
+        self.write_with_inode_lock_held(handle, offset, data, true, request_unique)
             .await
     }
 
@@ -5517,6 +5556,7 @@ where
         offset: u64,
         data: &[u8],
         honor_append: bool,
+        request_unique: u64,
     ) -> Result<usize, VfsError> {
         let data_len = data.len() as u64;
         #[cfg(test)]
@@ -5528,7 +5568,12 @@ where
             data.len(),
         );
         let (write_offset, written) = if honor_append && handle.flags.append {
+            let lock_wait = self.stats().request_segment_timer(
+                request_unique,
+                crate::vfs::stats::RequestSegment::FileLockWait,
+            );
             let _handle_guard = handle.lock_write().await;
+            drop(lock_wait);
             #[cfg(test)]
             write_diagnostic(
                 "vfs-handle-gate-after",
@@ -5562,7 +5607,9 @@ where
                     append_offset,
                     data.len(),
                 );
-                let written = handle.write_unlocked(append_offset, data).await?;
+                let written = handle
+                    .write_unlocked_with_unique(append_offset, data, request_unique)
+                    .await?;
                 #[cfg(test)]
                 write_diagnostic(
                     "vfs-handle-writer-after",
@@ -5586,7 +5633,12 @@ where
             );
             (append_offset, written)
         } else {
+            let lock_wait = self.stats().request_segment_timer(
+                request_unique,
+                crate::vfs::stats::RequestSegment::FileLockWait,
+            );
             let _handle_guard = handle.lock_write().await;
+            drop(lock_wait);
             #[cfg(test)]
             write_diagnostic(
                 "vfs-handle-gate-after",
@@ -5621,7 +5673,9 @@ where
                     offset,
                     data.len(),
                 );
-                let written = handle.write_unlocked(offset, data).await?;
+                let written = handle
+                    .write_unlocked_with_unique(offset, data, request_unique)
+                    .await?;
                 #[cfg(test)]
                 write_diagnostic(
                     "vfs-handle-writer-after",
@@ -5690,6 +5744,18 @@ where
 
     /// Write data by inode directly (used by FUSE to avoid path resolution).
     pub async fn write_ino(&self, ino: i64, offset: u64, data: &[u8]) -> Result<usize, VfsError> {
+        self.write_ino_with_unique(ino, offset, data, 0).await
+    }
+
+    /// Inode write preserving the originating FUSE request unique.  Existing
+    /// callers without a request identity continue through `write_ino`.
+    pub async fn write_ino_with_unique(
+        &self,
+        ino: i64,
+        offset: u64,
+        data: &[u8],
+        request_unique: u64,
+    ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-inode-entry", ino, 0, offset, data.len());
         #[cfg(feature = "workspace-overlay")]
@@ -5698,10 +5764,14 @@ where
             let data = data.to_vec();
             let vfs = self.clone();
             return driver
-                .run(async move { vfs.packed_owned_write_ino(ino, offset, &data).await })
+                .run(async move {
+                    vfs.packed_owned_write_ino(ino, offset, &data, request_unique)
+                        .await
+                })
                 .await?;
         }
-        self.packed_owned_write_ino(ino, offset, data).await
+        self.packed_owned_write_ino(ino, offset, data, request_unique)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5710,6 +5780,7 @@ where
         ino: i64,
         offset: u64,
         data: &[u8],
+        request_unique: u64,
     ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-inode-owned-entry", ino, 0, offset, data.len());
@@ -5752,7 +5823,12 @@ where
         let mutation_lock = self.state.append_lock(ino);
         #[cfg(test)]
         write_diagnostic("vfs-inode-append-lock-before", ino, 0, offset, data.len());
+        let lock_wait = self.stats().request_segment_timer(
+            request_unique,
+            crate::vfs::stats::RequestSegment::FileLockWait,
+        );
         let _mutation_guard = mutation_lock.lock_owned().await;
+        drop(lock_wait);
         #[cfg(test)]
         write_diagnostic("vfs-inode-append-lock-after", ino, 0, offset, data.len());
 
@@ -5778,7 +5854,7 @@ where
         #[cfg(test)]
         write_diagnostic("vfs-inode-writer-before", ino, 0, offset, data.len());
         let written = writer
-            .write_at(offset, data)
+            .write_at_with_unique(offset, data, request_unique)
             .await
             .map_err(VfsError::from)?;
         #[cfg(test)]
@@ -6218,7 +6294,7 @@ where
         let dst_inode = self.ensure_inode_registered(dst.ino).await?;
         dst.ensure_writer_with(|| self.state.writer.ensure_file(dst_inode));
         let written = self
-            .write_with_inode_lock_held(dst.clone(), off_out, &data, false)
+            .write_with_inode_lock_held(dst.clone(), off_out, &data, false, 0)
             .await?;
 
         // Flush the validated destination itself; never open a replacement

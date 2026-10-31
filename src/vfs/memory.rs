@@ -46,6 +46,10 @@ struct Inner {
     reader_bytes: AtomicU64,
     /// Bytes allocated by writer buffers
     writer_bytes: AtomicU64,
+    /// Failed reservation CAS attempts caused by allocator contention.
+    cas_retries: AtomicU64,
+    /// Reader reservations rejected by the critical watermark.
+    allocation_rejections: AtomicU64,
 }
 
 impl MemoryBudget {
@@ -61,6 +65,8 @@ impl MemoryBudget {
                 used_bytes: AtomicU64::new(0),
                 reader_bytes: AtomicU64::new(0),
                 writer_bytes: AtomicU64::new(0),
+                cas_retries: AtomicU64::new(0),
+                allocation_rejections: AtomicU64::new(0),
             }),
         }
     }
@@ -83,6 +89,16 @@ impl MemoryBudget {
     /// Current writer (dirty buffer) bytes
     pub fn writer_bytes(&self) -> u64 {
         self.inner.writer_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Number of failed compare-exchange attempts in reader reservations.
+    pub fn cas_retries(&self) -> u64 {
+        self.inner.cas_retries.load(Ordering::Relaxed)
+    }
+
+    /// Number of reader reservations rejected by the critical watermark.
+    pub fn allocation_rejections(&self) -> u64 {
+        self.inner.allocation_rejections.load(Ordering::Relaxed)
     }
 
     /// Current memory pressure as a fraction (0.0 to 1.0+)
@@ -138,6 +154,9 @@ impl MemoryBudget {
         loop {
             let current = self.inner.used_bytes.load(Ordering::Relaxed);
             if current.saturating_add(bytes) > critical_limit {
+                self.inner
+                    .allocation_rejections
+                    .fetch_add(1, Ordering::Relaxed);
                 trace!(
                     "Reader alloc rejected: used={:.1} MiB + request={:.1} MiB > critical={:.1} MiB",
                     current as f64 / 1048576.0,
@@ -162,6 +181,7 @@ impl MemoryBudget {
                 return true;
             }
             // CAS failed (contention) — retry
+            self.inner.cas_retries.fetch_add(1, Ordering::Relaxed);
         }
     }
 

@@ -101,6 +101,26 @@ where
     }
 }
 
+fn configure_session_with_observer<FS>(
+    session: asyncfuse::raw::Session<FS>,
+    config: FuseConcurrencyConfig,
+    budgeted: bool,
+    stats: &std::sync::Arc<crate::vfs::stats::FsStats>,
+) -> asyncfuse::raw::Session<FS>
+where
+    FS: asyncfuse::raw::Filesystem + Send + Sync + 'static,
+{
+    let session = configure_session(session, config, budgeted);
+    // Do not install a trait callback on every request when detailed
+    // observation is disabled. The observer can still be enabled before a
+    // later mount through BREWFS_REQUEST_TRACE.
+    if stats.request_observation().enabled() {
+        session.with_request_observer(stats.clone())
+    } else {
+        session
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn fuse_op_log_enabled() -> bool {
     std::env::var("BREWFS_FUSE_OP_LOG")
@@ -126,15 +146,26 @@ where
     let identity = fs.clone();
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
+    let request_observer = fs.stats().clone();
     // Prefer unprivileged mount on Linux (requires fusermount3 in PATH)
     let handle = if fuse_op_log_enabled() {
-        configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount_with_unprivileged(LoggingFileSystem::new(fs), &mount_point)
-            .await
+        configure_session_with_observer(
+            asyncfuse::raw::Session::new(options),
+            concurrency,
+            budgeted,
+            &request_observer,
+        )
+        .mount_with_unprivileged(LoggingFileSystem::new(fs), &mount_point)
+        .await
     } else {
-        configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount_with_unprivileged(fs, &mount_point)
-            .await
+        configure_session_with_observer(
+            asyncfuse::raw::Session::new(options),
+            concurrency,
+            budgeted,
+            &request_observer,
+        )
+        .mount_with_unprivileged(fs, &mount_point)
+        .await
     }?;
     bind_mount_device(&identity, &mount_point, handle).await
 }
@@ -155,14 +186,25 @@ where
     let identity = fs.clone();
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
+    let request_observer = fs.stats().clone();
     let handle = if fuse_op_log_enabled() {
-        configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount(LoggingFileSystem::new(fs), &mount_point)
-            .await
+        configure_session_with_observer(
+            asyncfuse::raw::Session::new(options),
+            concurrency,
+            budgeted,
+            &request_observer,
+        )
+        .mount(LoggingFileSystem::new(fs), &mount_point)
+        .await
     } else {
-        configure_session(asyncfuse::raw::Session::new(options), concurrency, budgeted)
-            .mount(fs, &mount_point)
-            .await
+        configure_session_with_observer(
+            asyncfuse::raw::Session::new(options),
+            concurrency,
+            budgeted,
+            &request_observer,
+        )
+        .mount(fs, &mount_point)
+        .await
     }?;
     bind_mount_device(&identity, &mount_point, handle).await
 }
