@@ -10,6 +10,17 @@ pub use filesystem::Filesystem;
 use futures_util::future::Either;
 pub use object_safe_filesystem::{DirectoryPlusStream, DirectoryStream, ObjectSafeFilesystem};
 pub use request::Request;
+
+/// Optional reply lifecycle observer. Implementations must be non-blocking
+/// and must not perform filesystem or reply I/O from a callback.
+pub trait RequestObserver: std::fmt::Debug + Send + Sync + 'static {
+    fn request_reply_submitted(&self, _unique: u64) {}
+    fn request_reply_submitted_result(&self, unique: u64, _error: i32) {
+        self.request_reply_submitted(unique);
+    }
+    fn request_cancelled(&self, _unique: u64) {}
+    fn request_failed(&self, _unique: u64) {}
+}
 #[cfg(any(
     feature = "async-io-runtime",
     feature = "tokio-runtime",

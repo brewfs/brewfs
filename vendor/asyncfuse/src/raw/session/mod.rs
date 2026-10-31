@@ -21,6 +21,14 @@ mod reply_lifecycle_tests;
 mod reply_tracker;
 #[cfg(all(test, target_os = "linux", feature = "io-uring-runtime"))]
 mod request_cancel_tests;
+#[cfg(all(
+    test,
+    target_os = "linux",
+    feature = "tokio-runtime",
+    not(feature = "io-uring-runtime"),
+    not(feature = "async-io-runtime")
+))]
+mod request_observer_tests;
 #[cfg(all(test, target_os = "linux", feature = "io-uring-runtime"))]
 mod startup_preflight_tests;
 #[cfg(all(test, target_os = "linux", feature = "io-uring-runtime"))]
@@ -700,6 +708,7 @@ pub struct Session<FS: Filesystem + Send + Sync + 'static> {
     inflight: Arc<AtomicUsize>,
     inflight_notify: Arc<async_notify::Notify>,
     readonly_reply_tracker: Option<Arc<ReplyTracker>>,
+    request_observer: Option<Arc<dyn crate::raw::RequestObserver>>,
 }
 
 fn kernel_writeback_permissions(default_permissions: bool, negotiated_flags: u32) -> bool {
@@ -765,6 +774,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             inflight: Arc::new(AtomicUsize::new(0)),
             inflight_notify: Arc::new(async_notify::Notify::new()),
             readonly_reply_tracker: None,
+            request_observer: None,
         }
     }
 
@@ -794,6 +804,12 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
     pub fn with_workers(mut self, worker_count: usize, max_background: usize) -> Self {
         self.worker_count = worker_count;
         self.max_background = max_background.max(1); // avoid zero
+        self
+    }
+
+    /// Install an optional non-blocking reply lifecycle observer.
+    pub fn with_request_observer(mut self, observer: Arc<dyn crate::raw::RequestObserver>) -> Self {
+        self.request_observer = Some(observer);
         self
     }
 
@@ -1238,6 +1254,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             // write requests queue up unsent.
             let conn = Arc::new(fuse_write_connection.try_clone()?);
             let tracker = self.readonly_reply_tracker.clone();
+            let request_observer = self.request_observer.clone();
 
             #[cfg(all(
                 not(feature = "tokio-runtime"),
@@ -1245,7 +1262,9 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 feature = "async-io-runtime"
             ))]
             task::spawn(async move {
-                if let Err(e) = Self::reply_fuse(conn, rx, tracker).await {
+                if let Err(e) =
+                    Self::reply_fuse_with_observer(conn, rx, tracker, request_observer).await
+                {
                     tracing::error!("reply fuse task {i} exited: {e}");
                 }
             })
@@ -1256,7 +1275,9 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 feature = "io-uring-runtime"
             ))]
             task::spawn(async move {
-                if let Err(e) = Self::reply_fuse(conn, rx, tracker).await {
+                if let Err(e) =
+                    Self::reply_fuse_with_observer(conn, rx, tracker, request_observer).await
+                {
                     tracing::error!("reply fuse task {i} exited: {e}");
                 }
             });
@@ -1302,10 +1323,20 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         }
     }
 
+    #[cfg(all(test, target_os = "linux", feature = "io-uring-runtime"))]
     async fn reply_fuse(
+        fuse_connection: Arc<FuseConnection>,
+        response_receiver: UnboundedReceiver<FuseData>,
+        tracker: Option<Arc<ReplyTracker>>,
+    ) -> IoResult<()> {
+        Self::reply_fuse_with_observer(fuse_connection, response_receiver, tracker, None).await
+    }
+
+    async fn reply_fuse_with_observer(
         fuse_connection: Arc<FuseConnection>,
         mut response_receiver: UnboundedReceiver<FuseData>,
         tracker: Option<Arc<ReplyTracker>>,
+        request_observer: Option<Arc<dyn crate::raw::RequestObserver>>,
     ) -> IoResult<()> {
         let mut pump = ReplyPumpLifetime::new(tracker.clone());
         loop {
@@ -1371,16 +1402,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                     );
                 }
             }
-            let reply_header = if data.len() >= FUSE_OUT_HEADER_SIZE {
-                let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                let err_code = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-                let unique = u64::from_le_bytes([
-                    data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
-                ]);
-                Some((len, err_code, unique))
-            } else {
-                None
-            };
+            let reply_header = reply_tracker::wire_header(&data, extend_data.as_deref()).ok();
 
             // Retry loop: keep writing this reply until it succeeds, the kernel
             // forgets the request (NotFound), or the channel is closed.
@@ -1397,6 +1419,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                         }
                         if let Some(ticket) = &ticket {
                             ticket.written();
+                        }
+                        if let Some((_, error, unique)) = reply_header {
+                            if let Some(observer) = &request_observer {
+                                observer.request_reply_submitted_result(unique, error);
+                            }
                         }
                         break;
                     }
@@ -1417,6 +1444,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                             if let Some(ticket) = &ticket {
                                 ticket.kernel_forgot();
                             }
+                            if let Some((_, _, unique)) = reply_header {
+                                if let Some(observer) = &request_observer {
+                                    observer.request_cancelled(unique);
+                                }
+                            }
                             warn!(
                                 "may reply interrupted fuse request, ignore this error {}",
                                 err
@@ -1429,6 +1461,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                             // Readonly terminal failures are sticky. Mutable
                             // retries keep their existing behavior unchanged.
                             pump.fail(&err);
+                            if let Some((_, _, unique)) = reply_header {
+                                if let Some(observer) = &request_observer {
+                                    observer.request_failed(unique);
+                                }
+                            }
                             return Err(err);
                         }
                         if let Some((len, err_code, unique)) = reply_header {
