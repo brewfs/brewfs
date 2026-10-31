@@ -17,6 +17,9 @@ use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3MountBudget};
 
 const SCAN_BATCH_LIMIT: u32 = 1024;
 const TXN_MAX_RETRIES: usize = 10;
+// Only namespaces without CONTROL serialize here. The key is locked but
+// never stored; established catalogs retain their independent entity CAS.
+const BOOTSTRAP_BARRIER: &[u8] = b"\0manager-bootstrap";
 // A scan response may carry a lock error in one KvPair while the transaction
 // remains read-only and safe to retry at its fixed timestamp. Keep this
 // continuation budget separate from region/page admission: exhausting it
@@ -267,11 +270,13 @@ async fn connect_transaction_client(
 pub struct TiKvWorkspaceBackend {
     clients: Arc<tokio::sync::Mutex<ClientSlots>>,
     prefix: Vec<u8>,
+    namespace: String,
     pd_endpoints: std::sync::Arc<Vec<String>>,
     mount_budget: Arc<V3MountBudget>,
     tls: Option<TiKvTlsConfig>,
     operator_admin: Option<TiKvOperatorAdminIdentity>,
     operations: Arc<Operations>,
+    established_namespace: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     test_control: std::sync::Arc<tests::commit_failure_candidates::CasTestControl>,
 }
@@ -399,11 +404,13 @@ impl TiKvWorkspaceBackend {
                 generic: None,
             })),
             prefix,
+            namespace: namespace.to_owned(),
             pd_endpoints: std::sync::Arc::new(pd_endpoints),
             mount_budget,
             tls,
             operator_admin: None,
             operations: Arc::default(),
+            established_namespace: Arc::default(),
             #[cfg(test)]
             test_control: std::sync::Arc::default(),
         })
@@ -414,6 +421,23 @@ impl TiKvWorkspaceBackend {
         scoped.extend_from_slice(&self.prefix);
         scoped.extend_from_slice(key);
         scoped
+    }
+
+    pub(crate) async fn load_manager_native_locator(
+        &self,
+    ) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        let _operation = self.operations.enter()?;
+        let mut transaction = self
+            .main_client()
+            .await?
+            .begin_with_options(TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn))
+            .await
+            .map_err(backend)?;
+        let value = transaction
+            .get(format!("nb2/header/{}", self.namespace))
+            .await;
+        transaction.rollback().await.map_err(backend)?;
+        value.map_err(backend)
     }
 
     async fn main_client(&self) -> Result<TransactionClient, WorkspaceError> {
@@ -932,7 +956,17 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         checks: &[KvCheck],
         writes: &[KvWrite],
     ) -> Result<bool, WorkspaceError> {
-        self.cas(checks, writes, None, None).await
+        self.cas(checks, writes, None, None, false).await
+    }
+
+    async fn compare_and_swap_in_empty_namespace(
+        &self,
+        checks: &[KvCheck],
+        writes: &[KvWrite],
+        before_ns: i64,
+    ) -> Result<bool, WorkspaceError> {
+        validate_cas_time_window(None, Some(before_ns))?;
+        self.cas(checks, writes, None, Some(before_ns), true).await
     }
 
     async fn authenticate_checks_before_bounded(
@@ -1085,7 +1119,8 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         writes: &[KvWrite],
         expires_at_ns: i64,
     ) -> Result<bool, WorkspaceError> {
-        self.cas(checks, writes, None, Some(expires_at_ns)).await
+        self.cas(checks, writes, None, Some(expires_at_ns), false)
+            .await
     }
 
     async fn compare_and_swap_in_time_window(
@@ -1096,7 +1131,8 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         before_ns: Option<i64>,
     ) -> Result<bool, WorkspaceError> {
         validate_cas_time_window(not_before_ns, before_ns)?;
-        self.cas(checks, writes, not_before_ns, before_ns).await
+        self.cas(checks, writes, not_before_ns, before_ns, false)
+            .await
     }
 
     async fn server_time_ns(&self) -> Result<i64, WorkspaceError> {
@@ -1118,10 +1154,38 @@ impl TiKvWorkspaceBackend {
         writes: &[KvWrite],
         not_before_ns: Option<i64>,
         before_ns: Option<i64>,
+        empty_namespace: bool,
     ) -> Result<bool, WorkspaceError> {
         let _operation = self.operations.enter()?;
+        if writes.iter().any(|write| match write {
+            KvWrite::Put { key, .. } | KvWrite::Delete { key } => {
+                key.as_slice() == BOOTSTRAP_BARRIER
+            }
+        }) {
+            return Err(WorkspaceError::Fenced);
+        }
+        // A range read alone has no phantom protection under snapshot
+        // isolation. Every pre-initialization CAS owns this same barrier.
+        // CONTROL is immutable as a namespace-lifetime marker: replacement or
+        // manual raw-key deletion is not supported catalog initialization.
+        let preinitialization = if empty_namespace {
+            true
+        } else if self
+            .established_namespace
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            false
+        } else if self.get(b"control").await?.is_some() {
+            self.established_namespace
+                .store(true, std::sync::atomic::Ordering::Release);
+            false
+        } else {
+            true
+        };
         let ordered_checks = pessimistic_checks_in_key_order(checks);
         let lock_keys = pessimistic_lock_keys(checks, writes);
+        let native_locator =
+            empty_namespace.then(|| format!("nb2/header/{}", self.namespace).into_bytes());
         'attempt: for attempt in 0..TXN_MAX_RETRIES {
             // A following bounded read cannot resolve an ordinary 2PC
             // secondary lock. Success therefore includes this transaction's
@@ -1136,8 +1200,94 @@ impl TiKvWorkspaceBackend {
                 .await
                 .map_err(backend)?;
 
+            if preinitialization {
+                #[cfg(test)]
+                self.test_control
+                    .before_bootstrap_lock(transaction.start_timestamp());
+                let barrier = self.scoped(BOOTSTRAP_BARRIER);
+                match transaction.get_for_update(barrier.clone()).await {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        return Err(WorkspaceError::Fenced);
+                    }
+                    Err(error) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        if is_retryable(&error.to_string()) && attempt + 1 < TXN_MAX_RETRIES {
+                            Self::retry_delay(attempt).await;
+                            continue 'attempt;
+                        }
+                        return Err(backend(error));
+                    }
+                }
+                if empty_namespace {
+                    // The transaction start timestamp may precede a wait for
+                    // the barrier. Read a fresh snapshot *after* owning it so
+                    // a previous writer's committed rows cannot be missed.
+                    // Exclude our own absent-key lock from the read ranges.
+                    let client = self.main_client().await?;
+                    let stamp = client.current_timestamp().await.map_err(backend)?;
+                    let mut snapshot = client.snapshot(stamp, TransactionOptions::new_optimistic());
+                    let end = prefix_range_end(&self.prefix)
+                        .map(Key::from)
+                        .map(Bound::Excluded)
+                        .unwrap_or(Bound::Unbounded);
+                    let ranges = [
+                        BoundRange::new(
+                            Bound::Included(Key::from(self.prefix.clone())),
+                            Bound::Excluded(Key::from(barrier.clone())),
+                        ),
+                        BoundRange::new(Bound::Excluded(Key::from(barrier)), end),
+                    ];
+                    let owner = self.scoped(super::manager_guard::MANAGER_CONTROLLER_KEY);
+                    let owner_checked = checks.iter().any(|check| {
+                        check.key.as_slice() == super::manager_guard::MANAGER_CONTROLLER_KEY
+                            && check.expected.is_some()
+                    });
+                    for range in ranges {
+                        let keys = match snapshot.scan_keys(range, 2).await {
+                            Ok(keys) => keys.collect::<Vec<_>>(),
+                            Err(error) => {
+                                transaction.rollback().await.map_err(backend)?;
+                                return Err(backend(error));
+                            }
+                        };
+                        if keys.into_iter().any(|key| {
+                            let key: Vec<u8> = key.into();
+                            !owner_checked || key != owner
+                        }) {
+                            transaction.rollback().await.map_err(backend)?;
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+
             #[cfg(test)]
             self.test_control.begin_attempt();
+            // The native locator is outside the carrier namespace, so it must
+            // be checked under its own lock through commit. Its key sorts
+            // entirely before or after the scoped packet; keep that order to
+            // agree with guarded native transactions that also lock authority.
+            let locator_first = native_locator
+                .as_ref()
+                .is_some_and(|key| key.as_slice() < self.prefix.as_slice());
+            if locator_first {
+                match transaction
+                    .get_for_update(native_locator.as_ref().unwrap().clone())
+                    .await
+                {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        return Ok(false);
+                    }
+                    Err(error) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        return Err(backend(error));
+                    }
+                }
+            }
             let mut matched = true;
             let mut check_index = 0;
             // First acquisition of every checked or written key follows one
@@ -1219,6 +1369,21 @@ impl TiKvWorkspaceBackend {
             if !matched {
                 transaction.rollback().await.map_err(backend)?;
                 return Ok(false);
+            }
+            if let Some(locator) = &native_locator
+                && !locator_first
+            {
+                match transaction.get_for_update(locator.clone()).await {
+                    Ok(None) => {}
+                    Ok(Some(_)) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        return Ok(false);
+                    }
+                    Err(error) => {
+                        transaction.rollback().await.map_err(backend)?;
+                        return Err(backend(error));
+                    }
+                }
             }
 
             for write in writes {
@@ -1904,6 +2069,7 @@ mod tests {
         include!("tikv_commit_proxy_tests.rs");
         include!("tikv_whole_auth_postsubmission_tests.rs");
         include!("tikv_lock_order_tests.rs");
+        include!("tikv_manager_bootstrap_tests.rs");
     }
 
     #[test]

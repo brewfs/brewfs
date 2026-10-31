@@ -100,6 +100,7 @@ where
     let backend = TiKvWorkspaceBackend::connect_with_budget(endpoints, &namespace, budget.clone())
         .await
         .unwrap();
+    establish_catalog_namespace(&backend).await;
     let mut task = tokio::spawn(run(backend.clone()));
     let (result, timed_out) = match tokio::time::timeout(CASE_TIMEOUT, &mut task).await {
         Ok(result) => (result, false),

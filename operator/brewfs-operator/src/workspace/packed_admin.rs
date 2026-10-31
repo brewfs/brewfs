@@ -357,6 +357,7 @@ impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
     async fn ensure_volume(&self, identity: VolumeIdentity) -> anyhow::Result<VolumeView> {
         let (store, budget) = self.fresh_publication_scope().await?;
         let volume = CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: OPERATOR_VOLUME_FORMAT.into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: identity.volume_id,
@@ -441,6 +442,7 @@ impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
                 self.native
                     .store
                     .create_workspace_from_packed_carrier(CreateWorkspace {
+                        upper_bucket: None,
                         workspace_id: request.workspace_id,
                         head_layer_id: request.head_layer_id,
                         base_revision: request.base_revision,

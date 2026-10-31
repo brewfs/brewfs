@@ -485,6 +485,8 @@ async fn reopen_recovers_volume_commit_before_registration_or_success_checkpoint
         ),
         catalog_ref: "local".into(),
         fingerprint: manager.fingerprint("local").unwrap(),
+        transport_fingerprint: None,
+        claim_established: false,
         task: Task::Volume {
             request: request.clone(),
             root,
@@ -564,6 +566,8 @@ async fn initialization_recovery_does_not_recreate_a_missing_original_catalog() 
         ),
         catalog_ref: "local".into(),
         fingerprint: manager.fingerprint("local").unwrap(),
+        transport_fingerprint: None,
+        claim_established: false,
         task: Task::Volume {
             request: request.clone(),
             root,
@@ -786,6 +790,8 @@ async fn accepted_retry_survives_restart_before_worker_starts() {
         ),
         catalog_ref: binding.view.catalog_ref,
         fingerprint: binding.fingerprint,
+        transport_fingerprint: None,
+        claim_established: false,
         task: Task::Delete { workspace },
     };
     let scope = format!("volumes/{}/workspaces/{workspace}/delete", volume.id);
@@ -884,4 +890,68 @@ async fn registration_rejects_orphan_packed_history_without_native_fallback() {
     assert_eq!(op.error.unwrap().code, "unsupported");
     assert!(manager.list_volumes().await.unwrap().is_empty());
     pool.close().await;
+}
+
+#[tokio::test]
+async fn shutdown_stops_admission_and_recovers_queued_work_under_original_ids() {
+    let (dir, manager) = fixture().await;
+    let volume = initialized(&manager).await;
+    let request = ForkRequest {
+        revision: volume.root_revision.clone().unwrap(),
+        count: 1,
+        owner: Some("shutdown-recovery".into()),
+    };
+    let accepted = manager
+        .submit_fork(volume.id, "queued-at-shutdown", request.clone(), false)
+        .await
+        .unwrap();
+    let workspace = accepted.items[0].workspace_id.unwrap();
+    let head = accepted.items[0].head_layer_id.unwrap();
+    manager.schedule(accepted.id);
+    tokio::time::timeout(std::time::Duration::from_secs(5), manager.shutdown())
+        .await
+        .expect("shutdown must wait for queued workers to release their handles")
+        .unwrap();
+    assert!(manager.inner.scheduled.lock().unwrap().is_empty());
+    assert_eq!(
+        manager
+            .create_volume("after-shutdown", initialize())
+            .await
+            .unwrap_err()
+            .code,
+        "unavailable"
+    );
+    // The worker may have finished before shutdown won the gate, or may still
+    // be durably queued. Neither ordering may lose the accepted identities.
+    let stopped = manager.operation(accepted.id).await.unwrap();
+    assert!(matches!(
+        stopped.state,
+        OperationState::Accepted | OperationState::Succeeded
+    ));
+    assert_eq!(stopped.items[0].workspace_id, Some(workspace));
+    assert_eq!(stopped.items[0].head_layer_id, Some(head));
+    manager.inner.pool.close().await;
+    drop(manager);
+
+    let reopened = Manager::open(dir.path()).await.unwrap();
+    let finished = reopened.operation(accepted.id).await.unwrap();
+    assert_eq!(finished.state, OperationState::Succeeded, "{finished:?}");
+    assert_eq!(finished.items[0].workspace_id, Some(workspace));
+    assert_eq!(finished.items[0].head_layer_id, Some(head));
+    let view = reopened
+        .inspect_workspace(volume.id, workspace)
+        .await
+        .unwrap();
+    assert_eq!(view.record.head_layer_id, head);
+    assert_eq!(view.base_revision, request.revision);
+    assert_eq!(view.record.owner_id.as_deref(), Some("shutdown-recovery"));
+    assert_eq!(reopened.list_workspaces(volume.id).await.unwrap().len(), 2);
+    let replay = reopened
+        .fork(volume.id, "queued-at-shutdown", request)
+        .await
+        .unwrap();
+    assert_eq!(replay.id, accepted.id);
+    assert_eq!(replay.items[0].workspace_id, Some(workspace));
+    assert_eq!(replay.items[0].head_layer_id, Some(head));
+    reopened.shutdown().await.unwrap();
 }

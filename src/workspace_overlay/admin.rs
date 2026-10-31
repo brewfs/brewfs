@@ -159,9 +159,12 @@ async fn ensure_workspace_inner<W: WorkspaceStore + ?Sized>(
     let view = inspect_workspace(store, request.workspace_id).await?;
     // Always revalidate after creation as well as a failed/ambiguous reply:
     // another creator might have won the same ID with different content.
-    if view.record.owner_id != request.owner_id || view.record.state != WorkspaceState::Active {
+    if view.record.owner_id != request.owner_id
+        || view.record.upper_bucket != request.upper_bucket
+        || view.record.state != WorkspaceState::Active
+    {
         return Err(conflict(
-            "workspace ID has a different owner or is not active",
+            "workspace ID has a different owner or upper bucket, or is not active",
         ));
     }
     if !allow_progress && view.record.head_epoch != 0 {
@@ -271,6 +274,19 @@ mod tests {
         different.head_layer_id = LayerId::new();
         assert!(matches!(
             ensure_workspace(&store, different).await,
+            Err(WorkspaceError::Conflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn replay_requires_the_persisted_upper_bucket_identity() {
+        let (store, root) = fixture().await;
+        let mut request = fork_request(&root);
+        request.upper_bucket = Some("original-child-bucket".into());
+        ensure_workspace(&store, request.clone()).await.unwrap();
+        request.upper_bucket = Some("different-child-bucket".into());
+        assert!(matches!(
+            ensure_workspace(&store, request).await,
             Err(WorkspaceError::Conflict(_))
         ));
     }

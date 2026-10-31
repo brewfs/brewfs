@@ -42,8 +42,9 @@ pub(super) fn router(state_dir: PathBuf) -> Router<ConsoleState> {
     unsupported_routes(router)
 }
 
-/// Recover persisted work before the real server accepts requests. The same
-/// initialized handle is retained by the router for the server's lifetime.
+/// Open the journal and start recovery before accepting requests. Remote
+/// recovery runs in the background; callers must poll operation state. Retain
+/// the same initialized handle for the server's lifetime.
 pub(super) async fn initialized_router(state_dir: PathBuf) -> anyhow::Result<Router<ConsoleState>> {
     #[cfg(feature = "workspace-overlay")]
     {
@@ -77,14 +78,42 @@ fn unsupported_routes(router: Router<ConsoleState>) -> Router<ConsoleState> {
 
 async fn capabilities() -> Json<serde_json::Value> {
     let enabled = cfg!(feature = "workspace-overlay");
+    let native = cfg!(feature = "native-packed-base");
+    let mut formats = Vec::new();
+    let mut profiles = Vec::new();
+    if enabled {
+        formats.push("workspace-v1");
+        profiles.push(serde_json::json!({
+            "volume_format": "workspace-v1",
+            "metadata_backends": ["sqlite", "redis", "tikv"],
+            "revision_kind": "catalog_revision"
+        }));
+    }
+    if native {
+        formats.push("workspace-native-v2");
+        profiles.push(serde_json::json!({
+            "volume_format": "workspace-native-v2",
+            "metadata_backends": ["redis", "tikv"],
+            "revision_kind": "native_p1_catalog",
+            "upper_bucket": null,
+            "object_storage": "shared_pool_with_workspace_key_isolation"
+        }));
+    }
     Json(serde_json::json!({
         "service": "brewfs-manager",
         "version": env!("CARGO_PKG_VERSION"),
         "api_version": "v1",
         "enabled": enabled,
-        "formats": if enabled { vec!["workspace-v1"] } else { vec![] },
-        "metadata_backends": if enabled { vec!["sqlite"] } else { vec![] },
+        "formats": formats,
+        "metadata_backends": if enabled { vec!["sqlite", "redis", "tikv"] } else { vec![] },
+        "profiles": profiles,
         "max_fork_count": 100,
+        "max_pending_operations": 128,
+        "pending_limit_applies_to": "new_operations",
+        "max_concurrent_admissions": 64,
+        "batch_execution": "serial",
+        "batch_atomic": false,
+        "overload_http_status": 429,
         "multi_replica": false,
         "authorization": "console_administrator_configured_catalogs",
         "persistent_operations": enabled,
@@ -95,6 +124,17 @@ async fn capabilities() -> Json<serde_json::Value> {
         "drain": false,
         "checkpoint": false,
         "handoff": false,
+        "migration": false,
+        "scheduling": false,
+        "benchmark": false,
+        "native_p1_catalog": native,
+        "native_published_revision": false,
+        "native_frozen_metadata": false,
+        "workspace_entity": false,
+        "native_tikv_tls": false,
+        "redis_cluster": false,
+        "redis_sentinel_discovery": false,
+        "native_redis_cluster": false,
         "remote_ready": false
     }))
 }
@@ -199,7 +239,8 @@ mod enabled {
             "unsupported" => StatusCode::NOT_IMPLEMENTED,
             "not_found" => StatusCode::NOT_FOUND,
             "conflict" | "idempotency_conflict" => StatusCode::CONFLICT,
-            "unavailable" | "recovery_required" => StatusCode::SERVICE_UNAVAILABLE,
+            "overloaded" => StatusCode::TOO_MANY_REQUESTS,
+            "unavailable" | "recovery_required" | "session_busy" => StatusCode::SERVICE_UNAVAILABLE,
             _ => {
                 return api::json_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -436,5 +477,57 @@ mod enabled {
             .await
             .map_err(manager_error)?;
         Ok(Json(operation).into_response())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn manager_backpressure_is_retryable_http_429_and_unknown_errors_are_redacted() {
+            let response = manager_error(ManagerError {
+                code: "overloaded",
+                message:
+                    "Manager pending operation limit reached; retry the original request and key"
+                        .into(),
+            })
+            .into_response();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"]["code"], "overloaded");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("original request and key")
+            );
+
+            let response = manager_error(ManagerError {
+                code: "session_busy",
+                message: "previous Manager session still holds the catalog; retry the original operation after lease expiry".into(),
+            }).into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"]["code"], "session_busy");
+
+            let response = manager_error(ManagerError {
+                code: "unexpected_backend_failure",
+                message: "redis://user:secret-marker@private-host/0".into(),
+            })
+            .into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(!body.contains("secret-marker"));
+            assert!(!body.contains("private-host"));
+        }
     }
 }

@@ -93,6 +93,15 @@ impl StoreError {
 pub trait ControlStore: Send + Sync {
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
     async fn run(&self, txn: Txn) -> Result<(), StoreError>;
+    /// Apply the exact checks and writes only before the backend-clock deadline.
+    /// A preceding time read is not sufficient: the deadline must be checked
+    /// while this transaction holds the checked ownership row. Unsupported
+    /// stores fail closed instead of falling back to an unguarded transaction.
+    async fn run_before(&self, _txn: Txn, _before_ns: i64) -> Result<(), StoreError> {
+        Err(StoreError::Backend(
+            "atomic control-store deadline is unsupported".into(),
+        ))
+    }
     async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
 }
 

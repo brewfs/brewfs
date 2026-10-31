@@ -697,6 +697,186 @@ impl<B> KvWorkspaceStore<B>
 where
     B: WorkspaceKvBackend,
 {
+    /// Manager bootstrap: never migrate or modify a foreign/partial catalog.
+    /// Its guarded backend includes the durable controller lease in the same
+    /// empty-namespace conditional transaction as this complete root packet.
+    pub async fn create_volume_root_in_empty_namespace(
+        &self,
+        request: CreateVolumeRoot,
+    ) -> Result<WorkspaceRecord, WorkspaceError> {
+        self.create_volume_root_inner(request, true).await
+    }
+
+    async fn create_volume_root_inner(
+        &self,
+        request: CreateVolumeRoot,
+        strict_empty: bool,
+    ) -> Result<WorkspaceRecord, WorkspaceError> {
+        self.require_admin_access()?;
+        let supported_header = (request.volume_format == VOLUME_FORMAT
+            && request.schema_version == WORKSPACE_SCHEMA_VERSION)
+            || (cfg!(feature = "native-packed-base")
+                && request.volume_format == "workspace-native-v2"
+                && request.schema_version == 2);
+        if !supported_header {
+            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
+                "{}/{}",
+                request.volume_format, request.schema_version
+            )));
+        }
+        if request.root_layer_id == request.writable_layer_id {
+            return Err(WorkspaceError::CorruptMetadata(
+                "root and writable layer IDs must differ".into(),
+            ));
+        }
+        let now = self.now_ns().await?;
+        let root_inode = InodeDelta {
+            layer_id: request.root_layer_id,
+            ino: 1,
+            state: InodeState::Present,
+            kind: 1,
+            size: 0,
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            nlink: 2,
+            atime_ns: now,
+            mtime_ns: now,
+            ctime_ns: now,
+            symlink_target: None,
+            parent_hint: Some(1),
+            data_version: 1,
+            sequence: 1,
+        };
+        let digest = delta_digest(&CanonicalLayerDelta {
+            inodes: vec![root_inode.clone()],
+            ..CanonicalLayerDelta::default()
+        })?;
+        let root = root_hash([0; 32], digest);
+        let workspace = WorkspaceRecord {
+            workspace_id: request.workspace_id,
+            head_layer_id: request.writable_layer_id,
+            head_epoch: 0,
+            fork_base: Some(BaseRevision {
+                layer_id: request.root_layer_id,
+                sealed_version: 1,
+                root_hash: root,
+            }),
+            owner_id: request.owner_id.clone(),
+            upper_bucket: request.upper_bucket.clone(),
+            state: WorkspaceState::Active,
+            active_lease: None,
+            created_at_ns: now,
+            updated_at_ns: now,
+        };
+        let root_layer = LayerRecord {
+            layer_id: request.root_layer_id,
+            parent_layer_id: None,
+            state: LayerState::Sealed,
+            schema_version: WORKSPACE_SCHEMA_VERSION,
+            sealed_version: Some(1),
+            delta_digest: Some(digest),
+            root_hash: Some(root),
+            depth: 1,
+            owner_workspace_id: None,
+            next_sequence: 2,
+            owned_slice_count: 0,
+            owned_bytes: 0,
+            created_at_ns: now,
+            sealed_at_ns: Some(now),
+        };
+        for attempt in 0..CAS_MAX_RETRIES {
+            let raw = self.backend.get(CONTROL_KEY).await?;
+            let mut control = if strict_empty {
+                if raw.is_some() {
+                    return Err(conflict("initialize requires an empty namespace"));
+                }
+                ControlHeader::default()
+            } else {
+                self.current_control().await?.ok_or_else(|| {
+                    WorkspaceError::CorruptMetadata("workspace catalog is not initialized".into())
+                })?
+            };
+            if control.header.is_some() {
+                return Err(WorkspaceError::InvalidStateTransition {
+                    from: "initialized".into(),
+                    to: "create-volume-root".into(),
+                });
+            }
+            let mut txn = self.topology_txn();
+            txn.checks.insert(CONTROL_KEY.to_vec(), raw);
+            if txn.read_workspace(request.workspace_id).await?.is_some()
+                || txn.read_layer(request.root_layer_id).await?.is_some()
+                || txn.read_layer(request.writable_layer_id).await?.is_some()
+            {
+                return Err(conflict("volume root entity already exists"));
+            }
+            for name in ["inode", "slice", "sealed_version"] {
+                if txn.read_allocator(name).await?.is_some() {
+                    return Err(conflict("volume allocator already exists"));
+                }
+            }
+            txn.put_workspace(&workspace)?;
+            txn.put_layer(&root_layer)?;
+            txn.put_layer(&writable_layer(
+                request.writable_layer_id,
+                request.root_layer_id,
+                2,
+                request.workspace_id,
+                now,
+            ))?;
+            txn.put_allocator("inode", 2)?;
+            txn.put_allocator("slice", 1)?;
+            txn.put_allocator("sealed_version", 2)?;
+            control.header = Some(VolumeHeader {
+                volume_format: request.volume_format.clone(),
+                schema_version: request.schema_version,
+                volume_id: request.volume_id,
+                created_at_ns: now,
+            });
+            txn.put_checked(put_control(&control)?)?;
+            txn.read_raw(VOLUME_HEADER_KEY.to_vec()).await?;
+            txn.put(
+                VOLUME_HEADER_KEY.to_vec(),
+                control.header.as_ref().ok_or(WorkspaceError::Fenced)?,
+            )?;
+            txn.read_raw(inode_key(&root_inode)).await?;
+            txn.put(inode_key(&root_inode), &root_inode)?;
+            if strict_empty {
+                // Fresh roots have no active native index/retention feature.
+                // Match the ordinary first topology packet's two generation
+                // births, but create CONTROL and all entities in one atomic
+                // empty-namespace transaction instead of migrating first.
+                for key in [LAYER_INVENTORY_GENERATION_KEY, TOPOLOGY_GENERATION_KEY] {
+                    if txn.read_raw(key.to_vec()).await?.is_some() {
+                        return Err(conflict("initialize requires an empty namespace"));
+                    }
+                    txn.put(key.to_vec(), &1_u64)?;
+                }
+                let checks = txn
+                    .checks
+                    .into_iter()
+                    .map(|(key, expected)| KvCheck { key, expected })
+                    .collect::<Vec<_>>();
+                let writes = txn.writes.into_values().collect::<Vec<_>>();
+                if self
+                    .backend
+                    .compare_and_swap_in_empty_namespace(&checks, &writes, i64::MAX)
+                    .await?
+                {
+                    return Ok(workspace);
+                }
+                return Err(conflict("initialize requires an empty namespace"));
+            }
+            if txn.commit().await? {
+                return Ok(workspace);
+            }
+            retry_backoff(attempt).await;
+        }
+        Err(WorkspaceError::Busy)
+    }
+
     async fn allocate_id_block(&self, count: i64) -> Result<i64, WorkspaceError> {
         self.allocate_id_block_named("slice", count).await
     }
@@ -2996,136 +3176,7 @@ where
         &self,
         request: CreateVolumeRoot,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
-        self.require_admin_access()?;
-        let supported_header = (request.volume_format == VOLUME_FORMAT
-            && request.schema_version == WORKSPACE_SCHEMA_VERSION)
-            || (cfg!(feature = "native-packed-base")
-                && request.volume_format == "workspace-native-v2"
-                && request.schema_version == 2);
-        if !supported_header {
-            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
-                "{}/{}",
-                request.volume_format, request.schema_version
-            )));
-        }
-        if request.root_layer_id == request.writable_layer_id {
-            return Err(WorkspaceError::CorruptMetadata(
-                "root and writable layer IDs must differ".into(),
-            ));
-        }
-        let now = self.now_ns().await?;
-        let root_inode = InodeDelta {
-            layer_id: request.root_layer_id,
-            ino: 1,
-            state: InodeState::Present,
-            kind: 1,
-            size: 0,
-            mode: 0o755,
-            uid: 0,
-            gid: 0,
-            rdev: 0,
-            nlink: 2,
-            atime_ns: now,
-            mtime_ns: now,
-            ctime_ns: now,
-            symlink_target: None,
-            parent_hint: Some(1),
-            data_version: 1,
-            sequence: 1,
-        };
-        let digest = delta_digest(&CanonicalLayerDelta {
-            inodes: vec![root_inode.clone()],
-            ..CanonicalLayerDelta::default()
-        })?;
-        let root = root_hash([0; 32], digest);
-        let workspace = WorkspaceRecord {
-            workspace_id: request.workspace_id,
-            head_layer_id: request.writable_layer_id,
-            head_epoch: 0,
-            fork_base: Some(BaseRevision {
-                layer_id: request.root_layer_id,
-                sealed_version: 1,
-                root_hash: root,
-            }),
-            owner_id: request.owner_id.clone(),
-            upper_bucket: request.upper_bucket.clone(),
-            state: WorkspaceState::Active,
-            active_lease: None,
-            created_at_ns: now,
-            updated_at_ns: now,
-        };
-        let root_layer = LayerRecord {
-            layer_id: request.root_layer_id,
-            parent_layer_id: None,
-            state: LayerState::Sealed,
-            schema_version: WORKSPACE_SCHEMA_VERSION,
-            sealed_version: Some(1),
-            delta_digest: Some(digest),
-            root_hash: Some(root),
-            depth: 1,
-            owner_workspace_id: None,
-            next_sequence: 2,
-            owned_slice_count: 0,
-            owned_bytes: 0,
-            created_at_ns: now,
-            sealed_at_ns: Some(now),
-        };
-        for attempt in 0..CAS_MAX_RETRIES {
-            let raw = self.backend.get(CONTROL_KEY).await?;
-            let mut control = self.current_control().await?.ok_or_else(|| {
-                WorkspaceError::CorruptMetadata("workspace catalog is not initialized".into())
-            })?;
-            if control.header.is_some() {
-                return Err(WorkspaceError::InvalidStateTransition {
-                    from: "initialized".into(),
-                    to: "create-volume-root".into(),
-                });
-            }
-            let mut txn = self.topology_txn();
-            txn.checks.insert(CONTROL_KEY.to_vec(), raw);
-            if txn.read_workspace(request.workspace_id).await?.is_some()
-                || txn.read_layer(request.root_layer_id).await?.is_some()
-                || txn.read_layer(request.writable_layer_id).await?.is_some()
-            {
-                return Err(conflict("volume root entity already exists"));
-            }
-            for name in ["inode", "slice", "sealed_version"] {
-                if txn.read_allocator(name).await?.is_some() {
-                    return Err(conflict("volume allocator already exists"));
-                }
-            }
-            txn.put_workspace(&workspace)?;
-            txn.put_layer(&root_layer)?;
-            txn.put_layer(&writable_layer(
-                request.writable_layer_id,
-                request.root_layer_id,
-                2,
-                request.workspace_id,
-                now,
-            ))?;
-            txn.put_allocator("inode", 2)?;
-            txn.put_allocator("slice", 1)?;
-            txn.put_allocator("sealed_version", 2)?;
-            control.header = Some(VolumeHeader {
-                volume_format: request.volume_format.clone(),
-                schema_version: request.schema_version,
-                volume_id: request.volume_id,
-                created_at_ns: now,
-            });
-            txn.put_checked(put_control(&control)?)?;
-            txn.read_raw(VOLUME_HEADER_KEY.to_vec()).await?;
-            txn.put(
-                VOLUME_HEADER_KEY.to_vec(),
-                control.header.as_ref().ok_or(WorkspaceError::Fenced)?,
-            )?;
-            txn.read_raw(inode_key(&root_inode)).await?;
-            txn.put(inode_key(&root_inode), &root_inode)?;
-            if txn.commit().await? {
-                return Ok(workspace);
-            }
-            retry_backoff(attempt).await;
-        }
-        Err(WorkspaceError::Busy)
+        self.create_volume_root_inner(request, false).await
     }
 
     async fn create_workspace(

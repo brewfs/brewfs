@@ -45,6 +45,8 @@ async fn accepted_registration(manager: &Manager, volume: Uuid) -> Record {
         operation: Operation::new(volume, "volume", vec![OperationItem::new(None, None)]),
         catalog_ref: "a".into(),
         fingerprint: manager.fingerprint("a").unwrap(),
+        transport_fingerprint: None,
+        claim_established: false,
         task: Task::Volume {
             request: request.clone(),
             root: WorkspaceId::new(),
@@ -146,6 +148,8 @@ async fn pending_fork_and_delete_cannot_follow_a_rebound_volume() {
         ),
         catalog_ref: binding.view.catalog_ref,
         fingerprint: binding.fingerprint,
+        transport_fingerprint: None,
+        claim_established: false,
         task: Task::Delete {
             workspace: root.workspace_id,
         },

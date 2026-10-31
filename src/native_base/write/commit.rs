@@ -318,6 +318,7 @@ pub async fn commit_uploaded_slice(
     guard: &HeadGuard,
     req: &CommitRequest,
 ) -> Result<CommitOutcome, WriteError> {
+    super::domain::ensure_workspace_not_deleted(store, keys, &guard.workspace_id).await?;
     // --- Idempotency: the same OperationId is answered from the record.
     let mut_key = keys.mutation(&req.operation_id);
     if let Some(existing) = store.get(&mut_key).await? {
@@ -402,6 +403,7 @@ pub async fn commit_uploaded_slice(
 
     // --- Assemble the single atomic transaction.
     let mut txn = Txn::new()
+        .check_absent(keys.workspace_deleted(&guard.workspace_id))
         .check_bytes(head_key.clone(), head_bytes)
         .check_bytes(domain_key, domain_bytes)
         .check_absent(mut_key.clone());

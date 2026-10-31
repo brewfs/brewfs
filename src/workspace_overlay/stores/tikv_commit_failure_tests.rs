@@ -36,9 +36,15 @@ pub(in super::super) struct CasTestControl {
     commit_failure_kinds: Mutex<Vec<&'static str>>,
     observe_locks: AtomicBool,
     lock_events: Mutex<Vec<LockObservation>>,
+    bootstrap_started: Mutex<Option<oneshot::Sender<Timestamp>>>,
 }
 
 impl CasTestControl {
+    pub(in super::super) fn before_bootstrap_lock(&self, timestamp: Timestamp) {
+        if let Some(entered) = self.bootstrap_started.lock().unwrap().take() {
+            let _ = entered.send(timestamp);
+        }
+    }
     fn start_lock_observation(&self) {
         assert!(!self.active.swap(true, Ordering::SeqCst));
         assert!(!self.observe_locks.swap(true, Ordering::SeqCst));
@@ -363,6 +369,7 @@ async fn revoked_lock_case(
     inspector: TiKvWorkspaceBackend,
     jobs: Jobs,
 ) {
+    establish_catalog_namespace(&b).await;
     let initial_checks = [
         KvCheck {
             key: GUARD.to_vec(),
@@ -507,6 +514,16 @@ async fn revoked_lock_case(
         attempts, 1,
         "commit failure must not start another CAS transaction"
     );
+}
+
+// Fault/lock-order contracts below target established-catalog CAS. Bootstrap
+// has its own extra serialization lock and its own separate race contract.
+async fn establish_catalog_namespace(backend: &TiKvWorkspaceBackend) {
+    use crate::workspace_overlay::catalog::WorkspaceStore;
+    crate::workspace_overlay::stores::kv_store::KvWorkspaceStore::new(backend.clone())
+        .initialize_workspace_schema()
+        .await
+        .unwrap();
 }
 
 async fn cleanup_namespace(backend: &TiKvWorkspaceBackend) {

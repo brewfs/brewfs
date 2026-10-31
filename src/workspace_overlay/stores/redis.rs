@@ -19,12 +19,14 @@ if check_count == nil or check_count < 0 or check_count % 1 ~= 0 then
 end
 local write_cursor = 2 + 2 * check_count
 local write_count = tonumber(ARGV[write_cursor])
+local empty_mode = ARGV[#ARGV - 5]
+local extra_key_count = empty_mode == '1' and 2 or 1
 if write_count == nil or write_count < 0 or write_count % 1 ~= 0
-    or #KEYS ~= check_count + write_count + 1
-    or #ARGV ~= write_cursor + 2 * write_count + 4 then
+    or #KEYS ~= check_count + write_count + extra_key_count
+    or #ARGV ~= write_cursor + 2 * write_count + 6 then
     return redis.error_reply('invalid workspace mutation arguments')
 end
-local index_key = KEYS[#KEYS]
+local index_key = KEYS[check_count + write_count + 1]
 local function key_type(key)
     local reply = redis.call('TYPE', key)
     if type(reply) == 'table' then return reply.ok end
@@ -63,6 +65,47 @@ for index = 1, check_count do
         if current then return 0 end
     elseif current ~= expected then
         return 0
+    end
+end
+
+-- Bootstrap observes raw keys, not the optional/migrated sorted index. Keep
+-- the scan and every mutation in this one script; an interleaved SCAN + CAS
+-- would admit foreign rows. Exhausting the fixed work budget fails closed.
+local namespace = ARGV[#ARGV - 4]
+if empty_mode ~= '0' and empty_mode ~= '1' then
+    return redis.error_reply('invalid empty namespace flag')
+end
+if empty_mode == '1' then
+    -- Native headers live outside ws:v1/. The Manager preflight is only a
+    -- diagnostic; this atomic predicate prevents a carrier from being created
+    -- if another initializer installed a native header after that read.
+    if redis.call('EXISTS', KEYS[#KEYS]) ~= 0 then return 0 end
+    local ready_type = key_type(namespace .. '__index/ready')
+    if ready_type ~= 'none' and ready_type ~= 'string' then
+        return redis.error_reply('invalid workspace index marker type')
+    end
+    if ready_type == 'string' and redis.call('GET', namespace .. '__index/ready') ~= '1' then
+        return redis.error_reply('invalid workspace index marker')
+    end
+    local owner_key = namespace .. 'manager/controller'
+    local owner_checked = false
+    for index = 1, check_count do
+        if KEYS[index] == owner_key and ARGV[2 + 2 * (index - 1)] == '1' then
+            owner_checked = true
+        end
+    end
+    local cursor = '0'
+    for page = 1, 4096 do
+        local result = redis.call('SCAN', cursor, 'MATCH', namespace .. '*', 'COUNT', 256)
+        cursor = result[1]
+        for _, key in ipairs(result[2]) do
+            if key ~= index_key and key ~= namespace .. '__index/ready'
+                and not (key == owner_key and owner_checked) then
+                return 0
+            end
+        end
+        if cursor == '0' then break end
+        if page == 4096 then return redis.error_reply('empty namespace scan budget exhausted') end
     end
 end
 
@@ -112,6 +155,9 @@ for index = 1, write_count do
         redis.call('DEL', key)
         redis.call('ZREM', index_key, key)
     end
+end
+if empty_mode == '1' and write_count > 0 then
+    redis.call('SET', namespace .. '__index/ready', '1')
 end
 return 1
 "#;
@@ -185,6 +231,7 @@ const INDEX_BATCH_SIZE: usize = 1024;
 pub struct RedisWorkspaceBackend {
     connection: ConnectionManager,
     prefix: Vec<u8>,
+    namespace: String,
     operator_admin: Option<RedisOperatorAdminIdentity>,
 }
 
@@ -196,6 +243,14 @@ struct RedisOperatorAdminIdentity {
 
 impl RedisWorkspaceBackend {
     pub async fn connect(url: &str, namespace: &str) -> Result<Self, WorkspaceError> {
+        let backend = Self::connect_read_only(url, namespace).await?;
+        backend.ensure_key_index().await?;
+        Ok(backend)
+    }
+
+    /// Connect without creating or migrating any namespace keys. Manager uses
+    /// this before durable admission and strict empty-namespace validation.
+    pub async fn connect_read_only(url: &str, namespace: &str) -> Result<Self, WorkspaceError> {
         validate_namespace(namespace)?;
         let client = redis::Client::open(url).map_err(backend)?;
         let connection = ConnectionManager::new(client).await.map_err(backend)?;
@@ -205,10 +260,82 @@ impl RedisWorkspaceBackend {
         let backend = Self {
             connection,
             prefix,
+            namespace: namespace.to_owned(),
             operator_admin: None,
         };
-        backend.ensure_key_index().await?;
         Ok(backend)
+    }
+
+    /// Read the native locator outside the workspace key prefix even when the
+    /// native feature is not compiled. A v1 Manager must not bypass native
+    /// admission/deletion by treating its metadata carrier as a plain volume.
+    pub(crate) async fn load_manager_native_locator(
+        &self,
+    ) -> Result<Option<Vec<u8>>, WorkspaceError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("GET")
+            .arg(format!("nb2/header/{}", self.namespace))
+            .query_async(&mut connection)
+            .await
+            .map_err(backend)
+    }
+
+    /// Registration must not silently scan an absent legacy key index. Its
+    /// migration remains an explicit administrator action, outside Manager.
+    pub async fn validate_manager_catalog_index(&self) -> Result<(), WorkspaceError> {
+        let mut connection = self.connection.clone();
+        let valid: bool = redis::Script::new(
+            r#"
+            local kind = redis.call('TYPE', KEYS[2])
+            if type(kind) == 'table' then kind = kind.ok end
+            return redis.call('GET', KEYS[1]) == '1' and kind == 'zset'
+        "#,
+        )
+        .key(self.scoped(KEY_INDEX_READY))
+        .key(self.scoped(KEY_INDEX))
+        .invoke_async(&mut connection)
+        .await
+        .map_err(backend)?;
+        if !valid {
+            return Err(WorkspaceError::UnsupportedCapability(
+                "Manager requires an existing complete Redis key index",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read-only admission probe that also sees rows missing from the index.
+    /// Lua returns one boolean, never arbitrary stored metadata values.
+    pub async fn has_raw_prefix(&self, prefix: &[u8]) -> Result<bool, WorkspaceError> {
+        let scoped = self.scoped(prefix);
+        let mut pattern = Vec::with_capacity(scoped.len() + 1);
+        for &byte in &scoped {
+            if matches!(byte, b'*' | b'?' | b'[' | b']' | b'\\') {
+                pattern.push(b'\\');
+            }
+            pattern.push(byte);
+        }
+        pattern.push(b'*');
+        let mut connection = self.connection.clone();
+        redis::Script::new(
+            r#"
+            local cursor = '0'
+            for page = 1, 4096 do
+                local result = redis.call('SCAN', cursor, 'MATCH', ARGV[1], 'COUNT', 256)
+                cursor = result[1]
+                for _, key in ipairs(result[2]) do
+                    if string.sub(key, 1, #ARGV[2]) == ARGV[2] then return 1 end
+                end
+                if cursor == '0' then return 0 end
+            end
+            return redis.error_reply('Manager raw namespace probe budget exhausted')
+        "#,
+        )
+        .arg(pattern)
+        .arg(scoped)
+        .invoke_async(&mut connection)
+        .await
+        .map_err(backend)
     }
 
     /// The trusted operator Secret resolver assigns roles to two independent
@@ -257,6 +384,7 @@ impl RedisWorkspaceBackend {
         let backend = Self {
             connection,
             prefix,
+            namespace: namespace.to_owned(),
             operator_admin: Some(RedisOperatorAdminIdentity {
                 admin_principal: expected_admin_principal.to_owned(),
                 runtime_principal: expected_runtime_principal.to_owned(),
@@ -353,6 +481,7 @@ impl RedisWorkspaceBackend {
         writes: &[KvWrite],
         not_before_ns: Option<i64>,
         before_ns: Option<i64>,
+        empty_namespace: bool,
     ) -> Result<bool, WorkspaceError> {
         let script = redis::Script::new(CAS_LUA);
         let mut invocation = script.prepare_invoke();
@@ -366,6 +495,9 @@ impl RedisWorkspaceBackend {
             invocation.key(self.scoped(key));
         }
         invocation.key(self.scoped(KEY_INDEX));
+        if empty_namespace {
+            invocation.key(format!("nb2/header/{}", self.namespace));
+        }
         invocation.arg(checks.len());
         for check in checks {
             match &check.expected {
@@ -388,6 +520,7 @@ impl RedisWorkspaceBackend {
                 }
             }
         }
+        invocation.arg(u8::from(empty_namespace)).arg(&self.prefix);
         for bound in [not_before_ns, before_ns] {
             match bound {
                 Some(value) if value > 0 => {
@@ -706,7 +839,17 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
         checks: &[KvCheck],
         writes: &[KvWrite],
     ) -> Result<bool, WorkspaceError> {
-        self.cas(checks, writes, None, None).await
+        self.cas(checks, writes, None, None, false).await
+    }
+
+    async fn compare_and_swap_in_empty_namespace(
+        &self,
+        checks: &[KvCheck],
+        writes: &[KvWrite],
+        before_ns: i64,
+    ) -> Result<bool, WorkspaceError> {
+        validate_cas_time_window(None, Some(before_ns))?;
+        self.cas(checks, writes, None, Some(before_ns), true).await
     }
 
     async fn authenticate_checks_before_bounded(
@@ -719,7 +862,8 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
         validate_cas_time_window(None, Some(expires_at_ns))?;
         // Existing Lua atomically compares all bytes and samples TIME; response
         // materializes only an integer. Expected input is bounded above.
-        self.cas(checks, &[], None, Some(expires_at_ns)).await
+        self.cas(checks, &[], None, Some(expires_at_ns), false)
+            .await
     }
 
     async fn compare_and_swap_before(
@@ -728,7 +872,8 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
         writes: &[KvWrite],
         expires_at_ns: i64,
     ) -> Result<bool, WorkspaceError> {
-        self.cas(checks, writes, None, Some(expires_at_ns)).await
+        self.cas(checks, writes, None, Some(expires_at_ns), false)
+            .await
     }
 
     async fn compare_and_swap_in_time_window(
@@ -739,7 +884,8 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
         before_ns: Option<i64>,
     ) -> Result<bool, WorkspaceError> {
         validate_cas_time_window(not_before_ns, before_ns)?;
-        self.cas(checks, writes, not_before_ns, before_ns).await
+        self.cas(checks, writes, not_before_ns, before_ns, false)
+            .await
     }
 
     async fn server_time_ns(&self) -> Result<i64, WorkspaceError> {

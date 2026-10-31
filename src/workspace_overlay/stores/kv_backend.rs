@@ -520,6 +520,23 @@ pub trait WorkspaceKvBackend: Send + Sync + 'static {
         writes: &[KvWrite],
     ) -> Result<bool, WorkspaceError>;
 
+    /// Strict Manager bootstrap. At the same serialized validation point as
+    /// exact checks, clock expiry and writes, reject every existing logical
+    /// namespace key except the exact checked Manager controller record.
+    /// Backend-owned index bookkeeping is not a user record. A separate scan
+    /// followed by ordinary CAS does not implement this contract.
+    async fn compare_and_swap_in_empty_namespace(
+        &self,
+        _checks: &[KvCheck],
+        _writes: &[KvWrite],
+        before_ns: i64,
+    ) -> Result<bool, WorkspaceError> {
+        validate_cas_time_window(None, Some(before_ns))?;
+        Err(WorkspaceError::UnsupportedCapability(
+            "atomic empty namespace initialization",
+        ))
+    }
+
     /// Authenticate exact checks with a backend-clock deadline and no writes.
     /// The caller owns retained checks and response/decoder expansion. Bounds
     /// apply before authority value materialization; max_data_requests bounds

@@ -41,6 +41,85 @@ impl TiKvControlStore {
             .map_err(backend)?;
         Ok(Self { client })
     }
+
+    async fn run_transaction(&self, txn: Txn, before_ns: Option<i64>) -> Result<(), StoreError> {
+        if before_ns.is_some_and(|deadline| deadline <= 0) {
+            return Err(StoreError::Conflict);
+        }
+        let options = TransactionOptions::new_pessimistic().drop_check(CheckLevel::Warn);
+        let options = if before_ns.is_some() {
+            options.wait_for_secondary_commit()
+        } else {
+            options
+        };
+        let mut transaction = self
+            .client
+            .begin_with_options(options)
+            .await
+            .map_err(backend)?;
+        // Every guard and business check is locked until commit. Use one key
+        // order so a namespace lease renewal cannot introduce a lock cycle.
+        let mut checks: Vec<_> = txn.checks.iter().collect();
+        if before_ns.is_some() {
+            checks.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        for (key, expect) in checks {
+            let current = match transaction.get_for_update(key.clone()).await {
+                Ok(current) => current,
+                Err(error) => {
+                    let _ = transaction.rollback().await;
+                    return if is_retryable(&error.to_string()) {
+                        Err(StoreError::Conflict)
+                    } else {
+                        Err(backend(error))
+                    };
+                }
+            };
+            if !expect_matches(expect, current.as_deref()) {
+                let _ = transaction.rollback().await;
+                return Err(StoreError::Conflict);
+            }
+        }
+        for (key, value) in &txn.writes {
+            let result = match value {
+                Some(value) => transaction.put(key.clone(), value.clone()).await,
+                None => transaction.delete(key.clone()).await,
+            };
+            if let Err(error) = result {
+                let _ = transaction.rollback().await;
+                return if is_retryable(&error.to_string()) {
+                    Err(StoreError::Conflict)
+                } else {
+                    Err(backend(error))
+                };
+            }
+        }
+        if let Some(deadline) = before_ns {
+            // A start timestamp can predate an arbitrarily long lock wait.
+            // Read PD time after all checks/writes while retaining their locks.
+            let now = match self.client.current_timestamp().await {
+                Ok(timestamp) => timestamp.physical.checked_mul(1_000_000),
+                Err(error) => {
+                    let _ = transaction.rollback().await;
+                    return Err(backend(error));
+                }
+            };
+            if now.is_none_or(|now| now >= deadline) {
+                let _ = transaction.rollback().await;
+                return Err(StoreError::Conflict);
+            }
+        }
+        match transaction.commit().await {
+            Ok(_) => Ok(()),
+            // Keep the existing unguarded caller's conflict behavior. Once a
+            // guarded commit was submitted, an uncertain reply is never proof
+            // that nothing happened: reconciliation must retain original IDs.
+            Err(error) if before_ns.is_none() && is_retryable(&error.to_string()) => {
+                Err(StoreError::Conflict)
+            }
+            Err(error) => Err(backend(error)),
+        }
+    }
 }
 
 fn backend(err: impl std::fmt::Display) -> StoreError {
@@ -113,64 +192,11 @@ impl ControlStore for TiKvControlStore {
     }
 
     async fn run(&self, txn: Txn) -> Result<(), StoreError> {
-        let options = TransactionOptions::new_pessimistic().drop_check(CheckLevel::Warn);
-        let mut transaction = self
-            .client
-            .begin_with_options(options)
-            .await
-            .map_err(backend)?;
+        self.run_transaction(txn, None).await
+    }
 
-        // Lock-then-verify: every checked key is read under a write lock,
-        // so the verified state cannot change before the commit.
-        for (key, expect) in &txn.checks {
-            let current = match transaction.get_for_update(key.clone()).await {
-                Ok(current) => current,
-                Err(error) => {
-                    if let Err(rollback_error) = transaction.rollback().await {
-                        log::debug!("TiKV control store check rollback failed: {rollback_error}");
-                    }
-                    // Losing the pessimistic-lock race is the same outcome
-                    // as a commit-time conflict: nothing applied, re-derive.
-                    let message = error.to_string();
-                    if is_retryable(&message) {
-                        return Err(StoreError::Conflict);
-                    }
-                    return Err(backend(error));
-                }
-            };
-            if !expect_matches(expect, current.as_deref()) {
-                if let Err(rollback_error) = transaction.rollback().await {
-                    log::debug!(
-                        "TiKV control store check mismatch rollback failed: {rollback_error}"
-                    );
-                }
-                return Err(StoreError::Conflict);
-            }
-        }
-        for (key, value) in &txn.writes {
-            let result = match value {
-                Some(v) => transaction.put(key.clone(), v.clone()).await,
-                None => transaction.delete(key.clone()).await,
-            };
-            if let Err(error) = result {
-                if let Err(rollback_error) = transaction.rollback().await {
-                    log::debug!("TiKV control store write rollback failed: {rollback_error}");
-                }
-                let message = error.to_string();
-                if is_retryable(&message) {
-                    return Err(StoreError::Conflict);
-                }
-                return Err(backend(error));
-            }
-        }
-
-        match transaction.commit().await {
-            Ok(_) => Ok(()),
-            // A pessimistic lock can expire under a PD disruption; the
-            // transaction applied nothing, and the caller must re-derive.
-            Err(error) if is_retryable(&error.to_string()) => Err(StoreError::Conflict),
-            Err(error) => Err(backend(error)),
-        }
+    async fn run_before(&self, txn: Txn, before_ns: i64) -> Result<(), StoreError> {
+        self.run_transaction(txn, Some(before_ns)).await
     }
 
     async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
@@ -221,6 +247,58 @@ impl ControlStore for TiKvControlStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
+    async fn real_tikv_native_deadline_and_owner_are_checked_with_the_write() {
+        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
+            .unwrap()
+            .split(',')
+            .map(|value| value.trim().to_owned())
+            .collect::<Vec<_>>();
+        let store = TiKvControlStore::connect(&endpoints).await.unwrap();
+        let scope = uuid::Uuid::new_v4();
+        let owner = format!("native-manager-{scope}/ws:v1/manager/controller").into_bytes();
+        let target = format!("nb2/{scope}/manager-deadline-test").into_bytes();
+        store
+            .run(
+                Txn::new()
+                    .check_absent(owner.clone())
+                    .put(owner.clone(), vec![1]),
+            )
+            .await
+            .unwrap();
+        let operation = || {
+            Txn::new()
+                .check_bytes(owner.clone(), vec![1])
+                .put(target.clone(), vec![7])
+        };
+        assert!(matches!(
+            store.run_before(operation(), 1).await,
+            Err(StoreError::Conflict)
+        ));
+        assert_eq!(store.get(&target).await.unwrap(), None);
+        store.run_before(operation(), i64::MAX).await.unwrap();
+        assert_eq!(store.get(&target).await.unwrap(), Some(vec![7]));
+        store
+            .run(
+                Txn::new()
+                    .check_bytes(owner.clone(), vec![1])
+                    .put(owner.clone(), vec![2])
+                    .delete(target.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.run_before(operation(), i64::MAX).await,
+            Err(StoreError::Conflict)
+        ));
+        assert_eq!(store.get(&target).await.unwrap(), None);
+        store
+            .run(Txn::new().delete(owner).delete(target))
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn prefix_range_end_increments_the_last_free_byte() {

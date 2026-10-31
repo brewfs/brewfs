@@ -29,7 +29,7 @@ use tokio::sync::Mutex;
 use crate::chunk::compress::{Compression, encode_persisted_block};
 use crate::native_base::seal::{BlockBinding, NATIVE_LOOSE_KIND};
 use crate::native_base::wire::bnct::{
-    DomainKind, DomainState, HeadRef, NativeMutationResult, OwnershipDomain,
+    ControlRecord, DomainKind, DomainState, HeadRef, NativeMutationResult, OwnershipDomain,
 };
 use crate::native_base::wire::refs::{Hash32, ObjectId, ObjectRef, RootRef};
 
@@ -38,7 +38,7 @@ use super::commit::{
     read_inode_view,
 };
 use super::domain::{
-    HeadGuard, UploadReservation, create_domain, mark_dispatched, register_upload,
+    HeadGuard, UploadReservation, ensure_workspace_not_deleted, mark_dispatched, register_upload,
 };
 use super::error::WriteError;
 use super::keys::Keys;
@@ -264,6 +264,7 @@ pub async fn ensure_workspace_head(
     params: &OverlayParams,
     epoch: u64,
 ) -> Result<HeadState, WriteError> {
+    ensure_workspace_not_deleted(store, keys, &params.workspace_id).await?;
     let head = HeadState {
         head: HeadRef {
             head_id: params.workspace_id,
@@ -286,6 +287,13 @@ pub async fn ensure_workspace_head(
                 )));
             }
             if found.writer_generation == head.writer_generation {
+                store
+                    .run(
+                        Txn::new()
+                            .check_absent(keys.workspace_deleted(&params.workspace_id))
+                            .check_bytes(head_key, existing),
+                    )
+                    .await?;
                 return Ok(found);
             }
             let next = HeadState {
@@ -295,6 +303,7 @@ pub async fn ensure_workspace_head(
             store
                 .run(
                     Txn::new()
+                        .check_absent(keys.workspace_deleted(&params.workspace_id))
                         .check_bytes(head_key.clone(), existing)
                         .put(head_key, next.encode()),
                 )
@@ -310,6 +319,7 @@ pub async fn ensure_workspace_head(
             store
                 .run(
                     Txn::new()
+                        .check_absent(keys.workspace_deleted(&params.workspace_id))
                         .check_absent(head_key.clone())
                         .put(head_key, head.encode()),
                 )
@@ -374,6 +384,7 @@ impl WriteOverlay {
     /// Create the ACTIVE ownership domain record (an existing ACTIVE domain
     /// for the same volume is accepted).
     pub async fn ensure_domain(&self, owner_id: [u8; 16]) -> Result<(), WriteError> {
+        ensure_workspace_not_deleted(&*self.store, &self.keys, &self.params.workspace_id).await?;
         let domain = OwnershipDomain {
             domain_id: self.params.domain_id,
             volume_id: self.params.volume_id,
@@ -402,9 +413,26 @@ impl WriteOverlay {
                         found.state, found.volume_id
                     )));
                 }
+                self.store
+                    .run(
+                        Txn::new()
+                            .check_absent(self.keys.workspace_deleted(&self.params.workspace_id))
+                            .check_bytes(key, existing),
+                    )
+                    .await?;
                 Ok(())
             }
-            None => create_domain(&*self.store, &self.keys, domain).await,
+            None => {
+                self.store
+                    .run(
+                        Txn::new()
+                            .check_absent(self.keys.workspace_deleted(&self.params.workspace_id))
+                            .check_absent(key.clone())
+                            .put(key, ControlRecord::OwnershipDomain(domain).encode()),
+                    )
+                    .await?;
+                Ok(())
+            }
         }
     }
 

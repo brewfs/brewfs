@@ -40,6 +40,25 @@ pub fn decode_registration(bytes: &[u8]) -> Result<ObjectRegistration, WriteErro
     }
 }
 
+/// Early error classification; every publishing transaction also checks the
+/// marker's absence so a deletion arriving after this read still wins safely.
+pub(super) async fn ensure_workspace_not_deleted(
+    store: &dyn ControlStore,
+    keys: &Keys,
+    workspace_id: &[u8; 16],
+) -> Result<(), WriteError> {
+    if store
+        .get(&keys.workspace_deleted(workspace_id))
+        .await?
+        .is_some()
+    {
+        return Err(WriteError::LeaseFence(
+            "workspace was logically deleted".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a domain. Fails with a conflict if it already exists.
 pub async fn create_domain(
     store: &dyn ControlStore,
@@ -87,6 +106,7 @@ pub async fn register_upload(
     object_ref: ObjectRef,
     upload_plan_hash: Hash32,
 ) -> Result<UploadReservation, WriteError> {
+    ensure_workspace_not_deleted(store, keys, &guard.workspace_id).await?;
     // Read the domain and registry outside the transaction, then guard both
     // reads with expected-value checks inside it (optimistic concurrency).
     let domain_key = keys.domain(domain_id);
@@ -165,6 +185,7 @@ pub async fn register_upload(
 
     let head_key = keys.head(&guard.workspace_id);
     let txn = Txn::new()
+        .check_absent(keys.workspace_deleted(&guard.workspace_id))
         .check_bytes(head_key, guard.expected_head.encode())
         .check_bytes(domain_key, domain_bytes)
         .check_absent(registry_key.clone())
