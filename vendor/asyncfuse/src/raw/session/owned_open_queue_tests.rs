@@ -228,6 +228,201 @@ fn open_lane_plan_checked_overflow_rejects_before_reservation() {
     assert!(fs.root_charges.lock().unwrap().is_empty());
 }
 
+#[test]
+fn held_packets_keep_each_lane_full_until_its_own_final_clone_drops() {
+    let fs = ProbeFs::default();
+    let mut plan = OpenLanePlan::prepare(&fs, 2, 1).unwrap().unwrap();
+    let mut first = plan.take(0);
+    let mut second = plan.take(1);
+    first.push_admitted(async {}, 1, None, None);
+    second.push_admitted(async {}, 2, None, None);
+    let packet = first
+        .controller
+        .wrap_packet(1, vec![0; OPEN_PACKET_BYTES])
+        .unwrap();
+    let last = packet.clone();
+    let other = second
+        .controller
+        .wrap_packet(2, vec![0; OPEN_PACKET_BYTES])
+        .unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(first.poll_one_completion(&mut cx).is_ready());
+    assert!(second.poll_one_completion(&mut cx).is_ready());
+    assert!(!first.has_capacity());
+    assert!(!second.has_capacity());
+    drop(packet);
+    assert!(!first.has_capacity());
+    drop(last);
+    assert!(first.has_capacity());
+    assert!(
+        !second.has_capacity(),
+        "a free slot cannot migrate between workers"
+    );
+    // Reuse the freed slot while a different lane still holds its real packet.
+    first.push_admitted(async {}, 3, None, None);
+    let replacement = first
+        .controller
+        .wrap_packet(3, vec![3; OPEN_PACKET_BYTES])
+        .unwrap();
+    // A delayed callback from a concurrent old clone must not affect the reuse.
+    first.controller.reap(1);
+    assert!(!first.has_capacity());
+    drop(replacement); // packet-before-Box retirement order
+    assert!(!first.has_capacity());
+    assert!(first.poll_one_completion(&mut cx).is_ready());
+    assert!(first.has_capacity());
+    drop(other);
+    assert!(second.has_capacity());
+    drop((first, second, plan));
+    assert_eq!(fs.roots.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn colliding_unique_index_survives_middle_head_tail_removal_and_reuse() {
+    let fs = ProbeFs::default();
+    let mut plan = OpenLanePlan::prepare(&fs, 1, 4).unwrap().unwrap();
+    let mut lane = plan.take(0);
+    let controller = plan.controller();
+    let keys: Vec<_> = {
+        let table = controller.inner.as_ref().unwrap().records.lock().unwrap();
+        (1..)
+            .filter(|unique| table.bucket(*unique) == 0)
+            .take(4)
+            .collect()
+    };
+    let mut packets = Vec::new();
+    for &unique in &keys {
+        lane.push_admitted(async {}, unique, None, None);
+        packets.push(Some(
+            controller
+                .wrap_packet(unique, vec![unique as u8; OPEN_PACKET_BYTES])
+                .unwrap(),
+        ));
+    }
+    assert_eq!(
+        controller.wrap_packet(u64::MAX, vec![9]).unwrap_err(),
+        vec![9]
+    );
+    let mut cx = Context::from_waker(Waker::noop());
+    for _ in 0..4 {
+        assert!(lane.poll_one_completion(&mut cx).is_ready());
+    }
+    assert!(!lane.has_capacity());
+    for (step, removed) in [1, 3, 0, 2].into_iter().enumerate() {
+        drop(packets[removed].take());
+        let table = controller.inner.as_ref().unwrap().records.lock().unwrap();
+        assert!(table.find(keys[removed]).is_none());
+        for (index, packet) in packets.iter().enumerate() {
+            if packet.is_some() {
+                assert!(
+                    table.find(keys[index]).is_some(),
+                    "collision neighbor lost at step {step}"
+                );
+            }
+        }
+        drop(table);
+        assert!(lane.has_capacity());
+    }
+    // Exercise every returned slot again and cancel without creating packets.
+    for unique in 100..104 {
+        lane.push_admitted(std::future::pending(), unique, None, None);
+    }
+    assert!(!lane.has_capacity());
+    drop((lane, plan, controller));
+    assert_eq!(fs.roots.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn simultaneous_packet_clone_drops_retire_once_without_polling() {
+    for _ in 0..32 {
+        let fs = ProbeFs::default();
+        let mut plan = OpenLanePlan::prepare(&fs, 1, 1).unwrap().unwrap();
+        let mut lane = plan.take(0);
+        let used = Arc::new(AtomicUsize::new(1));
+        lane.push_admitted(
+            DataFuture([0; 37]),
+            1,
+            Some(Arc::new(Charge {
+                used: used.clone(),
+                bytes: 1,
+            })),
+            None,
+        );
+        let packet = lane
+            .controller
+            .wrap_packet(1, vec![0; OPEN_PACKET_BYTES])
+            .unwrap();
+        let clone = packet.clone();
+        drop(lane);
+        assert_eq!(used.load(Ordering::Acquire), 1);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                barrier.wait();
+                drop(clone);
+            });
+            barrier.wait();
+            drop(packet);
+        });
+        assert_eq!(used.load(Ordering::Acquire), 0);
+        drop(plan);
+        assert_eq!(fs.roots.load(Ordering::Acquire), 0);
+    }
+}
+
+#[test]
+fn zero_capacity_plan_has_no_available_slot() {
+    let fs = ProbeFs::default();
+    let mut plan = OpenLanePlan::prepare(&fs, 1, 0).unwrap().unwrap();
+    let lane = plan.take(0);
+    assert!(!lane.has_capacity());
+    assert_eq!(
+        plan.controller().wrap_packet(1, vec![1]).unwrap_err(),
+        vec![1]
+    );
+    drop((lane, plan));
+    assert_eq!(fs.roots.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn request_guard_can_reenter_controller_after_slot_return() {
+    #[derive(Debug)]
+    struct ReentrantGuard {
+        controller: ControllerHandle,
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for ReentrantGuard {
+        fn drop(&mut self) {
+            assert!(self.controller.has_capacity(0, 1));
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+    let fs = ProbeFs::default();
+    let mut plan = OpenLanePlan::prepare(&fs, 1, 1).unwrap().unwrap();
+    let mut lane = plan.take(0);
+    let dropped = Arc::new(AtomicBool::new(false));
+    lane.push_admitted(
+        std::future::pending(),
+        1,
+        Some(Arc::new(ReentrantGuard {
+            controller: plan.controller(),
+            dropped: dropped.clone(),
+        })),
+        None,
+    );
+    let packet = lane
+        .controller
+        .wrap_packet(1, vec![0; OPEN_PACKET_BYTES])
+        .unwrap();
+    drop(lane);
+    assert!(!dropped.load(Ordering::Acquire));
+    drop(packet);
+    assert!(dropped.load(Ordering::Acquire));
+    drop(plan);
+    assert_eq!(fs.roots.load(Ordering::Acquire), 0);
+}
+
 fn item(session: &Session<ProbeFs>, fs: &ProbeFs, opcode: fuse_opcode, unique: u64) -> WorkItem {
     let body = if matches!(opcode, fuse_opcode::FUSE_OPEN | fuse_opcode::FUSE_OPENDIR) {
         vec![0; 8]
@@ -644,7 +839,11 @@ fn final_controller_grant_refund_follows_actual_arc_slots_lanes_and_plan_dealloc
         .extend(Layout::new::<Controller>())
         .unwrap();
     let arc_start = Arc::as_ptr(controller) as usize - offset;
-    let records_start = controller.records.lock().unwrap().as_ptr() as usize;
+    let records = controller.records.lock().unwrap();
+    let records_start = records.slots.as_ptr() as usize;
+    let buckets_start = records.buckets.as_ptr() as usize;
+    let free_heads_start = records.free_heads.as_ptr() as usize;
+    drop(records);
     let lanes_start = plan.lanes.as_ptr() as usize;
     let mut lane = plan.take(0);
     let entries_start = lane.entries.as_ptr() as usize;
@@ -673,12 +872,14 @@ fn final_controller_grant_refund_follows_actual_arc_slots_lanes_and_plan_dealloc
     .unwrap();
     lane.controller = plan.controller.clone();
     allocator::watch([arc_start, records_start, entries_start, lanes_start]);
+    allocator::append_watch(buckets_start);
+    allocator::append_watch(free_heads_start);
     drop(plan);
     assert_eq!(used.load(Ordering::Acquire), charge);
     drop(lane);
     assert_eq!(
         observed.load(Ordering::Acquire),
-        0b1111,
+        0b111111,
         "refund must follow allocator return for controller Arc and every base Vec"
     );
     assert_eq!(used.load(Ordering::Acquire), 0);
@@ -692,7 +893,7 @@ fn simultaneous_last_controller_drops_refund_once_after_actual_arc_dealloc() {
     let observed = Arc::new(AtomicUsize::new(0));
     let handle = ControllerHandle {
         inner: Some(Arc::new(Controller {
-            records: Mutex::new(Vec::new()),
+            records: Mutex::new(RecordTable::default()),
             base_roots: InlineRootPermit::try_new(ObservedRefund {
                 used: used.clone(),
                 observed: observed.clone(),
@@ -727,14 +928,14 @@ fn simultaneous_last_controller_drops_refund_once_after_actual_arc_dealloc() {
 
 #[test]
 fn injected_reserve_failures_retire_partial_base_before_returning_grant() {
-    for fail_at in 1..=4 {
+    for fail_at in 1..=6 {
         let fs = ProbeFs::default();
         allocation_failures::set(fail_at);
         let result = OpenLanePlan::prepare(&fs, 2, 2);
         allocation_failures::set(0);
         assert!(
             result.is_err(),
-            "records/plans/each worker-lane reserve is fallible"
+            "slots/buckets/free heads/plans/each worker-lane reserve is fallible"
         );
         assert_eq!(
             fs.root_charges.lock().unwrap().len(),
@@ -807,7 +1008,7 @@ impl Filesystem for FailureWitnessFs {
 #[test]
 fn each_injected_reserve_failure_refunds_only_after_every_actual_partial_dealloc() {
     let _serial = allocator::SERIAL.lock().unwrap();
-    for fail_at in 1..=4 {
+    for fail_at in 1..=6 {
         let fs = FailureWitnessFs::default();
         allocator::watch([0; 4]);
         allocation_failures::set(fail_at);
@@ -817,8 +1018,15 @@ fn each_injected_reserve_failure_refunds_only_after_every_actual_partial_dealloc
         allocation_failures::set(0);
         assert!(result.is_err());
         let expected = allocator::EXPECTED.load(Ordering::Acquire);
-        assert_eq!(expected.count_ones(), if fail_at == 1 { 0 } else { fail_at as u32 },
-            "successful records/controller/plans/first-lane allocations before the injected failure");
+        assert_eq!(
+            expected.count_ones(),
+            if fail_at <= 3 {
+                fail_at as u32 - 1
+            } else {
+                fail_at as u32
+            },
+            "every successful table/controller/plans/lane allocation before the injected failure"
+        );
         assert_eq!(
             fs.observed.load(Ordering::Acquire),
             expected,
@@ -946,7 +1154,7 @@ fn actual_complete_open_controller_record_and_queue_layout_receipt() {
     for workers in [1usize, 2, 4] {
         let capacity = 16usize;
         let plans = std::alloc::Layout::array::<Option<OpenLane>>(workers).unwrap();
-        let records = std::alloc::Layout::array::<Option<Record>>(workers * capacity).unwrap();
+        let records = std::alloc::Layout::array::<Slot>(workers * capacity).unwrap();
         let entries = std::alloc::Layout::array::<OwnedOpenFuture>(capacity).unwrap();
         eprintln!("BREWFS_ACTUAL_OPEN_BASE_REQUEST workers={workers} capacity={capacity} controller_arc_bytes={} plan_vec_bytes={} record_vec_bytes={} each_entry_vec_bytes={} total_storage_bytes={}",
             arc.size(), plans.size(), records.size(), entries.size(),

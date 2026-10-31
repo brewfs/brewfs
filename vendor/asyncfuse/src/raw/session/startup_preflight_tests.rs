@@ -184,7 +184,7 @@ async fn public_readonly_startup_plan_admission_denial_precedes_native_and_kerne
 
 #[tokio::test(flavor = "current_thread")]
 async fn public_readonly_startup_each_fallible_plan_reserve_precedes_physical_startup() {
-    for fail_at in 1..=4 {
+    for fail_at in 1..=6 {
         let _boundary = Boundary::arm();
         let fs = Arc::new(ProbeFs::default());
         let directory = EmptyMountDir::new();
