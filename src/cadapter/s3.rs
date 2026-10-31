@@ -529,11 +529,7 @@ impl S3Backend {
             Arc<crate::cadapter::read_observer::ReadObserver>,
         )>,
     ) -> Result<Option<ObjectByteStream>> {
-        let mut operation = self
-            .client
-            .get_object()
-            .bucket(&self.bucket_name())
-            .key(key);
+        let mut operation = self.client.get_object().bucket(self.bucket_name()).key(key);
         if let Some((offset, length)) = range {
             if length == 0 {
                 return Ok(Some(Box::pin(futures_util::stream::empty())));
@@ -624,7 +620,7 @@ impl S3Backend {
         let operation = self
             .client
             .head_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key);
         let response = match observed {
             Some((context, observer)) => {
@@ -729,7 +725,7 @@ impl S3Backend {
         let operation = self
             .client
             .head_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key);
         let response = match observed {
             Some((context, observer)) => {
@@ -830,7 +826,7 @@ impl S3Backend {
             let mut request = self
                 .client
                 .put_object()
-                .bucket(&self.bucket_name())
+                .bucket(self.bucket_name())
                 .key(key)
                 .body(body)
                 .content_length(total_size as i64);
@@ -871,7 +867,7 @@ impl S3Backend {
             let mut request = self
                 .client
                 .put_object()
-                .bucket(&self.bucket_name())
+                .bucket(self.bucket_name())
                 .key(key)
                 .body(SdkBody::from(data.to_vec()).into());
 
@@ -908,7 +904,7 @@ impl S3Backend {
         let request = self
             .client
             .create_multipart_upload()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key);
         #[cfg(feature = "rustfs-ec-block-size-hint")]
         let request = match self.ec_block_size_hint(data.len()) {
@@ -1024,7 +1020,7 @@ impl S3Backend {
         // Complete multipart upload
         self.client
             .complete_multipart_upload()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .upload_id(upload_id)
             .multipart_upload(completed)
@@ -1042,7 +1038,7 @@ impl S3Backend {
         let request = self
             .client
             .create_multipart_upload()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key);
         #[cfg(feature = "rustfs-ec-block-size-hint")]
         let request = match self.ec_block_size_hint(chunks.iter().map(Bytes::len).sum()) {
@@ -1173,7 +1169,7 @@ impl S3Backend {
 
         self.client
             .complete_multipart_upload()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .upload_id(upload_id)
             .multipart_upload(completed)
@@ -1279,7 +1275,7 @@ impl ObjectBackend for S3Backend {
         let mut request = self
             .client
             .put_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .if_none_match("*")
             .body(SdkBody::from(data.to_vec()).into());
@@ -1324,7 +1320,7 @@ impl ObjectBackend for S3Backend {
         let mut request = self
             .client
             .put_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .if_none_match("*")
             .body(SdkBody::from(data.to_vec()).into());
@@ -1356,7 +1352,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .get_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .send()
             .await;
@@ -1392,7 +1388,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .get_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .range(range_header)
             .send()
@@ -1460,7 +1456,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .head_object()
-            .bucket(&self.bucket_name())
+            .bucket(self.bucket_name())
             .key(key)
             .send()
             .await;
@@ -1513,7 +1509,7 @@ impl ObjectBackend for S3Backend {
             match self
                 .client
                 .delete_object()
-                .bucket(&self.bucket_name())
+                .bucket(self.bucket_name())
                 .key(key)
                 .send()
                 .await
