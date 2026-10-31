@@ -6,6 +6,7 @@ use super::store::BlockStore;
 use crate::meta::MetaLayer;
 use crate::utils::NumCastExt;
 use crate::vfs::backend::Backend;
+use crate::vfs::stats::{RequestObservation, RequestSegment};
 use anyhow::Result;
 use bytes::Bytes;
 use std::sync::Arc;
@@ -158,6 +159,33 @@ where
         priority: UploadPriority,
         local_upload_limit: Option<Arc<Semaphore>>,
     ) -> Result<()> {
+        self.write_at_vectored_with_priority_and_limit_observed(
+            slice_id,
+            offset,
+            chunks,
+            priority,
+            local_upload_limit,
+            None,
+        )
+        .await
+    }
+
+    /// Upload variant used by the writeback observer.  The default method
+    /// above remains allocation-free for compaction and other callers that do
+    /// not have a request context.
+    pub(crate) async fn write_at_vectored_with_priority_and_limit_observed(
+        &self,
+        slice_id: u64,
+        offset: SliceOffset,
+        chunks: &[Bytes],
+        priority: UploadPriority,
+        local_upload_limit: Option<Arc<Semaphore>>,
+        context: Option<(Arc<RequestObservation>, u64)>,
+    ) -> Result<()> {
+        let (observation, request_unique) = match context {
+            Some((observation, unique)) => (Some(observation), unique),
+            None => (None, 0),
+        };
         let total_len = chunks.iter().map(|c| c.len()).sum::<usize>();
 
         let mut cursor = ChunkCursor::new(chunks);
@@ -182,7 +210,29 @@ where
             .into_iter()
             .map(|f| {
                 let local_upload_limit = local_upload_limit.clone();
+                let observation = observation.clone();
                 async move {
+                    if request_unique != 0
+                        && let Some(observer) = &observation
+                    {
+                        let _ = observer.update_context(
+                            request_unique,
+                            None,
+                            None,
+                            Some(slice_id),
+                            None,
+                        );
+                    }
+                    let queue_wait = observation.as_ref().and_then(|observer| {
+                        if request_unique == 0 {
+                            observer.unscoped_segment_timer(RequestSegment::ObjectPutQueueWait)
+                        } else {
+                            observer.background_segment_timer(
+                                request_unique,
+                                RequestSegment::ObjectPutQueueWait,
+                            )
+                        }
+                    });
                     let _local_permit = match local_upload_limit {
                         Some(limit) => Some(
                             limit
@@ -193,7 +243,18 @@ where
                         None => None,
                     };
                     let _p = upload_permit_for(priority).await;
-                    f.await
+                    drop(queue_wait);
+                    let object_put = observation.as_ref().and_then(|observer| {
+                        if request_unique == 0 {
+                            observer.unscoped_segment_timer(RequestSegment::ObjectPut)
+                        } else {
+                            observer
+                                .background_segment_timer(request_unique, RequestSegment::ObjectPut)
+                        }
+                    });
+                    let result = f.await;
+                    drop(object_put);
+                    result
                 }
             })
             .collect();

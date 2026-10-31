@@ -30,6 +30,7 @@ use crate::vfs::config::WriteConfig;
 use crate::vfs::extract_ino_and_chunk_index;
 use crate::vfs::io::split_chunk_spans;
 use crate::vfs::memory::{MemoryBudget, MemoryConsumer, MemoryUsageGuard, PressureLevel};
+use crate::vfs::stats::{RequestObservation, RequestSegment};
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::Mutex as ParkingMutex;
@@ -38,7 +39,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{Display, Write as FmtWrite};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Weak};
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::task::JoinSet;
@@ -412,6 +413,8 @@ pub(crate) struct SliceState {
     /// FUSE request unique id that created this slice, used to order overlapping
     /// slices for correct commit sequencing (lower unique = older data = commit first).
     creation_unique: u64,
+    /// Diagnostic cause only. Never consulted for write ordering or reuse.
+    observation_unique: u64,
     /// Writer-local monotonic order used for dirty overlay and commit order.
     /// Unlike `creation_unique`, this is assigned to every write path, so
     /// ordinary buffered writes and FUSE_WRITE_CACHE writes share one ordering
@@ -463,6 +466,7 @@ impl SliceState {
             freeze_reason: None,
             auto_freeze_trigger: None,
             creation_unique,
+            observation_unique: 0,
             write_order: creation_unique,
             max_write_unique: creation_unique,
             write_origin_mask: 0,
@@ -765,10 +769,14 @@ where
         buf: &[u8],
         origin: WriteOrigin,
         allow_gap_from: Option<u64>,
+        observation_unique: u64,
     ) -> anyhow::Result<bool> {
         let wrote = self.with_mut(|s| match s.can_write(offset, buf.len(), allow_gap_from) {
             Some(action) => {
                 s.write(offset, buf, action, origin)?;
+                if s.observation_unique == 0 {
+                    s.observation_unique = observation_unique;
+                }
                 s.update_usage(s.data.alloc_bytes());
                 Ok::<bool, anyhow::Error>(true)
             }
@@ -1201,16 +1209,41 @@ where
         let (ino, chunk_index) = crate::vfs::extract_ino_and_chunk_index(desc.chunk_id);
         let new_size =
             chunk_index * self.shared.config.layout.chunk_size + desc.offset + desc.length;
+        let observation = self.shared.request_observation();
+        let request_unique = observation
+            .as_ref()
+            .map_or(0, |_| self.slice.lock().observation_unique);
+        if request_unique != 0
+            && let Some(observer) = &observation
+        {
+            let _ = observer.update_context(
+                request_unique,
+                Some(ino),
+                Some(desc.chunk_id),
+                Some(desc.slice_id),
+                None,
+            );
+        }
 
         let mut attempts = 0u32;
         loop {
-            match self
+            let metadata_commit = observation.as_ref().and_then(|observer| {
+                if request_unique == 0 {
+                    observer.unscoped_segment_timer(RequestSegment::MetadataCommit)
+                } else {
+                    observer
+                        .background_segment_timer(request_unique, RequestSegment::MetadataCommit)
+                }
+            });
+            let _metadata_inflight = self.shared.recent_pending_upload.track_metadata_commit();
+            let result = self
                 .shared
                 .backend
                 .meta()
                 .write(ino, desc.chunk_id, desc, new_size)
-                .await
-            {
+                .await;
+            drop(metadata_commit);
+            match result {
                 Ok(()) => {
                     self.shared.inode.set_committed_size(new_size);
                     self.shared
@@ -1360,6 +1393,12 @@ where
     chunk_id: u64,
     inner: &'a mut Inner,
     shared: &'a Shared<B, M>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WriteRequestIds {
+    creation_unique: u64,
+    observation_unique: u64,
 }
 
 impl<'a, B, M> ChunkHandle<'a, B, M>
@@ -1542,7 +1581,7 @@ where
         &mut self,
         offset: u64,
         buf: &[u8],
-        creation_unique: u64,
+        request_ids: WriteRequestIds,
         write_order: u64,
         origin: WriteOrigin,
         allow_gap_from: Option<u64>,
@@ -1561,7 +1600,7 @@ where
             let (slice, action) = self.find_slice_or_create(
                 offset,
                 buf.len(),
-                creation_unique,
+                request_ids.creation_unique,
                 write_order,
                 allow_gap_from,
             )?;
@@ -1573,7 +1612,13 @@ where
                 shared: self.shared,
             };
 
-            if handle.try_write(offset, buf, origin, allow_gap_from)? {
+            if handle.try_write(
+                offset,
+                buf,
+                origin,
+                allow_gap_from,
+                request_ids.observation_unique,
+            )? {
                 let should_flush = if matches!(
                     self.shared.config.writeback_mode,
                     WriteBackMode::CommitBeforeUpload
@@ -1649,6 +1694,9 @@ struct Shared<B, M> {
     /// needed until committed slices finish uploading and age out.
     released: AtomicBool,
     publication_freezing: AtomicBool,
+    /// Optional request observer installed by the mount. Test-only writers
+    /// leave this unset, preserving their existing allocation profile.
+    request_observation: OnceLock<Arc<RequestObservation>>,
 }
 
 struct RecentPendingUploadState {
@@ -1666,6 +1714,9 @@ struct RecentPendingUploadState {
     buffer_hard_sleep_us: AtomicU64,
     stage_inflight_bytes: Arc<AtomicU64>,
     remote_upload_inflight_bytes: Arc<AtomicU64>,
+    /// Number of metadata publication RPCs currently in flight. This is a
+    /// gauge used only by the drain observer; it does not gate publication.
+    metadata_inflight: Arc<AtomicU64>,
     stage_ops: AtomicU64,
     stage_bytes: AtomicU64,
     stage_us: AtomicU64,
@@ -1753,6 +1804,16 @@ struct InflightBytesGuard {
     bytes: u64,
 }
 
+struct InflightCountGuard {
+    counter: Arc<AtomicU64>,
+}
+
+impl Drop for InflightCountGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl Drop for InflightBytesGuard {
     fn drop(&mut self) {
         self.counter.fetch_sub(self.bytes, Ordering::AcqRel);
@@ -1776,6 +1837,7 @@ impl RecentPendingUploadState {
             buffer_hard_sleep_us: AtomicU64::new(0),
             stage_inflight_bytes: Arc::new(AtomicU64::new(0)),
             remote_upload_inflight_bytes: Arc::new(AtomicU64::new(0)),
+            metadata_inflight: Arc::new(AtomicU64::new(0)),
             stage_ops: AtomicU64::new(0),
             stage_bytes: AtomicU64::new(0),
             stage_us: AtomicU64::new(0),
@@ -1924,6 +1986,13 @@ impl RecentPendingUploadState {
         InflightBytesGuard {
             counter: self.remote_upload_inflight_bytes.clone(),
             bytes,
+        }
+    }
+
+    fn track_metadata_commit(&self) -> InflightCountGuard {
+        self.metadata_inflight.fetch_add(1, Ordering::AcqRel);
+        InflightCountGuard {
+            counter: self.metadata_inflight.clone(),
         }
     }
 
@@ -2194,7 +2263,19 @@ where
             upload_limit: Arc::new(Semaphore::new(upload_concurrency)),
             released: AtomicBool::new(false),
             publication_freezing: AtomicBool::new(false),
+            request_observation: OnceLock::new(),
         }
+    }
+
+    fn set_request_observation(&self, observation: Arc<RequestObservation>) {
+        let _ = self.request_observation.set(observation);
+    }
+
+    fn request_observation(&self) -> Option<Arc<RequestObservation>> {
+        self.request_observation
+            .get()
+            .filter(|observation| observation.enabled())
+            .cloned()
     }
 
     fn record_writeback_error(&self, err: String) {
@@ -2560,6 +2641,14 @@ where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
+    pub(crate) fn set_request_observation(&self, observation: Arc<RequestObservation>) {
+        self.shared.set_request_observation(observation);
+    }
+
+    fn request_observation(&self) -> Option<Arc<RequestObservation>> {
+        self.shared.request_observation()
+    }
+
     async fn wait_for_buffer_progress(&self, max_sleep: Duration) -> Duration {
         let start = Instant::now();
         let _ = timeout(max_sleep, self.shared.flush_notify.notified()).await;
@@ -2779,7 +2868,16 @@ where
         fields(offset, len = buf.len(), bypass_flush_gate = false)
     )]
     pub(crate) async fn write_at(&self, offset: u64, buf: &[u8]) -> anyhow::Result<usize> {
-        self.write_at_inner(offset, buf, false, 0, WriteOrigin::Normal)
+        self.write_at_with_unique(offset, buf, 0).await
+    }
+
+    pub(crate) async fn write_at_with_unique(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        request_unique: u64,
+    ) -> anyhow::Result<usize> {
+        self.write_at_inner(offset, buf, false, 0, WriteOrigin::Normal, request_unique)
             .await
     }
 
@@ -2848,6 +2946,7 @@ where
                 true,
                 creation_unique,
                 WriteOrigin::Cached,
+                creation_unique,
             )
             .await?;
         }
@@ -3015,11 +3114,25 @@ where
         bypass_flush_gate: bool,
         creation_unique: u64,
         origin: WriteOrigin,
+        request_unique: u64,
     ) -> anyhow::Result<usize> {
         self.shared.writeback_result()?;
+        let observation = self.request_observation();
+        let flush_wait = observation
+            .as_ref()
+            .and_then(|observer| observer.segment_timer(request_unique, RequestSegment::FlushWait));
         self.back_pressure().await?;
         self.wait_for_writeback_backpressure(buf.len()).await?;
+        drop(flush_wait);
+        let chunk_lock_wait = observation.as_ref().and_then(|observer| {
+            if request_unique == 0 {
+                observer.unscoped_segment_timer(RequestSegment::ChunkLockWait)
+            } else {
+                observer.segment_timer(request_unique, RequestSegment::ChunkLockWait)
+            }
+        });
         let mut guard = self.shared.inner.lock().await;
+        drop(chunk_lock_wait);
         let write_order = self.shared.next_write_order();
 
         if !bypass_flush_gate {
@@ -3029,9 +3142,17 @@ where
             // flush waits for the resulting slices to commit.
             guard.write_waiting += 1;
             while guard.flush_waiting > 0 {
+                let flush_wait = observation.as_ref().and_then(|observer| {
+                    observer.segment_timer(request_unique, RequestSegment::FlushWait)
+                });
                 drop(guard);
                 self.shared.write_notify.notified().await;
+                drop(flush_wait);
+                let lock_wait = observation.as_ref().and_then(|observer| {
+                    observer.segment_timer(request_unique, RequestSegment::ChunkLockWait)
+                });
                 guard = self.shared.inner.lock().await;
+                drop(lock_wait);
             }
             guard.write_waiting -= 1;
         }
@@ -3045,15 +3166,37 @@ where
         if within_offset + buf.len() as u64 <= layout.chunk_size {
             let cid = chunk_id_for(self.shared.inode.ino(), chunk_index)?;
             let ckey = guard.get_or_create_chunk(cid);
+            if request_unique != 0
+                && let Some(observer) = &observation
+            {
+                let _ = observer.set_context(
+                    request_unique,
+                    Some(self.shared.inode.ino()),
+                    Some(cid),
+                    None,
+                    None,
+                );
+            }
             let mut handle = guard.chunk_handle(&self.shared, ckey);
+            let dirty_merge = observation.as_ref().and_then(|observer| {
+                if request_unique == 0 {
+                    observer.unscoped_segment_timer(RequestSegment::DirtyMerge)
+                } else {
+                    observer.segment_timer(request_unique, RequestSegment::DirtyMerge)
+                }
+            });
             let action = handle.write_at(
                 within_offset,
                 buf,
-                creation_unique,
+                WriteRequestIds {
+                    creation_unique,
+                    observation_unique: observation.as_ref().map_or(0, |_| request_unique),
+                },
                 write_order,
                 origin,
                 None,
             )?;
+            drop(dirty_merge);
             drop(guard);
 
             for slice in action.flush {
@@ -3070,16 +3213,38 @@ where
             for span in spans {
                 let cid = chunk_id_for(self.shared.inode.ino(), span.index)?;
                 let ckey = guard.get_or_create_chunk(cid);
+                if request_unique != 0
+                    && let Some(observer) = &observation
+                {
+                    let _ = observer.set_context(
+                        request_unique,
+                        Some(self.shared.inode.ino()),
+                        Some(cid),
+                        None,
+                        None,
+                    );
+                }
                 let mut handle = guard.chunk_handle(&self.shared, ckey);
                 let span_len = span.len.as_usize();
+                let dirty_merge = observation.as_ref().and_then(|observer| {
+                    if request_unique == 0 {
+                        observer.unscoped_segment_timer(RequestSegment::DirtyMerge)
+                    } else {
+                        observer.segment_timer(request_unique, RequestSegment::DirtyMerge)
+                    }
+                });
                 let action = handle.write_at(
                     span.offset,
                     &buf[position..position + span_len],
-                    creation_unique,
+                    WriteRequestIds {
+                        creation_unique,
+                        observation_unique: observation.as_ref().map_or(0, |_| request_unique),
+                    },
                     write_order,
                     origin,
                     None,
                 )?;
+                drop(dirty_merge);
                 drop(guard);
 
                 for slice in action.flush {
@@ -3094,7 +3259,15 @@ where
                 if position >= buf.len() {
                     break;
                 }
+                let chunk_lock_wait = observation.as_ref().and_then(|observer| {
+                    if request_unique == 0 {
+                        observer.unscoped_segment_timer(RequestSegment::ChunkLockWait)
+                    } else {
+                        observer.segment_timer(request_unique, RequestSegment::ChunkLockWait)
+                    }
+                });
                 guard = self.shared.inner.lock().await;
+                drop(chunk_lock_wait);
             }
         }
 
@@ -3600,6 +3773,7 @@ where
         struct CachedPiece {
             offset: u64,
             creation_unique: u64,
+            observation_unique: u64,
             write_order: u64,
             max_write_unique: u64,
             write_origin_mask: u8,
@@ -3624,6 +3798,7 @@ where
             pieces.push(CachedPiece {
                 offset: state.offset,
                 creation_unique: state.creation_unique,
+                observation_unique: state.observation_unique,
                 write_order: state.write_order,
                 max_write_unique: state.max_write_unique,
                 write_origin_mask: state.write_origin_mask,
@@ -3672,6 +3847,10 @@ where
             creation_unique,
         );
         merged.data.append(&merged_data)?;
+        merged.observation_unique = pieces
+            .iter()
+            .find_map(|piece| (piece.observation_unique != 0).then_some(piece.observation_unique))
+            .unwrap_or(0);
         merged.write_order = write_order;
         merged.max_write_unique = max_write_unique;
         merged.write_origin_mask = write_origin_mask;
@@ -4196,6 +4375,10 @@ where
                     let slice_for_persist = slice.clone();
                     let ino = shared.inode.ino();
                     let layout = shared.config.layout;
+                    let request_observation = shared.request_observation();
+                    let request_unique = request_observation
+                        .as_ref()
+                        .map_or(0, |_| slice.lock().observation_unique);
                     let upload_priority = if matches!(
                         shared.config.writeback_mode,
                         WriteBackMode::CommitBeforeUpload
@@ -4268,12 +4451,15 @@ where
                                 .track_remote_upload_inflight(data_len);
                             backoff(UPLOAD_MAX_RETRIES, || async {
                                 match uploader
-                                    .write_at_vectored_with_priority_and_limit(
+                                    .write_at_vectored_with_priority_and_limit_observed(
                                         slice_id,
                                         batch_offset.into(),
                                         &all_chunks,
                                         upload_priority,
                                         Some(shared2.upload_limit.clone()),
+                                        request_observation
+                                            .clone()
+                                            .map(|observer| (observer, request_unique)),
                                     )
                                     .await
                                 {
@@ -4599,6 +4785,7 @@ where
             state.creation_unique,
         );
         tail.write_order = state.write_order;
+        tail.observation_unique = state.observation_unique;
         tail.max_write_unique = state.max_write_unique;
         tail.write_origin_mask = state.write_origin_mask;
         if let Err(err) = tail.data.append(&tail_buf) {
@@ -4755,12 +4942,36 @@ where
         let (ino, chunk_index) = extract_ino_and_chunk_index(desc.chunk_id);
         let file_offset = chunk_index * shared.config.layout.chunk_size + desc.offset;
         let new_size = file_offset + desc.length;
+        let observation = shared.request_observation();
+        let request_unique = observation
+            .as_ref()
+            .map_or(0, |_| slice.lock().observation_unique);
+        if request_unique != 0 {
+            let _ = observation.as_ref().map(|observer| {
+                observer.update_context(
+                    request_unique,
+                    Some(ino),
+                    Some(desc.chunk_id),
+                    Some(desc.slice_id),
+                    None,
+                )
+            });
+        }
+        let metadata_commit = observation.as_ref().and_then(|observer| {
+            if request_unique == 0 {
+                observer.unscoped_segment_timer(RequestSegment::MetadataCommit)
+            } else {
+                observer.background_segment_timer(request_unique, RequestSegment::MetadataCommit)
+            }
+        });
+        let _metadata_inflight = shared.recent_pending_upload.track_metadata_commit();
 
         let result = shared
             .backend
             .meta()
             .write(ino, desc.chunk_id, desc, new_size)
             .await;
+        drop(metadata_commit);
 
         match result {
             Ok(()) => {
@@ -5055,6 +5266,33 @@ where
                         let file_offset =
                             chunk_index * shared.config.layout.chunk_size + desc.offset;
                         let new_size = file_offset + desc.length;
+                        let observation = shared.request_observation();
+                        let request_unique = observation
+                            .as_ref()
+                            .map_or(0, |_| slice.lock().observation_unique);
+                        if request_unique != 0 {
+                            let _ = observation.as_ref().map(|observer| {
+                                observer.update_context(
+                                    request_unique,
+                                    Some(ino),
+                                    Some(desc.chunk_id),
+                                    Some(desc.slice_id),
+                                    None,
+                                )
+                            });
+                        }
+                        let metadata_commit = observation.as_ref().and_then(|observer| {
+                            if request_unique == 0 {
+                                observer.unscoped_segment_timer(RequestSegment::MetadataCommit)
+                            } else {
+                                observer.background_segment_timer(
+                                    request_unique,
+                                    RequestSegment::MetadataCommit,
+                                )
+                            }
+                        });
+                        let _metadata_inflight =
+                            shared.recent_pending_upload.track_metadata_commit();
 
                         let result = shared
                             .backend
@@ -5070,6 +5308,7 @@ where
                                 new_size
                             ))
                             .await;
+                        drop(metadata_commit);
 
                         if let Err(err) = result {
                             let retryable = should_retry_meta_write(&err);
@@ -5512,6 +5751,7 @@ pub(crate) struct DataWriter<B, M> {
     writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
     recent_pending_upload: Arc<RecentPendingUploadState>,
+    request_observation: Option<Arc<RequestObservation>>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -5542,6 +5782,7 @@ pub(crate) struct WritebackDirtyBreakdown {
     pub buffer_hard_sleep_us: u64,
     pub stage_inflight_bytes: u64,
     pub remote_upload_inflight_bytes: u64,
+    pub metadata_inflight: u64,
     pub stage_ops: u64,
     pub stage_bytes: u64,
     pub stage_us: u64,
@@ -5645,7 +5886,13 @@ where
             writeback_epoch: 0,
             memory_budget: None,
             recent_pending_upload: Arc::new(RecentPendingUploadState::new()),
+            request_observation: None,
         }
+    }
+
+    pub(crate) fn with_request_observation(mut self, observation: Arc<RequestObservation>) -> Self {
+        self.request_observation = Some(observation);
+        self
     }
 
     pub(crate) fn with_memory_budget(mut self, memory_budget: MemoryBudget) -> Self {
@@ -5677,6 +5924,9 @@ where
                 ))
             })
             .clone();
+        if let Some(observation) = &self.request_observation {
+            writer.set_request_observation(observation.clone());
+        }
         writer.mark_active();
         writer
     }
@@ -5739,6 +5989,10 @@ where
             remote_upload_inflight_bytes: self
                 .recent_pending_upload
                 .remote_upload_inflight_bytes
+                .load(Ordering::Acquire),
+            metadata_inflight: self
+                .recent_pending_upload
+                .metadata_inflight
                 .load(Ordering::Acquire),
             stage_ops: self.recent_pending_upload.stage_ops.load(Ordering::Relaxed),
             stage_bytes: self
@@ -9184,6 +9438,54 @@ mod tests {
         let file_reader = reader.open_for_handle(inode, 42);
         let out = file_reader.read(0, page).await.unwrap();
         assert_eq!(out, newer);
+    }
+
+    #[tokio::test]
+    async fn observation_id_does_not_enter_normal_write_ordering() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        for enabled in [false, true] {
+            let store = Arc::new(InMemoryBlockStore::new());
+            let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+            let meta = meta_handle.layer();
+            let backend = Arc::new(Backend::new(store, meta.clone()));
+            let ino = meta.create_file(1, "observed-write".into()).await.unwrap();
+            let inode = Inode::new(ino, 0);
+            let reader = Arc::new(DataReader::new(
+                Arc::new(ReadConfig::new(layout)),
+                backend.clone(),
+            ));
+            let writer = DataWriter::new(
+                test_config_without_auto_flush(layout),
+                backend,
+                reader.clone(),
+                None,
+            )
+            .with_request_observation(Arc::new(RequestObservation::new(enabled, 1)));
+            let file = writer.ensure_file(inode.clone());
+            file.write_at_with_unique(0, &[1; 128], 200).await.unwrap();
+            file.write_at_with_unique(128, &[2; 128], 100)
+                .await
+                .unwrap();
+            // FUSE unique is only a causal label for ordinary writes. The
+            // existing cached-write ordering watermarks must remain neutral.
+            {
+                let inner = file.shared.inner.lock().await;
+                for chunk in inner.chunks.values() {
+                    for slice in &chunk.slices {
+                        let slice = slice.lock();
+                        assert_eq!(slice.creation_unique, 0);
+                        assert_eq!(slice.max_write_unique, 0);
+                    }
+                }
+            }
+            file.flush().await.unwrap();
+            let data = reader.open_for_handle(inode, 1).read(0, 256).await.unwrap();
+            assert_eq!(&data[..128], &[1; 128]);
+            assert_eq!(&data[128..], &[2; 128]);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
