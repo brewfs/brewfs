@@ -1090,6 +1090,7 @@ impl Manager {
                     {
                         store
                             .create_volume_root_in_empty_namespace(CreateVolumeRoot {
+                                upper_bucket: None,
                                 volume_format: "workspace-v1".into(),
                                 schema_version: WORKSPACE_SCHEMA_VERSION,
                                 volume_id: record.operation.volume_id,
@@ -1162,7 +1163,7 @@ impl Manager {
                     .await
                     .map_err(catalog_error)?;
                 let item = &record.operation.items[index];
-                crate::workspace_overlay::lifecycle::WorkspaceLifecycle::new(Arc::new(store)).ensure_fork(CreateWorkspace {workspace_id:item.workspace_id.unwrap(),head_layer_id:item.head_layer_id.unwrap(),base_revision:request.revision,owner_id:request.owner})
+                crate::workspace_overlay::lifecycle::WorkspaceLifecycle::new(Arc::new(store)).ensure_fork(CreateWorkspace {workspace_id:item.workspace_id.unwrap(),head_layer_id:item.head_layer_id.unwrap(),base_revision:request.revision,owner_id:request.owner,upper_bucket:None})
                     .await.map_err(|error| match error {
                         WorkspaceError::Conflict(_) => ManagerError::new("recovery_required", "recorded fork identity cannot be reconciled; retain the journal and inspect the catalog"),
                         other => catalog_error(other),

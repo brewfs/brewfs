@@ -9,6 +9,7 @@ async fn two_catalogs() -> (tempfile::TempDir, Manager, CreateVolumeRoot) {
     std::fs::write(dir.path().join("manager-catalogs.json"), config.to_string()).unwrap();
     let manager = Manager::open(dir.path()).await.unwrap();
     let root = CreateVolumeRoot {
+        upper_bucket: None,
         volume_format: "workspace-v1".into(),
         schema_version: WORKSPACE_SCHEMA_VERSION,
         volume_id: Uuid::new_v4(),

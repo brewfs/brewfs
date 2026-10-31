@@ -237,6 +237,7 @@ mod tests {
         store.initialize_workspace_schema().await.unwrap();
         let root = store
             .create_volume_root(CreateVolumeRoot {
+                upper_bucket: None,
                 volume_format: "workspace-v1".into(),
                 schema_version: WORKSPACE_SCHEMA_VERSION,
                 volume_id: Uuid::new_v4(),
@@ -253,6 +254,7 @@ mod tests {
 
     fn fork_request(root: &WorkspaceView) -> CreateWorkspace {
         CreateWorkspace {
+            upper_bucket: None,
             workspace_id: WorkspaceId::new(),
             head_layer_id: LayerId::new(),
             base_revision: root.base_revision.clone(),

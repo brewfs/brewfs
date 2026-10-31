@@ -23,6 +23,7 @@ async fn session() -> (
     let workspace_id = WorkspaceId::new();
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
