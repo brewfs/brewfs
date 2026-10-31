@@ -4,15 +4,18 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context as _};
 use async_trait::async_trait;
+use brewfs::workspace_overlay::admin as catalog_admin;
+pub use brewfs::workspace_overlay::admin::WorkspaceView;
 use brewfs::workspace_overlay::catalog::{
-    CreateSnapshot, CreateVolumeRoot, CreateWorkspace, MarkDeleting, WorkspaceStore,
+    CreateSnapshot, CreateVolumeRoot, CreateWorkspace, WorkspaceStore,
 };
 use brewfs::workspace_overlay::error::WorkspaceError;
 use brewfs::workspace_overlay::ids::{LayerId, LeaseId, SnapshotId, WorkspaceId};
 use brewfs::workspace_overlay::model::{
-    BaseRevision, LayerState, SnapshotLease, VolumeHeader, WorkspaceRecord, WorkspaceState,
-    WORKSPACE_SCHEMA_VERSION,
+    BaseRevision, VolumeHeader, WorkspaceRecord, WORKSPACE_SCHEMA_VERSION,
 };
+#[cfg(test)]
+use brewfs::workspace_overlay::model::{LayerState, WorkspaceState};
 use brewfs::workspace_overlay::stores::kv_store::KvWorkspaceStore;
 use uuid::Uuid;
 
@@ -46,14 +49,6 @@ pub struct EnsureWorkspaceRequest {
     pub head_layer_id: LayerId,
     pub base_revision: BaseRevision,
     pub owner_id: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct WorkspaceView {
-    pub record: WorkspaceRecord,
-    pub base_revision: BaseRevision,
-    pub layer_depth: u32,
-    pub leases: Vec<SnapshotLease>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,75 +269,24 @@ where
         &self,
         request: EnsureWorkspaceRequest,
     ) -> anyhow::Result<WorkspaceView> {
-        match self.store.load_workspace(request.workspace_id).await {
-            Ok(record) => {
-                if record.owner_id != request.owner_id {
-                    bail!("deterministic workspace ID exists with a different owner");
-                }
-            }
-            Err(WorkspaceError::WorkspaceNotFound(_)) => {
-                match self
-                    .store
-                    .create_workspace(CreateWorkspace {
-                        workspace_id: request.workspace_id,
-                        head_layer_id: request.head_layer_id,
-                        base_revision: request.base_revision.clone(),
-                        owner_id: request.owner_id.clone(),
-                    })
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(error) => {
-                        self.store
-                            .load_workspace(request.workspace_id)
-                            .await
-                            .map_err(|_| error)?;
-                    }
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let view = self.inspect_workspace(request.workspace_id).await?;
-        if view.record.head_epoch == 0 && view.base_revision != request.base_revision {
-            bail!("new workspace base revision does not match the requested source");
-        }
-        Ok(view)
+        Ok(catalog_admin::ensure_workspace_for_reconcile(
+            self.store.as_ref(),
+            CreateWorkspace {
+                workspace_id: request.workspace_id,
+                head_layer_id: request.head_layer_id,
+                base_revision: request.base_revision,
+                owner_id: request.owner_id,
+            },
+        )
+        .await?)
     }
 
     async fn inspect_workspace(&self, id: WorkspaceId) -> anyhow::Result<WorkspaceView> {
-        let record = self.store.load_workspace(id).await?;
-        let chain = self.store.load_layer_chain(record.head_layer_id).await?;
-        let [head, base] = chain.as_slice() else {
-            bail!("workspace {id} does not contain exactly one writable and one sealed layer");
-        };
-        if head.state != LayerState::Writable
-            || head.owner_workspace_id != Some(id)
-            || head.parent_layer_id != Some(base.layer_id)
-            || head.depth != 2
-            || base.state != LayerState::Sealed
-            || base.owner_workspace_id.is_some()
-            || base.parent_layer_id.is_some()
-            || base.depth != 1
-        {
-            bail!("workspace {id} violates the fixed two-layer invariant");
-        }
-        let base_revision = revision_from_layer(base)?;
-        let leases = self.store.list_leases(id).await?;
-        Ok(WorkspaceView {
-            record,
-            base_revision,
-            layer_depth: head.depth,
-            leases,
-        })
+        Ok(catalog_admin::inspect_workspace(self.store.as_ref(), id).await?)
     }
 
     async fn verify_revision(&self, revision: &BaseRevision) -> anyhow::Result<()> {
-        let layer = self.store.load_layer(revision.layer_id).await?;
-        let actual = revision_from_layer(&layer)?;
-        if &actual != revision {
-            bail!("sealed revision tuple changed");
-        }
-        Ok(())
+        Ok(catalog_admin::verify_revision(self.store.as_ref(), revision).await?)
     }
 
     async fn ensure_snapshot(
@@ -399,33 +343,7 @@ where
     }
 
     async fn mark_workspace_deleting(&self, id: WorkspaceId, force: bool) -> anyhow::Result<()> {
-        match self
-            .store
-            .mark_workspace_deleting(MarkDeleting {
-                workspace_id: id,
-                force_fence_lease: force,
-            })
-            .await
-        {
-            Ok(()) => Ok(()),
-            // Backends use different conflict errors for an already durable
-            // Deleting marker (the KV path reports WorkspaceNotFound while
-            // SQLite reports InvalidStateTransition). Reconciliation is
-            // retried after every API-server write, so both forms must be
-            // treated as an idempotent success only after re-reading the
-            // authoritative record. A missing record or another state still
-            // fails closed and keeps the Kubernetes finalizer in place.
-            Err(WorkspaceError::InvalidStateTransition { .. })
-            | Err(WorkspaceError::WorkspaceNotFound(_)) => {
-                let workspace = self.store.load_workspace(id).await?;
-                if workspace.state == WorkspaceState::Deleting {
-                    Ok(())
-                } else {
-                    Err(anyhow!("workspace deletion transition was rejected"))
-                }
-            }
-            Err(error) => Err(error.into()),
-        }
+        Ok(catalog_admin::mark_workspace_deleting(self.store.as_ref(), id, force).await?)
     }
 
     async fn reap_expired_leases(&self) -> anyhow::Result<u64> {
@@ -454,47 +372,10 @@ fn validate_operator_volume_header(
     header: &VolumeHeader,
     expected_volume_id: Uuid,
 ) -> anyhow::Result<()> {
-    if header.volume_id != expected_volume_id {
-        bail!(
-            "workspace catalog is owned by volume {}, expected {}",
-            header.volume_id,
-            expected_volume_id
-        );
-    }
-    if header.volume_format != OPERATOR_VOLUME_FORMAT
-        || header.schema_version != WORKSPACE_SCHEMA_VERSION
-    {
-        bail!(
-            "workspace volume format mismatch: format={} schemaVersion={}",
-            header.volume_format,
-            header.schema_version
-        );
-    }
-    Ok(())
-}
-
-fn revision_from_layer(
-    layer: &brewfs::workspace_overlay::model::LayerRecord,
-) -> anyhow::Result<BaseRevision> {
-    if layer.state != LayerState::Sealed
-        || layer.owner_workspace_id.is_some()
-        || layer.parent_layer_id.is_some()
-        || layer.depth != 1
-    {
-        bail!(
-            "layer {} is not an immutable flat sealed base",
-            layer.layer_id
-        );
-    }
-    Ok(BaseRevision {
-        layer_id: layer.layer_id,
-        sealed_version: layer
-            .sealed_version
-            .ok_or_else(|| anyhow!("sealed layer has no version"))?,
-        root_hash: layer
-            .root_hash
-            .ok_or_else(|| anyhow!("sealed layer has no root hash"))?,
-    })
+    Ok(catalog_admin::validate_volume_header(
+        header,
+        expected_volume_id,
+    )?)
 }
 
 pub fn revision_to_status(revision: &BaseRevision) -> WorkspaceRevision {

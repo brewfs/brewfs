@@ -258,6 +258,65 @@ CREATE TABLE IF NOT EXISTS ws_v3_workspace_open (
 );
 "#;
 
+// Required columns for the Manager's read-only admission probe. Keep in sync
+// with SCHEMA; the table names also bound empty-namespace initialization.
+const MANAGER_CATALOG_COLUMNS: &[(&str, &str)] = &[
+    (
+        "ws_v1_volume_header",
+        "singleton_id, volume_format, schema_version, volume_id, created_at_ns",
+    ),
+    (
+        "ws_v1_workspaces",
+        "workspace_id, head_layer_id, head_epoch, fork_base_layer_id, fork_base_version, fork_base_root_hash, owner_id, state, active_lease, created_at_ns, updated_at_ns",
+    ),
+    (
+        "ws_v1_layers",
+        "layer_id, parent_layer_id, state, schema_version, sealed_version, delta_digest, root_hash, depth, owner_workspace_id, next_sequence, owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns",
+    ),
+    (
+        "ws_v1_dentry_delta",
+        "layer_id, parent_ino, name, op, ino, entry_type, sequence",
+    ),
+    (
+        "ws_v1_inode_delta",
+        "layer_id, ino, state, kind, size, mode, uid, gid, rdev, nlink, atime_ns, mtime_ns, ctime_ns, symlink_target, parent_hint, data_version, sequence",
+    ),
+    (
+        "ws_v1_xattr_delta",
+        "layer_id, ino, name, op, value, sequence",
+    ),
+    (
+        "ws_v1_acl_delta",
+        "layer_id, ino, acl_type, acl_id, op, value, sequence",
+    ),
+    (
+        "ws_v1_data_extent_delta",
+        "layer_id, ino, chunk_index, logical_offset, length, kind, slice_id, slice_offset, sequence",
+    ),
+    (
+        "ws_v1_snapshot_leases",
+        "lease_id, workspace_id, base_layer_id, base_version, base_root_hash, holder_generation, writable, state, expires_at_ns, created_at_ns, updated_at_ns",
+    ),
+    (
+        "ws_v1_snapshots",
+        "snapshot_id, name, layer_id, sealed_version, root_hash, owner_id, created_at_ns",
+    ),
+    (
+        "ws_v1_seal_journal",
+        "journal_id, workspace_id, old_head_layer_id, expected_head_epoch, phase, pending_bytes, delta_digest, root_hash, new_head_layer_id, last_error, created_at_ns, updated_at_ns",
+    ),
+    ("ws_v1_allocators", "name, next_value"),
+    (
+        "ws_v3_packed_bindings",
+        "workspace_id, binding_version, record",
+    ),
+    ("ws_v3_packed_current", "workspace_id, binding_version"),
+    (
+        "ws_v3_workspace_open",
+        "workspace_id, owner_id, generation, expires_at_ns, state, recovery_required, opened_at_ns, updated_at_ns",
+    ),
+];
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -279,11 +338,302 @@ pub struct SqliteWorkspaceStore {
 }
 
 impl SqliteWorkspaceStore {
+    /// Reject packed sidecars at the Manager boundary even if their workspace
+    /// row or initial history is missing. Absence of version 1 is not evidence
+    /// that a partially restored catalog is native-only.
+    pub async fn has_packed_catalog_bindings(&self) -> Result<bool, WorkspaceError> {
+        let present: i64 = sea_orm::sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM ws_v3_packed_bindings) OR EXISTS(SELECT 1 FROM ws_v3_packed_current)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(present != 0)
+    }
+
+    /// Check the schema used by Manager without creating or migrating tables.
+    /// A header alone cannot establish that an imported catalog is usable.
+    pub async fn validate_manager_catalog_schema(&self) -> Result<(), WorkspaceError> {
+        let actual_tables = self.schema_table_names().await?;
+        for (table, columns) in MANAGER_CATALOG_COLUMNS {
+            if !actual_tables.iter().any(|name| name.as_str() == *table) {
+                return Err(WorkspaceError::UnsupportedCapability(
+                    "complete workspace-v1 SQLite catalog schema",
+                ));
+            }
+            // Both identifier lists are compile-time constants, not request data.
+            let probe = format!("SELECT {columns} FROM \"{table}\" LIMIT 0");
+            sea_orm::sqlx::query(&probe)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| match &error {
+                    sea_orm::sqlx::Error::Database(database)
+                        if database.code().as_deref() == Some("1") =>
+                    {
+                        WorkspaceError::UnsupportedCapability(
+                            "complete workspace-v1 SQLite catalog schema",
+                        )
+                    }
+                    _ => backend(error),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Initialize a Manager-owned catalog only in an empty namespace.
+    pub async fn create_volume_root_in_empty_namespace(
+        &self,
+        request: CreateVolumeRoot,
+    ) -> Result<WorkspaceRecord, WorkspaceError> {
+        self.create_volume_root_inner(request, true).await
+    }
+
+    async fn create_volume_root_inner(
+        &self,
+        request: CreateVolumeRoot,
+        require_empty: bool,
+    ) -> Result<WorkspaceRecord, WorkspaceError> {
+        if request.volume_format != VOLUME_FORMAT
+            || request.schema_version != WORKSPACE_SCHEMA_VERSION
+        {
+            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
+                "{}/{}",
+                request.volume_format, request.schema_version
+            )));
+        }
+        if request.root_layer_id == request.writable_layer_id {
+            return Err(WorkspaceError::CorruptMetadata(
+                "root and writable layer IDs must differ".into(),
+            ));
+        }
+        let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
+        if require_empty {
+            Self::require_empty_namespace(&mut tx).await?;
+            // SCHEMA contains only CREATE statements with no quoted semicolons
+            // or trigger bodies. Execute each on this same reserved-write tx.
+            for statement in SCHEMA.split(';').filter(|sql| !sql.trim().is_empty()) {
+                sea_orm::sqlx::query(statement)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(backend)?;
+            }
+        }
+        let marker_exists = sea_orm::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ws_v1_volume_header WHERE singleton_id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if marker_exists != 0 {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: "initialized".into(),
+                to: "create-volume-root".into(),
+            });
+        }
+
+        let now = now_ns()?;
+        let root_inode = InodeDelta {
+            layer_id: request.root_layer_id,
+            ino: 1,
+            state: InodeState::Present,
+            kind: 1,
+            size: 0,
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            nlink: 2,
+            atime_ns: now,
+            mtime_ns: now,
+            ctime_ns: now,
+            symlink_target: None,
+            parent_hint: Some(1),
+            data_version: 1,
+            sequence: 1,
+        };
+        let root_delta = CanonicalLayerDelta {
+            inodes: vec![root_inode.clone()],
+            ..CanonicalLayerDelta::default()
+        };
+        let root_delta_digest = delta_digest(&root_delta)?;
+        let root_hash = root_hash([0; 32], root_delta_digest);
+
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_layers
+             (layer_id, parent_layer_id, state, schema_version, sealed_version,
+              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
+              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
+             VALUES (?, NULL, ?, ?, 1, ?, ?, 1, NULL, 2, 0, 0, ?, ?)",
+        )
+        .bind(request.root_layer_id.as_bytes().as_slice())
+        .bind(LayerState::Sealed.discriminant() as i64)
+        .bind(WORKSPACE_SCHEMA_VERSION as i64)
+        .bind(root_delta_digest.as_slice())
+        .bind(root_hash.as_slice())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        insert_inode(&mut tx, &root_inode).await?;
+
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_layers
+             (layer_id, parent_layer_id, state, schema_version, sealed_version,
+              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
+              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
+             VALUES (?, ?, ?, ?, NULL, NULL, NULL, 2, ?, 1, 0, 0, ?, NULL)",
+        )
+        .bind(request.writable_layer_id.as_bytes().as_slice())
+        .bind(request.root_layer_id.as_bytes().as_slice())
+        .bind(LayerState::Writable.discriminant() as i64)
+        .bind(WORKSPACE_SCHEMA_VERSION as i64)
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_workspaces
+             (workspace_id, head_layer_id, head_epoch,
+              fork_base_layer_id, fork_base_version, fork_base_root_hash,
+              owner_id, state, created_at_ns, updated_at_ns)
+             VALUES (?, ?, 0, ?, 1, ?, ?, ?, ?, ?)",
+        )
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(request.writable_layer_id.as_bytes().as_slice())
+        .bind(request.root_layer_id.as_bytes().as_slice())
+        .bind(root_hash.as_slice())
+        .bind(request.owner_id.as_deref())
+        .bind(WorkspaceState::Active.discriminant() as i64)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        for (name, next_value) in [
+            ("inode", 2_i64),
+            ("slice", 1_i64),
+            ("sealed_version", 2_i64),
+        ] {
+            sea_orm::sqlx::query("INSERT INTO ws_v1_allocators(name, next_value) VALUES (?, ?)")
+                .bind(name)
+                .bind(next_value)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+        }
+
+        // The immutable marker is deliberately the last row written. A crash
+        // before this point leaves a retryable, unmarked workspace schema.
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_volume_header
+             (singleton_id, volume_format, schema_version, volume_id, created_at_ns)
+             VALUES (1, ?, ?, ?, ?)",
+        )
+        .bind(VOLUME_FORMAT)
+        .bind(WORKSPACE_SCHEMA_VERSION as i64)
+        .bind(request.volume_id.as_bytes().as_slice())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
+
+        Ok(WorkspaceRecord {
+            workspace_id: request.workspace_id,
+            head_layer_id: request.writable_layer_id,
+            head_epoch: 0,
+            fork_base: Some(BaseRevision {
+                layer_id: request.root_layer_id,
+                sealed_version: 1,
+                root_hash,
+            }),
+            owner_id: request.owner_id,
+            state: WorkspaceState::Active,
+            active_lease: None,
+            created_at_ns: now,
+            updated_at_ns: now,
+        })
+    }
+
+    async fn require_empty_namespace(
+        tx: &mut Transaction<'_, Sqlite>,
+    ) -> Result<(), WorkspaceError> {
+        // Keep this allowlist in sync with SCHEMA. No foreign tables, views,
+        // triggers, or indexes may gain meaning merely by opening a Manager.
+        const INDEXES: &[&str] = &[
+            "ws_v1_layers_parent_idx",
+            "ws_v1_dentry_parent_idx",
+            "ws_v1_extent_lookup_idx",
+            "ws_v1_one_writer_idx",
+            "ws_v1_snapshot_name_idx",
+        ];
+        let not_empty = || {
+            WorkspaceError::Conflict(crate::workspace_overlay::error::ConflictDetail {
+                path: Vec::new(),
+                reason: "volume initialization requires an empty catalog namespace".into(),
+            })
+        };
+        let objects = sea_orm::sqlx::query(
+            "SELECT type, name FROM sqlite_master WHERE substr(name, 1, 7) != 'sqlite_'",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(backend)?;
+        let mut present_tables = Vec::new();
+        for object in objects {
+            let kind: String = object.try_get("type").map_err(backend)?;
+            let name: String = object.try_get("name").map_err(backend)?;
+            let allowed = match kind.as_str() {
+                "table" => MANAGER_CATALOG_COLUMNS
+                    .iter()
+                    .any(|(table, _)| *table == name),
+                "index" => INDEXES.contains(&name.as_str()),
+                _ => false,
+            };
+            if !allowed {
+                return Err(not_empty());
+            }
+            if kind == "table" {
+                present_tables.push(name);
+            }
+        }
+        for table in present_tables {
+            // Identifiers come only from the compile-time allowlist above.
+            let occupied: i64 = sea_orm::sqlx::query_scalar(&format!(
+                "SELECT EXISTS(SELECT 1 FROM \"{table}\" LIMIT 1)"
+            ))
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(backend)?;
+            if occupied != 0 {
+                return Err(not_empty());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn connect(url: &str) -> Result<Self, WorkspaceError> {
+        Self::connect_with_creation(url, true).await
+    }
+
+    /// Open an existing catalog without recreating a file removed between a
+    /// caller's identity/existence check and SQLite opening the database.
+    pub async fn connect_existing(url: &str) -> Result<Self, WorkspaceError> {
+        Self::connect_with_creation(url, false).await
+    }
+
+    async fn connect_with_creation(
+        url: &str,
+        create_if_missing: bool,
+    ) -> Result<Self, WorkspaceError> {
         let is_memory = url.contains("::memory:");
         let mut options = SqliteConnectOptions::from_str(url)
             .map_err(backend)?
-            .create_if_missing(true)
+            .create_if_missing(create_if_missing)
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(30));
         if !is_memory {
@@ -1495,159 +1845,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         &self,
         request: CreateVolumeRoot,
     ) -> Result<WorkspaceRecord, WorkspaceError> {
-        if request.volume_format != VOLUME_FORMAT
-            || request.schema_version != WORKSPACE_SCHEMA_VERSION
-        {
-            return Err(WorkspaceError::UnsupportedVolumeFormat(format!(
-                "{}/{}",
-                request.volume_format, request.schema_version
-            )));
-        }
-        if request.root_layer_id == request.writable_layer_id {
-            return Err(WorkspaceError::CorruptMetadata(
-                "root and writable layer IDs must differ".into(),
-            ));
-        }
-        let _guard = self.write_gate.lock().await;
-        let mut tx = self.begin_write().await?;
-        let marker_exists = sea_orm::sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM ws_v1_volume_header WHERE singleton_id = 1",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(backend)?;
-        if marker_exists != 0 {
-            return Err(WorkspaceError::InvalidStateTransition {
-                from: "initialized".into(),
-                to: "create-volume-root".into(),
-            });
-        }
-
-        let now = now_ns()?;
-        let root_inode = InodeDelta {
-            layer_id: request.root_layer_id,
-            ino: 1,
-            state: InodeState::Present,
-            kind: 1,
-            size: 0,
-            mode: 0o755,
-            uid: 0,
-            gid: 0,
-            rdev: 0,
-            nlink: 2,
-            atime_ns: now,
-            mtime_ns: now,
-            ctime_ns: now,
-            symlink_target: None,
-            parent_hint: Some(1),
-            data_version: 1,
-            sequence: 1,
-        };
-        let root_delta = CanonicalLayerDelta {
-            inodes: vec![root_inode.clone()],
-            ..CanonicalLayerDelta::default()
-        };
-        let root_delta_digest = delta_digest(&root_delta)?;
-        let root_hash = root_hash([0; 32], root_delta_digest);
-
-        sea_orm::sqlx::query(
-            "INSERT INTO ws_v1_layers
-             (layer_id, parent_layer_id, state, schema_version, sealed_version,
-              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
-              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
-             VALUES (?, NULL, ?, ?, 1, ?, ?, 1, NULL, 2, 0, 0, ?, ?)",
-        )
-        .bind(request.root_layer_id.as_bytes().as_slice())
-        .bind(LayerState::Sealed.discriminant() as i64)
-        .bind(WORKSPACE_SCHEMA_VERSION as i64)
-        .bind(root_delta_digest.as_slice())
-        .bind(root_hash.as_slice())
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        insert_inode(&mut tx, &root_inode).await?;
-
-        sea_orm::sqlx::query(
-            "INSERT INTO ws_v1_layers
-             (layer_id, parent_layer_id, state, schema_version, sealed_version,
-              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
-              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
-             VALUES (?, ?, ?, ?, NULL, NULL, NULL, 2, ?, 1, 0, 0, ?, NULL)",
-        )
-        .bind(request.writable_layer_id.as_bytes().as_slice())
-        .bind(request.root_layer_id.as_bytes().as_slice())
-        .bind(LayerState::Writable.discriminant() as i64)
-        .bind(WORKSPACE_SCHEMA_VERSION as i64)
-        .bind(request.workspace_id.as_bytes().as_slice())
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-
-        sea_orm::sqlx::query(
-            "INSERT INTO ws_v1_workspaces
-             (workspace_id, head_layer_id, head_epoch,
-              fork_base_layer_id, fork_base_version, fork_base_root_hash,
-              owner_id, state, created_at_ns, updated_at_ns)
-             VALUES (?, ?, 0, ?, 1, ?, ?, ?, ?, ?)",
-        )
-        .bind(request.workspace_id.as_bytes().as_slice())
-        .bind(request.writable_layer_id.as_bytes().as_slice())
-        .bind(request.root_layer_id.as_bytes().as_slice())
-        .bind(root_hash.as_slice())
-        .bind(request.owner_id.as_deref())
-        .bind(WorkspaceState::Active.discriminant() as i64)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        for (name, next_value) in [
-            ("inode", 2_i64),
-            ("slice", 1_i64),
-            ("sealed_version", 2_i64),
-        ] {
-            sea_orm::sqlx::query("INSERT INTO ws_v1_allocators(name, next_value) VALUES (?, ?)")
-                .bind(name)
-                .bind(next_value)
-                .execute(&mut *tx)
-                .await
-                .map_err(backend)?;
-        }
-
-        // The immutable marker is deliberately the last row written. A crash
-        // before this point leaves a retryable, unmarked workspace schema.
-        sea_orm::sqlx::query(
-            "INSERT INTO ws_v1_volume_header
-             (singleton_id, volume_format, schema_version, volume_id, created_at_ns)
-             VALUES (1, ?, ?, ?, ?)",
-        )
-        .bind(VOLUME_FORMAT)
-        .bind(WORKSPACE_SCHEMA_VERSION as i64)
-        .bind(request.volume_id.as_bytes().as_slice())
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        tx.commit().await.map_err(backend)?;
-
-        Ok(WorkspaceRecord {
-            workspace_id: request.workspace_id,
-            head_layer_id: request.writable_layer_id,
-            head_epoch: 0,
-            fork_base: Some(BaseRevision {
-                layer_id: request.root_layer_id,
-                sealed_version: 1,
-                root_hash,
-            }),
-            owner_id: request.owner_id,
-            state: WorkspaceState::Active,
-            active_lease: None,
-            created_at_ns: now,
-            updated_at_ns: now,
-        })
+        self.create_volume_root_inner(request, false).await
     }
 
     async fn create_workspace(
@@ -4477,4 +4675,255 @@ fn is_unique_violation(error: &sea_orm::sqlx::Error) -> bool {
 
 fn backend(error: impl std::fmt::Display) -> WorkspaceError {
     WorkspaceError::Backend(error.to_string())
+}
+
+#[cfg(test)]
+mod manager_init_tests {
+    use super::*;
+
+    fn request() -> CreateVolumeRoot {
+        CreateVolumeRoot {
+            volume_format: VOLUME_FORMAT.into(),
+            schema_version: WORKSPACE_SCHEMA_VERSION,
+            volume_id: Uuid::new_v4(),
+            workspace_id: WorkspaceId::new(),
+            root_layer_id: LayerId::new(),
+            writable_layer_id: LayerId::new(),
+            owner_id: Some("manager-test".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_catalog_connection_never_creates_an_absent_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.sqlite");
+        let url = format!("sqlite://{}", path.display());
+        assert!(SqliteWorkspaceStore::connect_existing(&url).await.is_err());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+        let created = SqliteWorkspaceStore::connect(&url).await.unwrap();
+        let workspace = created
+            .create_volume_root_in_empty_namespace(request())
+            .await
+            .unwrap();
+        created.pool.close().await;
+        let reopened = SqliteWorkspaceStore::connect_existing(&url).await.unwrap();
+        assert_eq!(reopened.list_workspaces().await.unwrap(), vec![workspace]);
+        reopened.pool.close().await;
+
+        // A previous existence check cannot authorize recreating a catalog
+        // that disappeared before SQLite opened it.
+        std::fs::remove_file(&path).unwrap();
+        assert!(SqliteWorkspaceStore::connect_existing(&url).await.is_err());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn manager_packed_probe_detects_orphan_rows_without_initial_history() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        store.initialize_workspace_schema().await.unwrap();
+        assert!(!store.has_packed_catalog_bindings().await.unwrap());
+        // An imported version-2 row need not have a workspace or version 1.
+        // Its bytes are intentionally undecodable: any row must close native admission.
+        sea_orm::sqlx::query("INSERT INTO ws_v3_packed_bindings VALUES (?, 2, X'01')")
+            .bind(Uuid::new_v4().as_bytes().as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.has_packed_catalog_bindings().await.unwrap());
+        sea_orm::sqlx::query("DELETE FROM ws_v3_packed_bindings")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // Model a partially restored/corrupt current pointer without history.
+        // This isolated in-memory pool has one connection.
+        sea_orm::sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sea_orm::sqlx::query("INSERT INTO ws_v3_packed_current VALUES (?, 2)")
+            .bind(Uuid::new_v4().as_bytes().as_slice())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.has_packed_catalog_bindings().await.unwrap());
+        assert!(store.list_workspaces().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_schema_probe_rejects_partial_header_and_workspace_catalog_without_writes() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // An empty workspace list must not make an incomplete catalog look ready.
+        for statement in SCHEMA.split(';').take(2) {
+            sea_orm::sqlx::query(statement)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        let before = store.schema_table_names().await.unwrap();
+        assert_eq!(before.len(), 2);
+        assert!(matches!(
+            store.validate_manager_catalog_schema().await,
+            Err(WorkspaceError::UnsupportedCapability(
+                "complete workspace-v1 SQLite catalog schema"
+            ))
+        ));
+        assert_eq!(store.schema_table_names().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn manager_schema_probe_accepts_complete_catalog_and_rejects_missing_column() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let created = store
+            .create_volume_root_in_empty_namespace(request())
+            .await
+            .unwrap();
+        store.validate_manager_catalog_schema().await.unwrap();
+        let header = store.load_volume_header().await.unwrap();
+        sea_orm::sqlx::query(
+            "ALTER TABLE ws_v1_allocators RENAME COLUMN next_value TO foreign_value",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            store.validate_manager_catalog_schema().await,
+            Err(WorkspaceError::UnsupportedCapability(
+                "complete workspace-v1 SQLite catalog schema"
+            ))
+        ));
+        assert_eq!(store.load_volume_header().await.unwrap(), header);
+        assert_eq!(
+            store.load_workspace(created.workspace_id).await.unwrap(),
+            created
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_initialize_rejects_foreign_schema_and_preserves_data() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        store.initialize_workspace_schema().await.unwrap();
+        // Deliberately starts with `sqlite` but not SQLite's reserved `sqlite_`.
+        // A LIKE 'sqlite_%' probe would accidentally skip this foreign table.
+        sea_orm::sqlx::raw_sql("CREATE TABLE sqliteXforeign(value TEXT); INSERT INTO sqliteXforeign VALUES ('keep-me');")
+            .execute(&store.pool).await.unwrap();
+        let result = store.create_volume_root_in_empty_namespace(request()).await;
+        assert!(result.is_err(), "foreign namespace was initialized");
+        assert!(store.load_volume_header().await.unwrap().is_none());
+        let value: String = sea_orm::sqlx::query_scalar("SELECT value FROM sqliteXforeign")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(value, "keep-me");
+    }
+
+    #[tokio::test]
+    async fn strict_initialize_rechecks_catalog_rows_not_just_volume_marker() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        store.initialize_workspace_schema().await.unwrap();
+        sea_orm::sqlx::query("INSERT INTO ws_v1_allocators VALUES ('orphan', 7)")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .create_volume_root_in_empty_namespace(request())
+                .await
+                .is_err()
+        );
+        assert!(store.load_volume_header().await.unwrap().is_none());
+        let retained: i64 = sea_orm::sqlx::query_scalar(
+            "SELECT next_value FROM ws_v1_allocators WHERE name = 'orphan'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, 7);
+    }
+
+    #[tokio::test]
+    async fn strict_initialize_rejects_extra_triggers_and_views() {
+        for ddl in [
+            "CREATE TRIGGER foreign_trigger BEFORE INSERT ON ws_v1_workspaces BEGIN SELECT 1; END;",
+            "CREATE VIEW foreign_view AS SELECT * FROM ws_v1_workspaces;",
+        ] {
+            let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+                .await
+                .unwrap();
+            store.initialize_workspace_schema().await.unwrap();
+            sea_orm::sqlx::raw_sql(ddl)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .create_volume_root_in_empty_namespace(request())
+                    .await
+                    .is_err()
+            );
+            assert!(store.load_volume_header().await.unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_initialize_recovers_empty_schema_but_never_replaces_a_volume() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // A crash after a prefix of the CREATE TABLE statements can leave an
+        // empty partial schema. Completing that schema does not claim data.
+        sea_orm::sqlx::raw_sql(SCHEMA.split(';').next().unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let identity = request();
+        let created = store
+            .create_volume_root_in_empty_namespace(identity.clone())
+            .await
+            .unwrap();
+        assert_eq!(created.workspace_id, identity.workspace_id);
+        assert!(
+            store
+                .create_volume_root_in_empty_namespace(request())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load_volume_header().await.unwrap().unwrap().volume_id,
+            identity.volume_id
+        );
+        assert_eq!(store.list_workspaces().await.unwrap(), vec![created]);
+    }
+
+    #[tokio::test]
+    async fn strict_initialize_refuses_foreign_database_without_adding_schema() {
+        let store = SqliteWorkspaceStore::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sea_orm::sqlx::raw_sql("CREATE TABLE application_data(value TEXT); INSERT INTO application_data VALUES ('keep-me');")
+            .execute(&store.pool).await.unwrap();
+        assert!(
+            store
+                .create_volume_root_in_empty_namespace(request())
+                .await
+                .is_err()
+        );
+        assert!(store.schema_table_names().await.unwrap().is_empty());
+        let value: String = sea_orm::sqlx::query_scalar("SELECT value FROM application_data")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(value, "keep-me");
+    }
 }

@@ -7,6 +7,7 @@ architecture or performance notes.
 - [configuration.md](configuration.md): runtime configuration and tuning knobs.
 - [binary-deployment.md](binary-deployment.md): binary installation, systemd, and single-node deployment.
 - [control-plane.md](control-plane.md): control-plane design and workflows.
+- [manager.md](manager.md): versioned catalog lifecycle API without Kubernetes.
 - [observability.md](observability.md): metrics, tracing, and visibility.
 - [profiling.md](profiling.md): profiling workflow.
 - [stats-tool.md](stats-tool.md): stats helper usage and design.

@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod api;
 pub mod csi;
+pub mod manager_api;
 pub mod registry;
 pub mod server;
 pub mod trash;
