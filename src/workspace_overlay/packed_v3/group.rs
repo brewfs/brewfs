@@ -666,8 +666,10 @@ fn metadata_budget_allows(
     // Mirror the packer's deterministic inline admission rule. The fixed
     // record estimate is intentionally larger than the actual GM06 record,
     // so this check errs on the side of an earlier shard boundary.
-    let inline_budget =
-        INLINE_GROUP_DATA_BUDGET_BYTES.min(max_metadata_bytes.saturating_sub(fixed_bytes));
+    let inline_budget = usize::try_from(policy.inline_group_data_budget_bytes)
+        .unwrap_or(usize::MAX)
+        .min(INLINE_GROUP_DATA_BUDGET_BYTES)
+        .min(max_metadata_bytes.saturating_sub(fixed_bytes));
     let mut inline_bytes = 0usize;
     let mut extent_bytes = 0usize;
     for file in current.iter().chain(std::iter::once(next)) {
@@ -800,7 +802,9 @@ fn pack_group_files_policy_inner(
             .map(|file| 96usize.saturating_add(file.name.len()))
             .sum::<usize>(),
     );
-    let inline_budget = INLINE_GROUP_DATA_BUDGET_BYTES
+    let inline_budget = usize::try_from(policy.inline_group_data_budget_bytes)
+        .unwrap_or(usize::MAX)
+        .min(INLINE_GROUP_DATA_BUDGET_BYTES)
         .min(MAX_GROUP_META_BYTES.saturating_sub(fixed_metadata_bytes));
     let entry_count = files.len();
     let file_count = files.iter().filter(|file| file.kind == 1).count();

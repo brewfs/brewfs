@@ -1,4 +1,4 @@
-# Issue 383 phase 4: smaller authenticated packed frames
+# Issue 383 phase 4: smaller packed frames and optional small-file bundles
 
 Date: 2026-10-30. This continues [phase 2](issue-383-phase2.md). The full report
 is `/work/REPORT-383-phase4.md`; raw fio, HTTP captures, object inventories,
@@ -35,7 +35,7 @@ These W arms already have A metadata caching: **this is not a 3-to-1 GET
 improvement**. Both arms use the identical historical phase-2 A-arm release
 binary, with its rejected B frame cache explicitly disabled. That executable
 contains disabled prototype code; it is not presented as a rebuild of the
-current source. A fresh current-source A-only binary will provide the next
+current source. Step 1 uses a fresh current-source A-only binary for its
 matched control.
 
 The compose TiKV 8.5.0 / RustFS 1.0.4 backend was recreated after prior cleanup.
@@ -90,7 +90,7 @@ tables and raw-corpus combinations. Existing test assertions are unchanged.
 The old release CLI first failed this contract with exit 2 (`unexpected
 argument`); the implementation then passes all 11 fixture tests. The current
 workspace lib/bins gate and overlay gate pass (2578 passed, zero failed,
-451 ignored). Full local checks are rerun before committing the entry point.
+451 ignored). Full local checks passed before committing the entry point.
 The exact current-source A-only release has a separate matched comparison:
 
 | Three W runs | 4 MiB | 512 KiB |
@@ -162,3 +162,126 @@ The added minimum-size CLI and its new tests are reverted together; existing
 tests are unchanged. The complete candidate patch and measurements remain in
 `rejected-64-source.diff` and `cap64k-*` on the experiment host. The validated
 512 KiB entry point stays. Merkle remains a separate future investigation.
+
+## Step 3: optional container ranges for small files
+
+`--small-file-bundles` applies only to directory imports with inline data on.
+It starts another group before the existing 224 KiB inline budget fills,
+separates inline groups from external/metadata-only groups, and batches up to
+128 all-inline groups in an existing GC05 container. Existing GR05 locators
+authenticate contiguous metadata plus inline-content ranges, each at most
+256 KiB raw/stored. There is no per-bundle S3 object, self-referential FD digest,
+new wire format, or reader change. The option is off by default.
+
+Allocation and cold-attribute records publish after the batch's locators.
+New tests cover all-inline coverage, adjacent authenticated ranges, 129-parent
+rollover, hardlinks, xattrs, symlinks and st_blocks, plus invalid CLI combinations.
+The separate FUSE mixed-layout guard passes 122 content reads, including pending
+inline groups alongside a 17 MiB external file and its hardlink, then unmounts.
+This content test is distinct from the failing fio mixed-write guard above.
+
+The source-report flag records requested intent; authenticated PM11 supplies
+the actual inline/frame counts. No authenticated policy field is invented.
+Directory summaries and new bundle/FD formats remain unimplemented. Rollback
+is to omit the flag and retain the previous immutable manifest.
+
+The small-file experiment uses 8,192 distinct deterministic 4 KiB files
+(32 MiB), Raw metadata/data on both arms, identical default frame sizes,
+and the same A-only release reader. The offline fixture uses the tested dev
+build; producer time is excluded. Each scenario has three repetitions:
+16 independent fresh-mount cold open/read samples per repetition, a complete
+shuffled scan, an adjacent scan, and pure readdir. All file reads use O_DIRECT
+and verify SHA-256; readdir verifies the exact name set. Mount bootstrap and
+passive capture tails are outside the active operation timer.
+Cold means the first file access on a fresh mount; object-server and host page
+caches are not cleared. The build-time flag cannot switch policies per operation
+within an existing immutable manifest.
+
+`tools/perf/packed_bundle_usefulness.py` reports verified consumed content
+bytes divided by actual complete GC05 HTTP response bodies, including metadata.
+Index bytes are included in total received bytes. Attribution requires an
+authenticated all-inline layout; the baseline's mixed layout has no bundle
+ratio. Pure readdir consumes zero file-content bytes, so its content ratio is
+zero and directory time/GETs/bytes are assessed separately. Missing response
+headers or body tails fail accounting rather than substituting requested ranges.
+
+One baseline shuffle capture lacks the final response header despite 8,192
+successful content checks, zero captured HTTP errors and zero kernel drops.
+It remains in `small-control-shuffle-3`; only this invalid capture is repeated
+under a new label. The passive capture tail increases from one to five seconds;
+completed valid repetitions are retained. The capture cutoff cause is unverified.
+
+| Actual small-file inventory | Default | Bundles |
+| --- | ---: | ---: |
+| Groups | 47 | 147 |
+| Frames / FD records / external extents | 92 / 92 / 0 | 0 / 0 / 0 |
+| FD record bytes / external extent bytes | 4,416 / 0 | 0 / 0 |
+| Inline content bytes | 10,567,680 | 33,554,432 |
+| GC05 containers / FD objects | 47 / 46 | 2 / 0 |
+| All objects | 131 | 40 |
+| All stored bytes | 40,296,141 | 39,793,827 |
+| Stored bytes excluding original payload | 6,741,709 | 6,239,395 |
+
+Storage decreases 502,314 B, or 1.497012% of the corpus. Newly inlined content
+is still payload, not structural metadata. The largest bundle range is
+233,764 B, within the existing bound.
+
+
+
+Each row below is one complete repetition. Cold p99 is the empirical maximum
+of 16 fresh-mount reads. Each readdir row is one full directory traversal;
+its p99 column is that single traversal's duration, not a tail estimate.
+Readdir bytes/GETs are per traversal, while bytes per entry are 4222.93→4300.37.
+
+| Scenario / layout / run | MiB/s | p99 s | Received B/operation | GET/operation | bundle useful-byte |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| cold / control / 1 | 0.154463 | 0.028664 | 748553.94 | 7.875000 | N/A |
+| cold / control / 2 | 0.155465 | 0.028527 | 751625.94 | 7.875000 | N/A |
+| cold / control / 3 | 0.149441 | 0.029988 | 769047.62 | 8.062500 | N/A |
+| cold / bundle / 1 | 0.178609 | 0.023065 | 565070.00 | 6.000000 | 1.7522% |
+| cold / bundle / 2 | 0.177557 | 0.022561 | 565069.62 | 6.000000 | 1.7522% |
+| cold / bundle / 3 | 0.179324 | 0.023423 | 565069.88 | 6.000000 | 1.7522% |
+| shuffle / control / 1 | 0.402282 | 0.022033 | 254398.53 | 1.028687 | N/A |
+| shuffle / control / 2 | 0.398324 | 0.023451 | 252925.90 | 1.022705 | N/A |
+| shuffle / control / 3 | 0.399572 | 0.021789 | 255690.84 | 1.033936 | N/A |
+| shuffle / bundle / 1 | 0.461577 | 0.013715 | 180860.89 | 0.776001 | 2.2691% |
+| shuffle / bundle / 2 | 0.459470 | 0.014527 | 181362.30 | 0.778320 | 2.2628% |
+| shuffle / bundle / 3 | 0.461540 | 0.013750 | 180962.80 | 0.776611 | 2.2678% |
+| adjacent / control / 1 | 0.465209 | 0.013155 | 173337.41 | 0.699097 | N/A |
+| adjacent / control / 2 | 0.465691 | 0.013330 | 173337.41 | 0.699097 | N/A |
+| adjacent / control / 3 | 0.462656 | 0.013220 | 173337.41 | 0.699097 | N/A |
+| adjacent / bundle / 1 | 0.728032 | 0.009583 | 4520.44 | 0.020508 | 98.1238% |
+| adjacent / bundle / 2 | 0.723895 | 0.009693 | 4520.44 | 0.020508 | 98.1238% |
+| adjacent / bundle / 3 | 0.723988 | 0.009591 | 4520.44 | 0.020508 | 98.1238% |
+| readdir / control / 1 | 0.000000 | 0.650187 | 34594216.00 | 146.000000 | N/A |
+| readdir / control / 2 | 0.000000 | 0.658371 | 34594216.00 | 146.000000 | N/A |
+| readdir / control / 3 | 0.000000 | 0.652634 | 34594216.00 | 146.000000 | N/A |
+| readdir / bundle / 1 | 0.000000 | 0.581704 | 35228616.00 | 155.000000 | 0.0000% |
+| readdir / bundle / 2 | 0.000000 | 0.581750 | 35228616.00 | 155.000000 | 0.0000% |
+| readdir / bundle / 3 | 0.000000 | 0.564573 | 35228616.00 | 155.000000 | 0.0000% |
+
+For this measured workload, cold open/read and shuffle support explicit opt-in
+(15.63% and 15.51% median throughput gains), but retain only 1.75% and about
+2.27% useful bundle bytes. Adjacent scans justify opt-in: throughput improves
+55.63%, received bytes/read fall 97.39%, and useful content reaches 98.12%.
+Pure readdir should keep the default: time improves 10.87%, but received bytes
+increase 1.83%, GETs increase 6.16%, and no file content is consumed. The global
+default remains off; these results do not establish a million-file policy.
+
+The cold candidate's six GETs comprise one bundle plus five index requests;
+about 331,308 B/read is index data. One bundle GET is not one full-path GET.
+
+The predicted readdir amplification was wrong for this workload: the model
+assumed each baseline group would be fetched once. Capture instead shows 141
+fetches for 47 distinct baseline ranges, versus 150 for 147 candidate ranges.
+That baseline repetition offsets most of the group-count growth. Its precise
+cache/iterator cause remains unverified; this small-workload timing improvement
+is not generalized to large directories. All valid repetitions have complete
+response headers/body tails, no captured HTTP errors, and clean unmounts.
+
+Final source validation passes the full local CI gate, including workspace
+lib/bins, overlay **2578 passed / 0 failed / 451 ignored**, all **14 fixture
+tests**, both FUSE runtimes, shell/report tests, fmt and strict Clippy. Logs are
+in `/work/logs/issue383-phase4/step3/`. No prior assertions or ignore attributes
+change. ACL permission TTL remains zero; existing layout limits and upper
+64 MiB chunks / 4 MiB blocks remain intact.

@@ -338,6 +338,7 @@ impl V3FrameDirectoryPage {
         super::V3BuildPolicy {
             frames: self.frame_policy,
             inline_data: false,
+            inline_group_data_budget_bytes: super::DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES,
             p90: None,
         }
         .select(1, self.profile, self.size_classes)?;

@@ -7,6 +7,7 @@ use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::chunk::read_plan::ReadGeneration;
 use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError, Reader, Writer};
 use crate::workspace_overlay::packed_v3::{AccessProfile, SizeClassTable};
+use futures_util::{StreamExt, TryStreamExt, stream};
 
 pub const V3_MANIFEST_BODY_LIMIT: usize = 64 * 1024;
 pub const V3_ROOT_COUNT: usize = 7;
@@ -881,6 +882,87 @@ impl AuthenticatedV3Snapshot {
             None,
         )
         .await
+    }
+
+    /// Explicitly warm every GroupMeta page belonging to one directory. The
+    /// retained reader cache supplies the LRU and read-cache epoch fencing;
+    /// this method only selects the authenticated group range and performs
+    /// the same metadata reads used by `readdir`/`open`.
+    pub async fn prefetch_directory_bundle<B: ObjectBackend + Clone + 'static>(
+        &self,
+        _client: &ObjectClient<B>,
+        reader: &super::V3IndexReader<B>,
+        parent: [u8; 32],
+        concurrency: usize,
+        allocation_limit: usize,
+    ) -> PackedResult<super::V3BundlePrefetchStats> {
+        let concurrency = concurrency.clamp(1, 64);
+        let lower = parent.to_vec();
+        let mut upper = parent.to_vec();
+        upper.extend_from_slice(&[0xff; 1025]);
+        let mut cursor = reader
+            .weighted_cursor(
+                self.root(V3RootKind::Groups),
+                &lower,
+                &upper,
+                0,
+                self.manifest.group_dentry_count,
+            )
+            .await?;
+        let mut groups = Vec::new();
+        while let Some((record, _)) = reader
+            .next_weighted(self.root(V3RootKind::Groups), &mut cursor)
+            .await?
+        {
+            let super::V3IndexValue::Leaf(value) = &record.value else {
+                return Err(PackedWireError::Invalid(
+                    "PM07 group prefetch returned branch value".into(),
+                ));
+            };
+            let group = super::V3GroupRef::decode_value(value)?;
+            if group.parent_dir_key != parent {
+                return Err(PackedWireError::Invalid(
+                    "PM07 group prefetch crossed parent boundary".into(),
+                ));
+            }
+            groups.push(group);
+        }
+
+        let generation = self.read_generation();
+        let mut stats = stream::iter(groups)
+            .map(|group| async move {
+                let container = self.container_ref(reader, group.container_ordinal).await?;
+                let metadata = reader
+                    .group_metadata(generation, &group, &container, allocation_limit)
+                    .await?;
+                let inline_bytes = metadata
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.inline_data.len() as u64)
+                    .sum::<u64>();
+                let metadata_bytes = metadata.owned_memory_bytes() as u64;
+                Ok::<_, PackedWireError>(super::V3BundlePrefetchStats {
+                    groups: 1,
+                    entries: metadata.entries().len() as u64,
+                    inline_bytes,
+                    retained_bytes: 0,
+                    metadata_bytes,
+                })
+            })
+            .buffer_unordered(concurrency)
+            .try_fold(
+                super::V3BundlePrefetchStats::default(),
+                |mut total, item| async move {
+                    total.groups = total.groups.saturating_add(item.groups);
+                    total.entries = total.entries.saturating_add(item.entries);
+                    total.inline_bytes = total.inline_bytes.saturating_add(item.inline_bytes);
+                    total.metadata_bytes = total.metadata_bytes.saturating_add(item.metadata_bytes);
+                    Ok::<_, PackedWireError>(total)
+                },
+            )
+            .await?;
+        stats.retained_bytes = reader.retained_bundle_bytes();
+        Ok(stats)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3219,6 +3301,7 @@ mod tests {
             frames: V3FramePolicy::Static256Kib,
             inline_data: false,
             p90: None,
+            ..Default::default()
         };
         let data: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
         let (group, frames) = pack_group_files_with_policy(

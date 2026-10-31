@@ -918,6 +918,23 @@ fn native_placement_arm() -> anyhow::Result<bool> {
 }
 
 #[cfg(feature = "workspace-overlay")]
+fn packed_metadata_cache_bytes() -> u64 {
+    std::env::var("BREWFS_PACKED_BUNDLE_CACHE_BYTES")
+        .or_else(|_| std::env::var("BREWFS_PACKED_METADATA_CACHE_BYTES"))
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.min(256 << 20))
+        .unwrap_or(8 << 20)
+}
+
+#[cfg(feature = "workspace-overlay")]
+fn packed_bundle_prefetch_mode() -> Option<String> {
+    std::env::var("BREWFS_PACKED_BUNDLE_PREFETCH")
+        .or_else(|_| std::env::var("BREWFS_PACKED_METADATA_PREFETCH"))
+        .ok()
+}
+
+#[cfg(feature = "workspace-overlay")]
 async fn mount_authenticated_packed_v3_readonly_with_client<
     B: ObjectBackend + Clone + Send + Sync + 'static,
 >(
@@ -962,10 +979,7 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     );
     let snapshot = AuthenticatedV3Snapshot::open(&client, &reference).await?;
     drop(startup);
-    let metadata_bytes = std::env::var("BREWFS_PACKED_METADATA_CACHE_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(256 * 1024 * 1024);
+    let metadata_bytes = packed_metadata_cache_bytes();
     if native_placement_arm()? {
         return mount_native_placement_readonly(
             client,
@@ -986,6 +1000,33 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     )?);
     let store = Arc::new(meta_layer.block_store(layout.block_size)?);
     meta_layer.initialize().await?;
+    if let Some(mode) = packed_bundle_prefetch_mode() {
+        match mode.as_str() {
+            "off" | "0" | "false" => {}
+            // `auto` and `eager` are retained as compatibility aliases for
+            // the former metadata-prefetch setting.  The v3 bundle entry
+            // point currently warms the requested root directory.
+            "root" | "1" | "true" | "auto" | "eager" => {
+                let started = Instant::now();
+                let stats = meta_layer
+                    .prefetch_directory_bundle(1, 8)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                println!(
+                    "packed bundle prefetch parent=1 groups={} entries={} inline_bytes={} retained_bytes={} metadata_bytes={} elapsed_ms={}",
+                    stats.groups,
+                    stats.entries,
+                    stats.inline_bytes,
+                    stats.retained_bytes,
+                    stats.metadata_bytes,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            other => {
+                anyhow::bail!("BREWFS_PACKED_BUNDLE_PREFETCH must be off or root (got {other})")
+            }
+        }
+    }
     let config = crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone());
     let fs = VFS::from_workspace_components(config, store, Arc::clone(&meta_layer))?
         .with_fuse_keep_cache(args.fuse_keep_cache);
@@ -2308,10 +2349,7 @@ where
         );
         let snapshot = AuthenticatedV3Snapshot::open(&client, &binding.manifest).await?;
         drop(startup);
-        let metadata_bytes = std::env::var("BREWFS_PACKED_METADATA_CACHE_BYTES")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(256 << 20);
+        let metadata_bytes = packed_metadata_cache_bytes();
         let lower = Arc::new(PackedV3ReadonlyMeta::from_v3_budget(
             client,
             snapshot,
@@ -2319,6 +2357,32 @@ where
             metadata_bytes,
             budget,
         )?);
+        if let Some(mode) = packed_bundle_prefetch_mode() {
+            match mode.as_str() {
+                "off" | "0" | "false" => {}
+                "root" | "1" | "true" | "auto" | "eager" => {
+                    let started = Instant::now();
+                    let stats = lower
+                        .prefetch_directory_bundle(1, 8)
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error))?;
+                    println!(
+                        "packed bundle prefetch parent=1 groups={} entries={} inline_bytes={} retained_bytes={} metadata_bytes={} elapsed_ms={}",
+                        stats.groups,
+                        stats.entries,
+                        stats.inline_bytes,
+                        stats.retained_bytes,
+                        stats.metadata_bytes,
+                        started.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
+                other => {
+                    anyhow::bail!(
+                        "BREWFS_PACKED_BUNDLE_PREFETCH must be off or root (got {other})"
+                    )
+                }
+            }
+        }
         workspace_overlay::meta_layer::WorkspacePackedBindingAuthority::validate(
             authority.as_ref(),
             &reader_guard,

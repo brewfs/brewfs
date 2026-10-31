@@ -2,7 +2,10 @@
 
 mod budget;
 mod build_policy;
-pub use build_policy::{V3BuildPolicy, V3BuildProvenance, V3FramePolicy, V3P90Policy};
+pub use build_policy::{
+    DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES, MAX_INLINE_GROUP_DATA_BUDGET_BYTES, V3BuildPolicy,
+    V3BuildProvenance, V3FramePolicy, V3P90Policy,
+};
 mod cold;
 pub(crate) use budget::V3Owned;
 pub use budget::{V3BudgetLimits, V3BudgetPool, V3MountBudget, V3OwnedBytes, V3OwnedPermit};
@@ -65,8 +68,8 @@ mod spool;
 pub use frame_directory::V3FrameDirectoryPage;
 pub(crate) use index::V3IndexCacheStats;
 pub use index::{
-    V3IndexPage, V3IndexReader, V3IndexRecord, V3IndexRecordHandle, V3IndexRows, V3IndexValue,
-    V3IndexValueHandle,
+    V3BundlePrefetchStats, V3IndexPage, V3IndexReader, V3IndexRecord, V3IndexRecordHandle,
+    V3IndexRows, V3IndexValue, V3IndexValueHandle,
 };
 pub use manifest::{AuthenticatedV3Snapshot, V3ReadRange, V3RootKind, V3SnapshotManifest};
 pub use native_placement::{NativePackedPlacementProvider, NativePlacementRepository};

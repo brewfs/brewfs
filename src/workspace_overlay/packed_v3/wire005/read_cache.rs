@@ -9,7 +9,7 @@ use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError};
 
 // Covers the fixed digest key, BTree node, Arc and entry bookkeeping. The
 // decoded value independently retains its original mount budget permit.
-const ENTRY_BYTES: u64 = 512;
+pub(super) const ENTRY_BYTES: u64 = 512;
 
 struct Entry<T> {
     value: Arc<T>,
@@ -153,6 +153,19 @@ impl<T> RetainedMetadata<T> {
         Ok(value)
     }
 
+    pub(super) fn get_if_present(
+        &self,
+        generation: ReadGeneration,
+        key: [u8; 32],
+    ) -> PackedResult<Option<Arc<T>>> {
+        let epoch = self.prepare(generation)?;
+        let value = self.get(&key, epoch);
+        if value.is_some() {
+            self.check_epoch(epoch)?;
+        }
+        Ok(value)
+    }
+
     fn check_epoch(&self, epoch: u64) -> PackedResult<()> {
         if self.budget.read_cache_epoch() != epoch || self.budget.state().closed {
             return Err(PackedWireError::ReadViewChanged);
@@ -164,6 +177,18 @@ impl<T> RetainedMetadata<T> {
         let mut state = self.state.lock().unwrap();
         state.entries.clear();
         state.bytes = 0;
+    }
+
+    pub(super) fn retained_bytes(&self) -> u64 {
+        self.state.lock().unwrap().bytes
+    }
+
+    pub(super) fn retained_entries(&self) -> usize {
+        self.state.lock().unwrap().entries.len()
+    }
+
+    pub(super) fn capacity(&self) -> u64 {
+        self.capacity
     }
 }
 

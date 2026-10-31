@@ -1201,6 +1201,7 @@ mod tests {
                 frames: V3FramePolicy::Static1Mib,
                 inline_data,
                 p90: None,
+                ..Default::default()
             };
             let options = V3ProducerOptions {
                 snapshot_id: [1; 32],
@@ -1287,6 +1288,7 @@ mod tests {
                     frames,
                     inline_data: false,
                     p90: None,
+                    ..Default::default()
                 };
                 let options = V3ProducerOptions {
                     snapshot_id: [1; 32],

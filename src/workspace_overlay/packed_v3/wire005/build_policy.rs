@@ -5,6 +5,13 @@ use crate::workspace_overlay::packed_v3::{
     choose_frame_layout,
 };
 
+/// Default amount of inline file data admitted to one logical small-file
+/// bundle.  The GroupMeta page remains bounded separately; larger bundle
+/// targets are represented by several adjacent GroupMeta pages in one
+/// authenticated container.
+pub const DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES: u32 = 224 * 1024;
+pub const MAX_INLINE_GROUP_DATA_BUDGET_BYTES: u32 = 4 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[repr(u8)]
@@ -70,6 +77,10 @@ pub struct V3P90Policy {
 pub struct V3BuildPolicy {
     pub frames: V3FramePolicy,
     pub inline_data: bool,
+    /// Target payload covered by one sequential small-file bundle.  This is
+    /// independent from frame sizing and may exceed one GroupMeta page; the
+    /// producer then places adjacent GroupMeta pages in one container.
+    pub inline_group_data_budget_bytes: u32,
     pub p90: Option<V3P90Policy>,
 }
 
@@ -78,6 +89,7 @@ impl Default for V3BuildPolicy {
         Self {
             frames: V3FramePolicy::SizeOnly,
             inline_data: true,
+            inline_group_data_budget_bytes: DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES,
             p90: None,
         }
     }
@@ -113,6 +125,11 @@ impl V3BuildPolicy {
     }
 
     fn validate(self) -> PackedResult<()> {
+        if self.inline_group_data_budget_bytes == 0
+            || self.inline_group_data_budget_bytes > MAX_INLINE_GROUP_DATA_BUDGET_BYTES
+        {
+            return Err(invalid("inline group data budget is outside 1..=4 MiB"));
+        }
         match (self.frames, self.p90) {
             (V3FramePolicy::P90Training, Some(policy)) => {
                 if policy.requested_range == 0 || policy.sample_count == 0 {
@@ -306,10 +323,18 @@ impl V3BuildProvenance {
     }
     pub(super) fn encode(&self, writer: &mut Writer) -> PackedResult<()> {
         self.validate()?;
-        // Keep the fixed legacy BP11 payload byte-for-byte compatible.  A
-        // p90 build opts into BP12, whose explicit extension authenticates
-        // the frozen histogram provenance before any frame is consumed.
-        writer.bytes(if self.p90.is_some() { b"BP12" } else { b"BP11" });
+        // Keep the fixed legacy BP11 payload byte-for-byte compatible.  BP12
+        // authenticates p90 provenance; BP13 adds the explicit bundle target
+        // while retaining the BP12 extension layout for p90 builds.
+        let custom_bundle =
+            self.policy.inline_group_data_budget_bytes != DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES;
+        writer.bytes(if custom_bundle {
+            b"BP13"
+        } else if self.p90.is_some() {
+            b"BP12"
+        } else {
+            b"BP11"
+        });
         writer.u8(self.policy.frames as u8);
         writer.u8(u8::from(self.policy.inline_data));
         writer.u8(self.requested_metadata_codec);
@@ -324,8 +349,11 @@ impl V3BuildProvenance {
         ] {
             writer.u64(value);
         }
-        if self.p90.is_some() {
-            writer.u8(1);
+        if custom_bundle {
+            writer.u32(self.policy.inline_group_data_budget_bytes);
+        }
+        if self.p90.is_some() || custom_bundle {
+            writer.u8(u8::from(self.p90.is_some()));
             if let Some(policy) = self.p90 {
                 writer.bytes(&policy.trace_digest);
                 writer.bytes(&policy.policy_digest);
@@ -348,9 +376,10 @@ impl V3BuildProvenance {
     }
     pub(super) fn decode(reader: &mut Reader<'_>) -> PackedResult<Self> {
         let magic = reader.take(4)?;
-        let has_p90_extension = match magic {
-            b"BP11" => false,
-            b"BP12" => true,
+        let (has_p90_extension, has_bundle_extension) = match magic {
+            b"BP11" => (false, false),
+            b"BP12" => (true, false),
+            b"BP13" => (true, true),
             _ => return Err(invalid("provenance version mismatch")),
         };
         let frames = V3FramePolicy::from_u8(reader.u8()?)?;
@@ -365,6 +394,7 @@ impl V3BuildProvenance {
             policy: V3BuildPolicy {
                 frames,
                 inline_data,
+                inline_group_data_budget_bytes: DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES,
                 p90: None,
             },
             requested_metadata_codec,
@@ -378,6 +408,9 @@ impl V3BuildProvenance {
             p90: None,
             ..Self::default()
         };
+        if has_bundle_extension {
+            result.policy.inline_group_data_budget_bytes = reader.u32()?;
+        }
         let has_p90 = if has_p90_extension {
             match reader.u8()? {
                 0 => false,
@@ -421,6 +454,7 @@ mod tests {
             frames: V3FramePolicy::Static1Mib,
             inline_data: false,
             p90: None,
+            ..Default::default()
         };
         let classes = SizeClassTable::default();
         let selected = policy
@@ -478,6 +512,7 @@ mod tests {
                 frames: V3FramePolicy::P90Training,
                 inline_data: false,
                 p90: Some(p90),
+                ..Default::default()
             },
             requested_metadata_codec: PackedCodec::Raw as u8,
             requested_data_codec: PackedCodec::Raw as u8,
@@ -499,5 +534,26 @@ mod tests {
         assert_eq!(&bytes[..4], b"BP12");
         let decoded = V3BuildProvenance::decode(&mut Reader::new(&bytes)).unwrap();
         assert_eq!(decoded, provenance);
+    }
+
+    #[test]
+    fn bp13_roundtrip_authenticates_custom_bundle_budget() {
+        let provenance = V3BuildProvenance {
+            policy: V3BuildPolicy {
+                inline_group_data_budget_bytes: 4 * 1024 * 1024,
+                ..V3BuildPolicy::default()
+            },
+            requested_metadata_codec: PackedCodec::Raw as u8,
+            requested_data_codec: PackedCodec::Raw as u8,
+            ..Default::default()
+        };
+        let mut writer = Writer::default();
+        provenance.encode(&mut writer).unwrap();
+        let bytes = writer.finish();
+        assert_eq!(&bytes[..4], b"BP13");
+        assert_eq!(
+            V3BuildProvenance::decode(&mut Reader::new(&bytes)).unwrap(),
+            provenance
+        );
     }
 }

@@ -63,6 +63,7 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
         frames: V3FramePolicy::Static256Kib,
         inline_data: false,
         p90: None,
+        ..Default::default()
     };
     let profile = AccessProfile::RandomSmallFile;
     let classes = SizeClassTable::default();
@@ -143,5 +144,87 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
         gets.load(Ordering::SeqCst) - before,
         3,
         "lease fence retires both metadata caches"
+    );
+}
+
+#[tokio::test]
+async fn adjacent_inline_groups_share_one_container_range() {
+    let objects = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let gets = Arc::new(AtomicUsize::new(0));
+    let client = ObjectClient::new(CountingBackend {
+        inner: LocalFsBackend::new(objects.path()),
+        gets: gets.clone(),
+    });
+    let policy = V3BuildPolicy::default();
+    let profile = AccessProfile::SequentialSmallFile;
+    let classes = SizeClassTable::default();
+    let file = |group_id, inode, byte| PackedFileInput {
+        name: format!("file-{group_id}").into_bytes(),
+        inode,
+        kind: 1,
+        mode: 0o100644,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        nlink: 1,
+        atime_ns: 0,
+        mtime_ns: 0,
+        ctime_ns: 0,
+        flags: 0,
+        data: vec![byte; 4096],
+    };
+    let (first, first_frames) =
+        pack_group_files_with_policy(7, [2; 32], vec![file(7, 2, 0x51)], profile, classes, policy)
+            .unwrap();
+    let (second, second_frames) =
+        pack_group_files_with_policy(8, [2; 32], vec![file(8, 3, 0x52)], profile, classes, policy)
+            .unwrap();
+    assert!(first_frames.is_empty());
+    assert!(second_frames.is_empty());
+
+    let mut producer = V3SnapshotProducer::new(
+        client.clone(),
+        scratch.path(),
+        "metadata-bundle-contract".into(),
+        V3ProducerOptions {
+            snapshot_id: [1; 32],
+            root_dir_key: [2; 32],
+            root_inode: 1,
+            profile,
+            size_classes: classes,
+            build_policy: policy,
+            metadata_codec: PackedCodec::Raw,
+            data_codec: PackedCodec::Raw,
+        },
+    )
+    .await
+    .unwrap();
+    producer
+        .add_container(1, &[first, second], &[], &[1, 1])
+        .await
+        .unwrap();
+    let reference = producer.finish().await.unwrap();
+    let snapshot = AuthenticatedV3Snapshot::open(&client, &reference)
+        .await
+        .unwrap();
+    let reader = V3IndexReader::new(client.clone(), 64 << 20);
+    let mut output = [0; 4096];
+
+    snapshot
+        .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
+        .await
+        .unwrap();
+    assert_eq!(output, [0x51; 4096]);
+    let after_first = gets.load(Ordering::SeqCst);
+    snapshot
+        .read_inode_range(&client, &reader, 3, 0, &mut output, 32 << 20)
+        .await
+        .unwrap();
+    assert_eq!(output, [0x52; 4096]);
+    assert_eq!(
+        gets.load(Ordering::SeqCst),
+        after_first,
+        "the second GroupMeta page must come from the retained container range"
     );
 }

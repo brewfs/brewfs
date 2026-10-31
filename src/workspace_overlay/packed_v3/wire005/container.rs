@@ -169,62 +169,106 @@ impl V3GroupRef {
                 u64::from(self.meta_stored_len),
                 allocation_limit as u64,
                 |stored| {
-                    let validated = (|| -> PackedResult<Arc<GroupMeta>> {
-                        let hash_timer = client.measure_read_work(
-                            crate::cadapter::read_observer::ReadClass::GroupMetadata,
-                            crate::cadapter::read_observer::ReadWork::Authentication,
-                        );
-                        let computed: [u8; 32] = Sha256::digest(&stored).into();
-                        drop(hash_timer);
-                        if computed != self.meta_digest {
-                            return Err(PackedWireError::HashMismatch {
-                                what: "wire 005 authenticated GroupMeta",
-                                expected: hex::encode(self.meta_digest),
-                                computed: hex::encode(computed),
-                            });
-                        }
-                        let decode_timer = client.measure_read_work(
-                            crate::cadapter::read_observer::ReadClass::GroupMetadata,
-                            crate::cadapter::read_observer::ReadWork::Decode,
-                        );
-                        let raw = decode_block(
-                            self.meta_codec,
-                            &stored,
-                            self.meta_raw_len as usize,
-                            256 * 1024,
-                            self.meta_raw_len as usize,
-                        )?;
-                        let meta = GroupMeta::decode_restart(&raw)?;
-                        drop(decode_timer);
-                        if meta.len() != self.entry_count as usize
-                            || meta.entries().first().map(|e| e.name.as_slice())
-                                != Some(self.first_name.as_slice())
-                            || meta.entries().last().map(|e| e.name.as_slice())
-                                != Some(self.last_name.as_slice())
-                        {
-                            return Err(PackedWireError::Invalid(
-                                "wire 005 group count/name fences disagree with metadata".into(),
-                            ));
-                        }
-                        for entry in meta.entries() {
-                            for extent in &entry.extents {
-                                if extent.frame_ordinal < self.first_frame
-                                    || extent.frame_ordinal >= self.first_frame + self.frame_count
-                                {
-                                    return Err(PackedWireError::Invalid(
-                                        "wire 005 entry extent references another group's frame"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                        }
-                        Ok(Arc::new(meta))
-                    })();
-                    validated.map_err(super::observer_validation_error)
+                    self.decode_metadata_stored(&stored)
+                        .map_err(super::observer_validation_error)
                 },
             )
             .await
             .map_err(super::observer_backend_error)
+    }
+
+    /// Decode an authenticated GroupMeta payload that was obtained from a
+    /// larger, coalesced container range.  The caller has already validated
+    /// the containing object and selected the exact metadata slice; the
+    /// digest and all GroupMeta fences are still checked here.
+    pub(super) fn decode_metadata_stored(&self, stored: &[u8]) -> PackedResult<Arc<GroupMeta>> {
+        if stored.len() != self.meta_stored_len as usize {
+            return Err(PackedWireError::Truncated {
+                what: "wire 005 GroupMeta range",
+                need: self.meta_stored_len as usize,
+                have: stored.len(),
+            });
+        }
+        let computed: [u8; 32] = Sha256::digest(stored).into();
+        if computed != self.meta_digest {
+            return Err(PackedWireError::HashMismatch {
+                what: "wire 005 authenticated GroupMeta",
+                expected: hex::encode(self.meta_digest),
+                computed: hex::encode(computed),
+            });
+        }
+        let raw = decode_block(
+            self.meta_codec,
+            stored,
+            self.meta_raw_len as usize,
+            256 * 1024,
+            self.meta_raw_len as usize,
+        )?;
+        let meta = GroupMeta::decode_restart(&raw)?;
+        if meta.len() != self.entry_count as usize
+            || meta.entries().first().map(|e| e.name.as_slice()) != Some(self.first_name.as_slice())
+            || meta.entries().last().map(|e| e.name.as_slice()) != Some(self.last_name.as_slice())
+        {
+            return Err(PackedWireError::Invalid(
+                "wire 005 group count/name fences disagree with metadata".into(),
+            ));
+        }
+        for entry in meta.entries() {
+            for extent in &entry.extents {
+                if extent.frame_ordinal < self.first_frame
+                    || extent.frame_ordinal >= self.first_frame + self.frame_count
+                {
+                    return Err(PackedWireError::Invalid(
+                        "wire 005 entry extent references another group's frame".into(),
+                    ));
+                }
+            }
+        }
+        Ok(Arc::new(meta))
+    }
+
+    /// Decode a GroupMeta slice while retaining the same budget ownership as
+    /// the ordinary single-range path.  This is used by the container range
+    /// cache after one coalesced GET has supplied several adjacent pages.
+    pub(super) fn decode_metadata_owned_from_stored(
+        &self,
+        stored: &[u8],
+        allocation_limit: usize,
+        budget: &Arc<super::V3MountBudget>,
+    ) -> PackedResult<Arc<super::budget::V3Owned<Arc<GroupMeta>>>> {
+        self.validate_metadata_payload(stored, allocation_limit)?;
+        let workspace = super::super::codec::decode_workspace_bytes(self.meta_codec)?;
+        let mut permit = budget.admit(&[
+            (super::V3BudgetPool::Metadata, 6 << 20),
+            (
+                super::V3BudgetPool::Stored,
+                u64::from(self.meta_stored_len) * 2,
+            ),
+            (super::V3BudgetPool::Raw, u64::from(self.meta_raw_len)),
+            (super::V3BudgetPool::Workspace, workspace as u64),
+        ])?;
+        let metadata = self.decode_metadata_stored(stored)?;
+        let weight = metadata.owned_memory_bytes();
+        permit.shrink(super::V3BudgetPool::Metadata, weight as u64)?;
+        permit.shrink(super::V3BudgetPool::Stored, 0)?;
+        permit.shrink(super::V3BudgetPool::Raw, 0)?;
+        permit.shrink(super::V3BudgetPool::Workspace, 0)?;
+        Ok(Arc::new(super::budget::V3Owned::new(metadata, permit)))
+    }
+
+    fn validate_metadata_payload(
+        &self,
+        stored: &[u8],
+        allocation_limit: usize,
+    ) -> PackedResult<()> {
+        if stored.len() != self.meta_stored_len as usize
+            || self.meta_stored_len as usize + self.meta_raw_len as usize > allocation_limit
+        {
+            return Err(PackedWireError::LimitExceeded(
+                "wire 005 group metadata allocation exceeds budget".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) async fn read_metadata_owned<B: ObjectBackend + Clone>(

@@ -14,6 +14,7 @@ const MAX_RECORDS: usize = 1024;
 const MAX_KEY_BYTES: usize = 2048;
 const MAX_VALUE_BYTES: usize = 8192;
 const MAX_HEIGHT: u8 = 16;
+const MAX_BUNDLE_CACHE_BYTES: u64 = 256 << 20;
 
 fn frame_directory_weight(page: &super::V3FrameDirectoryPage) -> u64 {
     (std::mem::size_of::<V3Owned<super::V3FrameDirectoryPage>>()
@@ -506,7 +507,28 @@ pub struct V3IndexReader<B: ObjectBackend + Clone> {
     budget: Arc<V3MountBudget>,
     demand_pipeline: tokio::sync::Mutex<V3ReaderRuntime<B>>,
     group_metadata: super::read_cache::RetainedMetadata<V3Owned<Arc<super::super::GroupMeta>>>,
+    /// Coalesced body ranges for all-inline GC05 containers.  One retained
+    /// range can satisfy every GroupMeta page in a bundle without issuing a
+    /// Range GET per group; the decoded GroupMeta cache remains the first
+    /// lookup so ordinary callers keep the existing ownership semantics.
+    bundle_ranges: super::read_cache::RetainedMetadata<V3Owned<Vec<u8>>>,
     frame_directories: super::read_cache::RetainedMetadata<V3Owned<super::V3FrameDirectoryPage>>,
+}
+
+/// Result of an explicit directory bundle warm-up. The byte count is the
+/// decoded GroupMeta ownership admitted to the retained cache; inline bytes
+/// are included because they live inside those authenticated pages.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct V3BundlePrefetchStats {
+    pub groups: u64,
+    pub entries: u64,
+    pub inline_bytes: u64,
+    /// Bytes retained by the GroupMeta and coalesced bundle caches after the
+    /// warm-up completes. This includes cache-entry bookkeeping and reflects
+    /// LRU eviction, unlike `metadata_bytes`, which is the sum of decoded
+    /// GroupMeta owners observed while warming.
+    pub retained_bytes: u64,
+    pub metadata_bytes: u64,
 }
 
 struct V3ReaderRuntime<B: ObjectBackend + Clone> {
@@ -518,6 +540,10 @@ pub(crate) struct V3IndexCacheStats {
     pages: Cache<([u8; 32], V3ObjectKind, u64), Arc<V3RetainedIndexPage>>,
     cache_ownership: Arc<V3IndexCacheOwnership>,
     configured_bytes: u64,
+    group_metadata: u64,
+    group_metadata_entries: usize,
+    bundle_ranges: u64,
+    bundle_range_entries: usize,
 }
 impl std::fmt::Debug for V3IndexCacheStats {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -553,6 +579,26 @@ impl V3IndexCacheStats {
             output,
             "brewfs_packed_v3_index_cache_peak_owned_bytes {}",
             self.cache_ownership.peak.load(Ordering::Acquire)
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_packed_v3_bundle_cache_retained_bytes {}",
+            self.group_metadata
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_packed_v3_bundle_cache_retained_entries {}",
+            self.group_metadata_entries
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_packed_v3_bundle_range_cache_retained_bytes {}",
+            self.bundle_ranges
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_packed_v3_bundle_range_cache_retained_entries {}",
+            self.bundle_range_entries
         );
     }
 }
@@ -627,6 +673,15 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         cache_bytes: u64,
         budget: Arc<V3MountBudget>,
     ) -> Self {
+        // The explicit packed bundle budget applies to decoded GroupMeta
+        // pages.  Coalesced bodies are transient stored bytes and use the
+        // Stored pool as their second admission guard; with the conservative
+        // default their large containers are therefore ineligible, while an
+        // opt-in 64--256 MiB budget can retain both the pages and a body.
+        let group_cache_bytes = cache_bytes.min(MAX_BUNDLE_CACHE_BYTES);
+        let bundle_cache_bytes = cache_bytes
+            .min(MAX_BUNDLE_CACHE_BYTES)
+            .min(budget.capacity(V3BudgetPool::Stored));
         Self {
             client,
             pages: Cache::builder()
@@ -640,9 +695,11 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             cache_ownership: Arc::new(V3IndexCacheOwnership::new(cache_bytes)),
             configured_bytes: cache_bytes,
             group_metadata: super::read_cache::RetainedMetadata::new(
-                (cache_bytes / 16)
-                    .min(8 << 20)
-                    .min(budget.capacity(V3BudgetPool::Metadata) / 4),
+                group_cache_bytes.min(budget.capacity(V3BudgetPool::Metadata)),
+                budget.clone(),
+            ),
+            bundle_ranges: super::read_cache::RetainedMetadata::new(
+                bundle_cache_bytes.min(budget.capacity(V3BudgetPool::Metadata)),
                 budget.clone(),
             ),
             frame_directories: super::read_cache::RetainedMetadata::new(
@@ -682,12 +739,111 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         let mut identity = Sha256::new();
         identity.update(group.encode_value()?);
         identity.update(container.encode_value()?);
+        let group_key = identity.finalize().into();
+        if let Some(value) = self.group_metadata.get_if_present(generation, group_key)? {
+            return Ok(value);
+        }
+        let bundle_eligible = group.frame_count == 0
+            && self.bundle_ranges.capacity() > 0
+            && container.object_len > (V3_HEADER_LEN + V3_FOOTER_LEN) as u64
+            && container
+                .object_len
+                .saturating_sub((V3_HEADER_LEN + V3_FOOTER_LEN) as u64)
+                .saturating_add(super::read_cache::ENTRY_BYTES)
+                <= self.bundle_ranges.capacity()
+            && container
+                .object_len
+                .saturating_sub((V3_HEADER_LEN + V3_FOOTER_LEN) as u64)
+                <= self.budget.capacity(V3BudgetPool::Stored);
+        let bundle = if bundle_eligible {
+            let key = container.digest;
+            let client = self.client.clone();
+            let container = container.clone();
+            let budget = self.budget.clone();
+            let body_len = container
+                .object_len
+                .checked_sub((V3_HEADER_LEN + V3_FOOTER_LEN) as u64)
+                .ok_or_else(|| {
+                    PackedWireError::Invalid("wire 005 container body length underflows".into())
+                })?;
+            Some(
+                self.bundle_ranges
+                    .read(generation, key, |value| value.len() as u64, async move {
+                        // The fetched body is retained as a metadata bundle, but
+                        // the in-flight object response also consumes the Stored
+                        // pool. Reserve both atomically before issuing the GET;
+                        // otherwise transferring the body charge to Metadata
+                        // after the read would fail with an apparent ENOMEM.
+                        let mut permit = budget.admit(&[
+                            (V3BudgetPool::Stored, body_len),
+                            (V3BudgetPool::Metadata, body_len),
+                        ])?;
+                        let bytes = client
+                            .typed_exact(
+                                crate::cadapter::read_observer::ReadClass::GroupMetadata,
+                                &container.key,
+                                V3_HEADER_LEN as u64,
+                                body_len,
+                                body_len,
+                                Ok,
+                            )
+                            .await
+                            .map_err(super::observer_backend_error)?;
+                        permit.shrink(V3BudgetPool::Stored, 0)?;
+                        permit.shrink(V3BudgetPool::Metadata, bytes.len() as u64)?;
+                        Ok(Arc::new(V3Owned::new(bytes, permit)))
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
         self.group_metadata
             .read(
                 generation,
-                identity.finalize().into(),
+                group_key,
                 |value| value.owned_memory_bytes() as u64,
-                group.read_metadata_owned(&self.client, container, allocation_limit, &self.budget),
+                async {
+                    if let Some(bundle) = bundle {
+                        let start = group
+                            .meta_offset
+                            .checked_sub(V3_HEADER_LEN as u64)
+                            .ok_or_else(|| {
+                                PackedWireError::Invalid(
+                                    "wire 005 GroupMeta offset precedes body".into(),
+                                )
+                            })? as usize;
+                        let end = start
+                            .checked_add(group.meta_stored_len as usize)
+                            .ok_or_else(|| {
+                                PackedWireError::LimitExceeded(
+                                    "wire 005 GroupMeta slice overflows".into(),
+                                )
+                            })?;
+                        let stored =
+                            bundle
+                                .get(start..end)
+                                .ok_or_else(|| PackedWireError::Truncated {
+                                    what: "wire 005 coalesced GroupMeta range",
+                                    need: end,
+                                    have: bundle.len(),
+                                })?;
+                        group.decode_metadata_owned_from_stored(
+                            stored,
+                            allocation_limit,
+                            &self.budget,
+                        )
+                    } else {
+                        group
+                            .read_metadata_owned(
+                                &self.client,
+                                container,
+                                allocation_limit,
+                                &self.budget,
+                            )
+                            .await
+                    }
+                },
             )
             .await
     }
@@ -769,6 +925,10 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             pages: self.pages.clone(),
             cache_ownership: self.cache_ownership.clone(),
             configured_bytes: self.configured_bytes,
+            group_metadata: self.group_metadata.retained_bytes(),
+            group_metadata_entries: self.group_metadata.retained_entries(),
+            bundle_ranges: self.bundle_ranges.retained_bytes(),
+            bundle_range_entries: self.bundle_ranges.retained_entries(),
         }
     }
 
@@ -1396,6 +1556,12 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         // Managed cache-owner charge; process RSS is measured separately.
         self.cache_ownership.owned.load(Ordering::Acquire)
     }
+
+    pub(super) fn retained_bundle_bytes(&self) -> u64 {
+        self.group_metadata
+            .retained_bytes()
+            .saturating_add(self.bundle_ranges.retained_bytes())
+    }
     pub(crate) async fn close(&self) {
         let mut runtime = self.demand_pipeline.lock().await;
         runtime.closed = true;
@@ -1405,6 +1571,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         drop(runtime.coordinator.take());
         self.budget.invalidate_read_caches();
         self.group_metadata.clear();
+        self.bundle_ranges.clear();
         self.frame_directories.clear();
         self.pages.invalidate_all();
         self.pages.run_pending_tasks().await;

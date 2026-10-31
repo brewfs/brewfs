@@ -2708,6 +2708,7 @@ mod tests {
                     frames: Default::default(),
                     inline_data: inline,
                     p90: None,
+                    ..Default::default()
                 },
                 metadata_codec: PackedCodec::Raw,
                 data_codec: PackedCodec::Raw,

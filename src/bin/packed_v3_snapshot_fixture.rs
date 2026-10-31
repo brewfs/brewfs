@@ -59,6 +59,14 @@ struct Args {
     /// Off keeps every nonempty payload out of metadata, including tiny files.
     #[arg(long, default_value = "on", value_parser = ["on", "off"])]
     inline_data: String,
+    /// Bundle adjacent small-file metadata and inline content in shared containers.
+    /// Opt in only for measured workloads; pure directory scans may read more data.
+    #[arg(long, conflicts_with = "raw_only")]
+    small_file_bundles: bool,
+    /// Target inline payload per sequential bundle. Larger values put more
+    /// adjacent GroupMeta pages in one authenticated container.
+    #[arg(long, default_value_t = 224 * 1024, value_parser = clap::value_parser!(u32).range(224 * 1024..=4 * 1024 * 1024))]
+    inline_group_data_budget_bytes: u32,
     #[arg(long,default_value_t=false,action=clap::ArgAction::Set)]
     cold_corpus: bool,
     #[arg(long,default_value_t=false,action=clap::ArgAction::Set)]
@@ -151,6 +159,9 @@ fn fixture_build_policy(
     args: &Args,
 ) -> Result<brewfs::workspace_overlay::packed_v3::wire005::V3BuildPolicy> {
     use brewfs::workspace_overlay::packed_v3::wire005::{V3BuildPolicy, V3FramePolicy};
+    if args.small_file_bundles && args.inline_data != "on" {
+        bail!("--small-file-bundles requires --inline-data on");
+    }
     let frames = match args.frame_policy.as_str() {
         "size-only" => V3FramePolicy::SizeOnly,
         "static-256kib" => V3FramePolicy::Static256Kib,
@@ -175,6 +186,7 @@ fn fixture_build_policy(
     Ok(V3BuildPolicy {
         frames,
         inline_data: args.inline_data == "on",
+        inline_group_data_budget_bytes: args.inline_group_data_budget_bytes,
         p90,
     })
 }
@@ -451,6 +463,23 @@ fn apply_cold_targets(
     Ok(())
 }
 
+async fn flush_generated_bundle<B: ObjectBackend + Clone + Send + Sync + 'static>(
+    producer: &mut brewfs::workspace_overlay::packed_v3::wire005::V3SnapshotProducer<B>,
+    groups: &mut Vec<PackedGroupInput>,
+    parents: &mut Vec<u64>,
+) -> Result<()> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let container_id = groups[0].group_id;
+    producer
+        .add_container(container_id, groups, &[], parents)
+        .await?;
+    groups.clear();
+    parents.clear();
+    Ok(())
+}
+
 async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
     args: &Args,
     client: ObjectClient<B>,
@@ -507,6 +536,11 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                 },
             )
             .await?;
+            let inventory = if args.small_file_bundles {
+                inventory.with_small_file_bundles_budget(args.inline_group_data_budget_bytes)
+            } else {
+                inventory
+            };
             let snapshot = inventory
                 .build_snapshot(client, prefix.into(), options)
                 .await?;
@@ -703,6 +737,17 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
     let mut file_index = 0u64;
     let mut group_count = 0u64;
     let mut logical_bytes = 0u64;
+    // GroupMeta pages stay bounded at 256 KiB.  When the small-file bundle
+    // switch is enabled, keep each generated page below the inline payload
+    // budget and aggregate those pages into one container below.
+    let generated_group_file_limit = if args.small_file_bundles && build_policy.inline_data {
+        let max_file = usize::try_from(maximum).unwrap_or(usize::MAX).max(1);
+        (224 * 1024 / max_file).max(1)
+    } else {
+        256
+    };
+    let bundle_target_bytes =
+        usize::try_from(build_policy.inline_group_data_budget_bytes).unwrap_or(usize::MAX);
     for directory in &directories {
         let key = if directory.inode == 1 {
             root_key
@@ -712,6 +757,9 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
         let mut files = Vec::new();
         let mut pending_bytes = 0usize;
         let mut shard = 0u64;
+        let mut bundle_groups = Vec::new();
+        let mut bundle_parents = Vec::new();
+        let mut bundle_inline_bytes = 0usize;
         for child in directories
             .iter()
             .filter(|child| child.parent_inode == directory.inode)
@@ -813,7 +861,7 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                 file_index += 1;
                 logical_bytes += size as u64;
                 pending_bytes += size;
-                if pending_bytes >= 8 * 1024 * 1024 || files.len() >= 256 {
+                if pending_bytes >= 8 * 1024 * 1024 || files.len() >= generated_group_file_limit {
                     let id = (directory.inode << 32) | shard;
                     let (mut group, frames) =
                         brewfs::workspace_overlay::packed_v3::pack_group_files_with_policy(
@@ -825,9 +873,35 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                             build_policy,
                         )?;
                     apply_cold_targets(&mut group, &cold_attributes)?;
-                    producer
-                        .add_container(id, &[group], &frames, &[directory.inode])
+                    if args.small_file_bundles && frames.is_empty() && group.file_count > 0 {
+                        let inline_bytes = GroupMeta::decode(&group.metadata)?
+                            .entries()
+                            .iter()
+                            .map(|entry| entry.inline_data.len())
+                            .sum::<usize>();
+                        bundle_inline_bytes = bundle_inline_bytes.saturating_add(inline_bytes);
+                        bundle_groups.push(group);
+                        bundle_parents.push(directory.inode);
+                        if bundle_inline_bytes >= bundle_target_bytes {
+                            flush_generated_bundle(
+                                &mut producer,
+                                &mut bundle_groups,
+                                &mut bundle_parents,
+                            )
+                            .await?;
+                            bundle_inline_bytes = 0;
+                        }
+                    } else {
+                        flush_generated_bundle(
+                            &mut producer,
+                            &mut bundle_groups,
+                            &mut bundle_parents,
+                        )
                         .await?;
+                        producer
+                            .add_container(id, &[group], &frames, &[directory.inode])
+                            .await?;
+                    }
                     pending_bytes = 0;
                     shard += 1;
                     group_count += 1;
@@ -846,11 +920,19 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                     build_policy,
                 )?;
             apply_cold_targets(&mut group, &cold_attributes)?;
-            producer
-                .add_container(id, &[group], &frames, &[directory.inode])
-                .await?;
+            if args.small_file_bundles && frames.is_empty() && group.file_count > 0 {
+                bundle_groups.push(group);
+                bundle_parents.push(directory.inode);
+            } else {
+                flush_generated_bundle(&mut producer, &mut bundle_groups, &mut bundle_parents)
+                    .await?;
+                producer
+                    .add_container(id, &[group], &frames, &[directory.inode])
+                    .await?;
+            }
             group_count += 1;
         }
+        flush_generated_bundle(&mut producer, &mut bundle_groups, &mut bundle_parents).await?;
     }
     for attrs in &cold_attributes {
         producer.add_cold_attributes(attrs).await?;
@@ -1003,6 +1085,250 @@ fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod codec_control_tests {
+    #[cfg(target_os = "linux")]
+    async fn build_small_bundle_fixture(
+        source: &std::path::Path,
+        bundles: bool,
+    ) -> (
+        tempfile::TempDir,
+        ObjectClient<LocalFsBackend>,
+        brewfs::workspace_overlay::packed_v3::wire005::AuthenticatedV3Snapshot,
+        serde_json::Value,
+    ) {
+        use brewfs::workspace_overlay::packed_v3::wire005::{
+            AuthenticatedV3Snapshot, V3ObjectKind, V3ObjectRef,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let objects = temporary.path().join("objects");
+        std::fs::create_dir(&objects).unwrap();
+        let mut arguments = vec![
+            "fixture",
+            "--source-directory",
+            source.to_str().unwrap(),
+            "--source-consistency",
+            "best-effort-detected",
+            "--source-hardlink-policy",
+            "visible-links",
+            "--metadata-codec",
+            "raw",
+            "--data-codec",
+            "raw",
+        ];
+        if bundles {
+            arguments.push("--small-file-bundles");
+        }
+        let mut args = Args::try_parse_from(arguments).expect("small-file bundle CLI");
+        args.manifest_output = temporary.path().join("manifest.txt");
+        let client = ObjectClient::new(LocalFsBackend::new(&objects));
+        build_v3_fixture(&args, client.clone(), "bundle-test")
+            .await
+            .unwrap();
+        let key = std::fs::read_to_string(&args.manifest_output).unwrap();
+        let bytes = std::fs::read(objects.join(key.trim())).unwrap();
+        let reference =
+            V3ObjectRef::from_bytes(key.trim().into(), V3ObjectKind::Manifest, &bytes).unwrap();
+        let snapshot = AuthenticatedV3Snapshot::open(&client, &reference)
+            .await
+            .unwrap();
+        let provenance = serde_json::from_slice(
+            &std::fs::read(args.manifest_output.with_extension("source.json")).unwrap(),
+        )
+        .unwrap();
+        (temporary, client, snapshot, provenance)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn small_file_bundles_share_authenticated_ranges_and_inline_every_small_file() {
+        use brewfs::workspace_overlay::packed_v3::wire005::V3IndexReader;
+        let source = tempfile::tempdir().unwrap();
+        for index in 0..120 {
+            std::fs::write(
+                source.path().join(format!("f{index:03}")),
+                vec![index as u8; 4096],
+            )
+            .unwrap();
+        }
+        let (_default_objects, _, default_snapshot, default_report) =
+            build_small_bundle_fixture(source.path(), false).await;
+        assert!(default_snapshot.manifest().build.frame_count > 0);
+        assert!(default_snapshot.manifest().build.inline_payload_bytes < 120 * 4096);
+        assert_eq!(default_report["source_report"]["small_file_bundles"], false);
+        let (_objects, client, snapshot, report) =
+            build_small_bundle_fixture(source.path(), true).await;
+        assert_eq!(snapshot.manifest().build.frame_count, 0);
+        assert_eq!(snapshot.manifest().build.inline_dentries, 120);
+        assert_eq!(snapshot.manifest().build.inline_payload_bytes, 120 * 4096);
+        assert_eq!(report["source_report"]["bundled_groups"], 3);
+        assert_eq!(report["source_report"]["bundle_containers"], 1);
+        assert_eq!(report["source_report"]["bundled_inline_bytes"], 120 * 4096);
+        let reader = V3IndexReader::new(client.clone(), 0);
+        let mut groups = std::collections::BTreeMap::new();
+        for index in 0..120 {
+            let name = format!("f{index:03}");
+            let parent = snapshot.manifest().root_dir_key;
+            let group = snapshot
+                .lookup_group(&reader, parent, name.as_bytes())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(group.meta_stored_len <= 256 * 1024);
+            assert!(group.meta_raw_len <= 256 * 1024);
+            assert_eq!(group.frame_count, 0);
+            groups.insert(group.group_id, group);
+            let entry = snapshot
+                .lookup_dentry(&client, &reader, parent, name.as_bytes(), 32 << 20)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut data = vec![255; 4096];
+            snapshot
+                .read_inode_range(&client, &reader, entry.inode, 0, &mut data, 32 << 20)
+                .await
+                .unwrap();
+            assert_eq!(data, vec![index as u8; 4096]);
+        }
+        let groups = groups.values().collect::<Vec<_>>();
+        assert_eq!(groups.len(), 3);
+        for pair in groups.windows(2) {
+            assert_eq!(pair[0].container_ordinal, pair[1].container_ordinal);
+            assert_eq!(
+                pair[0].meta_offset + u64::from(pair[0].meta_stored_len),
+                pair[1].meta_offset
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn small_file_bundle_rollover_preserves_parent_hardlink_cold_and_allocation_records() {
+        use brewfs::workspace_overlay::packed_v3::wire005::V3IndexReader;
+        use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+        let source = tempfile::tempdir().unwrap();
+        for index in 0..129 {
+            let directory = source.path().join(format!("d{index:03}"));
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::write(directory.join("file"), vec![index as u8; 4096]).unwrap();
+        }
+        let original = source.path().join("d000/file");
+        std::fs::hard_link(&original, source.path().join("d128/alias")).unwrap();
+        std::os::unix::fs::symlink("d000/file", source.path().join("link")).unwrap();
+        let path = std::ffi::CString::new(original.as_os_str().as_bytes()).unwrap();
+        // SAFETY: path/name are terminated; the four-byte value remains live.
+        assert_eq!(
+            unsafe {
+                libc::lsetxattr(
+                    path.as_ptr(),
+                    c"user.bundle".as_ptr(),
+                    b"kept".as_ptr().cast(),
+                    4,
+                    0,
+                )
+            },
+            0
+        );
+        let (_objects, client, snapshot, report) =
+            build_small_bundle_fixture(source.path(), true).await;
+        assert_eq!(report["source_report"]["bundled_groups"], 129);
+        assert_eq!(report["source_report"]["bundle_containers"], 2);
+        assert_eq!(snapshot.manifest().build.inline_dentries, 130);
+        assert_eq!(snapshot.manifest().build.frame_count, 0);
+        let reader = V3IndexReader::new(client.clone(), 0);
+        let root = snapshot.manifest().root_dir_key;
+        let mut original_inode = 0;
+        for index in [0, 127, 128] {
+            let directory = snapshot
+                .lookup_dentry(
+                    &client,
+                    &reader,
+                    root,
+                    format!("d{index:03}").as_bytes(),
+                    32 << 20,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let parent = directory_key(snapshot.manifest().snapshot_id, directory.inode);
+            let entry = snapshot
+                .lookup_dentry(&client, &reader, parent, b"file", 32 << 20)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut data = vec![255; 4096];
+            snapshot
+                .read_inode_range(&client, &reader, entry.inode, 0, &mut data, 32 << 20)
+                .await
+                .unwrap();
+            assert_eq!(data, vec![index as u8; 4096]);
+            if index == 0 {
+                original_inode = entry.inode;
+            }
+            if index == 128 {
+                let alias = snapshot
+                    .lookup_dentry(&client, &reader, parent, b"alias", 32 << 20)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(alias.inode, original_inode);
+                assert_eq!(alias.nlink, 2);
+                assert_eq!(
+                    snapshot.source_blocks(&reader, alias.inode).await.unwrap(),
+                    Some(original.metadata().unwrap().blocks())
+                );
+                let cold = snapshot
+                    .cold_attributes(&client, &reader, alias.inode)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    cold.xattrs
+                        .iter()
+                        .any(|x| x.name == b"user.bundle" && x.value == b"kept")
+                );
+            }
+        }
+        let link = snapshot
+            .lookup_dentry(&client, &reader, root, b"link", 32 << 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .cold_attributes(&client, &reader, link.inode)
+                .await
+                .unwrap()
+                .unwrap()
+                .symlink_target,
+            Some(b"d000/file".to_vec())
+        );
+    }
+
+    #[test]
+    fn small_file_bundles_require_directory_and_inline_policy() {
+        assert!(Args::try_parse_from(["fixture", "--small-file-bundles"]).is_err());
+        let args = Args::try_parse_from([
+            "fixture",
+            "--source-directory",
+            "source",
+            "--small-file-bundles",
+            "--inline-data",
+            "off",
+        ])
+        .unwrap();
+        assert!(fixture_build_policy(&args).is_err());
+        assert!(
+            Args::try_parse_from([
+                "fixture",
+                "--source-directory",
+                "source",
+                "--small-file-bundles",
+                "--raw-only",
+                "true"
+            ])
+            .is_err()
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn random_frame_cap_reaches_every_fixture_source_and_authenticated_provenance() {
