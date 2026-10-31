@@ -866,7 +866,10 @@ mod tests {
                 digest: [8; 32],
             },
             profile: AccessProfile::RandomSmallFile,
-            size_classes: SizeClassTable::default(),
+            size_classes: SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             frame_policy: Default::default(),
             descriptor: PackedFrameDescriptor {
                 frame_ordinal: ordinal,

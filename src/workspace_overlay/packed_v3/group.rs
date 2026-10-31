@@ -1802,7 +1802,10 @@ mod tests {
             [1; 32],
             tiny_files,
             AccessProfile::RandomSmallFile,
-            SizeClassTable::default(),
+            SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             None,
         )
         .unwrap();
@@ -1832,7 +1835,10 @@ mod tests {
                 data: vec![7; 10 * 1024 * 1024],
             }],
             AccessProfile::RandomSmallFile,
-            SizeClassTable::default(),
+            SizeClassTable {
+                max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                ..SizeClassTable::default()
+            },
             None,
         )
         .unwrap();

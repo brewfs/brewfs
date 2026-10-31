@@ -4,7 +4,7 @@ const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
 
 pub const DEFAULT_MIN_FRAME_RAW_BYTES: u64 = 256 * KIB;
-pub const DEFAULT_MAX_RANDOM_FRAME_RAW_BYTES: u64 = 4 * MIB;
+pub const DEFAULT_MAX_RANDOM_FRAME_RAW_BYTES: u64 = 256 * KIB;
 pub const DEFAULT_MAX_SEQUENTIAL_FRAME_RAW_BYTES: u64 = 8 * MIB;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -170,7 +170,10 @@ mod tests {
 
     #[test]
     fn size_only_selection_matches_v3_profiles() {
-        let table = SizeClassTable::default();
+        let table = SizeClassTable {
+            max_random_frame_raw_bytes: 4 * MIB,
+            ..SizeClassTable::default()
+        };
         let tiny =
             choose_frame_layout(200 * KIB, None, AccessProfile::RandomSmallFile, table).unwrap();
         assert_eq!(tiny.size_class, SizeClass::Tiny);
@@ -187,6 +190,19 @@ mod tests {
             choose_frame_layout(10 * MIB, None, AccessProfile::SequentialSmallFile, table).unwrap();
         assert_eq!(sequential.frame_raw_bytes, 8 * MIB);
         assert_eq!(sequential.frame_count, 2);
+    }
+
+    #[test]
+    fn default_random_and_mixed_frames_are_256_kib() {
+        let table = SizeClassTable::default();
+        assert_eq!(table.min_frame_raw_bytes, 256 * KIB);
+        assert_eq!(table.max_random_frame_raw_bytes, 256 * KIB);
+        assert_eq!(table.max_sequential_frame_raw_bytes, 8 * MIB);
+        for profile in [AccessProfile::RandomSmallFile, AccessProfile::Mixed] {
+            let decision = choose_frame_layout(10 * MIB, None, profile, table).unwrap();
+            assert_eq!(decision.frame_raw_bytes, 256 * KIB);
+            assert_eq!(decision.frame_count, 40);
+        }
     }
 
     #[test]

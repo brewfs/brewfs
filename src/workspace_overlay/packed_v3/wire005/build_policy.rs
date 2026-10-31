@@ -422,7 +422,10 @@ mod tests {
             inline_data: false,
             p90: None,
         };
-        let classes = SizeClassTable::default();
+        let classes = SizeClassTable {
+            max_random_frame_raw_bytes: 4 * 1024 * 1024,
+            ..SizeClassTable::default()
+        };
         let selected = policy
             .select(2560 * 1024, AccessProfile::RandomSmallFile, classes)
             .unwrap();

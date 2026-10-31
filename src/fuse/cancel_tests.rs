@@ -230,7 +230,11 @@ async fn fixture_with_source_files(
                 root_dir_key: [2; 32],
                 root_inode: 1,
                 profile: AccessProfile::RandomSmallFile,
-                size_classes: SizeClassTable::default(),
+                // Cancellation fixtures deliberately keep one 512 KiB body.
+                size_classes: SizeClassTable {
+                    max_random_frame_raw_bytes: 4 * 1024 * 1024,
+                    ..SizeClassTable::default()
+                },
                 build_policy: Default::default(),
                 metadata_codec: PackedCodec::Raw,
                 data_codec: PackedCodec::Raw,
