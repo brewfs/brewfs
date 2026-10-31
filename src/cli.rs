@@ -116,6 +116,7 @@ const LEASE_BOUND_ROW_CACHE_TTL: Duration = Duration::from_secs(60);
 
 pub async fn run() -> anyhow::Result<()> {
     init_tracing();
+    let _stage_timing = crate::stage_timing::install()?;
     raise_nofile_limit();
 
     let cli = Cli::parse();

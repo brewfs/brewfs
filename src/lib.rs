@@ -22,6 +22,7 @@ pub mod meta;
 pub mod native_base;
 pub(crate) mod posix;
 pub mod sdk_fs;
+pub(crate) mod stage_timing;
 // Expose vfs for E2E testing - tests should rely on design contracts, not impl details
 pub mod vfs;
 

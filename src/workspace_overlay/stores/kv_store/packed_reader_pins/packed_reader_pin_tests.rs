@@ -47,6 +47,8 @@ struct PinMemoryBackend {
     view_reads: Arc<AtomicI64>,
     /// All bounded reads, used to prove a bound immutable memo hit is local.
     bounded_reads: Arc<AtomicI64>,
+    bounded_scans: Arc<AtomicI64>,
+    scan_barrier: SharedTestBarrier,
 }
 impl Default for PinMemoryBackend {
     fn default() -> Self {
@@ -69,6 +71,8 @@ impl Default for PinMemoryBackend {
             point_reads: Default::default(),
             view_reads: Default::default(),
             bounded_reads: Default::default(),
+            bounded_scans: Default::default(),
+            scan_barrier: Default::default(),
         }
     }
 }
@@ -248,6 +252,12 @@ impl WorkspaceKvBackend for PinMemoryBackend {
         prefix: &[u8],
         limit: usize,
     ) -> Result<Vec<KvEntry>, WorkspaceError> {
+        self.bounded_scans.fetch_add(1, Ordering::SeqCst);
+        let barrier = self.scan_barrier.lock().await.take();
+        if let Some((entered, resume)) = barrier {
+            entered.notify_one();
+            resume.notified().await;
+        }
         if limit == 0 {
             return Err(WorkspaceError::InvalidReadPlan("zero scan limit".into()));
         }

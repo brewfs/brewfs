@@ -7,6 +7,7 @@ use moka::sync::Cache;
 
 use crate::chunk::read_plan::{ReadPlanSegment, ResolvedReadPlan};
 use crate::meta::store::MetaError;
+use crate::workspace_overlay::resolver::ResolvedCoverage;
 
 use super::ids::WorkspaceId;
 
@@ -25,8 +26,24 @@ pub struct ReadPlanCacheKey {
     pub range_end: u64,
 }
 
+/// Identity for a packed/unified upper-coverage memo. The lower digest and
+/// mutation fence make same-epoch source replacement fail closed.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct UnifiedReadPlanCacheKey {
+    pub workspace_id: WorkspaceId,
+    pub head_epoch: u64,
+    pub ino: i64,
+    pub chunk_index: u64,
+    pub inode_data_version: u64,
+    pub mutation_sequence: u64,
+    pub lower_snapshot: [u8; 32],
+    pub range_start: u64,
+    pub range_end: u64,
+}
+
 pub struct WorkspaceResolverCache {
     read_plans: Cache<ReadPlanCacheKey, Arc<ResolvedReadPlan>>,
+    unified_read_plans: Cache<UnifiedReadPlanCacheKey, Arc<ResolvedCoverage>>,
 }
 
 impl Default for WorkspaceResolverCache {
@@ -48,7 +65,25 @@ impl WorkspaceResolverCache {
                     .unwrap_or(u32::MAX)
             })
             .build();
-        Self { read_plans }
+        let unified_read_plans = Cache::builder()
+            .max_capacity(max_weight.max(1))
+            .support_invalidation_closures()
+            .weigher(
+                |_key: &UnifiedReadPlanCacheKey, coverage: &Arc<ResolvedCoverage>| {
+                    coverage
+                        .covered
+                        .len()
+                        .saturating_add(coverage.absent.len())
+                        .saturating_add(1)
+                        .try_into()
+                        .unwrap_or(u32::MAX)
+                },
+            )
+            .build();
+        Self {
+            read_plans,
+            unified_read_plans,
+        }
     }
 
     pub fn get_read_plan(&self, key: &ReadPlanCacheKey) -> Option<Arc<ResolvedReadPlan>> {
@@ -59,12 +94,35 @@ impl WorkspaceResolverCache {
         self.read_plans.insert(key, Arc::new(plan));
     }
 
+    pub fn get_unified_read_plan(
+        &self,
+        key: &UnifiedReadPlanCacheKey,
+    ) -> Option<Arc<ResolvedCoverage>> {
+        self.unified_read_plans.get(key)
+    }
+
+    pub fn insert_unified_read_plan(
+        &self,
+        key: UnifiedReadPlanCacheKey,
+        coverage: ResolvedCoverage,
+    ) {
+        self.unified_read_plans.insert(key, Arc::new(coverage));
+    }
+
     pub fn invalidate_inode(&self, workspace_id: WorkspaceId, ino: i64) {
         self.invalidate_matching(move |key| key.workspace_id == workspace_id && key.ino == ino);
+        self.unified_read_plans
+            .invalidate_entries_if(move |key, _| key.workspace_id == workspace_id && key.ino == ino)
+            .expect("unified read-plan cache invalidation predicates are enabled");
+        self.unified_read_plans.run_pending_tasks();
     }
 
     pub fn invalidate_workspace(&self, workspace_id: WorkspaceId) {
         self.invalidate_matching(move |key| key.workspace_id == workspace_id);
+        self.unified_read_plans
+            .invalidate_entries_if(move |key, _| key.workspace_id == workspace_id)
+            .expect("unified read-plan cache invalidation predicates are enabled");
+        self.unified_read_plans.run_pending_tasks();
     }
 
     fn invalidate_matching(

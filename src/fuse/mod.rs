@@ -831,6 +831,7 @@ where
             });
         }
 
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::FuseDispatch);
         let mut registration = None;
         let mut temporary = None;
         let (mut result, cancelled) = if Filesystem::supports_read_cancellation(self) {

@@ -136,6 +136,7 @@ where
         offset: ChunkOffset,
         len: usize,
     ) -> Result<Vec<u8>> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::DataPath);
         let offset = offset.get();
         if len == 0 {
             return Ok(Vec::new());
@@ -250,6 +251,7 @@ where
         offset: ChunkOffset,
         buf: &mut [u8],
     ) -> Result<()> {
+        let _stage = crate::stage_timing::Span::new(crate::stage_timing::Stage::DataPath);
         let offset = offset.get();
         let len = buf.len();
         if len == 0 {

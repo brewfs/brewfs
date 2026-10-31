@@ -19,6 +19,9 @@ mod performance_tests;
 #[path = "cache_commit_regression_tests.rs"]
 mod cache_commit_regression_tests;
 
+#[path = "unified_read_plan_cache_tests.rs"]
+mod unified_read_plan_cache_tests;
+
 use super::*;
 use crate::cadapter::client::ObjectClient;
 use crate::cadapter::localfs::LocalFsBackend;
