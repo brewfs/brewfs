@@ -53,6 +53,9 @@ brewfs_writeback_recent_pending_upload_bytes $pending
 brewfs_writeback_dirty_bytes $dirty
 brewfs_writeback_live_dirty_bytes $dirty
 brewfs_writeback_live_slices 2
+brewfs_writeback_metadata_inflight 0
+brewfs_memory_cas_retries_total 0
+brewfs_memory_allocation_rejections_total 0
 brewfs_buffer_dirty_bytes 0
 brewfs_writeback_recent_uploaded_bytes $uploaded
 brewfs_writeback_recent_pending_upload_slices 1
@@ -116,6 +119,9 @@ write_missing_stats() {
 brewfs_writeback_recent_pending_upload_bytes 0
 brewfs_writeback_dirty_bytes 0
 brewfs_writeback_live_dirty_bytes 0
+brewfs_writeback_metadata_inflight 0
+brewfs_memory_cas_retries_total 0
+brewfs_memory_allocation_rejections_total 0
 brewfs_buffer_dirty_bytes 0
 brewfs_writeback_recent_uploaded_bytes 1048576
 brewfs_writeback_live_slices 0
@@ -255,6 +261,21 @@ grep -F "## Drain And Backpressure" "$tmp_dir/out.md" >/dev/null
 grep -F "## Runtime And Tail" "$tmp_dir/out.md" >/dev/null
 grep -F "## Object And Upload Amplification" "$tmp_dir/out.md" >/dev/null
 grep -F "## Metric Gaps" "$tmp_dir/out.md" >/dev/null
+
+grep -F $'runtime\tfio-randrw-direct1\tmixed_effective_wall_bw_mib_s\t142.857\t142.857\t+0.0\tMiB/s' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'fio\tfio-randrw-direct1\tread_p99_sample_sufficient\t0.000\t0.000\t+0.0\tbool' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'fio_group\tfio-randrw-direct1/group-0\twrite_clat_p99_ms\t150.000\t180.000\t+20.0\tms' "$tmp_dir/out.tsv" >/dev/null
+grep -F 'group-0/slat/p99' "$tmp_dir/out.tsv" >/dev/null
+grep -F $'drain\tfio-seqwrite-direct1\tcompletion_evidence\tlegacy-unverified\tlegacy-unverified' "$tmp_dir/out.tsv" >/dev/null
+
+# Extended drain must replace the earlier clear point in the denominator.
+cat >"$candidate/post-write-drain.tsv" <<'EOF'
+tool	runner_drain_s	extended_strict_drain_s	pending_bytes	dirty_bytes	buffer_dirty_bytes
+fio-seqwrite-direct1	1	9	0	0	0
+EOF
+python3 "$SCRIPT" --format tsv "$baseline" "$candidate" >"$tmp_dir/strict.tsv"
+grep -F $'runtime\tfio-seqwrite-direct1\twrite_effective_active_plus_drain_bw_mib_s\t142.857\t105.263' "$tmp_dir/strict.tsv" >/dev/null
+grep -F $'drain\tfio-seqwrite-direct1\tcompletion_evidence\tlegacy-unverified\textended' "$tmp_dir/strict.tsv" >/dev/null
 
 if python3 "$SCRIPT" "$tmp_dir/missing" "$candidate" >"$tmp_dir/missing.out" 2>"$tmp_dir/missing.err"; then
     echo "expected missing artifact to fail" >&2

@@ -10,6 +10,7 @@ use crate::meta::store::{
     SetAttrRequest, StatFsSnapshot, chmod_request, chown_request,
 };
 use crate::vfs::handles::DirHandle;
+use crate::vfs::stats::RequestObservation;
 
 pub type MetadataMemoryGuard = Arc<dyn std::fmt::Debug + Send + Sync>;
 
@@ -106,6 +107,11 @@ pub trait MetaLayer: Send + Sync {
     fn metrics(&self) -> Option<Arc<MetaClientMetrics>> {
         None
     }
+
+    /// Install the mount-scoped request observer used for optional metadata
+    /// RPC timing. Implementations that do not issue client-side RPCs may
+    /// leave the default no-op implementation.
+    fn set_request_observation(&self, _observation: Arc<RequestObservation>) {}
 
     /// Returns / mutates the logical root inode alias used by chroot.
     fn root_ino(&self) -> i64;

@@ -28,8 +28,8 @@ use futures::stream;
 use if_addrs::get_if_addrs;
 use moka::future::Cache;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, process};
 use tokio::sync::{Mutex, mpsc};
@@ -37,6 +37,7 @@ use tracing::{Instrument, debug, info, trace, warn};
 use uuid::Uuid;
 
 use crate::vfs::extract_ino_and_chunk_index;
+use crate::vfs::stats::{RequestObservation, RequestSegmentTimer};
 use cache::{InodeCache, OpenFileCache};
 use chrono::Utc;
 use hostname::get as get_hostname;
@@ -323,6 +324,7 @@ pub struct MetaClient<T: MetaStore + ?Sized> {
     /// metadata stores observe a linear order for ctime and ownership updates.
     attr_locks: Arc<DashMap<i64, Arc<Mutex<()>>>>,
     metrics: Arc<MetaClientMetrics>,
+    request_observation: OnceLock<Arc<RequestObservation>>,
 
     /// Manages background session heartbeats when enabled by callers.
     session_manager: Arc<SessionManager<T>>,
@@ -435,6 +437,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
             inode_to_paths: Arc::new(DashMap::new()),
             attr_locks: Arc::new(DashMap::new()),
             metrics: Arc::new(MetaClientMetrics::default()),
+            request_observation: OnceLock::new(),
             session_manager: Arc::new(SessionManager::new(store.clone())),
             job_manager: Arc::new(JobManager::default()),
             control_plane: Mutex::new(None),
@@ -483,6 +486,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
 
     pub fn metrics(&self) -> Arc<MetaClientMetrics> {
         self.metrics.clone()
+    }
+
+    pub fn set_request_observation(&self, observation: Arc<RequestObservation>) {
+        let _ = self.request_observation.set(observation);
+    }
+
+    /// Context exists only while the owning FUSE future is being polled.
+    /// Spawned background tasks do not inherit it.
+    fn metadata_rpc_timer(&self) -> Option<RequestSegmentTimer> {
+        self.request_observation.get().and_then(|observation| {
+            observation.contextual_segment_timer(crate::vfs::stats::RequestSegment::MetadataRpcWait)
+        })
     }
 
     async fn list_directory_for_control(&self, path: &str) -> ControlResponse {
@@ -1441,7 +1456,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         trace!("MetaClient: Inode cache MISS for inode {}", inode);
         self.metrics.record_stat_cache_miss();
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let attr = self.store.stat(inode).await?;
+        drop(_metadata_rpc);
 
         if let Some(ref a) = attr {
             self.inode_cache.insert_node(inode, a.clone(), None).await;
@@ -1500,7 +1517,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         trace!("MetaClient: lookup MISS ({}, '{}')", parent, name);
         self.metrics.record_lookup_cache_miss();
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let result = self.store.lookup_with_attr(parent, name).await?;
+        drop(_metadata_rpc);
 
         if let Some((ino, attr)) = result {
             self.cache_lookup_attr(parent, name, ino, attr).await;
@@ -1592,6 +1611,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                         return Ok(Some((ino, attr)));
                     }
                     self.metrics.record_lookup_attr_fused_miss();
+                    let _metadata_rpc = self.metadata_rpc_timer();
                     let attr = match self.store.stat(ino).await {
                         Ok(Some(attr)) => attr,
                         Ok(None) => return Err(MetaError::NotFound(ino)),
@@ -1600,6 +1620,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                             return Err(err);
                         }
                     };
+                    drop(_metadata_rpc);
                     self.cache_lookup_attr(parent, name, ino, attr.clone())
                         .await;
                     return Ok(Some((ino, attr)));
@@ -1618,6 +1639,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         self.metrics.record_lookup_cache_miss();
         self.metrics.record_lookup_attr_fused_miss();
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let result = match self.store.lookup_with_attr(parent, name).await {
             Ok(result) => result,
             Err(err) => {
@@ -1625,6 +1647,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 return Err(err);
             }
         };
+        drop(_metadata_rpc);
 
         if let Some((ino, attr)) = result {
             self.cache_lookup_attr(parent, name, ino, attr.clone())
@@ -1718,6 +1741,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
         // Only the backend transaction/script can decide whether the current
         // destination is the source inode or a different inode. Destination
         // hints may be stale across clients and must never control the rename.
+        let _metadata_rpc = self.metadata_rpc_timer();
         let outcome = if noreplace {
             self.store
                 .rename_with_mode(old_parent, old_name, new_parent, new_name.clone(), true)
@@ -1727,6 +1751,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaClient<T> {
                 .rename_with_outcome(old_parent, old_name, new_parent, new_name.clone())
                 .await?
         };
+        drop(_metadata_rpc);
         let src_ino = outcome.ino;
         if !outcome.renamed {
             self.invalidate_open_file_cache_inode(src_ino).await;
@@ -2064,6 +2089,10 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         Some(self.metrics())
     }
 
+    fn set_request_observation(&self, observation: Arc<RequestObservation>) {
+        MetaClient::set_request_observation(self, observation);
+    }
+
     fn root_ino(&self) -> i64 {
         self.root()
     }
@@ -2074,11 +2103,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn initialize(&self) -> Result<(), MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.initialize().await
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.stat_fs().await
     }
 
@@ -2092,7 +2123,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let inode = self.check_root(ino);
 
         self.metrics.record_open_fresh_stat();
+        let _metadata_rpc = self.metadata_rpc_timer();
         let attr = self.store.stat(inode).await?;
+        drop(_metadata_rpc);
         match &attr {
             Some(a) => {
                 self.metrics.record_stat_fresh_store_hit();
@@ -2261,7 +2294,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .await
             .unwrap_or(0);
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let mut entries = self.store.readdir(inode).await?;
+        drop(_metadata_rpc);
         // Sort once before caching so readops always return stable ordering by name.
         entries.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -2322,7 +2357,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
         info!("MetaClient: mkdir operation for ({}, '{}')", parent, name);
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let created = self.store.mkdir_with_attr(parent, name.clone()).await?;
+        drop(_metadata_rpc);
         let ino = created.ino;
 
         debug!("MetaClient: mkdir created inode {}, updating cache", ino);
@@ -2347,7 +2384,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let parent = self.check_root(parent);
         info!("MetaClient: rmdir operation for ({}, '{}')", parent, name);
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.rmdir(parent, name).await?;
+        drop(_metadata_rpc);
 
         debug!("MetaClient: rmdir completed, updating cache");
 
@@ -2387,10 +2426,12 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             parent, name
         );
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let created = self
             .store
             .create_file_with_attr(parent, name.clone())
             .await?;
+        drop(_metadata_rpc);
         let ino = created.ino;
 
         info!(
@@ -2444,10 +2485,12 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let parent = self.check_root(parent);
         Self::validate_entry_name(&name)?;
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let created = self
             .store
             .create_node_with_attr(parent, name.clone(), kind, mode, uid, gid, rdev)
             .await?;
+        drop(_metadata_rpc);
         let ino = created.ino;
 
         if let Some(attr) = created.attr.as_ref() {
@@ -2477,7 +2520,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             inode, parent, name
         );
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let attr = self.store.link(inode, parent, name).await?;
+        drop(_metadata_rpc);
 
         self.inode_cache
             .ensure_node_in_cache(parent, &self.store, None)
@@ -2516,7 +2561,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             parent, name, target
         );
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         let (ino, attr) = self.store.symlink(parent, name, target).await?;
+        drop(_metadata_rpc);
 
         debug!("MetaClient: symlink created inode {}, updating cache", ino);
 
@@ -2549,7 +2596,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         info!("MetaClient: unlink operation for ({}, '{}')", parent, name);
 
         let target_ino = self.cached_lookup(parent, name).await?;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.unlink(parent, name).await?;
+        drop(_metadata_rpc);
 
         debug!("MetaClient: unlink completed, updating cache");
 
@@ -2665,14 +2714,18 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         let new_ino = self.cached_lookup_required(new_parent, new_name).await?;
 
         // Execute the store-level exchange
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store
             .rename_exchange(old_parent, old_name, new_parent, new_name)
             .await?;
+        drop(_metadata_rpc);
+        let _metadata_rpc = self.metadata_rpc_timer();
         let mut affected_inodes = HashSet::from([old_ino, new_ino]);
         let (current_old, current_new) = tokio::join!(
             self.store.lookup(old_parent, old_name),
             self.store.lookup(new_parent, new_name),
         );
+        drop(_metadata_rpc);
         for lookup in [current_old, current_new] {
             match lookup {
                 Ok(Some(ino)) => {
@@ -2782,7 +2835,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.set_file_size(inode, size).await?;
+        drop(_metadata_rpc);
 
         // Update cached attribute
         if let Some(node) = self.inode_cache.get_node(inode).await {
@@ -2798,7 +2853,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.extend_file_size(inode, size).await?;
+        drop(_metadata_rpc);
 
         if let Some(node) = self.inode_cache.get_node(inode).await {
             let mut attr = node.attr.write().await;
@@ -2815,7 +2872,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.truncate(inode, size, chunk_size).await?;
+        drop(_metadata_rpc);
         self.inode_cache.invalidate_inode(inode).await;
         self.invalidate_open_file_cache_inode(inode).await;
         Ok(())
@@ -2876,6 +2935,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             return Ok(vec![(None, "/".to_string())]);
         }
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_names(inode).await
     }
 
@@ -2886,6 +2946,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             return Ok(vec![(self.root(), "/".to_string())]);
         }
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_dentries(inode).await
     }
 
@@ -2896,6 +2957,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             return Ok(None);
         }
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_dir_parent(inode).await
     }
 
@@ -2906,6 +2968,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             return Ok(vec!["/".to_string()]);
         }
 
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_paths(inode).await
     }
 
@@ -2913,6 +2976,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     async fn read_symlink(&self, ino: i64) -> Result<String, MetaError> {
         let inode = self.check_root(ino);
         info!("MetaClient: read_symlink request for inode {}", inode);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.read_symlink(inode).await
     }
 
@@ -2934,9 +2998,15 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             .entry(inode)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
+        let lock_wait = self.request_observation.get().and_then(|observation| {
+            observation.contextual_segment_timer(crate::vfs::stats::RequestSegment::FileLockWait)
+        });
         let _attr_guard = attr_lock.lock().await;
+        drop(lock_wait);
         let timestamp_only = Self::timestamp_only_setattr(req, &flags);
+        let _metadata_rpc = self.metadata_rpc_timer();
         let attr = self.store.set_attr(inode, req, flags).await?;
+        drop(_metadata_rpc);
         if !self.inode_cache.refresh_attr(inode, attr.clone()).await {
             self.inode_cache
                 .insert_node(inode, attr.clone(), None)
@@ -2955,12 +3025,14 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     #[tracing::instrument(level = "trace", skip(self), fields(ino, flags = ?flags))]
     async fn open(&self, ino: i64, flags: OpenFlags) -> Result<FileAttr, MetaError> {
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.open(inode, flags).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn close(&self, ino: i64) -> Result<(), MetaError> {
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.close(inode).await
     }
 
@@ -2985,7 +3057,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     ) -> Result<(), MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.write(inode, chunk_id, slice, new_size).await?;
+        drop(_metadata_rpc);
 
         let (inode_from_chunk, chunk_index) = extract_ino_and_chunk_index(chunk_id);
         self.inode_cache
@@ -3006,6 +3080,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_deleted_files().await
     }
 
@@ -3013,6 +3088,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
         self.ensure_writable()?;
         self.invalidate_open_file_cache_checked(ino).await;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.remove_file_metadata(ino).await
     }
 
@@ -3036,11 +3112,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             if let Some(cached_version) = cached.version
                 && cached.validated_at.elapsed() >= self.options.slice_version_check_interval
             {
+                let _metadata_rpc = self.metadata_rpc_timer();
                 let store_version = self
                     .store
                     .get_chunk_version(chunk_id)
                     .instrument(tracing::trace_span!("get_slices.version_check", chunk_id))
                     .await?;
+                drop(_metadata_rpc);
                 if store_version == Some(cached_version) {
                     self.inode_cache
                         .touch_slices_validation(inode, chunk_index, cached_version)
@@ -3061,11 +3139,13 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         }
         tracing::Span::current().record("cache_hit", false);
         self.metrics.record_get_slices_cache_miss();
+        let _metadata_rpc = self.metadata_rpc_timer();
         let (version, slices) = self
             .store
             .get_slices_with_version(chunk_id)
             .instrument(tracing::trace_span!("get_slices.store", chunk_id))
             .await?;
+        drop(_metadata_rpc);
         let cached = self
             .inode_cache
             .cache_slices_if_absent(inode, chunk_index, version, &slices)
@@ -3090,7 +3170,9 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         self.ensure_writable()?;
 
         let (inode, chunk_index) = extract_ino_and_chunk_index(chunk_id);
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.append_slice(chunk_id, slice).await?;
+        drop(_metadata_rpc);
         self.inode_cache
             .append_slice(inode, chunk_index, slice)
             .await;
@@ -3100,6 +3182,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
 
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
         self.ensure_writable()?;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.next_id(key).await
     }
 
@@ -3120,6 +3203,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         inode: i64,
         query: &FileLockQuery,
     ) -> Result<FileLockInfo, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_plock(inode, query).await
     }
 
@@ -3141,10 +3225,12 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
             "MetaClient: set_plock inode={}, owner={}, block={}, type={:?}, range=[{}, {}), pid={}",
             inode, owner, block, lock_type, range.start, range.end, pid
         );
+        let _metadata_rpc = self.metadata_rpc_timer();
         let res = self
             .store
             .set_plock(inode, owner, block, lock_type, range, pid)
             .await;
+        drop(_metadata_rpc);
         match &res {
             Ok(()) => debug!("MetaClient: set_plock OK inode={}", inode),
             Err(e) => warn!("MetaClient: set_plock ERR inode={}: {:?}", inode, e),
@@ -3153,6 +3239,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
     }
 
     async fn get_flock(&self, inode: i64, owner: i64) -> Result<FileLockType, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_flock(inode, owner).await
     }
 
@@ -3163,6 +3250,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         block: bool,
         lock_type: FileLockType,
     ) -> Result<(), MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.set_flock(inode, owner, block, lock_type).await
     }
 
@@ -3174,28 +3262,35 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         flags: u32,
     ) -> Result<(), MetaError> {
         self.ensure_writable()?;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.set_xattr(inode, name, value, flags).await?;
+        drop(_metadata_rpc);
         self.inode_cache.invalidate_inode(inode).await;
         Ok(())
     }
 
     async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_xattr(inode, name).await
     }
 
     async fn list_xattr(&self, inode: i64) -> Result<Vec<String>, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.list_xattr(inode).await
     }
 
     async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
         self.ensure_writable()?;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.remove_xattr(inode, name).await?;
+        drop(_metadata_rpc);
         self.inode_cache.invalidate_inode(inode).await;
         Ok(())
     }
 
     async fn set_acl(&self, inode: i64, rule: AclRule) -> Result<(), MetaError> {
         self.ensure_writable()?;
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.set_acl(inode, rule).await
     }
 
@@ -3205,6 +3300,7 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         acl_type: u8,
         acl_id: u32,
     ) -> Result<Option<AclRule>, MetaError> {
+        let _metadata_rpc = self.metadata_rpc_timer();
         self.store.get_acl(inode, acl_type, acl_id).await
     }
 }
@@ -3218,6 +3314,46 @@ mod tests {
     use crate::meta::stores::database::DatabaseMetaStore;
     use crate::vfs::chunk_id_for;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn xattr_rpc_observation_includes_success_and_error_requests() {
+        use asyncfuse::raw::RequestObserver;
+        use std::future::{Future, poll_fn};
+        let client = create_test_client().await;
+        client.initialize().await.unwrap();
+        let ino = client
+            .create_file(1, "observed-xattr".into())
+            .await
+            .unwrap();
+        let stats = crate::vfs::stats::FsStats::new();
+        let observer = stats.request_observation();
+        observer.set_enabled(true);
+        client.set_request_observation(observer.clone());
+        for (unique, flags, succeeds) in [(11, 0, true), (12, libc::XATTR_CREATE as u32, false)] {
+            observer.begin(unique, 21); // SETXATTR, including its EEXIST response.
+            stats.request_worker_started(unique);
+            stats.request_handler_started(unique);
+            let mut call = std::pin::pin!(client.set_xattr(ino, "user.ws0", b"value", flags));
+            let result = poll_fn(|cx| {
+                let mut result = None;
+                stats.with_request_context(unique, &mut || result = Some(call.as_mut().poll(cx)));
+                result.unwrap()
+            })
+            .await;
+            assert_eq!(result.is_ok(), succeeds);
+            stats.request_handler_completed(unique);
+            stats.request_reply_submitted_result(unique, if succeeds { 0 } else { -libc::EEXIST });
+        }
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.closed, 2);
+        assert_eq!(snapshot.errors, 1);
+        for record in snapshot.trace_records {
+            assert!(
+                record.segments[crate::vfs::stats::RequestSegment::MetadataRpcWait as usize] > 0,
+                "xattr store await must be attributed on both success and error"
+            );
+        }
+    }
 
     async fn create_test_client() -> Arc<MetaClient<DatabaseMetaStore>> {
         create_test_client_with_capacity(100, 100).await
