@@ -1,7 +1,8 @@
 # Compile-time observability
 
-Status: implementation and measurements in progress. The acceptance report
-will contain raw measurements; no overhead claim is made before those runs.
+Measurements, raw rounds, validation results, and unresolved acceptance limits
+are recorded in the [acceptance report](../testing/observability-2026-10-31.md).
+The implementation remains a draft pending upstream integration and revalidation.
 
 ## JuiceFS comparison
 
@@ -55,6 +56,11 @@ Existing legacy statistics assertions still execute in unit-test builds;
 `cfg(test)` is never set by a normal debug or release build.
 Functional clocks and counters used for deadlines, memory admission, cache
 policy, and writeback scheduling remain in place.
+
+The zero-symbol and overhead evidence covers the ordinary default release.
+Legacy read observers used by optional packed/native profiles have not been
+comprehensively feature-gated in this draft. Their full gating remains an
+unresolved requirement; the default-release evidence does not validate them.
 
 ## Metric reference
 
