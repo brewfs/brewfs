@@ -422,6 +422,76 @@ async fn packed_entity_lower_real_bytes_ownership_restart_and_terminal_release()
 }
 
 #[tokio::test]
+#[ignore = "requires isolated real RustFS; run tools/testing/run_entity_data_tests.sh"]
+async fn packed_entity_lower_commit_before_upload_reads_and_drains_real_objects() {
+    use crate::workspace_overlay::entity::writeback::WritebackConfig;
+    let fixture = fixture(Arc::new(PinMemoryBackend::default())).await;
+    let volume = Uuid::new_v4();
+    let namespace_id = Uuid::new_v4();
+    let keys = EntityKeys::new(volume, namespace_id);
+    let lower = Arc::new(
+        PackedLower::open(
+            fixture.store.clone(),
+            fixture.client.clone(),
+            volume,
+            namespace_id,
+            &fixture.source,
+            fixture.binding.clone(),
+        )
+        .await
+        .unwrap(),
+    );
+    let backend = Arc::new(MemoryEntityBackend::new(1));
+    let lifecycle = Lifecycle::new(backend.clone(), keys.clone());
+    lifecycle.provision(lower.binding()).await.unwrap();
+    let session = lifecycle.acquire(Uuid::new_v4(), 1_000_000).await.unwrap();
+    lower.bind_session(&session, &keys, 1024).await.unwrap();
+    let namespace = EntityNamespace::new(backend, lower, keys, session.clone());
+    let spool = tempfile::tempdir().unwrap();
+    let data = EntityData::new_with_writeback(
+        namespace.clone(),
+        Arc::new(fixture.objects.clone()),
+        1024,
+        Some(WritebackConfig {
+            directory: spool.path().into(),
+            capacity_bytes: 1 << 20,
+            min_free_bytes: 0,
+        }),
+    )
+    .await
+    .unwrap();
+    let credentials = Credentials {
+        uid: 0,
+        gid: 0,
+        groups: vec![],
+        umask: 0,
+    };
+    let handle = Arc::new(
+        namespace
+            .open(1, b"nonzero", 6, &credentials)
+            .await
+            .unwrap(),
+    );
+    let patch = bytes::Bytes::from_static(b"entity asynchronous packed upper");
+    data.write(handle.clone(), 1000, patch.clone(), false)
+        .await
+        .unwrap();
+    let mut expected = fixture.payload;
+    expected[1000..1000 + patch.len()].copy_from_slice(&patch);
+    assert_eq!(
+        data.read(handle.clone(), 0, expected.len()).await.unwrap(),
+        expected
+    );
+    data.fsync(handle.clone()).await.unwrap();
+    drop(handle);
+    data.drain_remote(std::time::Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(data.writeback_status().await.unwrap().pending_objects, 0);
+    lifecycle.enter_maintenance(&session).await.unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
 async fn packed_entity_lower_bound_memos_are_local_coalesced_and_session_fenced() {
     use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadObserver};

@@ -214,6 +214,22 @@ pub struct MountArgs {
     #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
     pub entity_volume_id: Option<uuid::Uuid>,
 
+    /// Capture a private quiescent directory as a frozen native entity lower.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, conflicts_with_all = ["packed_manifest_key", "entity_native_manifest_key"]))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub entity_native_source: Option<PathBuf>,
+    /// Reuse a frozen native entity lower (individual Redis rows and raw S3 objects).
+    #[cfg_attr(
+        feature = "workspace-overlay",
+        arg(long, conflicts_with = "packed_manifest_key")
+    )]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub entity_native_manifest_key: Option<String>,
+    /// Upload pending original entity objects from the local spool, then exit without mounting.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, default_value_t = false))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub entity_recover_uploads: bool,
+
     /// Object-store key of the immutable packed-metadata manifest.
     #[arg(long, value_name = "KEY")]
     pub packed_manifest_key: Option<String>,
@@ -1060,6 +1076,9 @@ pub struct MountConfig {
     pub workspace: Option<uuid::Uuid>,
     pub experimental_entity_mount: bool,
     pub entity_volume_id: Option<uuid::Uuid>,
+    pub entity_native_source: Option<PathBuf>,
+    pub entity_native_manifest_key: Option<String>,
+    pub entity_recover_uploads: bool,
     pub packed_manifest_key: Option<String>,
     pub workspace_namespace: String,
     pub workspace_operator_managed: bool,
@@ -1183,7 +1202,11 @@ impl MountConfig {
         {
             anyhow::bail!("fuse.keep_cache is unsupported by the direct-I/O entity adapter");
         }
-        if (args.experimental_entity_mount || args.entity_volume_id.is_some())
+        if (args.experimental_entity_mount
+            || args.entity_volume_id.is_some()
+            || args.entity_native_source.is_some()
+            || args.entity_native_manifest_key.is_some()
+            || args.entity_recover_uploads)
             && volume_format != VolumeFormat::WorkspaceEntityV1
         {
             anyhow::bail!("experimental entity options require volume_format=workspace-entity-v1");
@@ -1191,10 +1214,19 @@ impl MountConfig {
         if args.experimental_entity_mount
             && (args.entity_volume_id.is_none_or(|id| id.is_nil())
                 || workspace.is_none_or(|id| id.is_nil())
-                || packed_manifest_key.is_none())
+                || (!args.entity_recover_uploads
+                    && [
+                        packed_manifest_key.is_some(),
+                        args.entity_native_source.is_some(),
+                        args.entity_native_manifest_key.is_some(),
+                    ]
+                    .into_iter()
+                    .filter(|selected| *selected)
+                    .count()
+                        != 1))
         {
             anyhow::bail!(
-                "experimental entity mount requires non-nil --entity-volume-id, --workspace and --packed-manifest-key"
+                "experimental entity mount requires non-nil --entity-volume-id, --workspace and exactly one of --packed-manifest-key, --entity-native-source, --entity-native-manifest-key"
             );
         }
         #[cfg(feature = "native-packed-base")]
@@ -1294,9 +1326,20 @@ impl MountConfig {
             if args.workspace_operator_managed || file_cfg.workspace_operator_managed {
                 anyhow::bail!("experimental entity mount cannot use legacy operator management");
             }
-            if matches!(cache.writeback_mode, WriteBackMode::CommitBeforeUpload) {
-                anyhow::bail!("experimental entity mount requires upload-before-publication");
+            if matches!(cache.writeback_mode, WriteBackMode::CommitBeforeUpload)
+                && (!cache.writeback_persist_sync
+                    || !cache.writeback_require_stage_before_commit
+                    || cache.write_ssd_bytes == 0)
+            {
+                anyhow::bail!(
+                    "entity commit_before_upload requires durable staging and positive cache.write_ssd_bytes"
+                );
             }
+        } else if args.entity_native_source.is_some()
+            || args.entity_native_manifest_key.is_some()
+            || args.entity_recover_uploads
+        {
+            anyhow::bail!("native entity lower and recovery require --experimental-entity-mount");
         }
 
         if volume_format == VolumeFormat::WorkspaceNativeV2
@@ -1358,6 +1401,9 @@ impl MountConfig {
             workspace,
             experimental_entity_mount: args.experimental_entity_mount,
             entity_volume_id: args.entity_volume_id,
+            entity_native_source: args.entity_native_source,
+            entity_native_manifest_key: args.entity_native_manifest_key,
+            entity_recover_uploads: args.entity_recover_uploads,
             packed_manifest_key,
             workspace_namespace: args
                 .workspace_namespace
@@ -1780,6 +1826,9 @@ mod tests {
             workspace: None,
             experimental_entity_mount: false,
             entity_volume_id: None,
+            entity_native_source: None,
+            entity_native_manifest_key: None,
+            entity_recover_uploads: false,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2427,6 +2476,9 @@ mod tests {
             workspace: None,
             experimental_entity_mount: false,
             entity_volume_id: None,
+            entity_native_source: None,
+            entity_native_manifest_key: None,
+            entity_recover_uploads: false,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2510,6 +2562,9 @@ mod tests {
             workspace: None,
             experimental_entity_mount: false,
             entity_volume_id: None,
+            entity_native_source: None,
+            entity_native_manifest_key: None,
+            entity_recover_uploads: false,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2741,6 +2796,56 @@ mod tests {
                 .unwrap()
                 .experimental_entity_mount
         );
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn entity_lower_selection_and_durable_writeback_are_explicit() {
+        let mut args = empty_mount_args(None, Some("/unused-entity".into()));
+        args.experimental_entity_mount = true;
+        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.workspace = Some(uuid::Uuid::new_v4());
+        args.entity_volume_id = Some(uuid::Uuid::new_v4());
+        args.meta_backend = Some(MetaBackendKind::Redis);
+        args.data_backend = Some(DataBackendKind::S3);
+        args.s3_bucket = Some("isolated-entity".into());
+        args.entity_native_source = Some("/private-frozen-source".into());
+        assert_eq!(
+            MountConfig::from_sources(args.clone())
+                .unwrap()
+                .cache
+                .writeback_mode,
+            WriteBackMode::UploadBeforeCommit
+        );
+        args.packed_manifest_key = Some("manifest".into());
+        assert!(MountConfig::from_sources(args.clone()).is_err());
+        args.packed_manifest_key = None;
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("entity.yaml");
+        std::fs::write(&config, "cache:\n  writeback_mode: commit_before_upload\n").unwrap();
+        args.config = Some(config.clone());
+        assert_eq!(
+            MountConfig::from_sources(args.clone())
+                .unwrap()
+                .cache
+                .writeback_mode,
+            WriteBackMode::CommitBeforeUpload
+        );
+        std::fs::write(
+            &config,
+            "cache:\n  writeback_mode: commit_before_upload\n  writeback_persist_sync: false\n",
+        )
+        .unwrap();
+        assert!(
+            MountConfig::from_sources(args.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("durable staging")
+        );
+        args.config = None;
+        args.entity_native_source = None;
+        args.entity_recover_uploads = true;
+        assert!(MountConfig::from_sources(args).is_ok());
     }
 
     #[test]

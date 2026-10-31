@@ -696,6 +696,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     }
 
     pub async fn replace_view_context(&self, view: ViewContext) {
+        if let Some(lower) = self.packed_lower() {
+            lower.budget.invalidate_read_caches();
+        }
         // Fence snapshots before the first await, including those captured
         // during replacement. A canceled replacement cannot certify a view.
         let namespace_write = self.namespace_epoch.begin_write();

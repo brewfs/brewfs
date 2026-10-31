@@ -5,7 +5,6 @@ use super::*;
 use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::cadapter::read_observer::{ReadEvent, ReadWork, SharedRawCoverage};
 use futures_util::{StreamExt, stream::FuturesUnordered};
-use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
@@ -481,7 +480,7 @@ async fn fetch_batch<B: ObjectBackend + Clone>(
                     })?;
                     let hash_timer =
                         client.measure_read_work(first.context.class, ReadWork::Authentication);
-                    let digest: [u8; 16] = Sha256::digest(bytes)[..16].try_into().unwrap();
+                    let digest = super::super::frame_directory::frame_digest(bytes);
                     drop(hash_timer);
                     if digest != f.frame_digest {
                         return Err(super::super::observer_validation_error(

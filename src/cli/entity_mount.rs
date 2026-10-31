@@ -6,7 +6,9 @@ use tokio::task::JoinHandle;
 
 use super::{FuseConcurrencyConfig, MountConfig, S3Backend, S3Config, shutdown_signal};
 use crate::fuse::entity::{EntityFuse, mount_privileged, mount_unprivileged};
+use crate::vfs::cache::config::WriteBackMode;
 use crate::workspace_overlay::entity::experiment::{FreshMountOptions, RedisEntityExperiment};
+use crate::workspace_overlay::entity::writeback::WritebackConfig;
 
 const LEASE_TTL_NS: i64 = 60_000_000_000;
 
@@ -20,9 +22,11 @@ impl Drop for RenewalTask {
 }
 
 pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&args.mount_point)?;
-    if !args.mount_point.is_dir() {
-        anyhow::bail!("mount point must be a directory");
+    if !args.entity_recover_uploads {
+        std::fs::create_dir_all(&args.mount_point)?;
+        if !args.mount_point.is_dir() {
+            anyhow::bail!("mount point must be a directory");
+        }
     }
     if args.chunk_size == 0
         || args.chunk_size > crate::workspace_overlay::entity::data::MAX_IO_BYTES as u64
@@ -55,18 +59,47 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
         objects,
     )
     .await?;
-    let mounted = factory
-        .create_fresh_from_manifest(
-            args.packed_manifest_key
-                .as_deref()
-                .context("packed manifest key required")?,
-            FreshMountOptions {
-                namespace_id: args.workspace,
-                lease_ttl_ns: LEASE_TTL_NS,
-                chunk_size: args.chunk_size,
-            },
-        )
-        .await?;
+    let staging = WritebackConfig {
+        directory: args.cache.cache_root.join("entity-writeback"),
+        capacity_bytes: args.cache.write_ssd_bytes,
+        min_free_bytes: args.cache.min_free_disk_bytes,
+    };
+    if args.entity_recover_uploads {
+        let status = factory
+            .recover_uploads(
+                args.workspace.context("entity namespace required")?,
+                staging,
+            )
+            .await?;
+        println!("entity_upload_recovery={}", serde_json::to_string(&status)?);
+        return Ok(());
+    }
+    let options = FreshMountOptions {
+        namespace_id: args.workspace,
+        lease_ttl_ns: LEASE_TTL_NS,
+        chunk_size: args.chunk_size,
+        writeback: matches!(args.cache.writeback_mode, WriteBackMode::CommitBeforeUpload)
+            .then_some(staging),
+    };
+    let mounted =
+        if args.entity_native_source.is_some() || args.entity_native_manifest_key.is_some() {
+            factory
+                .create_fresh_from_native(
+                    args.entity_native_source.as_deref(),
+                    args.entity_native_manifest_key.as_deref(),
+                    options,
+                )
+                .await?
+        } else {
+            factory
+                .create_fresh_from_manifest(
+                    args.packed_manifest_key
+                        .as_deref()
+                        .context("packed manifest key required")?,
+                    options,
+                )
+                .await?
+        };
     let fs = EntityFuse::new(
         mounted.namespace().clone(),
         mounted.data().clone(),
@@ -106,6 +139,8 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
                     "mount_point": args.mount_point,
                     "production_admission": false,
                     "fresh_only": true,
+                    "lower_manifest": String::from_utf8_lossy(&mounted.lower_binding().manifest_key),
+                    "writeback_mode": format!("{:?}", args.cache.writeback_mode),
                 })
             );
             enum Stop {
@@ -139,6 +174,10 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
     };
     stop.stop_admission();
     let drained = mounted.orderly_close().await;
+    println!(
+        "entity_writeback={}",
+        serde_json::to_string(&mounted.data().writeback_status().await?)?
+    );
     renewal.0.abort();
     // Join renewal before leaving the runtime; do not cancel owned data I/O.
     let mut task = renewal;
@@ -149,6 +188,7 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
             serde_json::json!({
                 "namespace_id": mounted.keys().namespace_id(),
                 "orderly_local_drain": true,
+                "remote_ready": true,
                 "upper_data_retained": true,
                 "production_admission": false,
             })

@@ -36,7 +36,7 @@ struct PlanPreparationOwner {
 
 struct CachedFrameDirectory {
     reference: V3ObjectRef,
-    page: super::V3FrameDirectoryPage,
+    page: std::sync::Arc<super::V3Owned<super::V3FrameDirectoryPage>>,
 }
 
 fn read_preparation_limit(allocation_limit: usize, budget: &super::V3MountBudget) -> usize {
@@ -802,7 +802,7 @@ impl AuthenticatedV3Snapshot {
 
     pub async fn lookup_dentry<B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         parent: [u8; 32],
         name: &[u8],
@@ -812,8 +812,8 @@ impl AuthenticatedV3Snapshot {
             return Ok(None);
         };
         let container = self.container_ref(reader, group.container_ordinal).await?;
-        let metadata = group
-            .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+        let metadata = reader
+            .group_metadata(self.read_generation(), &group, &container, allocation_limit)
             .await?;
         Ok(metadata.lookup(name).cloned())
     }
@@ -835,7 +835,7 @@ impl AuthenticatedV3Snapshot {
 
     async fn inode_entry_inner<B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         inode: u64,
         allocation_limit: usize,
@@ -846,9 +846,13 @@ impl AuthenticatedV3Snapshot {
         let container = self
             .container_ref(reader, location.group.container_ordinal)
             .await?;
-        let metadata = location
-            .group
-            .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+        let metadata = reader
+            .group_metadata(
+                self.read_generation(),
+                &location.group,
+                &container,
+                allocation_limit,
+            )
             .await?;
         let entry = metadata
             .entries()
@@ -943,8 +947,13 @@ impl AuthenticatedV3Snapshot {
                         .await?
                 }
                 None => {
-                    group
-                        .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+                    reader
+                        .group_metadata(
+                            self.read_generation(),
+                            &group,
+                            &container,
+                            allocation_limit,
+                        )
                         .await?
                 }
             };
@@ -1080,9 +1089,13 @@ impl AuthenticatedV3Snapshot {
         let container = self
             .container_ref(reader, location.group.container_ordinal)
             .await?;
-        let metadata = location
-            .group
-            .read_metadata_owned(client, &container, 512 * 1024, reader.budget())
+        let metadata = reader
+            .group_metadata(
+                self.read_generation(),
+                &location.group,
+                &container,
+                512 * 1024,
+            )
             .await?;
         let entry = metadata
             .entries()
@@ -1725,7 +1738,7 @@ impl AuthenticatedV3Snapshot {
 
     async fn frame_directory<'page, B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         container_ordinal: u32,
         frame_ordinal: u32,
@@ -1752,17 +1765,15 @@ impl AuthenticatedV3Snapshot {
             // reads visit multiple containers or revisit an earlier page.
             *cached = None;
             let mut permit = reader.budget().admit(&[
-                (super::V3BudgetPool::Metadata, 512 << 10),
-                (super::V3BudgetPool::Stored, reference.object_len * 2),
+                (super::V3BudgetPool::Metadata, 8192),
                 (super::V3BudgetPool::Control, 2048),
             ])?;
-            let page =
-                super::V3FrameDirectoryPage::read(client, &reference, container.digest).await?;
+            let page = reader
+                .frame_directory(self.read_generation(), &reference, container.digest)
+                .await?;
             let weight = std::mem::size_of::<super::budget::V3Owned<CachedFrameDirectory>>()
                 + reference.key.capacity()
-                + page.frames.capacity()
-                    * std::mem::size_of::<crate::workspace_overlay::packed_v3::PackedFrameDescriptor>(
-                    );
+                + 64;
             permit.shrink(super::V3BudgetPool::Metadata, weight as u64)?;
             permit.shrink(super::V3BudgetPool::Stored, 0)?;
             permit.shrink(super::V3BudgetPool::Control, 0)?;
@@ -3354,6 +3365,9 @@ mod tests {
             .await
             .unwrap();
         for _ in 0..2 {
+            // Exercise request-local page sharing from a cold retained cache.
+            // Cross-request retention has its own GET-count regression test.
+            reader.budget().invalidate_read_caches();
             range_keys.lock().unwrap().clear();
             let prepared = snapshot
                 .prepare_inode_read(&client, &reader, 3, 0, data.len(), 32 << 20)
@@ -3381,6 +3395,7 @@ mod tests {
 
         // Cache hits retain their memory owner and recheck the caller's
         // container and manifest bindings without another descriptor GET.
+        reader.budget().invalidate_read_caches();
         range_keys.lock().unwrap().clear();
         let budget = reader.budget().clone();
         let before = budget.state().used;

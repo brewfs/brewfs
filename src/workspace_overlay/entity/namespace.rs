@@ -195,6 +195,10 @@ enum Target {
 enum Request {
     Create(CreateRequest, Option<u32>),
     Stat(Target),
+    GetXattr {
+        ino: i64,
+        name: Vec<u8>,
+    },
     Access {
         ino: i64,
         mask: u32,
@@ -234,6 +238,7 @@ enum Request {
 
 enum Reply {
     Done,
+    Xattr(Option<Vec<u8>>),
     Inode(EntityInode),
     Open(EntityInode, EntityHandle),
     Directory(Box<DirectoryPage>),
@@ -266,6 +271,7 @@ impl Request {
         match self {
             Self::Create(request, _) => BTreeSet::from([request.parent]),
             Self::Stat(Target::Inode(ino))
+            | Self::GetXattr { ino, .. }
             | Self::Access { ino, .. }
             | Self::Open(Target::Inode(ino), _)
             | Self::Readdir { ino, .. }
@@ -506,6 +512,27 @@ impl<B: EntityBackend + 'static, L: ImmutableLower + 'static> EntityNamespace<B,
         self.run(Request::Chmod { ino, mode }, credentials)
             .await
             .map(|_| ())
+    }
+
+    pub async fn get_xattr(
+        &self,
+        ino: i64,
+        name: &[u8],
+        credentials: &Credentials,
+    ) -> Result<Option<Vec<u8>>> {
+        let Reply::Xattr(value) = self
+            .execute(
+                Request::GetXattr {
+                    ino,
+                    name: name.to_vec(),
+                },
+                credentials.clone(),
+            )
+            .await?
+        else {
+            unreachable!("xattr request reply")
+        };
+        Ok(value)
     }
 
     pub async fn set_xattr(
@@ -1298,6 +1325,19 @@ impl<'a, B: EntityBackend + 'static, L: ImmutableLower + 'static> Prepared<'a, B
             Request::Access { ino, mask } => {
                 let inode = self.inode(*ino).await?;
                 self.access(&inode, c, *mask).await?;
+            }
+            Request::GetXattr { ino, name } => {
+                validate_xattr_name(name)?;
+                let inode = self.inode(*ino).await?;
+                if name.starts_with(b"user.") {
+                    if !matches!(inode.kind, EntityKind::File | EntityKind::Directory) {
+                        return Err(EntityError::Unsupported("user xattr on special inode"));
+                    }
+                    self.access(&inode, c, 4).await?;
+                } else if name != ACCESS_XATTR && name != DEFAULT_XATTR {
+                    return Err(EntityError::Unsupported("xattr namespace"));
+                }
+                return Ok(Reply::Xattr(self.xattr(*ino, name).await?));
             }
             Request::Stat(target) | Request::Open(target, _) => {
                 let ino = match target {

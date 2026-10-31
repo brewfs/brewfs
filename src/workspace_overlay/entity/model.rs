@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::EntityError;
 
 pub const ENTITY_FORMAT: &str = "workspace-entity-v1";
+/// Older entity clients must reject namespaces whose acknowledged data can be local.
+pub const ENTITY_WRITEBACK_FORMAT: &str = "workspace-entity-v1-local-writeback";
 pub const MAX_CHUNK_SPANS: usize = 4096;
 pub const MAX_NAME_BYTES: usize = 255;
 pub const MAX_XATTR_BYTES: usize = 64 << 10;
