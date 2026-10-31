@@ -10,6 +10,7 @@ async fn topology_transaction_rejects_writes_without_prior_reads() {
     let store = budgeted_kv_store(MemoryBackend::default());
     let mut transaction = TopologyTxn::new(&store);
     let row = WorkspaceRecord {
+        upper_bucket: None,
         workspace_id: WorkspaceId::from_uuid(id(1200)),
         head_layer_id: LayerId::from_uuid(id(1201)),
         head_epoch: 0,
@@ -53,6 +54,7 @@ async fn topology_transaction_repeated_reads_keep_the_original_condition() {
 
     store
         .create_workspace(CreateWorkspace {
+            upper_bucket: None,
             workspace_id: WorkspaceId::from_uuid(id(1600)),
             head_layer_id: LayerId::from_uuid(id(1601)),
             base_revision: workspace.fork_base.clone().unwrap(),
@@ -159,6 +161,7 @@ async fn topology_transaction_checks_only_declared_entities() {
     for index in 0..64 {
         store
             .create_workspace(CreateWorkspace {
+                upper_bucket: None,
                 workspace_id: WorkspaceId::from_uuid(id(400 + index)),
                 head_layer_id: LayerId::from_uuid(id(500 + index)),
                 base_revision: revision.clone(),
@@ -213,6 +216,7 @@ async fn fork_retries_busy_from_initial_bounded_carrier_probe() {
             head_layer_id,
             base_revision: revision,
             owner_id: None,
+            upper_bucket: None,
         })
         .await
         .expect("a transient bounded carrier probe Busy should be retried");
@@ -256,6 +260,7 @@ async fn concurrent_forks_from_one_revision_have_distinct_heads() {
                     head_layer_id,
                     base_revision: revision,
                     owner_id: None,
+                    upper_bucket: None,
                 })
                 .await?;
             assert_eq!(store.load_workspace(workspace_id).await?, workspace);

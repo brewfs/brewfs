@@ -235,6 +235,7 @@ async fn register_validates_existing_catalog_identity_without_initializing() {
     let volume = Uuid::new_v4();
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: volume,
@@ -273,6 +274,7 @@ async fn initialize_rejects_an_already_initialized_catalog() {
     let id = Uuid::new_v4();
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: id,
@@ -509,6 +511,7 @@ async fn reopen_recovers_volume_commit_before_registration_or_success_checkpoint
     store.initialize_workspace_schema().await.unwrap();
     store
         .create_volume_root_in_empty_namespace(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: record.operation.volume_id,

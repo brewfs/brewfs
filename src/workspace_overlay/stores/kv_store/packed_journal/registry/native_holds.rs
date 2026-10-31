@@ -113,6 +113,7 @@ mod tests {
 
     fn workspace(revision: BaseRevision) -> WorkspaceRecord {
         WorkspaceRecord {
+            upper_bucket: None,
             workspace_id: WorkspaceId::new(),
             head_layer_id: LayerId::new(),
             head_epoch: 1,

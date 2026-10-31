@@ -207,6 +207,7 @@ async fn g10a_kv_unrelated_public_forks_do_not_grow_target_open_transfer() {
     let before = observed_open(&peer, target.workspace_id).await;
     for index in 0u128..16 {
         let child = store.create_workspace(CreateWorkspace {
+            upper_bucket: None,
             workspace_id: WorkspaceId::from_uuid(id(10_000 + 2 * index)),
             head_layer_id: LayerId::from_uuid(id(10_001 + 2 * index)),
             base_revision: target.fork_base.clone().unwrap(),

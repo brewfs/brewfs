@@ -23,6 +23,8 @@ mod packed_mount_recovery;
 #[cfg(all(test, feature = "workspace-overlay", target_os = "linux"))]
 mod packed_mount_session_tests;
 #[cfg(feature = "workspace-overlay")]
+mod workspace_bucket;
+#[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay;
 
 use bytes::Bytes;
@@ -394,6 +396,17 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
 
     namespace_flat_volume_cache(&mut args)?;
 
+    // Clean block cache keys contain only slice/block IDs, so different
+    // workspace buckets must never reuse the same on-disk block cache.
+    // Keep the original args root for durable writeback/recovery ownership.
+    let mut block_cache = args.cache.clone();
+    if let Some(workspace) = args.workspace {
+        block_cache.cache_root = block_cache
+            .cache_root
+            .join("workspace-blocks")
+            .join(workspace.to_string());
+    }
+
     let layout = ChunkLayout {
         chunk_size: args.chunk_size,
         block_size: args.block_size,
@@ -420,7 +433,7 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
             let store = create_object_store(
                 client,
                 layout,
-                &args.cache,
+                &block_cache,
                 args.volume_format != VolumeFormat::FlatV1,
             )
             .await?;
@@ -440,7 +453,7 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
             let store = create_object_store(
                 client,
                 layout,
-                &args.cache,
+                &block_cache,
                 args.volume_format != VolumeFormat::FlatV1,
             )
             .await?;
@@ -1919,6 +1932,13 @@ where
         .expect("mount session acquired")
         .view
         .clone();
+    let workspace_record = workspace_store.load_workspace(workspace_id).await?;
+    if let Some(bucket) = workspace_record.upper_bucket.as_deref() {
+        store.set_data_bucket(bucket).map_err(|error| {
+            anyhow::anyhow!("failed to select workspace upper bucket {bucket:?}: {error}")
+        })?;
+        tracing::info!(workspace = %workspace_id, bucket, "selected workspace upper bucket");
+    }
     let block_store = Arc::new(store);
     let gc_cancel = tokio_util::sync::CancellationToken::new();
     let gc_task = if args.workspace_operator_managed {
@@ -2563,12 +2583,15 @@ where
     };
 
     store.initialize_workspace_schema().await?;
+    let workspace_id = WorkspaceId::new();
+    let upper_bucket = workspace_bucket::create(&config, workspace_id).await?;
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: uuid::Uuid::now_v7(),
-            workspace_id: WorkspaceId::new(),
+            workspace_id,
             root_layer_id: LayerId::new(),
             writable_layer_id: LayerId::new(),
             owner_id: owner,
@@ -2644,17 +2667,22 @@ where
                 "packed-v3 mounted recovery requires its concrete Redis/TiKV and original PVC driver"
             );
         }
-        WorkspaceCommand::InitVolume { owner } => {
+        WorkspaceCommand::InitVolume { owner, data_config } => {
             if store.load_volume_header().await?.is_some() {
                 anyhow::bail!("workspace volume is already initialized")
             }
             store.initialize_workspace_schema().await?;
+            let workspace_id = WorkspaceId::new();
+            let upper_bucket =
+                workspace_bucket::create(&workspace_bucket::config(&data_config)?, workspace_id)
+                    .await?;
             let workspace = store
                 .create_volume_root(CreateVolumeRoot {
+                    upper_bucket,
                     volume_format: "workspace-v1".into(),
                     schema_version: WORKSPACE_SCHEMA_VERSION,
                     volume_id: uuid::Uuid::now_v7(),
-                    workspace_id: WorkspaceId::new(),
+                    workspace_id,
                     root_layer_id: LayerId::new(),
                     writable_layer_id: LayerId::new(),
                     owner_id: owner,
@@ -2678,7 +2706,11 @@ where
             store.initialize_workspace_schema().await?;
             validate_workspace_header(&store).await?;
         }
-        WorkspaceCommand::Create { revision, owner } => {
+        WorkspaceCommand::Create {
+            revision,
+            owner,
+            data_config,
+        } => {
             validate_workspace_header(&store).await?;
             let revision = match revision {
                 Some(revision) => revision,
@@ -2694,24 +2726,23 @@ where
                         )
                     })?,
             };
-            let mut created = WorkspaceLifecycle::new(store)
-                .fork_revision(revision, 1, owner)
-                .await?;
+            let mut created =
+                workspace_bucket::fork(store, revision, 1, owner, &data_config).await?;
             print_json(&created.remove(0))?;
         }
         WorkspaceCommand::Fork {
             source,
             count,
             owner,
+            data_config,
         } => {
             validate_workspace_header(&store).await?;
             if count == 0 {
                 anyhow::bail!("--count must be greater than zero")
             }
             let revision = source;
-            let created = WorkspaceLifecycle::new(store)
-                .fork_revision(revision, count, owner)
-                .await?;
+            let created =
+                workspace_bucket::fork(store, revision, count, owner, &data_config).await?;
             print_json(&created)?;
         }
         WorkspaceCommand::List => {
@@ -2739,10 +2770,25 @@ where
         }
         WorkspaceCommand::Discard { workspace, force } => {
             validate_workspace_header(&store).await?;
+            let record = store.load_workspace(workspace).await?;
             WorkspaceLifecycle::new(store)
                 .discard(workspace, force)
                 .await?;
-            println!("discarded {workspace}");
+            tracing::info!(%workspace, upper_bucket = ?record.upper_bucket, "discarded workspace; upper bucket retained");
+            println!(
+                "discarded {workspace}; upper bucket retained: {}",
+                record
+                    .upper_bucket
+                    .as_deref()
+                    .unwrap_or("(legacy shared bucket)")
+            );
+        }
+        WorkspaceCommand::DropUpperBucket {
+            workspace,
+            data_config,
+            force,
+        } => {
+            workspace_bucket::drop_bucket(store, workspace, &data_config, force).await?;
         }
     }
     Ok(())

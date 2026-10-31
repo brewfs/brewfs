@@ -61,6 +61,9 @@ const HOT_LEASE_PREFIX: &[u8] = b"lease/";
 const HOT_SNAPSHOT_PREFIX: &[u8] = b"snapshot/";
 const HOT_ALLOCATOR_PREFIX: &[u8] = b"alloc/";
 const ENVELOPE_MAGIC: &[u8; 8] = b"BWSKV001";
+// An explicit envelope prevents old binaries from silently dropping the
+// writable bucket when rewriting a workspace row.
+const WORKSPACE_BUCKET_MAGIC: &[u8; 8] = b"BWSWR002";
 
 const HOT_JOURNAL_PREFIX: &[u8] = b"journal/";
 const WORKSPACE_PREFIX: &[u8] = HOT_WORKSPACE_PREFIX;
@@ -353,6 +356,7 @@ impl From<LegacyWorkspaceRecord> for WorkspaceRecord {
             active_lease: None,
             created_at_ns: row.created_at_ns,
             updated_at_ns: row.updated_at_ns,
+            upper_bucket: None,
         }
     }
 }
@@ -389,6 +393,7 @@ pub struct KvWorkspaceStore<B> {
     native_auxiliary_budget:
         std::sync::OnceLock<Arc<crate::workspace_overlay::packed_v3::wire005::V3MountBudget>>,
     slice_ids: IdBlock,
+    bucket_slice_ids: dashmap::DashMap<WorkspaceId, (String, Arc<IdBlock>)>,
     inode_ids: IdBlock,
     /// Opt-in: a mounted runtime store reserves inode IDs in blocks. Admin,
     /// publication and test stores keep dense one-at-a-time allocation.
@@ -729,6 +734,7 @@ where
             packed_reader_pin_budget: std::sync::OnceLock::new(),
             native_auxiliary_budget: std::sync::OnceLock::new(),
             slice_ids: IdBlock::default(),
+            bucket_slice_ids: dashmap::DashMap::new(),
             inode_ids: IdBlock::default(),
             inode_blocks: false,
             committed_head: Arc::default(),
@@ -750,6 +756,7 @@ where
             packed_reader_pin_budget: std::sync::OnceLock::new(),
             native_auxiliary_budget: std::sync::OnceLock::new(),
             slice_ids: IdBlock::default(),
+            bucket_slice_ids: dashmap::DashMap::new(),
             inode_ids: IdBlock::default(),
             inode_blocks: false,
             committed_head: Arc::default(),
@@ -2950,6 +2957,41 @@ where
         self.allocate_id_block_named(name, 1).await
     }
 
+    async fn allocate_id_for_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        name: &str,
+    ) -> Result<i64, WorkspaceError> {
+        if name != "slice" {
+            return self.allocate_id(name).await;
+        }
+        let cached = self
+            .bucket_slice_ids
+            .get(&workspace_id)
+            .map(|entry| entry.clone());
+        let (bucket, ids) = match cached {
+            Some(cached) => cached,
+            None => {
+                let workspace = self.load_workspace(workspace_id).await?;
+                let Some(bucket) = workspace.upper_bucket else {
+                    return self.allocate_id(name).await;
+                };
+                self.bucket_slice_ids
+                    .entry(workspace_id)
+                    .or_insert_with(|| (bucket, Arc::new(IdBlock::default())))
+                    .clone()
+            }
+        };
+        if let Some(id) = ids.take() {
+            return Ok(id);
+        }
+        let first = self
+            .allocate_id_block_named(&format!("slice/{bucket}"), SLICE_ID_BLOCK)
+            .await?;
+        ids.refill(first, SLICE_ID_BLOCK);
+        ids.take().ok_or(WorkspaceError::Busy)
+    }
+
     async fn create_volume_root(
         &self,
         request: CreateVolumeRoot,
@@ -3006,6 +3048,7 @@ where
                 root_hash: root,
             }),
             owner_id: request.owner_id.clone(),
+            upper_bucket: request.upper_bucket.clone(),
             state: WorkspaceState::Active,
             active_lease: None,
             created_at_ns: now,
@@ -4377,6 +4420,13 @@ where
         let lease_cutoff = now_ns.saturating_sub(u64_to_i64(lease_grace_ns, "lease grace")?);
         let mut roots = BTreeSet::new();
         for workspace in state.workspaces.values() {
+            // Legacy slice references have no bucket identity. Refuse a
+            // destructive census instead of applying it to a peer's bucket.
+            if workspace.upper_bucket.is_some() {
+                return Err(WorkspaceError::UnsupportedCapability(
+                    "legacy GC cannot collect bucket-isolated workspaces; use explicit upper bucket cleanup",
+                ));
+            }
             if workspace.state != WorkspaceState::Deleting {
                 roots.insert(workspace.head_layer_id);
                 if let Some(fork) = &workspace.fork_base {
@@ -4977,14 +5027,12 @@ fn decode_open_value<T: DeserializeOwned>(
             "v3 open record exceeds decode limit".into(),
         ));
     }
-    let payload = bytes.strip_prefix(ENVELOPE_MAGIC).ok_or_else(|| {
-        WorkspaceError::CorruptMetadata("v3 open record has invalid envelope".into())
-    })?;
+    let payload = record_payload::<T>(bytes)?;
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .with_limit(max_bytes as u64)
         .reject_trailing_bytes()
-        .deserialize(payload)
+        .deserialize(&payload)
         .map_err(|error| WorkspaceError::CorruptMetadata(format!("decode v3 open record: {error}")))
 }
 
@@ -5137,16 +5185,39 @@ fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, WorkspaceError> {
     let payload = bincode::serialize(value)
         .map_err(|error| WorkspaceError::Backend(format!("encode workspace record: {error}")))?;
     let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + payload.len());
-    bytes.extend_from_slice(ENVELOPE_MAGIC);
+    bytes.extend_from_slice(
+        if std::any::type_name::<T>() == std::any::type_name::<WorkspaceRecord>() {
+            WORKSPACE_BUCKET_MAGIC
+        } else {
+            ENVELOPE_MAGIC
+        },
+    );
     bytes.extend_from_slice(&payload);
     Ok(bytes)
 }
 
-fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WorkspaceError> {
+fn record_payload<T>(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, WorkspaceError> {
+    let workspace = std::any::type_name::<T>() == std::any::type_name::<WorkspaceRecord>();
+    if workspace && let Some(payload) = bytes.strip_prefix(WORKSPACE_BUCKET_MAGIC) {
+        return Ok(std::borrow::Cow::Borrowed(payload));
+    }
     let payload = bytes.strip_prefix(ENVELOPE_MAGIC).ok_or_else(|| {
         WorkspaceError::CorruptMetadata("workspace KV record has invalid envelope".into())
     })?;
-    bincode::deserialize(payload).map_err(|error| {
+    if workspace {
+        // The old schema ends at updated_at_ns. Append only the encoding of
+        // Option::None in memory; the persisted row and objects are untouched.
+        let mut upgraded = payload.to_vec();
+        upgraded.push(0);
+        Ok(std::borrow::Cow::Owned(upgraded))
+    } else {
+        Ok(std::borrow::Cow::Borrowed(payload))
+    }
+}
+
+fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WorkspaceError> {
+    let payload = record_payload::<T>(bytes)?;
+    bincode::deserialize(&payload).map_err(|error| {
         WorkspaceError::CorruptMetadata(format!("decode workspace record: {error}"))
     })
 }
@@ -5863,6 +5934,111 @@ pub(crate) use tests::packed_adapter_test_store;
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn bucket_allocators_reserve_independent_ranges_and_survive_reopen() {
+        let backend = MemoryBackend::default();
+        let store = budgeted_kv_store(backend.clone());
+        store.initialize_workspace_schema().await.unwrap();
+        let mut request = create_request(10000);
+        request.upper_bucket = Some("bucket-a".into());
+        let a = store.create_volume_root(request).await.unwrap();
+        let b = store
+            .create_workspace(CreateWorkspace {
+                workspace_id: WorkspaceId::new(),
+                head_layer_id: LayerId::new(),
+                base_revision: a.fork_base.clone().unwrap(),
+                owner_id: None,
+                upper_bucket: Some("bucket-b".into()),
+            })
+            .await
+            .unwrap();
+        for expected in 1..=64 {
+            assert_eq!(
+                store
+                    .allocate_id_for_workspace(a.workspace_id, "slice")
+                    .await
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                store
+                    .allocate_id_for_workspace(b.workspace_id, "slice")
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+        let reopened = budgeted_kv_store(backend);
+        assert_eq!(
+            reopened
+                .load_workspace(a.workspace_id)
+                .await
+                .unwrap()
+                .upper_bucket
+                .as_deref(),
+            Some("bucket-a")
+        );
+        assert_eq!(
+            reopened
+                .allocate_id_for_workspace(a.workspace_id, "slice")
+                .await
+                .unwrap(),
+            65
+        );
+        assert_eq!(
+            reopened
+                .allocate_id_for_workspace(b.workspace_id, "slice")
+                .await
+                .unwrap(),
+            65
+        );
+        assert_eq!(reopened.allocate_id("slice").await.unwrap(), 1);
+        assert!(matches!(
+            reopened.gc_snapshot(i64::MAX / 2, 0).await,
+            Err(WorkspaceError::UnsupportedCapability(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_workspace_record_decodes_without_an_upper_bucket() {
+        let legacy = LegacyWorkspaceRecord {
+            workspace_id: WorkspaceId::from_uuid(id(3001)),
+            head_layer_id: LayerId::from_uuid(id(3002)),
+            head_epoch: 4,
+            fork_base: None,
+            owner_id: Some("legacy".into()),
+            state: WorkspaceState::Active,
+            created_at_ns: 10,
+            updated_at_ns: 11,
+        };
+        let mut bytes = ENVELOPE_MAGIC.to_vec();
+        // Exact pre-bucket entity row, including the existing active_lease
+        // field (the older migration-only LegacyWorkspaceRecord lacks it).
+        bytes.extend(
+            bincode::serialize(&(
+                legacy.workspace_id,
+                legacy.head_layer_id,
+                legacy.head_epoch,
+                &legacy.fork_base,
+                &legacy.owner_id,
+                legacy.state,
+                None::<LeaseId>,
+                legacy.created_at_ns,
+                legacy.updated_at_ns,
+            ))
+            .unwrap(),
+        );
+        let decoded: WorkspaceRecord = decode(&bytes).unwrap();
+        assert_eq!(decoded.workspace_id, legacy.workspace_id);
+        assert_eq!(decoded.upper_bucket, None);
+        let mut new = decoded;
+        new.upper_bucket = Some("workspace-upper".into());
+        assert_eq!(
+            decode::<WorkspaceRecord>(&encode(&new).unwrap()).unwrap(),
+            new
+        );
+    }
+
+    #[tokio::test]
     async fn operator_runtime_scope_rejects_management_without_backend_mutation() {
         let backend = MemoryBackend::default();
         let admin = budgeted_kv_store(backend.clone());
@@ -6334,6 +6510,7 @@ mod tests {
 
     fn create_request(offset: u128) -> CreateVolumeRoot {
         CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: id(offset + 1),
@@ -7452,6 +7629,7 @@ mod tests {
         };
         let second = store_b
             .create_workspace(CreateWorkspace {
+                upper_bucket: None,
                 workspace_id: WorkspaceId::from_uuid(id(110)),
                 head_layer_id: LayerId::from_uuid(id(111)),
                 base_revision: base,
@@ -7685,6 +7863,7 @@ mod tests {
     {
         store_a.initialize_workspace_schema().await.unwrap();
         let request = CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::now_v7(),

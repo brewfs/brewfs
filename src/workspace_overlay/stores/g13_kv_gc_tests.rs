@@ -461,6 +461,7 @@ impl WorkspaceKvBackend for ScheduledBackend {
 
 fn fork_request(base: BaseRevision, offset: u128) -> CreateWorkspace {
     CreateWorkspace {
+        upper_bucket: None,
         base_revision: base,
         workspace_id: WorkspaceId::from_uuid(id(offset + 1)),
         head_layer_id: LayerId::from_uuid(id(offset + 2)),

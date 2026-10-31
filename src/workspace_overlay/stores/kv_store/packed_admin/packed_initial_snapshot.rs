@@ -654,6 +654,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 root_hash: root,
             }),
             owner_id: request.owner_id.clone(),
+            upper_bucket: request.upper_bucket.clone(),
             state: WorkspaceState::Active,
             active_lease: None,
             created_at_ns: now,

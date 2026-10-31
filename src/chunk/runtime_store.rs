@@ -22,6 +22,10 @@ impl<S> RuntimeBlockStore<S> {
 
 #[async_trait]
 impl<S: BlockStore + Send + Sync> BlockStore for RuntimeBlockStore<S> {
+    fn set_data_bucket(&self, bucket: &str) -> anyhow::Result<()> {
+        self.inner.set_data_bucket(bucket)
+    }
+
     async fn write_fresh_vectored(
         &self,
         key: BlockKey,

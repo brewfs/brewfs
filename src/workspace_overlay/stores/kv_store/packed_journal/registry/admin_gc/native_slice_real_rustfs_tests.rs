@@ -775,6 +775,7 @@ async fn run_case<B: WorkspaceKvBackend + Clone>(
     );
     store.initialize_workspace_schema().await.unwrap();
     let request = CreateVolumeRoot {
+        upper_bucket: None,
         volume_format: VOLUME_FORMAT.into(),
         schema_version: WORKSPACE_SCHEMA_VERSION,
         volume_id: Uuid::new_v4(),

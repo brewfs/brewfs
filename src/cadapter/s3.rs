@@ -15,9 +15,13 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use hyper::Body;
 use md5;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, sleep};
 use tokio_util::io::ReaderStream;
+
+#[cfg(test)]
+#[path = "s3/bucket_tests.rs"]
+mod bucket_tests;
 
 #[cfg(feature = "rustfs-ec-block-size-hint")]
 const RUSTFS_EC_BLOCK_SIZE_HINT_KEY: &str = "rustfs-ec-block-size-hint";
@@ -145,6 +149,7 @@ impl Default for S3Config {
 pub struct S3Backend {
     client: Client,
     config: S3Config,
+    active_bucket: Arc<RwLock<String>>,
     mutation_replay_forbidden: bool,
 }
 
@@ -234,6 +239,104 @@ mod gc_replay_tests {
 
 #[allow(dead_code)]
 impl S3Backend {
+    /// Create the active bucket, treating an idempotent owner response as
+    /// success. A name collision owned by another account remains an error.
+    pub async fn create_bucket_idempotent(&self) -> Result<()> {
+        let bucket = self.bucket_name();
+        let mut request = self.client.create_bucket().bucket(&bucket);
+        if let Some(region) = self.client.config().region()
+            && region.as_ref() != "us-east-1"
+        {
+            request = request.create_bucket_configuration(
+                aws_sdk_s3::types::CreateBucketConfiguration::builder()
+                    .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(
+                        region.as_ref(),
+                    ))
+                    .build(),
+            );
+        }
+        match request.send().await {
+            Ok(_) => Ok(()),
+            Err(SdkError::ServiceError(error))
+                if error.err().meta().code() == Some("BucketAlreadyOwnedByYou") =>
+            {
+                Ok(())
+            }
+            Err(SdkError::ServiceError(error))
+                if error.err().meta().code() == Some("BucketAlreadyExists") =>
+            {
+                Err(anyhow!(
+                    "S3 bucket name collision: bucket {bucket:?} already exists and is not owned by this account"
+                ))
+            }
+            // S3-compatible services vary in the error code attached to an
+            // already-owned create. Treat an HTTP 409 as idempotent unless
+            // the service explicitly reports a globally owned name collision.
+            Err(SdkError::ServiceError(error)) if error.raw().status().as_u16() == 409 => Ok(()),
+            Err(error) => Err(anyhow!("failed to create S3 bucket {bucket:?}: {error}")),
+        }
+    }
+
+    pub async fn delete_bucket(&self) -> Result<()> {
+        let bucket = self.bucket_name();
+        self.client.delete_bucket().bucket(&bucket).send().await?;
+        Ok(())
+    }
+
+    /// Explicit operator cleanup only; workspace discard never calls this.
+    pub async fn empty_and_delete_bucket(&self) -> Result<()> {
+        let bucket = self.bucket_name();
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .max_keys(1000)
+                .send()
+                .await?;
+            if page.contents().is_empty() {
+                break;
+            }
+            let objects = page
+                .contents()
+                .iter()
+                .map(|object| {
+                    let key = object
+                        .key()
+                        .ok_or_else(|| anyhow!("S3 listing omitted an object key"))?;
+                    Ok(aws_sdk_s3::types::ObjectIdentifier::builder()
+                        .key(key)
+                        .build()?)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let result = self
+                .client
+                .delete_objects()
+                .bucket(&bucket)
+                .delete(
+                    aws_sdk_s3::types::Delete::builder()
+                        .set_objects(Some(objects))
+                        .build()?,
+                )
+                .send()
+                .await?;
+            if !result.errors().is_empty() {
+                anyhow::bail!(
+                    "failed to empty upper bucket {bucket:?}: {:?}",
+                    result.errors()
+                );
+            }
+        }
+        self.delete_bucket().await
+    }
+
+    fn bucket_name(&self) -> String {
+        self.active_bucket
+            .read()
+            .expect("S3 bucket lock is not poisoned")
+            .clone()
+    }
+
     #[cfg(feature = "rustfs-ec-block-size-hint")]
     fn ec_block_size_hint(&self, object_bytes: usize) -> Option<usize> {
         self.config
@@ -391,9 +494,11 @@ impl S3Backend {
         let client = Client::from_conf(s3_config_builder.build());
         tracing::info!("s3 backend client ready");
 
+        let active_bucket = config.bucket.clone();
         Ok(Self {
             client,
             config,
+            active_bucket: Arc::new(RwLock::new(active_bucket)),
             mutation_replay_forbidden: matches!(replay, S3MutationReplay::Forbidden),
         })
     }
@@ -424,11 +529,7 @@ impl S3Backend {
             Arc<crate::cadapter::read_observer::ReadObserver>,
         )>,
     ) -> Result<Option<ObjectByteStream>> {
-        let mut operation = self
-            .client
-            .get_object()
-            .bucket(&self.config.bucket)
-            .key(key);
+        let mut operation = self.client.get_object().bucket(self.bucket_name()).key(key);
         if let Some((offset, length)) = range {
             if length == 0 {
                 return Ok(Some(Box::pin(futures_util::stream::empty())));
@@ -519,7 +620,7 @@ impl S3Backend {
         let operation = self
             .client
             .head_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key);
         let response = match observed {
             Some((context, observer)) => {
@@ -624,7 +725,7 @@ impl S3Backend {
         let operation = self
             .client
             .head_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key);
         let response = match observed {
             Some((context, observer)) => {
@@ -725,7 +826,7 @@ impl S3Backend {
             let mut request = self
                 .client
                 .put_object()
-                .bucket(&self.config.bucket)
+                .bucket(self.bucket_name())
                 .key(key)
                 .body(body)
                 .content_length(total_size as i64);
@@ -766,7 +867,7 @@ impl S3Backend {
             let mut request = self
                 .client
                 .put_object()
-                .bucket(&self.config.bucket)
+                .bucket(self.bucket_name())
                 .key(key)
                 .body(SdkBody::from(data.to_vec()).into());
 
@@ -803,7 +904,7 @@ impl S3Backend {
         let request = self
             .client
             .create_multipart_upload()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key);
         #[cfg(feature = "rustfs-ec-block-size-hint")]
         let request = match self.ec_block_size_hint(data.len()) {
@@ -820,7 +921,7 @@ impl S3Backend {
         // Ensure we clean up the multipart upload if it fails
         let cleanup_on_drop = MultipartCleanupGuard {
             client: self.client.clone(),
-            bucket: self.config.bucket.clone(),
+            bucket: self.bucket_name(),
             key: key.to_string(),
             upload_id: upload_id.clone(),
             armed: true,
@@ -839,7 +940,7 @@ impl S3Backend {
             let end = (idx + self.config.part_size).min(total);
             let chunk_vec = data_arc.as_slice()[idx..end].to_vec();
             let client = self.client.clone();
-            let bucket = self.config.bucket.clone();
+            let bucket = self.bucket_name();
             let key = key.to_string();
             let upload_id_cloned = upload_id.clone();
             let pn = part_number;
@@ -919,7 +1020,7 @@ impl S3Backend {
         // Complete multipart upload
         self.client
             .complete_multipart_upload()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .upload_id(upload_id)
             .multipart_upload(completed)
@@ -937,7 +1038,7 @@ impl S3Backend {
         let request = self
             .client
             .create_multipart_upload()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key);
         #[cfg(feature = "rustfs-ec-block-size-hint")]
         let request = match self.ec_block_size_hint(chunks.iter().map(Bytes::len).sum()) {
@@ -953,7 +1054,7 @@ impl S3Backend {
 
         let cleanup_on_drop = MultipartCleanupGuard {
             client: self.client.clone(),
-            bucket: self.config.bucket.clone(),
+            bucket: self.bucket_name(),
             key: key.to_string(),
             upload_id: upload_id.clone(),
             armed: true,
@@ -997,7 +1098,7 @@ impl S3Backend {
             };
 
             let client = self.client.clone();
-            let bucket = self.config.bucket.clone();
+            let bucket = self.bucket_name();
             let key = key.to_string();
             let upload_id_cloned = upload_id.clone();
             let pn = (idx + 1) as i32;
@@ -1068,7 +1169,7 @@ impl S3Backend {
 
         self.client
             .complete_multipart_upload()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .upload_id(upload_id)
             .multipart_upload(completed)
@@ -1120,6 +1221,17 @@ impl Drop for MultipartCleanupGuard {
 
 #[async_trait]
 impl ObjectBackend for S3Backend {
+    fn set_bucket(&self, bucket: &str) -> Result<()> {
+        if bucket.is_empty() {
+            return Err(anyhow!("S3 bucket name cannot be empty"));
+        }
+        *self
+            .active_bucket
+            .write()
+            .expect("S3 bucket lock is not poisoned") = bucket.to_owned();
+        Ok(())
+    }
+
     #[cfg(feature = "rustfs-ec-block-size-hint")]
     fn prefers_full_object_reads(&self) -> bool {
         // Compatibility default only. ObjectBlockStore's read_fetch_policy
@@ -1163,7 +1275,7 @@ impl ObjectBackend for S3Backend {
         let mut request = self
             .client
             .put_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .if_none_match("*")
             .body(SdkBody::from(data.to_vec()).into());
@@ -1208,7 +1320,7 @@ impl ObjectBackend for S3Backend {
         let mut request = self
             .client
             .put_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .if_none_match("*")
             .body(SdkBody::from(data.to_vec()).into());
@@ -1240,7 +1352,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .get_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .send()
             .await;
@@ -1276,7 +1388,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .get_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .range(range_header)
             .send()
@@ -1344,7 +1456,7 @@ impl ObjectBackend for S3Backend {
         let resp = self
             .client
             .head_object()
-            .bucket(&self.config.bucket)
+            .bucket(self.bucket_name())
             .key(key)
             .send()
             .await;
@@ -1397,7 +1509,7 @@ impl ObjectBackend for S3Backend {
             match self
                 .client
                 .delete_object()
-                .bucket(&self.config.bucket)
+                .bucket(self.bucket_name())
                 .key(key)
                 .send()
                 .await
@@ -1479,6 +1591,7 @@ mod tests {
             .build();
         S3Backend {
             client: Client::from_conf(config),
+            active_bucket: Arc::new(RwLock::new("test-bucket".into())),
             mutation_replay_forbidden: false,
             config: S3Config {
                 bucket: "test-bucket".into(),
@@ -1536,6 +1649,7 @@ mod tests {
             .build();
         S3Backend {
             client: Client::from_conf(config),
+            active_bucket: Arc::new(RwLock::new("test-bucket".into())),
             mutation_replay_forbidden: false,
             config: S3Config {
                 bucket: "test-bucket".into(),
@@ -1839,6 +1953,7 @@ mod tests {
                 .build();
             S3Backend {
                 client: Client::from_conf(config),
+                active_bucket: Arc::new(RwLock::new("test-bucket".into())),
                 config: S3Config {
                     bucket: "test-bucket".to_string(),
                     part_size: 5 * 1024 * 1024,
@@ -2399,6 +2514,7 @@ mod tests {
 
         S3Backend {
             client: Client::from_conf(s3_config),
+            active_bucket: Arc::new(RwLock::new(bucket.clone())),
             mutation_replay_forbidden: false,
             config: S3Config {
                 bucket,
@@ -2484,7 +2600,7 @@ mod tests {
                 let head = backend
                     .client
                     .head_object()
-                    .bucket(&backend.config.bucket)
+                    .bucket(&backend.bucket_name())
                     .key(&key)
                     .customize()
                     .interceptor(effective.clone())
@@ -2566,7 +2682,7 @@ mod tests {
                 backend
                     .client
                     .head_object()
-                    .bucket(&backend.config.bucket)
+                    .bucket(&backend.bucket_name())
                     .key(&key)
                     .customize()
                     .interceptor(effective.clone())

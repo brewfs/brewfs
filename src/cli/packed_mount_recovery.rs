@@ -96,11 +96,22 @@ async fn dispatch<B: WorkspaceKvBackend>(
     match config.data_backend {
         DataBackendKind::LocalFs => {
             let client = create_localfs_client(&config)?;
-            recover_with_client(catalog, budget, config, arguments, client).await
+            recover_with_client(catalog, budget, config, arguments, client.clone(), client).await
         }
         DataBackendKind::S3 => {
             let client = create_s3_client(&config).await?;
-            recover_with_client(catalog, budget, config, arguments, client).await
+            let mut upper_config = config.clone();
+            if let Some(bucket) = catalog
+                .load_workspace(arguments.workspace)
+                .await?
+                .upper_bucket
+            {
+                upper_config.s3_bucket = Some(bucket);
+            }
+            // Use an independent backend: selecting the upper on a cloned
+            // S3 client would also redirect the shared packed-lower reader.
+            let upper_client = create_s3_client(&upper_config).await?;
+            recover_with_client(catalog, budget, config, arguments, client, upper_client).await
         }
     }
 }
@@ -111,6 +122,7 @@ async fn recover_with_client<B, O>(
     config: MountConfig,
     arguments: PackedMountRecoveryArgs,
     client: ObjectClient<O>,
+    upper_client: ObjectClient<O>,
 ) -> anyhow::Result<()>
 where
     B: WorkspaceKvBackend,
@@ -146,7 +158,12 @@ where
         crate::cadapter::read_observer::Phase::Startup,
         crate::cadapter::read_observer::Origin::Demand,
     );
-    let upper = Arc::new(create_object_store(client.clone(), layout, &config.cache, true).await?);
+    let mut block_cache = config.cache.clone();
+    block_cache.cache_root = block_cache
+        .cache_root
+        .join("workspace-blocks")
+        .join(arguments.workspace.to_string());
+    let upper = Arc::new(create_object_store(upper_client, layout, &block_cache, true).await?);
     let original = PackedReleasedMountReference {
         guard: workspace_overlay::catalog::HeadGuard {
             workspace_id: arguments.workspace,

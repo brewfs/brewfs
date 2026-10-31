@@ -262,6 +262,7 @@ async fn switched_head_during_acquire_releases_lease_and_rejects_stale_view() {
     store.initialize_workspace_schema().await.unwrap();
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: super::super::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),

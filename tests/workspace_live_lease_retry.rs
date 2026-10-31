@@ -38,6 +38,7 @@ async fn fixture() -> Fixture {
     store.initialize_workspace_schema().await.unwrap();
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),

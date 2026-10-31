@@ -19,6 +19,13 @@ pub(super) enum MountStore<S> {
 
 #[async_trait]
 impl<S: BlockStore + Send + Sync> BlockStore for MountStore<S> {
+    fn set_data_bucket(&self, bucket: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Standalone(store) => store.set_data_bucket(bucket),
+            Self::Operator(store) => store.set_data_bucket(bucket),
+        }
+    }
+
     async fn write_fresh_vectored(
         &self,
         key: BlockKey,

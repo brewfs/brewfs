@@ -28,6 +28,7 @@ async fn catalog() -> (
     store.initialize_workspace_schema().await.unwrap();
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: VOLUME_FORMAT.into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(9002),

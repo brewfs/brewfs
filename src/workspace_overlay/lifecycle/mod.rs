@@ -90,6 +90,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
                         head_layer_id: LayerId::new(),
                         base_revision: revision.clone(),
                         owner_id: owner_id.clone(),
+                        upper_bucket: None,
                     })
                     .await?,
             );
@@ -388,6 +389,7 @@ mod lease_recovery_tests {
         store.initialize_workspace_schema().await.unwrap();
         let workspace = store
             .create_volume_root(CreateVolumeRoot {
+                upper_bucket: None,
                 volume_format: "workspace-v1".into(),
                 schema_version: super::super::model::WORKSPACE_SCHEMA_VERSION,
                 volume_id: Uuid::new_v4(),
@@ -415,6 +417,7 @@ mod lease_recovery_tests {
             .unwrap();
         let child = store
             .create_workspace(CreateWorkspace {
+                upper_bucket: None,
                 workspace_id: WorkspaceId::new(),
                 head_layer_id: LayerId::new(),
                 base_revision: workspace.fork_base.unwrap(),

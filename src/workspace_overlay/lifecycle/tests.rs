@@ -24,6 +24,7 @@ async fn setup() -> (
     let workspace_id = WorkspaceId::from_uuid(Uuid::from_u128(501));
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(502),
@@ -109,6 +110,7 @@ async fn session_lease_validity_follows_real_renewals_and_lease_loss() {
     let workspace_id = WorkspaceId::from_uuid(Uuid::from_u128(601));
     store
         .create_volume_root(CreateVolumeRoot {
+            upper_bucket: None,
             volume_format: "workspace-v1".into(),
             schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(602),

@@ -468,6 +468,9 @@ pub enum WorkspaceCommand {
     InitVolume {
         #[arg(long)]
         owner: Option<String>,
+        /// Object configuration; S3 volumes allocate an independent upper bucket.
+        #[arg(long)]
+        data_config: PathBuf,
     },
     /// Initialize a new workspace-v1 volume whose default workspace overlays
     /// an existing authenticated packed-v3 manifest as its read-only lower.
@@ -490,6 +493,8 @@ pub enum WorkspaceCommand {
     Migrate,
     /// Create a workspace overlay on an exact immutable revision.
     Create {
+        #[arg(long)]
+        data_config: PathBuf,
         #[arg(long = "from", value_name = "REVISION")]
         revision: Option<crate::workspace_overlay::model::BaseRevision>,
         #[arg(long)]
@@ -498,6 +503,8 @@ pub enum WorkspaceCommand {
     /// Fork one or more workspace overlays from an exact immutable revision.
     /// A live workspace is never sealed to produce one.
     Fork {
+        #[arg(long)]
+        data_config: PathBuf,
         #[arg(value_name = "REVISION")]
         source: crate::workspace_overlay::model::BaseRevision,
         #[arg(long, default_value_t = 1)]
@@ -523,6 +530,14 @@ pub enum WorkspaceCommand {
     Discard {
         workspace: crate::workspace_overlay::ids::WorkspaceId,
         #[arg(long)]
+        force: bool,
+    },
+    /// Permanently empty and delete a discarded workspace's upper bucket.
+    DropUpperBucket {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        #[arg(long)]
+        data_config: PathBuf,
+        #[arg(long, required = true)]
         force: bool,
     },
 }
@@ -944,6 +959,8 @@ impl NativeBaseFileConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct DataFileConfig {
     pub backend: Option<DataBackendKind>,
+    /// S3 bucket name template with {bucket} and {workspace_id} placeholders.
+    pub workspace_bucket_template: Option<String>,
     pub localfs: Option<LocalFsFileConfig>,
     pub s3: Option<S3FileConfig>,
 }
@@ -1085,6 +1102,7 @@ pub struct MountConfig {
     pub data_backend: DataBackendKind,
     pub data_dir: PathBuf,
     pub s3_bucket: Option<String>,
+    pub workspace_bucket_template: String,
     pub s3_endpoint: Option<String>,
     pub s3_region: Option<String>,
     pub s3_part_size: usize,
@@ -1417,6 +1435,9 @@ impl MountConfig {
                 .or(localfs_cfg.data_dir)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR)),
             s3_bucket: args.s3_bucket.or(s3_cfg.bucket),
+            workspace_bucket_template: data_cfg
+                .workspace_bucket_template
+                .unwrap_or_else(|| "{bucket}-{workspace_id}".into()),
             s3_endpoint: args.s3_endpoint.or(s3_cfg.endpoint),
             s3_region: args.s3_region.or(s3_cfg.region),
             s3_part_size: args
