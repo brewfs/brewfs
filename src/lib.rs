@@ -15,6 +15,8 @@ pub mod fuse;
 pub mod gateway;
 #[cfg(feature = "hdfs-sdk")]
 pub mod hdfs;
+#[cfg(feature = "workspace-overlay")]
+pub(crate) mod manager;
 // Expose meta for E2E testing - tests should rely on design contracts, not impl details
 pub mod meta;
 pub mod native_base;

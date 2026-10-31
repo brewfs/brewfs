@@ -10,7 +10,16 @@ use axum::{
 use std::path::{Path, PathBuf};
 use tower_http::services::ServeDir;
 
+#[cfg(test)]
 pub fn build_router(config: ConsoleConfig) -> Router {
+    let manager_router = super::manager_api::router(config.state_dir.clone());
+    build_router_with_manager_router(config, manager_router)
+}
+
+fn build_router_with_manager_router(
+    config: ConsoleConfig,
+    manager_router: Router<ConsoleState>,
+) -> Router {
     let state = ConsoleState {
         auth: config.auth.clone(),
         static_dir: config.static_dir.clone(),
@@ -22,6 +31,7 @@ pub fn build_router(config: ConsoleConfig) -> Router {
         acl_adapter: super::acl::default_acl_adapter(),
     };
     let api = Router::new()
+        .nest("/v1", manager_router)
         .route("/health", get(api::health))
         .route("/volumes", get(api::list_volumes).post(api::create_volume))
         .route(
@@ -81,7 +91,8 @@ async fn serve_listener(
     config: ConsoleConfig,
 ) -> anyhow::Result<()> {
     let listen = listener.local_addr()?;
-    let app = build_router(config);
+    let manager_router = super::manager_api::initialized_router(config.state_dir.clone()).await?;
+    let app = build_router_with_manager_router(config, manager_router);
     println!("brewfs console listening on http://{listen}");
     axum::serve(listener, app).await?;
     Ok(())
@@ -324,6 +335,25 @@ mod tests {
         let body = raw.split("\r\n\r\n").nth(1).unwrap();
         let value: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(value["service"], "brewfs-console");
+        #[cfg(feature = "workspace-overlay")]
+        assert!(dir.path().join("state/manager.sqlite").is_file());
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_initialized_router_retains_single_instance_guard() {
+        let dir = tempdir().unwrap();
+        let first = crate::console::manager_api::initialized_router(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        let competing =
+            crate::console::manager_api::initialized_router(dir.path().to_path_buf()).await;
+        assert!(competing.is_err());
+        drop(first);
+        let reopened = crate::console::manager_api::initialized_router(dir.path().to_path_buf())
+            .await
+            .expect("dropping the router releases the Manager process guard");
+        drop(reopened);
     }
 
     #[tokio::test]
@@ -347,6 +377,370 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["service"], "brewfs-console");
         assert_eq!(value["auth_mode"], "disabled");
+    }
+
+    #[tokio::test]
+    async fn manager_capabilities_are_versioned_and_preserve_legacy_health() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["service"], "brewfs-manager");
+        assert_eq!(value["api_version"], "v1");
+        assert_eq!(value["multi_replica"], false);
+        assert_eq!(value["mount"], false);
+        assert_eq!(value["remote_ready"], false);
+        assert_eq!(value["enabled"], cfg!(feature = "workspace-overlay"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["service"], "brewfs-console");
+    }
+
+    #[tokio::test]
+    async fn manager_mutations_require_existing_console_auth_before_opening_storage() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(
+            dir.path(),
+            AuthConfig::Token {
+                token: "manager-secret".into(),
+            },
+        ));
+        for uri in [
+            "/api/v1/capabilities",
+            "/api/v1/volumes",
+            "/api/v1/operations/00000000-0000-0000-0000-000000000000",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::AUTHORIZATION, "Bearer wrong-secret")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            assert!(!body.contains("manager-secret"));
+            assert!(!body.contains("wrong-secret"));
+        }
+        assert!(!dir.path().join("state").exists());
+    }
+
+    #[cfg(not(feature = "workspace-overlay"))]
+    #[tokio::test]
+    async fn manager_disabled_mutations_explicitly_report_unsupported() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/volumes")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "unsupported");
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_rejects_invalid_ids_keys_and_schema_without_opening_storage() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        let requests = [
+            Request::builder()
+                .uri("/api/v1/volumes/not-a-uuid")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/volumes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/volumes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "same-key")
+                .header("Idempotency-Key", "another-key")
+                .body(Body::from("{}"))
+                .unwrap(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/volumes")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "bad-schema")
+                .body(Body::from(
+                    r#"{"mode":"initialize","catalog_ref":"local","password":"secret-marker"}"#,
+                ))
+                .unwrap(),
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/volumes/00000000-0000-0000-0000-000000000000/workspaces/00000000-0000-0000-0000-000000000000?force=true")
+                .header("Idempotency-Key", "force-not-supported")
+                .body(Body::empty()).unwrap(),
+        ];
+        for request in requests {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"]["code"], "invalid_request");
+            assert!(
+                !String::from_utf8(body.to_vec())
+                    .unwrap()
+                    .contains("secret-marker")
+            );
+        }
+        assert!(!dir.path().join("state").exists());
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_rejects_invalid_pagination_before_opening_storage() {
+        let dir = tempdir().unwrap();
+        let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
+        for query in ["limit=0", "limit=101", "after=not-a-uuid", "force=true"] {
+            let response = app.clone().oneshot(
+                Request::builder().uri(format!("/api/v1/volumes/00000000-0000-0000-0000-000000000000/workspaces?{query}"))
+                    .body(Body::empty()).unwrap()
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(!dir.path().join("state").exists());
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    async fn manager_json(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        key: Option<&str>,
+        body: Option<&serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, "Bearer manager-test-token");
+        if let Some(key) = key {
+            request = request.header("Idempotency-Key", key);
+        }
+        let body = if let Some(body) = body {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+            Body::from(serde_json::to_vec(body).unwrap())
+        } else {
+            Body::empty()
+        };
+        let response = app
+            .clone()
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let location = response.headers().get(header::LOCATION).cloned();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if status == StatusCode::ACCEPTED {
+            assert_eq!(
+                location.as_ref().and_then(|value| value.to_str().ok()),
+                Some(format!("/api/v1/operations/{}", value["id"].as_str().unwrap()).as_str())
+            );
+        }
+        (status, value)
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    async fn manager_finished(app: &Router, id: &serde_json::Value) -> serde_json::Value {
+        let uri = format!("/api/v1/operations/{}", id.as_str().unwrap());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let (status, operation) = manager_json(app, "GET", &uri, None, None).await;
+                assert_eq!(status, StatusCode::OK, "{operation}");
+                match operation["state"].as_str() {
+                    Some("succeeded") => return operation,
+                    Some("accepted" | "running") => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    _ => panic!("unexpected Manager operation state: {operation}"),
+                }
+            }
+        })
+        .await
+        .expect("Manager operation timed out")
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[tokio::test]
+    async fn manager_http_uses_real_catalog_and_scopes_forks_and_deletion() {
+        let dir = tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("manager-catalogs.json"),
+            serde_json::to_vec(&serde_json::json!({"catalogs": {"local": {
+                "backend": "sqlite", "path": dir.path().join("catalog.sqlite")
+            }}}))
+            .unwrap(),
+        )
+        .unwrap();
+        let app = build_router(test_config(
+            dir.path(),
+            AuthConfig::Token {
+                token: "manager-test-token".into(),
+            },
+        ));
+        let create = serde_json::json!({
+            "mode": "initialize", "catalog_ref": "local", "confirm_empty": true,
+            "owner": "root-owner"
+        });
+        let (status, accepted) = manager_json(
+            &app,
+            "POST",
+            "/api/v1/volumes",
+            Some("initialize-one"),
+            Some(&create),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        let (status, retried) = manager_json(
+            &app,
+            "POST",
+            "/api/v1/volumes",
+            Some("initialize-one"),
+            Some(&create),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{retried}");
+        assert_eq!(accepted["id"], retried["id"]);
+        let initialized = manager_finished(&app, &accepted["id"]).await;
+        assert!(initialized["items"][0]["remote_ready"].is_null());
+        assert_eq!(initialized["items"][0]["metadata_ready"], true);
+        let volume = initialized["volume_id"].as_str().unwrap();
+        let workspaces_uri = format!("/api/v1/volumes/{volume}/workspaces");
+        let (status, listed) = manager_json(&app, "GET", &workspaces_uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        let roots = listed["workspaces"].as_array().unwrap();
+        assert_eq!(roots.len(), 1);
+        let root = roots[0]["workspace_id"].as_str().unwrap();
+        let (_, inspected) =
+            manager_json(&app, "GET", &format!("{workspaces_uri}/{root}"), None, None).await;
+        let revision_uri = format!(
+            "/api/v1/volumes/{volume}/revisions/{}",
+            inspected["base_revision"]["layer_id"].as_str().unwrap()
+        );
+        let (status, revision) = manager_json(&app, "GET", &revision_uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{revision}");
+        assert_eq!(revision, inspected["base_revision"]);
+        let forks_uri = format!("/api/v1/volumes/{volume}/forks");
+        let forks = serde_json::json!({"revision": inspected["base_revision"], "count": 2, "owner": "fork-owner"});
+        let (status, accepted) =
+            manager_json(&app, "POST", &forks_uri, Some("fork-two"), Some(&forks)).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        let (status, retried) =
+            manager_json(&app, "POST", &forks_uri, Some("fork-two"), Some(&forks)).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{retried}");
+        assert_eq!(accepted["id"], retried["id"]);
+        manager_finished(&app, &accepted["id"]).await;
+        let mut changed = forks.clone();
+        changed["owner"] = serde_json::json!("other-owner");
+        let (status, conflict) =
+            manager_json(&app, "POST", &forks_uri, Some("fork-two"), Some(&changed)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+
+        let (status, listed) = manager_json(
+            &app,
+            "GET",
+            &format!("{workspaces_uri}?limit=2"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        assert_eq!(listed["workspaces"].as_array().unwrap().len(), 2);
+        let after = listed["next_after"].as_str().unwrap();
+        let (status, second_page) = manager_json(
+            &app,
+            "GET",
+            &format!("{workspaces_uri}?limit=2&after={after}"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{second_page}");
+        assert_eq!(second_page["workspaces"].as_array().unwrap().len(), 1);
+
+        let (_, listed) = manager_json(&app, "GET", &workspaces_uri, None, None).await;
+        let child = listed["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["owner_id"] == "fork-owner")
+            .unwrap()["workspace_id"]
+            .as_str()
+            .unwrap();
+        let (status, foreign) = manager_json(
+            &app,
+            "GET",
+            &format!(
+                "/api/v1/volumes/{}/workspaces/{child}",
+                uuid::Uuid::new_v4()
+            ),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{foreign}");
+        let child_uri = format!("{workspaces_uri}/{child}");
+        let (status, deletion) =
+            manager_json(&app, "DELETE", &child_uri, Some("delete-child"), None).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{deletion}");
+        let deleted = manager_finished(&app, &deletion["id"]).await;
+        assert_eq!(deleted["items"][0]["deletion_marked"], true);
+        assert_eq!(deleted["items"][0]["physical_reclaimed"], false);
+        let (status, repeat) =
+            manager_json(&app, "DELETE", &child_uri, Some("delete-child"), None).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{repeat}");
+        assert_eq!(deletion["id"], repeat["id"]);
+        assert!(dir.path().join("catalog.sqlite").exists());
+
+        let (status, legacy) = manager_json(&app, "GET", "/api/volumes", None, None).await;
+        assert_eq!(status, StatusCode::OK, "{legacy}");
+        assert_eq!(legacy["volumes"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

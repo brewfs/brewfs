@@ -3,6 +3,7 @@
 //! This module is compiled only when the `workspace-overlay` feature is
 //! explicitly enabled. The default flat-volume path must not depend on it.
 
+pub mod admin;
 pub mod cache;
 pub mod cache_scope;
 pub mod catalog;

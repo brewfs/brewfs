@@ -671,6 +671,9 @@ async fn recreation_case<B: WorkspaceKvBackend + Clone>(
         );
         base.layer_id
     } else {
+        // Orphan registration does not initialize a volume. The real peer's
+        // bounded native finalizer also authenticates that volume authority.
+        peer.create_volume_root(fresh_root_request()).await.unwrap();
         let layer = LayerId::new();
         if matches!(case, Case::OrphanRecreation) {
             peer.record_orphan_slice(RecordOrphanSlice {
@@ -683,6 +686,10 @@ async fn recreation_case<B: WorkspaceKvBackend + Clone>(
         }
         layer
     };
+    assert!(
+        peer.load_volume_header().await.unwrap().is_some(),
+        "recreation fixture must provide initialized volume authority"
+    );
     let generation_before = backend
         .inner
         .get(LAYER_INVENTORY_GENERATION_KEY)

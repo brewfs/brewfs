@@ -45,6 +45,21 @@ impl<W: WorkspaceStore + 'static> WorkspaceLifecycle<W> {
         &self.store
     }
 
+    /// Reconcile one fork whose identifiers were durably reserved by a caller.
+    /// Unlike `fork_revision`, retrying this operation cannot allocate new IDs.
+    pub async fn ensure_fork(
+        &self,
+        request: CreateWorkspace,
+    ) -> Result<super::admin::WorkspaceView, WorkspaceError> {
+        let started = Instant::now();
+        let result = super::admin::ensure_workspace(self.store.as_ref(), request).await;
+        self.metrics.record_fork(result.is_ok());
+        self.metrics.add_fork_control_latency_ns(
+            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        );
+        result
+    }
+
     pub async fn fork_revision(
         &self,
         revision: BaseRevision,

@@ -54,6 +54,7 @@ should not be treated as current behavior without checking the source.
 | Configuration | [operations/configuration.md](operations/configuration.md) |
 | Binary deployment | [operations/binary-deployment.md](operations/binary-deployment.md) |
 | Control plane | [operations/control-plane.md](operations/control-plane.md) |
+| Manager lifecycle API | [operations/manager.md](operations/manager.md) |
 | Observability | [operations/observability.md](operations/observability.md) |
 | Profiling | [operations/profiling.md](operations/profiling.md) |
 | Stats tool | [operations/stats-tool.md](operations/stats-tool.md) |
