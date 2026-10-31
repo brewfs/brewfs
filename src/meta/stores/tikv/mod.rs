@@ -1392,10 +1392,20 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn from_config(config: Config) -> Result<Self, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::FromConfig,
+            "tikv",
+        );
         Self::from_config_inner(config).await
     }
 
     async fn stat(&self, ino: i64) -> Result<Option<FileAttr>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Stat,
+            self.name(),
+        );
         let operation = "stat";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -1409,6 +1419,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StatFs,
+            self.name(),
+        );
         let operation = "stat_fs";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -1438,6 +1453,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Lookup,
+            self.name(),
+        );
         let operation = "lookup";
         let name = name.to_string();
         self.read_txn(operation, |store, txn| {
@@ -1453,6 +1473,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::LookupPath,
+            self.name(),
+        );
         if path.is_empty() {
             return Ok(None);
         }
@@ -1486,6 +1511,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Readdir,
+            self.name(),
+        );
         let operation = "readdir";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -1525,6 +1555,11 @@ impl MetaStore for TiKvMetaStore {
         start: &str,
         limit: usize,
     ) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReaddirPage,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1572,6 +1607,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Mkdir,
+            self.name(),
+        );
         let operation = "mkdir";
         self.write_txn_serialized(operation, parent as u64, |store, txn| {
             let name = name.clone();
@@ -1585,6 +1625,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Rmdir,
+            self.name(),
+        );
         let operation = "rmdir";
         let name = name.to_string();
         self.write_txn_serialized(operation, parent as u64, |store, txn| {
@@ -1627,6 +1672,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFile,
+            self.name(),
+        );
         Ok(self.create_file_with_attr(parent, name).await?.ino)
     }
 
@@ -1635,6 +1685,11 @@ impl MetaStore for TiKvMetaStore {
         parent: i64,
         name: String,
     ) -> Result<CreateEntryResult, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFileWithAttr,
+            self.name(),
+        );
         let operation = "create_file";
         self.write_txn_serialized(operation, parent as u64, |store, txn| {
             let name = name.clone();
@@ -1667,6 +1722,11 @@ impl MetaStore for TiKvMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateNode,
+            self.name(),
+        );
         if !kind.is_special_node() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -1695,6 +1755,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Link,
+            self.name(),
+        );
         if ino == ROOT_INODE {
             return Err(MetaError::NotSupported(
                 "cannot create hard links to the root inode".to_string(),
@@ -1791,6 +1856,11 @@ impl MetaStore for TiKvMetaStore {
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Symlink,
+            self.name(),
+        );
         let operation = "symlink";
         let name = name.to_string();
         let target = target.to_string();
@@ -1820,6 +1890,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn read_symlink(&self, ino: i64) -> Result<String, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReadSymlink,
+            self.name(),
+        );
         let operation = "read_symlink";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -1841,6 +1916,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Unlink,
+            self.name(),
+        );
         let operation = "unlink";
         let name = name.to_string();
         self.write_txn_serialized(operation, parent as u64, |store, txn| {
@@ -1872,6 +1952,11 @@ impl MetaStore for TiKvMetaStore {
         new_name: String,
         noreplace: bool,
     ) -> Result<RenameOutcome, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameWithMode,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             let ino = self
                 .lookup(old_parent, old_name)
@@ -2113,6 +2198,11 @@ impl MetaStore for TiKvMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameExchange,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
         }
@@ -2260,6 +2350,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetFileSize,
+            self.name(),
+        );
         let operation = "set_file_size";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -2284,6 +2379,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ExtendFileSize,
+            self.name(),
+        );
         let operation = "extend_file_size";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -2317,6 +2417,11 @@ impl MetaStore for TiKvMetaStore {
         req: &SetAttrRequest,
         flags: SetAttrFlags,
     ) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetAttr,
+            self.name(),
+        );
         let operation = "set_attr";
         let req = *req;
         let clear_suid = flags.contains(SetAttrFlags::CLEAR_SUID);
@@ -2398,6 +2503,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn open(&self, ino: i64, flags: OpenFlags) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Open,
+            self.name(),
+        );
         let operation = "open";
         let truncate = flags.contains(OpenFlags::TRUNC);
         if !truncate {
@@ -2457,6 +2567,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn close(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Close,
+            self.name(),
+        );
         if self.stat(ino).await?.is_some() {
             Ok(())
         } else {
@@ -2465,6 +2580,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn get_names(&self, ino: i64) -> Result<Vec<(Option<i64>, String)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetNames,
+            self.name(),
+        );
         if ino == ROOT_INODE {
             return Ok(vec![(None, "/".to_string())]);
         }
@@ -2497,6 +2617,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn get_paths(&self, ino: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPaths,
+            self.name(),
+        );
         if ino == ROOT_INODE {
             return Ok(vec!["/".to_string()]);
         }
@@ -2559,6 +2684,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn initialize(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Initialize,
+            self.name(),
+        );
         let operation = "initialize";
         let (root_exists, counter_exists) = self
             .read_txn(operation, |store, txn| {
@@ -2612,6 +2742,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetDeletedFiles,
+            self.name(),
+        );
         let operation = "get_deleted_files";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -2631,6 +2766,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveFileMetadata,
+            self.name(),
+        );
         let operation = "remove_file_metadata";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -2642,6 +2782,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetSlices,
+            self.name(),
+        );
         let operation = "get_slices";
         self.read_txn(operation, |store, txn| {
             Box::pin(async move { store.txn_get_slices(txn, chunk_id, false, operation).await })
@@ -2650,6 +2795,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListChunkIds,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -2711,6 +2861,11 @@ impl MetaStore for TiKvMetaStore {
         new_slices: &[SliceDesc],
         old_slices_to_delay: &[u8],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompact,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             return Err(MetaError::Internal(
                 "Invalid delayed data length".to_string(),
@@ -2755,6 +2910,11 @@ impl MetaStore for TiKvMetaStore {
         old_slices_to_delay: &[u8],
         expected_slices: &[SliceDesc],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompactWithVersion,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             return Err(MetaError::Internal(
                 "Invalid delayed data length".to_string(),
@@ -2831,6 +2991,11 @@ impl MetaStore for TiKvMetaStore {
         size: u64,
         operation_name: &str,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RecordUncommittedSlice,
+            self.name(),
+        );
         let operation = "record_uncommitted_slice";
         let operation_name = operation_name.to_string();
         let now = Self::now_secs();
@@ -2890,6 +3055,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmSliceCommitted,
+            self.name(),
+        );
         let operation = "confirm_slice_committed";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -2906,6 +3076,11 @@ impl MetaStore for TiKvMetaStore {
         batch_size: usize,
         max_age_secs: i64,
     ) -> Result<Vec<(u64, u64, u64, i64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ProcessDelayedSlices,
+            self.name(),
+        );
         if batch_size == 0 {
             return Ok(Vec::new());
         }
@@ -3001,6 +3176,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn confirm_delayed_deleted(&self, delayed_ids: &[i64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmDelayedDeleted,
+            self.name(),
+        );
         if delayed_ids.is_empty() {
             return Ok(());
         }
@@ -3031,6 +3211,11 @@ impl MetaStore for TiKvMetaStore {
         max_age_secs: i64,
         batch_size: usize,
     ) -> Result<Vec<(u64, u64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupOrphanUncommittedSlices,
+            self.name(),
+        );
         if batch_size == 0 {
             return Ok(Vec::new());
         }
@@ -3140,6 +3325,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn delete_uncommitted_slices(&self, slice_ids: &[u64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::DeleteUncommittedSlices,
+            self.name(),
+        );
         if slice_ids.is_empty() {
             return Ok(());
         }
@@ -3162,6 +3352,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn append_slice(&self, chunk_id: u64, slice: SliceDesc) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::AppendSlice,
+            self.name(),
+        );
         let operation = "append_slice";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
@@ -3182,6 +3377,11 @@ impl MetaStore for TiKvMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Write,
+            self.name(),
+        );
         let operation = "write";
         self.write_txn_serialized(operation, ino as u64, |store, txn| {
             Box::pin(async move {
@@ -3220,6 +3420,11 @@ impl MetaStore for TiKvMetaStore {
         inode: i64,
         query: &FileLockQuery,
     ) -> Result<FileLockInfo, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPlock,
+            self.name(),
+        );
         let operation = "get_plock";
         let sid = self.lock_session;
         let query = *query;
@@ -3257,6 +3462,11 @@ impl MetaStore for TiKvMetaStore {
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetPlock,
+            self.name(),
+        );
         let new_lock = PlockRecord::new(lock_type, pid, range.start, range.end);
         let mut attempt = 0usize;
 
@@ -3276,6 +3486,11 @@ impl MetaStore for TiKvMetaStore {
     }
 
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::NextId,
+            self.name(),
+        );
         if key == SLICE_ID_KEY {
             return self.next_leased_slice_id().await;
         }

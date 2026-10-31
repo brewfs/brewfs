@@ -64,12 +64,27 @@ fn long_version() -> &'static str {
     about = "BrewFS FUSE CLI"
 )]
 pub struct Cli {
+    /// Expose Prometheus metrics for this mount (requires observability build).
+    #[cfg(feature = "observability")]
+    #[arg(long, global = true, env = "BREWFS_METRICS", default_value_t = false)]
+    pub metrics: bool,
+    #[cfg(feature = "observability")]
+    #[arg(
+        long,
+        global = true,
+        env = "BREWFS_METRICS_ADDR",
+        default_value = "127.0.0.1:9567"
+    )]
+    pub metrics_addr: std::net::SocketAddr,
     #[command(subcommand)]
     pub cmd: Command,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Display live QPS, estimated P50/P99, object traffic and writeback debt.
+    #[cfg(feature = "observability")]
+    Stats(crate::observability::stats::StatsArgs),
     /// Mount BrewFS via FUSE.
     #[command(
         after_help = "Examples:\n  brewfs mount --config examples/mount-config.local.yaml\n  brewfs mount --config examples/mount-config.s3.yaml\n  brewfs mount --config examples/mount-config.local.yaml /mnt/slayer\n  brewfs mount --config examples/mount-config.s3.yaml --s3-bucket override-bucket"

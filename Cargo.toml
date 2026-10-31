@@ -344,6 +344,7 @@ axum-server = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 
 [features]
+observability = []
 default = ["fuse-io-uring-runtime", "gateway-s3", "gateway-webdav"]
 fuse-io-uring-runtime = ["asyncfuse/io-uring-runtime"]
 fuse-tokio-runtime = ["asyncfuse/tokio-runtime"]

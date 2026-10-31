@@ -20,6 +20,9 @@ pub(crate) mod manager;
 // Expose meta for E2E testing - tests should rely on design contracts, not impl details
 pub mod meta;
 pub mod native_base;
+#[cfg(feature = "observability")]
+pub mod observability;
+mod observation_macros;
 pub(crate) mod posix;
 pub mod sdk_fs;
 // Expose vfs for E2E testing - tests should rely on design contracts, not impl details

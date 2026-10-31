@@ -147,6 +147,11 @@ where
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
     let request_observer = fs.stats().clone();
+    #[cfg(feature = "observability")]
+    let fs = {
+        crate::observability::attach(fs.stats());
+        crate::observability::fuse::ObservedFilesystem(fs)
+    };
     // Prefer unprivileged mount on Linux (requires fusermount3 in PATH)
     let handle = if fuse_op_log_enabled() {
         configure_session_with_observer(
@@ -187,6 +192,11 @@ where
     let options = mount_options_for_fs(&fs);
     let budgeted = fs.prepared_max_read_bytes().is_some();
     let request_observer = fs.stats().clone();
+    #[cfg(feature = "observability")]
+    let fs = {
+        crate::observability::attach(fs.stats());
+        crate::observability::fuse::ObservedFilesystem(fs)
+    };
     let handle = if fuse_op_log_enabled() {
         configure_session_with_observer(
             asyncfuse::raw::Session::new(options),

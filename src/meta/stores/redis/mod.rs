@@ -2850,6 +2850,11 @@ impl MetaStore for RedisMetaStore {
         value: &[u8],
         flags: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetXattr,
+            self.name(),
+        );
         let create_only = flags & (libc::XATTR_CREATE as u32) != 0;
         let replace_only = flags & (libc::XATTR_REPLACE as u32) != 0;
         let result: String = redis::Script::new(SET_XATTR_LUA)
@@ -2891,6 +2896,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetXattr,
+            self.name(),
+        );
         let node_key = self.node_key(inode);
         let xattr_key = self.xattr_key(inode);
         let mut conn = self.conn.clone();
@@ -2912,6 +2922,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn list_xattr(&self, inode: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListXattr,
+            self.name(),
+        );
         let node_key = self.node_key(inode);
         let xattr_key = self.xattr_key(inode);
         let mut conn = self.conn.clone();
@@ -2932,6 +2947,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveXattr,
+            self.name(),
+        );
         let result: String = redis::Script::new(REMOVE_XATTR_LUA)
             .key(self.node_key(inode))
             .key(self.xattr_key(inode))
@@ -2958,11 +2978,21 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn from_config(config: Config) -> Result<Self, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::FromConfig,
+            "redis-meta-store",
+        );
         Self::from_config_inner(config).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn stat(&self, ino: i64) -> Result<Option<FileAttr>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Stat,
+            self.name(),
+        );
         Ok(self.get_node(ino).await?.map(|n| n.as_file_attr()))
     }
 
@@ -2973,6 +3003,11 @@ impl MetaStore for RedisMetaStore {
         fields(inode_count = inodes.len())
     )]
     async fn batch_stat(&self, inodes: &[i64]) -> Result<Vec<Option<FileAttr>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::BatchStat,
+            self.name(),
+        );
         let nodes = self.get_nodes(inodes).await?;
         Ok(nodes
             .into_iter()
@@ -2982,6 +3017,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Lookup,
+            self.name(),
+        );
         self.directory_child(parent, name).await
     }
 
@@ -2991,6 +3031,11 @@ impl MetaStore for RedisMetaStore {
         parent: i64,
         name: &str,
     ) -> Result<Option<(i64, FileAttr)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::LookupWithAttr,
+            self.name(),
+        );
         let script = redis::Script::new(LOOKUP_WITH_ATTR_LUA);
         let result: String = script
             .key(self.dir_key(parent))
@@ -3026,6 +3071,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::LookupPath,
+            self.name(),
+        );
         if path.is_empty() {
             return Ok(None);
         }
@@ -3048,6 +3098,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Readdir,
+            self.name(),
+        );
         let node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         if node.kind != NodeKind::Dir {
             return Err(MetaError::NotDirectory(ino));
@@ -3078,6 +3133,11 @@ impl MetaStore for RedisMetaStore {
         start: &str,
         limit: usize,
     ) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReaddirPage,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -3141,6 +3201,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Mkdir,
+            self.name(),
+        );
         Ok(self.create_entry(parent, name, FileType::Dir).await?.ino)
     }
 
@@ -3150,11 +3215,21 @@ impl MetaStore for RedisMetaStore {
         parent: i64,
         name: String,
     ) -> Result<CreateEntryResult, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::MkdirWithAttr,
+            self.name(),
+        );
         self.create_entry(parent, name, FileType::Dir).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Rmdir,
+            self.name(),
+        );
         // Step 1: Lookup child ino first (preserves NotFound(parent) behavior)
         let Some(child) = self.lookup(parent, name).await? else {
             return Err(MetaError::NotFound(parent));
@@ -3207,6 +3282,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFile,
+            self.name(),
+        );
         Ok(self.create_entry(parent, name, FileType::File).await?.ino)
     }
 
@@ -3216,6 +3296,11 @@ impl MetaStore for RedisMetaStore {
         parent: i64,
         name: String,
     ) -> Result<CreateEntryResult, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFileWithAttr,
+            self.name(),
+        );
         self.create_entry(parent, name, FileType::File).await
     }
 
@@ -3230,6 +3315,11 @@ impl MetaStore for RedisMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateNode,
+            self.name(),
+        );
         if kind.is_dir() || kind.is_symlink() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -3254,6 +3344,11 @@ impl MetaStore for RedisMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<CreateEntryResult, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateNodeWithAttr,
+            self.name(),
+        );
         if kind.is_dir() || kind.is_symlink() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -3267,6 +3362,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Link,
+            self.name(),
+        );
         if ino == ROOT_INODE {
             return Err(MetaError::NotSupported(
                 "cannot create hard links to the root inode".into(),
@@ -3345,6 +3445,11 @@ impl MetaStore for RedisMetaStore {
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Symlink,
+            self.name(),
+        );
         let created = self
             .create_entry(parent, name.to_string(), FileType::Symlink)
             .await?;
@@ -3366,6 +3471,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn read_symlink(&self, ino: i64) -> Result<String, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReadSymlink,
+            self.name(),
+        );
         let node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
 
         if node.kind != NodeKind::Symlink {
@@ -3380,6 +3490,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Unlink,
+            self.name(),
+        );
         let dir_key = self.dir_key(parent);
         let parent_node_key = self.node_key(parent);
         let deleted_set_key = self.deleted_set_key();
@@ -3438,6 +3553,11 @@ impl MetaStore for RedisMetaStore {
         new_name: String,
         noreplace: bool,
     ) -> Result<RenameOutcome, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameWithMode,
+            self.name(),
+        );
         if !noreplace {
             return self
                 .rename_with_outcome(old_parent, old_name, new_parent, new_name)
@@ -3517,6 +3637,11 @@ impl MetaStore for RedisMetaStore {
         new_parent: i64,
         new_name: String,
     ) -> Result<crate::meta::store::RenameOutcome, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameWithOutcome,
+            self.name(),
+        );
         // Self-rename optimization: no-op if same location
         if old_parent == new_parent && old_name == new_name {
             let ino = self
@@ -3616,6 +3741,11 @@ impl MetaStore for RedisMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameExchange,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
         }
@@ -3693,6 +3823,11 @@ impl MetaStore for RedisMetaStore {
         req: &SetAttrRequest,
         flags: SetAttrFlags,
     ) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetAttr,
+            self.name(),
+        );
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         let mut ctime_update = false;
         let now = current_time();
@@ -3767,6 +3902,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetFileSize,
+            self.name(),
+        );
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         let now = current_time();
         let old_size = node.attr.size;
@@ -3781,6 +3921,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ExtendFileSize,
+            self.name(),
+        );
         let script = redis::Script::new(EXTEND_FILE_SIZE_LUA);
         let node_key = self.node_key(ino);
         let now = current_time();
@@ -3810,6 +3955,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size, chunk_size))]
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Truncate,
+            self.name(),
+        );
         let mut node = self.get_node(ino).await?.ok_or(MetaError::NotFound(ino))?;
         let old_size = node.attr.size;
         let now = current_time();
@@ -3839,6 +3989,11 @@ impl MetaStore for RedisMetaStore {
         delta: &mut DirStat,
         attr: &mut FileAttr,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::FallocateFile,
+            self.name(),
+        );
         if mode != 0 {
             return Err(MetaError::NotSupported(format!(
                 "Redis fallocate mode {mode} is not supported"
@@ -3892,6 +4047,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_names(&self, ino: i64) -> Result<Vec<(Option<i64>, String)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetNames,
+            self.name(),
+        );
         let Some(node) = self.get_node(ino).await? else {
             return Ok(vec![]);
         };
@@ -3920,6 +4080,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_paths(&self, ino: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPaths,
+            self.name(),
+        );
         if ino == ROOT_INODE {
             return Ok(vec!["/".to_string()]);
         }
@@ -3940,11 +4105,21 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn initialize(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Initialize,
+            self.name(),
+        );
         self.init_root_directory().await
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StatFs,
+            self.name(),
+        );
         let mut cached = self.stat_fs_cache.lock().await;
         if let Some((cached_at, snapshot)) = cached.as_ref()
             && cached_at.elapsed() < STAT_FS_CACHE_TTL
@@ -4013,6 +4188,11 @@ impl MetaStore for RedisMetaStore {
         parent: i64,
         name: String,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RestoreDeletedFile,
+            self.name(),
+        );
         let result: String = namespace_script(include_str!("restore_trash.lua"))
             .key(self.node_key(ino))
             .key(self.node_key(parent))
@@ -4044,6 +4224,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetDeletedFiles,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let raw: Vec<String> = conn
             .hkeys(self.deleted_set_key())
@@ -4068,6 +4253,11 @@ impl MetaStore for RedisMetaStore {
         batch_size: usize,
         max_age_secs: i64,
     ) -> Result<Vec<(u64, u64, u64, i64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ProcessDelayedSlices,
+            self.name(),
+        );
         if batch_size == 0 {
             return Ok(vec![]);
         }
@@ -4206,6 +4396,11 @@ impl MetaStore for RedisMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(delayed_count = delayed_ids.len()))]
     // GC Phase 2: permanently remove delayed slice records after their blocks have been deleted.
     async fn confirm_delayed_deleted(&self, delayed_ids: &[i64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmDelayedDeleted,
+            self.name(),
+        );
         if delayed_ids.is_empty() {
             return Ok(());
         }
@@ -4229,6 +4424,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveFileMetadata,
+            self.name(),
+        );
         let result: String = redis::Script::new(REMOVE_FILE_METADATA_LUA)
             .key(self.node_key(ino))
             .key(self.deleted_set_key())
@@ -4266,6 +4466,11 @@ impl MetaStore for RedisMetaStore {
         fields(chunk_id, slice_count = tracing::field::Empty)
     )]
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetSlices,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let raw: Vec<Vec<u8>> = redis::cmd("LRANGE")
             .arg(self.chunk_key(chunk_id))
@@ -4293,6 +4498,11 @@ impl MetaStore for RedisMetaStore {
         &self,
         chunk_id: u64,
     ) -> Result<(Option<u64>, Vec<SliceDesc>), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetSlicesWithVersion,
+            self.name(),
+        );
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
         let mut conn = self.conn.clone();
@@ -4327,6 +4537,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(chunk_id))]
     async fn get_chunk_version(&self, chunk_id: u64) -> Result<Option<u64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetChunkVersion,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let version: Option<u64> = redis::cmd("GET")
             .arg(self.chunk_version_key(chunk_id))
@@ -4346,6 +4561,11 @@ impl MetaStore for RedisMetaStore {
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]
     async fn append_slice(&self, chunk_id: u64, slice: SliceDesc) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::AppendSlice,
+            self.name(),
+        );
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
         let data = crate::meta::serialization::serialize_meta(&slice)?;
@@ -4378,6 +4598,11 @@ impl MetaStore for RedisMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Write,
+            self.name(),
+        );
         // Combined Lua script: append slice + extend file size in a single RTT.
         let chunk_key = self.chunk_key(chunk_id);
         let version_key = self.chunk_version_key(chunk_id);
@@ -4421,6 +4646,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(limit))]
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListChunkIds,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(vec![]);
         }
@@ -4520,6 +4750,11 @@ impl MetaStore for RedisMetaStore {
         new_slices: &[SliceDesc],
         old_slices_to_delay: &[u8],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompact,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             tracing::warn!(
                 chunk_id = chunk_id,
@@ -4638,6 +4873,11 @@ impl MetaStore for RedisMetaStore {
         old_slices_to_delay: &[u8],
         expected_slices: &[SliceDesc],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompactWithVersion,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             tracing::warn!(
                 chunk_id = chunk_id,
@@ -4797,6 +5037,11 @@ impl MetaStore for RedisMetaStore {
         size: u64,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RecordUncommittedSlice,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let now = Utc::now().timestamp();
         let uc_key = self.uncommitted_key(slice_id);
@@ -4821,6 +5066,11 @@ impl MetaStore for RedisMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(slice_id))]
     // Mark an uncommitted slice as committed by removing its tracking record.
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmSliceCommitted,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let uc_key = self.uncommitted_key(slice_id);
 
@@ -4847,6 +5097,11 @@ impl MetaStore for RedisMetaStore {
         max_age_secs: i64,
         batch_size: usize,
     ) -> Result<Vec<(u64, u64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupOrphanUncommittedSlices,
+            self.name(),
+        );
         if batch_size == 0 {
             return Ok(vec![]);
         }
@@ -4970,6 +5225,11 @@ impl MetaStore for RedisMetaStore {
     #[tracing::instrument(level = "trace", skip(self), fields(slice_count = slice_ids.len()))]
     // Delete uncommitted slice tracking records after their orphan blocks have been cleaned up.
     async fn delete_uncommitted_slices(&self, slice_ids: &[u64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::DeleteUncommittedSlices,
+            self.name(),
+        );
         if slice_ids.is_empty() {
             return Ok(());
         }
@@ -4997,11 +5257,21 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(key))]
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::NextId,
+            self.name(),
+        );
         self.alloc_id(key).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(name))]
     async fn get_counter(&self, name: &str) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetCounter,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let value: Option<i64> = conn.get(name).await.map_err(redis_err)?;
         Ok(value.unwrap_or(0))
@@ -5009,6 +5279,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(name, delta))]
     async fn incr_counter(&self, name: &str, delta: i64) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::IncrCounter,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         conn.incr(name, delta).await.map_err(redis_err)
     }
@@ -5020,6 +5295,11 @@ impl MetaStore for RedisMetaStore {
         value: i64,
         diff: i64,
     ) -> Result<bool, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetCounterIfSmall,
+            self.name(),
+        );
         let script = redis::Script::new(
             r#"
             local current = redis.call('GET', KEYS[1])
@@ -5050,6 +5330,11 @@ impl MetaStore for RedisMetaStore {
         session_info: SessionInfo,
         token: CancellationToken,
     ) -> Result<Session, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StartSession,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
 
         // Increment the global fencing-token epoch so that locks written by
@@ -5095,6 +5380,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn shutdown_session(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ShutdownSession,
+            self.name(),
+        );
         let session_id = self.get_sid()?;
         self.cleanup_session_by_id(session_id, None).await?;
         Ok(())
@@ -5102,6 +5392,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn cleanup_sessions(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupSessions,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let now = Utc::now().timestamp_millis();
         let sessions: Vec<String> = redis::Cmd::zrangebyscore(ALL_SESSIONS_KEY, "-inf", now)
@@ -5118,6 +5413,11 @@ impl MetaStore for RedisMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(lock_name = ?lock_name, ttl_secs))]
     async fn get_global_lock(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetGlobalLock,
+            self.name(),
+        );
         let lock_name = lock_name.to_string();
         let mut conn = self.conn.clone();
         let now = Utc::now().timestamp_millis();
@@ -5209,6 +5509,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn is_global_lock_held(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::IsGlobalLockHeld,
+            self.name(),
+        );
         let lock_name = lock_name.to_string();
         let mut conn = self.conn.clone();
         let now = Utc::now().timestamp_millis();
@@ -5236,6 +5541,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn release_global_lock(&self, lock_name: LockName) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReleaseGlobalLock,
+            self.name(),
+        );
         let lock_name = lock_name.to_string();
         let expected_token = match self.global_lock_tokens.lock() {
             Ok(tokens) => tokens.get(&lock_name).cloned(),
@@ -5302,6 +5612,11 @@ impl MetaStore for RedisMetaStore {
         inode: i64,
         query: &FileLockQuery,
     ) -> Result<FileLockInfo, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPlock,
+            self.name(),
+        );
         let mut conn = self.conn.clone();
         let plock_key = self.plock_key(inode);
         let sid = self.get_sid()?;
@@ -5364,6 +5679,11 @@ impl MetaStore for RedisMetaStore {
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetPlock,
+            self.name(),
+        );
         let new_lock = PlockRecord::new(lock_type, pid, range.start, range.end);
 
         // If blocking: add a small random delay before the first attempt so
@@ -5414,6 +5734,11 @@ impl MetaStore for RedisMetaStore {
         block: bool,
         lock_type: FileLockType,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetFlock,
+            self.name(),
+        );
         if block {
             let initial_jitter_ms = (rand::random::<f64>() * 2.0) as u64;
             tokio::time::sleep(tokio::time::Duration::from_millis(initial_jitter_ms)).await;
@@ -5475,6 +5800,11 @@ impl MetaStore for RedisMetaStore {
     }
 
     async fn get_flock(&self, inode: i64, owner: i64) -> Result<FileLockType, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetFlock,
+            self.name(),
+        );
         let sid = self.get_sid()?;
         let field = self.plock_field(&sid, owner);
         let flock_key = format!("flock:{inode}");

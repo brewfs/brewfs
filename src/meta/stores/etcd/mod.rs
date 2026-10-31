@@ -1718,11 +1718,21 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn from_config(config: Config) -> Result<Self, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::FromConfig,
+            "etcd",
+        );
         Self::from_config_inner(config).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn stat(&self, ino: i64) -> Result<Option<FileAttr>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Stat,
+            self.name(),
+        );
         // Query reverse index once to get all metadata
         let reverse_key = Self::etcd_reverse_key(ino);
         if let Ok(Some(entry_info)) = self
@@ -1737,6 +1747,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StatFs,
+            self.name(),
+        );
         let mut used_space = 0u64;
         let mut used_inodes = 0u64;
         let mut start_key: Option<String> = None;
@@ -1791,6 +1806,11 @@ impl MetaStore for EtcdMetaStore {
         fields(inode_count = inodes.len())
     )]
     async fn batch_stat(&self, inodes: &[i64]) -> Result<Vec<Option<FileAttr>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::BatchStat,
+            self.name(),
+        );
         if inodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -1865,6 +1885,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Lookup,
+            self.name(),
+        );
         let forward_key = Self::etcd_forward_key(parent, name);
         if let Some(entry) = self.etcd_get_json::<EtcdForwardEntry>(&forward_key).await? {
             Ok(Some(entry.inode))
@@ -1875,6 +1900,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::LookupPath,
+            self.name(),
+        );
         if path == "/" {
             return Ok(Some((1, FileType::Dir)));
         }
@@ -1916,6 +1946,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Readdir,
+            self.name(),
+        );
         let access_meta = self
             .get_access_meta(ino)
             .await?
@@ -1951,6 +1986,11 @@ impl MetaStore for EtcdMetaStore {
         start: &str,
         limit: usize,
     ) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReaddirPage,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1988,11 +2028,21 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Mkdir,
+            self.name(),
+        );
         self.create_directory(parent, name).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Rmdir,
+            self.name(),
+        );
         let forward_key = Self::etcd_forward_key(parent, name);
         let forward_entry: EtcdForwardEntry =
             match self.etcd_get_json::<EtcdForwardEntry>(&forward_key).await? {
@@ -2050,6 +2100,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFile,
+            self.name(),
+        );
         self.create_node_internal(parent, name, FileType::File, 0o644, 0, 0, 0)
             .await
     }
@@ -2065,6 +2120,11 @@ impl MetaStore for EtcdMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateNode,
+            self.name(),
+        );
         if !kind.is_special_node() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -2077,6 +2137,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Link,
+            self.name(),
+        );
         if ino == 1 {
             return Err(MetaError::NotSupported(
                 "cannot create hard links to the root inode".into(),
@@ -2222,6 +2287,11 @@ impl MetaStore for EtcdMetaStore {
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Symlink,
+            self.name(),
+        );
         let parent_meta = self
             .get_access_meta(parent)
             .await?
@@ -2296,6 +2366,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn read_symlink(&self, ino: i64) -> Result<String, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReadSymlink,
+            self.name(),
+        );
         let reverse_key = Self::etcd_reverse_key(ino);
         let entry_info = self
             .etcd_get_json_serde_only::<EtcdEntryInfo>(&reverse_key)
@@ -2313,6 +2388,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Unlink,
+            self.name(),
+        );
         let name = name.to_string();
         let forward_key = Self::etcd_forward_key(parent, &name);
 
@@ -2426,6 +2506,11 @@ impl MetaStore for EtcdMetaStore {
         new_name: String,
         noreplace: bool,
     ) -> Result<RenameOutcome, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameWithMode,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             let ino = self
                 .lookup(old_parent, old_name)
@@ -2681,6 +2766,11 @@ impl MetaStore for EtcdMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameExchange,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
         }
@@ -2835,6 +2925,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetFileSize,
+            self.name(),
+        );
         let reverse_key = Self::etcd_reverse_key(ino);
 
         EtcdTxn::new(&self.client)
@@ -2868,6 +2963,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ExtendFileSize,
+            self.name(),
+        );
         let reverse_key = Self::etcd_reverse_key(ino);
 
         EtcdTxn::new(&self.client)
@@ -2904,6 +3004,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size, chunk_size))]
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Truncate,
+            self.name(),
+        );
         let reverse_key = Self::etcd_reverse_key(ino);
 
         let deferred_delete_keys = EtcdTxn::new(&self.client)
@@ -2940,6 +3045,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_names(&self, ino: i64) -> Result<Vec<(Option<i64>, String)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetNames,
+            self.name(),
+        );
         if ino == 1 {
             return Ok(vec![(None, "/".to_string())]);
         }
@@ -2978,6 +3088,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_paths(&self, ino: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPaths,
+            self.name(),
+        );
         if ino == 1 {
             return Ok(vec!["/".to_string()]);
         }
@@ -3001,11 +3116,21 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn initialize(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Initialize,
+            self.name(),
+        );
         Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetDeletedFiles,
+            self.name(),
+        );
         // Get all keys with reverse index prefix "r:"
         let resp = get_with_retry(&self.client, "r:", || {
             Some(etcd_client::GetOptions::new().with_prefix())
@@ -3035,6 +3160,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveFileMetadata,
+            self.name(),
+        );
         let mut client = self.client.clone();
 
         let reverse_key = Self::etcd_reverse_key(ino);
@@ -3075,6 +3205,11 @@ impl MetaStore for EtcdMetaStore {
         fields(chunk_id, slice_count = tracing::field::Empty)
     )]
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetSlices,
+            self.name(),
+        );
         let key = key_for_slice(chunk_id);
         let slices: Vec<SliceDesc> = self
             .etcd_get_json(&key)
@@ -3091,6 +3226,11 @@ impl MetaStore for EtcdMetaStore {
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]
     async fn append_slice(&self, chunk_id: u64, slice: SliceDesc) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::AppendSlice,
+            self.name(),
+        );
         let key = key_for_slice(chunk_id);
 
         EtcdTxn::new(&self.client)
@@ -3117,6 +3257,11 @@ impl MetaStore for EtcdMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Write,
+            self.name(),
+        );
         let slice_key = key_for_slice(chunk_id);
         let inode_key = Self::etcd_reverse_key(ino);
         let lock_key = LockName::ChunkCompactLock(chunk_id).to_string();
@@ -3174,6 +3319,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(key))]
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::NextId,
+            self.name(),
+        );
         self.generate_id(key).await
     }
 
@@ -3185,6 +3335,11 @@ impl MetaStore for EtcdMetaStore {
         session_info: SessionInfo,
         token: CancellationToken,
     ) -> Result<Session, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StartSession,
+            self.name(),
+        );
         let session_id = Uuid::now_v7();
         let session_key = Self::etcd_session_key(Some(session_id));
         let session_info_key = Self::etcd_session_info_key(Some(session_id));
@@ -3222,6 +3377,11 @@ impl MetaStore for EtcdMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn shutdown_session(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ShutdownSession,
+            self.name(),
+        );
         let session_id = *self.get_sid()?;
         self.shutdown_session_by_id(session_id).await?;
         Ok(())
@@ -3230,10 +3390,20 @@ impl MetaStore for EtcdMetaStore {
     // Etcd cleanup is performed by the lease keeper
     #[tracing::instrument(level = "trace", skip(self))]
     async fn cleanup_sessions(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupSessions,
+            self.name(),
+        );
         return Ok(());
     }
     #[tracing::instrument(level = "trace", skip(self), fields(lock_name = ?lock_name, ttl_secs))]
     async fn get_global_lock(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetGlobalLock,
+            self.name(),
+        );
         let lock_key = lock_name.to_string();
         let nonce: u64 = rand::random();
         let result = EtcdTxn::new(&self.client)
@@ -3284,6 +3454,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn is_global_lock_held(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::IsGlobalLockHeld,
+            self.name(),
+        );
         let lock_key = lock_name.to_string();
         let now = Utc::now().timestamp_millis();
         let ttl_millis = Duration::seconds(ttl_secs as i64).num_milliseconds();
@@ -3306,6 +3481,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn release_global_lock(&self, lock_name: LockName) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReleaseGlobalLock,
+            self.name(),
+        );
         let lock_key = lock_name.to_string();
         let expected_token = match self.global_lock_tokens.lock() {
             Ok(tokens) => tokens.get(&lock_key).cloned(),
@@ -3361,6 +3541,11 @@ impl MetaStore for EtcdMetaStore {
         req: &SetAttrRequest,
         flags: SetAttrFlags,
     ) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetAttr,
+            self.name(),
+        );
         let reverse_key = Self::etcd_reverse_key(ino);
         let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let req = *req;
@@ -3449,6 +3634,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListChunkIds,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(vec![]);
         }
@@ -3462,6 +3652,11 @@ impl MetaStore for EtcdMetaStore {
         new_slices: &[SliceDesc],
         old_slices_to_delay: &[u8],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompact,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             return Err(MetaError::Internal(
                 "Invalid delayed data length".to_string(),
@@ -3514,6 +3709,11 @@ impl MetaStore for EtcdMetaStore {
         old_slices_to_delay: &[u8],
         expected_slices: &[SliceDesc],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompactWithVersion,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             return Err(MetaError::Internal(
                 "Invalid delayed data length".to_string(),
@@ -3585,6 +3785,11 @@ impl MetaStore for EtcdMetaStore {
         size: u64,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RecordUncommittedSlice,
+            self.name(),
+        );
         let uncommitted_id_key = UNCOMMITTED_ID_KEY.to_string();
         let record_key = Self::etcd_uncommitted_pending_key(slice_id);
         let operation = operation.to_string();
@@ -3628,6 +3833,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmSliceCommitted,
+            self.name(),
+        );
         let pending_key = Self::etcd_uncommitted_pending_key(slice_id);
         let orphan_key = Self::etcd_uncommitted_orphan_key(slice_id);
 
@@ -3666,6 +3876,11 @@ impl MetaStore for EtcdMetaStore {
         batch_size: usize,
         max_age_secs: i64,
     ) -> Result<Vec<(u64, u64, u64, i64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ProcessDelayedSlices,
+            self.name(),
+        );
         self.promote_truncated_slices(batch_size).await?;
         if batch_size == 0 {
             return Ok(vec![]);
@@ -3737,6 +3952,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn confirm_delayed_deleted(&self, delayed_ids: &[i64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmDelayedDeleted,
+            self.name(),
+        );
         if delayed_ids.is_empty() {
             return Ok(());
         }
@@ -3781,6 +4001,11 @@ impl MetaStore for EtcdMetaStore {
         max_age_secs: i64,
         batch_size: usize,
     ) -> Result<Vec<(u64, u64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupOrphanUncommittedSlices,
+            self.name(),
+        );
         if batch_size == 0 {
             return Ok(vec![]);
         }
@@ -3870,6 +4095,11 @@ impl MetaStore for EtcdMetaStore {
     }
 
     async fn delete_uncommitted_slices(&self, slice_ids: &[u64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::DeleteUncommittedSlices,
+            self.name(),
+        );
         if slice_ids.is_empty() {
             return Ok(());
         }
@@ -3920,6 +4150,11 @@ impl MetaStore for EtcdMetaStore {
         inode: i64,
         query: &FileLockQuery,
     ) -> Result<FileLockInfo, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPlock,
+            self.name(),
+        );
         let key = Self::etcd_plock_key(inode);
         let sid = self
             .sid
@@ -3963,6 +4198,11 @@ impl MetaStore for EtcdMetaStore {
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetPlock,
+            self.name(),
+        );
         let new_lock = PlockRecord::new(lock_type, pid, range.start, range.end);
 
         loop {

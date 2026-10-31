@@ -15,6 +15,12 @@ pub type ObjectByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
 
 #[async_trait]
 pub trait ObjectBackend: Send + Sync {
+    /// Adapters containing another ObjectClient let that inner boundary own
+    /// traffic accounting, so one physical body is not counted twice.
+    #[cfg(feature = "observability")]
+    fn object_metrics_owned_by_inner_client(&self) -> bool {
+        false
+    }
     /// Switch the writable object bucket for a workspace mount. Backends that
     /// do not support bucket selection keep their existing behavior.
     fn set_bucket(&self, _bucket: &str) -> anyhow::Result<()> {
@@ -337,6 +343,32 @@ pub struct ObjectClient<B: ObjectBackend> {
 }
 
 impl<B: ObjectBackend> ObjectClient<B> {
+    #[cfg(feature = "observability")]
+    fn object_timer(
+        &self,
+        put: bool,
+        context: Option<ReadContext>,
+    ) -> Option<crate::observability::ObjectTimer> {
+        if self.backend.object_metrics_owned_by_inner_client() {
+            None
+        } else {
+            crate::observability::ObjectTimer::start(put, self.observation_kind(context))
+        }
+    }
+    #[cfg(feature = "observability")]
+    fn observation_kind(&self, context: Option<ReadContext>) -> usize {
+        match context.or_else(|| self.read_scope.as_ref().map(|(_, context)| *context)) {
+            Some(ReadContext {
+                class: ReadClass::ExternalPayload,
+                ..
+            }) => 2,
+            Some(ReadContext {
+                engine: Engine::PackedV3,
+                ..
+            }) => 1,
+            _ => 0,
+        }
+    }
     pub fn set_bucket(&self, bucket: &str) -> anyhow::Result<()> {
         self.backend.set_bucket(bucket)
     }
@@ -519,9 +551,15 @@ impl<B: ObjectBackend> ObjectClient<B> {
         offset: u64,
         length: u64,
     ) -> Result<ObjectByteStream> {
-        self.backend
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(false, None);
+        let stream = self
+            .backend
             .get_object_range_stream(key, offset, length)
-            .await
+            .await?;
+        #[cfg(feature = "observability")]
+        let stream = crate::observability::observe_stream(stream, observation);
+        Ok(stream)
     }
 
     pub(crate) async fn backend_range_stream_observed(
@@ -532,9 +570,15 @@ impl<B: ObjectBackend> ObjectClient<B> {
         context: ReadContext,
         observer: Arc<ReadObserver>,
     ) -> Result<ObjectByteStream> {
-        self.backend
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(false, Some(context));
+        let stream = self
+            .backend
             .get_object_range_stream_observed(key, offset, length, context, observer)
-            .await
+            .await?;
+        #[cfg(feature = "observability")]
+        let stream = crate::observability::observe_stream(stream, observation);
+        Ok(stream)
     }
 
     pub(crate) async fn backend_etag_observed(
@@ -552,7 +596,9 @@ impl<B: ObjectBackend> ObjectClient<B> {
         expected: Option<u64>,
         context: Option<ReadContext>,
     ) -> Result<Option<ObjectByteStream>> {
-        match &self.read_scope {
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(false, context);
+        let stream = match &self.read_scope {
             Some((observer, base_context)) => {
                 self.backend
                     .get_object_stream_observed(
@@ -564,7 +610,10 @@ impl<B: ObjectBackend> ObjectClient<B> {
                     .await
             }
             None => self.backend.get_object_stream(key).await,
-        }
+        }?;
+        #[cfg(feature = "observability")]
+        let stream = stream.map(|stream| crate::observability::observe_stream(stream, observation));
+        Ok(stream)
     }
 
     /// Native blocks lack a stored length descriptor. `None` records an
@@ -696,22 +745,52 @@ impl<B: ObjectBackend> ObjectClient<B> {
 
     #[allow(dead_code)]
     pub async fn put_object(&self, key: &str, data: &[u8]) -> Result<()> {
-        self.backend.put_object(key, data).await
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(true, None);
+        let result = self.backend.put_object(key, data).await;
+        #[cfg(feature = "observability")]
+        if let (Some(timer), Ok(())) = (observation, &result) {
+            timer.bytes(data.len());
+        }
+        result
     }
 
     pub async fn put_object_vectored(&self, key: &str, chunks: Vec<Bytes>) -> Result<()> {
-        self.backend.put_object_vectored(key, chunks).await
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(true, None);
+        #[cfg(feature = "observability")]
+        let bytes = chunks.iter().map(Bytes::len).sum();
+        let result = self.backend.put_object_vectored(key, chunks).await;
+        #[cfg(feature = "observability")]
+        if let (Some(timer), Ok(())) = (observation, &result) {
+            timer.bytes(bytes);
+        }
+        result
     }
 
     pub async fn put_object_create_only(&self, key: &str, data: &[u8]) -> Result<()> {
-        self.backend.put_object_create_only(key, data).await
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(true, None);
+        let result = self.backend.put_object_create_only(key, data).await;
+        #[cfg(feature = "observability")]
+        if let (Some(timer), Ok(())) = (observation, &result) {
+            timer.bytes(data.len());
+        }
+        result
     }
 
     pub async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if self.read_scope.is_some() {
             anyhow::bail!("observed readonly path forbids unclassified whole-object GET");
         }
-        self.backend.get_object(key).await
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(false, None);
+        let result = self.backend.get_object(key).await;
+        #[cfg(feature = "observability")]
+        if let (Some(timer), Ok(Some(bytes))) = (observation, &result) {
+            timer.bytes(bytes.len());
+        }
+        result
     }
 
     /// Get a range of bytes from an object.
@@ -724,7 +803,14 @@ impl<B: ObjectBackend> ObjectClient<B> {
         if self.read_scope.is_some() {
             anyhow::bail!("observed readonly range requires a typed class");
         }
-        self.backend.get_object_range(key, offset, buf).await
+        #[cfg(feature = "observability")]
+        let observation = self.object_timer(false, None);
+        let result = self.backend.get_object_range(key, offset, buf).await;
+        #[cfg(feature = "observability")]
+        if let (Some(timer), Ok(bytes)) = (observation, &result) {
+            timer.bytes(*bytes);
+        }
+        result
     }
 
     pub async fn get_object_range_stream(
@@ -736,9 +822,7 @@ impl<B: ObjectBackend> ObjectClient<B> {
         if self.read_scope.is_some() {
             anyhow::bail!("observed readonly stream requires a typed class");
         }
-        self.backend
-            .get_object_range_stream(key, offset, length)
-            .await
+        self.backend_range_stream(key, offset, length).await
     }
 
     pub async fn get_object_size(&self, key: &str) -> Result<Option<u64>> {

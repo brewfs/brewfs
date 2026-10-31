@@ -120,7 +120,20 @@ pub async fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let result = match cli.cmd {
-        Command::Mount(args) => mount_cmd(MountConfig::from_sources(*args)?).await,
+        Command::Mount(args) => {
+            let args = MountConfig::from_sources(*args)?;
+            #[cfg(feature = "observability")]
+            let _metrics_server = crate::observability::start(
+                cli.metrics,
+                cli.metrics_addr,
+                format!("{:?}", args.volume_format).to_lowercase(),
+                format!("{:?}", args.meta_backend).to_lowercase(),
+            )
+            .await?;
+            mount_cmd(args).await
+        }
+        #[cfg(feature = "observability")]
+        Command::Stats(args) => crate::observability::stats::run(args).await,
         #[cfg(feature = "workspace-overlay")]
         Command::Workspace(args) => workspace_cmd(args).await,
         Command::Gc(args) => gc_cmd(args).await,

@@ -1391,13 +1391,14 @@ where
 
     fn from_components_with_backend(
         config: VFSConfig,
-        store: Arc<S>,
+        _store: Arc<S>,
         meta_layer: Arc<M>,
         background_tasks: Option<VfsBackgroundTasks>,
         backend: Arc<Backend<S, M>>,
     ) -> Result<Self, VfsError> {
         let layout = config.write.layout;
         let root_ino = meta_layer.root_ino();
+        #[cfg(any(test, feature = "observability"))]
         let meta_metrics = meta_layer.metrics();
         // Acquire the actual packed mount Roots owner before either initial
         // registry Arc is allocated. Generic unbudgeted mounts preserve Default.
@@ -1441,9 +1442,13 @@ where
 
         // Statistics observe the mount; they must not keep its writer, metadata,
         // reader, or stats extension alive after the final VFS owner disappears.
+        #[cfg(any(test, feature = "observability"))]
         let stats_state = Arc::downgrade(&state);
-        let (cache_hits, cache_misses) = store.cache_counters();
-        let object_metrics = store.object_store_metrics();
+        #[cfg(any(test, feature = "observability"))]
+        let (cache_hits, cache_misses) = _store.cache_counters();
+        #[cfg(any(test, feature = "observability"))]
+        let object_metrics = _store.object_store_metrics();
+        #[cfg(any(test, feature = "observability"))]
         if cache_hits.is_some()
             || cache_misses.is_some()
             || object_metrics.is_some()
@@ -1773,8 +1778,8 @@ where
 
     fn vfs_timing_timer<'a>(
         &'a self,
-        ops_counter: &'a AtomicU64,
-        lat_counter: &'a AtomicU64,
+        ops_counter: &'a crate::vfs::diagnostic::Counter,
+        lat_counter: &'a crate::vfs::diagnostic::Counter,
     ) -> crate::vfs::stats::MaybeOpTimer<'a> {
         crate::vfs::stats::MaybeOpTimer::new(
             self.state.vfs_timing_enabled,

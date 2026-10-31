@@ -2,6 +2,8 @@
 
 BrewFS 提供了多层性能分析和监控手段：运行时统计（.stats 虚拟文件）、分布式追踪（tracing）、CPU 火焰图、tokio 异步任务分析和堆内存分析。
 
+运行时指标与 `.stats` 需要编译时开启 `observability` feature；默认构建不包含指标导出。HTTP `/metrics` 还需显式传入 `--metrics`。编译、全部指标、`brewfs stats` 和 Prometheus 配置见 [Prometheus 可观测性](prometheus.md)。
+
 ## brewfs-stats（实时监控）
 
 类似 `juicefs stats` 的终端实时监控工具。

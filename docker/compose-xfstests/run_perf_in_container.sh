@@ -578,6 +578,8 @@ EOF
     append_env_export BREWFS_PRE_MOUNT_WAIT_SECS "10"
     append_env_export BREWFS_MOUNT_READY_DELAY_SECS "1"
     append_env_export BREWFS_NOFILE_LIMIT "1048576"
+    append_env_export BREWFS_METRICS
+    append_env_export BREWFS_METRICS_ADDR
     append_env_export BREWFS_FUSE_DIRECT_IO
     append_env_export BREWFS_FUSE_WRITEBACK
     append_env_export BREWFS_FUSE_READ_DIRECT_IO
@@ -1822,6 +1824,9 @@ prepare_fio_dataset() {
     )
 
     info "预填充 fio 数据集: $tool"
+    if [[ -n "${PERF_FIO_PREP_BUFFER_PATTERN:-}" ]]; then
+        prep_args+=(--buffer_pattern="$PERF_FIO_PREP_BUFFER_PATTERN")
+    fi
     local sampler_pid status=0
     append_fio_observation_args prep_args
     prep_args+=("--output-format=${PERF_FIO_OUTPUT_FORMAT:-json}" "--output=$artifact_dir/results/${tool}-prefill.json")
@@ -2273,6 +2278,10 @@ run_fio_profile() {
     if [[ "$needs_prefill" == true ]]; then
         stats_snapshot_before_tool "${tool}-prefill"
         prepare_fio_dataset "$tool" "$work_dir" "$name" "$size" "$direct" "$numjobs" "$bs" "$ioengine" "$iodepth" || return $?
+        if truthy_env "${PERF_FIO_PREP_VERIFY_SHA256:-false}"; then
+            find "$work_dir" -type f -print0 | sort -z | xargs -0 -r sha256sum \
+                >"$artifact_dir/tools/${tool}-prepare.sha256" || return $?
+        fi
         stats_snapshot_after_tool "${tool}-prefill"
         if truthy_env "${PERF_FIO_COLD_READ:-false}" || truthy_env "${PERF_FIO_PREFILL_DRAIN:-false}"; then
             wait_for_fio_prefill_drain "$tool" || return $?

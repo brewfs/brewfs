@@ -1494,11 +1494,21 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn from_config(config: Config) -> Result<Self, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::FromConfig,
+            "database",
+        );
         Self::from_config_inner(config).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn stat(&self, ino: i64) -> Result<Option<FileAttr>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Stat,
+            self.name(),
+        );
         if let Ok(Some(file_meta)) = self.get_file_meta(ino).await {
             return Ok(Some(Self::file_meta_to_attr(&file_meta)));
         }
@@ -1517,6 +1527,11 @@ impl MetaStore for DatabaseMetaStore {
         fields(inode_count = inodes.len())
     )]
     async fn batch_stat(&self, inodes: &[i64]) -> Result<Vec<Option<FileAttr>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::BatchStat,
+            self.name(),
+        );
         if inodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -1555,6 +1570,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn lookup(&self, parent: i64, name: &str) -> Result<Option<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Lookup,
+            self.name(),
+        );
         let entry = ContentMeta::find()
             .filter(content_meta::Column::ParentInode.eq(parent))
             .filter(content_meta::Column::EntryName.eq(name))
@@ -1567,6 +1587,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::LookupPath,
+            self.name(),
+        );
         if path == "/" {
             return Ok(Some((1, FileType::Dir)));
         }
@@ -1608,6 +1633,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Readdir,
+            self.name(),
+        );
         let access_meta = self
             .get_access_meta(ino)
             .await?
@@ -1643,6 +1673,11 @@ impl MetaStore for DatabaseMetaStore {
         start: &str,
         limit: usize,
     ) -> Result<Vec<DirEntry>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReaddirPage,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1680,11 +1715,21 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn mkdir(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Mkdir,
+            self.name(),
+        );
         self.create_directory(parent, name).await
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn rmdir(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Rmdir,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let dir_entry = ContentMeta::find()
@@ -1750,6 +1795,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn create_file(&self, parent: i64, name: String) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateFile,
+            self.name(),
+        );
         self.create_file_internal(parent, name).await
     }
 
@@ -1764,6 +1814,11 @@ impl MetaStore for DatabaseMetaStore {
         gid: u32,
         rdev: u32,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CreateNode,
+            self.name(),
+        );
         if kind.is_dir() || kind.is_symlink() {
             return Err(MetaError::NotSupported(format!(
                 "create_node does not create {:?}",
@@ -1840,6 +1895,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(parent, name))]
     async fn unlink(&self, parent: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Unlink,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         self.lock_namespace_for_rename(&txn).await?;
 
@@ -1950,6 +2010,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, parent, name))]
     async fn link(&self, ino: i64, parent: i64, name: &str) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Link,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         // Serialize with rename/unlink/restore so their final-link decisions
         // cannot race a new hard link on PostgreSQL.
@@ -2127,6 +2192,11 @@ impl MetaStore for DatabaseMetaStore {
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Symlink,
+            self.name(),
+        );
         let inode = self.alloc_counter_id(INODE_ID_KEY).await?;
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
@@ -2201,6 +2271,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn read_symlink(&self, ino: i64) -> Result<String, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReadSymlink,
+            self.name(),
+        );
         let file = FileMeta::find_by_id(ino)
             .one(&self.db)
             .await
@@ -2224,6 +2299,11 @@ impl MetaStore for DatabaseMetaStore {
         new_name: String,
         noreplace: bool,
     ) -> Result<RenameOutcome, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameWithMode,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         self.lock_namespace_for_rename(&txn).await?;
 
@@ -2537,6 +2617,11 @@ impl MetaStore for DatabaseMetaStore {
         new_parent: i64,
         new_name: &str,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RenameExchange,
+            self.name(),
+        );
         if old_parent == new_parent && old_name == new_name {
             return Ok(());
         }
@@ -2738,6 +2823,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn set_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetFileSize,
+            self.name(),
+        );
         let _sqlite_write_guard = self.sqlite_write_guard().await;
         let mut file_meta: file_meta::ActiveModel = FileMeta::find_by_id(ino)
             .one(&self.db)
@@ -2771,6 +2861,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size))]
     async fn extend_file_size(&self, ino: i64, size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ExtendFileSize,
+            self.name(),
+        );
         let _sqlite_write_guard = self.sqlite_write_guard().await;
         let now = Self::now_nanos();
         let result = file_meta::Entity::update_many()
@@ -2807,6 +2902,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, size, chunk_size))]
     async fn truncate(&self, ino: i64, size: u64, chunk_size: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Truncate,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let mut file_meta: file_meta::ActiveModel = FileMeta::find_by_id(ino)
@@ -2847,6 +2947,11 @@ impl MetaStore for DatabaseMetaStore {
         req: &SetAttrRequest,
         flags: SetAttrFlags,
     ) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetAttr,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         if let Some(file) = FileMeta::find_by_id(ino)
@@ -3033,6 +3138,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_names(&self, ino: i64) -> Result<Vec<(Option<i64>, String)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetNames,
+            self.name(),
+        );
         if ino == 1 {
             return Ok(vec![(None, "/".to_string())]);
         }
@@ -3070,6 +3180,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino, flags = ?flags))]
     async fn open(&self, ino: i64, flags: OpenFlags) -> Result<FileAttr, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Open,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         if let Some(mut file) = FileMeta::find_by_id(ino)
@@ -3146,6 +3261,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn close(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Close,
+            self.name(),
+        );
         if self.stat(ino).await?.is_some() {
             Ok(())
         } else {
@@ -3155,6 +3275,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn get_paths(&self, ino: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPaths,
+            self.name(),
+        );
         if ino == 1 {
             return Ok(vec!["/".to_string()]);
         }
@@ -3183,11 +3308,21 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn initialize(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Initialize,
+            self.name(),
+        );
         Ok(())
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn stat_fs(&self) -> Result<StatFsSnapshot, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StatFs,
+            self.name(),
+        );
         let files = FileMeta::find()
             .filter(file_meta::Column::Deleted.eq(false))
             .filter(file_meta::Column::Nlink.gt(0))
@@ -3218,6 +3353,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetDeletedFiles,
+            self.name(),
+        );
         let deleted_files = FileMeta::find()
             .filter(file_meta::Column::Deleted.eq(true))
             .all(&self.db)
@@ -3229,6 +3369,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(ino))]
     async fn remove_file_metadata(&self, ino: i64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveFileMetadata,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
         let file_meta = FileMeta::find_by_id(ino)
@@ -3269,6 +3414,11 @@ impl MetaStore for DatabaseMetaStore {
         parent: i64,
         name: String,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RestoreDeletedFile,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         self.lock_namespace_for_rename(&txn).await?;
 
@@ -3351,6 +3501,11 @@ impl MetaStore for DatabaseMetaStore {
         fields(chunk_id, slice_count = tracing::field::Empty)
     )]
     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetSlices,
+            self.name(),
+        );
         let rows = SliceMeta::find()
             .filter(slice_meta::Column::ChunkId.eq(chunk_id as i64))
             .order_by_asc(slice_meta::Column::Id)
@@ -3365,6 +3520,11 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn list_chunk_ids(&self, limit: usize) -> Result<Vec<u64>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListChunkIds,
+            self.name(),
+        );
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -3403,6 +3563,11 @@ impl MetaStore for DatabaseMetaStore {
         fields(chunk_id, slice_id = slice.slice_id, offset = slice.offset, len = slice.length)
     )]
     async fn append_slice(&self, chunk_id: u64, slice: SliceDesc) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::AppendSlice,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let model = slice_meta::ActiveModel {
             chunk_id: Set(chunk_id as i64),
@@ -3428,6 +3593,11 @@ impl MetaStore for DatabaseMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::Write,
+            self.name(),
+        );
         if self
             .is_global_lock_held(
                 LockName::ChunkCompactLock(chunk_id),
@@ -3503,6 +3673,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(key))]
     async fn next_id(&self, key: &str) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::NextId,
+            self.name(),
+        );
         match key {
             SLICE_ID_KEY | INODE_ID_KEY => self.alloc_counter_id(key).await,
             other => Err(MetaError::NotSupported(format!(
@@ -3519,6 +3694,11 @@ impl MetaStore for DatabaseMetaStore {
         session_info: SessionInfo,
         token: CancellationToken,
     ) -> Result<Session, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::StartSession,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let session_id = Uuid::now_v7();
         let expire = (Utc::now() + ChronoDuration::minutes(5)).timestamp_millis();
@@ -3557,6 +3737,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn shutdown_session(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ShutdownSession,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let session_id = self.get_sid()?;
         self.shutdown_session_by_id(*session_id, &txn).await?;
@@ -3566,6 +3751,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn cleanup_sessions(&self) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupSessions,
+            self.name(),
+        );
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
         let sessions = SessionMeta::find()
             .filter(session_meta::Column::Expire.lt(Utc::now().timestamp_millis()))
@@ -3582,6 +3772,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(lock_name = ?lock_name))]
     async fn get_global_lock(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetGlobalLock,
+            self.name(),
+        );
         self.get_lock_internal(lock_name, ttl_secs)
             .await
             .unwrap_or_default()
@@ -3589,6 +3784,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(lock_name = ?lock_name))]
     async fn is_global_lock_held(&self, lock_name: LockName, ttl_secs: u64) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::IsGlobalLockHeld,
+            self.name(),
+        );
         self.is_lock_held_internal(lock_name, ttl_secs)
             .await
             .unwrap_or(false)
@@ -3596,6 +3796,11 @@ impl MetaStore for DatabaseMetaStore {
 
     #[tracing::instrument(level = "trace", skip(self), fields(lock_name = ?lock_name))]
     async fn release_global_lock(&self, lock_name: LockName) -> bool {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReleaseGlobalLock,
+            self.name(),
+        );
         self.release_lock_internal(lock_name).await.unwrap_or(false)
     }
 
@@ -3610,6 +3815,11 @@ impl MetaStore for DatabaseMetaStore {
         inode: i64,
         query: &FileLockQuery,
     ) -> Result<FileLockInfo, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetPlock,
+            self.name(),
+        );
         let sid = self
             .sid
             .get()
@@ -3654,6 +3864,11 @@ impl MetaStore for DatabaseMetaStore {
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetPlock,
+            self.name(),
+        );
         let new_lock = PlockRecord::new(lock_type, pid, range.start, range.end);
 
         loop {
@@ -3683,6 +3898,11 @@ impl MetaStore for DatabaseMetaStore {
         value: &[u8],
         flags: u32,
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetXattr,
+            self.name(),
+        );
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
@@ -3727,6 +3947,11 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetXattr,
+            self.name(),
+        );
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
@@ -3738,6 +3963,11 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn list_xattr(&self, inode: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListXattr,
+            self.name(),
+        );
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
@@ -3750,6 +3980,11 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveXattr,
+            self.name(),
+        );
         if self.stat(inode).await?.is_none() {
             return Err(MetaError::NotFound(inode));
         }
@@ -3767,6 +4002,11 @@ impl MetaStore for DatabaseMetaStore {
     }
 
     async fn set_acl(&self, inode: i64, rule: AclRule) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetAcl,
+            self.name(),
+        );
         let mut rules = match self.get_xattr(inode, DATABASE_ACL_RULES_XATTR_NAME).await? {
             Some(raw) => serde_json::from_slice::<Vec<AclRule>>(&raw)
                 .map_err(|err| MetaError::Internal(format!("invalid ACL metadata: {err}")))?,
@@ -3787,6 +4027,11 @@ impl MetaStore for DatabaseMetaStore {
         acl_type: u8,
         acl_id: u32,
     ) -> Result<Option<AclRule>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetAcl,
+            self.name(),
+        );
         let Some(raw) = self.get_xattr(inode, DATABASE_ACL_RULES_XATTR_NAME).await? else {
             return Ok(None);
         };
@@ -3803,11 +4048,21 @@ impl MetaStore for DatabaseMetaStore {
         batch_size: usize,
         max_age_secs: i64,
     ) -> Result<Vec<(u64, u64, u64, i64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ProcessDelayedSlices,
+            self.name(),
+        );
         DatabaseMetaStore::process_delayed_slices(self, batch_size, max_age_secs).await
     }
 
     // GC Phase 2: permanently remove delayed slice records after their blocks have been deleted.
     async fn confirm_delayed_deleted(&self, delayed_ids: &[i64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmDelayedDeleted,
+            self.name(),
+        );
         DatabaseMetaStore::confirm_delayed_deleted(self, delayed_ids).await
     }
 
@@ -3818,6 +4073,11 @@ impl MetaStore for DatabaseMetaStore {
         new_slices: &[SliceDesc],
         old_slices_to_delay: &[u8],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompact,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             warn!(
                 chunk_id = chunk_id,
@@ -3886,6 +4146,11 @@ impl MetaStore for DatabaseMetaStore {
         old_slices_to_delay: &[u8],
         expected_slices: &[SliceDesc],
     ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ReplaceSlicesForCompactWithVersion,
+            self.name(),
+        );
         if !old_slices_to_delay.is_empty() && !old_slices_to_delay.len().is_multiple_of(20) {
             warn!(
                 chunk_id = chunk_id,
@@ -4024,6 +4289,11 @@ impl MetaStore for DatabaseMetaStore {
         size: u64,
         operation: &str,
     ) -> Result<i64, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RecordUncommittedSlice,
+            self.name(),
+        );
         let _sqlite_write_guard = self.sqlite_write_guard().await;
         let now = Utc::now().timestamp();
 
@@ -4043,6 +4313,11 @@ impl MetaStore for DatabaseMetaStore {
 
     // Mark an uncommitted slice as committed by removing its tracking record.
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ConfirmSliceCommitted,
+            self.name(),
+        );
         let _sqlite_write_guard = self.sqlite_write_guard().await;
         UncommittedSlice::delete_many()
             .filter(uncommitted_slice::Column::SliceId.eq(slice_id as i64))
@@ -4058,6 +4333,11 @@ impl MetaStore for DatabaseMetaStore {
         max_age_secs: i64,
         batch_size: usize,
     ) -> Result<Vec<(u64, u64)>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::CleanupOrphanUncommittedSlices,
+            self.name(),
+        );
         let cutoff_time = Utc::now().timestamp() - max_age_secs;
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
 
@@ -4118,6 +4398,11 @@ impl MetaStore for DatabaseMetaStore {
 
     // Delete uncommitted slice tracking records after their orphan blocks have been cleaned up.
     async fn delete_uncommitted_slices(&self, slice_ids: &[u64]) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::DeleteUncommittedSlices,
+            self.name(),
+        );
         if slice_ids.is_empty() {
             return Ok(());
         }

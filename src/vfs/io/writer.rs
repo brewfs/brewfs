@@ -1702,105 +1702,104 @@ struct Shared<B, M> {
 struct RecentPendingUploadState {
     packed_tasks: Arc<PackedWriterTasks>,
     bytes: AtomicU64,
-    soft_sleep_ops: AtomicU64,
-    soft_sleep_us: AtomicU64,
-    hard_wait_ops: AtomicU64,
-    hard_wait_us: AtomicU64,
-    buffer_soft_sleep_ops: AtomicU64,
-    buffer_soft_sleep_us: AtomicU64,
-    buffer_moderate_sleep_ops: AtomicU64,
-    buffer_moderate_sleep_us: AtomicU64,
-    buffer_hard_sleep_ops: AtomicU64,
-    buffer_hard_sleep_us: AtomicU64,
-    stage_inflight_bytes: Arc<AtomicU64>,
-    remote_upload_inflight_bytes: Arc<AtomicU64>,
-    /// Number of metadata publication RPCs currently in flight. This is a
-    /// gauge used only by the drain observer; it does not gate publication.
+    soft_sleep_ops: crate::vfs::diagnostic::Counter,
+    soft_sleep_us: crate::vfs::diagnostic::Counter,
+    hard_wait_ops: crate::vfs::diagnostic::Counter,
+    hard_wait_us: crate::vfs::diagnostic::Counter,
+    buffer_soft_sleep_ops: crate::vfs::diagnostic::Counter,
+    buffer_soft_sleep_us: crate::vfs::diagnostic::Counter,
+    buffer_moderate_sleep_ops: crate::vfs::diagnostic::Counter,
+    buffer_moderate_sleep_us: crate::vfs::diagnostic::Counter,
+    buffer_hard_sleep_ops: crate::vfs::diagnostic::Counter,
+    buffer_hard_sleep_us: crate::vfs::diagnostic::Counter,
+    stage_inflight_bytes: Arc<crate::vfs::diagnostic::Counter>,
+    remote_upload_inflight_bytes: Arc<crate::vfs::diagnostic::Counter>,
+    /// Gauge used only by the drain observer; does not gate publication.
     metadata_inflight: Arc<AtomicU64>,
-    stage_ops: AtomicU64,
-    stage_bytes: AtomicU64,
-    stage_us: AtomicU64,
-    stage_failures: AtomicU64,
-    commit_before_stage_ops: AtomicU64,
-    commit_wait_upload_ops: AtomicU64,
-    commit_wait_upload_us: AtomicU64,
-    commit_wait_upload_size_ops: AtomicU64,
-    commit_wait_upload_size_us: AtomicU64,
-    commit_wait_upload_max_unflushed_ops: AtomicU64,
-    commit_wait_upload_max_unflushed_us: AtomicU64,
-    commit_wait_upload_explicit_flush_ops: AtomicU64,
-    commit_wait_upload_explicit_flush_us: AtomicU64,
-    commit_wait_upload_auto_ops: AtomicU64,
-    commit_wait_upload_auto_us: AtomicU64,
-    commit_wait_upload_commit_age_ops: AtomicU64,
-    commit_wait_upload_commit_age_us: AtomicU64,
-    commit_wait_upload_unknown_reason_ops: AtomicU64,
-    commit_wait_upload_unknown_reason_us: AtomicU64,
-    commit_wait_upload_normal_only_ops: AtomicU64,
-    commit_wait_upload_normal_only_us: AtomicU64,
-    commit_wait_upload_cached_only_ops: AtomicU64,
-    commit_wait_upload_cached_only_us: AtomicU64,
-    commit_wait_upload_mixed_origin_ops: AtomicU64,
-    commit_wait_upload_mixed_origin_us: AtomicU64,
-    commit_wait_upload_unknown_origin_ops: AtomicU64,
-    commit_wait_upload_unknown_origin_us: AtomicU64,
-    commit_wait_retry_ops: AtomicU64,
-    commit_wait_retry_us: AtomicU64,
-    flush_wait_ops: AtomicU64,
-    flush_wait_us: AtomicU64,
-    flush_wait_slices: AtomicU64,
-    flush_fragmentation_ops: AtomicU64,
-    flush_fragmentation_slices: AtomicU64,
-    flush_fragmentation_bytes: AtomicU64,
-    flush_fragmentation_cached_sub_block_slices: AtomicU64,
-    flush_fragmentation_cached_sub_block_bytes: AtomicU64,
-    flush_fragmentation_full_block_slices: AtomicU64,
-    flush_fragmentation_full_block_bytes: AtomicU64,
-    slice_create_ops: AtomicU64,
-    slice_reuse_ops: AtomicU64,
-    slice_reject_older_unique_ops: AtomicU64,
-    slice_reject_dispatched_prefix_ops: AtomicU64,
-    freeze_size_ops: AtomicU64,
-    freeze_size_bytes: AtomicU64,
-    freeze_max_unflushed_ops: AtomicU64,
-    freeze_max_unflushed_bytes: AtomicU64,
-    freeze_explicit_flush_ops: AtomicU64,
-    freeze_explicit_flush_bytes: AtomicU64,
-    freeze_auto_ops: AtomicU64,
-    freeze_auto_bytes: AtomicU64,
-    freeze_commit_age_ops: AtomicU64,
-    freeze_commit_age_bytes: AtomicU64,
-    upload_batch_ops: AtomicU64,
-    upload_batch_bytes: AtomicU64,
-    upload_batch_blocks: AtomicU64,
-    upload_batch_single_block_ops: AtomicU64,
-    upload_batch_multi_block_ops: AtomicU64,
-    upload_partial_tail_ops: AtomicU64,
-    upload_partial_tail_size_ops: AtomicU64,
-    upload_partial_tail_max_unflushed_ops: AtomicU64,
-    upload_partial_tail_explicit_flush_ops: AtomicU64,
-    upload_partial_tail_auto_ops: AtomicU64,
-    upload_partial_tail_normal_only_ops: AtomicU64,
-    upload_partial_tail_cached_only_ops: AtomicU64,
-    upload_partial_tail_mixed_origin_ops: AtomicU64,
-    upload_partial_tail_unknown_origin_ops: AtomicU64,
-    upload_partial_tail_auto_age_ops: AtomicU64,
-    upload_partial_tail_auto_idle_ops: AtomicU64,
-    upload_partial_tail_auto_pressure_ops: AtomicU64,
-    upload_partial_tail_auto_too_many_ops: AtomicU64,
-    upload_partial_tail_auto_buffer_high_ops: AtomicU64,
-    upload_partial_tail_auto_flush_duration_ops: AtomicU64,
-    upload_partial_tail_auto_unknown_ops: AtomicU64,
-    upload_partial_tail_auto_normal_only_ops: AtomicU64,
-    upload_partial_tail_auto_cached_only_ops: AtomicU64,
-    upload_partial_tail_auto_mixed_origin_ops: AtomicU64,
-    upload_partial_tail_auto_unknown_origin_ops: AtomicU64,
-    upload_partial_tail_commit_age_ops: AtomicU64,
+    stage_ops: crate::vfs::diagnostic::Counter,
+    stage_bytes: crate::vfs::diagnostic::Counter,
+    stage_us: crate::vfs::diagnostic::Counter,
+    stage_failures: crate::vfs::diagnostic::Counter,
+    commit_before_stage_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_size_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_size_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_max_unflushed_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_max_unflushed_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_explicit_flush_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_explicit_flush_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_auto_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_auto_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_commit_age_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_commit_age_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_unknown_reason_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_unknown_reason_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_normal_only_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_normal_only_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_cached_only_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_cached_only_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_mixed_origin_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_mixed_origin_us: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_unknown_origin_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_upload_unknown_origin_us: crate::vfs::diagnostic::Counter,
+    commit_wait_retry_ops: crate::vfs::diagnostic::Counter,
+    commit_wait_retry_us: crate::vfs::diagnostic::Counter,
+    flush_wait_ops: crate::vfs::diagnostic::Counter,
+    flush_wait_us: crate::vfs::diagnostic::Counter,
+    flush_wait_slices: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_ops: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_slices: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_bytes: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_cached_sub_block_slices: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_cached_sub_block_bytes: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_full_block_slices: crate::vfs::diagnostic::Counter,
+    flush_fragmentation_full_block_bytes: crate::vfs::diagnostic::Counter,
+    slice_create_ops: crate::vfs::diagnostic::Counter,
+    slice_reuse_ops: crate::vfs::diagnostic::Counter,
+    slice_reject_older_unique_ops: crate::vfs::diagnostic::Counter,
+    slice_reject_dispatched_prefix_ops: crate::vfs::diagnostic::Counter,
+    freeze_size_ops: crate::vfs::diagnostic::Counter,
+    freeze_size_bytes: crate::vfs::diagnostic::Counter,
+    freeze_max_unflushed_ops: crate::vfs::diagnostic::Counter,
+    freeze_max_unflushed_bytes: crate::vfs::diagnostic::Counter,
+    freeze_explicit_flush_ops: crate::vfs::diagnostic::Counter,
+    freeze_explicit_flush_bytes: crate::vfs::diagnostic::Counter,
+    freeze_auto_ops: crate::vfs::diagnostic::Counter,
+    freeze_auto_bytes: crate::vfs::diagnostic::Counter,
+    freeze_commit_age_ops: crate::vfs::diagnostic::Counter,
+    freeze_commit_age_bytes: crate::vfs::diagnostic::Counter,
+    upload_batch_ops: crate::vfs::diagnostic::Counter,
+    upload_batch_bytes: crate::vfs::diagnostic::Counter,
+    upload_batch_blocks: crate::vfs::diagnostic::Counter,
+    upload_batch_single_block_ops: crate::vfs::diagnostic::Counter,
+    upload_batch_multi_block_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_size_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_max_unflushed_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_explicit_flush_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_normal_only_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_cached_only_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_mixed_origin_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_unknown_origin_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_age_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_idle_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_pressure_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_too_many_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_buffer_high_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_flush_duration_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_unknown_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_normal_only_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_cached_only_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_mixed_origin_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_auto_unknown_origin_ops: crate::vfs::diagnostic::Counter,
+    upload_partial_tail_commit_age_ops: crate::vfs::diagnostic::Counter,
     notify: Notify,
 }
 
 struct InflightBytesGuard {
-    counter: Arc<AtomicU64>,
+    counter: Arc<crate::vfs::diagnostic::Counter>,
     bytes: u64,
 }
 
@@ -1825,102 +1824,103 @@ impl RecentPendingUploadState {
         Self {
             packed_tasks: PackedWriterTasks::new(),
             bytes: AtomicU64::new(0),
-            soft_sleep_ops: AtomicU64::new(0),
-            soft_sleep_us: AtomicU64::new(0),
-            hard_wait_ops: AtomicU64::new(0),
-            hard_wait_us: AtomicU64::new(0),
-            buffer_soft_sleep_ops: AtomicU64::new(0),
-            buffer_soft_sleep_us: AtomicU64::new(0),
-            buffer_moderate_sleep_ops: AtomicU64::new(0),
-            buffer_moderate_sleep_us: AtomicU64::new(0),
-            buffer_hard_sleep_ops: AtomicU64::new(0),
-            buffer_hard_sleep_us: AtomicU64::new(0),
-            stage_inflight_bytes: Arc::new(AtomicU64::new(0)),
-            remote_upload_inflight_bytes: Arc::new(AtomicU64::new(0)),
+            soft_sleep_ops: crate::vfs::diagnostic::Counter::new(0),
+            soft_sleep_us: crate::vfs::diagnostic::Counter::new(0),
+            hard_wait_ops: crate::vfs::diagnostic::Counter::new(0),
+            hard_wait_us: crate::vfs::diagnostic::Counter::new(0),
+            buffer_soft_sleep_ops: crate::vfs::diagnostic::Counter::new(0),
+            buffer_soft_sleep_us: crate::vfs::diagnostic::Counter::new(0),
+            buffer_moderate_sleep_ops: crate::vfs::diagnostic::Counter::new(0),
+            buffer_moderate_sleep_us: crate::vfs::diagnostic::Counter::new(0),
+            buffer_hard_sleep_ops: crate::vfs::diagnostic::Counter::new(0),
+            buffer_hard_sleep_us: crate::vfs::diagnostic::Counter::new(0),
+            stage_inflight_bytes: Arc::new(crate::vfs::diagnostic::Counter::new(0)),
+            remote_upload_inflight_bytes: Arc::new(crate::vfs::diagnostic::Counter::new(0)),
             metadata_inflight: Arc::new(AtomicU64::new(0)),
-            stage_ops: AtomicU64::new(0),
-            stage_bytes: AtomicU64::new(0),
-            stage_us: AtomicU64::new(0),
-            stage_failures: AtomicU64::new(0),
-            commit_before_stage_ops: AtomicU64::new(0),
-            commit_wait_upload_ops: AtomicU64::new(0),
-            commit_wait_upload_us: AtomicU64::new(0),
-            commit_wait_upload_size_ops: AtomicU64::new(0),
-            commit_wait_upload_size_us: AtomicU64::new(0),
-            commit_wait_upload_max_unflushed_ops: AtomicU64::new(0),
-            commit_wait_upload_max_unflushed_us: AtomicU64::new(0),
-            commit_wait_upload_explicit_flush_ops: AtomicU64::new(0),
-            commit_wait_upload_explicit_flush_us: AtomicU64::new(0),
-            commit_wait_upload_auto_ops: AtomicU64::new(0),
-            commit_wait_upload_auto_us: AtomicU64::new(0),
-            commit_wait_upload_commit_age_ops: AtomicU64::new(0),
-            commit_wait_upload_commit_age_us: AtomicU64::new(0),
-            commit_wait_upload_unknown_reason_ops: AtomicU64::new(0),
-            commit_wait_upload_unknown_reason_us: AtomicU64::new(0),
-            commit_wait_upload_normal_only_ops: AtomicU64::new(0),
-            commit_wait_upload_normal_only_us: AtomicU64::new(0),
-            commit_wait_upload_cached_only_ops: AtomicU64::new(0),
-            commit_wait_upload_cached_only_us: AtomicU64::new(0),
-            commit_wait_upload_mixed_origin_ops: AtomicU64::new(0),
-            commit_wait_upload_mixed_origin_us: AtomicU64::new(0),
-            commit_wait_upload_unknown_origin_ops: AtomicU64::new(0),
-            commit_wait_upload_unknown_origin_us: AtomicU64::new(0),
-            commit_wait_retry_ops: AtomicU64::new(0),
-            commit_wait_retry_us: AtomicU64::new(0),
-            flush_wait_ops: AtomicU64::new(0),
-            flush_wait_us: AtomicU64::new(0),
-            flush_wait_slices: AtomicU64::new(0),
-            flush_fragmentation_ops: AtomicU64::new(0),
-            flush_fragmentation_slices: AtomicU64::new(0),
-            flush_fragmentation_bytes: AtomicU64::new(0),
-            flush_fragmentation_cached_sub_block_slices: AtomicU64::new(0),
-            flush_fragmentation_cached_sub_block_bytes: AtomicU64::new(0),
-            flush_fragmentation_full_block_slices: AtomicU64::new(0),
-            flush_fragmentation_full_block_bytes: AtomicU64::new(0),
-            slice_create_ops: AtomicU64::new(0),
-            slice_reuse_ops: AtomicU64::new(0),
-            slice_reject_older_unique_ops: AtomicU64::new(0),
-            slice_reject_dispatched_prefix_ops: AtomicU64::new(0),
-            freeze_size_ops: AtomicU64::new(0),
-            freeze_size_bytes: AtomicU64::new(0),
-            freeze_max_unflushed_ops: AtomicU64::new(0),
-            freeze_max_unflushed_bytes: AtomicU64::new(0),
-            freeze_explicit_flush_ops: AtomicU64::new(0),
-            freeze_explicit_flush_bytes: AtomicU64::new(0),
-            freeze_auto_ops: AtomicU64::new(0),
-            freeze_auto_bytes: AtomicU64::new(0),
-            freeze_commit_age_ops: AtomicU64::new(0),
-            freeze_commit_age_bytes: AtomicU64::new(0),
-            upload_batch_ops: AtomicU64::new(0),
-            upload_batch_bytes: AtomicU64::new(0),
-            upload_batch_blocks: AtomicU64::new(0),
-            upload_batch_single_block_ops: AtomicU64::new(0),
-            upload_batch_multi_block_ops: AtomicU64::new(0),
-            upload_partial_tail_ops: AtomicU64::new(0),
-            upload_partial_tail_size_ops: AtomicU64::new(0),
-            upload_partial_tail_max_unflushed_ops: AtomicU64::new(0),
-            upload_partial_tail_explicit_flush_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_ops: AtomicU64::new(0),
-            upload_partial_tail_normal_only_ops: AtomicU64::new(0),
-            upload_partial_tail_cached_only_ops: AtomicU64::new(0),
-            upload_partial_tail_mixed_origin_ops: AtomicU64::new(0),
-            upload_partial_tail_unknown_origin_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_age_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_idle_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_pressure_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_too_many_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_buffer_high_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_flush_duration_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_unknown_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_normal_only_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_cached_only_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_mixed_origin_ops: AtomicU64::new(0),
-            upload_partial_tail_auto_unknown_origin_ops: AtomicU64::new(0),
-            upload_partial_tail_commit_age_ops: AtomicU64::new(0),
+            stage_ops: crate::vfs::diagnostic::Counter::new(0),
+            stage_bytes: crate::vfs::diagnostic::Counter::new(0),
+            stage_us: crate::vfs::diagnostic::Counter::new(0),
+            stage_failures: crate::vfs::diagnostic::Counter::new(0),
+            commit_before_stage_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_size_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_size_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_max_unflushed_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_max_unflushed_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_explicit_flush_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_explicit_flush_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_auto_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_auto_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_commit_age_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_commit_age_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_unknown_reason_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_unknown_reason_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_normal_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_normal_only_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_cached_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_cached_only_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_mixed_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_mixed_origin_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_unknown_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_upload_unknown_origin_us: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_retry_ops: crate::vfs::diagnostic::Counter::new(0),
+            commit_wait_retry_us: crate::vfs::diagnostic::Counter::new(0),
+            flush_wait_ops: crate::vfs::diagnostic::Counter::new(0),
+            flush_wait_us: crate::vfs::diagnostic::Counter::new(0),
+            flush_wait_slices: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_ops: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_slices: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_bytes: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_cached_sub_block_slices: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_cached_sub_block_bytes: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_full_block_slices: crate::vfs::diagnostic::Counter::new(0),
+            flush_fragmentation_full_block_bytes: crate::vfs::diagnostic::Counter::new(0),
+            slice_create_ops: crate::vfs::diagnostic::Counter::new(0),
+            slice_reuse_ops: crate::vfs::diagnostic::Counter::new(0),
+            slice_reject_older_unique_ops: crate::vfs::diagnostic::Counter::new(0),
+            slice_reject_dispatched_prefix_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_size_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_size_bytes: crate::vfs::diagnostic::Counter::new(0),
+            freeze_max_unflushed_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_max_unflushed_bytes: crate::vfs::diagnostic::Counter::new(0),
+            freeze_explicit_flush_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_explicit_flush_bytes: crate::vfs::diagnostic::Counter::new(0),
+            freeze_auto_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_auto_bytes: crate::vfs::diagnostic::Counter::new(0),
+            freeze_commit_age_ops: crate::vfs::diagnostic::Counter::new(0),
+            freeze_commit_age_bytes: crate::vfs::diagnostic::Counter::new(0),
+            upload_batch_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_batch_bytes: crate::vfs::diagnostic::Counter::new(0),
+            upload_batch_blocks: crate::vfs::diagnostic::Counter::new(0),
+            upload_batch_single_block_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_batch_multi_block_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_size_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_max_unflushed_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_explicit_flush_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_normal_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_cached_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_mixed_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_unknown_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_age_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_idle_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_pressure_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_too_many_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_buffer_high_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_flush_duration_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_unknown_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_normal_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_cached_only_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_mixed_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_auto_unknown_origin_ops: crate::vfs::diagnostic::Counter::new(0),
+            upload_partial_tail_commit_age_ops: crate::vfs::diagnostic::Counter::new(0),
             notify: Notify::new(),
         }
     }
 
+    #[inline(always)]
     fn record_soft_sleep(&self, duration: Duration) {
         self.soft_sleep_ops.fetch_add(1, Ordering::Relaxed);
         self.soft_sleep_us.fetch_add(
@@ -1929,6 +1929,7 @@ impl RecentPendingUploadState {
         );
     }
 
+    #[inline(always)]
     fn record_hard_wait(&self, duration: Duration) {
         self.hard_wait_ops.fetch_add(1, Ordering::Relaxed);
         self.hard_wait_us.fetch_add(
@@ -1937,6 +1938,7 @@ impl RecentPendingUploadState {
         );
     }
 
+    #[inline(always)]
     fn record_buffer_soft_sleep(&self, duration: Duration) {
         self.buffer_soft_sleep_ops.fetch_add(1, Ordering::Relaxed);
         self.buffer_soft_sleep_us.fetch_add(
@@ -1945,6 +1947,7 @@ impl RecentPendingUploadState {
         );
     }
 
+    #[inline(always)]
     fn record_buffer_moderate_sleep(&self, duration: Duration) {
         self.buffer_moderate_sleep_ops
             .fetch_add(1, Ordering::Relaxed);
@@ -1954,6 +1957,7 @@ impl RecentPendingUploadState {
         );
     }
 
+    #[inline(always)]
     fn record_buffer_hard_sleep(&self, duration: Duration) {
         self.buffer_hard_sleep_ops.fetch_add(1, Ordering::Relaxed);
         self.buffer_hard_sleep_us.fetch_add(
@@ -1962,12 +1966,19 @@ impl RecentPendingUploadState {
         );
     }
 
-    fn record_stage_start(&self, bytes: u64) -> Instant {
+    #[inline(always)]
+    fn record_stage_start(&self, bytes: u64) -> crate::vfs::diagnostic::Instant {
         self.stage_inflight_bytes.fetch_add(bytes, Ordering::AcqRel);
-        Instant::now()
+        crate::vfs::diagnostic::Instant::now()
     }
 
-    fn record_stage_finish(&self, start: Instant, bytes: u64, success: bool) {
+    #[inline(always)]
+    fn record_stage_finish(
+        &self,
+        start: crate::vfs::diagnostic::Instant,
+        bytes: u64,
+        success: bool,
+    ) {
         self.stage_inflight_bytes.fetch_sub(bytes, Ordering::AcqRel);
         self.stage_ops.fetch_add(1, Ordering::Relaxed);
         self.stage_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -1980,6 +1991,7 @@ impl RecentPendingUploadState {
         }
     }
 
+    #[inline(always)]
     fn track_remote_upload_inflight(&self, bytes: u64) -> InflightBytesGuard {
         self.remote_upload_inflight_bytes
             .fetch_add(bytes, Ordering::AcqRel);
@@ -1996,10 +2008,12 @@ impl RecentPendingUploadState {
         }
     }
 
+    #[inline(always)]
     fn record_commit_before_stage(&self) {
         self.commit_before_stage_ops.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_commit_wait_upload(
         &self,
         duration: Duration,
@@ -2062,6 +2076,7 @@ impl RecentPendingUploadState {
         origin_us.fetch_add(elapsed_us, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_commit_wait_retry(&self, duration: Duration) {
         self.commit_wait_retry_ops.fetch_add(1, Ordering::Relaxed);
         self.commit_wait_retry_us.fetch_add(
@@ -2070,6 +2085,7 @@ impl RecentPendingUploadState {
         );
     }
 
+    #[inline(always)]
     fn record_flush_wait(&self, duration: Duration, slices: u64) {
         self.flush_wait_ops.fetch_add(1, Ordering::Relaxed);
         self.flush_wait_us.fetch_add(
@@ -2079,6 +2095,7 @@ impl RecentPendingUploadState {
         self.flush_wait_slices.fetch_add(slices, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_flush_fragmentation(
         &self,
         slices: u64,
@@ -2103,24 +2120,29 @@ impl RecentPendingUploadState {
             .fetch_add(full_block_bytes, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_slice_create(&self) {
         self.slice_create_ops.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_slice_reuse(&self) {
         self.slice_reuse_ops.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_slice_reject_older_unique(&self) {
         self.slice_reject_older_unique_ops
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_slice_reject_dispatched_prefix(&self) {
         self.slice_reject_dispatched_prefix_ops
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_freeze(&self, reason: SliceFreezeReason, bytes: u64) {
         let (ops, total_bytes) = match reason {
             SliceFreezeReason::SizeOrChunkEnd => (&self.freeze_size_ops, &self.freeze_size_bytes),
@@ -2141,6 +2163,7 @@ impl RecentPendingUploadState {
         total_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    #[inline(always)]
     fn record_upload_batch(
         &self,
         bytes: u64,
@@ -2650,7 +2673,7 @@ where
     }
 
     async fn wait_for_buffer_progress(&self, max_sleep: Duration) -> Duration {
-        let start = Instant::now();
+        let start = crate::vfs::diagnostic::Instant::now();
         let _ = timeout(max_sleep, self.shared.flush_notify.notified()).await;
         start.elapsed()
     }
@@ -2791,7 +2814,7 @@ where
             match decision {
                 WritebackBackpressureDecision::Allow => return Ok(()),
                 WritebackBackpressureDecision::SoftSleep(duration) => {
-                    let start = Instant::now();
+                    let start = crate::vfs::diagnostic::Instant::now();
                     tokio::time::sleep(duration).await;
                     self.shared
                         .recent_pending_upload
@@ -2799,7 +2822,7 @@ where
                     return Ok(());
                 }
                 WritebackBackpressureDecision::Wait => {
-                    let start = Instant::now();
+                    let start = crate::vfs::diagnostic::Instant::now();
                     self.shared.recent_pending_upload.notify.notified().await;
                     self.shared
                         .recent_pending_upload
@@ -5123,7 +5146,7 @@ where
                     continue;
                 }
 
-                let wait_start = Instant::now();
+                let wait_start = crate::vfs::diagnostic::Instant::now();
                 let wait_result = timeout(COMMIT_WAIT_SLICE, runtime.notify.notified())
                     .instrument(tracing::trace_span!("commit_chunk.wait_upload"))
                     .await;
@@ -5456,7 +5479,7 @@ where
                     backoff_ms = backoff.as_millis() as u64,
                     "commit_chunk retrying"
                 );
-                let wait_start = Instant::now();
+                let wait_start = crate::vfs::diagnostic::Instant::now();
                 tokio::time::sleep(backoff)
                     .instrument(tracing::trace_span!("commit_chunk.wait_retry"))
                     .await;
@@ -6537,7 +6560,7 @@ where
         if let Some(writer) = writer
             && writer.has_pending().await
         {
-            let start = std::time::Instant::now();
+            let start = crate::vfs::diagnostic::Instant::now();
             writer.flush().await?;
             let ms = start.elapsed().as_millis();
             if ms > 100 {
@@ -6553,7 +6576,7 @@ where
         if let Some(writer) = writer
             && writer.has_pending().await
         {
-            let start = std::time::Instant::now();
+            let start = crate::vfs::diagnostic::Instant::now();
             writer.flush_snapshot().await?;
             let ms = start.elapsed().as_millis();
             if ms > 100 {

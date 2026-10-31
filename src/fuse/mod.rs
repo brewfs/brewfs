@@ -1117,7 +1117,7 @@ where
         set_attr: SetAttr,
     ) -> FuseResult<ReplyAttr> {
         debug!(unique = req.unique, ino, set_attr = ?set_attr, "fuse.setattr");
-        let setattr_start = std::time::Instant::now();
+        let setattr_start = crate::vfs::diagnostic::Instant::now();
 
         let (mut meta_req, mut meta_flags) = fuse_setattr_to_meta(&set_attr);
         // A different metadata writer could invalidate the kernel's cached
@@ -3750,7 +3750,10 @@ where
         // Preserve an actual source entry named `.stats`. Expose the virtual
         // file only when that name is absent, with the same parent search
         // check as an ordinary lookup; backend failures must not hide a file.
-        if parent as i64 == self.root_ino() && raw_name == STATS_FILENAME.as_bytes() {
+        if cfg!(any(test, feature = "observability"))
+            && parent as i64 == self.root_ino()
+            && raw_name == STATS_FILENAME.as_bytes()
+        {
             self.ensure_access_allowed(parent as i64, req.uid, req.gid, req.pid, libc::X_OK as u32)
                 .await?;
             if let Some((_, vattr)) = self.child_attr_of_bytes(parent as i64, raw_name).await? {

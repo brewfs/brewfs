@@ -1,6 +1,7 @@
+use crate::vfs::diagnostic::Counter as AtomicU64;
 #[allow(dead_code)]
 // Kept for future cache integration; currently bypassed by ObjectBlockStore
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 #[allow(dead_code)]
 use super::keys::CleanBlockKey;

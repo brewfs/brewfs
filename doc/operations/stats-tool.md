@@ -6,6 +6,10 @@
 inspired by JuiceFS's `juicefs stats` command. It reads a virtual `.stats` file exposed
 at the mount root and displays per-second throughput, latency, and operation counts.
 
+The mounted BrewFS must be built with `--features observability` to expose
+`.stats`. For HTTP-based QPS and estimated P50/P99, use the feature-gated
+`brewfs stats` subcommand described in [Prometheus observability](prometheus.md).
+
 ## Architecture
 
 ```

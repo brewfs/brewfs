@@ -18,6 +18,7 @@
 pub(crate) mod backend;
 pub(crate) mod cache;
 pub(crate) mod config;
+pub mod diagnostic;
 pub mod error;
 pub mod fs;
 pub(crate) mod fuse_read_cancel;

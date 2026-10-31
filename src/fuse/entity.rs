@@ -1050,6 +1050,8 @@ where
     L: ImmutableLowerData + 'static,
     O: ObjectBackend + 'static,
 {
+    #[cfg(feature = "observability")]
+    let filesystem = crate::observability::fuse::ObservedFilesystem(filesystem);
     asyncfuse::raw::Session::new(mount_options())
         .with_workers(
             concurrency.worker_count.max(1),
@@ -1070,6 +1072,8 @@ where
     L: ImmutableLowerData + 'static,
     O: ObjectBackend + 'static,
 {
+    #[cfg(feature = "observability")]
+    let filesystem = crate::observability::fuse::ObservedFilesystem(filesystem);
     asyncfuse::raw::Session::new(mount_options())
         .with_workers(
             concurrency.worker_count.max(1),
