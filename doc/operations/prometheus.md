@@ -1,8 +1,10 @@
 # Compile-time observability
 
-Measurements, raw rounds, validation results, and unresolved acceptance limits
-are recorded in the [acceptance report](../testing/observability-2026-10-31.md).
-The implementation remains a draft pending upstream integration and revalidation.
+Measurements, raw rounds, validation results, and scope limits are recorded in
+the [acceptance report](../testing/observability-2026-10-31.md). After rebasing
+onto `cba857b5`, five interleaved pairs with the same executable and five with
+the baseline/default builds place the ordinary default build within measured
+noise. See the [noise experiment](../testing/observability-overhead-2026-11-01.md).
 
 ## JuiceFS comparison
 
@@ -59,7 +61,7 @@ policy, and writeback scheduling remain in place.
 
 The zero-symbol and overhead evidence covers the ordinary default release.
 Legacy read observers used by optional packed/native profiles have not been
-comprehensively feature-gated in this draft. Their full gating remains an
+comprehensively feature-gated in this change. Their full gating remains an
 unresolved requirement; the default-release evidence does not validate them.
 
 ## Metric reference
@@ -182,3 +184,21 @@ binary hashes, parameters and medians, and cleans its own compose services and
 volumes. Upload-before-commit makes completion independent of the diagnostic
 debt counters that are unavailable in the default binary. This measures local
 instrumentation overhead; it is not an S3 or managed-backend comparison.
+
+For a default-build noise control, use the same default executable in both
+arms, then repeat with the clean baseline and candidate. Each command below
+runs five fixed A1 B1 … A5 B5 pairs with a fixed fio seed, fresh mounts and
+volumes, no scraping, and no periodic writeback sampler. Keep every round;
+the analyzer reports raw P99, medians, ranges, sample standard deviations,
+and paired log-ratio confidence intervals. Choose new output directories.
+
+```sh
+python3 tools/perf/measure_feature_observability.py \
+  /path/to/default /path/to/default --two-arm --rounds 5 --runtime 30 \
+  --tools 'fio-randread fio-seqread fio-randrw' --output /tmp/obs-same
+python3 tools/perf/summarize_observability_noise.py /tmp/obs-same
+python3 tools/perf/measure_feature_observability.py \
+  /path/to/baseline /path/to/default --two-arm --rounds 5 --runtime 30 \
+  --tools 'fio-randread fio-seqread fio-randrw' --output /tmp/obs-different
+python3 tools/perf/summarize_observability_noise.py /tmp/obs-different
+```

@@ -7,6 +7,8 @@ Three rounds use rotating order and the same deterministic, SHA256-verified
 read profiles use direct I/O to exercise FUSE rather than the kernel cache.
 LocalFS object storage and upload-before-commit make completion independent
 of diagnostic debt counters, which are absent from the default build.
+With --two-arm, omit enabled and run at least five fixed baseline/default
+pairs; passing the same binary twice measures the order/time noise floor.
 """
 import argparse
 import hashlib
@@ -25,11 +27,16 @@ import time
 
 WRAPPER = r'''
 import hashlib, json, os, pathlib, subprocess, threading, time, urllib.request
+NOISE_CONTROL = False
 root = pathlib.Path(os.environ['BREWFS_ARTIFACT_DIR'])
 root.mkdir(parents=True, exist_ok=True)
 # The outer runner reserves BREWFS_WRITEBACK_MODE for its S3 profiles.
 # Set the explicit LocalFS default inside the container instead.
 os.environ['BREWFS_WRITEBACK_MODE'] = 'upload_before_commit'
+# Neither arm is scraped in the two-arm noise control. In particular, do not
+# poll legacy .stats in only the baseline, where the virtual file still exists.
+if NOISE_CONTROL:
+    os.environ['PERF_WRITEBACK_SAMPLER'] = 'false'
 with open('/usr/local/bin/brewfs', 'rb') as binary:
     (root / 'binary-sha256.txt').write_text(hashlib.file_digest(binary, 'sha256').hexdigest() + '\n')
 (root / 'fio-version.txt').write_text(subprocess.check_output(['fio', '--version'], text=True))
@@ -52,6 +59,27 @@ if os.environ.get('BREWFS_METRICS') == 'true':
     thread = threading.Thread(target=scrape, daemon=True)
     thread.start()
 result = subprocess.run(['bash', '/usr/local/bin/run_perf_in_container.sh'])
+mounts = [line for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines()
+          if ' - fuse' in line]
+def remaining_mount_processes():
+    found = []
+    for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+        try:
+            args = path.read_bytes().split(b'\0')
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if args[:2] == [b'/usr/local/bin/brewfs', b'mount']:
+            found.append(int(path.parent.name))
+    return found
+deadline = time.monotonic() + 10
+processes = remaining_mount_processes()
+while processes and time.monotonic() < deadline:
+    time.sleep(.1)
+    processes = remaining_mount_processes()
+(root / 'unmount-check.json').write_text(json.dumps(
+    {'remaining_fuse_mounts': mounts, 'remaining_mount_processes': processes}))
+if mounts or processes:
+    raise RuntimeError('FUSE mount or process remains after runner cleanup')
 stop.set()
 if thread is not None:
     thread.join(timeout=3)
@@ -63,7 +91,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('baseline', type=Path)
     parser.add_argument('default', type=Path)
-    parser.add_argument('enabled', type=Path)
+    parser.add_argument('enabled', type=Path, nargs='?')
+    parser.add_argument('--two-arm', action='store_true',
+                        help='Fixed baseline/default order, at least five pairs; omit enabled')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--runtime', type=int, default=30)
     parser.add_argument('--rounds', type=int, default=3)
@@ -72,9 +102,14 @@ def main():
     args = parser.parse_args()
     if args.runtime < 1 or args.rounds < 3:
         parser.error('runtime must be positive; at least three rounds are required')
-    binaries = {mode: getattr(args, mode).resolve() for mode in ['baseline', 'default', 'enabled']}
+    if args.two_arm and (args.rounds < 5 or args.enabled is not None):
+        parser.error('two-arm requires at least five rounds and no enabled binary')
+    if not args.two_arm and args.enabled is None:
+        parser.error('enabled binary is required unless --two-arm is selected')
+    modes = ['baseline', 'default'] if args.two_arm else ['baseline', 'default', 'enabled']
+    binaries = {mode: getattr(args, mode).resolve() for mode in modes}
     if not all(binary.is_file() for binary in binaries.values()):
-        parser.error('all three binaries must exist')
+        parser.error('all selected binaries must exist')
     repo = Path(__file__).resolve().parents[2]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -85,7 +120,8 @@ def main():
     target = repo / 'target/docker/brewfs'
     target.parent.mkdir(parents=True, exist_ok=True)
     wrapper = output / 'container-wrapper.py'
-    wrapper.write_text(WRAPPER)
+    wrapper.write_text(WRAPPER.replace('NOISE_CONTROL = False', 'NOISE_CONTROL = True')
+                       if args.two_arm else WRAPPER)
     config = (compose_dir / 'docker-compose.redis-perf.yml').read_text()
     config = re.sub(r'^    container_name:.*\n', '', config, flags=re.M)
     project = f'brewfs-obs-{os.getpid()}'
@@ -102,9 +138,14 @@ def main():
         redis_port = listener.getsockname()[1]
     env = dict(COMPOSE_PROJECT_NAME=project, BREWFS_PERF_COMPOSE_FILE=str(compose),
                BREWFS_REUSE_HOST_BINARY='1', PERF_LOG_TO_CONSOLE='false', REDIS_HOST_PORT=str(redis_port),
+               BREWFS_META_BACKEND='redis', BREWFS_META_URL='redis://redis:6379/0',
+               BREWFS_PERF_STATE_MOUNT='brewfs-state-perf-redis', REDIS_PERF_DATA_MOUNT='redis-data-perf',
+               BREWFS_VOLUME_FORMAT='', BREWFS_WORKSPACE_ID='', BREWFS_WORKSPACE_NAMESPACE='',
                PERF_FIO_SIZE='512m', PERF_FIO_RUNTIME=str(args.runtime), PERF_FIO_DIRECT='1',
                PERF_FIO_RANDREAD_BS='4k', PERF_FIO_SEQREAD_BS='1m', PERF_FIO_RANDRW_BS='4k',
                PERF_FIO_NUMJOBS='1', PERF_FIO_IODEPTH='16', PERF_FIO_IOENGINE='libaio',
+               PERF_FIO_RANDSEED='20261031', PERF_FIO_RANDREPEAT='1',
+               BREWFS_REQUEST_TRACE='false',
                PERF_FIO_PREP_BS='1m', PERF_FIO_PREP_BUFFER_PATTERN='0x0123456789abcdef',
                PERF_FIO_PREP_VERIFY_SHA256='true', BREWFS_COMPRESSION='none',
                BREWFS_WRITEBACK_MODE='', BREWFS_READ_MEMORY_BYTES='1073741824',
@@ -127,14 +168,15 @@ def main():
                 'host': {'hostname': platform.node(), 'kernel': platform.release(), 'machine': platform.machine(), 'logical_cpus': os.cpu_count()},
                 'binaries': {mode: {'path': str(path), 'sha256': hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()} for mode, path in binaries.items()},
                 'parameters': parameters, 'effective_writeback_mode': 'upload_before_commit',
-                'tools': args.tools, 'rounds': args.rounds, 'compose_project': project}
+                'tools': args.tools, 'rounds': args.rounds, 'compose_project': project,
+                'writeback_sampler': False if args.two_arm else 'runner default',
+                'order': 'baseline/default in every round' if args.two_arm else 'rotating three-arm'}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     records = []
     try:
         for round_index in range(args.rounds):
-            modes = ['baseline', 'default', 'enabled']
-            modes = modes[round_index % 3:] + modes[:round_index % 3]
-            for mode in modes:
+            order = modes if args.two_arm else modes[round_index % 3:] + modes[:round_index % 3]
+            for mode in order:
                 env.pop('BREWFS_METRICS', None)
                 env.pop('BREWFS_METRICS_ADDR', None)
                 if mode == 'enabled': env['BREWFS_METRICS'] = 'true'
@@ -151,6 +193,16 @@ def main():
                 print(json.dumps(record), flush=True)
                 if status != 0 or len(artifacts) != 1:
                     raise RuntimeError('compose run failed or produced an ambiguous artifact set')
+                remaining = subprocess.check_output(
+                    ['docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project={project}'],
+                    text=True).strip()
+                volumes = subprocess.check_output(
+                    ['docker', 'volume', 'ls', '-q', '--filter', f'label=com.docker.compose.project={project}'],
+                    text=True).strip()
+                cleanup = {'containers': remaining, 'volumes': volumes}
+                (artifacts[0] / 'compose-cleanup.json').write_text(json.dumps(cleanup) + '\n')
+                if remaining or volumes:
+                    raise RuntimeError('compose resources remain between arms')
                 for scene in args.tools.split():
                     if not scene.startswith('fio-'):
                         continue
@@ -160,6 +212,17 @@ def main():
                                        max(job['read']['runtime'], job['write']['runtime']) < args.runtime * 990
                                        for job in jobs):
                         raise RuntimeError(f'{scene} failed or was interrupted: {result_path}')
+                    if args.two_arm:
+                        expected = {'randseed': '20261031', 'randrepeat': '1', 'direct': '1',
+                                    'numjobs': '1', 'iodepth': '16', 'ioengine': 'libaio',
+                                    'runtime': str(args.runtime), 'size': '512m'}
+                        expected['bs'] = '1m' if scene == 'fio-seqread' else '4k'
+                        if scene == 'fio-randrw':
+                            expected['rwmixread'] = '70'
+                        for job in jobs:
+                            options = job['job options']
+                            if any(str(options.get(key, '')).lower() != value for key, value in expected.items()):
+                                raise RuntimeError(f'fixed fio configuration mismatch: {result_path}: {options}')
                 if 'metaperf' in args.tools.split():
                     log = (artifacts[0] / 'tools/metaperf.log').read_text()
                     operations = re.findall(r'^(create|open|stat|readdir|rename):.*?ops/sec=', log, re.M)
@@ -168,6 +231,11 @@ def main():
                 actual_hash = (artifacts[0] / 'binary-sha256.txt').read_text().strip()
                 if actual_hash != manifest['binaries'][mode]['sha256']:
                     raise RuntimeError('container did not execute the selected binary')
+                if args.two_arm:
+                    backend_hash = hashlib.sha256((artifacts[0] / 'backend.yml').read_bytes()).hexdigest()
+                    if backend_hash != manifest.setdefault('backend_config_sha256', backend_hash):
+                        raise RuntimeError('mount configuration changed between arms')
+                    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
                 if mode == 'enabled':
                     scrapes = json.loads((artifacts[0] / 'http-scrapes.json').read_text())
                     if scrapes['successes'] == 0 or 'brewfs_fuse_op_total' not in (artifacts[0] / 'http-metrics-last.prom').read_text():
@@ -197,7 +265,7 @@ def main():
             raise RuntimeError('missing measurement rounds')
         values['median_mib_s'] = {mode: statistics.median(values[mode]) for mode in binaries}
         base = values['median_mib_s']['baseline']
-        values['throughput_delta_pct'] = {mode: (values['median_mib_s'][mode] / base - 1) * 100 for mode in ['default', 'enabled']}
+        values['throughput_delta_pct'] = {mode: (values['median_mib_s'][mode] / base - 1) * 100 for mode in modes if mode != 'baseline'}
     (output / 'summary.json').write_text(json.dumps({'corpus_sha256': list(corpus), 'scenes': summary}, indent=2) + '\n')
 
 
