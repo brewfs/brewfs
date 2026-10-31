@@ -11,6 +11,9 @@ const READ_OPERATION_BYTES: u64 = 1 << 20;
 const OPERATION_BYTES: u64 = 32 << 20;
 const WRITE_BYTES: usize = 8 << 20;
 const MAX_ROWS: usize = 32768;
+// Keep the complete authority snapshot within the strictest backend's point
+// read limit. Derived reads have their own bounded fallback and final CAS.
+const MAX_COLD_VIEW_KEYS: usize = 32;
 const PERMISSION_NAMES: [&[u8]; 3] = [ACCESS_XATTR, DEFAULT_XATTR, b"system.brewfs.acl"];
 
 struct PackedPermissionView {
@@ -50,7 +53,7 @@ impl CommitViewCache {
         request: &VersionedMutation,
     ) -> std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>> {
         let mut points = std::collections::BTreeMap::new();
-        for key in derived_prefetch_keys(request) {
+        for key in derived_prefetch_keys(request, usize::MAX) {
             if let Some(value) = self.derived.get(&key) {
                 points.insert(key, value.clone());
             } else if key.starts_with(SLICE_DELETION_KEY_PREFIX) {
@@ -435,7 +438,10 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         // from the request rows alone. Reading them in this same consistent
         // view read removes their separate round trips; every one is still a
         // check in the final CAS, so a concurrent change fails that CAS.
-        keys.extend(derived_prefetch_keys(&request));
+        keys.extend(derived_prefetch_keys(
+            &request,
+            MAX_COLD_VIEW_KEYS.saturating_sub(view_len),
+        ));
         // Recovery-scoped writers authenticate a token against fresh reads;
         // they never use the cached view.
         let cacheable = packed_admin::capture_mounted_recovery_owner().is_none();
@@ -649,15 +655,14 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
     }
 }
 
-/// Returns the owned-plus-stored bytes this mutation can retain, which the
-/// commit admits instead of a fixed worst-case arena.
 /// Exact derived keys the native-reverse and extent preparation read for
-/// this request. Bounded so the combined view read stays within its byte and
-/// record limits; a request over the bound just reads them separately.
-fn derived_prefetch_keys(request: &VersionedMutation) -> Vec<Vec<u8>> {
+/// this request, within the remaining point-key budget after authority keys.
+/// Keep deletion windows whole: a partial window would be read again by the
+/// independent derived path. Both paths retain every fence in the final CAS.
+fn derived_prefetch_keys(request: &VersionedMutation, key_budget: usize) -> Vec<Vec<u8>> {
     const MAX_PREFETCHED_SLICES: usize = 32;
     let mut keys = Vec::new();
-    if !request.dentries.is_empty() {
+    if !request.dentries.is_empty() && keys.len() < key_budget {
         keys.push(super::native_reverse::state_key(
             request.guard.expected_head_layer_id,
         ));
@@ -670,19 +675,23 @@ fn derived_prefetch_keys(request: &VersionedMutation) -> Vec<Vec<u8>> {
             ExtentKind::Hole => None,
         })
         .collect();
-    if !request.extents.is_empty() && slices.len() <= MAX_PREFETCHED_SLICES {
+    if !request.extents.is_empty() && keys.len() < key_budget {
         keys.push(super::native_slice_deletion::layer_extent_generation_key(
             request.guard.expected_head_layer_id,
         ));
-        keys.extend(
-            slices
-                .into_iter()
-                .map(super::native_slice_deletion::slice_deletion_key),
-        );
+        if slices.len() <= MAX_PREFETCHED_SLICES && slices.len() <= key_budget - keys.len() {
+            keys.extend(
+                slices
+                    .into_iter()
+                    .map(super::native_slice_deletion::slice_deletion_key),
+            );
+        }
     }
     keys
 }
 
+/// Returns the owned-plus-stored bytes this mutation can retain, which the
+/// commit admits instead of a fixed worst-case arena.
 fn validate_mutation_allocation_bounds(request: &VersionedMutation) -> Result<u64, WorkspaceError> {
     fn overflow() -> WorkspaceError {
         WorkspaceError::InvalidReadPlan("packed mutation allocation limit".into())
