@@ -12,12 +12,16 @@ pub mod lifecycle;
 pub mod memory;
 pub mod model;
 pub mod namespace;
+pub mod native_lower;
 pub mod ownership;
 pub mod packed_lower;
 pub mod recovery;
 pub mod redis;
 pub mod resolver;
+pub mod writeback;
 
+#[cfg(test)]
+mod local_test_objects;
 #[cfg(test)]
 mod namespace_tests;
 #[cfg(test)]
