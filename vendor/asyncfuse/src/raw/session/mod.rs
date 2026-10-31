@@ -700,6 +700,7 @@ pub struct Session<FS: Filesystem + Send + Sync + 'static> {
     inflight: Arc<AtomicUsize>,
     inflight_notify: Arc<async_notify::Notify>,
     readonly_reply_tracker: Option<Arc<ReplyTracker>>,
+    request_observer: Option<Arc<dyn crate::raw::RequestObserver>>,
 }
 
 fn kernel_writeback_permissions(default_permissions: bool, negotiated_flags: u32) -> bool {
@@ -765,6 +766,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             inflight: Arc::new(AtomicUsize::new(0)),
             inflight_notify: Arc::new(async_notify::Notify::new()),
             readonly_reply_tracker: None,
+            request_observer: None,
         }
     }
 
@@ -797,6 +799,14 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         self
     }
 
+    /// Install an optional non-blocking request lifecycle observer. Detailed
+    /// observers are deliberately opt-in; leaving this unset preserves the
+    /// original dispatch and reply path.
+    pub fn with_request_observer(mut self, observer: Arc<dyn crate::raw::RequestObserver>) -> Self {
+        self.request_observer = Some(observer);
+        self
+    }
+
     fn response_sender(&self) -> &UnboundedSender<FuseData> {
         &self.response_senders[0]
     }
@@ -811,6 +821,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 roots,
                 self.inflight.clone(),
                 self.inflight_notify.clone(),
+                self.request_observer.clone(),
             ));
         }
         Ok(())
@@ -894,6 +905,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 _inflight_notify: self.inflight_notify.clone(),
                 response_memory: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
                 readonly_reply_tracker: self.readonly_reply_tracker.clone(),
+                request_observer: self.request_observer.clone(),
                 open_controller,
             });
             let workers = Workers::new(self.worker_count, self.max_background, ctx, open_plan)
@@ -1238,6 +1250,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
             // write requests queue up unsent.
             let conn = Arc::new(fuse_write_connection.try_clone()?);
             let tracker = self.readonly_reply_tracker.clone();
+            let request_observer = self.request_observer.clone();
 
             #[cfg(all(
                 not(feature = "tokio-runtime"),
@@ -1245,7 +1258,9 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 feature = "async-io-runtime"
             ))]
             task::spawn(async move {
-                if let Err(e) = Self::reply_fuse(conn, rx, tracker).await {
+                if let Err(e) =
+                    Self::reply_fuse_with_observer(conn, rx, tracker, request_observer).await
+                {
                     tracing::error!("reply fuse task {i} exited: {e}");
                 }
             })
@@ -1256,7 +1271,9 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 feature = "io-uring-runtime"
             ))]
             task::spawn(async move {
-                if let Err(e) = Self::reply_fuse(conn, rx, tracker).await {
+                if let Err(e) =
+                    Self::reply_fuse_with_observer(conn, rx, tracker, request_observer).await
+                {
                     tracing::error!("reply fuse task {i} exited: {e}");
                 }
             });
@@ -1302,10 +1319,20 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
         }
     }
 
+    #[allow(dead_code)]
     async fn reply_fuse(
+        fuse_connection: Arc<FuseConnection>,
+        response_receiver: UnboundedReceiver<FuseData>,
+        tracker: Option<Arc<ReplyTracker>>,
+    ) -> IoResult<()> {
+        Self::reply_fuse_with_observer(fuse_connection, response_receiver, tracker, None).await
+    }
+
+    async fn reply_fuse_with_observer(
         fuse_connection: Arc<FuseConnection>,
         mut response_receiver: UnboundedReceiver<FuseData>,
         tracker: Option<Arc<ReplyTracker>>,
+        request_observer: Option<Arc<dyn crate::raw::RequestObserver>>,
     ) -> IoResult<()> {
         let mut pump = ReplyPumpLifetime::new(tracker.clone());
         loop {
@@ -1398,6 +1425,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                         if let Some(ticket) = &ticket {
                             ticket.written();
                         }
+                        if let Some((_, error, unique)) = reply_header {
+                            if let Some(observer) = &request_observer {
+                                observer.request_reply_submitted_result(unique, error);
+                            }
+                        }
                         break;
                     }
                     Err(err) => {
@@ -1417,6 +1449,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                             if let Some(ticket) = &ticket {
                                 ticket.kernel_forgot();
                             }
+                            if let Some((_, _, unique)) = reply_header {
+                                if let Some(observer) = &request_observer {
+                                    observer.request_cancelled(unique);
+                                }
+                            }
                             warn!(
                                 "may reply interrupted fuse request, ignore this error {}",
                                 err
@@ -1429,6 +1466,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                             // Readonly terminal failures are sticky. Mutable
                             // retries keep their existing behavior unchanged.
                             pump.fail(&err);
+                            if let Some((_, _, unique)) = reply_header {
+                                if let Some(observer) = &request_observer {
+                                    observer.request_failed(unique);
+                                }
+                            }
                             return Err(err);
                         }
                         if let Some((len, err_code, unique)) = reply_header {
@@ -1790,12 +1832,34 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
 
             let request = Request::from(&in_header);
 
+            if let Some(observer) = &self.request_observer {
+                observer.request_received_on_inode(
+                    request.unique,
+                    in_header.opcode,
+                    in_header.nodeid,
+                );
+            }
+
             let opcode = match fuse_opcode::try_from(in_header.opcode) {
                 Err(err) => {
                     debug!("receive unknown opcode {}", err.0);
 
-                    self.reject_ordinary_request(request, libc::ENOSYS.into(), &fs)
-                        .await?;
+                    if let Some(observer) = &self.request_observer {
+                        observer.request_worker_started(request.unique);
+                        observer.request_handler_started(request.unique);
+                    }
+
+                    if let Err(error) = self
+                        .reject_ordinary_request(request, libc::ENOSYS.into(), &fs)
+                        .await
+                    {
+                        self.observe_request_failed(request.unique);
+                        return Err(error);
+                    }
+
+                    if let Some(observer) = &self.request_observer {
+                        observer.request_handler_completed(request.unique);
+                    }
 
                     continue;
                 }
@@ -1812,8 +1876,20 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 match opcode {
                     fuse_opcode::FUSE_INIT => {
                         warn!("duplicated fuse init request");
-                        self.handle_init(request, data_ref, &fuse_connection, &fs)
-                            .await?;
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
+                        if let Err(error) = self
+                            .handle_init(request, data_ref, &fuse_connection, &fs)
+                            .await
+                        {
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                        }
                         continue;
                     }
                     fuse_opcode::FUSE_DESTROY => {
@@ -1822,26 +1898,68 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                                 inflight=self.inflight.load(Ordering::Acquire));
                         }
                         debug!("receive fuse destroy");
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
                         fs.destroy(request).await;
                         debug!("fuse destroyed");
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                            observer.request_completed_without_reply(request.unique);
+                        }
                         return Ok(());
                     }
                     fuse_opcode::FUSE_FORGET => {
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
                         self.handle_forget(request, in_header, data_ref, &fs).await;
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                            observer.request_completed_without_reply(request.unique);
+                        }
                         continue;
                     }
                     fuse_opcode::FUSE_INTERRUPT => {
-                        self.handle_interrupt(request, data_ref, &fs).await?;
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
+                        if let Err(error) = self.handle_interrupt(request, data_ref, &fs).await {
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                        }
                         continue;
                     }
                     fuse_opcode::FUSE_NOTIFY_REPLY => {
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
                         self.handle_notify_reply(request, in_header, data_ref, &fs)
                             .await;
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                            observer.request_completed_without_reply(request.unique);
+                        }
                         continue;
                     }
                     fuse_opcode::FUSE_BATCH_FORGET => {
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_worker_started(request.unique);
+                            observer.request_handler_started(request.unique);
+                        }
                         self.handle_batch_forget(request, in_header, data_ref, &fs)
                             .await;
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                            observer.request_completed_without_reply(request.unique);
+                        }
                         continue;
                     }
                     _ => {}
@@ -1858,8 +1976,23 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                     && !readonly_close
                     && self.inflight.load(Ordering::Acquire) >= self.max_background
                 {
-                    self.reject_ordinary_request(request, libc::ENOMEM.into(), &fs)
-                        .await?;
+                    if let Some(observer) = &self.request_observer {
+                        observer.request_worker_started(request.unique);
+                        observer.request_handler_started(request.unique);
+                    }
+                    if let Err(error) = self
+                        .reject_ordinary_request(request, libc::ENOMEM.into(), &fs)
+                        .await
+                    {
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                        }
+                        self.observe_request_failed(request.unique);
+                        return Err(error);
+                    }
+                    if let Some(observer) = &self.request_observer {
+                        observer.request_handler_completed(request.unique);
+                    }
                     continue;
                 }
                 let unique = request.unique;
@@ -1870,17 +2003,51 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 // Exhaustion stops dispatch before any close adapter side effect.
                 let memory_guard = if readonly_close {
                     let workers = self.workers.as_ref().expect("workers checked above");
-                    fs.reserve_control_memory(
-                        workers
-                            .close_request_memory_bytes(data_ref.len() as u64)
-                            .map_err(IoError::from)?,
-                    )
-                    .map_err(IoError::from)?
+                    let bytes = match workers.close_request_memory_bytes(data_ref.len() as u64) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            let error = IoError::from(error);
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_worker_started(request.unique);
+                                observer.request_handler_started(request.unique);
+                                observer.request_handler_completed(request.unique);
+                            }
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
+                    };
+                    match fs.reserve_control_memory(bytes).map_err(IoError::from) {
+                        Ok(guard) => guard,
+                        Err(error) => {
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_worker_started(request.unique);
+                                observer.request_handler_started(request.unique);
+                                observer.request_handler_completed(request.unique);
+                            }
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
+                    }
                 } else {
                     match fs.reserve_request_memory(data_ref.len() as u64) {
                         Ok(guard) => guard,
                         Err(error) => {
-                            self.reject_ordinary_request(request, error, &fs).await?;
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_worker_started(request.unique);
+                                observer.request_handler_started(request.unique);
+                            }
+                            if let Err(error) =
+                                self.reject_ordinary_request(request, error, &fs).await
+                            {
+                                if let Some(observer) = &self.request_observer {
+                                    observer.request_handler_completed(request.unique);
+                                }
+                                self.observe_request_failed(request.unique);
+                                return Err(error);
+                            }
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_handler_completed(request.unique);
+                            }
                             continue;
                         }
                     }
@@ -1897,7 +2064,7 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                     feature = "tokio-runtime"
                 ))]
                 let body_bytes = if opcode == fuse_opcode::FUSE_WRITE {
-                    let Some(body) = self
+                    let body = match self
                         .acquire_pooled_write_body(
                             request,
                             &fs,
@@ -1906,9 +2073,26 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                             data_size,
                             &memory_guard,
                         )
-                        .await?
-                    else {
-                        continue;
+                        .await
+                    {
+                        Ok(Some(body)) => body,
+                        Ok(None) => {
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_worker_started(request.unique);
+                                observer.request_handler_started(request.unique);
+                                observer.request_handler_completed(request.unique);
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            if let Some(observer) = &self.request_observer {
+                                observer.request_worker_started(request.unique);
+                                observer.request_handler_started(request.unique);
+                                observer.request_handler_completed(request.unique);
+                            }
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
                     };
                     body
                 } else {
@@ -1943,12 +2127,33 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                 });
             } else {
                 // Will concurrency in a single-threaded context cause disorder in the sequence of operations on a single file?
+                // Kernel control messages that are consumed without a
+                // userspace reply.  FUSE_NOTIFY_REPLY is the response to a
+                // prior notify-retrieve and normally has no response of its
+                // own; an error reply from the legacy handler is treated as
+                // a best-effort side effect and the lifecycle remains
+                // idempotent when that reply is observed later.
+                let no_reply = matches!(
+                    opcode,
+                    fuse_opcode::FUSE_FORGET
+                        | fuse_opcode::FUSE_BATCH_FORGET
+                        | fuse_opcode::FUSE_NOTIFY_REPLY
+                );
+                if let Some(observer) = &self.request_observer {
+                    observer.request_worker_started(request.unique);
+                    observer.request_handler_started(request.unique);
+                }
                 match opcode {
                     fuse_opcode::FUSE_INIT => {
                         warn!("duplicated fuse init request");
 
-                        self.handle_init(request, data_ref, &fuse_connection, &fs)
-                            .await?;
+                        if let Err(error) = self
+                            .handle_init(request, data_ref, &fuse_connection, &fs)
+                            .await
+                        {
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
                     }
 
                     fuse_opcode::FUSE_DESTROY => {
@@ -1961,6 +2166,11 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                         fs.destroy(request).await;
 
                         debug!("fuse destroyed");
+
+                        if let Some(observer) = &self.request_observer {
+                            observer.request_handler_completed(request.unique);
+                            observer.request_completed_without_reply(request.unique);
+                        }
 
                         return Ok(());
                     }
@@ -2117,7 +2327,10 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                     }
 
                     fuse_opcode::FUSE_INTERRUPT => {
-                        self.handle_interrupt(request, data_ref, &fs).await?;
+                        if let Err(error) = self.handle_interrupt(request, data_ref, &fs).await {
+                            self.observe_request_failed(request.unique);
+                            return Err(error);
+                        }
                     }
 
                     fuse_opcode::FUSE_BMAP => {
@@ -2173,7 +2386,19 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                     #[cfg(target_os = "macos")]
                     fuse_opcode::FUSE_EXCHANGE => {} // fuse_opcode::CUSE_INIT => {}
                 }
+                if let Some(observer) = &self.request_observer {
+                    observer.request_handler_completed(request.unique);
+                    if no_reply {
+                        observer.request_completed_without_reply(request.unique);
+                    }
+                }
             }
+        }
+    }
+
+    fn observe_request_failed(&self, unique: u64) {
+        if let Some(observer) = &self.request_observer {
+            observer.request_failed(unique);
         }
     }
 

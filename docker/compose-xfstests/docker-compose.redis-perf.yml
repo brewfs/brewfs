@@ -140,6 +140,9 @@ services:
       BREWFS_WORKSPACE_ID: ${BREWFS_WORKSPACE_ID:-}
       BREWFS_WORKSPACE_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-}
       BREWFS_WRITEBACK_MODE: ${BREWFS_WRITEBACK_MODE:-}
+      BREWFS_REQUEST_TRACE: ${BREWFS_REQUEST_TRACE:-}
+      BREWFS_REQUEST_TRACE_SAMPLE_RATE: ${BREWFS_REQUEST_TRACE_SAMPLE_RATE:-}
+      TOKIO_WORKER_THREADS:
       BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
       BREWFS_DATA_DIR: /var/lib/brewfs/data
       BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
@@ -190,6 +193,7 @@ services:
     volumes:
       - ./artifacts:/artifacts
       - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
+      - ../../tools/perf/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
       - ${BREWFS_PERF_STATE_MOUNT:-brewfs-state-perf-redis}:/var/lib/brewfs
     networks:
       - brewfs-xfstests

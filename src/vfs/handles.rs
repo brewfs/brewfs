@@ -491,8 +491,19 @@ where
     }
 
     pub(crate) async fn write(&self, offset: u64, data: &[u8]) -> anyhow::Result<usize> {
+        self.write_with_unique(offset, data, 0).await
+    }
+
+    pub(crate) async fn write_with_unique(
+        &self,
+        offset: u64,
+        data: &[u8],
+        request_unique: u64,
+    ) -> anyhow::Result<usize> {
         let _guard = self.gate.write_lock().await;
-        let written = self.write_unlocked(offset, data).await?;
+        let written = self
+            .write_unlocked_with_unique(offset, data, request_unique)
+            .await?;
         if written > 0 {
             self.mark_write_dirty();
         }
@@ -501,6 +512,15 @@ where
 
     /// Write while the caller already holds the required handle write locks.
     pub(crate) async fn write_unlocked(&self, offset: u64, data: &[u8]) -> anyhow::Result<usize> {
+        self.write_unlocked_with_unique(offset, data, 0).await
+    }
+
+    pub(crate) async fn write_unlocked_with_unique(
+        &self,
+        offset: u64,
+        data: &[u8],
+        request_unique: u64,
+    ) -> anyhow::Result<usize> {
         let writer = {
             let guard = self.state.lock().unwrap();
             guard
@@ -508,7 +528,9 @@ where
                 .clone()
                 .ok_or_else(|| anyhow!("file handle writer not initialized"))?
         };
-        let written = writer.write_at(offset, data).await?;
+        let written = writer
+            .write_at_with_unique(offset, data, request_unique)
+            .await?;
         self.update_offset(offset + written as u64);
         Ok(written)
     }
