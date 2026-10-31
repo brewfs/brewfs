@@ -12,6 +12,14 @@ const MAX_PAGE_BODY: usize = 256 * 1024;
 const RECORD_LEN: usize = 48;
 const PREFIX_LEN: usize = 80;
 
+/// Wire-compatible SHA-256/128 with runtime CPU dispatch, including an
+/// optimized software backend on hosts without SHA instructions.
+pub(super) fn frame_digest(stored: &[u8]) -> [u8; 16] {
+    ring::digest::digest(&ring::digest::SHA256, stored).as_ref()[..16]
+        .try_into()
+        .unwrap()
+}
+
 #[derive(Debug)]
 pub(super) struct BudgetedFrame {
     pub raw: Vec<u8>,
@@ -151,7 +159,6 @@ impl V3FrameDirectoryPage {
         ordinal: u32,
         allocation_limit: usize,
     ) -> PackedResult<Vec<u8>> {
-        use sha2::{Digest, Sha256};
         self.validate()?;
         super::validate_key(&container.key)?;
         if !matches!(
@@ -199,7 +206,7 @@ impl V3FrameDirectoryPage {
                         class,
                         crate::cadapter::read_observer::ReadWork::Authentication,
                     );
-                    let digest: [u8; 16] = Sha256::digest(&stored)[..16].try_into().unwrap();
+                    let digest = frame_digest(&stored);
                     drop(hash_timer);
                     if digest != frame.frame_digest {
                         return Err(super::observer_validation_error(
@@ -331,6 +338,7 @@ impl V3FrameDirectoryPage {
         super::V3BuildPolicy {
             frames: self.frame_policy,
             inline_data: false,
+            inline_group_data_budget_bytes: super::DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES,
             p90: None,
         }
         .select(1, self.profile, self.size_classes)?;
@@ -387,6 +395,34 @@ impl V3FrameDirectoryPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_digest_matches_sha256_known_vectors() {
+        assert_eq!(
+            hex::encode(frame_digest(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb924"
+        );
+        assert_eq!(
+            hex::encode(frame_digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223"
+        );
+    }
+
+    #[test]
+    fn frame_digest_matches_writer_at_padding_and_frame_boundaries() {
+        use sha2::{Digest, Sha256};
+
+        // Include non-aligned starts as coalesced frame bodies need not be aligned.
+        let data: Vec<u8> = (0..=(8 << 20)).map(|i| (i % 251) as u8).collect();
+        for len in [0, 1, 55, 56, 63, 64, 65, 127, 128, 4096, 4 << 20, 8 << 20] {
+            for start in [0, 1] {
+                let stored = &data[start..start + len];
+                let expected: [u8; 16] = Sha256::digest(stored)[..16].try_into().unwrap();
+                assert_eq!(frame_digest(stored), expected, "start={start}, len={len}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn raw_coverage_uses_the_source_engine_phase_and_origin() {
         use crate::cadapter::localfs::LocalFsBackend;

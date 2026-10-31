@@ -15,6 +15,7 @@ use std::sync::Arc;
 use sea_orm::sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use sha2::{Digest, Sha256};
 
+use super::DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES;
 use super::source_root::{MAX_SOURCE_PATH_BYTES, V3SourceEntry, V3SourceRoot};
 use super::{
     CapturedV3SourceFile, CapturedV3SourceRoot, V3ColdAttributes, V3IndexSpool, V3ObjectKind,
@@ -80,6 +81,10 @@ pub struct V3SourceNamespaceReport {
     pub external_chunks: u64,
     pub external_frames: u64,
     pub external_data_bytes: u64,
+    pub small_file_bundles: bool,
+    pub bundled_groups: u64,
+    pub bundle_containers: u64,
+    pub bundled_inline_bytes: u64,
 }
 
 pub struct V3SourceNamespaceSnapshot {
@@ -138,6 +143,7 @@ pub struct V3SourceNamespaceInventory {
     spool: V3IndexSpool,
     options: V3SourceNamespaceOptions,
     report: V3SourceNamespaceReport,
+    small_file_bundles: bool,
 }
 
 fn invalid(what: &str) -> PackedWireError {
@@ -454,6 +460,7 @@ impl V3SourceNamespaceInventory {
             spool,
             options,
             report: V3SourceNamespaceReport::default(),
+            small_file_bundles: false,
         };
         inventory.capture_source().await?;
         inventory.assign_inodes().await?;
@@ -727,6 +734,27 @@ impl V3SourceNamespaceInventory {
         &self.report
     }
 
+    /// Opt into all-inline small-file groups sharing bounded GC05 containers.
+    /// This can amplify pure readdir and random reads; the default is unchanged.
+    pub fn with_small_file_bundles(self) -> Self {
+        self.with_small_file_bundles_budget(DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES)
+    }
+
+    /// Opt into all-inline small-file groups and choose the target amount of
+    /// adjacent inline data per authenticated container bundle.
+    pub fn with_small_file_bundles_budget(mut self, budget_bytes: u32) -> Self {
+        if !(DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES..=super::MAX_INLINE_GROUP_DATA_BUDGET_BYTES)
+            .contains(&budget_bytes)
+        {
+            // The public builder is infallible for compatibility. Invalid
+            // values are rejected again by the authenticated build policy.
+            return self;
+        }
+        self.small_file_bundles = true;
+        self.report.small_file_bundles = true;
+        self
+    }
+
     pub async fn build_snapshot<B: ObjectBackend + Clone + 'static>(
         mut self,
         client: ObjectClient<B>,
@@ -735,6 +763,9 @@ impl V3SourceNamespaceInventory {
     ) -> PackedResult<V3SourceNamespaceSnapshot> {
         if options.root_inode != self.options.root_inode {
             return Err(invalid("producer root differs from inventory"));
+        }
+        if self.small_file_bundles && !options.build_policy.inline_data {
+            return Err(invalid("small-file bundles require inline data"));
         }
         self.validate_unchanged().await?;
         let mut producer =
@@ -746,6 +777,8 @@ impl V3SourceNamespaceInventory {
         }
         let mut cursor: Option<(Vec<u8>, Vec<u8>)> = None;
         let mut pending = NamespaceGroup::default();
+        let mut bundles =
+            NamespaceBundles::new(options.build_policy.inline_group_data_budget_bytes);
         let mut group_id = 1u64;
         let limits = GroupPackingLimits::for_profile(options.profile);
         loop {
@@ -878,7 +911,9 @@ impl V3SourceNamespaceInventory {
             } else {
                 blocking(move || validate_path(&path, &token)).await?;
             }
-            if !pending.can_push(parent_inode as u64, &entry, &frames, limits, &options) {
+            if !pending.can_push(parent_inode as u64, &entry, &frames, limits, &options)
+                || (self.small_file_bundles && !pending.can_bundle(&entry, &frames, &options))
+            {
                 pending
                     .flush(
                         &mut producer,
@@ -886,6 +921,7 @@ impl V3SourceNamespaceInventory {
                         group_id,
                         &options,
                         &mut self.report,
+                        &mut bundles,
                     )
                     .await?;
                 group_id = group_id
@@ -907,7 +943,11 @@ impl V3SourceNamespaceInventory {
                 group_id,
                 &options,
                 &mut self.report,
+                &mut bundles,
             )
+            .await?;
+        bundles
+            .flush(&mut producer, &self.spool, &mut self.report)
             .await?;
         self.validate_unchanged().await?;
         let reference = producer.finish().await?;
@@ -942,6 +982,33 @@ struct NamespaceGroup {
 }
 
 impl NamespaceGroup {
+    fn group_inline_budget(options: &V3ProducerOptions) -> usize {
+        usize::try_from(options.build_policy.inline_group_data_budget_bytes)
+            .unwrap_or(usize::MAX)
+            .min(super::super::meta::INLINE_GROUP_DATA_BUDGET_BYTES)
+    }
+
+    fn can_bundle(
+        &self,
+        entry: &GroupMetaEntry,
+        frames: &[PackedFrameInput],
+        options: &V3ProducerOptions,
+    ) -> bool {
+        if self.entries.is_empty() {
+            return true;
+        }
+        let bytes = frames.iter().map(|frame| frame.raw.len()).sum::<usize>();
+        let budget = Self::group_inline_budget(options);
+        let eligible = options.build_policy.inline_data
+            && entry.kind == 1
+            && is_dense(entry, bytes)
+            && bytes > 0
+            && bytes <= budget;
+        // Keep metadata-only/external groups separate. A full inline group
+        // starts a successor instead of spilling its small files into frames.
+        eligible == (self.inline > 0) && (!eligible || self.inline + bytes <= budget)
+    }
+
     fn can_push(
         &self,
         parent: u64,
@@ -954,12 +1021,13 @@ impl NamespaceGroup {
             return true;
         }
         let bytes = frames.iter().map(|f| f.raw.len()).sum::<usize>();
+        let inline_budget = Self::group_inline_budget(options);
         let inline = options.build_policy.inline_data
             && entry.kind == 1
             && is_dense(entry, bytes)
             && bytes > 0
             && bytes < INLINE_FILE_MAX_BYTES
-            && self.inline + bytes <= 224 * 1024;
+            && self.inline + bytes <= inline_budget;
         let metadata = 160
             + entry.name.len()
             + if inline {
@@ -987,12 +1055,13 @@ impl NamespaceGroup {
         let bytes = frames.iter().map(|f| f.raw.len()).sum::<usize>();
         self.payload += bytes;
         let dense = is_dense(&entry, bytes);
+        let inline_budget = Self::group_inline_budget(options);
         if options.build_policy.inline_data
             && entry.kind == 1
             && dense
             && bytes > 0
             && bytes < INLINE_FILE_MAX_BYTES
-            && self.inline + bytes <= 224 * 1024
+            && self.inline + bytes <= inline_budget
         {
             entry.inline_data = frames
                 .into_iter()
@@ -1075,6 +1144,7 @@ impl NamespaceGroup {
         group_id: u64,
         options: &V3ProducerOptions,
         report: &mut V3SourceNamespaceReport,
+        bundles: &mut NamespaceBundles,
     ) -> PackedResult<()> {
         if self.entries.is_empty() {
             return Ok(());
@@ -1113,21 +1183,25 @@ impl NamespaceGroup {
         };
         // Final GM07 bound is checked before any container PUT.
         metadata.encode_restart()?;
-        producer
-            .add_container(group_id, &[group], &self.frames, &[self.parent])
-            .await?;
-        producer.set_inode_blocks_batch(&self.allocations).await?;
-        for inode in &self.cold {
-            let bytes: Vec<u8> = sea_orm::sqlx::query_scalar(
-                "SELECT cold FROM source_inodes WHERE snapshot_inode=?",
-            )
-            .bind(*inode as i64)
-            .fetch_one(&spool.pool)
-            .await
-            .map_err(|_| backend("group cold lookup"))?;
-            let mut cold = decode_cold(&bytes)?;
-            cold.inode = *inode;
-            producer.add_cold_attributes(&cold).await?;
+        if report.small_file_bundles && self.inline > 0 && self.frames.is_empty() {
+            bundles.groups.push(group);
+            bundles.parents.push(self.parent);
+            bundles.allocations.append(&mut self.allocations);
+            bundles.cold.append(&mut self.cold);
+            report.bundled_groups += 1;
+            report.bundled_inline_bytes += self.inline as u64;
+            bundles.inline_bytes = bundles.inline_bytes.saturating_add(self.inline);
+            // Each raw and stored GM07 is at most 256 KiB. 128 pairs
+            // fit the existing 64 MiB builder budget, without raising it.
+            if bundles.groups.len() == 128 || bundles.inline_bytes >= bundles.target_bytes {
+                bundles.flush(producer, spool, report).await?;
+            }
+        } else {
+            bundles.flush(producer, spool, report).await?;
+            producer
+                .add_container(group_id, &[group], &self.frames, &[self.parent])
+                .await?;
+            publish_group_attributes(producer, spool, &self.allocations, &self.cold).await?;
         }
         report.groups += 1;
         report.frames += self.frames.len() as u64;
@@ -1137,6 +1211,78 @@ impl NamespaceGroup {
         *self = Self::default();
         Ok(())
     }
+}
+
+struct NamespaceBundles {
+    groups: Vec<PackedGroupInput>,
+    parents: Vec<u64>,
+    allocations: Vec<(u64, u64)>,
+    cold: Vec<u64>,
+    target_bytes: usize,
+    inline_bytes: usize,
+}
+
+impl NamespaceBundles {
+    fn new(target_bytes: u32) -> Self {
+        Self {
+            groups: Vec::new(),
+            parents: Vec::new(),
+            allocations: Vec::new(),
+            cold: Vec::new(),
+            target_bytes: usize::try_from(target_bytes)
+                .unwrap_or(usize::MAX)
+                .max(usize::try_from(DEFAULT_INLINE_GROUP_DATA_BUDGET_BYTES).unwrap()),
+            inline_bytes: 0,
+        }
+    }
+}
+
+impl NamespaceBundles {
+    async fn flush<B: ObjectBackend + Clone + 'static>(
+        &mut self,
+        producer: &mut V3SnapshotProducer<B>,
+        spool: &V3IndexSpool,
+        report: &mut V3SourceNamespaceReport,
+    ) -> PackedResult<()> {
+        let Some(first) = self.groups.first() else {
+            return Ok(());
+        };
+        // Existing GR05 locators authenticate each contiguous metadata+inline
+        // range. No FD is needed and no digest is embedded into its own object.
+        producer
+            .add_container(first.group_id, &self.groups, &[], &self.parents)
+            .await?;
+        // Locators must exist before allocation and cold-attribute publication.
+        publish_group_attributes(producer, spool, &self.allocations, &self.cold).await?;
+        report.bundle_containers += 1;
+        self.groups.clear();
+        self.parents.clear();
+        self.allocations.clear();
+        self.cold.clear();
+        self.inline_bytes = 0;
+        Ok(())
+    }
+}
+
+async fn publish_group_attributes<B: ObjectBackend + Clone + 'static>(
+    producer: &mut V3SnapshotProducer<B>,
+    spool: &V3IndexSpool,
+    allocations: &[(u64, u64)],
+    inodes: &[u64],
+) -> PackedResult<()> {
+    producer.set_inode_blocks_batch(allocations).await?;
+    for inode in inodes {
+        let bytes: Vec<u8> =
+            sea_orm::sqlx::query_scalar("SELECT cold FROM source_inodes WHERE snapshot_inode=?")
+                .bind(*inode as i64)
+                .fetch_one(&spool.pool)
+                .await
+                .map_err(|_| backend("group cold lookup"))?;
+        let mut cold = decode_cold(&bytes)?;
+        cold.inode = *inode;
+        producer.add_cold_attributes(&cold).await?;
+    }
+    Ok(())
 }
 
 fn is_dense(entry: &GroupMetaEntry, bytes: usize) -> bool {
@@ -1288,6 +1434,7 @@ mod tests {
             frames: V3FramePolicy::Static1Mib,
             inline_data: false,
             p90: None,
+            ..Default::default()
         };
         let published = inventory(source.path(), scratch.path())
             .await

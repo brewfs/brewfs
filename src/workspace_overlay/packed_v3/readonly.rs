@@ -756,6 +756,35 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
         self.context.snapshot.manifest_reference()
     }
 
+    /// Explicitly warm one authenticated directory's GroupMeta bundle. This
+    /// is a mount-facing entry point for operators and benchmark harnesses;
+    /// the same retained LRU/epoch fencing used by normal reads applies.
+    pub async fn prefetch_directory_bundle(
+        &self,
+        parent_inode: u64,
+        concurrency: usize,
+    ) -> Result<super::wire005::V3BundlePrefetchStats, MetaError> {
+        let parent = if parent_inode == self.context.snapshot.manifest().root_inode {
+            self.context.snapshot.manifest().root_dir_key
+        } else {
+            super::catalog::directory_key(
+                self.context.snapshot.manifest().snapshot_id,
+                parent_inode,
+            )
+        };
+        self.context
+            .snapshot
+            .prefetch_directory_bundle(
+                &self.context.client,
+                &self.context.reader,
+                parent,
+                concurrency,
+                32 << 20,
+            )
+            .await
+            .map_err(map_error)
+    }
+
     pub fn mount_budget(&self) -> Arc<super::wire005::V3MountBudget> {
         Arc::clone(&self.context.budget)
     }

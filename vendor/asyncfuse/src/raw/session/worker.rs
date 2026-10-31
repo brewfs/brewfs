@@ -382,6 +382,7 @@ pub(crate) struct ResponseSender<'a> {
     sender: &'a UnboundedSender<FuseData>,
     guard: Option<crate::raw::reply::ReplyMemoryGuard>,
     tracker: Option<&'a Arc<ReplyTracker>>,
+    observer: Option<&'a Arc<dyn crate::raw::RequestObserver>>,
     controller: &'a super::owned_open_queue::ControllerHandle,
     unique: u64,
 }
@@ -414,8 +415,17 @@ impl ResponseSender<'_> {
                 None => Either::Right((header, body)),
             },
         };
+        // Publish the handler boundary before the pump can see this packet.
+        // The lifecycle guard may notify again when the future returns; the
+        // observer must retain the first boundary.
+        if let Some(observer) = self.observer {
+            observer.request_handler_completed(self.unique);
+        }
         let result = self.sender.unbounded_send(data);
         if result.is_err() {
+            if let Some(observer) = self.observer {
+                observer.request_failed(self.unique);
+            }
             if let Some(tracker) = self.tracker {
                 tracker.fail(&std::io::Error::from(std::io::ErrorKind::BrokenPipe));
             }
@@ -459,6 +469,7 @@ pub(crate) struct DispatchCtx<FS: Filesystem + Send + Sync + 'static> {
     pub(crate) _inflight_notify: Arc<async_notify::Notify>,
     pub(crate) response_memory: ResponseMemoryMap,
     pub(crate) readonly_reply_tracker: Option<Arc<ReplyTracker>>,
+    pub(crate) request_observer: Option<Arc<dyn crate::raw::RequestObserver>>,
     pub(crate) open_controller: super::owned_open_queue::ControllerHandle,
 }
 
@@ -469,6 +480,7 @@ impl<FS: Filesystem + Send + Sync + 'static> DispatchCtx<FS> {
             sender: &self.resp[unique as usize % self.resp.len()],
             guard: self.response_memory.lock().unwrap().get(&unique).cloned(),
             tracker: self.readonly_reply_tracker.as_ref(),
+            observer: self.request_observer.as_ref(),
             controller: &self.open_controller,
             unique,
         }
@@ -845,6 +857,57 @@ fn is_open_opcode(opcode: u32) -> bool {
     opcode == fuse_opcode::FUSE_OPEN as u32 || opcode == fuse_opcode::FUSE_OPENDIR as u32
 }
 
+/// Own the observer lifecycle for a queued handler.  Dropping an admitted
+/// future is a real cancellation boundary; reporting it here prevents the
+/// sampled request map from retaining an entry indefinitely when a worker is
+/// shut down or a readonly future is aborted.
+#[derive(Debug)]
+struct RequestLifecycleGuard {
+    observer: Option<Arc<dyn crate::raw::RequestObserver>>,
+    unique: u64,
+    no_reply: bool,
+    finished: bool,
+}
+
+impl RequestLifecycleGuard {
+    fn new(
+        observer: Option<Arc<dyn crate::raw::RequestObserver>>,
+        unique: u64,
+        no_reply: bool,
+    ) -> Self {
+        if let Some(observer_ref) = &observer {
+            observer_ref.request_worker_started(unique);
+            observer_ref.request_handler_started(unique);
+        }
+        Self {
+            observer,
+            unique,
+            no_reply,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(observer) = &self.observer {
+            observer.request_handler_completed(self.unique);
+            if self.no_reply {
+                observer.request_completed_without_reply(self.unique);
+            }
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for RequestLifecycleGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Some(observer) = &self.observer {
+                observer.request_cancelled(self.unique);
+            }
+        }
+    }
+}
+
 pub(crate) fn is_close_opcode(opcode: u32) -> bool {
     opcode == fuse_opcode::FUSE_FLUSH as u32
         || opcode == fuse_opcode::FUSE_RELEASE as u32
@@ -858,13 +921,37 @@ fn readonly_close_future<FS: Filesystem + Send + Sync + 'static>(
     item: WorkItem,
 ) -> impl std::future::Future<Output = ()> + Send + 'static {
     async move {
-        match fuse_opcode::try_from(item.opcode) {
-            Ok(fuse_opcode::FUSE_FLUSH) => handle_flush_inline(&ctx, item).await,
-            Ok(fuse_opcode::FUSE_RELEASE) => handle_release_inline(&ctx, item).await,
-            Ok(fuse_opcode::FUSE_RELEASEDIR) => handle_releasedir_inline(&ctx, item).await,
-            _ => unreachable!("readonly close queue received an ordinary opcode"),
-        }
+        observe_future(ctx.request_observer.as_deref(), item.unique, async {
+            let no_reply = false;
+            let mut lifecycle =
+                RequestLifecycleGuard::new(ctx.request_observer.clone(), item.unique, no_reply);
+            match fuse_opcode::try_from(item.opcode) {
+                Ok(fuse_opcode::FUSE_FLUSH) => handle_flush_inline(&ctx, item).await,
+                Ok(fuse_opcode::FUSE_RELEASE) => handle_release_inline(&ctx, item).await,
+                Ok(fuse_opcode::FUSE_RELEASEDIR) => handle_releasedir_inline(&ctx, item).await,
+                _ => unreachable!("readonly close queue received an ordinary opcode"),
+            }
+            lifecycle.finish();
+        })
+        .await;
     }
+}
+
+async fn observe_future<F: std::future::Future>(
+    observer: Option<&dyn crate::raw::RequestObserver>,
+    unique: u64,
+    future: F,
+) -> F::Output {
+    let Some(observer) = observer else {
+        return future.await;
+    };
+    let mut future = std::pin::pin!(future);
+    futures_util::future::poll_fn(|cx| {
+        let mut result = None;
+        observer.with_request_context(unique, &mut || result = Some(future.as_mut().poll(cx)));
+        result.expect("request observer must poll exactly once")
+    })
+    .await
 }
 
 /// Dispatch work item to the appropriate handler based on opcode.
@@ -875,6 +962,15 @@ async fn process_work_item<FS: Filesystem + Send + Sync + 'static>(
     worker_idx: usize,
     item: WorkItem,
 ) {
+    let unique = item.unique;
+    observe_future(ctx.request_observer.as_deref(), unique, async {
+    let no_reply = matches!(
+        fuse_opcode::try_from(item.opcode),
+        Ok(fuse_opcode::FUSE_FORGET
+            | fuse_opcode::FUSE_BATCH_FORGET
+            | fuse_opcode::FUSE_NOTIFY_REPLY)
+    );
+    let mut lifecycle = RequestLifecycleGuard::new(ctx.request_observer.clone(), unique, no_reply);
     let opcode_result = fuse_opcode::try_from(item.opcode);
     dispatch_to_worker! {
         match opcode_result, {
@@ -960,6 +1056,8 @@ async fn process_work_item<FS: Filesystem + Send + Sync + 'static>(
             }
         }
     }
+    lifecycle.finish();
+    }).await;
 }
 
 /// Macro for dispatching work items to handler functions

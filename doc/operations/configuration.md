@@ -466,10 +466,10 @@ uses Tokio's blocking pool. See [the measured scope and caveats](../testing/toki
 | `cache.populate_write_cache_after_upload` | `true` | 上传后把写入 block 放入读缓存。 |
 | `cache.persist_write_cache_after_upload` | `false` | 上传后是否持久化到磁盘读缓存。 |
 | `cache.memory_budget_bytes` | `2147483648` | VFS reader/writer buffer 总预算，默认 2 GiB。 |
-| `BREWFS_PACKED_METADATA_CACHE_BYTES` | `268435456` | packed v3 解码元数据总预算；按 index page、GroupMeta、frame directory、inode 热项和 locator 分层，不写入 `cache.root`。 |
-| `BREWFS_PACKED_METADATA_PREFETCH` | `auto` | packed v3 挂载前预热模式：默认 `auto` 按独立 index 子预算预热稳定页前缀，再按 GroupMeta 和 frame-directory byte budget 预热可驻留的 group/container；`eager`/`true` 并行预热指定 GroupMeta，`off` 保留严格 metadata-cold 请求图。超预算的尾部页/group/container 留给按需 LRU；数据 frame 仍按请求读取。 |
-| `BREWFS_PACKED_METADATA_PREFETCH_CONCURRENCY` | `8` | metadata warm-up 最大并发。 |
-| `BREWFS_PACKED_METADATA_PREFETCH_MAX_GROUPS` | 未设置 | 预热的 GroupMeta 数量上限；未设置表示按索引预热全部 group，`0` 表示只预热 index。 |
+| `BREWFS_PACKED_BUNDLE_CACHE_BYTES` | `8388608` | packed v3 GroupMeta/inline bundle retained-cache 预算；默认 8 MiB，最多 256 MiB，按 GroupMeta LRU 保留并在 lease/epoch 变化时失效。大目录预热时显式设置 64--256 MiB。 |
+| `BREWFS_PACKED_METADATA_CACHE_BYTES` | 同上（兼容别名） | 旧名称仍可用；新配置优先使用 `BREWFS_PACKED_BUNDLE_CACHE_BYTES`。 |
+| `BREWFS_PACKED_BUNDLE_PREFETCH` | `off` | 挂载启动时预热 root 目录的认证 GroupMeta bundle；`root`/`true`/`auto`/`eager` 开启，`off` 关闭。显式 API `PackedV3ReadonlyMeta::prefetch_directory_bundle` 可按 inode 预热其他目录，并返回耗时、GroupMeta 数、inline 字节和 retained metadata 字节。 |
+| `BREWFS_PACKED_METADATA_PREFETCH` | 未设置（兼容别名） | 旧预热开关名称；接受 `auto`、`eager`、`true`、`off`，语义等同于 bundle 预热。 |
 | block page cache | `32768 x 65536` | 普通小范围数据读的 page cache，默认约 2 GiB；冷读 profile 会显式禁用。 |
 | `cache.compression` | `lz4` | 对象压缩：`none`、`lz4`、`zstd`。 |
 | `cache.zstd_level` | `3` | `compression=zstd` 时的 level。 |

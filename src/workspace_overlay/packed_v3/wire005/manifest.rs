@@ -7,6 +7,7 @@ use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::chunk::read_plan::ReadGeneration;
 use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError, Reader, Writer};
 use crate::workspace_overlay::packed_v3::{AccessProfile, SizeClassTable};
+use futures_util::{StreamExt, TryStreamExt, stream};
 
 pub const V3_MANIFEST_BODY_LIMIT: usize = 64 * 1024;
 pub const V3_ROOT_COUNT: usize = 7;
@@ -36,7 +37,7 @@ struct PlanPreparationOwner {
 
 struct CachedFrameDirectory {
     reference: V3ObjectRef,
-    page: super::V3FrameDirectoryPage,
+    page: std::sync::Arc<super::V3Owned<super::V3FrameDirectoryPage>>,
 }
 
 fn read_preparation_limit(allocation_limit: usize, budget: &super::V3MountBudget) -> usize {
@@ -802,7 +803,7 @@ impl AuthenticatedV3Snapshot {
 
     pub async fn lookup_dentry<B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         parent: [u8; 32],
         name: &[u8],
@@ -812,8 +813,8 @@ impl AuthenticatedV3Snapshot {
             return Ok(None);
         };
         let container = self.container_ref(reader, group.container_ordinal).await?;
-        let metadata = group
-            .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+        let metadata = reader
+            .group_metadata(self.read_generation(), &group, &container, allocation_limit)
             .await?;
         Ok(metadata.lookup(name).cloned())
     }
@@ -835,7 +836,7 @@ impl AuthenticatedV3Snapshot {
 
     async fn inode_entry_inner<B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         inode: u64,
         allocation_limit: usize,
@@ -846,9 +847,13 @@ impl AuthenticatedV3Snapshot {
         let container = self
             .container_ref(reader, location.group.container_ordinal)
             .await?;
-        let metadata = location
-            .group
-            .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+        let metadata = reader
+            .group_metadata(
+                self.read_generation(),
+                &location.group,
+                &container,
+                allocation_limit,
+            )
             .await?;
         let entry = metadata
             .entries()
@@ -877,6 +882,87 @@ impl AuthenticatedV3Snapshot {
             None,
         )
         .await
+    }
+
+    /// Explicitly warm every GroupMeta page belonging to one directory. The
+    /// retained reader cache supplies the LRU and read-cache epoch fencing;
+    /// this method only selects the authenticated group range and performs
+    /// the same metadata reads used by `readdir`/`open`.
+    pub async fn prefetch_directory_bundle<B: ObjectBackend + Clone + 'static>(
+        &self,
+        _client: &ObjectClient<B>,
+        reader: &super::V3IndexReader<B>,
+        parent: [u8; 32],
+        concurrency: usize,
+        allocation_limit: usize,
+    ) -> PackedResult<super::V3BundlePrefetchStats> {
+        let concurrency = concurrency.clamp(1, 64);
+        let lower = parent.to_vec();
+        let mut upper = parent.to_vec();
+        upper.extend_from_slice(&[0xff; 1025]);
+        let mut cursor = reader
+            .weighted_cursor(
+                self.root(V3RootKind::Groups),
+                &lower,
+                &upper,
+                0,
+                self.manifest.group_dentry_count,
+            )
+            .await?;
+        let mut groups = Vec::new();
+        while let Some((record, _)) = reader
+            .next_weighted(self.root(V3RootKind::Groups), &mut cursor)
+            .await?
+        {
+            let super::V3IndexValue::Leaf(value) = &record.value else {
+                return Err(PackedWireError::Invalid(
+                    "PM07 group prefetch returned branch value".into(),
+                ));
+            };
+            let group = super::V3GroupRef::decode_value(value)?;
+            if group.parent_dir_key != parent {
+                return Err(PackedWireError::Invalid(
+                    "PM07 group prefetch crossed parent boundary".into(),
+                ));
+            }
+            groups.push(group);
+        }
+
+        let generation = self.read_generation();
+        let mut stats = stream::iter(groups)
+            .map(|group| async move {
+                let container = self.container_ref(reader, group.container_ordinal).await?;
+                let metadata = reader
+                    .group_metadata(generation, &group, &container, allocation_limit)
+                    .await?;
+                let inline_bytes = metadata
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.inline_data.len() as u64)
+                    .sum::<u64>();
+                let metadata_bytes = metadata.owned_memory_bytes() as u64;
+                Ok::<_, PackedWireError>(super::V3BundlePrefetchStats {
+                    groups: 1,
+                    entries: metadata.entries().len() as u64,
+                    inline_bytes,
+                    retained_bytes: 0,
+                    metadata_bytes,
+                })
+            })
+            .buffer_unordered(concurrency)
+            .try_fold(
+                super::V3BundlePrefetchStats::default(),
+                |mut total, item| async move {
+                    total.groups = total.groups.saturating_add(item.groups);
+                    total.entries = total.entries.saturating_add(item.entries);
+                    total.inline_bytes = total.inline_bytes.saturating_add(item.inline_bytes);
+                    total.metadata_bytes = total.metadata_bytes.saturating_add(item.metadata_bytes);
+                    Ok::<_, PackedWireError>(total)
+                },
+            )
+            .await?;
+        stats.retained_bytes = reader.retained_bundle_bytes();
+        Ok(stats)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -943,8 +1029,13 @@ impl AuthenticatedV3Snapshot {
                         .await?
                 }
                 None => {
-                    group
-                        .read_metadata_owned(client, &container, allocation_limit, reader.budget())
+                    reader
+                        .group_metadata(
+                            self.read_generation(),
+                            &group,
+                            &container,
+                            allocation_limit,
+                        )
                         .await?
                 }
             };
@@ -1080,9 +1171,13 @@ impl AuthenticatedV3Snapshot {
         let container = self
             .container_ref(reader, location.group.container_ordinal)
             .await?;
-        let metadata = location
-            .group
-            .read_metadata_owned(client, &container, 512 * 1024, reader.budget())
+        let metadata = reader
+            .group_metadata(
+                self.read_generation(),
+                &location.group,
+                &container,
+                512 * 1024,
+            )
             .await?;
         let entry = metadata
             .entries()
@@ -1725,7 +1820,7 @@ impl AuthenticatedV3Snapshot {
 
     async fn frame_directory<'page, B: ObjectBackend + Clone + 'static>(
         &self,
-        client: &ObjectClient<B>,
+        _client: &ObjectClient<B>,
         reader: &super::V3IndexReader<B>,
         container_ordinal: u32,
         frame_ordinal: u32,
@@ -1752,17 +1847,15 @@ impl AuthenticatedV3Snapshot {
             // reads visit multiple containers or revisit an earlier page.
             *cached = None;
             let mut permit = reader.budget().admit(&[
-                (super::V3BudgetPool::Metadata, 512 << 10),
-                (super::V3BudgetPool::Stored, reference.object_len * 2),
+                (super::V3BudgetPool::Metadata, 8192),
                 (super::V3BudgetPool::Control, 2048),
             ])?;
-            let page =
-                super::V3FrameDirectoryPage::read(client, &reference, container.digest).await?;
+            let page = reader
+                .frame_directory(self.read_generation(), &reference, container.digest)
+                .await?;
             let weight = std::mem::size_of::<super::budget::V3Owned<CachedFrameDirectory>>()
                 + reference.key.capacity()
-                + page.frames.capacity()
-                    * std::mem::size_of::<crate::workspace_overlay::packed_v3::PackedFrameDescriptor>(
-                    );
+                + 64;
             permit.shrink(super::V3BudgetPool::Metadata, weight as u64)?;
             permit.shrink(super::V3BudgetPool::Stored, 0)?;
             permit.shrink(super::V3BudgetPool::Control, 0)?;
@@ -3208,6 +3301,7 @@ mod tests {
             frames: V3FramePolicy::Static256Kib,
             inline_data: false,
             p90: None,
+            ..Default::default()
         };
         let data: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
         let (group, frames) = pack_group_files_with_policy(
@@ -3354,6 +3448,9 @@ mod tests {
             .await
             .unwrap();
         for _ in 0..2 {
+            // Exercise request-local page sharing from a cold retained cache.
+            // Cross-request retention has its own GET-count regression test.
+            reader.budget().invalidate_read_caches();
             range_keys.lock().unwrap().clear();
             let prepared = snapshot
                 .prepare_inode_read(&client, &reader, 3, 0, data.len(), 32 << 20)
@@ -3381,6 +3478,7 @@ mod tests {
 
         // Cache hits retain their memory owner and recheck the caller's
         // container and manifest bindings without another descriptor GET.
+        reader.budget().invalidate_read_caches();
         range_keys.lock().unwrap().clear();
         let budget = reader.budget().clone();
         let before = budget.state().used;
