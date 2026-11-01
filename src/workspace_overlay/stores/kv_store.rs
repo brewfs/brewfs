@@ -441,18 +441,21 @@ pub(super) async fn with_prefetched_points<F: std::future::Future>(
 
 /// Per-store reserved range of slice IDs, `[next, end)`.
 #[derive(Default)]
-struct IdBlock(std::sync::Mutex<(i64, i64)>);
+struct IdBlock {
+    range: std::sync::Mutex<(i64, i64)>,
+    refill_gate: tokio::sync::Mutex<()>,
+}
 
 impl IdBlock {
     fn take(&self) -> Option<i64> {
-        let mut range = self.0.lock().unwrap();
+        let mut range = self.range.lock().unwrap();
         (range.0 < range.1).then(|| {
             range.0 += 1;
             range.0 - 1
         })
     }
     fn refill(&self, first: i64, count: i64) {
-        let mut range = self.0.lock().unwrap();
+        let mut range = self.range.lock().unwrap();
         if range.0 >= range.1 {
             *range = (first, first + count);
         }
@@ -3117,9 +3120,17 @@ where
             if let Some(id) = self.slice_ids.take() {
                 return Ok(id);
             }
+            // Coalesce exhausted-range callers before entering the backend:
+            // at most one slice allocator metadata operation per store.
+            let _refill = self.slice_ids.refill_gate.lock().await;
+            if let Some(id) = self.slice_ids.take() {
+                return Ok(id);
+            }
             let first = self.allocate_id_block(SLICE_ID_BLOCK).await?;
-            self.slice_ids.refill(first, SLICE_ID_BLOCK);
-            return self.slice_ids.take().ok_or(WorkspaceError::Busy);
+            // Reserve our own ID before publishing the rest to fast-path
+            // callers, which could otherwise consume the entire new range.
+            self.slice_ids.refill(first + 1, SLICE_ID_BLOCK - 1);
+            return Ok(first);
         }
         if name == "inode" && self.inode_blocks {
             // Packed publication takes max(allocator, highest native inode +
@@ -3145,6 +3156,17 @@ where
         if name != "slice" {
             return self.allocate_id(name).await;
         }
+        if let Some(id) = self
+            .bucket_slice_ids
+            .get(&workspace_id)
+            .and_then(|entry| entry.value().1.take())
+        {
+            return Ok(id);
+        }
+        // Share admission with legacy slice refills, including the initial
+        // workspace lookup. Recheck the cache/range after waiting: a peer may
+        // have loaded the bucket and reserved an entire range meanwhile.
+        let _refill = self.slice_ids.refill_gate.lock().await;
         let cached = self
             .bucket_slice_ids
             .get(&workspace_id)
@@ -3154,6 +3176,7 @@ where
             None => {
                 let workspace = self.load_workspace(workspace_id).await?;
                 let Some(bucket) = workspace.upper_bucket else {
+                    drop(_refill);
                     return self.allocate_id(name).await;
                 };
                 self.bucket_slice_ids
@@ -3168,8 +3191,8 @@ where
         let first = self
             .allocate_id_block_named(&format!("slice/{bucket}"), SLICE_ID_BLOCK)
             .await?;
-        ids.refill(first, SLICE_ID_BLOCK);
-        ids.take().ok_or(WorkspaceError::Busy)
+        ids.refill(first + 1, SLICE_ID_BLOCK - 1);
+        Ok(first)
     }
 
     async fn create_volume_root(
@@ -6146,6 +6169,7 @@ mod tests {
         records: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
         cas_checks: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
         cas_write_keys: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
+        bounded_read_keys: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
         scans: Arc<AtomicU64>,
         fail_cas_once: Arc<std::sync::atomic::AtomicBool>,
         fail_busy_once: Arc<std::sync::atomic::AtomicBool>,
@@ -6352,6 +6376,7 @@ mod tests {
             limits: super::super::kv_backend::KvReadLimits,
         ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
             limits.validate_keys(keys)?;
+            self.bounded_read_keys.lock().await.push(keys.to_vec());
             if self
                 .fail_bounded_read_busy_once
                 .swap(false, Ordering::SeqCst)
@@ -7803,6 +7828,139 @@ mod tests {
             store_b.load_layer(second_head).await.unwrap().next_sequence,
             33
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_slice_id_refills_share_one_reservation() {
+        for count in [SLICE_ID_BLOCK, SLICE_ID_BLOCK * 16 + 1] {
+            let backend = MemoryBackend::default();
+            let store = budgeted_kv_store(backend.clone());
+            store.initialize_workspace_schema().await.unwrap();
+            store.create_volume_root(create_request(211)).await.unwrap();
+            backend.cas_write_keys.lock().await.clear();
+            backend.bounded_read_keys.lock().await.clear();
+            // Every caller sees an empty range while its first backend read
+            // is parked. Only the refill owner may enter metadata work.
+            let held = backend.records.lock().await;
+            let mut pending = Box::pin(futures_util::future::join_all(
+                (0..count).map(|_| store.allocate_id("slice")),
+            ));
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            let admitted_reads = backend.bounded_read_keys.lock().await.len();
+            drop(held);
+            let mut seen = BTreeSet::new();
+            for id in pending.await {
+                assert!(seen.insert(id.expect("concurrent allocation must succeed")));
+            }
+            assert_eq!(seen.len(), count as usize);
+            assert_eq!(admitted_reads, 1, "refill metadata concurrency is bounded");
+            assert_eq!(
+                backend.cas_write_keys.lock().await.len(),
+                (count as usize).div_ceil(SLICE_ID_BLOCK as usize)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_bucket_slice_id_refills_bound_cold_lookup_and_reservation() {
+        for count in [SLICE_ID_BLOCK, SLICE_ID_BLOCK * 16 + 1] {
+            let backend = MemoryBackend::default();
+            let store = budgeted_kv_store(backend.clone());
+            store.initialize_workspace_schema().await.unwrap();
+            let mut request = create_request(213);
+            request.upper_bucket = Some("concurrent-slice-ids".into());
+            let workspace = store.create_volume_root(request).await.unwrap();
+            backend.cas_write_keys.lock().await.clear();
+            backend.bounded_read_keys.lock().await.clear();
+            let held = backend.records.lock().await;
+            let mut pending =
+                Box::pin(futures_util::future::join_all((0..count).map(|_| {
+                    store.allocate_id_for_workspace(workspace.workspace_id, "slice")
+                })));
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            let admitted_reads = backend.bounded_read_keys.lock().await.len();
+            drop(held);
+            let mut seen = BTreeSet::new();
+            for id in pending.await {
+                assert!(seen.insert(id.expect("bucket allocation must succeed")));
+            }
+            assert_eq!(seen.len(), count as usize);
+            assert_eq!(admitted_reads, 1, "cold lookup metadata is also bounded");
+            assert_eq!(
+                backend.cas_write_keys.lock().await.len(),
+                (count as usize).div_ceil(SLICE_ID_BLOCK as usize)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bucket_slice_id_admission_releases_after_cancellation_error_and_legacy_fallback() {
+        let backend = MemoryBackend::default();
+        let store = budgeted_kv_store(backend.clone());
+        store.initialize_workspace_schema().await.unwrap();
+        let legacy = store.create_volume_root(create_request(214)).await.unwrap();
+        let bucket = store
+            .create_workspace(CreateWorkspace {
+                workspace_id: WorkspaceId::new(),
+                head_layer_id: LayerId::new(),
+                base_revision: legacy.fork_base.clone().unwrap(),
+                owner_id: None,
+                upper_bucket: Some("canceled-slice-ids".into()),
+            })
+            .await
+            .unwrap();
+        let held = backend.records.lock().await;
+        let mut canceled = Box::pin(store.allocate_id_for_workspace(bucket.workspace_id, "slice"));
+        assert!(futures::poll!(canceled.as_mut()).is_pending());
+        drop(canceled);
+        drop(held);
+        backend
+            .fail_bounded_read_busy_once
+            .store(true, Ordering::SeqCst);
+        assert!(matches!(
+            store
+                .allocate_id_for_workspace(bucket.workspace_id, "slice")
+                .await,
+            Err(WorkspaceError::Busy)
+        ));
+        for workspace in [legacy.workspace_id, bucket.workspace_id] {
+            assert_eq!(
+                tokio::time::timeout(
+                    Duration::from_secs(1),
+                    store.allocate_id_for_workspace(workspace, "slice")
+                )
+                .await
+                .expect("cancellation, error, and fallback must release admission")
+                .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn slice_id_refill_releases_admission_after_cancellation_and_error() {
+        let backend = MemoryBackend::default();
+        let store = budgeted_kv_store(backend.clone());
+        store.initialize_workspace_schema().await.unwrap();
+        store.create_volume_root(create_request(212)).await.unwrap();
+        let held = backend.records.lock().await;
+        let mut canceled = Box::pin(store.allocate_id("slice"));
+        assert!(futures::poll!(canceled.as_mut()).is_pending());
+        drop(canceled);
+        drop(held);
+        backend
+            .fail_bounded_read_busy_once
+            .store(true, Ordering::SeqCst);
+        assert!(matches!(
+            store.allocate_id("slice").await,
+            Err(WorkspaceError::Busy)
+        ));
+        let id = tokio::time::timeout(Duration::from_secs(1), store.allocate_id("slice"))
+            .await
+            .expect("a canceled/failed refill must release admission")
+            .unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(store.allocate_id("slice").await.unwrap(), 2);
     }
 
     #[tokio::test]

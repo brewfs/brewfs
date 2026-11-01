@@ -57,6 +57,120 @@ mod packed_permission_migration_tests {
     }
 
     #[tokio::test]
+    async fn packed_slice_batches_keep_cold_reads_within_total_key_budget() {
+        use super::super::native_slice_deletion::{
+            layer_extent_generation_key, slice_deletion_key,
+        };
+
+        for (count, with_dentry) in (18..=33)
+            .chain([64])
+            .flat_map(|count| [(count, false), (count, true)])
+        {
+            let (_directory, store, mut mutation, binding, _) = fixture().await;
+            let head = mutation.guard.expected_head_layer_id;
+            mutation.chunk_size = 64 * 4096;
+            mutation.inodes[0].size = count * 4096;
+            mutation.extents = (0..count)
+                .map(|i| DataExtentDelta::data(head, 400, 0, i * 4096, 4096, i + 100, 0, 0))
+                .collect();
+            if with_dentry {
+                mutation.dentries.push(DentryDelta::put(
+                    head, 1, b"written".to_vec(), 400, 0, 0,
+                ));
+            }
+            store.backend.bounded_read_keys.lock().await.clear();
+            store
+                .apply_packed_versioned_mutation(mutation.clone(), binding.clone())
+                .await
+                .unwrap();
+            let reads = store.backend.bounded_read_keys.lock().await.clone();
+            assert!(
+                reads.iter().all(|keys| keys.len() <= 32),
+                "{count} slices: cold read sizes {:?}",
+                reads.iter().map(Vec::len).collect::<Vec<_>>()
+            );
+            // All authority rows remain in one consistent snapshot, and in
+            // the final CAS alongside every independently read slice fence.
+            let authority = vec![
+                hot_workspace_key(mutation.guard.workspace_id),
+                hot_layer_key(head),
+                hot_layer_key(binding.base_layer_id),
+                hot_lease_key(mutation.guard.workspace_id, mutation.guard.lease_id),
+                packed_current_key(mutation.guard.workspace_id),
+                packed_claim_key(mutation.guard.workspace_id),
+                packed_history_key(mutation.guard.workspace_id, binding.binding_version),
+                packed_history_key(mutation.guard.workspace_id, 1),
+                packed_writer_authority::packed_writer_key(mutation.guard.workspace_id),
+                open_v3_key(mutation.guard.workspace_id),
+                open_v3_recovery_key(mutation.guard.workspace_id),
+                CONTROL_KEY.to_vec(),
+            ];
+            assert_eq!(&reads[0][..authority.len()], authority);
+            let checks = store.backend.cas_checks.lock().await;
+            assert_eq!(checks.len(), 1);
+            if with_dentry {
+                assert!(checks[0].contains(&super::super::native_reverse::state_key(head)));
+            }
+            for key in authority
+                .into_iter()
+                .chain([layer_extent_generation_key(head)])
+                .chain((0..count).map(|i| slice_deletion_key(i + 100)))
+            {
+                assert!(checks[0].contains(&key));
+            }
+            drop(checks);
+            let rows = store
+                .get_extent_deltas_bounded(
+                    ExtentQuery {
+                        layer_ids: vec![head, binding.base_layer_id],
+                        ino: 400,
+                        chunk_index: 0,
+                        range_start: 0,
+                        range_end: mutation.chunk_size,
+                    },
+                    64,
+                )
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), count as usize);
+            for expected in &mutation.extents {
+                assert!(rows.iter().any(|row| row.logical_offset == expected.logical_offset
+                    && row.length == expected.length
+                    && row.kind == expected.kind));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn packed_unprefetched_slice_deletion_still_fences_commit() {
+        let (_directory, store, mut mutation, binding, _) = fixture().await;
+        let head = mutation.guard.expected_head_layer_id;
+        mutation.chunk_size = 64 * 4096;
+        mutation.inodes[0].size = 20 * 4096;
+        mutation.extents = (0..20)
+            .map(|i| DataExtentDelta::data(head, 400, 0, i * 4096, 4096, i + 100, 0, 0))
+            .collect();
+        let key = super::super::native_slice_deletion::slice_deletion_key(119);
+        let marker = b"deletion reserved concurrently".to_vec();
+        let mut expected = store.backend.records.lock().await.clone();
+        expected.insert(key.clone(), marker.clone());
+        store.backend.mutate_on_cas.lock().await.push(KvWrite::Put {
+            key: key.clone(),
+            value: marker,
+        });
+        store.backend.bounded_read_keys.lock().await.clear();
+        let result = store.apply_packed_versioned_mutation(mutation, binding).await;
+        assert!(matches!(result, Err(WorkspaceError::Busy)), "{result:?}");
+        assert_eq!(*store.backend.records.lock().await, expected);
+        let reads = store.backend.bounded_read_keys.lock().await;
+        assert!(!reads[0].contains(&key));
+        assert!(reads[1..].iter().any(|keys| keys.contains(&key)));
+        let checks = store.backend.cas_checks.lock().await;
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].contains(&key));
+    }
+
+    #[tokio::test]
     async fn packed_hole_compaction_keeps_cached_commits_bounded() {
         let (_directory, store, mut mutation, binding, budget) = fixture().await;
         let head = mutation.guard.expected_head_layer_id;
