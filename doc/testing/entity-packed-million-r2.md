@@ -209,9 +209,11 @@ From creation to actual VM deletion and explicit retained-disk deletion receipts
 the estimate is **CNY 110.706793** (client 36.885619; objects 36.902969;
 metadata 36.918205). This includes preparation, failures, repairs, waiting,
 correctness, observation and archival collection. Public traffic and billing
-adjustments are additional. A scoped billing query at about 23:29 UTC returned
-only 3625–3630 seconds of service per resource, totaling CNY 13.334003 in visible
-partial charges; a complete reconciled bill is unavailable at closure. The
+adjustments are additional. Billing was queried for both November 1 and 2 in
+the provider's daily billing calendar. At about 23:40 UTC, visible partial
+charges totaled **CNY 91.739243**, covering roughly the first 6–7 hours of
+individual billing items, short of the full 8.37-hour lifetime. A complete
+reconciled bill is unavailable at closure. The
 foreign instance and shared resources are outside this run's cost estimate.
 
 ## Reproduction and validation

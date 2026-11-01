@@ -3228,17 +3228,22 @@
       "foreign opt-dynpolicy instance and shared resources"
     ],
     "billing_query": {
-      "queried_utc_ns": 1793575739607146500,
+      "queried_utc_ns": 1793576411658414700,
+      "billing_dates": [
+        "2026-11-01",
+        "2026-11-02"
+      ],
       "actual_bill_verified": false,
-      "visible_partial_pretax_cny": 13.3340025141,
+      "visible_partial_pretax_cny": 91.7392425141,
       "reason": "Billing records currently cover less than the full resource lifetime; retain quote-based estimate separately.",
       "rows": [
         {
           "role": "client",
           "kind": "instance",
-          "visible_pretax_cny": 2.9617276,
+          "visible_pretax_cny": 20.5998076,
           "service_periods": [
-            "3627"
+            "3627",
+            "21600"
           ]
         },
         {
@@ -3250,18 +3255,21 @@
         {
           "role": "client",
           "kind": "data",
-          "visible_pretax_cny": 1.4841653427,
+          "visible_pretax_cny": 9.9811653427,
           "service_periods": [
             "3630",
-            "3630"
+            "3630",
+            "21600",
+            "18000"
           ]
         },
         {
           "role": "objects",
           "kind": "instance",
-          "visible_pretax_cny": 2.9609103689,
+          "visible_pretax_cny": 20.598990368899997,
           "service_periods": [
-            "3626"
+            "3626",
+            "21600"
           ]
         },
         {
@@ -3273,18 +3281,21 @@
         {
           "role": "objects",
           "kind": "data",
-          "visible_pretax_cny": 1.4837576264,
+          "visible_pretax_cny": 9.9807576264,
           "service_periods": [
             "3629",
-            "3629"
+            "3629",
+            "21600",
+            "18000"
           ]
         },
         {
           "role": "metadata",
           "kind": "instance",
-          "visible_pretax_cny": 2.9600931379,
+          "visible_pretax_cny": 20.598173137899998,
           "service_periods": [
-            "3625"
+            "3625",
+            "21600"
           ]
         },
         {
@@ -3296,10 +3307,12 @@
         {
           "role": "metadata",
           "kind": "data",
-          "visible_pretax_cny": 1.4833484382,
+          "visible_pretax_cny": 9.9803484382,
           "service_periods": [
             "3628",
-            "3628"
+            "3628",
+            "21600",
+            "18000"
           ]
         }
       ]
