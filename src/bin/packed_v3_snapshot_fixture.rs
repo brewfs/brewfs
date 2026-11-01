@@ -13,7 +13,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use brewfs::cadapter::client::{ObjectBackend, ObjectClient};
 use brewfs::cadapter::localfs::LocalFsBackend;
-use brewfs::cadapter::s3::{S3Backend, S3Config};
+use brewfs::cadapter::s3::{RustfsEcBlockSizeHint, S3Backend, S3Config};
 use brewfs::workspace_overlay::packed_v3::{
     AccessProfile, GroupMeta, PackedFileInput, PackedGroupInput, SizeClassTable, directory_key,
 };
@@ -87,6 +87,10 @@ struct Args {
     manifest_output: PathBuf,
     #[arg(long)]
     bucket: Option<String>,
+    /// Layout policy for new S3 Pack objects (off, auto, tiered or fixed bytes).
+    /// Requires the rustfs-ec-block-size-hint Cargo feature when enabled.
+    #[arg(long, requires = "bucket")]
+    s3_rustfs_ec_block_size_hint: Option<RustfsEcBlockSizeHint>,
     #[arg(long)]
     endpoint: Option<String>,
     #[arg(long)]
@@ -949,6 +953,7 @@ async fn main() -> Result<()> {
             part_size: 16 * 1024 * 1024,
             max_concurrency: 32,
             disable_payload_checksum: true,
+            rustfs_ec_block_size_hint: args.s3_rustfs_ec_block_size_hint,
             ..Default::default()
         })
         .await?;
@@ -1004,6 +1009,37 @@ fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod codec_control_tests {
+    #[test]
+    fn pack_uploader_accepts_tiered_policy_only_for_s3() {
+        use clap::Parser;
+        let args = super::Args::try_parse_from([
+            "fixture",
+            "--bucket",
+            "test",
+            "--s3-rustfs-ec-block-size-hint",
+            "tiered",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.s3_rustfs_ec_block_size_hint,
+            Some("tiered".parse().unwrap())
+        );
+        assert!(
+            super::Args::try_parse_from(["fixture", "--s3-rustfs-ec-block-size-hint", "tiered",])
+                .is_err()
+        );
+        assert!(
+            super::Args::try_parse_from([
+                "fixture",
+                "--bucket",
+                "test",
+                "--s3-rustfs-ec-block-size-hint",
+                "tiered:broken",
+            ])
+            .is_err()
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn random_frame_cap_reaches_every_fixture_source_and_authenticated_provenance() {
