@@ -1,0 +1,3329 @@
+{
+  "source_commit": "918deb90e046889d94eb8ff633822e275792ce28",
+  "contract": {
+    "run_id": "entity-packed-million-r2",
+    "purpose": "Repeat the immutable-base workspace comparison at one million files with separated services and continuous observability.",
+    "source_commit": "918deb90e046889d94eb8ff633822e275792ce28",
+    "runtime_algorithm_changes": [],
+    "brewfs_observability_feature": true,
+    "topology": {
+      "client": "dedicated ecs.g9i.2xlarge, 8 vCPU, 32 GiB",
+      "objects": "dedicated ecs.g9i.2xlarge running the same pinned RustFS image",
+      "metadata": "dedicated ecs.g9i.2xlarge running one pinned PD and one pinned TiKV replica",
+      "network": "same availability zone, VPC private IPs for all test traffic"
+    },
+    "storage": {
+      "per_node_system_disk": "40 GiB ESSD PL1; operating system and telemetry only",
+      "per_node_data_disk": "200 GiB ESSD AutoPL; 11800 baseline plus 18200 provisioned IOPS, burst disabled",
+      "data_disk_delete_with_instance": false,
+      "instance_baseline_limits": "60000 IOPS, 4 Gbit/s aggregate storage bandwidth; 6 Gbit/s network baseline",
+      "preflight": "Named-file-only fio direct 4KiB random and fsync latency plus sequential throughput, saved separately from filesystem comparison",
+      "interpretation": "Use measured disk latency, queue, IOPS, throughput and service WAL/fsync; nominal IOPS is not proof of absence of a storage bottleneck"
+    },
+    "resource_policy": {
+      "spot_strategy": "NoSpot",
+      "deletion_protection": true,
+      "automatic_release_time": null,
+      "automatic_delete_on_error": false,
+      "phase_wall_clock_kill_timeout": null,
+      "checkpoint_ack_kill_timeout": null,
+      "stalled_progress_action": "record and notify; preserve processes, volumes and instance state",
+      "cleanup": "immediately after complete evidence is collected and verified, explicitly release owned instances, retained data disks and security group; do not wait for report/PR/CI; preserve shared resources"
+    },
+    "namespace_files": 1000000,
+    "file_bytes": 4096,
+    "directories": 1024,
+    "repetitions": 3,
+    "workspaces_per_batch": 4,
+    "expected_cells": 6,
+    "workspaces_retained_per_arm": 12,
+    "preparation_repetitions": 1,
+    "upload_mode": "upload_before_commit",
+    "packed_frame_cap": 262144,
+    "codecs": "raw / none",
+    "inline_data": false,
+    "chunk_and_block_bytes": 4194304,
+    "payload_cache_bytes": 0,
+    "workers": 8,
+    "runtime_workers": 8,
+    "per_workspace": {
+      "selected_files": 1024,
+      "prewarm_files": 512,
+      "random_reads": 4096,
+      "read_bytes": 4096,
+      "cow_files": 100,
+      "fsync_each_cow": true
+    },
+    "accounting": "Preparation once plus every actual workspace lifecycle, including bootstrap, clone, prewarm, reads, COW, remote drain, unmount and real worker exit. Source generation, correctness verification, telemetry and checkpoint costs are separately recorded; also report full campaign wall time.",
+    "measurement_policy": "Continuous raw node/service metrics and request logs are retained. No CPU profiler during timed cells. Never replace a missing metric with zero or silently discard a slow/failed cell.",
+    "caveats": [
+      "Three paired operational rounds reuse the same published base and retain earlier workspaces, not three independent deployments.",
+      "Metadata cache policies differ and must remain explicit.",
+      "This separated-node, observability-enabled run is not directly interchangeable with the earlier single-node result.",
+      "One TiKV replica is not a high-availability topology."
+    ]
+  },
+  "cells": [
+    {
+      "client": "brewfs",
+      "repetition": 1,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 110.20025555700158,
+      "observed_phase_s": 110.200250469,
+      "correctness_verification_s": 2009.172427341,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": false,
+      "uninterrupted_performance_sample_valid": true,
+      "timing_source": "Original monotonic perf_counter lifecycle clock",
+      "original_object_counter_offset_unavailable": false,
+      "lifecycle_plus_correctness_s": 2119.3726828980016,
+      "physical_http_delta": {
+        "DELETE_204": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_200": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_206": {
+          "requests": 119176,
+          "response_bytes": 19638632367,
+          "request_length_bytes": 109761165,
+          "request_time_s": 66.3419999999824
+        },
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0,
+          "request_length_bytes": 3492,
+          "request_time_s": 0.004
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0,
+          "request_length_bytes": 2015568,
+          "request_time_s": 1.5370000000025357
+        }
+      },
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 0,
+          "bootstrap_s": 3.039210189,
+          "read": {
+            "prewarm_s": 2.238524562000748,
+            "active_s": 15.466559145001156,
+            "p50_ms": 27.57689500140259,
+            "p90_ms": 43.79181200056337,
+            "p95_ms": 52.13355100022454,
+            "p99_ms": 72.42653899993456,
+            "max_ms": 111.6434899995511,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 27.01695900032064,
+              "p90_ms": 42.95763400114083,
+              "p95_ms": 52.94316800063825,
+              "p99_ms": 73.64220899944485,
+              "max_ms": 105.60122300012154,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 28.316642999925534,
+              "p90_ms": 44.24456499873486,
+              "p95_ms": 51.23678800009657,
+              "p99_ms": 71.63171200045326,
+              "max_ms": 111.6434899995511,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.101692242000354,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 29.8605600000883,
+                "p90_ms": 40.37614700064296,
+                "p95_ms": 42.63765699943178,
+                "p99_ms": 46.6149250005401,
+                "max_ms": 49.91117700046743,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.521436000184622,
+                "p90_ms": 12.738040000840556,
+                "p95_ms": 14.417708000109997,
+                "p99_ms": 17.87759999933769,
+                "max_ms": 19.107097999949474,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 305.40070999995805,
+                "p90_ms": 543.6394400003337,
+                "p95_ms": 576.9909149985324,
+                "p99_ms": 1076.0337259998778,
+                "max_ms": 1096.5950379995775,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 3.6749160008184845,
+                "p90_ms": 9.174668000923702,
+                "p95_ms": 9.975490000215359,
+                "p99_ms": 17.841275001046597,
+                "max_ms": 19.43149199905747,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.2461020000482677,
+                "p90_ms": 10.025109000707744,
+                "p95_ms": 14.250567000999581,
+                "p99_ms": 18.29911499953596,
+                "max_ms": 18.86120699964522,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 17.902947998663876,
+                "p90_ms": 27.162127000337932,
+                "p95_ms": 29.97571999912907,
+                "p99_ms": 37.06407000026957,
+                "max_ms": 60.86876200060942,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 369.1105210000387,
+                "p90_ms": 603.9978349999728,
+                "p95_ms": 648.8695810003264,
+                "p99_ms": 1115.1308309999877,
+                "max_ms": 1153.8587369996094,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.4580875740011834,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 0,
+          "bootstrap_s": 2.737520484,
+          "read": {
+            "prewarm_s": 2.2992262640000263,
+            "active_s": 16.673159264999413,
+            "p50_ms": 29.238762999739265,
+            "p90_ms": 49.343398999553756,
+            "p95_ms": 59.048347000498325,
+            "p99_ms": 81.36070299951825,
+            "max_ms": 121.15839000034612,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.201788998558186,
+              "p90_ms": 48.24375699899974,
+              "p95_ms": 57.45989400020335,
+              "p99_ms": 81.94511200053967,
+              "max_ms": 113.51852199913992,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.091173999608145,
+              "p90_ms": 50.6119130004663,
+              "p95_ms": 60.85330199857708,
+              "p99_ms": 81.36070299951825,
+              "max_ms": 121.15839000034612,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.614377194000554,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.770014998983243,
+                "p90_ms": 40.64536599980784,
+                "p95_ms": 42.8553940000711,
+                "p99_ms": 47.719384001538856,
+                "max_ms": 61.490477999541326,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.687097000394715,
+                "p90_ms": 14.219119999324903,
+                "p95_ms": 18.73314099975687,
+                "p99_ms": 29.655668999112095,
+                "max_ms": 37.788579998959904,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 334.11233199876733,
+                "p90_ms": 607.01741199955,
+                "p95_ms": 727.2473630000604,
+                "p99_ms": 925.4467789996852,
+                "max_ms": 1116.1277129995142,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.6479110005748225,
+                "p90_ms": 9.777405999557232,
+                "p95_ms": 11.307273000056739,
+                "p99_ms": 14.431266001338372,
+                "max_ms": 18.267642999489908,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 4.90238199927262,
+                "p90_ms": 10.708980000345036,
+                "p95_ms": 12.612644999535405,
+                "p99_ms": 14.406424999833689,
+                "max_ms": 15.471298998818384,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 18.220940999526647,
+                "p90_ms": 30.22056400004658,
+                "p95_ms": 33.46432900070795,
+                "p99_ms": 43.19325399956142,
+                "max_ms": 57.3941710008512,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 418.24538100081554,
+                "p90_ms": 678.3948230004171,
+                "p95_ms": 802.1919069997239,
+                "p99_ms": 1054.8964959998557,
+                "max_ms": 1207.1295879995887,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.4867634740003268,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 0,
+          "bootstrap_s": 2.992107744,
+          "read": {
+            "prewarm_s": 2.3833506610008044,
+            "active_s": 16.662076340000567,
+            "p50_ms": 29.00671799943666,
+            "p90_ms": 49.67515399948752,
+            "p95_ms": 59.284412000124576,
+            "p99_ms": 80.56338099959248,
+            "max_ms": 127.69914099953894,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 27.843619000123,
+              "p90_ms": 48.257551999995485,
+              "p95_ms": 59.17558900000586,
+              "p99_ms": 80.69703899855085,
+              "max_ms": 111.48431100082234,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.11536200028786,
+              "p90_ms": 50.56785299893818,
+              "p95_ms": 59.427207001135685,
+              "p99_ms": 80.4172500011191,
+              "max_ms": 127.69914099953894,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.214172715999666,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.10190900042653,
+                "p90_ms": 39.759654999215854,
+                "p95_ms": 41.61834099977568,
+                "p99_ms": 47.34190399904037,
+                "max_ms": 48.501846000363,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 7.080452998707187,
+                "p90_ms": 13.294956001118408,
+                "p95_ms": 15.452370998900733,
+                "p99_ms": 18.35861299878161,
+                "max_ms": 20.831112000450958,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 278.25503000167373,
+                "p90_ms": 571.6324400000303,
+                "p95_ms": 616.6166290004185,
+                "p99_ms": 1105.292135000127,
+                "max_ms": 1333.5240839987819,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 5.03650300015579,
+                "p90_ms": 10.316462999981013,
+                "p95_ms": 11.711389999618405,
+                "p99_ms": 16.155741999682505,
+                "max_ms": 20.34898300007626,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 4.425204000654048,
+                "p90_ms": 10.525390000111656,
+                "p95_ms": 12.155884000094375,
+                "p99_ms": 18.65452899983211,
+                "max_ms": 20.717205001346883,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 18.236824000268825,
+                "p90_ms": 29.470833000232233,
+                "p95_ms": 31.75629700126592,
+                "p99_ms": 40.00434900081018,
+                "max_ms": 40.86160699989705,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 349.22115200060944,
+                "p90_ms": 632.8853819995857,
+                "p95_ms": 685.4491820013209,
+                "p99_ms": 1181.561655999758,
+                "max_ms": 1388.1398769990483,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.30676680900069186,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 0,
+          "bootstrap_s": 2.924336059,
+          "read": {
+            "prewarm_s": 2.530468634000499,
+            "active_s": 17.15719762399931,
+            "p50_ms": 29.829152999809594,
+            "p90_ms": 51.83088600097108,
+            "p95_ms": 60.944636999920476,
+            "p99_ms": 78.15012200080673,
+            "max_ms": 134.46003299941367,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.826551000747713,
+              "p90_ms": 51.12628300048527,
+              "p95_ms": 60.42365999928734,
+              "p99_ms": 78.67528700080584,
+              "max_ms": 129.68431199988117,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 31.055781000759453,
+              "p90_ms": 52.199759000359336,
+              "p95_ms": 61.58349300130794,
+              "p99_ms": 78.15012200080673,
+              "max_ms": 134.46003299941367,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.4046221769986005,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.628419999833568,
+                "p90_ms": 38.84031500092533,
+                "p95_ms": 39.855286000602064,
+                "p99_ms": 45.28489800031821,
+                "max_ms": 46.207932000470464,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 8.015078001335496,
+                "p90_ms": 15.564780000204337,
+                "p95_ms": 16.83324499936134,
+                "p99_ms": 20.601290998456534,
+                "max_ms": 20.71070999954827,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 266.2311509993742,
+                "p90_ms": 670.0445700007549,
+                "p95_ms": 752.0802099988941,
+                "p99_ms": 1097.5877689998015,
+                "max_ms": 1237.56448200038,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.246605998559971,
+                "p90_ms": 10.089092000271194,
+                "p95_ms": 14.074201000767061,
+                "p99_ms": 16.071629001089605,
+                "max_ms": 17.910585000208812,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 4.030492000310915,
+                "p90_ms": 11.208317999262363,
+                "p95_ms": 13.18953500049247,
+                "p99_ms": 15.422034999573953,
+                "max_ms": 16.27319500039448,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 18.66331800010812,
+                "p90_ms": 29.163051998693845,
+                "p95_ms": 34.301837000384694,
+                "p99_ms": 39.9766800001089,
+                "max_ms": 40.2224829995248,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 331.870092999452,
+                "p90_ms": 744.6011140000337,
+                "p95_ms": 804.9980260002485,
+                "p99_ms": 1169.839485999546,
+                "max_ms": 1295.0243100003718,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.3067379290005192,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": null
+    },
+    {
+      "client": "juicefs",
+      "repetition": 1,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 4154.062787261,
+      "observed_phase_s": 4154.062782685,
+      "correctness_verification_s": 67.48019193,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": false,
+      "uninterrupted_performance_sample_valid": true,
+      "timing_source": "Original monotonic perf_counter lifecycle clock",
+      "original_object_counter_offset_unavailable": false,
+      "lifecycle_plus_correctness_s": 4221.542979191,
+      "physical_http_delta": {
+        "DELETE_204": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_200": {
+          "requests": 19218,
+          "response_bytes": 78716928,
+          "request_length_bytes": 14200734,
+          "request_time_s": 4.443999999999857
+        },
+        "GET_206": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "HEAD_200": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0,
+          "request_length_bytes": 1990294,
+          "request_time_s": 1.7240000000033433
+        }
+      },
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 1027.357052789,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5635919399992417,
+            "active_s": 4.41274175199942,
+            "p50_ms": 7.807392999893636,
+            "p90_ms": 11.128132000521873,
+            "p95_ms": 13.898638999307877,
+            "p99_ms": 16.518626998731634,
+            "max_ms": 21.887985998546355,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 7.728890999715077,
+              "p90_ms": 10.86171600036323,
+              "p95_ms": 13.434795000648592,
+              "p99_ms": 16.591911000432447,
+              "max_ms": 18.95325000077719,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 7.878119999077171,
+              "p90_ms": 11.306546999549028,
+              "p95_ms": 14.254421001169248,
+              "p99_ms": 16.518626998731634,
+              "max_ms": 21.887985998546355,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.382977896999364,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 7.677833998968708,
+                "p90_ms": 11.8461580004805,
+                "p95_ms": 14.93509000101767,
+                "p99_ms": 17.48599999882572,
+                "max_ms": 17.669856000793516,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.805598999359063,
+                "p90_ms": 6.4834650002012495,
+                "p95_ms": 6.74291399991489,
+                "p99_ms": 7.137018999856082,
+                "max_ms": 7.216538999273325,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.026607000108924694,
+                "p90_ms": 0.03548299901012797,
+                "p95_ms": 0.043650999941746704,
+                "p99_ms": 0.04634700053429697,
+                "max_ms": 0.057668999943416566,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.418235999764875,
+                "p90_ms": 6.856162999611115,
+                "p95_ms": 7.871255000281963,
+                "p99_ms": 12.70700900022348,
+                "max_ms": 14.537027000187663,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015362000340246595,
+                "p90_ms": 0.020990999473724514,
+                "p95_ms": 0.02337500154681038,
+                "p99_ms": 0.026895999326370656,
+                "max_ms": 0.08898600026441272,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.397655999942799,
+                "p90_ms": 11.81239099969389,
+                "p95_ms": 14.316693999717245,
+                "p99_ms": 16.694912999810185,
+                "max_ms": 17.342549001114094,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 27.77362499909941,
+                "p90_ms": 34.13388899934944,
+                "p95_ms": 36.1211440012994,
+                "p99_ms": 39.26442099873384,
+                "max_ms": 39.987966998523916,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 1031.869009102,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5413316669983033,
+            "active_s": 4.146337503001632,
+            "p50_ms": 7.748779000394279,
+            "p90_ms": 9.332261999588809,
+            "p95_ms": 9.970658999009174,
+            "p99_ms": 11.677594000502722,
+            "max_ms": 38.07700899960764,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 7.656875999600743,
+              "p90_ms": 9.299453000494395,
+              "p95_ms": 9.957051999663236,
+              "p99_ms": 11.464066999906208,
+              "max_ms": 38.07700899960764,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 7.822075000149198,
+              "p90_ms": 9.366485999635188,
+              "p95_ms": 10.023680999438511,
+              "p99_ms": 11.779320999266929,
+              "max_ms": 38.02997699858679,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3734258750009758,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 7.811633000528673,
+                "p90_ms": 10.154454001167323,
+                "p95_ms": 13.707460999285104,
+                "p99_ms": 15.068280999912531,
+                "max_ms": 16.0967330011772,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.131927999376785,
+                "p90_ms": 6.722344998706831,
+                "p95_ms": 6.860518000394222,
+                "p99_ms": 7.471817998521146,
+                "max_ms": 7.493814000554266,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.028095000743633136,
+                "p90_ms": 0.03773100070247892,
+                "p95_ms": 0.04103900027985219,
+                "p99_ms": 0.05187399983697105,
+                "max_ms": 0.05257900011201855,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.269708000720129,
+                "p90_ms": 5.93447499886679,
+                "p95_ms": 6.785879000744899,
+                "p99_ms": 10.598120001304778,
+                "max_ms": 10.88609699945664,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.016108000636450015,
+                "p90_ms": 0.021535999621846713,
+                "p95_ms": 0.02355600008741021,
+                "p99_ms": 0.027740999939851463,
+                "max_ms": 0.028516000384115614,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.238755999627756,
+                "p90_ms": 11.127854999358533,
+                "p95_ms": 15.664591001041117,
+                "p99_ms": 17.217155000253115,
+                "max_ms": 17.326492999927723,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 27.22639000057825,
+                "p90_ms": 33.25831999973161,
+                "p95_ms": 34.01100399969437,
+                "p99_ms": 37.48113199981162,
+                "max_ms": 37.99234600046475,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 1035.878472837,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5495129070004623,
+            "active_s": 4.153398592001395,
+            "p50_ms": 7.743202999336063,
+            "p90_ms": 9.42629999917699,
+            "p95_ms": 9.976665000067442,
+            "p99_ms": 11.527169999681064,
+            "max_ms": 41.468252000413486,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 7.697207000092021,
+              "p90_ms": 9.351097000035224,
+              "p95_ms": 9.9577560013131,
+              "p99_ms": 11.564540000108536,
+              "max_ms": 41.468252000413486,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 7.783565999488928,
+              "p90_ms": 9.460451999984798,
+              "p95_ms": 10.10384800065367,
+              "p99_ms": 11.414749000323354,
+              "max_ms": 38.14314699957322,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.4283854829991469,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 7.8183549994719215,
+                "p90_ms": 8.909723999749986,
+                "p95_ms": 9.359077999761212,
+                "p99_ms": 12.159356998381554,
+                "max_ms": 14.159628000925295,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.8882809989881935,
+                "p90_ms": 6.5547289996175095,
+                "p95_ms": 6.720893001329387,
+                "p99_ms": 7.1176829987962265,
+                "max_ms": 7.320722999793361,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.02801300070132129,
+                "p90_ms": 0.03752900011022575,
+                "p95_ms": 0.044592999984161,
+                "p99_ms": 0.06928100083314348,
+                "max_ms": 0.09263900028599892,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.904543000520789,
+                "p90_ms": 39.203927999551524,
+                "p95_ms": 39.96456200002285,
+                "p99_ms": 52.07582599905436,
+                "max_ms": 52.57552799957921,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.016526999388588592,
+                "p90_ms": 0.0247349998971913,
+                "p95_ms": 0.030447999961324967,
+                "p99_ms": 0.043275998905301094,
+                "max_ms": 0.11841599916806445,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.2424890006223,
+                "p90_ms": 9.530425000775722,
+                "p95_ms": 9.736384999996517,
+                "p99_ms": 16.84220600145636,
+                "max_ms": 17.21590800116246,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 27.590366000367794,
+                "p90_ms": 59.55656799960707,
+                "p95_ms": 64.69382100112853,
+                "p99_ms": 75.7092139992892,
+                "max_ms": 75.76950099974056,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 1037.577154918,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5444094859994948,
+            "active_s": 4.156681650001701,
+            "p50_ms": 7.786109003063757,
+            "p90_ms": 9.507776998361805,
+            "p95_ms": 9.987697998440126,
+            "p99_ms": 11.555673001566902,
+            "max_ms": 19.540326000424102,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 7.710957001108909,
+              "p90_ms": 9.331689001555787,
+              "p95_ms": 9.953936001693364,
+              "p99_ms": 11.581818002014188,
+              "max_ms": 19.540326000424102,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 7.8639969979121815,
+              "p90_ms": 9.610345001419773,
+              "p95_ms": 10.072994002257474,
+              "p99_ms": 11.52694900156348,
+              "max_ms": 19.200589002139168,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3712078360003943,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 7.832965002307901,
+                "p90_ms": 10.296513999492163,
+                "p95_ms": 20.12813900000765,
+                "p99_ms": 20.872850000159815,
+                "max_ms": 20.990629000152694,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.0335269990901,
+                "p90_ms": 6.551308000780409,
+                "p95_ms": 6.588777003344148,
+                "p99_ms": 6.95575700228801,
+                "max_ms": 7.1491399976366665,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.02697500167414546,
+                "p90_ms": 0.03837199983536266,
+                "p95_ms": 0.03997199746663682,
+                "p99_ms": 0.04599900057655759,
+                "max_ms": 0.04871900091529824,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.628960003174143,
+                "p90_ms": 6.892228000651812,
+                "p95_ms": 8.018939999601571,
+                "p99_ms": 13.24843700058409,
+                "max_ms": 13.617183998576365,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.016104000678751618,
+                "p90_ms": 0.022154999896883965,
+                "p95_ms": 0.023719003365840763,
+                "p99_ms": 0.02827500065905042,
+                "max_ms": 0.11209399963263422,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.222427997679915,
+                "p90_ms": 9.39768199896207,
+                "p95_ms": 9.778142000868684,
+                "p99_ms": 10.832594998646528,
+                "max_ms": 10.959961997286882,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 27.585260999330785,
+                "p90_ms": 29.877133001718903,
+                "p95_ms": 42.58602099798736,
+                "p99_ms": 47.99772899787058,
+                "max_ms": 49.850182000227505,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": 0.35870742600309313
+    },
+    {
+      "client": "juicefs",
+      "repetition": 2,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 4257.212038518999,
+      "observed_phase_s": 4257.212032691,
+      "correctness_verification_s": 68.52260531,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": false,
+      "uninterrupted_performance_sample_valid": true,
+      "timing_source": "Original monotonic perf_counter lifecycle clock",
+      "original_object_counter_offset_unavailable": false,
+      "lifecycle_plus_correctness_s": 4325.734643828999,
+      "physical_http_delta": {
+        "DELETE_204": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_200": {
+          "requests": 19214,
+          "response_bytes": 78700544,
+          "request_length_bytes": 14197778,
+          "request_time_s": 4.607000000000298
+        },
+        "GET_206": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "HEAD_200": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0,
+          "request_length_bytes": 1990294,
+          "request_time_s": 1.0260000000062064
+        }
+      },
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 1055.398291405,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5967431819990452,
+            "active_s": 4.542941020001308,
+            "p50_ms": 8.217536000302061,
+            "p90_ms": 10.57441199736786,
+            "p95_ms": 13.197083000704879,
+            "p99_ms": 16.78692000132287,
+            "max_ms": 26.24769800240756,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.185550999769475,
+              "p90_ms": 10.58854000075371,
+              "p95_ms": 13.675165999302408,
+              "p99_ms": 16.72910599882016,
+              "max_ms": 26.24769800240756,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.272342001873767,
+              "p90_ms": 10.556958000961458,
+              "p95_ms": 12.998639002034906,
+              "p99_ms": 16.826733000925742,
+              "max_ms": 19.24784899892984,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3899968990008347,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.539924998331117,
+                "p90_ms": 12.029429999529384,
+                "p95_ms": 15.446979999978794,
+                "p99_ms": 18.267178998939926,
+                "max_ms": 18.72270199964987,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.188093000673689,
+                "p90_ms": 6.897528997797053,
+                "p95_ms": 7.066521000524517,
+                "p99_ms": 7.343607001530472,
+                "max_ms": 7.399367998004891,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.02763500015134923,
+                "p90_ms": 0.03724999987753108,
+                "p95_ms": 0.03976399966632016,
+                "p99_ms": 0.06346200098050758,
+                "max_ms": 0.10346400085836649,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.543847000604728,
+                "p90_ms": 6.466596001700964,
+                "p95_ms": 8.854233998135896,
+                "p99_ms": 12.637820000236388,
+                "max_ms": 13.309951998962788,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015159002941800281,
+                "p90_ms": 0.02107099862769246,
+                "p95_ms": 0.02601799860713072,
+                "p99_ms": 0.06615600068471394,
+                "max_ms": 0.09209500058204867,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.873255999787943,
+                "p90_ms": 10.912322999502067,
+                "p95_ms": 13.539234998461325,
+                "p99_ms": 15.381193999928655,
+                "max_ms": 15.402862001792528,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 28.749885997967795,
+                "p90_ms": 34.51363299973309,
+                "p95_ms": 37.753496999357594,
+                "p99_ms": 40.587016999779735,
+                "max_ms": 42.76880800171057,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 1059.900984639,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.615531267998449,
+            "active_s": 4.491127978002623,
+            "p50_ms": 8.186462000594474,
+            "p90_ms": 10.119553000549786,
+            "p95_ms": 11.477862997708144,
+            "p99_ms": 16.48909600044135,
+            "max_ms": 39.216992001456674,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.142816001054598,
+              "p90_ms": 10.00766300057876,
+              "p95_ms": 11.203281999769388,
+              "p99_ms": 16.378822998376563,
+              "max_ms": 37.221422000584425,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.242113999585854,
+              "p90_ms": 10.240093997708755,
+              "p95_ms": 12.018918998364825,
+              "p99_ms": 16.59084399943822,
+              "max_ms": 39.216992001456674,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3812609739979962,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.100682000076631,
+                "p90_ms": 10.01479099795688,
+                "p95_ms": 13.010824000957655,
+                "p99_ms": 14.571327999874484,
+                "max_ms": 16.823145997477695,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.13836199772777,
+                "p90_ms": 6.834691001131432,
+                "p95_ms": 7.048250998195726,
+                "p99_ms": 7.619465999596287,
+                "max_ms": 8.43048300157534,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.026625002647051588,
+                "p90_ms": 0.038142999983392656,
+                "p95_ms": 0.04129599983571097,
+                "p99_ms": 0.045010998292127624,
+                "max_ms": 0.12879999849246815,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.255062998709036,
+                "p90_ms": 5.6506319997424725,
+                "p95_ms": 6.2508359987987205,
+                "p99_ms": 7.574410999950487,
+                "max_ms": 9.427775999938603,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015308996808016673,
+                "p90_ms": 0.02369399953749962,
+                "p95_ms": 0.025696997909108177,
+                "p99_ms": 0.037797002732986584,
+                "max_ms": 0.03917900176020339,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.898333999241004,
+                "p90_ms": 11.822124000900658,
+                "p95_ms": 15.102511999430135,
+                "p99_ms": 17.32157700098469,
+                "max_ms": 17.85646300049848,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 28.409603000909556,
+                "p90_ms": 33.552568002050975,
+                "p95_ms": 35.60959400056163,
+                "p99_ms": 37.10623499864596,
+                "max_ms": 37.11207000014838,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 1058.395622585,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.6271408719985629,
+            "active_s": 4.611593693000032,
+            "p50_ms": 8.298665001348127,
+            "p90_ms": 10.566228000243427,
+            "p95_ms": 15.093961999809835,
+            "p99_ms": 16.7385490021843,
+            "max_ms": 38.59892199761816,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.206415997847216,
+              "p90_ms": 10.686835001251893,
+              "p95_ms": 15.235617996950168,
+              "p99_ms": 16.550866999750724,
+              "max_ms": 38.59892199761816,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.371299001737498,
+              "p90_ms": 10.50013699932606,
+              "p95_ms": 15.008402999228565,
+              "p99_ms": 16.85214900135179,
+              "max_ms": 38.5220690004644,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.39269455899921013,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.423022001807112,
+                "p90_ms": 13.90698600152973,
+                "p95_ms": 15.918638000584906,
+                "p99_ms": 17.075988002034137,
+                "max_ms": 17.53639100206783,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.999447999784024,
+                "p90_ms": 6.666419998509809,
+                "p95_ms": 6.928872997377766,
+                "p99_ms": 7.450976001564413,
+                "max_ms": 7.55116200161865,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.026512003387324512,
+                "p90_ms": 0.03539400131558068,
+                "p95_ms": 0.039046000892994925,
+                "p99_ms": 0.04393199924379587,
+                "max_ms": 0.09502700049779378,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.385534000903135,
+                "p90_ms": 5.700694000552176,
+                "p95_ms": 6.191337000927888,
+                "p99_ms": 8.74922899674857,
+                "max_ms": 9.174235001410125,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015786001313244924,
+                "p90_ms": 0.020817999029532075,
+                "p95_ms": 0.02281999695696868,
+                "p99_ms": 0.030507999326800928,
+                "max_ms": 0.0961660007305909,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.83317600164446,
+                "p90_ms": 11.375893001968507,
+                "p95_ms": 14.678192001156276,
+                "p99_ms": 16.160908999154344,
+                "max_ms": 18.186837998655392,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 29.187172000092687,
+                "p90_ms": 33.98922999986098,
+                "p95_ms": 35.775460997683695,
+                "p99_ms": 40.33664700182271,
+                "max_ms": 44.5750870021584,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 1060.618598521,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.6163597099985054,
+            "active_s": 4.526972559000569,
+            "p50_ms": 8.167578002030496,
+            "p90_ms": 10.685893998015672,
+            "p95_ms": 12.852683001256082,
+            "p99_ms": 16.523204001714475,
+            "max_ms": 25.67338100197958,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.099423997919075,
+              "p90_ms": 10.614956001518294,
+              "p95_ms": 13.0214380005782,
+              "p99_ms": 16.440939998574322,
+              "max_ms": 25.67338100197958,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.249431997683132,
+              "p90_ms": 10.71745100125554,
+              "p95_ms": 12.733628998830682,
+              "p99_ms": 16.616900997178163,
+              "max_ms": 18.18759200250497,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.37957959399864194,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.358229999430478,
+                "p90_ms": 10.071353997773258,
+                "p95_ms": 11.724997999408515,
+                "p99_ms": 15.050288999191253,
+                "max_ms": 17.13256299990462,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.109234000177821,
+                "p90_ms": 6.858120999822859,
+                "p95_ms": 7.037577001028694,
+                "p99_ms": 8.162620000803145,
+                "max_ms": 8.602155998232774,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.027070000214735046,
+                "p90_ms": 0.035135999496560544,
+                "p95_ms": 0.045584998588310555,
+                "p99_ms": 0.42740299977594987,
+                "max_ms": 0.9873599992715754,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.640450002625585,
+                "p90_ms": 6.124958999862429,
+                "p95_ms": 7.199856998340692,
+                "p99_ms": 9.884782000881387,
+                "max_ms": 10.12667299801251,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015019999409560114,
+                "p90_ms": 0.020731000404339284,
+                "p95_ms": 0.023277003492694348,
+                "p99_ms": 0.037027999496785924,
+                "max_ms": 0.10862099952646531,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.626173999800812,
+                "p90_ms": 10.18269400083227,
+                "p95_ms": 11.810150001110742,
+                "p99_ms": 15.510014000028605,
+                "max_ms": 17.18166800128529,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 28.368478997435886,
+                "p90_ms": 32.2203450014058,
+                "p95_ms": 33.184175998030696,
+                "p99_ms": 36.75895100241178,
+                "max_ms": 46.12563800037606,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": 0.3531018009998661
+    },
+    {
+      "client": "brewfs",
+      "repetition": 2,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 110.20331970400002,
+      "observed_phase_s": 110.203315422,
+      "correctness_verification_s": 2006.609357123,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": false,
+      "uninterrupted_performance_sample_valid": true,
+      "timing_source": "Original monotonic perf_counter lifecycle clock",
+      "original_object_counter_offset_unavailable": false,
+      "lifecycle_plus_correctness_s": 2116.8126768270004,
+      "physical_http_delta": {
+        "DELETE_204": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_200": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_206": {
+          "requests": 119182,
+          "response_bytes": 19639866850,
+          "request_length_bytes": 109766708,
+          "request_time_s": 66.42199999843598
+        },
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0,
+          "request_length_bytes": 3492,
+          "request_time_s": 0.003
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0,
+          "request_length_bytes": 2015568,
+          "request_time_s": 2.1440000000029613
+        }
+      },
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 0,
+          "bootstrap_s": 3.02330039,
+          "read": {
+            "prewarm_s": 2.4606835760023387,
+            "active_s": 15.635043647998828,
+            "p50_ms": 27.534045002539642,
+            "p90_ms": 44.65512499882607,
+            "p95_ms": 53.70947600022191,
+            "p99_ms": 76.23199399677105,
+            "max_ms": 117.83205699975952,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 26.381264000519877,
+              "p90_ms": 42.1579030007706,
+              "p95_ms": 52.50004300251021,
+              "p99_ms": 77.19227600318845,
+              "max_ms": 117.83205699975952,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 28.758188000210794,
+              "p90_ms": 46.70975900080521,
+              "p95_ms": 55.344618998788064,
+              "p99_ms": 76.23199399677105,
+              "max_ms": 110.72162100026617,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.297981972002162,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 29.037495001830393,
+                "p90_ms": 38.55946600015159,
+                "p95_ms": 44.32473799897707,
+                "p99_ms": 48.46463000285439,
+                "max_ms": 53.33136999979615,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.530419999762671,
+                "p90_ms": 12.075878999894485,
+                "p95_ms": 14.94649800224579,
+                "p99_ms": 18.56143199984217,
+                "max_ms": 18.572246997791808,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 300.13173099723645,
+                "p90_ms": 601.4993090029748,
+                "p95_ms": 694.8964650000562,
+                "p99_ms": 1014.1719419989386,
+                "max_ms": 1369.6418599975004,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 3.920622999430634,
+                "p90_ms": 9.883138001896441,
+                "p95_ms": 12.498667998443125,
+                "p99_ms": 19.348341000295477,
+                "max_ms": 19.8950749982032,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.1142469997575972,
+                "p90_ms": 9.91221299773315,
+                "p95_ms": 11.010632999386871,
+                "p99_ms": 16.926645999774337,
+                "max_ms": 18.227273998491,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 17.352660997858038,
+                "p90_ms": 26.761986999190412,
+                "p95_ms": 29.132960000424646,
+                "p99_ms": 37.14012099953834,
+                "max_ms": 90.00910599934286,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 357.4748289975105,
+                "p90_ms": 662.181874999078,
+                "p95_ms": 768.864505997044,
+                "p99_ms": 1073.1776960019488,
+                "max_ms": 1437.9645830013033,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.3971006040010252,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 0,
+          "bootstrap_s": 3.020980616,
+          "read": {
+            "prewarm_s": 2.2148359309976513,
+            "active_s": 16.33324951599934,
+            "p50_ms": 28.86879899961059,
+            "p90_ms": 47.786138999072136,
+            "p95_ms": 55.92363699906855,
+            "p99_ms": 74.9476400014828,
+            "max_ms": 99.93329999997513,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.032007998262998,
+              "p90_ms": 45.65697499856469,
+              "p95_ms": 52.94611499994062,
+              "p99_ms": 71.60958700114861,
+              "max_ms": 94.64806400137604,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 29.789222000545124,
+              "p90_ms": 50.010455001029186,
+              "p95_ms": 57.98047300049802,
+              "p99_ms": 78.14280700040399,
+              "max_ms": 99.93329999997513,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.336009638998803,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 28.543164000438992,
+                "p90_ms": 38.59539000040968,
+                "p95_ms": 41.00987899801112,
+                "p99_ms": 48.68008899939014,
+                "max_ms": 56.6627049993258,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.955765998805873,
+                "p90_ms": 12.987989000976086,
+                "p95_ms": 14.191853999363957,
+                "p99_ms": 20.569090000208234,
+                "max_ms": 20.80545799981337,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 295.78781600139337,
+                "p90_ms": 594.6281949982222,
+                "p95_ms": 686.4782250013377,
+                "p99_ms": 950.1200369995786,
+                "max_ms": 1086.6155330004403,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 3.821935002633836,
+                "p90_ms": 10.462618000019575,
+                "p95_ms": 13.221286000771215,
+                "p99_ms": 27.096241999970516,
+                "max_ms": 28.198631000122987,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.1107670001802035,
+                "p90_ms": 10.249553000903688,
+                "p95_ms": 12.533873999927891,
+                "p99_ms": 19.986619001429062,
+                "max_ms": 20.020700998429675,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 17.749835998984054,
+                "p90_ms": 30.264904999057762,
+                "p95_ms": 33.455365999543574,
+                "p99_ms": 61.69899499946041,
+                "max_ms": 70.02644800013513,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 361.34585199761204,
+                "p90_ms": 658.0651069998567,
+                "p95_ms": 732.513121998636,
+                "p99_ms": 1016.2924750002276,
+                "max_ms": 1149.908580002375,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.40730097699997714,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 0,
+          "bootstrap_s": 3.072896101,
+          "read": {
+            "prewarm_s": 2.389111567001237,
+            "active_s": 16.635506506001548,
+            "p50_ms": 28.84761899986188,
+            "p90_ms": 49.8256009996112,
+            "p95_ms": 59.32144799953676,
+            "p99_ms": 81.99721299752127,
+            "max_ms": 142.04257099845563,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 27.939466999669094,
+              "p90_ms": 49.2216839993489,
+              "p95_ms": 58.9129319996573,
+              "p99_ms": 82.63974299916299,
+              "max_ms": 142.04257099845563,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 29.74669399918639,
+              "p90_ms": 50.29140400074539,
+              "p95_ms": 59.88521600011154,
+              "p99_ms": 80.7526480020897,
+              "max_ms": 112.58823800017126,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.524635721001687,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.5654780024488,
+                "p90_ms": 43.02466499939328,
+                "p95_ms": 50.61600699991686,
+                "p99_ms": 62.37081600193051,
+                "max_ms": 62.58083600187092,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 7.505274999857647,
+                "p90_ms": 12.515825001173653,
+                "p95_ms": 13.758325003436767,
+                "p99_ms": 18.400319997454062,
+                "max_ms": 20.753867000166792,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 301.9315679994179,
+                "p90_ms": 686.9210900003964,
+                "p95_ms": 734.8501989981742,
+                "p99_ms": 881.6035039999406,
+                "max_ms": 958.5142690011708,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.649370999686653,
+                "p90_ms": 9.700995997263817,
+                "p95_ms": 10.433924999233568,
+                "p99_ms": 17.275146001338726,
+                "max_ms": 19.439652998698875,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.127224998024758,
+                "p90_ms": 9.586240998032736,
+                "p95_ms": 10.159045999898808,
+                "p99_ms": 17.856253998616012,
+                "max_ms": 17.904694999742787,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 19.69984899915289,
+                "p90_ms": 28.760094002791448,
+                "p95_ms": 35.8880540006794,
+                "p99_ms": 39.0932989976136,
+                "max_ms": 49.441639999713516,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 383.22184899880085,
+                "p90_ms": 761.1570069966547,
+                "p95_ms": 802.1322630011127,
+                "p99_ms": 948.1091599991487,
+                "max_ms": 1024.069614999462,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.4378618950031523,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 0,
+          "bootstrap_s": 2.755741122,
+          "read": {
+            "prewarm_s": 2.352734143998532,
+            "active_s": 16.812597067000752,
+            "p50_ms": 29.476619998604292,
+            "p90_ms": 50.449661997845396,
+            "p95_ms": 59.4780540013744,
+            "p99_ms": 78.01581699823146,
+            "max_ms": 124.87773999964702,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.41524000177742,
+              "p90_ms": 49.621594000200275,
+              "p95_ms": 58.026384002005216,
+              "p99_ms": 75.8929569965403,
+              "max_ms": 119.37357300121221,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.4987119998259,
+              "p90_ms": 51.02829899988137,
+              "p95_ms": 60.0828749993525,
+              "p99_ms": 80.50251000167918,
+              "max_ms": 124.87773999964702,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.492202000001271,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 30.166027998348,
+                "p90_ms": 41.71081599997706,
+                "p95_ms": 43.18498499924317,
+                "p99_ms": 51.4623240014771,
+                "max_ms": 51.477044999046484,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 7.066638998367125,
+                "p90_ms": 11.578180001379224,
+                "p95_ms": 14.69946399811306,
+                "p99_ms": 20.909409002342727,
+                "max_ms": 21.019463001721306,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 297.9330679991108,
+                "p90_ms": 579.3374130007578,
+                "p95_ms": 710.2553769982478,
+                "p99_ms": 1065.4183340011514,
+                "max_ms": 1143.9367840030172,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 5.971517999569187,
+                "p90_ms": 10.311805999663193,
+                "p95_ms": 13.06793900221237,
+                "p99_ms": 17.811323999922024,
+                "max_ms": 18.341858001804212,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.948385001422139,
+                "p90_ms": 11.004211999534164,
+                "p95_ms": 12.834014996769838,
+                "p99_ms": 19.826408999506384,
+                "max_ms": 19.89117199991597,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 17.66316800058121,
+                "p90_ms": 29.40294600193738,
+                "p95_ms": 34.460855000361335,
+                "p99_ms": 49.82962799840607,
+                "max_ms": 51.737571997364284,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 385.8620540013362,
+                "p90_ms": 672.1426530020835,
+                "p95_ms": 763.4832450021349,
+                "p99_ms": 1120.035853000445,
+                "max_ms": 1205.9631209995132,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.397503295000206,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": null
+    },
+    {
+      "client": "brewfs",
+      "repetition": 3,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 110.2015378420001,
+      "observed_phase_s": 110.201533199,
+      "correctness_verification_s": 2004.125042433,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": false,
+      "uninterrupted_performance_sample_valid": true,
+      "timing_source": "Original monotonic perf_counter lifecycle clock",
+      "original_object_counter_offset_unavailable": false,
+      "lifecycle_plus_correctness_s": 2114.326580275,
+      "physical_http_delta": {
+        "DELETE_204": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_200": {
+          "requests": 0,
+          "response_bytes": 0,
+          "request_length_bytes": 0,
+          "request_time_s": 0.0
+        },
+        "GET_206": {
+          "requests": 119007,
+          "response_bytes": 19610939343,
+          "request_length_bytes": 109605664,
+          "request_time_s": 63.816999998491156
+        },
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0,
+          "request_length_bytes": 3492,
+          "request_time_s": 0.002000000000000001
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0,
+          "request_length_bytes": 2015568,
+          "request_time_s": 0.9029999999984284
+        }
+      },
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 0,
+          "bootstrap_s": 2.996780412,
+          "read": {
+            "prewarm_s": 2.5037187930029177,
+            "active_s": 16.447002406999673,
+            "p50_ms": 28.785504997358657,
+            "p90_ms": 48.416899000585545,
+            "p95_ms": 58.08437199812033,
+            "p99_ms": 76.18012099919724,
+            "max_ms": 108.35706500074593,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 27.81849399980274,
+              "p90_ms": 47.817919999943115,
+              "p95_ms": 55.66473900034907,
+              "p99_ms": 71.95786499869428,
+              "max_ms": 97.2314689970517,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 29.67853600057424,
+              "p90_ms": 49.29805799838505,
+              "p95_ms": 60.118052999314386,
+              "p99_ms": 79.5235359983053,
+              "max_ms": 108.35706500074593,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.509810206000111,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.910543999401852,
+                "p90_ms": 40.43339899726561,
+                "p95_ms": 41.943013999116374,
+                "p99_ms": 61.68891900233575,
+                "max_ms": 61.95981899873004,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.724115999531932,
+                "p90_ms": 12.65243600209942,
+                "p95_ms": 13.548085000365973,
+                "p99_ms": 20.18986500115716,
+                "max_ms": 30.507923002005555,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 314.1980879991024,
+                "p90_ms": 609.4203909997304,
+                "p95_ms": 753.7830359979125,
+                "p99_ms": 900.0506400006998,
+                "max_ms": 927.6484289985092,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.511196999374079,
+                "p90_ms": 9.33243000326911,
+                "p95_ms": 10.190680000960128,
+                "p99_ms": 17.612366998946527,
+                "max_ms": 17.68384699971648,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 4.183979999652365,
+                "p90_ms": 9.779469997738488,
+                "p95_ms": 10.732621001807274,
+                "p99_ms": 15.526908999163425,
+                "max_ms": 16.232330999628175,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 20.023966000735527,
+                "p90_ms": 31.693259999883594,
+                "p95_ms": 33.07067199784797,
+                "p99_ms": 39.86453499965137,
+                "max_ms": 45.231552998302504,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 386.8235320005624,
+                "p90_ms": 710.5214340008388,
+                "p95_ms": 842.3611069993058,
+                "p99_ms": 963.020110000798,
+                "max_ms": 1016.104833001009,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.34723018200020306,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 0,
+          "bootstrap_s": 2.772549957,
+          "read": {
+            "prewarm_s": 2.219317098999454,
+            "active_s": 16.623809699998674,
+            "p50_ms": 29.35812899886514,
+            "p90_ms": 48.336339998058975,
+            "p95_ms": 57.968545999756316,
+            "p99_ms": 76.97921299768495,
+            "max_ms": 106.43129799791495,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.309625999099808,
+              "p90_ms": 47.36422299902188,
+              "p95_ms": 56.86688800051343,
+              "p99_ms": 74.60332499977085,
+              "max_ms": 92.7513930000714,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.306507000204874,
+              "p90_ms": 49.269496001215884,
+              "p95_ms": 59.3117259995779,
+              "p99_ms": 78.2444319993374,
+              "max_ms": 106.43129799791495,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 4.867326256000524,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 28.794669997296296,
+                "p90_ms": 38.26278799897409,
+                "p95_ms": 40.60020099859685,
+                "p99_ms": 50.04678900149884,
+                "max_ms": 50.69236599956639,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.969529996946221,
+                "p90_ms": 11.833373999252217,
+                "p95_ms": 12.287633002415532,
+                "p99_ms": 17.178497000713833,
+                "max_ms": 20.99078399987775,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 256.5725009990274,
+                "p90_ms": 602.6143620001676,
+                "p95_ms": 714.6620220009936,
+                "p99_ms": 887.4010469990026,
+                "max_ms": 982.5388959980046,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.116656000405783,
+                "p90_ms": 9.075403999304399,
+                "p95_ms": 12.015147996862652,
+                "p99_ms": 16.02516300044954,
+                "max_ms": 16.522775000339607,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.124063998257043,
+                "p90_ms": 8.901674998924136,
+                "p95_ms": 10.657497998181498,
+                "p99_ms": 13.426975001493702,
+                "max_ms": 14.194987001246773,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 18.33039600023767,
+                "p90_ms": 28.033049002260668,
+                "p95_ms": 31.280809998861514,
+                "p99_ms": 38.62121800193563,
+                "max_ms": 38.950015001319116,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 321.1834030007594,
+                "p90_ms": 663.2361359988863,
+                "p95_ms": 779.1748880008527,
+                "p99_ms": 948.7183230012306,
+                "max_ms": 1064.2448389990022,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.3364249439982814,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 0,
+          "bootstrap_s": 3.090117806,
+          "read": {
+            "prewarm_s": 2.1957494519992906,
+            "active_s": 16.45778638000047,
+            "p50_ms": 28.848756999650504,
+            "p90_ms": 48.47463900296134,
+            "p95_ms": 56.358261997957015,
+            "p99_ms": 76.6521939985978,
+            "max_ms": 110.29141700055334,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 27.730832000088412,
+              "p90_ms": 46.80080699836253,
+              "p95_ms": 54.65168099908624,
+              "p99_ms": 71.49539300007746,
+              "max_ms": 110.29141700055334,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.140947001200402,
+              "p90_ms": 49.537790997419506,
+              "p95_ms": 58.34702499851119,
+              "p99_ms": 80.73442100067041,
+              "max_ms": 99.98726900084876,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.023752158998832,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 29.14740899723256,
+                "p90_ms": 37.477511999895796,
+                "p95_ms": 46.249848001025384,
+                "p99_ms": 53.92657699849224,
+                "max_ms": 60.998799999651965,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.5036479971022345,
+                "p90_ms": 12.814398996852105,
+                "p95_ms": 16.124982001201715,
+                "p99_ms": 19.851175999065163,
+                "max_ms": 43.867883996426826,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 291.94717700011097,
+                "p90_ms": 564.7227100016607,
+                "p95_ms": 636.663129000226,
+                "p99_ms": 708.5408460006875,
+                "max_ms": 776.844557000004,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 3.302196000731783,
+                "p90_ms": 9.044817998073995,
+                "p95_ms": 11.893890998180723,
+                "p99_ms": 15.964607999194413,
+                "max_ms": 17.05872700040345,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.3449180009483825,
+                "p90_ms": 10.163751998334192,
+                "p95_ms": 11.270483999396674,
+                "p99_ms": 15.77602100223885,
+                "max_ms": 16.437239002698334,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 16.45474299948546,
+                "p90_ms": 26.382563999504782,
+                "p95_ms": 29.445255997416098,
+                "p99_ms": 32.36507899782737,
+                "max_ms": 34.67499199905433,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 355.6381700000202,
+                "p90_ms": 628.4979439988092,
+                "p95_ms": 701.370743001462,
+                "p99_ms": 779.4050390002667,
+                "max_ms": 826.7083270002331,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.2866717510005401,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 0,
+          "bootstrap_s": 2.871658603,
+          "read": {
+            "prewarm_s": 2.4223175359984452,
+            "active_s": 17.143699682997976,
+            "p50_ms": 29.72292699996615,
+            "p90_ms": 52.01996400137432,
+            "p95_ms": 60.916825001186226,
+            "p99_ms": 79.82872499997029,
+            "max_ms": 134.96377000046778,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 28.85195699855103,
+              "p90_ms": 51.04470100195613,
+              "p95_ms": 59.5070269991993,
+              "p99_ms": 81.7363860005571,
+              "max_ms": 125.45733499791822,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 30.644836002466036,
+              "p90_ms": 52.790483001444954,
+              "p95_ms": 62.30966200018884,
+              "p99_ms": 79.37492500059307,
+              "max_ms": 134.96377000046778,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 5.39128230300048,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 31.18257599999197,
+                "p90_ms": 41.50344699883135,
+                "p95_ms": 45.7108340015111,
+                "p99_ms": 50.484626000979915,
+                "max_ms": 53.52019199926872,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 5.851549001818057,
+                "p90_ms": 11.797073999332497,
+                "p95_ms": 13.211066998337628,
+                "p99_ms": 21.065125001769047,
+                "max_ms": 27.44873700066819,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 302.29845799840405,
+                "p90_ms": 619.8752480013354,
+                "p95_ms": 691.9168610002089,
+                "p99_ms": 958.5912610018568,
+                "max_ms": 1332.047390002117,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.13910799761652,
+                "p90_ms": 10.268309000821318,
+                "p95_ms": 15.525998998782597,
+                "p99_ms": 17.713097000523703,
+                "max_ms": 20.45389900013106,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 3.580499000236159,
+                "p90_ms": 9.705274998850655,
+                "p95_ms": 10.852665000129491,
+                "p99_ms": 17.07731999704265,
+                "max_ms": 19.12400099899969,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 17.549737996887416,
+                "p90_ms": 29.098839000653243,
+                "p95_ms": 33.09367000110797,
+                "p99_ms": 41.90184599792701,
+                "max_ms": 44.66326300098444,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 361.2303060035629,
+                "p90_ms": 690.8174759992107,
+                "p95_ms": 750.5776409998361,
+                "p99_ms": 1027.8838980011642,
+                "max_ms": 1408.9110019995132,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": 0.4884419219997653,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": null
+    },
+    {
+      "client": "juicefs",
+      "repetition": 3,
+      "files": 1000000,
+      "workspaces": 4,
+      "profile": "workspace-fanout",
+      "lifecycle_s": 4090.323980167,
+      "observed_phase_s": 4090.323980167,
+      "correctness_verification_s": 68.380121163,
+      "remote_ready": true,
+      "source_names_verified": 1000000,
+      "remote_logical_verification": true,
+      "recovered_interrupted_cell": true,
+      "uninterrupted_performance_sample_valid": false,
+      "timing_source": "Original durable lifecycle stage start to actual exit; includes external stop and recovery; original private perf_counter origin unavailable",
+      "original_object_counter_offset_unavailable": true,
+      "lifecycle_plus_correctness_s": 4158.70410133,
+      "physical_http_delta": null,
+      "details": [
+        {
+          "workspace": 0,
+          "clone_s": 1013.032200958,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.6104334539995762,
+            "active_s": 4.591511607999564,
+            "p50_ms": 8.22992099710973,
+            "p90_ms": 11.066275001212489,
+            "p95_ms": 14.066627001739107,
+            "p99_ms": 16.543165998882614,
+            "max_ms": 44.914657999470364,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.144946001266362,
+              "p90_ms": 11.169765999511583,
+              "p95_ms": 14.577961999748368,
+              "p99_ms": 16.817997999169165,
+              "max_ms": 40.49388899875339,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.294344999740133,
+              "p90_ms": 11.026870000932831,
+              "p95_ms": 13.679211999260588,
+              "p99_ms": 16.37180800025817,
+              "max_ms": 44.914657999470364,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.387790987999324,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 0,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.141612997860648,
+                "p90_ms": 10.224939000181621,
+                "p95_ms": 15.47115500216023,
+                "p99_ms": 17.823582998971688,
+                "max_ms": 17.912791998242028,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.062710999685805,
+                "p90_ms": 6.603865000215592,
+                "p95_ms": 6.682708997686859,
+                "p99_ms": 6.780480001907563,
+                "max_ms": 7.050546999380458,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.02634199699969031,
+                "p90_ms": 0.03542299964465201,
+                "p95_ms": 0.03840600038529374,
+                "p99_ms": 0.20224900072207674,
+                "max_ms": 0.2537830005167052,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.559380002319813,
+                "p90_ms": 6.555117000971222,
+                "p95_ms": 8.528206002665684,
+                "p99_ms": 12.19066900011967,
+                "max_ms": 12.931877001392422,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015382000128738582,
+                "p90_ms": 0.02215200220234692,
+                "p95_ms": 0.02584300091257319,
+                "p99_ms": 0.045619999582413584,
+                "max_ms": 0.10109999857377261,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.813193002424669,
+                "p90_ms": 11.652191999019124,
+                "p95_ms": 13.617644999612821,
+                "p99_ms": 16.92872800049372,
+                "max_ms": 17.31239199943957,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 28.449850000470178,
+                "p90_ms": 33.64967200104729,
+                "p95_ms": 35.55625999797485,
+                "p99_ms": 38.67423200063058,
+                "max_ms": 39.365603999613086,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 1,
+          "clone_s": 1020.864701567,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5836180090009293,
+            "active_s": 4.4180053349991795,
+            "p50_ms": 8.298077002109494,
+            "p90_ms": 9.9346630013315,
+            "p95_ms": 10.249866998492507,
+            "p99_ms": 11.442957002145704,
+            "max_ms": 46.79258599935565,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.235936002165545,
+              "p90_ms": 9.853686999122147,
+              "p95_ms": 10.091362000821391,
+              "p99_ms": 11.168201999680605,
+              "max_ms": 40.156402999855345,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.36179999896558,
+              "p90_ms": 9.9548069993034,
+              "p95_ms": 10.398106001957785,
+              "p99_ms": 11.751154001103714,
+              "max_ms": 46.79258599935565,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.36702984899966395,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 1,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.034316000703257,
+                "p90_ms": 9.364798999740742,
+                "p95_ms": 9.817220998229459,
+                "p99_ms": 11.213170000701211,
+                "max_ms": 15.285953999409685,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.375242999638431,
+                "p90_ms": 7.1444099994550925,
+                "p95_ms": 7.883194997702958,
+                "p99_ms": 8.16665500315139,
+                "max_ms": 8.332442001119489,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.027197002054890618,
+                "p90_ms": 0.03819699850282632,
+                "p95_ms": 0.04063100277562626,
+                "p99_ms": 0.051024002459598705,
+                "max_ms": 0.1125190028687939,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.4474139976955485,
+                "p90_ms": 6.118119999882765,
+                "p95_ms": 7.588715998281259,
+                "p99_ms": 10.097234000568278,
+                "max_ms": 10.927647999778856,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015715999325038865,
+                "p90_ms": 0.022604999685427174,
+                "p95_ms": 0.02531000063754618,
+                "p99_ms": 0.033732998417690396,
+                "max_ms": 0.4479420022107661,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.500529002049007,
+                "p90_ms": 9.901451998302946,
+                "p95_ms": 10.243853001156822,
+                "p99_ms": 11.253774002398131,
+                "max_ms": 16.431389001809293,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 27.82731099796365,
+                "p90_ms": 30.986441001005005,
+                "p95_ms": 32.6717549978639,
+                "p99_ms": 35.801011999865295,
+                "max_ms": 37.5419280026108,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 2,
+          "clone_s": 1019.064362914,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.6148371809977107,
+            "active_s": 4.561198988001706,
+            "p50_ms": 8.17195100171375,
+            "p90_ms": 11.176824998983648,
+            "p95_ms": 13.9716750018124,
+            "p99_ms": 16.537208000954706,
+            "max_ms": 25.433904000237817,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.091905998298898,
+              "p90_ms": 10.832238000148209,
+              "p95_ms": 13.9716750018124,
+              "p99_ms": 16.4835609975853,
+              "max_ms": 22.10887500041281,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.244074000685941,
+              "p90_ms": 11.368329000106314,
+              "p95_ms": 14.083771999139572,
+              "p99_ms": 16.624032003164757,
+              "max_ms": 25.433904000237817,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3870459079989814,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 2,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.1379220027884,
+                "p90_ms": 9.978167996450793,
+                "p95_ms": 11.284252999757882,
+                "p99_ms": 15.48589699814329,
+                "max_ms": 17.09178700184566,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.244043997867266,
+                "p90_ms": 6.712785001582233,
+                "p95_ms": 7.039410000288626,
+                "p99_ms": 7.550633999926504,
+                "max_ms": 7.831678001821274,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.02640100137796253,
+                "p90_ms": 0.03783500142162666,
+                "p95_ms": 0.04573199839796871,
+                "p99_ms": 0.09651899745222181,
+                "max_ms": 0.11526899834279902,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.393618000904098,
+                "p90_ms": 6.043331002729246,
+                "p95_ms": 7.628759001818253,
+                "p99_ms": 9.603272003005259,
+                "max_ms": 9.954663000826258,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015914996765786782,
+                "p90_ms": 0.021640000340994447,
+                "p95_ms": 0.024934000975918025,
+                "p99_ms": 0.04630000330507755,
+                "max_ms": 0.316020999889588,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.98167199920863,
+                "p90_ms": 12.373567999020452,
+                "p95_ms": 14.744004001840949,
+                "p99_ms": 16.26335100081633,
+                "max_ms": 17.577569000422955,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 29.15411299909465,
+                "p90_ms": 33.380228000169154,
+                "p95_ms": 35.25785899910261,
+                "p99_ms": 35.87672000139719,
+                "max_ms": 37.07723999832524,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        },
+        {
+          "workspace": 3,
+          "clone_s": 1014.530340009,
+          "bootstrap_s": 0,
+          "read": {
+            "prewarm_s": 0.5962726789985027,
+            "active_s": 4.536476847999438,
+            "p50_ms": 8.189066000340972,
+            "p90_ms": 10.524793997319648,
+            "p95_ms": 13.018781999562634,
+            "p99_ms": 16.5220369999588,
+            "max_ms": 39.77102300268598,
+            "samples": 4096,
+            "operations": 4096,
+            "user_bytes": 16777216,
+            "prewarm_files": 512,
+            "working_files": 1024,
+            "namespace_files": 1000000,
+            "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+            "initial_warm": {
+              "p50_ms": 8.108253001410048,
+              "p90_ms": 10.465663999639219,
+              "p95_ms": 12.799460000678664,
+              "p99_ms": 16.418105999036925,
+              "max_ms": 39.77102300268598,
+              "samples": 2048
+            },
+            "initial_unwarmed": {
+              "p50_ms": 8.281244001409505,
+              "p90_ms": 10.550602000876097,
+              "p95_ms": 13.473076000082074,
+              "p99_ms": 16.62040200244519,
+              "max_ms": 32.92488299848628,
+              "samples": 2048
+            },
+            "semantics": "Half the selected set pre-read, balanced initial warm/unwarmed requests; no cache-hit claim"
+          },
+          "cow": {
+            "active_s": 0.3769971980000264,
+            "files": 100,
+            "user_bytes": 409600,
+            "workspace": 3,
+            "latency": {
+              "before_read_ms": {
+                "p50_ms": 8.261921000666916,
+                "p90_ms": 10.597825999866473,
+                "p95_ms": 12.310924001212697,
+                "p99_ms": 13.705680998100433,
+                "max_ms": 14.191883001331007,
+                "samples": 100
+              },
+              "open_ms": {
+                "p50_ms": 6.153151000034995,
+                "p90_ms": 6.884648999402998,
+                "p95_ms": 7.064182002068264,
+                "p99_ms": 7.351973999902839,
+                "max_ms": 7.928262999485014,
+                "samples": 100
+              },
+              "pwrite_ms": {
+                "p50_ms": 0.027049998607253656,
+                "p90_ms": 0.03680000008898787,
+                "p95_ms": 0.04246499884175137,
+                "p99_ms": 0.11649900261545554,
+                "max_ms": 0.1368449993606191,
+                "samples": 100
+              },
+              "fsync_ms": {
+                "p50_ms": 4.504705997533165,
+                "p90_ms": 5.535006999707548,
+                "p95_ms": 6.080849998397753,
+                "p99_ms": 7.575854000606341,
+                "max_ms": 8.166082996467594,
+                "samples": 100
+              },
+              "close_ms": {
+                "p50_ms": 0.015833000361453742,
+                "p90_ms": 0.023792003048583865,
+                "p95_ms": 0.026925998099613935,
+                "p99_ms": 0.11169899880769663,
+                "max_ms": 0.7935820030979812,
+                "samples": 100
+              },
+              "after_read_ms": {
+                "p50_ms": 8.65988199802814,
+                "p90_ms": 10.828852999111405,
+                "p95_ms": 11.693087002640823,
+                "p99_ms": 12.453182000172092,
+                "max_ms": 16.474396998091834,
+                "samples": 100
+              },
+              "total_ms": {
+                "p50_ms": 28.240826999535784,
+                "p90_ms": 31.823503999476088,
+                "p95_ms": 33.24506599892629,
+                "p99_ms": 35.39081100097974,
+                "max_ms": 35.753165000642184,
+                "samples": 100
+              }
+            }
+          },
+          "drain_tail_s": null,
+          "remote_ready": true,
+          "actual_worker_exit_zero": true,
+          "assisted_fuse_cleanup": false
+        }
+      ],
+      "shared_drain_tail_s": 0.3690886629992747
+    }
+  ],
+  "validation": {
+    "strict_acceptance_passed": false,
+    "full_observability_acceptance": false,
+    "uninterrupted_six_cell_performance_acceptance": false,
+    "archive_integrity_verified": true,
+    "workload_correctness_and_exit_evidence_complete": true,
+    "safe_to_release_owned_resources": true,
+    "scope": "Explicit failed-run closure; not the original successful acceptance gate.",
+    "namespace_files": 1000000,
+    "completed_operation_cells": 6,
+    "workspaces": 24,
+    "clean_paired_rounds": [
+      1,
+      2
+    ],
+    "recovered_cells": [
+      {
+        "client": "juicefs",
+        "repetition": 3,
+        "timing_source": "Original durable lifecycle stage start to actual exit; includes external stop and recovery; original private perf_counter origin unavailable"
+      }
+    ],
+    "raw_sample_counts": {
+      "read": 98304,
+      "prewarm": 12288,
+      "cow": 2400
+    },
+    "raw_sample_file_counts": {
+      "read": 24,
+      "prewarm": 24,
+      "cow": 24
+    },
+    "trace_sha256": "aa48f81e8154489b2c8eba9e4fea206d2ce0cc4178de29b5d193859d06e1a783",
+    "ordinary_exit_only": true,
+    "coverage": {
+      "client": {
+        "host_samples": 5501,
+        "maximum_host_gap_s": 5.005968807,
+        "archive_members": 711,
+        "exporter_success_counts": {
+          "juicefs-mount": 3728,
+          "juicefs-sync": 1174,
+          "brewfs-mount": 1283
+        },
+        "exporter_failures": {
+          "juicefs-mount": [
+            {
+              "utc_ns": 1793561663902321539,
+              "state": "stopping",
+              "error": "URLError: <urlopen error [Errno 111] Connection refused>"
+            },
+            {
+              "utc_ns": 1793566003977972664,
+              "state": "stopping",
+              "error": "URLError: <urlopen error [Errno 111] Connection refused>"
+            }
+          ],
+          "juicefs-sync": [
+            {
+              "utc_ns": 1793553063756961382,
+              "state": "active",
+              "error": "URLError: <urlopen error [Errno 111] Connection refused>"
+            }
+          ],
+          "brewfs-mount": [
+            {
+              "utc_ns": 1793568214016408015,
+              "state": "stopping",
+              "error": "URLError: <urlopen error [Errno 111] Connection refused>"
+            }
+          ]
+        }
+      },
+      "objects": {
+        "host_samples": 5447,
+        "maximum_host_gap_s": 274.744959295,
+        "archive_members": 131,
+        "exporter_success_counts": {},
+        "exporter_failures": {}
+      },
+      "metadata": {
+        "host_samples": 5501,
+        "maximum_host_gap_s": 5.001687893,
+        "archive_members": 843,
+        "exporter_success_counts": {
+          "pd": 5529,
+          "tikv": 5529
+        },
+        "exporter_failures": {
+          "pd": [],
+          "tikv": []
+        },
+        "backend_metric_maximum_gap_s": {
+          "tikv": 5.018265297,
+          "pd": 5.01213272
+        }
+      }
+    },
+    "failed_gates": [
+      {
+        "gate": "host_coverage",
+        "role": "objects",
+        "limit_s": 30,
+        "observed_s": 274.744959295
+      },
+      {
+        "gate": "final_exporter_catalog",
+        "name": "brewfs-mount",
+        "historical_success_count": 1283
+      },
+      {
+        "gate": "final_exporter_catalog",
+        "name": "juicefs-sync",
+        "historical_success_count": 1174
+      },
+      {
+        "gate": "uninterrupted_six_cell_performance",
+        "recovered_cell": "million-juicefs-r3"
+      }
+    ],
+    "final_client_catalog_targets": [
+      "juicefs-mount"
+    ],
+    "physical_http_all_phases": {
+      "GET_200": {
+        "requests": 60346,
+        "response_bytes": 247149767,
+        "request_time_s": 14.574999999997392
+      },
+      "PUT_200": {
+        "requests": 1009870,
+        "response_bytes": 0,
+        "request_time_s": 2197.4289999687358
+      },
+      "GET_206": {
+        "requests": 3368427,
+        "response_bytes": 860376725649,
+        "request_time_s": 1438.471999973026
+      },
+      "DELETE_204": {
+        "requests": 2,
+        "response_bytes": 0,
+        "request_time_s": 0.006
+      },
+      "HEAD_200": {
+        "requests": 15,
+        "response_bytes": 0,
+        "request_time_s": 0.009000000000000001
+      }
+    },
+    "campaign_started_utc_ns": 1793546976579204330,
+    "campaign_operations_ended_utc_ns": 1793574480079698267,
+    "campaign_operation_span_s": 27503.500493937,
+    "strict_diagnostic_sha256": "8d6a33565f59265526b7e3dd2b4d2b1343231761be9ff8e8b0ea3a8e34156af7",
+    "frozen_verifier_sha256": "1e829af2f1493ec13a9155c341c2e22d4d45fa7127fcf81b6c2c763904448828",
+    "original_failures_and_maintenance_logs_preserved": true,
+    "all_overheads_retained": true,
+    "archive_references": {
+      "client": {
+        "filename": "client-final.tar.gz",
+        "bytes": 69168005,
+        "sha256": "1f08b795a24376e5ce208146d88ae50fac2634560812d9549c8107eee2c4ce7e",
+        "members": 711,
+        "deferred_segments": 0
+      },
+      "objects": {
+        "filename": "objects-final.tar.gz",
+        "bytes": 87415595,
+        "sha256": "72864bdefc4a5cbf69da4b13ed22b954a5c05a8170cd90bc72727d36c4c71589",
+        "members": 131,
+        "deferred_segments": 0
+      },
+      "metadata": {
+        "filename": "metadata-final.tar.gz",
+        "bytes": 828738778,
+        "sha256": "9768229a469a9fc7d23ca2be4162b09282b6bc06a1f406e654348212c06aeb65",
+        "members": 843,
+        "deferred_segments": 0
+      }
+    },
+    "strict_failure": "KeyError: brewfs-mount in the final restarted client exporter catalog; original strict verifier exits nonzero.",
+    "managed_lifecycle_exit_records": [
+      {
+        "client": "brewfs",
+        "repetition": 1,
+        "drain_tail_s": 0.4580875740011834,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 1,
+        "drain_tail_s": 0.4867634740003268,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 1,
+        "drain_tail_s": 0.30676680900069186,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 1,
+        "drain_tail_s": 0.3067379290005192,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "juicefs",
+        "repetition": 1,
+        "drain_tail_s": 0.35870742600309313,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "juicefs",
+        "repetition": 2,
+        "drain_tail_s": 0.3531018009998661,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 2,
+        "drain_tail_s": 0.3971006040010252,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 2,
+        "drain_tail_s": 0.40730097699997714,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 2,
+        "drain_tail_s": 0.4378618950031523,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 2,
+        "drain_tail_s": 0.397503295000206,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 3,
+        "drain_tail_s": 0.34723018200020306,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 3,
+        "drain_tail_s": 0.3364249439982814,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 3,
+        "drain_tail_s": 0.2866717510005401,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "brewfs",
+        "repetition": 3,
+        "drain_tail_s": 0.4884419219997653,
+        "worker_exit_count": 1
+      },
+      {
+        "client": "juicefs",
+        "repetition": 3,
+        "drain_tail_s": 0.3690886629992747,
+        "worker_exit_count": 1
+      }
+    ]
+  },
+  "cost": {
+    "actual_bill_verified": false,
+    "rows": [
+      {
+        "role": "client",
+        "created_utc_ns": 1793545169606149900,
+        "instance_deleted_utc_ns": 1793575255170792000,
+        "data_disk_deleted_utc_ns": 1793575298213650500,
+        "compute_system_hours": 8.357101289472222,
+        "data_disk_iops_hours": 8.369057639055555,
+        "configuration_estimate_cny": 36.88561945756157,
+        "parts": {
+          "compute_cny": 24.0082805843958,
+          "system_disk_capacity_cny": 0.5589229342399021,
+          "data_disk_capacity_cny": 2.7986128745001775,
+          "extra_fixed_iops_cny": 9.519803064425693
+        }
+      },
+      {
+        "role": "objects",
+        "created_utc_ns": 1793545170624172100,
+        "instance_deleted_utc_ns": 1793575277341967000,
+        "data_disk_deleted_utc_ns": 1793575299419258300,
+        "compute_system_hours": 8.36297716525,
+        "data_disk_iops_hours": 8.369109746166666,
+        "configuration_estimate_cny": 36.902969348524834,
+        "parts": {
+          "compute_cny": 24.025160800330198,
+          "system_disk_capacity_cny": 0.55931591281192,
+          "data_disk_capacity_cny": 2.798630299118133,
+          "extra_fixed_iops_cny": 9.519862336264582
+        }
+      },
+      {
+        "role": "metadata",
+        "created_utc_ns": 1793545171708632700,
+        "instance_deleted_utc_ns": 1793575297041771700,
+        "data_disk_deleted_utc_ns": 1793575300587994200,
+        "compute_system_hours": 8.368148094166667,
+        "data_disk_iops_hours": 8.369133155972222,
+        "configuration_estimate_cny": 36.918204681735375,
+        "parts": {
+          "compute_cny": 24.040015844922,
+          "system_disk_capacity_cny": 0.5596617445378667,
+          "data_disk_capacity_cny": 2.7986381273571106,
+          "extra_fixed_iops_cny": 9.519888964918401
+        }
+      }
+    ],
+    "configuration_estimate_cny": 110.70679348782178,
+    "configuration_rate_cny_per_h": 13.23474,
+    "accounting": "Compute/system disk until verified VM deletion; retained data disk capacity and fixed IOPS until explicit disk deletion receipt. Uses creation receipts and quoted rates; not a reconciled invoice.",
+    "excluded": [
+      "public network traffic",
+      "billing adjustments",
+      "foreign opt-dynpolicy instance and shared resources"
+    ],
+    "billing_query": {
+      "queried_utc_ns": 1793576411658414700,
+      "billing_dates": [
+        "2026-11-01",
+        "2026-11-02"
+      ],
+      "actual_bill_verified": false,
+      "visible_partial_pretax_cny": 91.7392425141,
+      "reason": "Billing records currently cover less than the full resource lifetime; retain quote-based estimate separately.",
+      "rows": [
+        {
+          "role": "client",
+          "kind": "instance",
+          "visible_pretax_cny": 20.5998076,
+          "service_periods": [
+            "3627",
+            "21600"
+          ]
+        },
+        {
+          "role": "client",
+          "kind": "system",
+          "visible_pretax_cny": 0,
+          "service_periods": []
+        },
+        {
+          "role": "client",
+          "kind": "data",
+          "visible_pretax_cny": 9.9811653427,
+          "service_periods": [
+            "3630",
+            "3630",
+            "21600",
+            "18000"
+          ]
+        },
+        {
+          "role": "objects",
+          "kind": "instance",
+          "visible_pretax_cny": 20.598990368899997,
+          "service_periods": [
+            "3626",
+            "21600"
+          ]
+        },
+        {
+          "role": "objects",
+          "kind": "system",
+          "visible_pretax_cny": 0,
+          "service_periods": []
+        },
+        {
+          "role": "objects",
+          "kind": "data",
+          "visible_pretax_cny": 9.9807576264,
+          "service_periods": [
+            "3629",
+            "3629",
+            "21600",
+            "18000"
+          ]
+        },
+        {
+          "role": "metadata",
+          "kind": "instance",
+          "visible_pretax_cny": 20.598173137899998,
+          "service_periods": [
+            "3625",
+            "21600"
+          ]
+        },
+        {
+          "role": "metadata",
+          "kind": "system",
+          "visible_pretax_cny": 0,
+          "service_periods": []
+        },
+        {
+          "role": "metadata",
+          "kind": "data",
+          "visible_pretax_cny": 9.9803484382,
+          "service_periods": [
+            "3628",
+            "3628",
+            "21600",
+            "18000"
+          ]
+        }
+      ]
+    }
+  },
+  "cleanup": {
+    "all_owned_instances_absent": true,
+    "all_owned_data_disks_absent": true,
+    "all_owned_system_disks_absent": true,
+    "security_group_retained_shared": true,
+    "shared_resources_retained": true,
+    "power_lease_released": true
+  }
+}

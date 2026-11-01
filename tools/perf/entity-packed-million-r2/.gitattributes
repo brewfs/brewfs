@@ -1,0 +1,11 @@
+# Preserve the exact historical byte hashes on every checkout platform.
+frozen/** -text
+object_agent_repaired.py -text
+resume_unstarted_cells.py -text
+finish_existing_last_workspace.py -text
+verify_cloud_results.py -text
+test_rotation_repair.py -text
+# Historical EOF/CRLF bytes are part of the measured source identities.
+frozen/harness/control.py whitespace=-blank-at-eof
+frozen/harness/juicefs_tools.py whitespace=-blank-at-eof
+frozen/runtime-source-provenance.json whitespace=cr-at-eol
