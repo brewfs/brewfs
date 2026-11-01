@@ -1,0 +1,80 @@
+[
+  {
+    "path": "focus.py",
+    "measured_sha256": "7074cf86526313744d9d6d7cd2c259a74b0daec853725d91088e8fa551ea1fa0",
+    "published_sha256": "7074cf86526313744d9d6d7cd2c259a74b0daec853725d91088e8fa551ea1fa0",
+    "portability_edit": null
+  },
+  {
+    "path": "campaign.py",
+    "measured_sha256": "0431bfd974226f26d99e9a603dad3cdf9eeec690e5b2f656d49f4d30a66d8f4b",
+    "published_sha256": "0431bfd974226f26d99e9a603dad3cdf9eeec690e5b2f656d49f4d30a66d8f4b",
+    "portability_edit": null
+  },
+  {
+    "path": "scale_driver.py",
+    "measured_sha256": "bb5dc68998291c3e5b21046609a3c7ea6438d8941c9f3a52097f6cedd150b2da",
+    "published_sha256": "bb5dc68998291c3e5b21046609a3c7ea6438d8941c9f3a52097f6cedd150b2da",
+    "portability_edit": null
+  },
+  {
+    "path": "scale_workloads.py",
+    "measured_sha256": "3128d84b2b786e8a37c4a2bf32bba4096a5f9bf52c92e62bffec15c143bf6d3c",
+    "published_sha256": "3128d84b2b786e8a37c4a2bf32bba4096a5f9bf52c92e62bffec15c143bf6d3c",
+    "portability_edit": null
+  },
+  {
+    "path": "workloads.py",
+    "measured_sha256": "cbcab91710f3a7816623e3c756e30b63a2198c60693d55bc004922d9445c1c07",
+    "published_sha256": "cbcab91710f3a7816623e3c756e30b63a2198c60693d55bc004922d9445c1c07",
+    "portability_edit": null
+  },
+  {
+    "path": "perf_payload.py",
+    "measured_sha256": "8acf7f424f94dd47e11dacdd9c03c9dd0044314c83f9d0dd755c677192d95b84",
+    "published_sha256": "8acf7f424f94dd47e11dacdd9c03c9dd0044314c83f9d0dd755c677192d95b84",
+    "portability_edit": null
+  },
+  {
+    "path": "juicefs_tools.py",
+    "measured_sha256": "89bb577963eb90c2877833e2906d8cabb853db97d5dca7163702505a84356533",
+    "published_sha256": "2aaa63ab8cc5bb005512dbaf33b6238c151a91e0e0f603839cb166b89b396dd9",
+    "portability_edit": "Unused local fallback path and one trailing EOF blank line; campaign sets the binary explicitly."
+  },
+  {
+    "path": "cloud-run.sh",
+    "measured_sha256": "89f5fe66a05ee681ccacab57cc3be31f5f94c347f1ae81de253e9ebdd748ca14",
+    "published_sha256": "89f5fe66a05ee681ccacab57cc3be31f5f94c347f1ae81de253e9ebdd748ca14",
+    "portability_edit": null
+  },
+  {
+    "path": "backend-image-lock.json",
+    "measured_sha256": "78ec998ffd48825bc6be94037b8cb7e3c6b0bd543257f7da62af29e78e36cdca",
+    "published_sha256": "78ec998ffd48825bc6be94037b8cb7e3c6b0bd543257f7da62af29e78e36cdca",
+    "portability_edit": null
+  },
+  {
+    "path": "experiment-contract.json",
+    "measured_sha256": "214ba762eb4a15ced0b87fcd51a0e7d834c7e9677d63fa186fea6158d9bd674b",
+    "published_sha256": "214ba762eb4a15ced0b87fcd51a0e7d834c7e9677d63fa186fea6158d9bd674b",
+    "portability_edit": null
+  },
+  {
+    "path": "cloud-runtime-files.sha256",
+    "measured_sha256": "c1b49fdd0b71bf8dcb465913103a47209f7d592932db519ec602d19f8d0f0946",
+    "published_sha256": "c1b49fdd0b71bf8dcb465913103a47209f7d592932db519ec602d19f8d0f0946",
+    "portability_edit": null
+  },
+  {
+    "path": "verify-backend-images.py",
+    "measured_sha256": "378e16db321e85a14f5b92099804f34fda53c25f76f46bfae246ed8d9118dd3d",
+    "published_sha256": "378e16db321e85a14f5b92099804f34fda53c25f76f46bfae246ed8d9118dd3d",
+    "portability_edit": null
+  },
+  {
+    "path": "image-identity.py",
+    "measured_sha256": "d903029cc4c0ec20539e5d673b4e1c00ba82cacde276d6b9fc2e2019486057b0",
+    "published_sha256": "c064e3f5142dce0d31e566500941ff80f846a9e1edd973feac35ccce5078bdbf",
+    "portability_edit": "Windows preflight uses the default WSL user; measured Linux branch unchanged."
+  }
+]

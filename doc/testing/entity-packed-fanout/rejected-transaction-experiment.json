@@ -1,0 +1,47 @@
+{
+  "decision": "runtime_optimizer_not_accepted_or_published",
+  "normal_cells": 339,
+  "normal_complete": true,
+  "scale_matrix_intentionally_not_run": true,
+  "archive_sha256": "bd5a8519b07d7ad0b2d180364149b7767baa8dd6b747beb850e7ed15238f77d3",
+  "candidate_source_manifest_sha256": "9b9505762d035e602472143b1065da6ecb3caf0a9cad854b7ecdcc4744db1990",
+  "mixed_io_guards": [
+    {
+      "lower": "native",
+      "mode": "commit_before_upload",
+      "pairs": 5,
+      "read_p95_change_percent": 8.888888888888879,
+      "fsync_p95_change_percent": 10.05586592178771,
+      "read_p95_worse_pairs": 5,
+      "fsync_p95_worse_pairs": 5
+    },
+    {
+      "lower": "native",
+      "mode": "upload_before_commit",
+      "pairs": 5,
+      "read_p95_change_percent": 10.07194244604317,
+      "fsync_p95_change_percent": 10.05586592178771,
+      "read_p95_worse_pairs": 5,
+      "fsync_p95_worse_pairs": 5
+    },
+    {
+      "lower": "packed",
+      "mode": "commit_before_upload",
+      "pairs": 5,
+      "read_p95_change_percent": 7.407407407407396,
+      "fsync_p95_change_percent": 4.324324324324325,
+      "read_p95_worse_pairs": 5,
+      "fsync_p95_worse_pairs": 5
+    },
+    {
+      "lower": "packed",
+      "mode": "upload_before_commit",
+      "pairs": 5,
+      "read_p95_change_percent": 7.194244604316546,
+      "fsync_p95_change_percent": 6.486486486486487,
+      "read_p95_worse_pairs": 5,
+      "fsync_p95_worse_pairs": 5
+    }
+  ],
+  "current_focused_runtime": "unchanged main 9832ddd"
+}

@@ -1,0 +1,467 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "campaign_status": "incomplete",
+  "full_campaign_accepted": false,
+  "expected_cells": 14,
+  "completed_cells": 6,
+  "runtime_changes": [],
+  "runtime_optimizer_accepted": false,
+  "failure": {
+    "stage": "1M JuiceFS baseline native sync",
+    "timeout_s": 3600,
+    "workspace_cells_at_1m": 0,
+    "comparison_at_1m": "inconclusive; no speedup is calculated"
+  },
+  "archive_sha256": "f32d4be6ddbbdb083fa6113d185d25a66388a59f9ef88dcc4d865f0b506e2b49",
+  "transferred_harness_sha256": "4d9e21f22bc0b6fac07667fbc9a38e7aae13357e3c796ca8ab2e1be495febd7a",
+  "base_commit": "9832ddd1ae11a3861e38c14fa659e8160e151743",
+  "binaries_sha256": {
+    "brewfs": "41b86c60636b1dcdd3a7ba4b83f107712ce36c52bf2598cc504fe4fe172aba5b",
+    "packed_v3_snapshot_fixture": "0a1224feee686b0859ca2b29ccf052adadb64e1ebe23706f885724da95af1f0b"
+  },
+  "build_flags": "--locked --release --no-default-features --features fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint; brewfs built separately with --bin brewfs, no examples or development dependency activation",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+  "environment": {
+    "provider": "Aliyun spot ECS",
+    "region": "ap-southeast-1",
+    "instance_type": "ecs.g7.2xlarge",
+    "vcpu": 8,
+    "memory_gib": 32,
+    "system_disk_gib": 200,
+    "cpu": {
+      "Architecture": "x86_64",
+      "CPU(s)": "8",
+      "Model name": "Intel(R) Xeon(R) Platinum 8369B CPU @ 2.70GHz",
+      "Thread(s) per core": "2",
+      "Core(s) per socket": "4"
+    },
+    "versions": {
+      "pd": [
+        "Release Version: v8.5.3",
+        "Edition: Community",
+        "Git Commit Hash: 65e429d26e81db93c590890ddacf18c4b970f299"
+      ],
+      "tikv": [
+        "TiKV ",
+        "Release Version:   8.5.3",
+        "Edition:           Community"
+      ],
+      "juicefs": [
+        "juicefs version 1.3.1+2025-12-02.e0032b2"
+      ]
+    },
+    "object_service": "Same-host RustFS, S3-compatible; not remote OSS/S3",
+    "metadata_service": "One PD and one TiKV, one replica"
+  },
+  "original_contract": {
+    "purpose": "Test one deployment scenario where immutable packed metadata can help: fan out a large base into independent writable workspaces.",
+    "base_commit": "9832ddd1ae11a3861e38c14fa659e8160e151743",
+    "runtime_changes": [],
+    "arms": [
+      "BrewFS packed lower + TiKV upper, current main",
+      "JuiceFS 1.3.1 + TiKV, native metadata clone -p"
+    ],
+    "namespace_sizes": [
+      100000,
+      1000000
+    ],
+    "file_bytes": 4096,
+    "directories": 1024,
+    "workspaces": 4,
+    "upload_mode": "upload_before_commit",
+    "packed_frame_cap": 262144,
+    "codecs": "raw / no compression",
+    "inline_data": false,
+    "chunk_and_block_bytes": 4194304,
+    "clean_payload_cache_bytes": 0,
+    "workers": 8,
+    "runtime_workers": 8,
+    "per_workspace": {
+      "selected_working_files": 1024,
+      "prewarm_files": 512,
+      "balanced_random_reads": 4096,
+      "read_bytes": 4096,
+      "cow_files": 100,
+      "fsync_each_cow": true
+    },
+    "repetitions": 3,
+    "excluded_1m_capacity_pilot_pairs": 1,
+    "expected_cells_including_pilots": 14,
+    "primary_metric": "One-time packing or native import plus the complete four-workspace lifecycle, with prewarm, reads, COW, final upload drain, unmount and process exit included.",
+    "onboarding_repetitions": 1,
+    "validation": "Remote object checksums, source immutability, workspace isolation and full namespace counts after the timed window.",
+    "caveats": [
+      "S3-compatible RustFS and TiKV share one owned 8-vCPU 32-GiB VM; not a remote OSS/S3 or HA claim.",
+      "Half the selected working set is pre-read; no 50-percent steady cache-hit claim.",
+      "Metadata cache implementations differ; payload caches are disabled. Internal request scheduling is not identical.",
+      "Both successful and unsuccessful size points remain in the report.",
+      "The shelved transaction optimizer is not used in either arm."
+    ]
+  },
+  "analysis_plan": {
+    "primary_question": "Does the existing packed + TiKV design reduce the complete cost of fanout from a large immutable base into multiple retained writable workspaces?",
+    "runtime": "Current main 9832ddd only. No experimental transaction optimizer.",
+    "method": "Each cell creates four new workspaces. Prior workspaces are retained, as in a persistent multi-workspace deployment. The three operational rounds share one published base and are paired rounds, not three independent fresh deployments.",
+    "primary_total": "Preparation measured once plus the sum of every actually executed four-workspace lifecycle at the size point. Include the 1M capacity-pilot lifecycle in this end-to-end total; exclude it only from the separate three-round operational summary.",
+    "size_points": [
+      {
+        "files": 100000,
+        "role": "method validation and secondary evidence",
+        "all_batches": 3,
+        "retained_workspaces_per_arm": 12
+      },
+      {
+        "files": 1000000,
+        "role": "primary deployment scenario",
+        "all_batches": 4,
+        "retained_workspaces_per_arm": 16
+      }
+    ],
+    "reporting": "Show preparation, sum of workspace lifecycle costs, complete total and per-workspace amortized cost for both arms. Keep all paired round samples. Do not present a cross-size scaling trend because the total fanout counts differ.",
+    "timing": "Every lifecycle includes mount/bootstrap, native clone where applicable, prewarm, reads, COW with fsync, final remote drain, unmount and process exit. Correctness verification and common synthetic input generation are separate and explicitly reported.",
+    "scope": "One deployment scenario, two size points, one fixed upload mode and one default frame geometry. No additional scan/read-only/bulk-write scenes are part of the focused comparison."
+  },
+  "completed_100k_cohort": {
+    "status": "all three preplanned paired rounds complete",
+    "scope": "Descriptive cohort within the failed larger campaign; not acceptance of a runtime optimization",
+    "summaries": [
+      {
+        "client": "brewfs",
+        "files": 100000,
+        "actual_workspaces": 12,
+        "preparation_s": 145.5164438339998,
+        "all_workspace_lifecycles_s": 187.57667550899896,
+        "complete_100k_cohort_s": 333.09311934299876,
+        "common_source_generation_s": 8.465107206000539,
+        "operational_rounds_s": [
+          61.975480692999554,
+          62.826418736998676,
+          62.77477607900073
+        ],
+        "round_median_s": 62.77477607900073,
+        "drain_exit_s": 0.3256971389964747
+      },
+      {
+        "client": "juicefs",
+        "files": 100000,
+        "actual_workspaces": 12,
+        "preparation_s": 358.57969814400167,
+        "all_workspace_lifecycles_s": 1037.1505786079979,
+        "complete_100k_cohort_s": 1395.7302767519996,
+        "common_source_generation_s": 8.465107206000539,
+        "operational_rounds_s": [
+          339.83742744899973,
+          347.87022985899966,
+          349.4429212999985
+        ],
+        "round_median_s": 347.87022985899966,
+        "drain_exit_s": 0.18518146299902583
+      }
+    ]
+  },
+  "samples": [
+    {
+      "files": 100000,
+      "round": 1,
+      "client": "brewfs",
+      "workspaces": 4,
+      "lifecycle_s": 61.975480692999554,
+      "clone_s": 0,
+      "prewarm_s": 7.340361234999364,
+      "read_s": 46.717112690997965,
+      "cow_s": 6.608339619999242,
+      "drain_exit_s": 0.10849012599646812,
+      "object_requests": {
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0
+        },
+        "GET_206": {
+          "requests": 88514,
+          "response_bytes": 13139836582
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        33.97479500017653,
+        33.32024100018316,
+        33.59940500013181,
+        33.55186399858212
+      ]
+    },
+    {
+      "files": 100000,
+      "round": 1,
+      "client": "juicefs",
+      "workspaces": 4,
+      "lifecycle_s": 339.83742744899973,
+      "clone_s": 321.80524316699666,
+      "prewarm_s": 1.9166935849989386,
+      "read_s": 14.364396514998589,
+      "cow_s": 1.5607855499983998,
+      "drain_exit_s": 0.06184085499990033,
+      "object_requests": {
+        "GET_200": {
+          "requests": 19222,
+          "response_bytes": 78733312
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        8.192551000320236,
+        8.411374999923282,
+        8.441182999376906,
+        8.72215200070059
+      ]
+    },
+    {
+      "files": 100000,
+      "round": 2,
+      "client": "juicefs",
+      "workspaces": 4,
+      "lifecycle_s": 347.87022985899966,
+      "clone_s": 329.63699803099735,
+      "prewarm_s": 1.947145512998759,
+      "read_s": 14.522775847997764,
+      "cow_s": 1.5711930209981801,
+      "drain_exit_s": 0.06344725199960521,
+      "object_requests": {
+        "GET_200": {
+          "requests": 19222,
+          "response_bytes": 78733312
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        8.255101000031573,
+        8.397993000471615,
+        8.397866000450449,
+        8.478331999867805
+      ]
+    },
+    {
+      "files": 100000,
+      "round": 2,
+      "client": "brewfs",
+      "workspaces": 4,
+      "lifecycle_s": 62.826418736998676,
+      "clone_s": 0,
+      "prewarm_s": 7.373009413997352,
+      "read_s": 47.4970980270009,
+      "cow_s": 6.645236454998667,
+      "drain_exit_s": 0.10861113899954944,
+      "object_requests": {
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0
+        },
+        "GET_206": {
+          "requests": 88504,
+          "response_bytes": 13141009287
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        34.158211999965715,
+        34.67839199947775,
+        34.127990000342834,
+        34.0527939988533
+      ]
+    },
+    {
+      "files": 100000,
+      "round": 3,
+      "client": "brewfs",
+      "workspaces": 4,
+      "lifecycle_s": 62.77477607900073,
+      "clone_s": 0,
+      "prewarm_s": 7.431995795999683,
+      "read_s": 47.376528053000584,
+      "cow_s": 6.656402752998474,
+      "drain_exit_s": 0.10859587400045712,
+      "object_requests": {
+        "HEAD_200": {
+          "requests": 4,
+          "response_bytes": 0
+        },
+        "GET_206": {
+          "requests": 88560,
+          "response_bytes": 13146629297
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        34.49445200021728,
+        33.11059899897373,
+        33.813904999988154,
+        34.1841290010052
+      ]
+    },
+    {
+      "files": 100000,
+      "round": 3,
+      "client": "juicefs",
+      "workspaces": 4,
+      "lifecycle_s": 349.4429212999985,
+      "clone_s": 331.1371864579978,
+      "prewarm_s": 1.946974674001467,
+      "read_s": 14.574948051998945,
+      "cow_s": 1.595331038999575,
+      "drain_exit_s": 0.05989335599952028,
+      "object_requests": {
+        "GET_200": {
+          "requests": 19222,
+          "response_bytes": 78733312
+        },
+        "PUT_200": {
+          "requests": 400,
+          "response_bytes": 0
+        }
+      },
+      "source_names_verified": 100000,
+      "remote_ready": true,
+      "read_trace_sha256": [
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2",
+        "d748ba16aeb916339e7448dbd7806ace3e4d5f15ebf6c23a9cfe360c93121ee2"
+      ],
+      "cow_indices_sha256": [
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682",
+        "6df918edfe5d429d257d918f0a7d60e1df4411a893430326532b948a5b793682"
+      ],
+      "read_p95_per_workspace_ms": [
+        8.300213999973494,
+        8.616832001280272,
+        8.41967099950125,
+        8.413284000198473
+      ]
+    }
+  ],
+  "stage_medians_per_four_workspaces": [
+    {
+      "client": "brewfs",
+      "clone_s": 0,
+      "prewarm_s": 7.373009413997352,
+      "read_s": 47.376528053000584,
+      "cow_s": 6.645236454998667,
+      "drain_exit_s": 0.10859587400045712
+    },
+    {
+      "client": "juicefs",
+      "clone_s": 329.63699803099735,
+      "prewarm_s": 1.946974674001467,
+      "read_s": 14.522775847997764,
+      "cow_s": 1.5711930209981801,
+      "drain_exit_s": 0.06184085499990033
+    }
+  ],
+  "local_validation": {
+    "status": "passed",
+    "scope": "WSL current-main correctness and repository CI gates; no local performance measurement",
+    "passed": 1298,
+    "ignored": 264,
+    "checks": [
+      "cargo fmt --all --check",
+      "four perf shell syntax checks",
+      "three perf shell report/matrix checks",
+      "cargo check --workspace",
+      "cargo build --workspace",
+      "workspace-member rfuse3 feature checks when applicable",
+      "brewfs tokio/io-uring feature checks",
+      "cargo test --workspace --lib --bins",
+      "cargo clippy --workspace --all-targets -- -D warnings"
+    ],
+    "shell_original_bytes_restored": true
+  },
+  "backend_services_cleaned": true,
+  "cloud_resources_released": true
+}
