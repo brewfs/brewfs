@@ -1,0 +1,13 @@
+{
+  "primary_question": "Does the existing packed + TiKV design reduce the complete cost of fanout from a large immutable base into multiple retained writable workspaces?",
+  "runtime": "Current main 9832ddd only. No experimental transaction optimizer.",
+  "method": "Each cell creates four new workspaces. Prior workspaces are retained, as in a persistent multi-workspace deployment. The three operational rounds share one published base and are paired rounds, not three independent fresh deployments.",
+  "primary_total": "Preparation measured once plus the sum of every actually executed four-workspace lifecycle at the size point. Include the 1M capacity-pilot lifecycle in this end-to-end total; exclude it only from the separate three-round operational summary.",
+  "size_points": [
+    {"files": 100000, "role": "method validation and secondary evidence", "all_batches": 3, "retained_workspaces_per_arm": 12},
+    {"files": 1000000, "role": "primary deployment scenario", "all_batches": 4, "retained_workspaces_per_arm": 16}
+  ],
+  "reporting": "Show preparation, sum of workspace lifecycle costs, complete total and per-workspace amortized cost for both arms. Keep all paired round samples. Do not present a cross-size scaling trend because the total fanout counts differ.",
+  "timing": "Every lifecycle includes mount/bootstrap, native clone where applicable, prewarm, reads, COW with fsync, final remote drain, unmount and process exit. Correctness verification and common synthetic input generation are separate and explicitly reported.",
+  "scope": "One deployment scenario, two size points, one fixed upload mode and one default frame geometry. No additional scan/read-only/bulk-write scenes are part of the focused comparison."
+}
