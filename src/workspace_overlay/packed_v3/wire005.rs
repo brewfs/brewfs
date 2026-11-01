@@ -24,6 +24,10 @@ mod manifest;
 mod metadata_cache_tests;
 mod native_placement;
 mod pipeline;
+#[cfg(test)]
+pub(crate) fn verify_memo_reservation_bytes() -> PackedResult<u64> {
+    pipeline::verify_memo_reservation_bytes()
+}
 mod placement;
 mod producer;
 mod publication;

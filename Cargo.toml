@@ -245,7 +245,7 @@ walkdir = "2.5.0"
 webpki-roots = "0.26.3"
 which = "4.4.2"
 x509-parser = "0.18.0"
-lru = "0.16"
+lru = { version = "0.16", default-features = false }
 zeroize = { version = "1.7.0", features = ["zeroize_derive"] }
 quickcheck = "1.0.3"
 mockall = "0.13.1"
@@ -295,6 +295,7 @@ dashmap = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 ring = { workspace = true, optional = true }
+lru = { workspace = true, optional = true }
 hyper = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true, features = ["fs", "trace"] }
@@ -352,7 +353,7 @@ gateway-s3 = ["dep:s3s", "dep:tower"]
 gateway-webdav = ["dep:dav-server", "dep:axum-server", "dep:rustls"]
 hdfs-sdk = []
 rustfs-ec-block-size-hint = []
-workspace-overlay = ["dep:bincode", "dep:blake3", "dep:tempfile", "dep:ring"]
+workspace-overlay = ["dep:bincode", "dep:blake3", "dep:tempfile", "dep:ring", "dep:lru"]
 native-packed-base = ["workspace-overlay"]
 frozen-base-metadata = ["native-packed-base"]
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]

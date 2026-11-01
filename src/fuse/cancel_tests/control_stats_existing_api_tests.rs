@@ -15,6 +15,9 @@ async fn minimum_control_existing_api_pending_read_coexists_with_complete_stats_
     let f = fixture_with_budget(budget).await;
     assert!(f.fs.meta_layer().install_v3_stats(f.fs.stats()));
     let idle = f.budget.state().used;
+    let memo_bytes =
+        crate::workspace_overlay::packed_v3::wire005::verify_memo_reservation_bytes().unwrap();
+    assert!(memo_bytes <= 2 << 20, "verification index exceeds 2 MiB");
 
     // These are the original Session adapter hooks, with the actual Linux
     // open/read request body sizes. Guards span their real handler futures.
@@ -155,10 +158,21 @@ async fn minimum_control_existing_api_pending_read_coexists_with_complete_stats_
     assert_eq!(f.fs.open_file_handle_count(), 1);
     let before_last_consumer = f.budget.state().used;
     assert_eq!(before_last_consumer[V3BudgetPool::Control as usize], 4096);
-    assert_eq!(
-        before_last_consumer[V3BudgetPool::Metadata as usize],
-        idle[V3BudgetPool::Metadata as usize] + 16384 + 8192
-    );
+    // The lazy coordinator owns a payload-free verification index until
+    // shutdown. Subtract only its declared reservation, never a measured
+    // delta that could hide retained payload or other unexpected owners.
+    // The original 24 KiB is request/handle bookkeeping, not cached payload.
+    let request_handle_bytes = before_last_consumer[V3BudgetPool::Metadata as usize]
+        .checked_sub(idle[V3BudgetPool::Metadata as usize] + memo_bytes)
+        .expect("missing idle metadata or memo reservation");
+    assert_eq!(request_handle_bytes, 24576);
+    for pool in [
+        V3BudgetPool::Stored,
+        V3BudgetPool::Raw,
+        V3BudgetPool::Workspace,
+    ] {
+        assert_eq!(before_last_consumer[pool as usize], 0, "{pool:?}");
+    }
     assert!(before_last_consumer[V3BudgetPool::Output as usize] > 0);
     drop(retained);
     let after_last_consumer = f.budget.state().used;
@@ -166,7 +180,7 @@ async fn minimum_control_existing_api_pending_read_coexists_with_complete_stats_
     assert_eq!(after_last_consumer[V3BudgetPool::Output as usize], 0);
     assert_eq!(
         after_last_consumer[V3BudgetPool::Metadata as usize],
-        idle[V3BudgetPool::Metadata as usize] + 16384
+        idle[V3BudgetPool::Metadata as usize] + memo_bytes + 16384
     );
     f.gate.mode.store(0, Ordering::SeqCst);
     let recovery_owner = Filesystem::reserve_request_memory(&f.fs, 40)
@@ -195,7 +209,7 @@ async fn minimum_control_existing_api_pending_read_coexists_with_complete_stats_
     assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
     assert_eq!(
         f.budget.state().used[V3BudgetPool::Metadata as usize],
-        idle[V3BudgetPool::Metadata as usize]
+        idle[V3BudgetPool::Metadata as usize] + memo_bytes
     );
     assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
     assert_eq!(f.budget.capacity(V3BudgetPool::Metadata), 64 << 20);

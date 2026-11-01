@@ -168,7 +168,15 @@ fn coordinator(
     budget: Arc<V3MountBudget>,
     observer: Arc<ReadObserver>,
 ) -> Arc<V3DemandCoordinator<Backend>> {
-    V3DemandCoordinator::new(
+    coordinator_with_memo(backend, budget, observer, true)
+}
+fn coordinator_with_memo(
+    backend: &Backend,
+    budget: Arc<V3MountBudget>,
+    observer: Arc<ReadObserver>,
+    enabled: bool,
+) -> Arc<V3DemandCoordinator<Backend>> {
+    V3DemandCoordinator::new_configured(
         ObjectClient::new(backend.clone()).with_read_observer(
             observer,
             Engine::Native,
@@ -177,6 +185,7 @@ fn coordinator(
         ),
         budget,
         V3PipelineLimits::default(),
+        enabled,
     )
     .unwrap()
 }
@@ -188,6 +197,280 @@ async fn wait_for_cleanup(budget: &Arc<V3MountBudget>) {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn verified_frame_memo_uses_metadata_budget_without_consuming_root_headroom() {
+    for enabled in [false, true] {
+        let (backend, demand, _) = fixture();
+        let budget = V3MountBudget::defaults();
+        let limits = V3PipelineLimits::default();
+        let coordinator_roots = queue_roots_bytes(limits) + registry_roots_bytes::<Frame>(limits);
+        // Runtime index structures can fill Roots after mount startup. A memo
+        // must not take their remaining space or raise the configured budget.
+        let held = budget
+            .admit(&[(
+                V3BudgetPool::Roots,
+                budget.capacity(V3BudgetPool::Roots) - coordinator_roots,
+            )])
+            .unwrap();
+        let pipeline = coordinator_with_memo(
+            &backend,
+            budget.clone(),
+            Arc::new(ReadObserver::default()),
+            enabled,
+        );
+        assert_eq!(
+            budget.state().used[V3BudgetPool::Roots as usize],
+            budget.capacity(V3BudgetPool::Roots)
+        );
+        assert_eq!(
+            budget.state().used[V3BudgetPool::Metadata as usize],
+            if enabled {
+                super::super::verify_memo::RESERVATION_BYTES
+            } else {
+                0
+            }
+        );
+        let waiter = pipeline.submit(&demand).unwrap();
+        assert_eq!(waiter.wait().await.unwrap().raw, [1; 64]);
+        drop(waiter);
+        pipeline.shutdown().await;
+        drop(pipeline);
+        drop(held);
+        wait_for_cleanup(&budget).await;
+    }
+}
+
+#[tokio::test]
+async fn enabled_verify_memo_retains_zero_payload_bytes_after_consumers_drop() {
+    let (backend, first, second) = fixture();
+    let budget = V3MountBudget::defaults();
+    let observer = Arc::new(ReadObserver::default());
+    let pipeline = coordinator_with_memo(&backend, budget.clone(), observer.clone(), true);
+    let idle = budget.state().used;
+    assert_eq!(
+        idle[V3BudgetPool::Metadata as usize],
+        super::super::verify_memo::RESERVATION_BYTES
+    );
+    assert!(idle[V3BudgetPool::Metadata as usize] > 0);
+    assert!(idle[V3BudgetPool::Metadata as usize] <= 2 << 20);
+    for (index, demand) in [&first, &second, &first, &second].into_iter().enumerate() {
+        let waiter = pipeline.submit(demand).unwrap();
+        let frame = waiter.wait().await.unwrap();
+        assert_eq!(frame.raw, [1 + demand.descriptor.frame_ordinal as u8; 64]);
+        assert_eq!(budget.state().used[V3BudgetPool::Raw as usize], 64);
+        let released_frame = Arc::downgrade(&frame);
+        drop(frame);
+        drop(waiter);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while budget.state().used != idle {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed read retained payload or unaccounted metadata");
+        assert!(released_frame.upgrade().is_none(), "memo retained a frame");
+        for pool in [
+            V3BudgetPool::Stored,
+            V3BudgetPool::Raw,
+            V3BudgetPool::Workspace,
+            V3BudgetPool::Output,
+        ] {
+            assert_eq!(budget.state().used[pool as usize], 0, "{pool:?}");
+        }
+        assert_eq!(backend.probe.calls.lock().unwrap().len(), index + 1);
+    }
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.work[&(first.context, ReadWork::Decode)].count, 4);
+    assert_eq!(
+        snapshot.work[&(first.context, ReadWork::Authentication)].count,
+        2,
+        "the repeated reads must actually hit the enabled memo"
+    );
+    pipeline.shutdown().await;
+    drop(pipeline);
+    wait_for_cleanup(&budget).await;
+}
+
+#[tokio::test]
+async fn verified_frame_memo_repeats_get_and_decode_but_not_authentication() {
+    let (backend, demand, _) = fixture();
+    let budget = V3MountBudget::defaults();
+    let observer = Arc::new(ReadObserver::default());
+    // Also serves as the negative control when this one test is explicitly
+    // invoked with BREWFS_PACKED_VERIFY_MEMO=0: two hashes must then be seen.
+    let pipeline = coordinator_with_memo(
+        &backend,
+        budget.clone(),
+        observer.clone(),
+        VerifyMemo::enabled_from_env().unwrap(),
+    );
+    for _ in 0..2 {
+        let waiter = pipeline.submit(&demand).unwrap();
+        let frame = waiter.wait().await.unwrap();
+        assert_eq!(frame.raw, [1; 64]);
+        drop(frame);
+        drop(waiter);
+    }
+    assert_eq!(backend.probe.calls.lock().unwrap().len(), 2);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.work[&(demand.context, ReadWork::Decode)].count, 2);
+    assert_eq!(
+        snapshot.work[&(demand.context, ReadWork::Authentication)].count,
+        1
+    );
+    assert_eq!(budget.state().used[V3BudgetPool::Raw as usize], 0);
+    pipeline.shutdown().await;
+    drop(pipeline);
+    wait_for_cleanup(&budget).await;
+}
+
+#[tokio::test]
+async fn verified_frame_memo_never_remembers_corrupt_first_responses() {
+    for enabled in [false, true] {
+        let (backend, demand, _) = fixture();
+        let budget = V3MountBudget::defaults();
+        let observer = Arc::new(ReadObserver::default());
+        let pipeline = coordinator_with_memo(&backend, budget.clone(), observer.clone(), enabled);
+        backend.probe.mode.store(5, Ordering::SeqCst);
+        for _ in 0..2 {
+            let waiter = pipeline.submit(&demand).unwrap();
+            assert!(matches!(
+                waiter.wait().await.unwrap_err().as_ref(),
+                PackedWireError::HashMismatch { .. }
+            ));
+        }
+        backend.probe.mode.store(0, Ordering::SeqCst);
+        for _ in 0..2 {
+            let waiter = pipeline.submit(&demand).unwrap();
+            assert_eq!(waiter.wait().await.unwrap().raw, [1; 64]);
+        }
+        assert_eq!(backend.probe.calls.lock().unwrap().len(), 4);
+        assert_eq!(
+            observer.snapshot().work[&(demand.context, ReadWork::Authentication)].count,
+            if enabled { 3 } else { 4 }
+        );
+        pipeline.shutdown().await;
+        drop(pipeline);
+        wait_for_cleanup(&budget).await;
+    }
+}
+
+#[tokio::test]
+async fn verified_frame_memo_hits_still_reject_terminal_short_and_excess_bodies() {
+    let (backend, demand, _) = fixture();
+    let budget = V3MountBudget::defaults();
+    let observer = Arc::new(ReadObserver::default());
+    let pipeline = coordinator(&backend, budget.clone(), observer.clone());
+    {
+        let waiter = pipeline.submit(&demand).unwrap();
+        assert_eq!(waiter.wait().await.unwrap().raw, [1; 64]);
+    }
+    for mode in [2, 3, 4] {
+        backend.probe.mode.store(mode, Ordering::SeqCst);
+        let waiter = pipeline.submit(&demand).unwrap();
+        assert!(waiter.wait().await.is_err(), "body mode {mode}");
+    }
+    let mut invalid = demand.clone();
+    invalid.logical_length = 65;
+    assert!(pipeline.submit(&invalid).is_err());
+    backend.probe.mode.store(0, Ordering::SeqCst);
+    let mut invalid_codec_body = demand.clone();
+    invalid_codec_body.descriptor.codec = 1; // zstd: these raw bytes are not a valid frame.
+    {
+        let waiter = pipeline.submit(&invalid_codec_body).unwrap();
+        assert!(waiter.wait().await.is_err());
+    }
+    assert_eq!(backend.probe.calls.lock().unwrap().len(), 5);
+    assert_eq!(
+        observer.snapshot().work[&(demand.context, ReadWork::Authentication)].count,
+        1
+    );
+    pipeline.shutdown().await;
+    drop(pipeline);
+    wait_for_cleanup(&budget).await;
+}
+
+#[tokio::test]
+async fn verified_frame_memo_does_not_transfer_evidence_to_changed_identities() {
+    let (backend, demand, _) = fixture();
+    let budget = V3MountBudget::defaults();
+    let observer = Arc::new(ReadObserver::default());
+    let pipeline = coordinator(&backend, budget.clone(), observer.clone());
+    {
+        let waiter = pipeline.submit(&demand).unwrap();
+        assert_eq!(waiter.wait().await.unwrap().raw, [1; 64]);
+    }
+    // Same corrupt response, but each authenticated identity component must
+    // cause a miss even though the original frame was successfully verified.
+    backend.probe.mode.store(5, Ordering::SeqCst);
+    for variant in 0..6 {
+        let mut changed = demand.clone();
+        match variant {
+            0 => changed.container.digest[0] ^= 1,
+            1 => changed.descriptor.frame_ordinal += 1,
+            2 => changed.descriptor.frame_digest[0] ^= 1,
+            3 => changed.descriptor.object_offset += 1,
+            5 => changed.container.key = "another-physical-object".into(),
+            _ => {
+                changed.descriptor.stored_len -= 1;
+                changed.descriptor.raw_len -= 1;
+                changed.logical_length -= 1;
+            }
+        }
+        let waiter = pipeline.submit(&changed).unwrap();
+        assert!(
+            matches!(
+                waiter.wait().await.unwrap_err().as_ref(),
+                PackedWireError::HashMismatch { .. }
+            ),
+            "identity variant {variant}"
+        );
+    }
+    assert_eq!(
+        observer.snapshot().work[&(demand.context, ReadWork::Authentication)].count,
+        7
+    );
+    pipeline.shutdown().await;
+    drop(pipeline);
+    wait_for_cleanup(&budget).await;
+}
+
+#[tokio::test]
+async fn verified_frame_memo_requires_immutable_responses_and_off_rechecks_each_response() {
+    for enabled in [false, true] {
+        let (backend, demand, _) = fixture();
+        let budget = V3MountBudget::defaults();
+        let pipeline = coordinator_with_memo(
+            &backend,
+            budget.clone(),
+            Arc::new(ReadObserver::default()),
+            enabled,
+        );
+        {
+            let waiter = pipeline.submit(&demand).unwrap();
+            assert_eq!(waiter.wait().await.unwrap().raw, [1; 64]);
+        }
+        // Explicitly document the trust boundary: a name/digest does not stop
+        // a backend from violating the immutable-object contract after a hit.
+        backend.probe.mode.store(5, Ordering::SeqCst);
+        let waiter = pipeline.submit(&demand).unwrap();
+        if enabled {
+            let mut changed = [1; 64];
+            changed[0] ^= 1;
+            assert_eq!(waiter.wait().await.unwrap().raw, changed);
+        } else {
+            assert!(matches!(
+                waiter.wait().await.unwrap_err().as_ref(),
+                PackedWireError::HashMismatch { .. }
+            ));
+        }
+        drop(waiter);
+        pipeline.shutdown().await;
+        drop(pipeline);
+        wait_for_cleanup(&budget).await;
+    }
 }
 
 #[tokio::test]

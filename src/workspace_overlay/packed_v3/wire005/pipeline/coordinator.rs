@@ -1,6 +1,7 @@
 //! A single mount-owned worker collects only submitted demands and consumes
 //! each actual response EOF before authenticating/publishing any shared frame.
 
+use super::verify_memo::{FrameIdentity, VerifyMemo};
 use super::*;
 use crate::cadapter::client::{ObjectBackend, ObjectClient};
 use crate::cadapter::read_observer::{ReadEvent, ReadWork, SharedRawCoverage};
@@ -69,18 +70,51 @@ impl<B: ObjectBackend + Clone + 'static> V3DemandCoordinator<B> {
         budget: Arc<V3MountBudget>,
         limits: V3PipelineLimits,
     ) -> PackedResult<Arc<Self>> {
+        Self::new_configured(client, budget, limits, VerifyMemo::enabled_from_env()?)
+    }
+
+    fn new_configured(
+        client: ObjectClient<B>,
+        budget: Arc<V3MountBudget>,
+        limits: V3PipelineLimits,
+        verify_memo_enabled: bool,
+    ) -> PackedResult<Arc<Self>> {
         let limits = limits.validate()?;
+        // Identity/timestamp metadata is paid from Metadata, never a payload
+        // pool. Roots must retain its headroom for runtime index structures.
+        // The worker keeps this reservation until its memo is dropped.
+        let memo_bytes = if verify_memo_enabled {
+            super::verify_memo::RESERVATION_BYTES
+        } else {
+            0
+        };
+        let roots = budget.admit(&[
+            (V3BudgetPool::Roots, queue_roots_bytes(limits)),
+            (V3BudgetPool::Metadata, memo_bytes),
+        ])?;
+        let roots = Arc::new(roots);
+        let memo = VerifyMemo::new(verify_memo_enabled);
         // Prepay every concurrently owned collection future, its linked node
         // and fixed body state. Dynamic recipes remain independently owned.
-        let state_bytes =
-            std::mem::size_of_val(&process_jobs(&client, &budget, limits, Vec::new())) as u64;
+        let state_bytes = std::mem::size_of_val(&process_jobs::<B, true>(
+            &client,
+            &budget,
+            &memo,
+            limits,
+            Vec::new(),
+        ))
+        .max(std::mem::size_of_val(&process_jobs::<B, false>(
+            &client,
+            &budget,
+            &memo,
+            limits,
+            Vec::new(),
+        ))) as u64;
         if state_bytes + 256 + 4096 > 8192 {
             return Err(limit("collection state exceeds its mount reservation"));
         }
         // mpsc slots, the collection Vec/BTreeMap and demand/key clones are
         // bounded and allocated only after this mount lifetime reservation.
-        let roots = budget.admit(&[(V3BudgetPool::Roots, queue_roots_bytes(limits))])?;
-        let roots = Arc::new(roots);
         let registry = V3FlightRegistry::new(budget.clone(), limits)?;
         let (sender, receiver) = tokio::sync::mpsc::channel(limits.max_pending_frames);
         let worker_client = client.clone();
@@ -91,7 +125,13 @@ impl<B: ObjectBackend + Clone + 'static> V3DemandCoordinator<B> {
         let handle = tokio::spawn(async move {
             let _completion = completion_guard;
             let _queue_roots = worker_roots;
-            collect(worker_client, worker_budget, limits, receiver).await;
+            // Select once per worker. The disabled specialization eliminates
+            // identity construction, LRU access and memo branches per frame.
+            if verify_memo_enabled {
+                collect::<B, true>(worker_client, worker_budget, memo, limits, receiver).await;
+            } else {
+                collect::<B, false>(worker_client, worker_budget, memo, limits, receiver).await;
+            }
         });
         Ok(Arc::new(Self {
             client,
@@ -262,9 +302,10 @@ impl<B: ObjectBackend + Clone> Drop for V3DemandCoordinator<B> {
     }
 }
 
-async fn collect<B: ObjectBackend + Clone + 'static>(
+async fn collect<B: ObjectBackend + Clone + 'static, const MEMO: bool>(
     client: ObjectClient<B>,
     budget: Arc<V3MountBudget>,
+    memo: VerifyMemo,
     limits: V3PipelineLimits,
     mut receiver: tokio::sync::mpsc::Receiver<Job>,
 ) {
@@ -293,14 +334,17 @@ async fn collect<B: ObjectBackend + Clone + 'static>(
                 Err(_) => break,
             }
         }
-        active.push(process_jobs(&client, &budget, limits, jobs));
+        active.push(process_jobs::<B, MEMO>(
+            &client, &budget, &memo, limits, jobs,
+        ));
     }
     while active.next().await.is_some() {}
 }
 
-async fn process_jobs<B: ObjectBackend + Clone + 'static>(
+async fn process_jobs<B: ObjectBackend + Clone + 'static, const MEMO: bool>(
     client: &ObjectClient<B>,
     budget: &Arc<V3MountBudget>,
+    memo: &VerifyMemo,
     limits: V3PipelineLimits,
     mut jobs: Vec<Job>,
 ) {
@@ -335,7 +379,7 @@ async fn process_jobs<B: ObjectBackend + Clone + 'static>(
         // capacity. Reduce to individual frames instead of retaining a
         // partially admitted bundle while waiting for another resource.
         match batch.fits_capacity(budget) {
-            Ok(true) => run_batch(client, budget, batch, &mut jobs).await,
+            Ok(true) => run_batch::<B, MEMO>(client, budget, memo, batch, &mut jobs).await,
             Ok(false) if batch.frames.len() > 1 => {
                 for demand in &batch.frames {
                     let one = V3FrameBatch {
@@ -346,7 +390,9 @@ async fn process_jobs<B: ObjectBackend + Clone + 'static>(
                         frames: vec![demand.clone()],
                     };
                     match one.fits_capacity(budget) {
-                        Ok(true) => run_batch(client, budget, &one, &mut jobs).await,
+                        Ok(true) => {
+                            run_batch::<B, MEMO>(client, budget, memo, &one, &mut jobs).await
+                        }
                         Ok(false) => {
                             if let Some(job) = jobs.remove(&demand.key()) {
                                 job.ticket
@@ -380,9 +426,10 @@ async fn process_jobs<B: ObjectBackend + Clone + 'static>(
     }
 }
 
-async fn run_batch<B: ObjectBackend + Clone + 'static>(
+async fn run_batch<B: ObjectBackend + Clone + 'static, const MEMO: bool>(
     client: &ObjectClient<B>,
     budget: &Arc<V3MountBudget>,
+    memo: &VerifyMemo,
     batch: &V3FrameBatch,
     jobs: &mut BTreeMap<V3FlightKey, Job>,
 ) {
@@ -429,7 +476,7 @@ async fn run_batch<B: ObjectBackend + Clone + 'static>(
                 Ok(permit) => tokio::select! {
                     biased;
                     _=body.cancelled()=>Err((*cancelled()).clone()),
-                    result=fetch_batch(&client,budget,batch,permit,jobs)=>result,
+                    result=fetch_batch::<B, MEMO>(&client,budget,memo,batch,permit,jobs)=>result,
                 },
             }
         }
@@ -452,9 +499,10 @@ async fn run_batch<B: ObjectBackend + Clone + 'static>(
     }
 }
 
-async fn fetch_batch<B: ObjectBackend + Clone>(
+async fn fetch_batch<B: ObjectBackend + Clone, const MEMO: bool>(
     client: &ObjectClient<B>,
     _budget: &Arc<V3MountBudget>,
+    memo: &VerifyMemo,
     batch: &V3FrameBatch,
     mut permit: V3OwnedPermit,
     jobs: &BTreeMap<V3FlightKey, Job>,
@@ -478,18 +526,24 @@ async fn fetch_batch<B: ObjectBackend + Clone>(
                             "coalesced frame range exceeds body",
                         ))
                     })?;
-                    let hash_timer =
-                        client.measure_read_work(first.context.class, ReadWork::Authentication);
-                    let digest = super::super::frame_directory::frame_digest(bytes);
-                    drop(hash_timer);
-                    if digest != f.frame_digest {
-                        return Err(super::super::observer_validation_error(
-                            PackedWireError::HashMismatch {
-                                what: "wire005 coalesced frame",
-                                expected: hex::encode(f.frame_digest),
-                                computed: hex::encode(digest),
-                            },
-                        ));
+                    let identity = MEMO.then(|| FrameIdentity::from_demand(demand));
+                    let needs_verification = identity
+                        .as_ref()
+                        .is_none_or(|identity| !memo.contains_verified(identity));
+                    if needs_verification {
+                        let hash_timer =
+                            client.measure_read_work(first.context.class, ReadWork::Authentication);
+                        let digest = super::super::frame_directory::frame_digest(bytes);
+                        drop(hash_timer);
+                        if digest != f.frame_digest {
+                            return Err(super::super::observer_validation_error(
+                                PackedWireError::HashMismatch {
+                                    what: "wire005 coalesced frame",
+                                    expected: hex::encode(f.frame_digest),
+                                    computed: hex::encode(digest),
+                                },
+                            ));
+                        }
                     }
                     let decode_timer =
                         client.measure_read_work(first.context.class, ReadWork::Decode);
@@ -508,6 +562,9 @@ async fn fetch_batch<B: ObjectBackend + Clone>(
                         )
                     })?;
                     drop(decode_timer);
+                    if let Some(identity) = identity.filter(|_| needs_verification) {
+                        memo.remember_verified(identity);
+                    }
                     let raw_permit = permit
                         .split(V3BudgetPool::Raw, raw.capacity() as u64)
                         .map_err(super::super::observer_validation_error)?;

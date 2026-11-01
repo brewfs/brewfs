@@ -149,6 +149,7 @@ impl V3MountBudget {
         Ok(observer)
     }
     pub fn from_env() -> PackedResult<Arc<Self>> {
+        super::pipeline::log_verify_memo_configuration()?;
         let mut limits = V3BudgetLimits::default();
         for pool in V3BudgetPool::ALL {
             let key = format!(
@@ -256,7 +257,10 @@ impl V3MountBudget {
             ),
             // One maximal index path (17 owned pages), request copies and
             // GroupMeta/descriptor temporary state must fit concurrently.
-            (V3BudgetPool::Metadata, 44 << 20),
+            (
+                V3BudgetPool::Metadata,
+                (44 << 20) + super::pipeline::verify_memo_reservation_bytes()?,
+            ),
             (V3BudgetPool::Plans, 2 << 20),
             (V3BudgetPool::Control, 32 << 10),
             // One complete diagnostic snapshot must coexist with one normal
