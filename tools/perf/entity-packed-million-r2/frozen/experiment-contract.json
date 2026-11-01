@@ -1,0 +1,63 @@
+{
+  "run_id": "entity-packed-million-r2",
+  "purpose": "Repeat the immutable-base workspace comparison at one million files with separated services and continuous observability.",
+  "source_commit": "918deb90e046889d94eb8ff633822e275792ce28",
+  "runtime_algorithm_changes": [],
+  "brewfs_observability_feature": true,
+  "topology": {
+    "client": "dedicated ecs.g9i.2xlarge, 8 vCPU, 32 GiB",
+    "objects": "dedicated ecs.g9i.2xlarge running the same pinned RustFS image",
+    "metadata": "dedicated ecs.g9i.2xlarge running one pinned PD and one pinned TiKV replica",
+    "network": "same availability zone, VPC private IPs for all test traffic"
+  },
+  "storage": {
+    "per_node_system_disk": "40 GiB ESSD PL1; operating system and telemetry only",
+    "per_node_data_disk": "200 GiB ESSD AutoPL; 11800 baseline plus 18200 provisioned IOPS, burst disabled",
+    "data_disk_delete_with_instance": false,
+    "instance_baseline_limits": "60000 IOPS, 4 Gbit/s aggregate storage bandwidth; 6 Gbit/s network baseline",
+    "preflight": "Named-file-only fio direct 4KiB random and fsync latency plus sequential throughput, saved separately from filesystem comparison",
+    "interpretation": "Use measured disk latency, queue, IOPS, throughput and service WAL/fsync; nominal IOPS is not proof of absence of a storage bottleneck"
+  },
+  "resource_policy": {
+    "spot_strategy": "NoSpot",
+    "deletion_protection": true,
+    "automatic_release_time": null,
+    "automatic_delete_on_error": false,
+    "phase_wall_clock_kill_timeout": null,
+    "checkpoint_ack_kill_timeout": null,
+    "stalled_progress_action": "record and notify; preserve processes, volumes and instance state",
+    "cleanup": "immediately after complete evidence is collected and verified, explicitly release owned instances, retained data disks and security group; do not wait for report/PR/CI; preserve shared resources"
+  },
+  "namespace_files": 1000000,
+  "file_bytes": 4096,
+  "directories": 1024,
+  "repetitions": 3,
+  "workspaces_per_batch": 4,
+  "expected_cells": 6,
+  "workspaces_retained_per_arm": 12,
+  "preparation_repetitions": 1,
+  "upload_mode": "upload_before_commit",
+  "packed_frame_cap": 262144,
+  "codecs": "raw / none",
+  "inline_data": false,
+  "chunk_and_block_bytes": 4194304,
+  "payload_cache_bytes": 0,
+  "workers": 8,
+  "runtime_workers": 8,
+  "per_workspace": {
+    "selected_files": 1024,
+    "prewarm_files": 512,
+    "random_reads": 4096,
+    "read_bytes": 4096,
+    "cow_files": 100,
+    "fsync_each_cow": true
+  },
+  "accounting": "Preparation once plus every actual workspace lifecycle, including bootstrap, clone, prewarm, reads, COW, remote drain, unmount and real worker exit. Source generation, correctness verification, telemetry and checkpoint costs are separately recorded; also report full campaign wall time.",
+  "measurement_policy": "Continuous raw node/service metrics and request logs are retained. No CPU profiler during timed cells. Never replace a missing metric with zero or silently discard a slow/failed cell.",
+  "caveats": [
+    "Three paired operational rounds reuse the same published base and retain earlier workspaces, not three independent deployments.",
+    "Metadata cache policies differ and must remain explicit.",
+    "This separated-node, observability-enabled run is not directly interchangeable with the earlier single-node result.",
+    "One TiKV replica is not a high-availability topology."
+  ]
+}

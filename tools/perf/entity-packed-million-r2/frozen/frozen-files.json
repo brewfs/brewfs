@@ -1,0 +1,106 @@
+[
+  {
+    "path": "binary-identities.json",
+    "sha256": "c72cacd0c95a58c41856b43f6c768a64508f9066e963132f61f5e4c26a27ec5b"
+  },
+  {
+    "path": "cloud_storage.py",
+    "sha256": "154b7d0eff0f602762f6e4db40fa3c3b4632e7458fc386a674b52204e23176c0"
+  },
+  {
+    "path": "disk_preflight.py",
+    "sha256": "522d02b5b026a494ab23278e4a10a287731708508f0040f51a4c69ee4b141d67"
+  },
+  {
+    "path": "experiment-contract.json",
+    "sha256": "bfc84fc780dbeed762502d0094710b076a04a8b9343c97fa88afe880dd96428e"
+  },
+  {
+    "path": "finalize_node.py",
+    "sha256": "f269116f54f3413da0fc60b2bb64d086d552b217541da320f081c11ab488d722"
+  },
+  {
+    "path": "harness/archive.py",
+    "sha256": "f990e59042ed805c76c41f3618b86829b2492a031a16816d4accb4ff021e8ca6"
+  },
+  {
+    "path": "harness/backend-image-lock.json",
+    "sha256": "78ec998ffd48825bc6be94037b8cb7e3c6b0bd543257f7da62af29e78e36cdca"
+  },
+  {
+    "path": "harness/cell.py",
+    "sha256": "97849452a13addf86667bec7dc63cd85f62a0b3e5e81a82eefe20cf75c6b03c7"
+  },
+  {
+    "path": "harness/common.py",
+    "sha256": "01f6782fa81b9ec61be128024a3b65cff38d435befab78684c91f7b2d1fcec28"
+  },
+  {
+    "path": "harness/control.py",
+    "sha256": "adbb29bd85241f0f4701087ac30f862ae92b7a0b2410d94071f21d3bf3b5a8f7"
+  },
+  {
+    "path": "harness/driver.py",
+    "sha256": "4e5d9d0733648e8ca1861faf337a2dbcfe697bdc0af1d01f1d7ea16f8b94e318"
+  },
+  {
+    "path": "harness/juicefs_tools.py",
+    "sha256": "89bb577963eb90c2877833e2906d8cabb853db97d5dca7163702505a84356533"
+  },
+  {
+    "path": "harness/managed.py",
+    "sha256": "97b816f16485912974a4e63bbacae048f32f5630fa8e7c32bcfad4a273636411"
+  },
+  {
+    "path": "harness/node_agent.py",
+    "sha256": "2110e99d623ebcec21286b00d080180dc9dcbc0be20755248717c44b45d65ae9"
+  },
+  {
+    "path": "harness/perf_payload.py",
+    "sha256": "8acf7f424f94dd47e11dacdd9c03c9dd0044314c83f9d0dd755c677192d95b84"
+  },
+  {
+    "path": "harness/progress.py",
+    "sha256": "8dac5ea98080f534b04b8245cc56bdb8451c55040ba4ba3840a5ad844cef3fdd"
+  },
+  {
+    "path": "harness/runtime-smoke.py",
+    "sha256": "cde6eaabb3475482dea0a2c35a71909b76de473f7a2914418d2d010a2483474d"
+  },
+  {
+    "path": "harness/scale_workloads.py",
+    "sha256": "5b574cd623e10233317f5f8c2ec616b38f8836078851d568f89d04fb432f7ce3"
+  },
+  {
+    "path": "harness/supervise.py",
+    "sha256": "9a41a9b75a4da0cb891bab0f807e244022273c9e95495a2655069784a107bd07"
+  },
+  {
+    "path": "harness/test_observation.py",
+    "sha256": "bfe03ef5d32e884b9f299f2470b39a43904280d153667cc3623f6c17c0a57f21"
+  },
+  {
+    "path": "harness/workloads.py",
+    "sha256": "cbcab91710f3a7816623e3c756e30b63a2198c60693d55bc004922d9445c1c07"
+  },
+  {
+    "path": "node_bootstrap.py",
+    "sha256": "edf5941e6dd4ecdd5c0f776384c4580f07d31f2611957acb870461255e2f7420"
+  },
+  {
+    "path": "object_proxy.conf.in",
+    "sha256": "3892e203e17dc75556056fabdae89e5049b979c0aa851a12af10ab3469f40adb"
+  },
+  {
+    "path": "runtime-source-provenance.json",
+    "sha256": "741eae600489bc36fbb9de1e9c83ebd4aad2d30c5b79f42ff74f43214275d9e7"
+  },
+  {
+    "path": "setup_packages.sh",
+    "sha256": "e56247f733d08158560e113c5198ab365c0e8e76b00b113715ca6caccf7ccf24"
+  },
+  {
+    "path": "start_campaign.py",
+    "sha256": "0a02b2fc2a933d3d309d49c2431637b60ca9e01fac723ec71b50bb926a0509dd"
+  }
+]

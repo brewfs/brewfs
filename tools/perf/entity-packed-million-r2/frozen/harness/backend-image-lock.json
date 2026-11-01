@@ -1,0 +1,30 @@
+{
+  "pingcap/pd:v8.5.0": {
+    "fingerprint_sha256": "87a5ead1593a37710d9d77301b54c60c96dc61cfe86cbb6eda5b4c74a41659e7",
+    "reported_id": "sha256:5f6dfb1645769bebc5c0e983cf46842709cfe2fb910d91fd039e68810a09d555",
+    "repo_digests": [
+      "pingcap/pd@sha256:5f6dfb1645769bebc5c0e983cf46842709cfe2fb910d91fd039e68810a09d555"
+    ]
+  },
+  "pingcap/tikv:v8.5.0": {
+    "fingerprint_sha256": "10d7e700590492b9a88ec264913eca6d97da28ba7f60fcde5aaebc6739f5104f",
+    "reported_id": "sha256:7f607b81bc623ed4336ac551d8174abe17329a9d260da2178fff1689ffc7f68f",
+    "repo_digests": [
+      "pingcap/tikv@sha256:7f607b81bc623ed4336ac551d8174abe17329a9d260da2178fff1689ffc7f68f"
+    ]
+  },
+  "redis:7.2-alpine": {
+    "fingerprint_sha256": "759991d0282930be1907c95bf74103cdf28bc5868982afc5c521024f30cf7dee",
+    "reported_id": "sha256:63218503f6461303e502355b8b0359a1194a190341f954e7fc7e8f92cd382a43",
+    "repo_digests": [
+      "redis@sha256:63218503f6461303e502355b8b0359a1194a190341f954e7fc7e8f92cd382a43"
+    ]
+  },
+  "ax-retest/rustfs:a87e8f94": {
+    "fingerprint_sha256": "e7fa9336d3f17b46a2da8f5f323d9b051399c1f4d0a1e7c50ab03e2d0daf8f5c",
+    "reported_id": "sha256:2449ed15a1747b97a690f1acb7536f06e6a2f7a20a72601e439ae5be63318f81",
+    "repo_digests": [
+      "ax-retest/rustfs@sha256:2449ed15a1747b97a690f1acb7536f06e6a2f7a20a72601e439ae5be63318f81"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+user root;
+daemon off;
+worker_processes 2;
+pid @WORK@/nginx.pid;
+error_log @WORK@/nginx-error.log warn;
+events { worker_connections 2048; }
+http {
+  log_format detailed escape=json '{"method":"$request_method","uri":"$uri","range":"$http_range","status":$status,"request_length":$request_length,"content_length":"$http_content_length","decoded_content_length":"$http_x_amz_decoded_content_length","response_bytes":$body_bytes_sent,"request_time":$request_time,"upstream_time":"$upstream_response_time","connect_time":"$upstream_connect_time","header_time":"$upstream_header_time","connection":"$connection","connection_requests":$connection_requests,"msec":$msec}';
+  access_log @WORK@/object-requests.jsonl detailed;
+  client_max_body_size 64m;
+  client_body_temp_path @WORK@/client-temp;
+  proxy_temp_path @WORK@/proxy-temp;
+  fastcgi_temp_path @WORK@/fastcgi-temp;
+  uwsgi_temp_path @WORK@/uwsgi-temp;
+  scgi_temp_path @WORK@/scgi-temp;
+  upstream objects { server 127.0.0.1:9000; keepalive 128; }
+  server {
+    listen @IP@:9001;
+    location / {
+      proxy_pass http://objects;
+      proxy_http_version 1.1;
+      proxy_set_header Host $http_host;
+      proxy_set_header Connection "";
+      proxy_buffering off;
+      proxy_request_buffering off;
+      proxy_read_timeout 180s;
+    }
+  }
+}
