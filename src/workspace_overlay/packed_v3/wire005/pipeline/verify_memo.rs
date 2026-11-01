@@ -1,5 +1,11 @@
 //! Mount-local evidence about immutable frame identities, never payload bytes.
 //!
+//! The index stores only a 32-byte BLAKE3 identity of the 32-byte container
+//! digest plus physical object key, and frame metadata (expected digest,
+//! ordinal, stored range and access time). It retains no stored or decoded
+//! payload. Its 1.5 MiB Metadata reservation is independent of the zero-payload
+//! cache policy and must stay within the declared 2 MiB index budget ceiling.
+//!
 //! This relies on the object store preserving immutable objects after their
 //! first successful verification. It cannot detect a same-length overwrite or
 //! corrupt later response for an identity already in the memo. Set

@@ -1,8 +1,11 @@
 # Packed frame verification memo — 2026-11-01
 
-Status: the single candidate release and three paired A/B rounds per workload
-are complete. Full local CI and remaining content checks are pending; the
-measurements are provisional and have not been accepted.
+Status (2026-11-02 gate repair): the single candidate release, three paired
+A/B rounds per workload and all eight full-corpus SHA-256 passes are complete.
+The two overlay gate failures are resolved as recorded below. All 17 fresh
+local build/test/check command groups and both focused tests passed. The
+reported performance results are accepted for these two measured read scenes;
+the immutable-storage safety condition remains unchanged.
 Artifacts: `/home/hxy/perf-packed-verify-20261101/`.
 
 ## Scope and safety contract
@@ -56,6 +59,18 @@ caches stay at zero in both arms.
 The metadata-only LRU has a conservative 1.5 MiB Metadata reservation, including
 allocator/hash-table/node overhead; it is not accurately described as a
 256 KiB structure. Actual resident memory is measured separately.
+This memory caches no payload: only the 32-byte BLAKE3 identity of the 32-byte
+container digest plus physical object key, and frame metadata. The declared
+index ceiling is 2 MiB; it is separate from the zero-payload-cache invariant.
+The control/statistics test subtracts only the declared memo reservation and
+still requires exactly 24 KiB of request/handle Metadata before the last
+consumer drops, 16 KiB afterwards, and zero after the file handle closes.
+The memo reservation itself must disappear at metadata-session shutdown.
+A dedicated enabled-memo test reads two frames twice, requires four GETs and
+decodes but only two authentications, and checks that every released frame
+owner disappears and Stored/Raw/Workspace/Output usage returns to zero after
+each read. The entire budget must return to its initialized baseline, so
+payload cannot be hidden by moving its accounting to Metadata.
 The existing 256 MiB Metadata and 16 MiB Roots capacities stay unchanged in
 both arms. Roots cannot safely hold the memo: the historical seqread round
 already used 16,589,672 of 16,777,216 Roots bytes. The corrected constructor
@@ -116,12 +131,13 @@ The frozen source checksums all match. The binary contains the explicit
 `MEMO=false` specializations; runtime perf and counter checks remain required.
 No clean-main comparison binary was built in this corrected task.
 
-The provisional artifact audit passes every measurement check: all 36 rounds,
-all six disabled-path audits, all per-round SHA thresholds, identical arm
-environments, zero PUTs, clean drain/teardown, and unchanged paused compiler
-CPU counters. Its two incomplete gates are the eight full-corpus verification
-passes and complete local CI. See `validation/provisional-artifact-audit.json`.
-No optimization acceptance, commit, push, PR, or merge is claimed yet.
+The artifact audit passes every measurement check: all 36 rounds, all six
+disabled-path audits, all per-round SHA thresholds, identical arm environments,
+zero PUTs, clean drain/teardown, and unchanged paused compiler CPU counters.
+The later content audit completed all eight passes: 65,568 file verifications,
+17,448,304,640 bytes and zero SHA-256/length mismatches; all output manifests
+match. Evidence: `validation/finalize/content-audit.json`. The original
+`validation/provisional-artifact-audit.json` records the earlier snapshot.
 
 ## Same-binary A/B results
 
@@ -198,17 +214,55 @@ and call chains. Their payload authentication and decode counts match.
 
 ## Local validation
 
-The feature-test negative control is pending compilation. The live
-off profiles and authentication/decode counts above are available.
+PR #401's repair chooses option A, retaining 8,192 evidence entries. The
+control/statistics assertion originally compared 1,597,440 bytes of total
+Metadata against 24,576 bytes of request/handle ownership. Their difference
+is exactly the 1,572,864-byte memo reservation. The repaired test preserves
+the exact request/handle amounts and shutdown ownership checks, bounds the
+memo independently by 2 MiB, and asserts zero payload-pool usage. The new
+enabled-memo test described above protects against retaining payload on hits.
+The repair changes tests, a test-only accessor and comments; production memo
+behavior and the measured release binaries are unchanged.
 
-**Provisional measurements: complete local CI has not passed. These
-numbers are not accepted performance results and do not authorize
-committing or merging the optimization.**
+The other failure,
+`kernel_cache_refill_discards_external_upper_rows_and_checks_binding`, passed
+five isolated reruns of the original full-overlay test binary on 2026-11-01
+UTC: 19:09:08.781207, 19:09:09.050556, 19:09:09.301136, 19:09:09.551629 and
+19:09:09.796052. Each exited 0 with one test passed. It is classified as timing
+flaky and its source/assertions are unchanged. The previous deadline difference
+was 20.951247 **ms**, exceeding its 20 ms TTL. Logs and timestamps:
+`validation/fix401/isolated-before-fix.json` and `ttl-rerun-{1..5}.log`.
 
-Completed gate exit statuses: `{"fmt": 0, "juicefs-direct": 0, "juicefs-report": 0, "perf-report-delta": 0, "shell-syntax": 0}`.
+Both fresh strict clippy commands exited 0 with the same 31 dependency diagnostics:
+26 `dead_code` warnings in vendored `tikv-client`, four in vendored `asyncfuse`,
+and one Cargo future-compatibility notice for `proc-macro-error2 2.0.1`
+(E0365, private `proc_macro` re-export). Every implicated source blob and all
+three lockfile package records match PR base `918deb9`, so none was introduced
+by this PR. `strict_clippy_zero_warnings` remains literally false; no suppression
+was added. The detailed list and provenance are in
+`validation/fix401/warning-provenance.json` and `/home/hxy/REPORT-PACKED-VERIFY.md`.
 
-- `test-workspace`: pending or incomplete; no passing total is claimed.
-- `test-feature-workspace`: pending or incomplete; no passing total is claimed.
+The fresh serial gate run completed on 2026-11-01 at 20:02:34 UTC. All 17
+build/test/check command groups exited 0. The repaired control/statistics test
+and the new enabled-memo zero-payload test also each passed in an exact run.
+The complete overlay suite ran without added skips, ignores or filters:
+2,714 passed, zero failed, 474 existing ignored. Default tests passed 1,300
+tests; workspace `--lib --bins` passed those 1,300 plus two binary tests.
+Both strict clippy commands, workspace clippy/check/build, both runtime
+checks, fmt/diff, four shell syntax checks and three report regression scripts
+passed. `rfuse3` is not a workspace member. Commands, exit codes, per-log
+SHA-256 and warning lists are in `validation/fix401/gate-summary.json`.
+
+`all_required_commands_complete=true`, `all_required_commands_pass=true`;
+`strict_clippy_zero_warnings=false` is retained honestly for the pre-existing
+dependency notices. The no-default-feature Tokio check additionally reports
+the pre-existing unused `ReadResult::Fatal` variant in
+`vendor/asyncfuse/src/raw/session/utils.rs`; this vendored file is unchanged.
+No compiler was killed. The host memory watchdog was stopped for local
+compilation and restored after the gates finished. Both preserved release
+binaries still match the original measured SHA-256, and
+`validation/fix401/repair-source-audit.json` confirms that production Rust
+behavior and the TTL test are unchanged by the repair.
 
 Raw fio JSON, exact commands, before/after metrics, 1 Hz process samples,
 drain records, perf data, top-20 tables, folded stacks and SVGs are retained

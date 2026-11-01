@@ -243,6 +243,57 @@ async fn verified_frame_memo_uses_metadata_budget_without_consuming_root_headroo
 }
 
 #[tokio::test]
+async fn enabled_verify_memo_retains_zero_payload_bytes_after_consumers_drop() {
+    let (backend, first, second) = fixture();
+    let budget = V3MountBudget::defaults();
+    let observer = Arc::new(ReadObserver::default());
+    let pipeline = coordinator_with_memo(&backend, budget.clone(), observer.clone(), true);
+    let idle = budget.state().used;
+    assert_eq!(
+        idle[V3BudgetPool::Metadata as usize],
+        super::super::verify_memo::RESERVATION_BYTES
+    );
+    assert!(idle[V3BudgetPool::Metadata as usize] > 0);
+    assert!(idle[V3BudgetPool::Metadata as usize] <= 2 << 20);
+    for (index, demand) in [&first, &second, &first, &second].into_iter().enumerate() {
+        let waiter = pipeline.submit(demand).unwrap();
+        let frame = waiter.wait().await.unwrap();
+        assert_eq!(frame.raw, [1 + demand.descriptor.frame_ordinal as u8; 64]);
+        assert_eq!(budget.state().used[V3BudgetPool::Raw as usize], 64);
+        let released_frame = Arc::downgrade(&frame);
+        drop(frame);
+        drop(waiter);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while budget.state().used != idle {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed read retained payload or unaccounted metadata");
+        assert!(released_frame.upgrade().is_none(), "memo retained a frame");
+        for pool in [
+            V3BudgetPool::Stored,
+            V3BudgetPool::Raw,
+            V3BudgetPool::Workspace,
+            V3BudgetPool::Output,
+        ] {
+            assert_eq!(budget.state().used[pool as usize], 0, "{pool:?}");
+        }
+        assert_eq!(backend.probe.calls.lock().unwrap().len(), index + 1);
+    }
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.work[&(first.context, ReadWork::Decode)].count, 4);
+    assert_eq!(
+        snapshot.work[&(first.context, ReadWork::Authentication)].count,
+        2,
+        "the repeated reads must actually hit the enabled memo"
+    );
+    pipeline.shutdown().await;
+    drop(pipeline);
+    wait_for_cleanup(&budget).await;
+}
+
+#[tokio::test]
 async fn verified_frame_memo_repeats_get_and_decode_but_not_authentication() {
     let (backend, demand, _) = fixture();
     let budget = V3MountBudget::defaults();
