@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::Notify;
 mod coordinator;
+mod verify_memo;
 pub(super) use coordinator::{V3DemandCoordinator, V3SharedFrame, queue_roots_bytes};
 
 use super::budget::V3Owned;
@@ -17,6 +18,26 @@ use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError};
 use crate::workspace_overlay::packed_v3::{
     AccessProfile, PackedFrameDescriptor, SizeClass, SizeClassTable,
 };
+
+pub(super) fn verify_memo_reservation_bytes() -> PackedResult<u64> {
+    Ok(if verify_memo::VerifyMemo::enabled_from_env()? {
+        verify_memo::RESERVATION_BYTES
+    } else {
+        0
+    })
+}
+
+pub(super) fn log_verify_memo_configuration() -> PackedResult<()> {
+    let enabled = verify_memo::VerifyMemo::enabled_from_env()?;
+    tracing::info!(
+        enabled,
+        capacity_entries = if enabled { verify_memo::CAPACITY } else { 0 },
+        metadata_reservation_bytes = verify_memo_reservation_bytes()?,
+        payload_cache_bytes = 0,
+        "packed frame verification memo (requires immutable objects)"
+    );
+    Ok(())
+}
 
 fn invalid(reason: &str) -> PackedWireError {
     PackedWireError::Invalid(format!("wire005 pipeline: {reason}"))
