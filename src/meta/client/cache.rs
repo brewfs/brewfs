@@ -195,23 +195,19 @@ impl InodeCache {
         if let Some(parent_node) = self.ttl_manager.get(&parent_ino).await {
             let mut children_lock = parent_node.children.write().await;
 
-            let new_map = match &*children_lock {
+            match &mut *children_lock {
                 ChildrenState::NotLoaded => {
                     let mut map = BTreeMap::new();
                     map.insert(name, child_ino);
-                    ChildrenState::Partial(Arc::new(map))
+                    *children_lock = ChildrenState::Partial(Arc::new(map));
                 }
                 ChildrenState::Partial(existing_map) | ChildrenState::Complete(existing_map) => {
-                    let mut map = (**existing_map).clone();
-                    map.insert(name, child_ino);
-                    match &*children_lock {
-                        ChildrenState::Complete(_) => ChildrenState::Complete(Arc::new(map)),
-                        _ => ChildrenState::Partial(Arc::new(map)),
-                    }
+                    // Mutate under the children write lock; copy only when a reader
+                    // retains an Arc snapshot, preserving its immutable view.
+                    Arc::make_mut(existing_map).insert(name, child_ino);
                 }
-            };
+            }
 
-            *children_lock = new_map;
             parent_node
                 .children_generation
                 .fetch_add(1, Ordering::AcqRel);
@@ -245,20 +241,18 @@ impl InodeCache {
     pub(crate) async fn remove_child(&self, parent_ino: i64, name: &str) -> Option<i64> {
         if let Some(parent_node) = self.ttl_manager.get(&parent_ino).await {
             let mut children_lock = parent_node.children.write().await;
-            if let Some(children_map) = children_lock.get_map() {
-                let mut map = (**children_map).clone();
-                if let Some(child_ino) = map.remove(name) {
-                    *children_lock = match &*children_lock {
-                        ChildrenState::Complete(_) => ChildrenState::Complete(Arc::new(map)),
-                        _ => ChildrenState::Partial(Arc::new(map)),
-                    };
-                    parent_node
-                        .children_generation
-                        .fetch_add(1, Ordering::AcqRel);
+            if let ChildrenState::Partial(children_map) | ChildrenState::Complete(children_map) =
+                &mut *children_lock
+            {
+                // A missing name must not copy a shared snapshot or advance generation.
+                let child_ino = *children_map.get(name)?;
+                Arc::make_mut(children_map).remove(name);
+                parent_node
+                    .children_generation
+                    .fetch_add(1, Ordering::AcqRel);
 
-                    self.ttl_manager.invalidate(&child_ino).await;
-                    return Some(child_ino);
-                }
+                self.ttl_manager.invalidate(&child_ino).await;
+                return Some(child_ino);
             }
         }
         None
@@ -271,18 +265,15 @@ impl InodeCache {
     ) -> Option<i64> {
         if let Some(parent_node) = self.ttl_manager.get(&parent_ino).await {
             let mut children_lock = parent_node.children.write().await;
-            if let Some(children_map) = children_lock.get_map() {
-                let mut map = (**children_map).clone();
-                if let Some(child_ino) = map.remove(name) {
-                    *children_lock = match &*children_lock {
-                        ChildrenState::Complete(_) => ChildrenState::Complete(Arc::new(map)),
-                        _ => ChildrenState::Partial(Arc::new(map)),
-                    };
-                    parent_node
-                        .children_generation
-                        .fetch_add(1, Ordering::AcqRel);
-                    return Some(child_ino);
-                }
+            if let ChildrenState::Partial(children_map) | ChildrenState::Complete(children_map) =
+                &mut *children_lock
+            {
+                let child_ino = *children_map.get(name)?;
+                Arc::make_mut(children_map).remove(name);
+                parent_node
+                    .children_generation
+                    .fetch_add(1, Ordering::AcqRel);
+                return Some(child_ino);
             }
         }
         None
@@ -575,6 +566,184 @@ mod tests {
             mtime: 0,
             ctime: 0,
             nlink: if kind == FileType::Dir { 2 } else { 1 },
+        }
+    }
+
+    #[tokio::test]
+    async fn child_mutations_reuse_unshared_maps() {
+        for complete in [false, true] {
+            let cache = InodeCache::new(8, Duration::from_secs(60));
+            cache.insert_node(1, attr(1, FileType::Dir), None).await;
+            cache.add_child(1, "first".into(), 2).await;
+            if complete {
+                assert!(
+                    cache
+                        .load_children_if_fresh(1, vec![("first".into(), 2)], 1)
+                        .await
+                );
+            }
+            let node = cache.get_node(1).await.unwrap();
+            let allocation = {
+                let children = node.children.read().await;
+                Arc::as_ptr(children.get_map().unwrap()) as usize
+            };
+            cache.add_child(1, "second".into(), 3).await;
+            assert_eq!(
+                Arc::as_ptr(node.children.read().await.get_map().unwrap()) as usize,
+                allocation,
+                "inserting without a snapshot must reuse the map allocation"
+            );
+            cache.add_child(1, "first".into(), 4).await;
+            assert_eq!(
+                Arc::as_ptr(node.children.read().await.get_map().unwrap()) as usize,
+                allocation
+            );
+            assert_eq!(
+                cache.remove_child_but_keep_inode(1, "second").await,
+                Some(3)
+            );
+            assert_eq!(
+                Arc::as_ptr(node.children.read().await.get_map().unwrap()) as usize,
+                allocation
+            );
+            assert_eq!(cache.remove_child(1, "first").await, Some(4));
+            assert_eq!(cache.children_generation(1).await, Some(5));
+            let children = node.children.read().await;
+            assert_eq!(children.is_complete(), complete);
+            assert!(children.get_map().unwrap().is_empty());
+            assert_eq!(
+                Arc::as_ptr(children.get_map().unwrap()) as usize,
+                allocation
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn child_mutations_preserve_concurrent_snapshots() {
+        for complete in [false, true] {
+            let cache = Arc::new(InodeCache::new(8, Duration::from_secs(60)));
+            cache.insert_node(1, attr(1, FileType::Dir), None).await;
+            cache.insert_node(2, attr(2, FileType::File), Some(1)).await;
+            cache.insert_node(3, attr(3, FileType::File), Some(1)).await;
+            cache.add_child(1, "first".into(), 2).await;
+            cache.add_child(1, "second".into(), 3).await;
+            if complete {
+                assert!(
+                    cache
+                        .load_children_if_fresh(
+                            1,
+                            vec![("first".into(), 2), ("second".into(), 3)],
+                            2
+                        )
+                        .await
+                );
+            }
+            let node = cache.get_node(1).await.unwrap();
+            let snapshot = node.children.read().await.clone();
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let reader = tokio::spawn(async move {
+                let map = snapshot.get_map().unwrap();
+                assert_eq!(map.len(), 2);
+                done_rx.await.unwrap();
+                assert_eq!(snapshot.is_complete(), complete);
+                assert_eq!(map.len(), 2);
+                assert_eq!(map.get("first"), Some(&2));
+                assert_eq!(map.get("second"), Some(&3));
+                assert!(!map.contains_key("third"));
+            });
+            cache.add_child(1, "third".into(), 4).await;
+            cache.add_child(1, "first".into(), 5).await;
+            // Hold a new snapshot for each removal to exercise copy-on-write too.
+            let before_keep = node.children.read().await.clone();
+            assert_eq!(
+                cache.remove_child_but_keep_inode(1, "second").await,
+                Some(3)
+            );
+            assert_eq!(before_keep.get_map().unwrap().get("second"), Some(&3));
+            assert!(cache.get_node(3).await.is_some());
+            let before_remove = node.children.read().await.clone();
+            assert_eq!(cache.remove_child(1, "third").await, Some(4));
+            assert_eq!(before_remove.get_map().unwrap().get("third"), Some(&4));
+            assert_eq!(cache.children_generation(1).await, Some(6));
+            assert!(!cache.load_children_if_fresh(1, vec![], 2).await);
+            assert_eq!(cache.lookup_if_loaded(1, "first").await, Some(Some(5)));
+            assert_eq!(
+                cache.lookup_if_loaded(1, "second").await,
+                if complete { Some(None) } else { None }
+            );
+            assert_eq!(node.children.read().await.is_complete(), complete);
+            done_tx.send(()).unwrap();
+            reader.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn child_removal_preserves_missing_state_and_inode_invalidation() {
+        let cache = InodeCache::new(8, Duration::from_secs(60));
+        cache.insert_node(1, attr(1, FileType::Dir), None).await;
+        for complete in [false, true] {
+            if complete {
+                cache.mark_children_complete_empty(1).await;
+            }
+            assert_eq!(cache.remove_child(1, "missing").await, None);
+            assert_eq!(cache.remove_child_but_keep_inode(1, "missing").await, None);
+            assert_eq!(cache.children_generation(1).await, Some(0));
+            let node = cache.get_node(1).await.unwrap();
+            assert_eq!(node.children.read().await.is_complete(), complete);
+        }
+        cache.insert_node(2, attr(2, FileType::File), Some(1)).await;
+        cache.add_child(1, "file".into(), 2).await;
+        assert_eq!(cache.remove_child(1, "file").await, Some(2));
+        assert!(cache.get_node(2).await.is_none());
+        assert_eq!(cache.children_generation(1).await, Some(2));
+        cache.invalidate_inode(1).await;
+        cache.add_child(1, "absent-parent".into(), 3).await;
+        assert_eq!(cache.children_generation(1).await, None);
+    }
+
+    /// Repeat with BREWFS_ADD_CHILD_BENCH_ROUNDS for CPU sampling. Setup and
+    /// validation are outside the timed 1,000-insertion window; no timing gate in CI.
+    #[tokio::test]
+    async fn add_child_large_directory_timed() {
+        let rounds: usize = std::env::var("BREWFS_ADD_CHILD_BENCH_ROUNDS")
+            .map(|value| value.parse().expect("positive integer benchmark rounds"))
+            .unwrap_or(1);
+        assert!(rounds > 0);
+        let cache = InodeCache::new(8, Duration::from_secs(3600));
+        cache.insert_node(1, attr(1, FileType::Dir), None).await;
+        for round in 0..rounds {
+            let generation = cache.children_generation(1).await.unwrap();
+            assert!(
+                cache
+                    .load_children_if_fresh(
+                        1,
+                        (0..8192)
+                            .map(|i| (format!("child-{i:05}"), i + 2))
+                            .collect(),
+                        generation
+                    )
+                    .await
+            );
+            let additions: Vec<_> = (8192..9192)
+                .map(|i| (format!("child-{i:05}"), i + 2))
+                .collect();
+            let started = Instant::now();
+            for (name, ino) in additions {
+                cache
+                    .add_child(1, std::hint::black_box(name), std::hint::black_box(ino))
+                    .await;
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "add_child_large_directory round={round} entries=8192 additions=1000 elapsed_ns={}",
+                elapsed.as_nanos()
+            );
+            assert_eq!(cache.children_generation(1).await, Some(generation + 1000));
+            let node = cache.get_node(1).await.unwrap();
+            let children = node.children.read().await;
+            assert!(children.is_complete());
+            assert_eq!(children.get_map().unwrap().len(), 9192);
+            assert_eq!(children.get_map().unwrap().get("child-09191"), Some(&9193));
         }
     }
 
