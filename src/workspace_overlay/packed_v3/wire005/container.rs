@@ -264,6 +264,7 @@ struct DirectoryGroup {
     group: V3GroupRef,
     container: V3ObjectRef,
     metadata: tokio::sync::OnceCell<OwnedGroupMetadata>,
+    view: Option<(crate::chunk::read_plan::ReadGeneration, u64)>,
 }
 
 /// One authenticated group per open directory. Switching groups retires the
@@ -284,24 +285,47 @@ impl V3DirectoryMetadata {
         })
     }
 
-    pub(super) async fn read<B: ObjectBackend + Clone>(
+    pub(super) async fn read<B: ObjectBackend + Clone + 'static>(
         &self,
         group: &V3GroupRef,
         client: &ObjectClient<B>,
         container: &V3ObjectRef,
         allocation_limit: usize,
     ) -> PackedResult<OwnedGroupMetadata> {
+        self.read_shared(group, client, container, allocation_limit, None)
+            .await
+    }
+
+    pub(super) async fn read_shared<B: ObjectBackend + Clone + 'static>(
+        &self,
+        group: &V3GroupRef,
+        client: &ObjectClient<B>,
+        container: &V3ObjectRef,
+        allocation_limit: usize,
+        shared: Option<(
+            &super::V3IndexReader<B>,
+            crate::chunk::read_plan::ReadGeneration,
+        )>,
+    ) -> PackedResult<OwnedGroupMetadata> {
         // Hits and followers still obey admission and the caller's allocation
         // limit. Match the complete references so count/name/frame claims can
         // never borrow validation from a different occurrence of the bytes.
         let _request = self.budget.admit(&[(super::V3BudgetPool::Control, 512)])?;
         group.validate_metadata_read(container, allocation_limit)?;
+        if let Some((reader, _)) = shared {
+            if !Arc::ptr_eq(reader.budget(), &self.budget) {
+                return Err(PackedWireError::Invalid(
+                    "directory metadata belongs to a different mount budget".into(),
+                ));
+            }
+            reader.ensure_open().await?;
+        }
+        let view = shared.map(|(_, generation)| (generation, self.budget.read_cache_epoch()));
         let slot = {
             let mut current = self.current.lock().unwrap();
-            if let Some(slot) = current
-                .as_ref()
-                .filter(|slot| slot.group == *group && slot.container == *container)
-            {
+            if let Some(slot) = current.as_ref().filter(|slot| {
+                slot.group == *group && slot.container == *container && slot.view == view
+            }) {
                 slot.clone()
             } else {
                 // Release the old retained group before admitting its successor.
@@ -316,6 +340,7 @@ impl V3DirectoryMetadata {
                         group: group.clone(),
                         container: container.clone(),
                         metadata: tokio::sync::OnceCell::new(),
+                        view,
                     },
                     permit,
                 ));
@@ -325,12 +350,28 @@ impl V3DirectoryMetadata {
         };
         // No directory-state lock spans I/O. OnceCell shares successful fills
         // and lets a later caller retry after failure or cancellation.
-        slot.metadata
-            .get_or_try_init(|| {
-                group.read_metadata_owned(client, container, allocation_limit, &self.budget)
+        let value = slot
+            .metadata
+            .get_or_try_init(|| async {
+                match shared {
+                    Some((reader, generation)) => {
+                        reader
+                            .group_metadata(generation, group, container, allocation_limit)
+                            .await
+                    }
+                    None => {
+                        group
+                            .read_metadata_owned(client, container, allocation_limit, &self.budget)
+                            .await
+                    }
+                }
             })
             .await
-            .cloned()
+            .cloned()?;
+        if view.is_some_and(|(_, epoch)| epoch != self.budget.read_cache_epoch()) {
+            return Err(PackedWireError::ReadViewChanged);
+        }
+        Ok(value)
     }
 }
 

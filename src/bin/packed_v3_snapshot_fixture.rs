@@ -457,7 +457,9 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
     client: ObjectClient<B>,
     prefix: &str,
 ) -> Result<()> {
-    use brewfs::workspace_overlay::packed_v3::wire005::{V3ProducerOptions, V3SnapshotProducer};
+    use brewfs::workspace_overlay::packed_v3::wire005::{
+        V3BuildPolicy, V3ProducerOptions, V3SnapshotProducer,
+    };
     let provenance_client = client.clone();
     let build_policy = fixture_build_policy(args)?;
     let size_classes = fixture_size_classes(args)?;
@@ -793,8 +795,43 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
             .iter()
             .any(|child| child.parent_inode == directory.inode)
         {
+            let mut pending_inline_bytes = files
+                .iter()
+                .filter(|file| {
+                    file.kind == 1 && file.data.len() <= V3BuildPolicy::INLINE_GROUP_PAYLOAD_BYTES
+                })
+                .map(|file| file.data.len())
+                .sum::<usize>();
             for index in 0..args.files_per_dir {
                 let size = file_size_for_index(file_index, minimum, maximum);
+                if !files.is_empty()
+                    && (pending_bytes >= 8 * 1024 * 1024
+                        || files.len() >= 256
+                        || build_policy.inline_group_needs_flush(
+                            profile,
+                            pending_inline_bytes,
+                            size,
+                        ))
+                {
+                    let id = (directory.inode << 32) | shard;
+                    let (mut group, frames) =
+                        brewfs::workspace_overlay::packed_v3::pack_group_files_with_policy(
+                            id,
+                            key,
+                            std::mem::take(&mut files),
+                            profile,
+                            size_classes,
+                            build_policy,
+                        )?;
+                    apply_cold_targets(&mut group, &cold_attributes)?;
+                    producer
+                        .add_container(id, &[group], &frames, &[directory.inode])
+                        .await?;
+                    pending_bytes = 0;
+                    pending_inline_bytes = 0;
+                    shard += 1;
+                    group_count += 1;
+                }
                 files.push(PackedFileInput {
                     name: format!("f{index:06}").into_bytes(),
                     inode: next_inode,
@@ -814,24 +851,8 @@ async fn build_v3_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
                 file_index += 1;
                 logical_bytes += size as u64;
                 pending_bytes += size;
-                if pending_bytes >= 8 * 1024 * 1024 || files.len() >= 256 {
-                    let id = (directory.inode << 32) | shard;
-                    let (mut group, frames) =
-                        brewfs::workspace_overlay::packed_v3::pack_group_files_with_policy(
-                            id,
-                            key,
-                            std::mem::take(&mut files),
-                            profile,
-                            size_classes,
-                            build_policy,
-                        )?;
-                    apply_cold_targets(&mut group, &cold_attributes)?;
-                    producer
-                        .add_container(id, &[group], &frames, &[directory.inode])
-                        .await?;
-                    pending_bytes = 0;
-                    shard += 1;
-                    group_count += 1;
+                if size <= V3BuildPolicy::INLINE_GROUP_PAYLOAD_BYTES {
+                    pending_inline_bytes += size;
                 }
             }
         }

@@ -627,6 +627,27 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         cache_bytes: u64,
         budget: Arc<V3MountBudget>,
     ) -> Self {
+        Self::with_budget_for_profile(
+            client,
+            cache_bytes,
+            budget,
+            super::super::AccessProfile::RandomSmallFile,
+        )
+    }
+
+    pub fn with_budget_for_profile(
+        client: ObjectClient<B>,
+        cache_bytes: u64,
+        budget: Arc<V3MountBudget>,
+        profile: super::super::AccessProfile,
+    ) -> Self {
+        // Sequential groups carry the small-file data itself. Retain complete
+        // packs in the existing cache, still bounded by the mount's ledger.
+        let group_bytes = if profile == super::super::AccessProfile::SequentialSmallFile {
+            (cache_bytes / 4).min(64 << 20)
+        } else {
+            (cache_bytes / 16).min(8 << 20)
+        };
         Self {
             client,
             pages: Cache::builder()
@@ -640,9 +661,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             cache_ownership: Arc::new(V3IndexCacheOwnership::new(cache_bytes)),
             configured_bytes: cache_bytes,
             group_metadata: super::read_cache::RetainedMetadata::new(
-                (cache_bytes / 16)
-                    .min(8 << 20)
-                    .min(budget.capacity(V3BudgetPool::Metadata) / 4),
+                group_bytes.min(budget.capacity(V3BudgetPool::Metadata) / 4),
                 budget.clone(),
             ),
             frame_directories: super::read_cache::RetainedMetadata::new(
@@ -735,7 +754,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
     /// alone leaves a window in which an already-closed reader can issue new
     /// index GETs. Keep the runtime close bit as the authoritative reader
     /// fence and check it before every page/cache operation.
-    async fn ensure_open(&self) -> PackedResult<()> {
+    pub(super) async fn ensure_open(&self) -> PackedResult<()> {
         let runtime = self.demand_pipeline.lock().await;
         if runtime.closed || self.budget.state().closed {
             return Err(PackedWireError::LimitExceeded(

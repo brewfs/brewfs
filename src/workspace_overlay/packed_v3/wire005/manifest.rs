@@ -942,9 +942,21 @@ impl AuthenticatedV3Snapshot {
             let container = self.container_ref(reader, group.container_ordinal).await?;
             let meta = match metadata {
                 Some(metadata) => {
-                    metadata
-                        .read(&group, client, &container, allocation_limit)
-                        .await?
+                    if self.manifest.profile == AccessProfile::SequentialSmallFile {
+                        metadata
+                            .read_shared(
+                                &group,
+                                client,
+                                &container,
+                                allocation_limit,
+                                Some((reader, self.read_generation())),
+                            )
+                            .await?
+                    } else {
+                        metadata
+                            .read(&group, client, &container, allocation_limit)
+                            .await?
+                    }
                 }
                 None => {
                     reader

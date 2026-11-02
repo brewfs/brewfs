@@ -954,12 +954,20 @@ impl NamespaceGroup {
             return true;
         }
         let bytes = frames.iter().map(|f| f.raw.len()).sum::<usize>();
+        if entry.kind == 1
+            && is_dense(entry, bytes)
+            && options
+                .build_policy
+                .inline_group_needs_flush(options.profile, self.inline, bytes)
+        {
+            return false;
+        }
         let inline = options.build_policy.inline_data
             && entry.kind == 1
             && is_dense(entry, bytes)
             && bytes > 0
             && bytes < INLINE_FILE_MAX_BYTES
-            && self.inline + bytes <= 224 * 1024;
+            && self.inline + bytes <= super::V3BuildPolicy::INLINE_GROUP_PAYLOAD_BYTES;
         let metadata = 160
             + entry.name.len()
             + if inline {
@@ -992,7 +1000,7 @@ impl NamespaceGroup {
             && dense
             && bytes > 0
             && bytes < INLINE_FILE_MAX_BYTES
-            && self.inline + bytes <= 224 * 1024
+            && self.inline + bytes <= super::V3BuildPolicy::INLINE_GROUP_PAYLOAD_BYTES
         {
             entry.inline_data = frames
                 .into_iter()
@@ -1218,6 +1226,54 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sequential_smallfile_namespace_keeps_dense_payloads_inline() {
+        let source = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let objects = tempfile::tempdir().unwrap();
+        for index in 0..120 {
+            std::fs::write(
+                source.path().join(format!("f{index:06}")),
+                vec![index as u8; 4096],
+            )
+            .unwrap();
+        }
+        let client = ObjectClient::new(LocalFsBackend::new(objects.path()));
+        let mut options = options(PackedCodec::Raw);
+        options.profile = AccessProfile::SequentialSmallFile;
+        let published = inventory(source.path(), scratch.path())
+            .await
+            .build_snapshot(client.clone(), "sequential-inline".into(), options)
+            .await
+            .unwrap();
+        assert_eq!(published.report.inline_payload_bytes, 120 * 4096);
+        assert_eq!(published.report.frames, 0);
+        assert_eq!(published.report.groups, 3);
+        let snapshot = AuthenticatedV3Snapshot::open(&client, &published.reference)
+            .await
+            .unwrap();
+        let reader = V3IndexReader::new(client.clone(), 16 << 20);
+        for index in 0..120 {
+            let entry = snapshot
+                .lookup_dentry(
+                    &client,
+                    &reader,
+                    [2; 32],
+                    format!("f{index:06}").as_bytes(),
+                    32 << 20,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let mut bytes = [0; 4096];
+            snapshot
+                .read_inode_range(&client, &reader, entry.inode, 0, &mut bytes, 32 << 20)
+                .await
+                .unwrap();
+            assert_eq!(bytes, [index as u8; 4096]);
+        }
     }
 
     #[tokio::test]
