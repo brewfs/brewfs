@@ -73,6 +73,18 @@ impl<B: ObjectBackend + Clone + 'static> V3DemandCoordinator<B> {
         Self::new_configured(client, budget, limits, VerifyMemo::enabled_from_env()?)
     }
 
+    pub(in crate::workspace_overlay::packed_v3::wire005) fn new_for_retained_frames(
+        client: ObjectClient<B>,
+        budget: Arc<V3MountBudget>,
+        limits: V3PipelineLimits,
+    ) -> PackedResult<Arc<Self>> {
+        // Preserve validation of the explicit setting, but authenticate each
+        // actual fill. The identity-only memo cannot certify a new response
+        // after its previously verified payload has been evicted.
+        VerifyMemo::enabled_from_env()?;
+        Self::new_configured(client, budget, limits, false)
+    }
+
     fn new_configured(
         client: ObjectClient<B>,
         budget: Arc<V3MountBudget>,

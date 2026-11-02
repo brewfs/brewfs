@@ -584,15 +584,11 @@ mod tests {
     #[test]
     fn entity_payload_cache_metrics_are_separate_from_metadata_hits() {
         use crate::workspace_overlay::entity::payload_cache::{Key, PayloadCache};
+        use crate::workspace_overlay::packed_v3::wire005::FrameCacheKey;
         let metrics = Metrics::new("entity".into(), "tikv".into());
         let cache = PayloadCache::new(8192);
         *metrics.entity_read_cache.lock() = Some(Arc::downgrade(&cache));
-        let key = Key::Lower {
-            manifest: [1; 32],
-            ino: 2,
-            offset: 0,
-            length: 4096,
-        };
+        let key = Key::LowerFrame(FrameCacheKey([1; 32]));
         assert!(cache.get(&key).is_none());
         cache.insert(key.clone(), &[3; 4096]);
         assert!(cache.get(&key).is_some());

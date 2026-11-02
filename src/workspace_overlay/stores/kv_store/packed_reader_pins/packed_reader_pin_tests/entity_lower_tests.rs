@@ -34,6 +34,15 @@ struct Fixture<B> {
 }
 
 async fn fixture<B: WorkspaceKvBackend>(backend: Arc<B>) -> Fixture<B> {
+    fixture_with_shared_frame(backend, 1, PackedCodec::Raw).await
+}
+
+async fn fixture_with_shared_frame<B: WorkspaceKvBackend>(
+    backend: Arc<B>,
+    files: u32,
+    codec: PackedCodec,
+) -> Fixture<B> {
+    assert!((1..=2).contains(&files));
     let objects = test_objects::backend().await;
     let client = ObjectClient::new(objects.clone());
     // Local temporary storage is only the producer's bounded metadata spool;
@@ -43,35 +52,43 @@ async fn fixture<B: WorkspaceKvBackend>(backend: Arc<B>) -> Fixture<B> {
     let group = PackedGroupInput {
         group_id: 1,
         parent_dir_key: [7; 32],
-        metadata: GroupMeta::new(vec![GroupMetaEntry {
-            name: b"nonzero".to_vec(),
-            inode: 400,
-            kind: 1,
-            mode: 0o100644,
-            uid: 1,
-            gid: 2,
-            rdev: 0,
-            nlink: 1,
-            atime_ns: 0,
-            mtime_ns: 0,
-            ctime_ns: 0,
-            size: payload.len() as u64,
-            flags: 0,
-            inline_data: Arc::from([]),
-            extents: vec![GroupMetaExtent {
-                file_offset: 0,
-                logical_len: payload.len() as u32,
-                frame_ordinal: 0,
-                raw_offset: 0,
-                raw_len: payload.len() as u32,
-            }],
-        }])
+        metadata: GroupMeta::new(
+            (0..files)
+                .map(|file| GroupMetaEntry {
+                    name: if file == 0 {
+                        b"nonzero".to_vec()
+                    } else {
+                        b"nonzero-neighbor".to_vec()
+                    },
+                    inode: 400 + u64::from(file),
+                    kind: 1,
+                    mode: 0o100644,
+                    uid: 1,
+                    gid: 2,
+                    rdev: 0,
+                    nlink: 1,
+                    atime_ns: 0,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    size: payload.len() as u64,
+                    flags: 0,
+                    inline_data: Arc::from([]),
+                    extents: vec![GroupMetaExtent {
+                        file_offset: 0,
+                        logical_len: payload.len() as u32,
+                        frame_ordinal: 0,
+                        raw_offset: file * payload.len() as u32,
+                        raw_len: files * payload.len() as u32,
+                    }],
+                })
+                .collect(),
+        )
         .unwrap()
         .encode()
         .unwrap(),
         frame_ordinals: vec![0],
-        entry_count: 1,
-        file_count: 1,
+        entry_count: files,
+        file_count: files,
         layout_profile: AccessProfile::RandomSmallFile,
     };
     let mut producer = V3SnapshotProducer::new(
@@ -86,7 +103,7 @@ async fn fixture<B: WorkspaceKvBackend>(backend: Arc<B>) -> Fixture<B> {
             size_classes: SizeClassTable::default(),
             build_policy: Default::default(),
             metadata_codec: PackedCodec::Raw,
-            data_codec: PackedCodec::Raw,
+            data_codec: codec,
         },
     )
     .await
@@ -96,11 +113,14 @@ async fn fixture<B: WorkspaceKvBackend>(backend: Arc<B>) -> Fixture<B> {
             1,
             &[group],
             &[PackedFrameInput {
-                raw: payload.clone(),
+                raw: (0..files)
+                    .flat_map(|file| payload.iter().map(move |byte| byte ^ (file as u8 * 0x55)))
+                    .collect(),
                 size_class: SizeClass::Tiny,
-                codec: 0,
+                // The producer encodes these raw bytes with data_codec.
+                codec: PackedCodec::Raw as u8,
                 first_file_slot: 0,
-                last_file_slot: 0,
+                last_file_slot: files - 1,
             }],
             &[1],
         )
@@ -608,9 +628,221 @@ async fn packed_entity_lower_bound_memos_are_local_coalesced_and_session_fenced(
 
 #[tokio::test]
 #[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
-async fn packed_entity_lower_payload_cache_avoids_gets_and_preserves_session_fence() {
-    use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadObserver};
+async fn packed_entity_lower_frame_cache_reuses_neighbor_file_and_different_ranges() {
+    use crate::cadapter::read_observer::{
+        Engine, Ledger, Origin, Phase, ReadClass, ReadContext, ReadObserver, ReadWork,
+    };
     use crate::workspace_overlay::entity::payload_cache::PayloadCache;
+    for codec in [PackedCodec::Raw, PackedCodec::Zstd] {
+        let fixture =
+            fixture_with_shared_frame(Arc::new(PinMemoryBackend::default()), 2, codec).await;
+        let observer = Arc::new(ReadObserver::default());
+        let client = ObjectClient::new(fixture.objects.clone()).with_read_observer(
+            observer.clone(),
+            Engine::PackedV3,
+            Phase::Runtime,
+            Origin::Demand,
+        );
+        let (volume, namespace) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut lower = PackedLower::open(
+            fixture.store.clone(),
+            client,
+            volume,
+            namespace,
+            &fixture.source,
+            fixture.binding.clone(),
+        )
+        .await
+        .unwrap();
+        let cache = PayloadCache::new(16384);
+        lower.set_payload_cache(cache.clone()).unwrap();
+        let keys = EntityKeys::new(volume, namespace);
+        let lifecycle = Lifecycle::new(Arc::new(MemoryEntityBackend::new(1)), keys.clone());
+        lifecycle.provision(&fixture.binding).await.unwrap();
+        let session = lifecycle.acquire(Uuid::new_v4(), 1_000_000).await.unwrap();
+        lower.bind_session(&session, &keys, 8192).await.unwrap();
+        let tag = ReadContext {
+            engine: Engine::PackedV3,
+            phase: Phase::Runtime,
+            origin: Origin::Demand,
+            class: ReadClass::PackedPayload,
+        };
+        assert_eq!(
+            lower.read_range(400, 0, 128).await.unwrap(),
+            fixture.payload[..128]
+        );
+        let first = observer.snapshot();
+        assert_eq!(first.rows[&(Ledger::BackendBody, tag)].success, 1);
+        assert_eq!(first.work[&(tag, ReadWork::Decode)].count, 1);
+        assert!(
+            lower.set_payload_cache(cache.clone()).is_err(),
+            "cannot replace a started reader's cache"
+        );
+        let neighbor: Vec<_> = fixture.payload.iter().map(|byte| byte ^ 0x55).collect();
+        assert_eq!(
+            lower.read_range(401, 7, 2048).await.unwrap(),
+            neighbor[7..2055]
+        );
+        assert_eq!(
+            lower.read_range(400, 17, 1024).await.unwrap(),
+            fixture.payload[17..1041]
+        );
+        assert_eq!(
+            observer.snapshot().rows[&(Ledger::BackendBody, tag)],
+            first.rows[&(Ledger::BackendBody, tag)],
+            "two files and distinct ranges in one authenticated frame must share one real payload GET"
+        );
+        assert_eq!(
+            cache.stats().entries,
+            1,
+            "retain one frame, not duplicate file-range copies"
+        );
+        assert_eq!(cache.stats().lower_hits, 2);
+        let reads = (0..16).map(|i| {
+            let lower = &lower;
+            async move { lower.read_range(400 + i % 2, i as u64, 128).await.unwrap() }
+        });
+        for (i, bytes) in futures::future::join_all(reads)
+            .await
+            .into_iter()
+            .enumerate()
+        {
+            let expected = if i % 2 == 0 {
+                &fixture.payload
+            } else {
+                &neighbor
+            };
+            assert_eq!(bytes, expected[i..i + 128]);
+        }
+        let hot = observer.snapshot();
+        assert_eq!(
+            hot.rows[&(Ledger::BackendBody, tag)],
+            first.rows[&(Ledger::BackendBody, tag)]
+        );
+        assert_eq!(
+            hot.work[&(tag, ReadWork::Decode)],
+            first.work[&(tag, ReadWork::Decode)],
+            "neighbor files and concurrent hot reads must not decode the frame again"
+        );
+        assert_eq!(cache.stats().lower_hits, 18);
+        lifecycle.enter_maintenance(&session).await.unwrap();
+        cache.close();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
+async fn packed_entity_lower_frame_cache_limits_and_failed_refill() {
+    use crate::workspace_overlay::entity::payload_cache::{Key, PayloadCache};
+    let fixture =
+        fixture_with_shared_frame(Arc::new(PinMemoryBackend::default()), 2, PackedCodec::Raw).await;
+    let neighbor: Vec<_> = fixture.payload.iter().map(|byte| byte ^ 0x55).collect();
+    for capacity in [0, 8192 + 511, 16384] {
+        let (volume, namespace) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut lower = PackedLower::open(
+            fixture.store.clone(),
+            fixture.client.clone(),
+            volume,
+            namespace,
+            &fixture.source,
+            fixture.binding.clone(),
+        )
+        .await
+        .unwrap();
+        let cache = PayloadCache::new(capacity);
+        lower.set_payload_cache(cache.clone()).unwrap();
+        let keys = EntityKeys::new(volume, namespace);
+        let lifecycle = Lifecycle::new(Arc::new(MemoryEntityBackend::new(1)), keys.clone());
+        lifecycle.provision(&fixture.binding).await.unwrap();
+        let session = lifecycle.acquire(Uuid::new_v4(), 1_000_000).await.unwrap();
+        lower.bind_session(&session, &keys, 8192).await.unwrap();
+        assert_eq!(
+            lower.read_range(400, 0, 128).await.unwrap(),
+            fixture.payload[..128]
+        );
+        assert_eq!(
+            lower.read_range(401, 0, 256).await.unwrap(),
+            neighbor[..256]
+        );
+        if capacity < 8192 + 512 {
+            assert_eq!(
+                cache.stats().retained_bytes,
+                0,
+                "charge the entire decoded frame, not a requested slice"
+            );
+        } else {
+            assert_eq!(cache.stats().retained_bytes, 8192 + 512);
+            // Exercise the shared upper/lower budget: this upper object must
+            // evict the frame. A refill must authenticate the new body even
+            // though this same frame identity was successfully verified before.
+            cache.insert(
+                Key::Upper {
+                    volume,
+                    namespace,
+                    slice: 1,
+                    size: 8192,
+                    digest: [5; 32],
+                },
+                &[5; 8192],
+            );
+            assert_eq!(cache.stats().entries, 1);
+            assert_eq!(cache.stats().evictions, 1);
+            let reader = V3IndexReader::new(fixture.client.clone(), 0);
+            let container = fixture.snapshot.container_ref(&reader, 0).await.unwrap();
+            let original = fixture
+                .client
+                .get_object(&container.key)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut corrupt = original.clone();
+            let start = corrupt
+                .windows(fixture.payload.len())
+                .position(|bytes| bytes == fixture.payload)
+                .unwrap();
+            corrupt[start + 100] ^= 1;
+            fixture
+                .client
+                .put_object(&container.key, &corrupt)
+                .await
+                .unwrap();
+            for _ in 0..2 {
+                let error = lower.read_range(401, 0, 256).await.unwrap_err();
+                assert!(error.to_string().contains("hash mismatch"), "{error}");
+                assert_eq!(
+                    cache.stats().entries,
+                    1,
+                    "failed fills must not enter the cache"
+                );
+            }
+            fixture
+                .client
+                .put_object(&container.key, &original)
+                .await
+                .unwrap();
+            assert_eq!(
+                lower.read_range(401, 0, 256).await.unwrap(),
+                neighbor[..256]
+            );
+            assert!(cache.stats().retained_bytes <= capacity);
+        }
+        lifecycle.enter_maintenance(&session).await.unwrap();
+        assert!(matches!(
+            lower.read_range(401, 0, 256).await,
+            Err(EntityError::Fenced)
+        ));
+        cache.close();
+        assert_eq!(cache.stats().retained_bytes, 0);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
+async fn packed_entity_lower_payload_cache_avoids_gets_and_preserves_session_fence() {
+    use crate::cadapter::read_observer::{
+        Engine, Ledger, Origin, Phase, ReadClass, ReadContext, ReadObserver,
+    };
+    use crate::workspace_overlay::entity::payload_cache::{Key, PayloadCache};
     let fixture = fixture(Arc::new(PinMemoryBackend::default())).await;
     let observer = Arc::new(ReadObserver::default());
     let client = ObjectClient::new(fixture.objects.clone()).with_read_observer(
@@ -631,19 +863,27 @@ async fn packed_entity_lower_payload_cache_avoids_gets_and_preserves_session_fen
     .await
     .unwrap();
     let cache = PayloadCache::new(8192);
-    lower.set_payload_cache(cache.clone());
+    lower.set_payload_cache(cache.clone()).unwrap();
     let keys = EntityKeys::new(volume, namespace);
     let lifecycle = Lifecycle::new(Arc::new(MemoryEntityBackend::new(1)), keys.clone());
     lifecycle.provision(&fixture.binding).await.unwrap();
     let session = lifecycle.acquire(Uuid::new_v4(), 1_000_000).await.unwrap();
     lower.bind_session(&session, &keys, 8192).await.unwrap();
-    let before = observer.snapshot().rows;
+    let tag = ReadContext {
+        engine: Engine::PackedV3,
+        phase: Phase::Runtime,
+        origin: Origin::Demand,
+        class: ReadClass::PackedPayload,
+    };
     assert_eq!(
         lower.read_range(400, 0, 4096).await.unwrap(),
         fixture.payload
     );
-    let after = observer.snapshot().rows;
-    assert_ne!(before, after, "cold payload must reach real object storage");
+    let after = observer.snapshot().rows[&(Ledger::BackendBody, tag)].clone();
+    assert_eq!(
+        after.success, 1,
+        "cold payload must reach real object storage"
+    );
     for _ in 0..16 {
         assert_eq!(
             lower.read_range(400, 0, 4096).await.unwrap(),
@@ -651,24 +891,39 @@ async fn packed_entity_lower_payload_cache_avoids_gets_and_preserves_session_fen
         );
     }
     assert_eq!(
-        observer.snapshot().rows,
+        observer.snapshot().rows[&(Ledger::BackendBody, tag)],
         after,
         "hot payload must issue no GET"
     );
     assert_eq!(cache.stats().lower_hits, 16);
     assert_eq!(cache.stats().lower_misses, 1);
-    // A distinct retained range evicts the first under the shared byte budget.
+    // A different range reuses the same retained frame.
     assert_eq!(
         lower.read_range(400, 1, 4095).await.unwrap(),
         fixture.payload[1..]
     );
+    assert_eq!(cache.stats().evictions, 0);
+    assert_eq!(observer.snapshot().rows[&(Ledger::BackendBody, tag)], after);
+    // Upper objects compete for the same budget and can evict the lower frame.
+    cache.insert(
+        Key::Upper {
+            volume,
+            namespace,
+            slice: 1,
+            size: 4096,
+            digest: [7; 32],
+        },
+        &[7; 4096],
+    );
     assert_eq!(cache.stats().evictions, 1);
-    let before_reload = observer.snapshot().rows;
     assert_eq!(
         lower.read_range(400, 0, 4096).await.unwrap(),
         fixture.payload
     );
-    assert_ne!(observer.snapshot().rows, before_reload);
+    assert_eq!(
+        observer.snapshot().rows[&(Ledger::BackendBody, tag)].success,
+        2
+    );
     lifecycle.enter_maintenance(&session).await.unwrap();
     assert!(matches!(
         lower.read_range(400, 0, 4096).await,

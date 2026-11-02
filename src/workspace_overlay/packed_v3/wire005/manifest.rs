@@ -1435,10 +1435,7 @@ impl AuthenticatedV3Snapshot {
             }
         }
         drop(directory_page);
-        type ActiveFrame = Option<(
-            (u32, u32),
-            std::sync::Arc<super::budget::V3Owned<super::pipeline::V3SharedFrame>>,
-        )>;
+        type ActiveFrame = Option<((u32, u32), super::frame_cache::ReadFrame)>;
         struct FetchedSources<B: ObjectBackend + Clone> {
             group_id: u64,
             frames: HashMap<
@@ -1455,6 +1452,7 @@ impl AuthenticatedV3Snapshot {
             frame_policy: super::V3FramePolicy,
             budget: std::sync::Arc<super::V3MountBudget>,
             active: tokio::sync::Mutex<ActiveFrame>,
+            frame_cache: Option<std::sync::Arc<dyn super::DecodedFrameCache>>,
             delivery: Option<std::sync::Arc<crate::cadapter::read_observer::OperationDelivery>>,
             inline_coverage: tokio::sync::Mutex<Option<crate::cadapter::read_observer::RawLease>>,
             _inline_permit: Option<super::V3OwnedPermit>,
@@ -1510,42 +1508,81 @@ impl AuthenticatedV3Snapshot {
                             // Release the previous raw consumer before waiting
                             // for the next frame, including logical A-B-A.
                             *active = None;
-                            let class = if container.kind == V3ObjectKind::LargeData {
-                                crate::cadapter::read_observer::ReadClass::ExternalPayload
-                            } else {
-                                crate::cadapter::read_observer::ReadClass::PackedPayload
-                            };
-                            let context = self.client.read_context(class).unwrap_or(
-                                crate::cadapter::read_observer::ReadContext {
-                                    engine: crate::cadapter::read_observer::Engine::PackedV3,
-                                    phase: crate::cadapter::read_observer::Phase::Runtime,
-                                    origin: crate::cadapter::read_observer::Origin::Demand,
-                                    class,
-                                },
-                            );
-                            let waiter = self
-                                ._pipeline
-                                .as_ref()
-                                .ok_or_else(|| anyhow::anyhow!("missing mount frame coordinator"))?
-                                .submit_with(container.key.len(), || {
-                                    super::pipeline::V3FrameDemand {
-                                        generation: self.generation,
-                                        context,
-                                        container: container.clone(),
-                                        profile: self.profile,
-                                        size_classes: self.classes,
-                                        frame_policy: self.frame_policy,
-                                        descriptor: descriptor.clone(),
-                                        raw_offset: u64::from(*raw_offset),
-                                        logical_length: output.len() as u64,
-                                    }
-                                })?;
-                            let frame = waiter
-                                .wait()
-                                .await
-                                .map_err(|error| anyhow::Error::new((*error).clone()))?;
-                            drop(waiter);
-                            *active = Some((key, frame));
+                            let cache_key = self.frame_cache.as_ref().map(|_| {
+                                super::FrameCacheKey::new(
+                                    self.generation,
+                                    container,
+                                    descriptor,
+                                    self.profile,
+                                    self.classes,
+                                    self.frame_policy,
+                                )
+                            });
+                            if let (Some(cache), Some(cache_key)) = (&self.frame_cache, cache_key)
+                                && let Some(bytes) = cache.get(&cache_key)
+                            {
+                                if bytes.len() != descriptor.raw_len as usize {
+                                    anyhow::bail!(
+                                        "cached frame length disagrees with authenticated descriptor"
+                                    );
+                                }
+                                // The Arc shares retained bytes rather than allocating a new
+                                // decode buffer. Bound the pin, without waiting on Raw permits
+                                // held by concurrent consumers of the same frame.
+                                let permit = self.budget.admit(&[(V3BudgetPool::Control, 512)])?;
+                                *active = Some((
+                                    key,
+                                    super::frame_cache::ReadFrame::Cached {
+                                        bytes,
+                                        _permit: permit,
+                                    },
+                                ));
+                            }
+                            if active.is_none() {
+                                let class = if container.kind == V3ObjectKind::LargeData {
+                                    crate::cadapter::read_observer::ReadClass::ExternalPayload
+                                } else {
+                                    crate::cadapter::read_observer::ReadClass::PackedPayload
+                                };
+                                let context = self.client.read_context(class).unwrap_or(
+                                    crate::cadapter::read_observer::ReadContext {
+                                        engine: crate::cadapter::read_observer::Engine::PackedV3,
+                                        phase: crate::cadapter::read_observer::Phase::Runtime,
+                                        origin: crate::cadapter::read_observer::Origin::Demand,
+                                        class,
+                                    },
+                                );
+                                let waiter = self
+                                    ._pipeline
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("missing mount frame coordinator")
+                                    })?
+                                    .submit_with(container.key.len(), || {
+                                        super::pipeline::V3FrameDemand {
+                                            generation: self.generation,
+                                            context,
+                                            container: container.clone(),
+                                            profile: self.profile,
+                                            size_classes: self.classes,
+                                            frame_policy: self.frame_policy,
+                                            descriptor: descriptor.clone(),
+                                            raw_offset: u64::from(*raw_offset),
+                                            logical_length: output.len() as u64,
+                                        }
+                                    })?;
+                                let frame = waiter
+                                    .wait()
+                                    .await
+                                    .map_err(|error| anyhow::Error::new((*error).clone()))?;
+                                drop(waiter);
+                                if let (Some(cache), Some(cache_key)) =
+                                    (&self.frame_cache, cache_key)
+                                {
+                                    cache.insert(cache_key, &frame.raw);
+                                }
+                                *active = Some((key, super::frame_cache::ReadFrame::Demand(frame)));
+                            }
                         }
                         let frame = &active.as_ref().unwrap().1;
                         let start = *raw_offset as usize;
@@ -1553,7 +1590,7 @@ impl AuthenticatedV3Snapshot {
                             .checked_add(output.len())
                             .ok_or_else(|| anyhow::anyhow!("frame output range overflows"))?;
                         let receipt = if let (Some(coverage), Some(delivery)) =
-                            (&frame.coverage, &self.delivery)
+                            (frame.coverage(), &self.delivery)
                         {
                             let bytes=crate::cadapter::read_observer::SharedRawCoverage::required_receipt_bytes(1)?;
                             let owner = self.budget.admit(&[(V3BudgetPool::Control, bytes)])?;
@@ -1581,7 +1618,7 @@ impl AuthenticatedV3Snapshot {
                             None
                         };
                         output.copy_from_slice(
-                            frame.raw.get(start..end).ok_or_else(|| {
+                            frame.bytes().get(start..end).ok_or_else(|| {
                                 anyhow::anyhow!("frame output range exceeds source")
                             })?,
                         );
@@ -1681,6 +1718,7 @@ impl AuthenticatedV3Snapshot {
             fetcher: std::sync::Arc::new(FetchedSources {
                 group_id,
                 frames: decoded,
+                frame_cache: reader.decoded_frame_cache(),
                 generation,
                 client: client.clone(),
                 profile: self.manifest.profile,

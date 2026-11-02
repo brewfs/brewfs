@@ -487,7 +487,7 @@ impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: Workspac
         #[cfg(feature = "observability")]
         crate::observability::attach_entity_read_cache(&payload_cache);
         if let ExperimentalLower::Packed(packed) = &mut lower {
-            packed.set_payload_cache(payload_cache.clone());
+            packed.set_payload_cache(payload_cache.clone())?;
         }
         let binding = lower.binding().clone();
         let keys = EntityKeys::new(self.volume_id, namespace_id);
