@@ -1,6 +1,29 @@
-# Candidate tiered RustFS object hints
+# Explicit tiered and range-heavy RustFS object hints
 
 `tiered` is an explicit, deterministic policy for **new** S3 objects. It does not change BrewFS chunking, encode data differently, learn online, rewrite historical objects or infer access patterns. Product default remains unset. The existing `auto` rule and fixed 64/256/1024/4096 KiB hints remain available. Experiments opting into tiered must use new experiment IDs.
+
+`range-heavy` is a separate explicit profile for sparse Range workloads. It
+omits the hint for finalized N ≤ 262144 bytes and requests **65536 bytes for
+every larger object**, including 8/32 MiB objects. Its policy version is
+`range-heavy-v1`. With the qualified unversioned default 2+2 geometry, 128 KiB
+objects stay inline and all external objects use B/q = 64/16 KiB. This is a
+client length policy: backend versioning, custom inline budgets and MPU can
+change which objects are external, as described below. It does not discover
+inline eligibility or automatically detect the read shape.
+
+Use the same `--s3-rustfs-ec-block-size-hint range-heavy` CLI argument or
+`data.s3.rustfs_ec_block_size_hint: range-heavy` YAML field. The feature gate,
+S3 requirement, CLI-over-YAML precedence and explicit `off` override are shared
+with the other profiles. Unknown profile names fail at startup; enabling a
+profile without the feature reports `feature not compiled:
+rustfs-ec-block-size-hint`. The independent Pack uploader uses the same parser
+and S3 constructor validation.
+
+**Default remains auto for configurations already choosing auto; the absent
+option remains unset.** Neither tiered nor range-heavy changes defaults or the
+selection rules of auto, tiered, custom tables or numeric fixed hints. Smaller
+B/q can improve sparse Range while reducing full-GET throughput; this profile
+is an explicit workload choice, not a general performance recommendation.
 
 ## Policy version and input
 
@@ -64,7 +87,7 @@ The existing S3 selection helper serves ordinary PUT, vectored PUT, create-only 
 
 Flat-v1 data objects pass through ObjectBlockStore's final encoder. Workspace-native-v2 has its own native encoder: `BackendObjectRepository` sends its completed immutable object through S3 create-only and verifies exact readback. Both reach the same S3 hint selector with their actual final bytes; they do not necessarily share a wire format. The Pack fixture's independent S3 constructor now receives its explicit option; external Pack producers are not implicitly configured. Restoring sealed SSD data routes through the existing uploader and final encoder. Forks, read-only remounts and ordinary reads issue no hint-triggered rewriting.
 
-#362 added independent `read_fetch_policy`: explicit `whole-object` or `sparse` controls GET/Range and prefetch regardless of hint value. It preserves the existing cache admission policy. Auto, tiered and all fixed hints retain the same historical LRU/whole-object backend preference; unset/off retains TinyLFU. Freeze explicit fetch policy, all prefetch settings, cache budgets, compression and concurrency for auto/tiered/fixed mechanism comparisons. Off versus enabled product combinations include this cache difference and need separate reporting; direct S3 controls avoid BrewFS cache confounding.
+#362 added independent `read_fetch_policy`: explicit `whole-object` or `sparse` controls GET/Range and prefetch regardless of hint value. It preserves the existing cache admission policy. Auto, tiered, range-heavy and all fixed hints retain the same historical LRU/whole-object backend preference; unset/off retains TinyLFU. Freeze explicit fetch policy, all prefetch settings, cache budgets, compression and concurrency for mechanism comparisons. Off versus enabled product combinations include this cache difference and need separate reporting; direct S3 controls avoid BrewFS cache confounding. Selecting range-heavy does not itself set `read_fetch_policy` or prefetch.
 
 ## Evidence and acceptance
 
@@ -108,3 +131,23 @@ Actual FUSE and independent-producer samples demonstrate why the finalized lengt
 Flat and native files passed full/pread checks, explicit kernel read-only remount, EROFS checks and unchanged layout snapshots. A flat commit-before-upload mount acknowledged fsync while an owned proxy rejected 15 PUT attempts with 503. After killing the client, one sealed SSD record was recovered by a new mount; final N and hint stayed 1048577/262144, content matched, and the dirty record drained. The same configuration was retained across recovery sessions.
 
 The Pack fixture uploaded 320 ML small files; its standalone read-only mount verified all files and rejected writes. Current wire-005 admission requires zero payload RAM/SSD cache and disabled prefetch. Creating a workspace fork left all existing Pack layouts unchanged, but **Pack fork-mounted content readback did not pass**: `workspace fork` creates a native BaseRevision overlay and does not inherit the separate workspace/head-specific PackedLowerBindingRecord, so that mount was empty. This EC change does not qualify that publication/fork path. No TiKV, historical-server-binary, independent-disk or performance acceptance is inferred from these results; no C1–C4 campaign was run.
+
+## Recorded range-heavy mechanism probe (2026-11-02)
+
+Fresh auto/tiered/range-heavy/fixed64k objects were compared on the same single
+disk and retained RustFS dev binary. Three paired rounds covered 8/32 MiB
+objects with cold/hot 4 KiB Range requests. Range-heavy/fixed64k ratios of
+median throughput were 0.967/1.071 for 8 MiB cold/hot and 1.043/1.024 for
+32 MiB cold/hot, meeting the predefined 0.9 descriptive threshold. This does
+**not** establish cold-read equivalence: the 32 MiB cold first-round ratio was
+0.508, and its paired geometric mean was 0.874 with 95% CI [0.272, 2.807].
+All rounds and outliers are retained. One full-GET/hot round per size observed
+range-heavy costs of 3.8%/6.0% relative to auto; no full-GET CI is claimed.
+
+All 3096 shard metadata CRC checks and 6144 main-matrix readback checks passed,
+with another 12 boundary readbacks confirming default inline admission through
+256 KiB and 64/16 KiB external B/q. Default and feature workspace tests, builds,
+checks, strict Clippy and runtime checks passed before measurements. This is
+direct S3 mechanism evidence, without FUSE, compose, C1-C4, TiKV, independent
+disks or Pack fork qualification. Reports and frozen raw evidence are retained
+at `/mnt/brewfs-data/REPORT-402-R2.md` and `/mnt/brewfs-data/402-r2/`.

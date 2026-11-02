@@ -1832,8 +1832,8 @@ mod tests {
         let path = request.uri().path().to_string();
         let query = request.uri().query().unwrap_or_default().to_string();
         let headers = request.headers().clone();
-        // Include the 16 MiB + 1 tier boundary without an unbounded mock body.
-        let body = to_bytes(request.into_body(), 17 * 1024 * 1024)
+        // Cover the 32 MiB range-heavy sample while keeping mock bodies bounded.
+        let body = to_bytes(request.into_body(), 33 * 1024 * 1024)
             .await
             .unwrap();
         state.requests.lock().await.push(CapturedRequest {
@@ -2242,6 +2242,29 @@ mod tests {
                 (4_194_305, Some("1048576")),
                 (5_242_893, Some("1048576")),
                 // A small tail after a large object must not inherit its hint.
+                (17, None),
+            ],
+        )
+        .await;
+    }
+
+    #[cfg(feature = "rustfs-ec-block-size-hint")]
+    #[tokio::test]
+    async fn rustfs_ec_hint_range_heavy_all_upload_paths_and_retries() {
+        check_sized_policy_on_upload_paths(
+            "range-heavy",
+            &[
+                (0, None),
+                (131_072, None),
+                (262_143, None),
+                (262_144, None),
+                (262_145, Some("65536")),
+                (524_288, Some("65536")),
+                (2_097_152, Some("65536")),
+                (4_194_308, Some("65536")),
+                (8_388_608, Some("65536")),
+                (33_554_432, Some("65536")),
+                // A small tail after a large object keeps its inline admission.
                 (17, None),
             ],
         )
@@ -2710,6 +2733,7 @@ mod tests {
         for hint in [
             RustfsEcBlockSizeHint::Auto,
             "tiered".parse().unwrap(),
+            "range-heavy".parse().unwrap(),
             RustfsEcBlockSizeHint::Fixed(65_536),
             RustfsEcBlockSizeHint::Fixed(262_144),
             RustfsEcBlockSizeHint::Fixed(1_048_576),
