@@ -104,11 +104,16 @@ Full overlay/observability including integration and doctests passes (2857
 passed, 0 failed, 502 ignored across 32 result rows); the library subset is
 2746 passed / 477 ignored. fmt, diff and all shell gates pass. The two-job
 overlay compile was OOM-killed; the one-job retry completed. Strict clippy,
-check/build/runtime gates and mixed fio rounds are pending final closeout.
+check/build/runtime gates all exit 0. Three main/candidate mixed fio pairs
+strictly drain with zero final dirty/pending bytes; aggregate active+drain
+bandwidth changes -1.18%, read p99 improves 19.00%, and write p99 regresses
+42.94% (92.799 to 132.645 ms), so the mixed write-tail guard fails.
 
 The extra denied-PUT `real_redis_cli_pending_upload_kill_pvc_recovery` test
 FAILED before its crash step: no persisted pending-upload PVC slice appeared
-within 90 seconds (exit 101). Logs are preserved; this is not a recovery pass.
+within 90 seconds (exit 101). Replaying with the preserved main binary fails
+at the same wait, so this is present on the matched main harness. Logs are
+preserved; this is not a recovery pass.
 The 8192-file durable-close recovery and separate two-file recovered
 publication both pass. No merge is authorized by the measured state while
 these failures/gaps remain.
