@@ -1,0 +1,6 @@
+# Bound individual LLVM modules; preserve optimization level and test selection.
+[profile.dev.package.brewfs]
+codegen-units = 256
+
+[profile.test.package.brewfs]
+codegen-units = 256

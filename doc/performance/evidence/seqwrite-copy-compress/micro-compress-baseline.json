@@ -1,0 +1,328 @@
+{
+  "label": "baseline",
+  "command": [
+    "rustc",
+    "--edition=2024",
+    "-C",
+    "opt-level=3",
+    "-C",
+    "debuginfo=0",
+    "/home/hxy/perf-seqwrite-20261102/harness/compress-bench.rs",
+    "-L",
+    "dependency=/home/hxy/brewfs-seqwrite-baseline-target/release/deps",
+    "-o",
+    "/home/hxy/perf-seqwrite-20261102/build/compress-bench-baseline",
+    "--extern",
+    "bytes=/home/hxy/brewfs-seqwrite-baseline-target/release/deps/libbytes-aac9a5038d52d6f8.rlib",
+    "--extern",
+    "tracing=/home/hxy/brewfs-seqwrite-baseline-target/release/deps/libtracing-f65e9989589eefdb.rlib",
+    "--extern",
+    "lz4_flex=/home/hxy/brewfs-seqwrite-baseline-target/release/deps/liblz4_flex-edd8f8c12b4b1149.rlib",
+    "--extern",
+    "zstd=/home/hxy/brewfs-seqwrite-baseline-target/release/deps/libzstd-53e429d70ea75903.rlib",
+    "--extern",
+    "anyhow=/home/hxy/brewfs-seqwrite-baseline-target/release/deps/libanyhow-d0208d6e29d298e0.rlib"
+  ],
+  "source_sha256": "d063e1b4ff905a06de3ac1d21755025fa61eb6b7bfe7c6b5f6ad510985befda4",
+  "binary_sha256": "ac1c48b176c7aaf72b63db288460b8898c1cccf355280f0ce1b3e2fa4a082ba5",
+  "diagnostic_only": true,
+  "rows": [
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 304201346,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1683.0957743362517
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 304394343,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1682.0286308671643
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 351714611,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1455.7257048385743
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random-prefix-zero-tail",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 162014717,
+      "output_bytes": 1071744,
+      "owned_outputs": 128,
+      "mib_s": 3160.2067360337396
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random-prefix-zero-tail",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 130635021,
+      "output_bytes": 1071744,
+      "owned_outputs": 128,
+      "mib_s": 3919.3165514169436
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/random-prefix-zero-tail",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 123571939,
+      "output_bytes": 1071744,
+      "owned_outputs": 128,
+      "mib_s": 4143.335486546019
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/repeated-random-8k",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 100982467,
+      "output_bytes": 1100032,
+      "owned_outputs": 128,
+      "mib_s": 5070.18708505111
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/repeated-random-8k",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 97362324,
+      "output_bytes": 1100032,
+      "owned_outputs": 128,
+      "mib_s": 5258.707670125047
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/repeated-random-8k",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 102925008,
+      "output_bytes": 1100032,
+      "owned_outputs": 128,
+      "mib_s": 4974.495605577218
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/text",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 101508927,
+      "output_bytes": 56192,
+      "owned_outputs": 128,
+      "mib_s": 5043.89136139721
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/text",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 100369873,
+      "output_bytes": 56192,
+      "owned_outputs": 128,
+      "mib_s": 5101.132288968823
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/text",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 105621516,
+      "output_bytes": 56192,
+      "owned_outputs": 128,
+      "mib_s": 4847.49717093627
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/zeros",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 144023238,
+      "output_bytes": 19328,
+      "owned_outputs": 128,
+      "mib_s": 3554.981870356227
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/zeros",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 157860208,
+      "output_bytes": 19328,
+      "owned_outputs": 128,
+      "mib_s": 3243.375936765521
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/compression-cases/zeros",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 127476264,
+      "output_bytes": 19328,
+      "owned_outputs": 128,
+      "mib_s": 4016.4339927627625
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/00.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 356084476,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1437.8610540718996
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/00.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 353355489,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1448.9657467865172
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/00.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 376919891,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1358.378828566519
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/01.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 783841631,
+      "output_bytes": 529090304,
+      "owned_outputs": 128,
+      "mib_s": 653.1931703433598
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/01.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 945122256,
+      "output_bytes": 529090304,
+      "owned_outputs": 128,
+      "mib_s": 541.7288575627406
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/01.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 944448292,
+      "output_bytes": 529090304,
+      "owned_outputs": 128,
+      "mib_s": 542.1154385443052
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/02.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 979441970,
+      "output_bytes": 529175808,
+      "owned_outputs": 128,
+      "mib_s": 522.7466411307655
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/02.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 1012814239,
+      "output_bytes": 529175808,
+      "owned_outputs": 128,
+      "mib_s": 505.5221187505442
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/02.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 1025082373,
+      "output_bytes": 529175808,
+      "owned_outputs": 128,
+      "mib_s": 499.47205559840404
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/03.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 568640355,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 900.3933602285402
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/03.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 534884128,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 957.2166628208494
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/03.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 507963903,
+      "output_bytes": 536870912,
+      "owned_outputs": 0,
+      "mib_s": 1007.9456374284925
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/04.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 1009008825,
+      "output_bytes": 525478912,
+      "owned_outputs": 128,
+      "mib_s": 507.42866396634344
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/04.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 801401008,
+      "output_bytes": 525478912,
+      "owned_outputs": 128,
+      "mib_s": 638.8811529920112
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/04.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 870819621,
+      "output_bytes": 525478912,
+      "owned_outputs": 128,
+      "mib_s": 587.9518417511633
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/05.raw",
+      "round": 0,
+      "input_bytes": 536870912,
+      "elapsed_ns": 713773992,
+      "output_bytes": 534709504,
+      "owned_outputs": 128,
+      "mib_s": 717.3138917059337
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/05.raw",
+      "round": 1,
+      "input_bytes": 536870912,
+      "elapsed_ns": 730351247,
+      "output_bytes": 534709504,
+      "owned_outputs": 128,
+      "mib_s": 701.0325539979533
+    },
+    {
+      "input": "/home/hxy/perf-seqwrite-20261102/reference-payloads/05.raw",
+      "round": 2,
+      "input_bytes": 536870912,
+      "elapsed_ns": 709964144,
+      "output_bytes": 534709504,
+      "owned_outputs": 128,
+      "mib_s": 721.1631803197092
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "status": 0,
+  "started": 1793619162.5962367,
+  "finished": 1793619352.4457872,
+  "command": [
+    "docker",
+    "compose",
+    "-f",
+    "/home/hxy/perf-seqwrite-20261102/harness/guard-compose.yml",
+    "run",
+    "--rm",
+    "--no-deps",
+    "perf"
+  ],
+  "binary_sha256": "bb99101bbc7edc3b60f3a24db672e7618a23a118996da275ce057a05c21e3ef3",
+  "pair": 2,
+  "variant": "baseline",
+  "stage": "ab"
+}

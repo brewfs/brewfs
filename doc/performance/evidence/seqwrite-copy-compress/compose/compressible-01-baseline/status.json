@@ -1,0 +1,20 @@
+{
+  "status": 0,
+  "started": 1793620252.7441385,
+  "finished": 1793620282.1894035,
+  "command": [
+    "docker",
+    "compose",
+    "-f",
+    "/home/hxy/perf-seqwrite-20261102/harness/compressible-compose.yml",
+    "run",
+    "--rm",
+    "--no-deps",
+    "perf"
+  ],
+  "binary_sha256": "bb99101bbc7edc3b60f3a24db672e7618a23a118996da275ce057a05c21e3ef3",
+  "pair": 1,
+  "variant": "baseline",
+  "stage": "compressible",
+  "fio_extra": "--zero_buffers=1 --scramble_buffers=0 --refill_buffers=1"
+}

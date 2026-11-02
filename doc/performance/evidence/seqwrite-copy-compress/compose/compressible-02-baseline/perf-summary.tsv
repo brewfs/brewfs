@@ -1,0 +1,2 @@
+tool	status	seconds	log
+fio-seqwrite	pass	21	/artifacts/compressible-02-baseline/tools/fio-seqwrite.log

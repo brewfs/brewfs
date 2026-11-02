@@ -1,0 +1,107 @@
+name: brewfs-seqwrite-acceptance
+services:
+  perf:
+    image: sha256:a9425964628cd6403791b8661aeb1884f002ffcf3a6fe4d3308912a5571e08e2
+    network_mode: host
+    entrypoint:
+    - /usr/bin/tini
+    - --
+    - bash
+    - /usr/local/bin/seqwrite-entrypoint.sh
+    privileged: true
+    devices:
+    - /dev/fuse:/dev/fuse
+    security_opt:
+    - apparmor=unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    environment:
+      BREWFS_META_BACKEND: redis
+      BREWFS_META_URL: redis://127.0.0.1:26381/0
+      BREWFS_VOLUME_FORMAT: flat-v1
+      BREWFS_DATA_BACKEND: s3
+      BREWFS_S3_ENDPOINT: http://127.0.0.1:29020
+      BREWFS_S3_BUCKET: brewfs-seqwrite-20261102
+      BREWFS_S3_REGION: us-east-1
+      BREWFS_S3_FORCE_PATH_STYLE: 'true'
+      BREWFS_S3_MAX_CONCURRENCY: '8'
+      BREWFS_S3_PART_SIZE: '16777216'
+      BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM: 'true'
+      BREWFS_WRITEBACK_MODE: upload_before_commit
+      BREWFS_WRITE_COALESCE_BYTES: '65536'
+      BREWFS_WRITE_COALESCE_MS: '0'
+      BREWFS_ARTIFACT_DIR: /artifacts/${SEQWRITE_ARM:?required}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      BREWFS_LOG_FILE: /artifacts/${SEQWRITE_ARM}/brewfs.log
+      BREWFS_SOURCE_REVISION: 1bd4d75e
+      BREWFS_SOURCE_DIRTY: ${SEQWRITE_SOURCE_DIRTY:-true}
+      BREWFS_COMPRESSION: zstd
+      BREWFS_READ_MEMORY_BYTES: '0'
+      BREWFS_READ_SSD_BYTES: '0'
+      BREWFS_WRITE_MEMORY_BYTES: '536870912'
+      BREWFS_WRITE_SSD_BYTES: '0'
+      BREWFS_MEMORY_BUDGET_BYTES: '2147483648'
+      BREWFS_POPULATE_WRITE_CACHE_AFTER_UPLOAD: 'false'
+      BREWFS_PERSIST_WRITE_CACHE_AFTER_UPLOAD: 'false'
+      BREWFS_PREFETCH_ENABLED: 'false'
+      BREWFS_RANGE_BACKGROUND_PREFETCH: 'false'
+      BREWFS_UPLOAD_CONCURRENCY: '10'
+      BREWFS_DIRTY_SLICE_TARGET_SIZE: '33554432'
+      BREWFS_DIRTY_SLICE_MAX_AGE_MS: '2000'
+      BREWFS_FUSE_WORKERS: '16'
+      BREWFS_FUSE_MAX_BACKGROUND: '512'
+      BREWFS_FUSE_KEEP_CACHE: 'false'
+      BREWFS_FUSE_WRITEBACK: 'false'
+      BREWFS_METRICS: 'true'
+      BREWFS_METRICS_ADDR: 127.0.0.1:9567
+      BREWFS_REQUEST_TRACE: 'false'
+      TOKIO_WORKER_THREADS: '1'
+      RUST_LOG: warn,brewfs=info
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: 'true'
+      NO_PROXY: localhost,127.0.0.1
+      PERF_TOOLS: ${SEQWRITE_TOOLS:-fio-seqread fio-seqwrite fio-randread fio-randwrite
+        fio-randrw fio-bigread fio-bigwrite metaperf dirstress dirperf}
+      PERF_LOG_TO_CONSOLE: 'false'
+      PERF_FIO_SIZE: 512m
+      PERF_FIO_RUNTIME: '20'
+      PERF_FIO_DIRECT: ${SEQWRITE_DIRECT:-0}
+      PERF_FIO_IOENGINE: libaio
+      PERF_FIO_IODEPTH: '32'
+      PERF_FIO_RANDREAD_BS: 4k
+      PERF_FIO_RANDWRITE_BS: 4k
+      PERF_FIO_RANDRW_BS: 4k
+      PERF_FIO_SEQWRITE_BS: 1m
+      PERF_FIO_SEQWRITE_IODEPTH: '8'
+      PERF_FIO_SEQREAD_BS: 1m
+      PERF_FIO_SEQREAD_IODEPTH: '8'
+      PERF_FIO_RANDSEED: '20261101'
+      PERF_FIO_RANDREPEAT: '1'
+      PERF_FIO_PREFILL_DRAIN: 'true'
+      PERF_FIO_PREFILL_REMOUNT: 'true'
+      PERF_FIO_POST_WRITE_DRAIN: 'true'
+      PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS: '180'
+      PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS: '1'
+      PERF_FIO_BIGREAD_REPEATS: '1'
+      PERF_FIO_BIGREAD_WARMUP_PASSES: '0'
+      PERF_METADATA_POST_TOOL_DRAIN: 'true'
+      PERF_METAPERF_SECONDS: '20'
+      PERF_FIO_RANDREAD_DIRECT: '1'
+      PERF_FIO_SEQWRITE_ARGS: --refill_buffers=1 --scramble_buffers=1
+      PERF_FIO_RANDWRITE_ARGS: --refill_buffers=1 --scramble_buffers=1
+      PERF_FIO_RANDRW_ARGS: --refill_buffers=1 --scramble_buffers=1
+      PERF_FIO_PREP_BS: 1m
+      PERF_FIO_PREP_IODEPTH: '8'
+      PERF_FIO_PREP_VERIFY_SHA256: 'true'
+    volumes:
+    - /home/hxy/perf-seqwrite-20261102/harness/entrypoint.sh:/usr/local/bin/seqwrite-entrypoint.sh:ro
+    - ${SEQWRITE_BINARY:?required}:/usr/local/bin/brewfs:ro
+    - /home/hxy/perf-seqwrite-20261102/harness/runner-zstd1.sh:/usr/local/bin/run_perf_in_container.sh:ro
+    - /home/hxy/brewfs-main/tools/perf/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
+    - /home/hxy/brewfs-main/tools/perf/perf_manifest.py:/usr/local/bin/perf_manifest.py:ro
+    - /home/hxy/brewfs-main/docker/compose-xfstests/perf_metadata_fallback.py:/usr/local/bin/perf_metadata_fallback.py:ro
+    - /home/hxy/perf-seqwrite-20261102/compose:/artifacts

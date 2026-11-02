@@ -1,0 +1,98 @@
+{
+  "comparability": {
+    "cache_preparation": {
+      "PERF_FIO_COLD_READ": "false",
+      "PERF_FIO_COLD_READ_CLEAR_CACHE": "false",
+      "PERF_FIO_COLD_READ_DROP_CACHES": "true",
+      "PERF_FIO_DROP_CACHES": "false",
+      "PERF_FIO_PREFILL_DRAIN": "true",
+      "PERF_FIO_PREFILL_REMOUNT": "true"
+    },
+    "completion": {
+      "PERF_FIO_POST_WRITE_DRAIN": "true",
+      "PERF_FIO_POST_WRITE_DRAIN_INTERVAL_SECS": "1",
+      "PERF_FIO_POST_WRITE_DRAIN_TIMEOUT_SECS": "180",
+      "PERF_METADATA_POST_TOOL_DRAIN": "true"
+    },
+    "dataset": {
+      "PERF_FIO_SIZE": "512m"
+    },
+    "filesystem": {
+      "BREWFS_BLOCK_SIZE": "4194304",
+      "BREWFS_CHUNK_SIZE": "67108864",
+      "BREWFS_COMPRESSION": "zstd",
+      "BREWFS_FUSE_DIRECT_IO": "",
+      "BREWFS_FUSE_KEEP_CACHE": "false",
+      "BREWFS_FUSE_MAX_BACKGROUND": "512",
+      "BREWFS_FUSE_READ_DIRECT_IO": "",
+      "BREWFS_FUSE_WORKERS": "16",
+      "BREWFS_FUSE_WRITEBACK": "false",
+      "BREWFS_FUSE_WRITE_DIRECT_IO": "",
+      "BREWFS_MEMORY_BUDGET_BYTES": "2147483648",
+      "BREWFS_METADATA_ALLOW_WRITE_OPEN_CACHE": "",
+      "BREWFS_METADATA_OPEN_CACHE_TTL_MS": "",
+      "BREWFS_PREFETCH_CONCURRENCY": "",
+      "BREWFS_PREFETCH_ENABLED": "false",
+      "BREWFS_PREFETCH_MAX_BYTES": "",
+      "BREWFS_READ_MEMORY_BYTES": "0",
+      "BREWFS_READ_SSD_BYTES": "0",
+      "BREWFS_REQUEST_TRACE": "false",
+      "BREWFS_REQUEST_TRACE_SAMPLE_RATE": "",
+      "BREWFS_S3_MAX_CONCURRENCY": "8",
+      "BREWFS_UPLOAD_CONCURRENCY": "10",
+      "BREWFS_VOLUME_FORMAT": "flat-v1",
+      "BREWFS_WRITEBACK_MODE": "upload_before_commit",
+      "BREWFS_WRITEBACK_PERSIST_SYNC": "",
+      "BREWFS_WRITEBACK_REQUIRE_STAGE_BEFORE_COMMIT": "",
+      "BREWFS_WRITEBACK_UPLOAD_CONCURRENCY": "",
+      "BREWFS_WRITE_MEMORY_BYTES": "536870912",
+      "BREWFS_WRITE_SSD_BYTES": "0",
+      "TOKIO_WORKER_THREADS": "1"
+    },
+    "observation": {
+      "BREWFS_REQUEST_TRACE": "false",
+      "BREWFS_REQUEST_TRACE_SAMPLE_RATE": "",
+      "TOKIO_WORKER_THREADS": "1"
+    },
+    "resources": {
+      "cpu_limit": "max 100000",
+      "memory_limit_bytes": "max"
+    },
+    "topology": {
+      "metadata": "redis",
+      "metadata_endpoint": "redis://127.0.0.1:26381/0",
+      "object": "s3",
+      "object_endpoint": "http://127.0.0.1:29020",
+      "runner": "compose"
+    },
+    "workload": {
+      "PERF_FIO_CLAT_PERCENTILES": "1",
+      "PERF_FIO_DIRECT": "0",
+      "PERF_FIO_DIRECT_MATRIX": "",
+      "PERF_FIO_IODEPTH": "32",
+      "PERF_FIO_IOENGINE": "libaio",
+      "PERF_FIO_LAT_PERCENTILES": "1",
+      "PERF_FIO_PERCENTILE_LIST": "50:95:99:99.9",
+      "PERF_FIO_RANDREPEAT": "1",
+      "PERF_FIO_RANDSEED": "20261101",
+      "PERF_FIO_RUNTIME": "20",
+      "PERF_TOOLS": "fio-seqwrite"
+    }
+  },
+  "experiment": {
+    "declared_changes": [],
+    "variable": null
+  },
+  "generated_at": "2026-11-02T11:52:03.859715+00:00",
+  "resolved_endpoints": {
+    "metadata": "redis://127.0.0.1:26381/0",
+    "object": "http://127.0.0.1:29020"
+  },
+  "schema_version": 1,
+  "source": {
+    "binary_sha256": "24bb3d0c46a416c2e697f219fe64905677845c83e16edc5b3a5e03bc41b902cc",
+    "dirty": true,
+    "dirty_diff_sha256": null,
+    "revision": "1bd4d75f8c7c77188f52e025dcd315520353cd65"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "upstream": "/home/hxy/brewfs-main/docker/compose-xfstests/run_perf_in_container.sh",
+  "upstream_sha256": "be1737147f016242e0526a18c077d9132cfd72cb1bc0e84d4a04179c70f296ce",
+  "configured_sha256": "28b9acb087d8aa253fc92910ab81ed0f76bd2fd760d67c333aaf0eff0abafffd",
+  "changes": [
+    "echo cache.zstd_level: 1 after compression in generated mount YAML",
+    "omit duplicate --name when restoring controlled extra fio arguments; retain one intended job"
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "captured_utc": "2026-11-02T08:56:14.972747+00:00",
+  "commands": {
+    "uname": {
+      "argv": [
+        "uname",
+        "-a"
+      ],
+      "status": 0,
+      "stdout": "Linux brewfs-singapore-v2 6.8.0-139-generic #139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux\n",
+      "stderr": ""
+    },
+    "cpu": {
+      "argv": [
+        "lscpu"
+      ],
+      "status": 0,
+      "stdout": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  8\nOn-line CPU(s) list:                     0-7\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Xeon(R) Platinum\nCPU family:                              6\nModel:                                   85\nThread(s) per core:                      2\nCore(s) per socket:                      4\nSocket(s):                               1\nStepping:                                4\nBogoMIPS:                                5000.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap clflushopt clwb avx512cd avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves arat\nHypervisor vendor:                       KVM\nVirtualization type:                     full\nL1d cache:                               128 KiB (4 instances)\nL1i cache:                               128 KiB (4 instances)\nL2 cache:                                4 MiB (4 instances)\nL3 cache:                                33 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-7\nVulnerability Gather data sampling:      Unknown: Dependent on hypervisor status\nVulnerability Indirect target selection: Mitigation; Aligned branch/return thunks\nVulnerability Itlb multihit:             KVM: Mitigation: VMX unsupported\nVulnerability L1tf:                      Mitigation; PTE Inversion\nVulnerability Mds:                       Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown\nVulnerability Meltdown:                  Mitigation; PTI\nVulnerability Mmio stale data:           Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Vulnerable\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Vulnerable\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Retpolines; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Retpoline\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n",
+      "stderr": ""
+    },
+    "rustc": {
+      "argv": [
+        "rustc",
+        "-Vv"
+      ],
+      "status": 0,
+      "stdout": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+      "stderr": ""
+    },
+    "cargo": {
+      "argv": [
+        "cargo",
+        "-V"
+      ],
+      "status": 0,
+      "stdout": "cargo 1.99.0 (5f94df478 2026-08-27)\n",
+      "stderr": ""
+    },
+    "fio": {
+      "argv": [
+        "fio",
+        "--version"
+      ],
+      "status": 0,
+      "stdout": "fio-3.36\n",
+      "stderr": ""
+    },
+    "perf": {
+      "argv": [
+        "perf",
+        "--version"
+      ],
+      "status": 0,
+      "stdout": "perf version 6.8.12\n",
+      "stderr": ""
+    },
+    "memory": {
+      "argv": [
+        "free",
+        "-g"
+      ],
+      "status": 0,
+      "stdout": "               total        used        free      shared  buff/cache   available\nMem:              30          18           3           0           8          11\nSwap:             31           0          31\n",
+      "stderr": ""
+    },
+    "disk": {
+      "argv": [
+        "df",
+        "-h",
+        "/home/hxy/brewfs-main"
+      ],
+      "status": 0,
+      "stdout": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vdb        251G  209G   30G  88% /home/hxy\n",
+      "stderr": ""
+    },
+    "docker": {
+      "argv": [
+        "docker",
+        "system",
+        "df"
+      ],
+      "status": 0,
+      "stdout": "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\nImages          18        4         9.795GB   2.459GB (25%)\nContainers      5         2         262.1kB   241.7kB (92%)\nLocal Volumes   0         0         0B        0B\nBuild Cache     43        0         3.073GB   0B\n",
+      "stderr": ""
+    },
+    "base": {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "status": 0,
+      "stdout": "1bd4d75f8c7c77188f52e025dcd315520353cd65\n",
+      "stderr": ""
+    }
+  }
+}

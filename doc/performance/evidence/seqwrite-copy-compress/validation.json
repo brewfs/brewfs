@@ -1,0 +1,102 @@
+{
+  "build-workspace": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/build-workspace.log",
+    "log_sha256": "af689aec887eb2ae1ef9ae8dbca78a2257233cce0c164e2eb7fee444d4eab477"
+  },
+  "check-io-uring": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/check-io-uring.log",
+    "log_sha256": "9245538a9c33c3d1d9bbc765745684b1f07626ba6d217cd2fc2741f240b11ae3"
+  },
+  "check-tokio": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/check-tokio.log",
+    "log_sha256": "5efac71c2c07c3dc73c32155939574a35b452987820507452d1b704d56f112bf"
+  },
+  "check-workspace": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/check-workspace.log",
+    "log_sha256": "4177e9070485fe10855960186ab56268b5003f12015e7160254d71a0abd88f7a"
+  },
+  "ci": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/ci.log",
+    "log_sha256": null
+  },
+  "clippy-all-targets": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/clippy-all-targets.log",
+    "log_sha256": "95b61b4e895ce97317410a6fd20dcd0f64c00a6790039300cad6013a06f653c1"
+  },
+  "clippy-overlay": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/clippy-overlay.log",
+    "log_sha256": "295973971812171bb73718ae7728d81a02b46ba5a14808d22a6c6dc520b1b1f1"
+  },
+  "clippy-workspace": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/clippy-workspace.log",
+    "log_sha256": "e59b363d0a1494e746bc725e482e58b86782ece6cfe883f93fed61b335ebe1c4"
+  },
+  "diff-check": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/diff-check.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "fmt": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/fmt.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "framed-object-evidence": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/framed-object-evidence.log",
+    "log_sha256": "c033a73051bd08d22945b017dbfc2468f56a548ffd81f12a47afc313cf88b5d9"
+  },
+  "juicefs-direct-matrix": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/juicefs-direct-matrix.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "juicefs-perf-report": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/juicefs-perf-report.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "overlay-full": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/overlay-full.log",
+    "log_sha256": "500e4d1bca067da338826058c000e2a078a366c9efbd7e8411491353af7a1335"
+  },
+  "perf-report-delta": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/perf-report-delta.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "syntax-run_juicefs_perf": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/syntax-run_juicefs_perf.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "syntax-run_juicefs_perf_in_container": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/syntax-run_juicefs_perf_in_container.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "syntax-run_perf_in_container": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/syntax-run_perf_in_container.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "syntax-run_redis_perf": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/syntax-run_redis_perf.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "test-workspace": {
+    "exit": 0,
+    "raw_log": "/home/hxy/perf-seqwrite-20261102/validation/test-workspace.log",
+    "log_sha256": "8ee20c2388dfd0d0c3a727f1a930a90e421dbe90153cb96e1fa11456eb39f33b"
+  }
+}

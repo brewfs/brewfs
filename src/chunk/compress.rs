@@ -16,6 +16,8 @@ use tracing::{debug, trace};
 /// Magic bytes identifying compressed data (0xSF = SlayerFs)
 const MAGIC: [u8; 2] = [0x53, 0x46];
 pub const PERSISTED_HEADER_LEN: usize = 4;
+const ZSTD_PROBE_MIN_BLOCK: usize = 1024 * 1024;
+const ZSTD_PROBE_LEN: usize = 8192;
 
 /// Compression algorithm selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -92,8 +94,9 @@ pub fn compress<'a>(data: &'a [u8], algo: Compression) -> Cow<'a, [u8]> {
 
     let compressed_body = match algo {
         Compression::Lz4 => lz4_flex::compress_prepend_size(data),
-        Compression::Zstd(level) => match zstd::bulk::compress(data, level) {
-            Ok(c) => c,
+        Compression::Zstd(level) => match compress_zstd(data, level) {
+            Ok(Some(compressed)) => compressed,
+            Ok(None) => return Cow::Borrowed(data),
             Err(e) => {
                 debug!("Zstd compression failed, storing uncompressed: {}", e);
                 return Cow::Borrowed(data);
@@ -130,6 +133,135 @@ pub fn compress<'a>(data: &'a [u8], algo: Compression) -> Cow<'a, [u8]> {
     #[cfg(test)]
     copy_probe::record(compressed_body.len(), PERSISTED_HEADER_LEN);
     Cow::Owned(result)
+}
+
+fn compress_zstd(data: &[u8], level: i32) -> std::io::Result<Option<Vec<u8>>> {
+    if data.len() >= ZSTD_PROBE_MIN_BLOCK {
+        let samples = [
+            &data[..ZSTD_PROBE_LEN],
+            &data[data.len() / 2..data.len() / 2 + ZSTD_PROBE_LEN],
+            &data[data.len() - ZSTD_PROBE_LEN..],
+        ];
+        if !zstd_samples_worth_compressing(level, samples) {
+            return Ok(None);
+        }
+    }
+    // Keep the full encoder's allocation/parameter lifecycle independent of
+    // the small sample frames.
+    #[cfg(test)]
+    copy_probe::record_codec_input(data.len());
+    zstd::bulk::compress(data, level).map(Some)
+}
+
+fn compress_zstd_with_context(
+    compressor: &mut zstd::bulk::Compressor<'_>,
+    data: &[u8],
+) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    copy_probe::record_codec_input(data.len());
+    compressor.compress(data)
+}
+
+/// Bound speculative codec work to 24 KiB on large, low-gain blocks. The five
+/// percent sample saving is a CPU/transfer tradeoff, not an entropy guarantee:
+/// redundancy outside the samples can be missed. Equal samples retain the full
+/// encoder so repeated high-entropy regions are not mistaken for random data.
+/// Small blocks and LZ4 retain their existing encoding decisions.
+fn zstd_samples_worth_compressing(level: i32, samples: [&[u8]; 3]) -> bool {
+    if samples[0] == samples[1] || samples[0] == samples[2] || samples[1] == samples[2] {
+        return true;
+    }
+    let Ok(mut compressor) = zstd::bulk::Compressor::new(level) else {
+        return true;
+    };
+    let mut compressed_len = 0;
+    for sample in samples {
+        let Ok(compressed) = compress_zstd_with_context(&mut compressor, sample) else {
+            // Preserve the original full-encoder fallback on a probe error.
+            return true;
+        };
+        // A strongly compressible region warrants a full attempt without
+        // spending the rest of the probe budget (including random-prefix data).
+        if compressed.len() * 5 <= sample.len() * 4 {
+            return true;
+        }
+        compressed_len += compressed.len();
+    }
+    compressed_len * 100 < 3 * ZSTD_PROBE_LEN * 95
+}
+
+pub(crate) struct PersistedUpload {
+    pub cache_block: Option<Bytes>,
+    pub chunks: Vec<Bytes>,
+    pub compression: Compression,
+}
+
+/// Large raw objects can share their immutable payload fragments with the
+/// backend. Cache population and conditional creation still require a contiguous
+/// frame. The persisted wire format is identical on both paths.
+pub(crate) fn prepare_persisted_upload(
+    parts: &[Bytes],
+    compression: Compression,
+    needs_contiguous: bool,
+) -> PersistedUpload {
+    let total_len = parts.iter().map(Bytes::len).sum::<usize>();
+    if !needs_contiguous && total_len >= ZSTD_PROBE_MIN_BLOCK {
+        let raw = match compression {
+            Compression::None => true,
+            Compression::Lz4 => false,
+            Compression::Zstd(level) => {
+                let mut sampled = vec![0; 3 * ZSTD_PROBE_LEN];
+                for (sample_index, start) in [0, total_len / 2, total_len - ZSTD_PROBE_LEN]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut part_start = 0;
+                    for part in parts {
+                        let begin = start.max(part_start);
+                        let end = (start + ZSTD_PROBE_LEN).min(part_start + part.len());
+                        if begin < end {
+                            let dest = sample_index * ZSTD_PROBE_LEN + begin - start;
+                            sampled[dest..dest + end - begin]
+                                .copy_from_slice(&part[begin - part_start..end - part_start]);
+                            #[cfg(test)]
+                            copy_probe::record(end - begin, 0);
+                        }
+                        part_start += part.len();
+                        if part_start >= start + ZSTD_PROBE_LEN {
+                            break;
+                        }
+                    }
+                }
+                !zstd_samples_worth_compressing(
+                    level,
+                    [
+                        &sampled[..ZSTD_PROBE_LEN],
+                        &sampled[ZSTD_PROBE_LEN..2 * ZSTD_PROBE_LEN],
+                        &sampled[2 * ZSTD_PROBE_LEN..],
+                    ],
+                )
+            }
+        };
+        if raw {
+            let mut chunks = Vec::with_capacity(parts.len() + 1);
+            chunks.push(Bytes::from_static(b"SF\0\0"));
+            chunks.extend_from_slice(parts);
+            return PersistedUpload {
+                cache_block: None,
+                chunks,
+                compression: Compression::None,
+            };
+        }
+    }
+    let (cache_block, frame) = encode_persisted_block_vectored(parts, compression);
+    let PersistedHeader::Framed(compression) = parse_persisted_header(&frame) else {
+        unreachable!("newly encoded persisted blocks are always framed");
+    };
+    PersistedUpload {
+        cache_block: Some(cache_block),
+        chunks: vec![frame],
+        compression,
+    }
 }
 
 /// Encode a block for the versioned object namespace.
@@ -197,6 +329,7 @@ pub(crate) mod copy_probe {
 
     thread_local! {
         static COPIED: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+        static CODEC_INPUT: Cell<usize> = const { Cell::new(0) };
     }
 
     pub fn record(payload: usize, header: usize) {
@@ -208,6 +341,14 @@ pub(crate) mod copy_probe {
 
     pub fn take() -> (usize, usize) {
         COPIED.with(|counter| counter.replace((0, 0)))
+    }
+
+    pub fn record_codec_input(bytes: usize) {
+        CODEC_INPUT.with(|counter| counter.set(counter.get() + bytes));
+    }
+
+    pub fn take_codec_input() -> usize {
+        CODEC_INPUT.with(|counter| counter.replace(0))
     }
 }
 
@@ -306,6 +447,137 @@ pub fn decompress_framed_bytes(data: Bytes, max_decoded_len: usize) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn random_payload(len: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678_u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn large_raw_upload_shares_fragments_and_bounds_probe_copies() {
+        let mut data = random_payload(4 * 1024 * 1024 + 13);
+        data[..4].copy_from_slice(b"SF\0\0");
+        let data = Bytes::from(data);
+        let mut parts = vec![Bytes::new()];
+        parts.extend(
+            (0..data.len())
+                .step_by(65537)
+                .map(|offset| data.slice(offset..(offset + 65537).min(data.len()))),
+        );
+        parts.push(Bytes::new());
+        for compression in [Compression::None, Compression::Zstd(1)] {
+            copy_probe::take();
+            let prepared = prepare_persisted_upload(&parts, compression, false);
+            let (copied, header) = copy_probe::take();
+            assert!(copied <= 24 * 1024, "copied {copied} payload bytes");
+            assert_eq!(header, 0);
+            assert!(prepared.cache_block.is_none());
+            assert_eq!(prepared.compression, Compression::None);
+            assert_eq!(prepared.chunks.len(), parts.len() + 1);
+            assert_eq!(&prepared.chunks[0][..], b"SF\0\0");
+            for (actual, original) in prepared.chunks[1..].iter().zip(&parts) {
+                assert_eq!(actual.as_ptr(), original.as_ptr());
+                assert_eq!(actual, original);
+            }
+            let frame = prepared.chunks.concat();
+            assert_eq!(
+                decompress_framed(&frame, data.len()).unwrap().as_ref(),
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn contiguous_cache_and_compressible_uploads_keep_framing() {
+        let data = Bytes::from(random_payload(4 * 1024 * 1024));
+        let parts = vec![data.slice(..8191), data.slice(8191..)];
+        for compression in [Compression::None, Compression::Lz4, Compression::Zstd(1)] {
+            let prepared = prepare_persisted_upload(&parts, compression, true);
+            assert_eq!(prepared.chunks.len(), 1);
+            let frame = &prepared.chunks[0];
+            let cached = prepared.cache_block.unwrap();
+            assert_eq!(cached.as_ptr(), frame.as_ptr().wrapping_add(4));
+            assert_eq!(decompress_framed(frame, data.len()).unwrap().as_ref(), data);
+        }
+        let mut data = random_payload(8192);
+        data.resize(4 * 1024 * 1024, 0);
+        let data = Bytes::from(data);
+        let parts = vec![data.slice(..8191), data.slice(8191..)];
+        let prepared = prepare_persisted_upload(&parts, Compression::Zstd(1), false);
+        assert_eq!(prepared.compression, Compression::Zstd(0));
+        assert_eq!(prepared.chunks.len(), 1);
+        assert_eq!(
+            decompress_framed(&prepared.chunks[0], data.len())
+                .unwrap()
+                .as_ref(),
+            data
+        );
+    }
+
+    #[test]
+    fn zstd_probe_bounds_codec_work_for_large_incompressible_blocks() {
+        for len in [1024 * 1024, 4 * 1024 * 1024] {
+            let data = random_payload(len);
+            for compression in [Compression::Zstd(1), Compression::Zstd(3)] {
+                copy_probe::take_codec_input();
+                let encoded = encode_persisted_block(&data, compression);
+                let codec_input = copy_probe::take_codec_input();
+                assert!(
+                    codec_input <= 24 * 1024,
+                    "incompressible {len}-byte block sent {codec_input} bytes to Zstd"
+                );
+                assert_eq!(
+                    parse_persisted_header(&encoded),
+                    PersistedHeader::Framed(Compression::None)
+                );
+                assert_eq!(decompress_framed(&encoded, len).unwrap().as_ref(), data);
+            }
+        }
+    }
+
+    #[test]
+    fn zstd_probe_keeps_small_block_codec_work_unchanged() {
+        for len in [0, 4096, 65536, 1024 * 1024 - 1] {
+            let data = random_payload(len);
+            copy_probe::take_codec_input();
+            let encoded = encode_persisted_block(&data, Compression::Zstd(1));
+            assert_eq!(copy_probe::take_codec_input(), len);
+            assert_eq!(decompress_framed(&encoded, len).unwrap().as_ref(), data);
+        }
+    }
+
+    #[test]
+    fn zstd_probe_retains_compressible_tails_and_repeated_high_entropy_data() {
+        let len = 4 * 1024 * 1024;
+        let random = random_payload(8192);
+        let mut tail = vec![0; len];
+        tail[..random.len()].copy_from_slice(&random);
+        let repeated = random.repeat(len / random.len());
+        let text = b"BrewFS sequential compression roundtrip\n"
+            .iter()
+            .copied()
+            .cycle()
+            .take(len)
+            .collect::<Vec<_>>();
+        for data in [vec![0; len], tail, repeated, text] {
+            copy_probe::take_codec_input();
+            let encoded = encode_persisted_block(&data, Compression::Zstd(1));
+            assert_eq!(
+                parse_persisted_header(&encoded),
+                PersistedHeader::Framed(Compression::Zstd(0))
+            );
+            assert!(encoded.len() < len / 10);
+            assert!(copy_probe::take_codec_input() <= len + 24 * 1024);
+            assert_eq!(decompress_framed(&encoded, len).unwrap().as_ref(), data);
+        }
+    }
 
     #[test]
     fn test_roundtrip_none() {

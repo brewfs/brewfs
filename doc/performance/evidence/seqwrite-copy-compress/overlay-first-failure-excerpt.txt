@@ -1,0 +1,38 @@
+Evidence limitation: this is the excerpt captured by the exec tool at
+2026-11-02T13:15:17Z, not a replacement for the complete original log.
+The original validation/overlay-full.log was accidentally overwritten by
+the remainder driver's run_gate before it was archived. Do not describe
+the initial full raw log as preserved. Product source and assertions were
+unchanged throughout the rerun.
+
+Initial overlay-full.status: 101
+Initial ci.status: 101
+Command:
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+CARGO_TARGET_DIR=/home/hxy/brewfs-pkv-target/ci CARGO_BUILD_JOBS=1
+RUSTFLAGS='-C debuginfo=0' RUST_TEST_THREADS=2
+cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml test --workspace --lib --bins --features workspace-overlay,observability
+
+Captured output:
+thread 'workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes' (2686757) panicked at src/workspace_overlay/meta_layer/tests.rs:1477:57:
+called `Result::unwrap()` on an `Err` value: Io(Os { code: 16, kind: ResourceBusy, message: "Device or resource busy" })
+
+failures:
+    workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes
+
+test result: FAILED. 2751 passed; 1 failed; 475 ignored; 0 measured; 0 filtered out; finished in 443.28s
+
+error: test failed, to rerun pass `-p brewfs --lib`
+
+The same unchanged test and EBUSY at line 1477 are documented in main:
+doc/performance/write-coalesce-2026-11-02.md
+doc/superpowers/plans/2026-11-02-write-coalesce.md
+This prior evidence does not waive the requirement for an unfiltered
+0-failure suite, or establish that the current candidate cannot contribute.
+
+Remainder launch errors before any test executed:
+- sudo's secure PATH could not resolve cargo (exit 127).
+- Adding cargo/rustup proxies still selected root's unset toolchain (exit 1).
+- Corrected by selecting the original stable toolchain directory first and
+  explicitly setting task environment RUSTUP_HOME and CARGO_HOME.
+The actual full rerun uses the same compiler, flags and RUST_TEST_THREADS=2.

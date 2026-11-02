@@ -1,6 +1,7 @@
 //! Flat-v1 shared immutable objects. Logical extents and their commit order
 //! remain independent; the object never contains synthetic bytes for holes.
 use super::*;
+use crate::chunk::compress::encode_persisted_block_vectored;
 use crate::meta::MetaLayer;
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, oneshot};

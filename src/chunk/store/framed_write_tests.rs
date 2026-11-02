@@ -14,11 +14,14 @@ struct CapturingBackend {
 
 #[async_trait]
 impl ObjectBackend for CapturingBackend {
-    async fn put_object_vectored(&self, key: &str, mut chunks: Vec<Bytes>) -> anyhow::Result<()> {
-        assert_eq!(chunks.len(), 1);
-        let data = chunks.pop().unwrap();
+    async fn put_object_vectored(&self, key: &str, chunks: Vec<Bytes>) -> anyhow::Result<()> {
+        let data = if let [single] = chunks.as_slice() {
+            single.clone()
+        } else {
+            Bytes::from(chunks.concat())
+        };
         *self.uploaded.lock().unwrap() = Some(data.clone());
-        self.local.put_object_vectored(key, vec![data]).await
+        self.local.put_object_vectored(key, chunks).await
     }
 
     async fn put_object(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
