@@ -11,7 +11,8 @@
 报告所用的 372 个证据文件另归档于
 `brewfs:/home/hxy/opt-reports/pr407-seqwrite/seqwrite-copy-compress/`。
 其中包括配对统计、原始 fio JSON、phase 时间戳、火焰图、校验结果、CI 日志与
-复现脚本；`raw-artifact-manifest.json` 记录完整原始目录的文件哈希。
+复现脚本；`raw-artifact-manifest.json` 记录本轮测量归档中 4,876 个原始文件的
+大小和 SHA-256，收尾逐一复核全部一致（934,632,482 字节）。
 这些证据不在 Git 中；原工作树的 `doc/performance/evidence/seqwrite-copy-compress/`
 也保留在磁盘上，仅从 Git 索引移除。归档逐文件比对一致，清单位于
 `brewfs:/home/hxy/opt-reports/pr407-seqwrite/evidence-SHA256SUMS`。
@@ -39,7 +40,8 @@
 overlay 的严格 all-targets clippy 均已通过；候选 release 与完整 perf 已完成。
 候选 perf 的 CPU 与 seqwrite 指标达到阈值，正式三对交错 A/B 于 11:43 UTC
 完成，满足四小时出数时限。randread、seqread 与 randrw 的 95% CI 尚不能
-排除超过 3% 的下降，未通过全部验收，PR 保持 draft。完整内容与崩溃读回已通过；
+排除超过 3% 的下降，原实验未通过全部性能验收。2026-11-02 收尾授权要求在
+测试与 CI 门禁通过、如实保留未证明项后合并，详见末尾「发布判断」。完整内容与崩溃读回已通过；
 broad 两臂各 10/10 工具成功退出，但单对 seqread -32.86%、bigread -9.23%、
 randrw -5.76% 尚未解释。完整 overlay 二进制重跑及其余门禁已于 13:40:25 UTC
 前完成；首轮 overlay 失败与原始日志缺口公开列于后文，不能称为首轮全绿。
@@ -101,8 +103,10 @@ CacheSlice append 把请求写入可变页一次；freeze、Bytes slice 和 uplo
 
 ## 验收与发布规则
 
-所有门禁与硬指标满足才转 ready/merge；否则保持 draft 并逐项列差距。
-未通过验收不更新 README 的已接受性能比较表。
+收尾按用户明确授权执行：正确性与 CI 门禁通过、overlay 的首轮失败有五次
+同二进制通过或原始 main 对照证据后，转 ready 并 squash merge。
+合并不代表读/混合负载的 ≤3% 非退化已获证明；这些未证明项及所有不利数据
+继续公开保留，不更新 README 的已接受性能比较表。
 保留原始 fio JSON、perf data/folded/SVG、指标、SHA-256 列表、SIGKILL 和卸载记录。
 
 ## 当前 main 的完整诊断（先于产品修改）
@@ -357,6 +361,72 @@ check、workspace clippy 和最终 diff-check 均通过，恢复脚本于 13:40:
 产品源码 SHA-256 始终一致；没有因这次失败调整断言或新增 ignore。
 本轮专用 Redis/RustFS compose 服务、容器和网络已正常清理，raw perf 证据目录保留。
 
+### PR #407 收尾：同二进制五次复核
+
+2026-11-02 14:36:53–14:37:01 UTC，对首轮原 overlay library 二进制执行
+五次 `--exact` 测试，保持 `RUST_TEST_THREADS=2`，未修改测试或断言。
+结果依次为 **fail / pass / pass / pass / fail（3/5 通过）**；两次失败均为
+同一 `tests.rs:1477:57`、`observer.open` 的 `EBUSY`，退出码 101。
+不能据此声称「5/5 flaky 通过」。完整 stdout/stderr、命令、逐次开始/结束时间、
+退出码与 SHA-256 在 `validation/pr407-overlay-repeat/`，镜像归档为
+`brewfs:/home/hxy/opt-reports/pr407-seqwrite/pr407-overlay-repeat/`。
+
+五次执行前后测试二进制 SHA-256 均为
+`4e487507d79bb7e8d22bb6557bedb8f319072bdea8af9f5651a3fac56e18e577`，
+测试源码均为 `2defe6a72a43dd338551acbab7a9100033e5636e5d2f4cbe16e561caf3b2e209`。
+为避免后续构建替换 target 内的可执行文件，原二进制以硬链接保存在
+`/home/hxy/perf-seqwrite-20261102/bin/brewfs-candidate-overlay-pr407`。
+五次日志清单 `pr407-overlay-repeat/SHA256SUMS` 的 SHA-256 为
+`fb3f6dc0ba1a84732f5753186f0a8f72b608d5f5f45651ff208c979ce02cd96a`。
+
+收尾核对 846 个源码/构建输入与原本地 CI、overlay 全套及 release 构建清单
+一致；365 个 metadata/overlay 文件与固定 main 完全一致。该源码核对仅为
+辅助证据，是否属于既有问题以原始 main 的实际对照执行为依据。
+
+### 原始 main 对照：同一 EBUSY 已实测重现
+
+在干净的 `/home/hxy/brewfs-seqwrite-baseline` 工作树固定
+`1bd4d75f8c7c77188f52e025dcd315520353cd65`，使用相同默认 features 加
+`workspace-overlay,observability`、dev/test debug=0、codegen-units=256、
+`RUSTFLAGS=-C debuginfo=0`，单 job 构建原始 main 的 library 测试可执行文件。
+构建前后全部源码清单一致，工作树无修改；构建 exit 0。
+保持 `RUST_TEST_THREADS=2`，同一测试于 15:28:38–15:28:45 UTC 运行五次：
+
+| 版本 | 第 1 次 | 第 2 次 | 第 3 次 | 第 4 次 | 第 5 次 | 通过 |
+|---|---|---|---|---|---|---|
+| PR #407 原候选二进制 | EBUSY | pass | pass | pass | EBUSY | 3/5 |
+| 原始 main `1bd4d75` | EBUSY | EBUSY | EBUSY | pass | pass | 2/5 |
+
+main 的三次失败均在 **同一 `tests.rs:1477:57` 的 `observer.open`**，同为
+`Io(Os { code: 16, kind: ResourceBusy, ... })`、exit 101。由此确认该问题在
+本次优化前已存在，按用户授权的「原始 main 也失败」路径记录为既有问题；
+不是 5/5 通过，也不是修复了 SQLite 并发问题。本轮未改产品源码或测试。
+
+main 二进制的前后 SHA-256 均为
+`8d660209c19a7006526e70ddcf7d5fd712714d49398446db967afba7427791f1`，
+以硬链接保存在 `/home/hxy/perf-seqwrite-20261102/bin/brewfs-main-overlay-pr407`。
+完整构建命令、环境、源码清单、五次日志与退出码在
+`validation/pr407-main-control/`，镜像归档为
+`brewfs:/home/hxy/opt-reports/pr407-seqwrite/pr407-main-control/`。
+关键文件路径相对于 `brewfs:/home/hxy/opt-reports/pr407-seqwrite/`：
+
+| 文件 | SHA-256 |
+|---|---|
+| `pr407-overlay-repeat/summary.json` | `3f7d00e5a24886ecb1e164384dd8def9f75977b4d04a03406ff47ab0218f6de9` |
+| `pr407-main-control/summary.json` | `9445726465a0004865abd526487bc2cea30c8798c9c06b288cb0ecfe20004415` |
+| `pr407-main-control/SHA256SUMS` | `945ee41b329e0c7b0662ff44a020ee13a629236b5aff7090be6da4e8e651df88` |
+
+首次 main 构建使用 4 jobs，在 14:54:20 UTC 被主机已有的 3072 MiB
+watchdog 终止（当时可用 2269 MiB，SIGTERM）；未执行测试，不能计入上表。
+失败构建完整保留在 `validation/pr407-main-control-attempt-01/`。随后单 job
+构建耗时 31m05s 成功。外部脚本最初未识别 Cargo 的 `rlib/cdylib/staticlib`
+测试目标类型，在测试前退出；仅修正结果解析后运行上述五次，没有重编译、
+跳过测试或改变断言。相关失败日志均归档。
+
+合并前另复用三个原候选测试二进制进行未过滤的完整复核，其日志、退出码与
+二进制哈希保存在 `validation/pr407-overlay-full/` 并镜像至同名 opt-reports
+目录；合并时的完整计数及最终提交 CI 链接同时记录在 PR 正文与合并评论。
+
 ## 最终验收数据（自动汇总，无轮次筛选）
 
 汇总时间：2026-11-02T13:43:43.195833+00:00。
@@ -381,6 +451,15 @@ check、workspace clippy 和最终 diff-check 均通过，恢复脚本于 13:40:
 | randread | 0.266902 / 0.282691 | 0.260091 / 0.297854 | 0.295996 / 0.383512 |
 | seqread | 32.269343 / 23.381294 | 22.372034 / 30.066926 | 21.752145 / 23.283701 |
 | randrw | 0.386197 / 0.399815 | 0.377017 / 0.409469 | 0.402259 / 0.399436 |
+
+三对 seqread 配对 95% CI 为 **[−53.34%, +120.34%]**，同一 baseline 臂
+在 **21.75–32.27 MiB/s** 之间波动（任务口径称「±48%」；按最大/最小值
+计算跨度约 48.35%，不是围绕均值的对称置信区间）。Broad 单对 −32.86%
+处于这一观测波动尺度内，本环境无法据此判定退化或非退化，不能据此删除它。
+seqwrite 主结果有明确配对证据；seqread/bigread/randrw 的 ≤3% 非退化
+**未证明**，本机现有条件无法达到这一精度，需要隔离 IO 的专用环境。
+原拟追加的 **7 对受控重测已由编排者取消，未执行**，不是测试通过或失败。
+randread 吞吐及 randrw read p99 的区间限制也继续完整保留于下表。
 
 | 场景 | A/B 精确 wall+drain | 候选 active+drain | ≤3% 不退化已证明 |
 |---|---|---:|---|
@@ -569,9 +648,16 @@ Docker Compose、fio、perf 与 inferno。历史基线和已接受 README 表均
 
 ### 发布判断
 
-**保持 draft，不转 ready、不合并。** CPU、顺序写 active 和包含严格排空的
-墙钟带宽已达标，完整内容与 SIGKILL 后重启读回通过；正式三对的 randread、
-seqread、randrw 95% CI 仍不能排除超过 3% 的吞吐回归，randrw read p99
-95% CI 上界 +3.75% 也超过 3%。Broad 单对的 seqread -32.86%、bigread
--9.23%、randrw -5.76% 需要进一步诊断。样本量、冷读/后端状态和可压缩
-数据微基准风险尚未充分解释；本轮保留候选供 review，不宣称优化已接受。
+本次按用户明确授权，在正确性与当前提交 CI 门禁通过后转 ready 并 squash
+合并。已证明的主结果为 seqwrite active **+37.51% [+30.10%, +45.33%]**、
+精确 wall+严格 drain **+35.80% [+29.26%, +42.68%]**、p99 **−22.99%**，
+以及 2 GiB、524,288 块完整内容和 SIGKILL 后恢复校验。SQLite ACL/atime
+问题由本轮干净的原始 main 对照重现，采用授权的既有问题路径，保留全部失败。
+
+**未证明项仍是 seqread/bigread/randrw 的 ≤3% 非退化。** Seqread 的
+95% CI 为 [−53.34%, +120.34%]，同臂 21.75–32.27 MiB/s（任务口径 ±48%）；
+broad 的 seqread −32.86%、bigread −9.23%、randrw −5.76% 均保留。
+randread 的宽区间、randrw read p99 上界 +3.75%、冷读/后端状态及可压缩
+数据微基准风险也未消除。读路径的这一精度在本机不可达，需隔离 IO 的专用环境；
+7 对受控重测已由编排者取消、未执行。合并不把这些未证明项改为通过，
+不更新 README 的已接受性能表。
