@@ -2,14 +2,29 @@
 
 `tiered` is an explicit, deterministic policy for **new** S3 objects. It does not change BrewFS chunking, encode data differently, learn online, rewrite historical objects or infer access patterns. Product default remains unset. The existing `auto` rule and fixed 64/256/1024/4096 KiB hints remain available. Experiments opting into tiered must use new experiment IDs.
 
-`range-heavy` is a separate explicit profile for sparse Range workloads. It
-omits the hint for finalized N ≤ 262144 bytes and requests **65536 bytes for
-every larger object**, including 8/32 MiB objects. Its policy version is
-`range-heavy-v1`. With the qualified unversioned default 2+2 geometry, 128 KiB
-objects stay inline and all external objects use B/q = 64/16 KiB. This is a
-client length policy: backend versioning, custom inline budgets and MPU can
-change which objects are external, as described below. It does not discover
-inline eligibility or automatically detect the read shape.
+`range-heavy` is a separate explicit profile for sparse Range workloads. Its
+policy version is `range-heavy-v2`. It omits the hint for finalized N ≤ the
+inline bound (default 262144 bytes), requests **65536 bytes up to 8388608
+bytes** and **262144 bytes above 8388608 bytes**. With the qualified
+unversioned default 2+2 geometry, 128 KiB objects stay inline and external
+objects use B/q = 64/16 KiB or 256/64 KiB. This is a client length policy:
+backend versioning, custom inline budgets and MPU can change which objects are
+external, as described below. It does not discover inline eligibility or
+automatically detect the read shape.
+
+The 8 MiB boundary comes from the first-round single-disk mechanism data:
+fixed 64 KiB cost 4.2%/4.5% hot/cold full-GET throughput at 8 MiB but
+6.6%/7.1% at 32 MiB, while fixed 256 KiB cost at most 2.2% at 8 and 32 MiB
+and still read 4 KiB Ranges 1.8–3.7× faster than auto at 8/32 MiB. v1 (64 KiB for every
+external object) exceeded a 5% full-GET budget at 32 MiB. The boundary is a
+candidate that needs re-measurement, not an acceptance.
+
+`range-heavy:INLINE_BYTES` raises the no-hint bound for deployments whose
+RustFS inline budget is larger than the default (for example an explicit
+`RUSTFS_STORAGE_CLASS_INLINE_BLOCK`). It accepts decimal 262144–4194304; RustFS
+never inlines an object larger than its EC block, so a larger bound would only
+withhold the hint from external objects. A lower bound is rejected because it
+would make default unversioned 2+2 objects of 64–256 KiB external.
 
 Use the same `--s3-rustfs-ec-block-size-hint range-heavy` CLI argument or
 `data.s3.rustfs_ec_block_size_hint: range-heavy` YAML field. The feature gate,
@@ -18,6 +33,13 @@ with the other profiles. Unknown profile names fail at startup; enabling a
 profile without the feature reports `feature not compiled:
 rustfs-ec-block-size-hint`. The independent Pack uploader uses the same parser
 and S3 constructor validation.
+
+`range-heavy` is the only profile that changes the read side by default. With
+`read_fetch_policy` unset, an enabled hint makes the backend default fetch
+whole objects, so small EC blocks would only add full-GET cost. When neither
+the CLI nor YAML sets `read_fetch_policy`, a mount using `range-heavy`
+therefore reads with `sparse`. An explicit `whole-object` or `backend-default`
+is kept and logged as a warning at startup.
 
 **Default remains auto for configurations already choosing auto; the absent
 option remains unset.** Neither tiered nor range-heavy changes defaults or the
@@ -87,7 +109,7 @@ The existing S3 selection helper serves ordinary PUT, vectored PUT, create-only 
 
 Flat-v1 data objects pass through ObjectBlockStore's final encoder. Workspace-native-v2 has its own native encoder: `BackendObjectRepository` sends its completed immutable object through S3 create-only and verifies exact readback. Both reach the same S3 hint selector with their actual final bytes; they do not necessarily share a wire format. The Pack fixture's independent S3 constructor now receives its explicit option; external Pack producers are not implicitly configured. Restoring sealed SSD data routes through the existing uploader and final encoder. Forks, read-only remounts and ordinary reads issue no hint-triggered rewriting.
 
-#362 added independent `read_fetch_policy`: explicit `whole-object` or `sparse` controls GET/Range and prefetch regardless of hint value. It preserves the existing cache admission policy. Auto, tiered, range-heavy and all fixed hints retain the same historical LRU/whole-object backend preference; unset/off retains TinyLFU. Freeze explicit fetch policy, all prefetch settings, cache budgets, compression and concurrency for mechanism comparisons. Off versus enabled product combinations include this cache difference and need separate reporting; direct S3 controls avoid BrewFS cache confounding. Selecting range-heavy does not itself set `read_fetch_policy` or prefetch.
+#362 added independent `read_fetch_policy`: explicit `whole-object` or `sparse` controls GET/Range and prefetch regardless of hint value. It preserves the existing cache admission policy. Auto, tiered, range-heavy and all fixed hints retain the same historical LRU/whole-object backend preference; unset/off retains TinyLFU. Freeze explicit fetch policy, all prefetch settings, cache budgets, compression and concurrency for mechanism comparisons. Off versus enabled product combinations include this cache difference and need separate reporting; direct S3 controls avoid BrewFS cache confounding. Selecting range-heavy without an explicit `read_fetch_policy` selects `sparse` for the mount (see above); it does not change prefetch settings or cache admission.
 
 ## Evidence and acceptance
 

@@ -2263,7 +2263,8 @@ mod tests {
                 (2_097_152, Some("65536")),
                 (4_194_308, Some("65536")),
                 (8_388_608, Some("65536")),
-                (33_554_432, Some("65536")),
+                (8_388_609, Some("262144")),
+                (33_554_432, Some("262144")),
                 // A small tail after a large object keeps its inline admission.
                 (17, None),
             ],

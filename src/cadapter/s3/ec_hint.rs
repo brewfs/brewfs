@@ -3,7 +3,13 @@
 use anyhow::{Result, anyhow};
 
 const BLOCK_SIZES: [usize; 4] = [65_536, 262_144, 1_048_576, 4_194_304];
-const POLICY_ERROR: &str = "RustFS EC block size hint must be off, auto, tiered, range-heavy, tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B, or 65536, 262144, 1048576, 4194304 bytes";
+const POLICY_ERROR: &str = "RustFS EC block size hint must be off, auto, tiered, range-heavy, range-heavy:INLINE_BYTES (262144-4194304), tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B, or 65536, 262144, 1048576, 4194304 bytes";
+/// Default unversioned 2+2 RustFS inline admission bound for finalized objects.
+const DEFAULT_INLINE_BYTES: usize = 262_144;
+/// RustFS never inlines an object larger than its EC block.
+const MAX_INLINE_BYTES: usize = 4_194_304;
+/// Above this size 64 KiB blocks cost more than 5% full-GET throughput.
+const RANGE_HEAVY_SMALL_BLOCK_MAX_BYTES: usize = 8_388_608;
 
 /// An exhaustive five-row table. Finite upper bounds are inclusive; the last
 /// row covers every remaining length. Private fields keep SDK callers from
@@ -86,9 +92,11 @@ pub enum RustfsEcBlockSizeHint {
     Auto,
     Fixed(usize),
     Tiered(RustfsEcBlockSizeTiers),
-    /// Preserve default small-object admission; request 64 KiB above 256 KiB.
-    /// Inline eligibility itself remains a backend decision.
-    RangeHeavy,
+    /// Preserve inline admission through `inline_bytes`; request 64 KiB up to
+    /// 8 MiB and 256 KiB above. Inline eligibility itself remains a backend decision.
+    RangeHeavy {
+        inline_bytes: usize,
+    },
 }
 
 impl std::str::FromStr for RustfsEcBlockSizeHint {
@@ -99,10 +107,21 @@ impl std::str::FromStr for RustfsEcBlockSizeHint {
             "off" => Ok(Self::Off),
             "auto" => Ok(Self::Auto),
             "tiered" => Ok(Self::Tiered(RustfsEcBlockSizeTiers::default())),
-            "range-heavy" => Ok(Self::RangeHeavy),
+            "range-heavy" => Ok(Self::RangeHeavy {
+                inline_bytes: DEFAULT_INLINE_BYTES,
+            }),
             _ if value.starts_with("tiered:") => {
                 RustfsEcBlockSizeTiers::parse(&value[7..]).map(Self::Tiered)
             }
+            _ if value.starts_with("range-heavy:") => decimal(&value[12..]).and_then(|bytes| {
+                if (DEFAULT_INLINE_BYTES..=MAX_INLINE_BYTES).contains(&bytes) {
+                    Ok(Self::RangeHeavy {
+                        inline_bytes: bytes,
+                    })
+                } else {
+                    Err(POLICY_ERROR.into())
+                }
+            }),
             _ => decimal(value).and_then(|size| {
                 if BLOCK_SIZES.contains(&size) {
                     Ok(Self::Fixed(size))
@@ -119,7 +138,10 @@ impl std::fmt::Display for RustfsEcBlockSizeHint {
         match self {
             Self::Off => f.write_str("off"),
             Self::Auto => f.write_str("auto"),
-            Self::RangeHeavy => f.write_str("range-heavy"),
+            Self::RangeHeavy {
+                inline_bytes: DEFAULT_INLINE_BYTES,
+            } => f.write_str("range-heavy"),
+            Self::RangeHeavy { inline_bytes } => write!(f, "range-heavy:{inline_bytes}"),
             Self::Fixed(size) => write!(f, "{size}"),
             Self::Tiered(table) => write!(
                 f,
@@ -157,6 +179,11 @@ impl RustfsEcBlockSizeHint {
         self != Self::Off
     }
 
+    /// Only a read-shape profile changes the mount's default fetch policy.
+    pub(crate) fn implies_sparse_reads(self) -> bool {
+        matches!(self, Self::RangeHeavy { .. })
+    }
+
     #[cfg(feature = "rustfs-ec-block-size-hint")]
     pub(super) fn for_object(self, object_bytes: usize) -> Option<usize> {
         match self {
@@ -165,7 +192,11 @@ impl RustfsEcBlockSizeHint {
             Self::Auto if object_bytes > 1_048_576 => Some(1_048_576),
             Self::Auto => None,
             Self::Tiered(table) => table.for_object(object_bytes),
-            Self::RangeHeavy => (object_bytes > 262_144).then_some(65_536),
+            Self::RangeHeavy { inline_bytes } if object_bytes <= inline_bytes => None,
+            Self::RangeHeavy { .. } if object_bytes <= RANGE_HEAVY_SMALL_BLOCK_MAX_BYTES => {
+                Some(65_536)
+            }
+            Self::RangeHeavy { .. } => Some(262_144),
         }
     }
 
@@ -176,7 +207,7 @@ impl RustfsEcBlockSizeHint {
             Self::Auto => "auto-v1",
             Self::Fixed(_) => "fixed",
             Self::Tiered(_) => "tiered-v1",
-            Self::RangeHeavy => "range-heavy-v1",
+            Self::RangeHeavy { .. } => "range-heavy-v2",
         }
     }
 }
@@ -225,20 +256,74 @@ mod tests {
             assert_eq!(policy.for_object(length), None, "N={length}");
         }
         for length in [
-            262_145,
-            524_288,
-            1_048_576,
-            2_097_152,
-            4_194_304,
-            4_194_308,
-            8_388_608,
-            16_777_216,
-            33_554_432,
-            usize::MAX,
+            262_145, 524_288, 1_048_576, 2_097_152, 4_194_304, 4_194_308, 8_388_608,
         ] {
             assert_eq!(policy.for_object(length), Some(65_536), "N={length}");
         }
-        assert_eq!(policy.version(), "range-heavy-v1");
+        // Above 8 MiB the 64 KiB full-GET cost exceeds the budget; 256 KiB keeps most of the Range gain.
+        for length in [8_388_609, 16_777_216, 33_554_432, usize::MAX] {
+            assert_eq!(policy.for_object(length), Some(262_144), "N={length}");
+        }
+        assert_eq!(policy.version(), "range-heavy-v2");
+    }
+
+    #[cfg(feature = "rustfs-ec-block-size-hint")]
+    #[test]
+    fn range_heavy_inline_bound_is_configurable_and_roundtrips() {
+        let policy: RustfsEcBlockSizeHint = "range-heavy:1048576".parse().unwrap();
+        assert_eq!(policy.to_string(), "range-heavy:1048576");
+        assert_eq!(policy, policy.to_string().parse().unwrap());
+        for length in [262_145, 1_048_576] {
+            assert_eq!(policy.for_object(length), None, "N={length}");
+        }
+        assert_eq!(policy.for_object(1_048_577), Some(65_536));
+        assert_eq!(policy.for_object(8_388_609), Some(262_144));
+        assert_eq!(
+            "range-heavy:262144"
+                .parse::<RustfsEcBlockSizeHint>()
+                .unwrap()
+                .to_string(),
+            "range-heavy"
+        );
+        assert!(
+            "range-heavy:4194304"
+                .parse::<RustfsEcBlockSizeHint>()
+                .is_ok()
+        );
+        for value in [
+            "range-heavy:",
+            "range-heavy:262143",
+            "range-heavy:4194305",
+            "range-heavy:+262144",
+            "range-heavy:1MiB",
+        ] {
+            assert!(value.parse::<RustfsEcBlockSizeHint>().is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn only_range_heavy_implies_sparse_reads() {
+        assert!(
+            "range-heavy"
+                .parse::<RustfsEcBlockSizeHint>()
+                .unwrap()
+                .implies_sparse_reads()
+        );
+        assert!(
+            "range-heavy:1048576"
+                .parse::<RustfsEcBlockSizeHint>()
+                .unwrap()
+                .implies_sparse_reads()
+        );
+        for value in ["off", "auto", "tiered", "65536", "4194304"] {
+            assert!(
+                !value
+                    .parse::<RustfsEcBlockSizeHint>()
+                    .unwrap()
+                    .implies_sparse_reads(),
+                "{value}"
+            );
+        }
     }
 
     #[test]
