@@ -116,10 +116,208 @@ fn enqueue<B: WorkspaceKvBackend>(
                 },
                 new_size: 64,
                 reply,
+                _slot: f
+                    .meta
+                    .write_admission
+                    .slots
+                    .clone()
+                    .try_acquire_owned()
+                    .unwrap(),
             });
             receiver
         })
         .collect()
+}
+
+#[tokio::test]
+async fn group_commit_admission_bounds_queue_and_resumes_all_writers() {
+    let f = fixture_with_cache(64 << 20).await;
+    let ino = f.meta.create_file(1, "bounded".into()).await.unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let guard = f.meta.mutation_gate.lock().await;
+    let count = 512;
+    let mut writes = (0..count)
+        .map(|index| {
+            f.meta.write(
+                ino,
+                chunk_id,
+                SliceDesc {
+                    slice_id: 80_000 + index as u64,
+                    chunk_id,
+                    offset: 0,
+                    length: 4096,
+                },
+                4096,
+            )
+        })
+        .collect::<Vec<_>>();
+    for write in &mut writes {
+        assert!(futures::poll!(write).is_pending());
+    }
+    let queued = f.meta.write_queue.lock().unwrap().pending.len();
+    eprintln!("held-backend pending writes: {queued}, callers: {count}");
+    assert!(queued <= 256, "metadata admission must bound queued writes");
+    let stats = crate::vfs::stats::FsStats::new();
+    assert!(f.meta.install_row_cache_stats(&stats));
+    let snapshot = stats
+        .render_bounded(stats.render_allocation_limit())
+        .unwrap();
+    for line in [
+        "brewfs_workspace_metadata_pending_writes 256\n",
+        "brewfs_workspace_metadata_admitted_writes 256\n",
+        "brewfs_workspace_metadata_write_capacity 256\n",
+        "brewfs_workspace_metadata_pending_high_watermark 256\n",
+        "brewfs_workspace_metadata_admission_waiters 256\n",
+    ] {
+        assert!(snapshot.contains(line), "missing {line}");
+    }
+    // Cancellation before admission must not publish the last write. All
+    // previously admitted writes retain the existing cancellation semantics.
+    drop(writes.pop());
+    drop(guard);
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        futures::future::try_join_all(writes),
+    )
+    .await
+    .expect("admission waiters must resume after backend progress")
+    .unwrap();
+    assert!(f.meta.write_queue.lock().unwrap().pending.is_empty());
+    let snapshot = stats.render();
+    assert!(snapshot.contains("brewfs_workspace_metadata_admitted_writes 0\n"));
+    assert!(snapshot.contains("brewfs_workspace_metadata_admission_waiters 0\n"));
+    let inode = f.meta.resolve_inode_delta(ino).await.unwrap().unwrap();
+    assert_eq!((inode.size, inode.data_version), (4096, count as u64));
+    let owned = f
+        .meta
+        .store
+        .gc_snapshot(0, 0)
+        .await
+        .unwrap()
+        .slice_references;
+    assert_eq!(
+        owned.iter().filter(|row| row.slice_id >= 80_000).count(),
+        count - 1,
+        "every admitted publication must retain its object ownership"
+    );
+    shutdown(&f).await;
+}
+
+#[tokio::test]
+async fn group_commit_full_cancelled_queue_does_not_strand_admission() {
+    let f = fixture_with_cache(64 << 20).await;
+    let ino = f
+        .meta
+        .create_file(1, "cancelled-full".into())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let guard = f.meta.mutation_gate.lock().await;
+    let write = |slice_id| {
+        f.meta.write(
+            ino,
+            chunk_id,
+            SliceDesc {
+                slice_id,
+                chunk_id,
+                offset: 0,
+                length: 4096,
+            },
+            4096,
+        )
+    };
+    let mut cancelled = (0..256)
+        .map(|index| write(90_000 + index))
+        .collect::<Vec<_>>();
+    for future in &mut cancelled {
+        assert!(futures::poll!(future).is_pending());
+    }
+    drop(cancelled);
+    let mut newcomer = write(90_256);
+    assert!(futures::poll!(&mut newcomer).is_pending());
+    assert_eq!(f.meta.write_queue.lock().unwrap().pending.len(), 256);
+    drop(guard);
+    tokio::time::timeout(Duration::from_secs(20), newcomer)
+        .await
+        .expect("an admission waiter must be able to drive orphaned batches")
+        .unwrap();
+    let inode = f.meta.resolve_inode_delta(ino).await.unwrap().unwrap();
+    assert_eq!((inode.size, inode.data_version), (4096, 258));
+    let owned = f
+        .meta
+        .store
+        .gc_snapshot(0, 0)
+        .await
+        .unwrap()
+        .slice_references;
+    assert_eq!(
+        owned.iter().filter(|row| row.slice_id >= 90_000).count(),
+        257
+    );
+    shutdown(&f).await;
+}
+
+#[tokio::test]
+async fn group_commit_admission_includes_the_batch_in_service() {
+    let f = fixture_with_cache(64 << 20).await;
+    let ino = f.meta.create_file(1, "in-service".into()).await.unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let write = |slice_id| {
+        f.meta.write(
+            ino,
+            chunk_id,
+            SliceDesc {
+                slice_id,
+                chunk_id,
+                offset: 0,
+                length: 4096,
+            },
+            4096,
+        )
+    };
+    let control = &f.control.group_commit;
+    control.track.store(true, Ordering::SeqCst);
+    control.pause_commit.store(true, Ordering::SeqCst);
+    let mut leader = write(100_000);
+    tokio::select! {
+        result = &mut leader => panic!("backend must pause: {result:?}"),
+        permit = control.reached.acquire() => permit.unwrap().forget(),
+    }
+    let mut followers = (1..=256)
+        .map(|index| write(100_000 + index))
+        .collect::<Vec<_>>();
+    for follower in &mut followers {
+        assert!(futures::poll!(follower).is_pending());
+    }
+    assert_eq!(
+        f.meta.write_queue.lock().unwrap().pending.len(),
+        255,
+        "the executing batch must retain its admission slots"
+    );
+    control.resume.add_permits(1);
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        futures::future::try_join_all(std::iter::once(leader).chain(followers)),
+    )
+    .await
+    .expect("service completion must release capacity")
+    .unwrap();
+    let inode = f.meta.resolve_inode_delta(ino).await.unwrap().unwrap();
+    assert_eq!((inode.size, inode.data_version), (4096, 258));
+    // Cancellation of the executing leader drops its local commit future and
+    // receipt, following the existing uncertain-commit semantics. Capacity
+    // must be released even when no backend result was delivered.
+    control.pause_commit.store(true, Ordering::SeqCst);
+    let mut cancelled_leader = write(110_000);
+    tokio::select! {
+        result = &mut cancelled_leader => panic!("backend must pause: {result:?}"),
+        permit = control.reached.acquire() => permit.unwrap().forget(),
+    }
+    assert_eq!(f.meta.write_admission.slots.available_permits(), 255);
+    drop(cancelled_leader);
+    assert_eq!(f.meta.write_admission.slots.available_permits(), 256);
+    control.resume.add_permits(1);
+    shutdown(&f).await;
 }
 
 #[tokio::test]

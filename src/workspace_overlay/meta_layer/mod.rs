@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::chunk::SliceDesc;
 use crate::chunk::layout::DEFAULT_CHUNK_SIZE;
@@ -97,7 +97,8 @@ pub struct WorkspaceMetaLayer<W> {
     locks: Mutex<WorkspaceLocks>,
     mutation_gate: Mutex<()>,
     /// Data writes waiting for the next group commit (see `write`).
-    write_queue: std::sync::Mutex<WriteQueue>,
+    write_queue: Arc<std::sync::Mutex<WriteQueue>>,
+    write_admission: Arc<WriteAdmission>,
     metrics: Arc<WorkspaceMetrics>,
     row_cache_counters: Arc<RowCacheCounters>,
     lower: WorkspaceLower,
@@ -207,21 +208,105 @@ impl RowsWritten {
 }
 
 /// One `MetaLayer::write` waiting for a group commit.
+#[derive(Debug)]
 struct PendingWrite {
     ino: i64,
     chunk_id: u64,
     slice: SliceDesc,
     new_size: u64,
     reply: tokio::sync::oneshot::Sender<Result<(), MetaError>>,
+    /// Retain capacity while queued and while the local commit future runs.
+    /// Cancelling a waiting receiver does not release an accepted write's slot.
+    _slot: OwnedSemaphorePermit,
 }
 
 /// Concurrent data writes share one versioned commit. The mutation gate holder
 /// commits one batch, then hands leadership to another waiting writer. A batch
 /// is one CAS on the same head version a single write uses, so conflict detection
 /// and row ordering are unchanged.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct WriteQueue {
     pending: Vec<PendingWrite>,
+    high_watermark: usize,
+}
+
+#[derive(Debug)]
+struct WriteAdmission {
+    slots: Arc<Semaphore>,
+    waiters: AtomicU64,
+    waits_total: AtomicU64,
+}
+
+impl WriteAdmission {
+    fn new() -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(MAX_OUTSTANDING_WRITES)),
+            waiters: AtomicU64::new(0),
+            waits_total: AtomicU64::new(0),
+        }
+    }
+
+    fn waiting(&self) -> WriteAdmissionWait<'_> {
+        self.waiters.fetch_add(1, Ordering::Relaxed);
+        self.waits_total.fetch_add(1, Ordering::Relaxed);
+        WriteAdmissionWait(&self.waiters)
+    }
+}
+
+struct WriteAdmissionWait<'a>(&'a AtomicU64);
+
+impl Drop for WriteAdmissionWait<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+struct WorkspaceStatsExtension {
+    row_cache: RowCacheStatsExtension,
+    queue: std::sync::Weak<std::sync::Mutex<WriteQueue>>,
+    admission: Arc<WriteAdmission>,
+}
+
+impl crate::vfs::stats::FsStatsExtension for WorkspaceStatsExtension {
+    fn render_max_bytes(&self) -> usize {
+        2048
+    }
+
+    fn render_into(&self, output: &mut dyn std::fmt::Write) {
+        crate::vfs::stats::FsStatsExtension::render_into(&self.row_cache, output);
+        let (pending, peak, admitted) = self.queue.upgrade().map_or((0, 0, 0), |queue| {
+            let queue = queue.lock().unwrap();
+            (
+                queue.pending.len(),
+                queue.high_watermark,
+                MAX_OUTSTANDING_WRITES - self.admission.slots.available_permits(),
+            )
+        });
+        let _ = writeln!(output, "brewfs_workspace_metadata_pending_writes {pending}");
+        let _ = writeln!(
+            output,
+            "brewfs_workspace_metadata_admitted_writes {admitted}"
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_workspace_metadata_write_capacity {MAX_OUTSTANDING_WRITES}"
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_workspace_metadata_pending_high_watermark {peak}"
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_workspace_metadata_admission_waiters {}",
+            self.admission.waiters.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            output,
+            "brewfs_workspace_metadata_admission_waits_total {}",
+            self.admission.waits_total.load(Ordering::Relaxed)
+        );
+    }
 }
 
 /// Each member of a failed batch gets the same failure. I/O errors keep their
@@ -243,6 +328,10 @@ fn duplicate_write_error(error: &MetaError) -> MetaError {
 
 /// Bound on writes folded into one commit, far inside the packet limits.
 const MAX_GROUP_WRITES: usize = 64;
+
+/// Four full batches, including the batch currently executing. Callers beyond
+/// this per-layer limit await capacity before allocating a reply or enqueuing.
+const MAX_OUTSTANDING_WRITES: usize = 4 * MAX_GROUP_WRITES;
 
 /// Bound simultaneous cold snapshots (each packed snapshot admits 2 MiB).
 const MAX_GROUP_INODE_READS: usize = 8;
@@ -271,7 +360,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             lease_validity: None,
             locks: Mutex::new(WorkspaceLocks::default()),
             mutation_gate: Mutex::new(()),
-            write_queue: std::sync::Mutex::new(WriteQueue::default()),
+            write_queue: Arc::new(std::sync::Mutex::new(WriteQueue::default())),
+            write_admission: Arc::new(WriteAdmission::new()),
             metrics: global_workspace_metrics(),
             row_cache_counters: Arc::new(RowCacheCounters::default()),
             lower: WorkspaceLower::Native,
@@ -302,11 +392,15 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         self
     }
 
-    /// Install mount-local row-cache counters into the FUSE `.stats` file so
-    /// metadata experiments can separate cache hits from backend fills.
+    /// Install mount-local row-cache and publication-admission counters into
+    /// the FUSE `.stats` file without issuing backend requests.
     pub fn install_row_cache_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
-        stats.set_extension(Arc::new(RowCacheStatsExtension {
-            counters: self.row_cache_counters.clone(),
+        stats.set_extension(Arc::new(WorkspaceStatsExtension {
+            row_cache: RowCacheStatsExtension {
+                counters: self.row_cache_counters.clone(),
+            },
+            queue: Arc::downgrade(&self.write_queue),
+            admission: self.write_admission.clone(),
         }))
     }
 
@@ -847,6 +941,27 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 Ok(()) => Ok(()),
                 Err(error) => Err(duplicate_write_error(error)),
             });
+        }
+    }
+
+    async fn acquire_write_slot(&self) -> OwnedSemaphorePermit {
+        if let Ok(slot) = self.write_admission.slots.clone().try_acquire_owned() {
+            return slot;
+        }
+        let _waiting = self.write_admission.waiting();
+        let slot = self.write_admission.slots.clone().acquire_owned();
+        tokio::pin!(slot);
+        loop {
+            tokio::select! {
+                biased;
+                slot = &mut slot => return slot.expect("workspace write admission is never closed"),
+                guard = self.mutation_gate.lock() => {
+                    // Accepted writes outlive cancelled waiting callers. A full
+                    // queue can therefore have no remaining commit leader;
+                    // admission waiters must also be able to drive its batches.
+                    self.commit_next_write_batch(guard).await;
+                }
+            }
         }
     }
 
@@ -3420,6 +3535,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         new_size: u64,
     ) -> Result<(), MetaError> {
         Self::validate_write(ino, chunk_id, &slice, new_size, self.chunk_size)?;
+        let slot = self.acquire_write_slot().await;
         let (sender, mut receiver) = tokio::sync::oneshot::channel();
         {
             let mut queue = self.write_queue.lock().unwrap();
@@ -3429,7 +3545,9 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                 slice,
                 new_size,
                 reply: sender,
+                _slot: slot,
             });
+            queue.high_watermark = queue.high_watermark.max(queue.pending.len());
         }
         loop {
             let guard = tokio::select! {

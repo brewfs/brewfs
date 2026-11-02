@@ -17,6 +17,13 @@ struct Fixture<M: MetaLayer> {
 }
 
 async fn fixture() -> Fixture<impl MetaLayer> {
+    fixture_with_options(65536, 4096).await
+}
+
+async fn fixture_with_options(
+    write_coalesce_bytes: usize,
+    page_size: u32,
+) -> Fixture<impl MetaLayer> {
     let objects = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let store = Arc::new(
@@ -29,7 +36,7 @@ async fn fixture() -> Fixture<impl MetaLayer> {
                 ..Default::default()
             },
             BlockStoreConfig {
-                write_coalesce_bytes: 65536,
+                write_coalesce_bytes,
                 write_coalesce_ms: 0,
                 compression: Compression::None,
                 populate_write_cache_after_upload: false,
@@ -54,7 +61,7 @@ async fn fixture() -> Fixture<impl MetaLayer> {
         inode.clone(),
         Arc::new(
             WriteConfig::new(layout)
-                .page_size(4096)
+                .page_size(page_size)
                 .freeze_min_bytes(32 << 20)
                 .auto_flush_max_age(Duration::from_secs(60)),
         ),
@@ -70,6 +77,38 @@ async fn fixture() -> Fixture<impl MetaLayer> {
         reader,
         writer,
         inode,
+    }
+}
+
+#[tokio::test]
+async fn isolated_4k_flush_uploads_only_one_framed_payload_with_coalescing_on_or_off() {
+    use crate::chunk::compress::{PERSISTED_HEADER_LEN, PersistedHeader, parse_persisted_header};
+
+    for coalesce_bytes in [0, 65536] {
+        let f = fixture_with_options(coalesce_bytes, 65536).await;
+        let data = (0..4096)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        f.writer.write_at(0, &data).await.unwrap();
+        f.writer.flush().await.unwrap();
+        let stats = f.store.object_store_metrics().unwrap().snapshot();
+        assert_eq!(stats.put_ops, 1);
+        assert_eq!(stats.put_bytes, (data.len() + PERSISTED_HEADER_LEN) as u64);
+        let objects = std::fs::read_dir(f.objects.path().join("chunks-v2"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("0"))
+            .collect::<Vec<_>>();
+        assert_eq!(objects.len(), 1);
+        let persisted = std::fs::read(&objects[0]).unwrap();
+        assert_eq!(persisted.len(), 4100, "no page or block alignment padding");
+        assert_eq!(
+            parse_persisted_header(&persisted),
+            PersistedHeader::Framed(Compression::None)
+        );
+        assert_eq!(&persisted[PERSISTED_HEADER_LEN..], data);
+        assert!(!f.objects.path().join("chunks-coalesced-v1").exists());
+        let reader = f.reader.open_for_handle(f.inode.clone(), 1);
+        assert_eq!(reader.read(0, 4096).await.unwrap(), data);
     }
 }
 
