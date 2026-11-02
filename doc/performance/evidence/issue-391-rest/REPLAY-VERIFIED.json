@@ -1,0 +1,22 @@
+{
+  "verified_at": "2026-11-02T15:17:09.412608+00:00",
+  "archive_files": 11735,
+  "archive_sha256": "fc1d1d0ba2f3934f0745fdda9ab6f6039f38741b3be73c9e9d645034f992311f",
+  "archive_bytes": 34479530,
+  "all_archived_hashes_verified": true,
+  "baseline_analysis_identical": true,
+  "candidate_analysis_identical": true,
+  "high_resolution_pairs_identical": true,
+  "native_comparator_pairs_identical": true,
+  "fresh_replay_directory": "/data/out/issue391-replay-bn3cuef8",
+  "outer_csv_line_endings": "LF; parsed CSV rows unchanged; original local CSV preserved",
+  "normalized_outer_csv_files": [
+    "baseline-pressure.csv",
+    "matched-pressure.csv"
+  ],
+  "outer_svg_trailing_whitespace": "removed; normalized XML identical; original local SVG preserved",
+  "normalized_outer_svg_files": [
+    "matched-pressure.svg",
+    "baseline-pressure.svg"
+  ]
+}
