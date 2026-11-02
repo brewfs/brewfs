@@ -1,0 +1,25 @@
+{
+  "reason": "Initial complete broad pair: seqread 31.495275 -> 21.472086 MiB/s (-31.82%); GET mean latency 13.265 -> 19.366 ms; sampled host CPU stall 6.95 -> 14.66%. Investigate persistence without dropping the original result.",
+  "preregistered_utc": "2026-11-02T06:25:38Z",
+  "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+  "pairs": 3,
+  "order": [
+    [
+      "off",
+      "on"
+    ],
+    [
+      "on",
+      "off"
+    ],
+    [
+      "off",
+      "on"
+    ]
+  ],
+  "config": "Unchanged final broad-compose.yml; only PERF_TOOLS=fio-seqread and artifact destination overridden. Same 512 MiB prefill, strict drain, remount, 1 MiB reads, 1 job, depth 8, 20 seconds, direct=0, seed20261101.",
+  "isolation": "Start after both complete broad arms, additional buffered correctness and strict clippy finish; no concurrent test/build workload.",
+  "decision": "Retain initial broad anomaly plus all six follow-up arms. Require median on throughput >=97% of off and median p99 <=110% of off, clean runner/unmount/drain, zero fio error. Otherwise do not merge. This follow-up cannot replace the complete broad workload gate.",
+  "artifact_path": "broad/seqread-recheck/pair-NN-ARM",
+  "after_measurement_observation": "After each normal runner unmount, list task bucket object keys/sizes to distinguish layout changes; outside timed workload and without changing runner assertions."
+}

@@ -1,0 +1,18 @@
+{
+  "reason": "First on arm invalid: empty .stats sample during bigread prefill; bigread prefill and bigwrite fio error=0, but bigread measurement skipped and sticky invalid marker fails later tools. No runner assertions, sampling or read timeout changed.",
+  "initial_stage": "/home/hxy/perf-write-coalesce-r2-20261102/broad-attempts/initial-stage",
+  "failed_arm": "/home/hxy/perf-write-coalesce-r2-20261102/broad-attempts/on-attempt1",
+  "accepted_off_attempt": 1,
+  "on_attempt": 2,
+  "retry_status": 0,
+  "command": [
+    "docker",
+    "compose",
+    "-f",
+    "/home/hxy/perf-write-coalesce-r2-20261102/harness/broad-compose.yml",
+    "run",
+    "--rm",
+    "--no-deps",
+    "perf"
+  ]
+}

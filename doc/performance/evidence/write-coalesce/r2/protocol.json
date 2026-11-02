@@ -1,0 +1,164 @@
+{
+  "created_utc": "2026-11-02T02:53:19.122956+00:00",
+  "task_started_utc": "2026-11-02T02:48:08Z",
+  "deadline_utc": "2026-11-02T07:48:08Z",
+  "git_commit": "d5e53e1ca532762cf7ffb361430d939a0b97eb7c",
+  "build": {
+    "CARGO_BUILD_JOBS": {
+      "library": "1",
+      "binary": "4",
+      "note": "First compile completed the library; binary compile deliberately restarted with four jobs using cached same-source library. No optimization, feature, or codegen flag changes. Prior attempt and restart reason preserved in build-library-one-job/."
+    },
+    "RUSTFLAGS": "-C debuginfo=0",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_RELEASE_DEBUG": "0",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+    "profile": "release",
+    "default_features": true,
+    "features": [
+      "workspace-overlay",
+      "observability"
+    ]
+  },
+  "primary_instrumentation": "observability feature + runtime metrics; 1 Hz scrape; request trace disabled",
+  "warmups": 2,
+  "measurements": 3,
+  "fio_runtime_seconds": 20,
+  "fio_size_per_job_bytes": 536870912,
+  "fio_ioengine": "libaio",
+  "fio_randseed": 20261101,
+  "fio_randrepeat": true,
+  "random_iodepth": 32,
+  "sequential_jobs": 1,
+  "sequential_iodepth": 8,
+  "rwmixread": 70,
+  "cache": {
+    "read_memory_bytes": 0,
+    "read_ssd_bytes": 0,
+    "write_memory_bytes": 536870912,
+    "write_ssd_bytes": 0,
+    "memory_budget_bytes": 2147483648,
+    "prefetch_enabled": false,
+    "range_background_prefetch": false,
+    "flat_read_page_cache_capacity": 0
+  },
+  "fuse": {
+    "workers": 16,
+    "max_background": 512,
+    "requested_max_read_bytes": 4194304,
+    "requested_max_write_bytes": 4194304,
+    "requested_max_readahead_bytes": 16777216,
+    "cache_ttl_ms": 0,
+    "keep_cache": false,
+    "kernel_writeback_cache": false
+  },
+  "object_store": "isolated compose Redis/RustFS on same host; image IDs in harness/compose.yml",
+  "compression": "zstd; seeded incompressible corpus",
+  "writeback_mode": "upload_before_commit",
+  "drain": "legacy .stats extended debt gauges all zero and stable object PUT count/bytes for 3 samples, 0.5 s apart; 180 s timeout; include fio close wall time",
+  "perf": "perf record -F 499 -g --call-graph dwarf,8192 -e cpu-clock -z -p DAEMON -- sleep WINDOW; measurement interval only; software event because no virtual PMU",
+  "statistic": "paired on-minus-off differences; mean +/- t(0.975,n-1)*SD/sqrt(n); n>=3; report all rounds and median p99",
+  "limits": [
+    "buffered libaio may achieve lower depth than requested; retain iodepth distribution",
+    "fio latency includes client/kernel queues; FUSE metric histograms are separate",
+    "CPU profiles describe on-CPU cost, not off-CPU waiting",
+    "no global drop_caches; every arm begins with its own full prefill",
+    "raw numbers remain provisional until the complete same-iteration workspace and overlay CI gates pass",
+    "compose container runner broad guards are separate from the paired host FUSE campaign"
+  ],
+  "tokio_worker_threads": 1,
+  "drain_debt_gauges": [
+    "brewfs_writeback_dirty_bytes",
+    "brewfs_buffer_dirty_bytes",
+    "brewfs_writeback_live_dirty_bytes",
+    "brewfs_writeback_live_slices",
+    "brewfs_writeback_recent_pending_upload_bytes",
+    "brewfs_writeback_recent_pending_upload_slices",
+    "brewfs_writeback_stage_inflight_bytes",
+    "brewfs_writeback_remote_upload_inflight_bytes",
+    "brewfs_writeback_metadata_inflight"
+  ],
+  "amendments": [
+    {
+      "before_any_performance_measurement": true,
+      "change": "remove unrelated packed fields inherited from historical protocol; replace slow S3 per-object cleanup with stopped task-backend directory reset",
+      "reason": "all main/off/on arms receive the same clean backend state without spending the test budget deleting thousands of disposable small objects via HTTP"
+    }
+  ],
+  "baseline": "same final release binary, coalesce off",
+  "schedule": "randwrite, seqwrite, randrw (v1 order): 2 off/on warmup pairs + 3 off/on measurement pairs each; direct: 1 off/on pair each",
+  "corpus_source": "/home/hxy/perf-full-state-20261101/source/large (reused immutable seeded bytes, not measurements)",
+  "round_reset": "after confirming no task FUSE mount remains, stop task RustFS, remove only its disposable objects bind directory, recreate with original ownership, restart, clear task Redis DB 0 and recreate task bucket; fresh mount and 512 MiB/file incompressible prefill with fsync and strict drain before every arm",
+  "artifact_cleanup": "delete task-owned object payloads after completed unmount; preserve all measurement artifacts",
+  "supported_volume_scope": "flat-v1 with Redis and upload_before_commit; no native-v2 or packed-v3 performance claim",
+  "candidate_control": {
+    "off_bytes": 0,
+    "on_bytes": 65536,
+    "coalesce_ms": 0,
+    "on_safety_deadline_ms": 100
+  },
+  "workloads": [
+    "randwrite",
+    "seqwrite",
+    "randrw"
+  ],
+  "direct_guard": "one off/on pair per workload with fio direct=1; separate guard rows, excluded from primary confidence intervals",
+  "random_jobs": 4,
+  "random_block_bytes": 4096,
+  "sequential_block_bytes": 1048576,
+  "primary_fio_direct": 0,
+  "upload_concurrency": "existing foreground semaphore 192 and FileWriter local limit; groups acquire one permit per participating file in stable order",
+  "put_normalization": "physical PUT count including drain / logical fio write GiB, excluding prefills; mean PUT = physical bytes / physical count",
+  "artifact_root": "/home/hxy/perf-write-coalesce-r2-20261102",
+  "state_root": "/home/hxy/perf-write-coalesce-r2-state-20261102",
+  "inherited_protocol_sha256": "ef347633c414719d48806a3130dae39f01437e999d72e5a259885ecef923efe6",
+  "acceptance": {
+    "randwrite_puts_per_gib_max": 26000,
+    "randwrite_average_put_bytes_min": 40000,
+    "randwrite_paired_ci_low_min_exclusive": 0,
+    "p99_change_percent_max": 10,
+    "seqwrite_bw_change_percent_min": -3,
+    "randrw_no_material_regression": true,
+    "randwrite_direct_applies_same_put_and_p99_limits": true
+  },
+  "harness_hashes": {
+    "acceptance.py": "08c0e10a406c22e806d0e957288263bdbca0742f25bd22cdee6c3363156ab3ab",
+    "broad-compose.yml": "cbe710402ae8ec4bcfddf0436597289f4562618c8878724928865821d0049f1e",
+    "broad-entrypoint.sh": "76095713e4365d93897f762fcba80145bf3f7a6397311a8c865b267c2a897e57",
+    "broad.py": "5c316e179787b9335b1e83e7e300206d1574b5babb2909d12f6e8c9bfc49a17f",
+    "campaign.py": "cb8eb3ee860f59bacbd79d40b86339d8a13ba8e9e5c2594b596ee7a2eaa5348e",
+    "ci.sh": "90b5ce32af0fbf8dd877cffe73f9d1bb75efa9bd575447ee841ec684b5ffbcd9",
+    "compose.yml": "9f6937ba040de4bfa1ad8d60ed144dae2def95be952f863b9694bc719bcc2f72",
+    "container-tools/perf_lines_observe.py": "1a6e72c80c719ac755dc55a2e932aa516350d37ff9c67ea983b4effaa42c22ee",
+    "container-tools/perf_manifest.py": "9188bd4a01b67607fcd05c6e4acb8b99e6816fed9e65a77069024b00cef034e2",
+    "container-tools/perf_metadata_fallback.py": "a59221981e82da1225298ff43c407d289fbda862b546f0f99fa144307537aad9",
+    "legacy_run.py": "3a5adb59b7dfdeac89155f7099138f2a6d767f12b0192f4a1492ebad49d8ebd4",
+    "measure.sh": "f99750e2a5e2765e67566a90721643a8b1ea1168b3df9feee5e92d45b16e6188",
+    "overlay-repeat.sh": "a54d14c4afd3743d3a5fd6d74dafb5c370710b0104e1609950b1487dcf51c8a1",
+    "overlay.sh": "8bfc658ddd018a2da366418538245f45240b91ed02acd021d1dcac6112c6e631",
+    "red_fuse.py": "3d94fa50e894e0038236cea7ee75770f2b604fc334aee301d9b9821a74521980",
+    "release-four-jobs.sh": "579c4a313239989d2028b4e019d89ac5446055c8daac47adcbe545e10c94f56d",
+    "release.sh": "0420b343df73a55fb9a5e16de1d39013a3ee0d4a4a0e5b0a80f19af418c29a36",
+    "source_manifest.py": "6b240acf5247926ad578639d3dddc872ea3f91f3073f27ed2d57e283dbe2631e",
+    "summarize.py": "135e1334512ad93647f9dac0aa5383cc4907ff48db0f0f78a7064bed79bd372f",
+    "verify-modes.py": "12d90c48db94fac88ae4c9c9a3cc8b927db0eb838aa9cb5f500b03e673a14ce7",
+    "verify.py": "e5446cfa95300c955f5425a6b866747ce65cf57783627ee8993175a54666b9f4"
+  },
+  "unchanged_v1_harness": {
+    "legacy_run.py": true,
+    "verify.py": true,
+    "red_fuse.py": true,
+    "broad.py": true
+  },
+  "broad_harness_amendments": [
+    "Record actual unmount commands/results and post-runner mount/process tables; workload script unchanged.",
+    "Bind byte-identical Python helper copies with executable mode, matching image installation; repository files are mode 644."
+  ],
+  "container_tool_source_hashes": {
+    "tools/perf/perf_manifest.py": "9188bd4a01b67607fcd05c6e4acb8b99e6816fed9e65a77069024b00cef034e2",
+    "tools/perf/perf_lines_observe.py": "1a6e72c80c719ac755dc55a2e932aa516350d37ff9c67ea983b4effaa42c22ee",
+    "docker/compose-xfstests/perf_metadata_fallback.py": "a59221981e82da1225298ff43c407d289fbda862b546f0f99fa144307537aad9"
+  },
+  "source_dirty_details": "environment/source-dirty-details.json",
+  "additional_correctness": "After the unchanged v1 paired/broad campaign, repeat the same fsync/close -> SIGKILL -> 8192-block SHA-256 checks with buffered FUSE, off and on, using verify-modes.py from the prior review."
+}

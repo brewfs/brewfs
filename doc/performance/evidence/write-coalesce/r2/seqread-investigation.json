@@ -1,0 +1,24 @@
+{
+  "off": {
+    "samples": 14,
+    "window_s": 20.123248883,
+    "io_stall_pct": 27.0343374056057,
+    "cpu_stall_pct": 6.953121775391005,
+    "memory_stall_pct": 0.0,
+    "prefill_put": [
+      "brewfs_s3_put_ops_total 129",
+      "brewfs_s3_put_bytes_total 478646580"
+    ]
+  },
+  "on": {
+    "samples": 13,
+    "window_s": 19.009814981,
+    "io_stall_pct": 26.438063731936534,
+    "cpu_stall_pct": 14.659143199369574,
+    "memory_stall_pct": 0.0,
+    "prefill_put": [
+      "brewfs_s3_put_ops_total 129",
+      "brewfs_s3_put_bytes_total 478437043"
+    ]
+  }
+}

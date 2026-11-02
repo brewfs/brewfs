@@ -1,0 +1,150 @@
+{
+  "passed": true,
+  "gates": [
+    {
+      "name": "fmt",
+      "status": 0,
+      "command": "cargo fmt --all --check",
+      "started": "2026-11-02T05:10:53Z",
+      "finished": "2026-11-02T05:11:03Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-run_perf_in_container",
+      "status": 0,
+      "command": "bash -n docker/compose-xfstests/run_perf_in_container.sh",
+      "started": "2026-11-02T05:11:03Z",
+      "finished": "2026-11-02T05:11:03Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-run_redis_perf",
+      "status": 0,
+      "command": "bash -n docker/compose-xfstests/run_redis_perf.sh",
+      "started": "2026-11-02T05:11:03Z",
+      "finished": "2026-11-02T05:11:03Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-run_juicefs_perf_in_container",
+      "status": 0,
+      "command": "bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh",
+      "started": "2026-11-02T05:11:03Z",
+      "finished": "2026-11-02T05:11:03Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "syntax-run_juicefs_perf",
+      "status": 0,
+      "command": "bash -n docker/compose-xfstests/run_juicefs_perf.sh",
+      "started": "2026-11-02T05:11:03Z",
+      "finished": "2026-11-02T05:11:03Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "perf-report-delta",
+      "status": 0,
+      "command": "bash docker/compose-xfstests/test_perf_report_delta.sh",
+      "started": "2026-11-02T05:11:03Z",
+      "finished": "2026-11-02T05:11:04Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "juicefs-direct-matrix",
+      "status": 0,
+      "command": "bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+      "started": "2026-11-02T05:11:04Z",
+      "finished": "2026-11-02T05:11:04Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "juicefs-perf-report",
+      "status": 0,
+      "command": "bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+      "started": "2026-11-02T05:11:04Z",
+      "finished": "2026-11-02T05:11:04Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "redis-coalesce",
+      "status": 0,
+      "command": "python3 tests/scripts/test_write_coalesce_redis.py --port 26380 --db 1",
+      "started": "2026-11-02T05:11:04Z",
+      "finished": "2026-11-02T05:11:05Z",
+      "log_sha256": "8182d3f8d268981fd44813be4baf87acf20d4b873806900113fd5dc390340002"
+    },
+    {
+      "name": "check-workspace",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml check --workspace",
+      "started": "2026-11-02T05:11:05Z",
+      "finished": "2026-11-02T05:12:30Z",
+      "log_sha256": "2a2dcec38199959f993e008249ee9c7e3ad57cd71aa3facfd3536b25f1b3e629"
+    },
+    {
+      "name": "build-workspace",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml build --workspace",
+      "started": "2026-11-02T05:12:30Z",
+      "finished": "2026-11-02T05:16:38Z",
+      "log_sha256": "72646828b8a81983c1f79a9fccfad6949794837200a99216a40bf8351f53d72a"
+    },
+    {
+      "name": "check-tokio",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml check -p brewfs --no-default-features --features fuse-tokio-runtime",
+      "started": "2026-11-02T05:16:38Z",
+      "finished": "2026-11-02T05:17:53Z",
+      "log_sha256": "d8eaf515daa925b4ad97791f7ffc1cfa37f5cd5d3c974015d8f5fc4cd2c547e7"
+    },
+    {
+      "name": "check-io-uring",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml check -p brewfs --no-default-features --features fuse-io-uring-runtime",
+      "started": "2026-11-02T05:17:53Z",
+      "finished": "2026-11-02T05:19:11Z",
+      "log_sha256": "2f59bc0a2e51f3c5b4bbcdcaf6d4df91fc78139447886f31d570d64f4e60ac42"
+    },
+    {
+      "name": "test-workspace",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test --workspace --lib --bins",
+      "started": "2026-11-02T05:19:11Z",
+      "finished": "2026-11-02T05:33:25Z",
+      "log_sha256": "950ffda84e8d97e20c1216b2c536fc0ca90fe27d5f20d22577b14ae99a7f1e6a",
+      "results": [
+        "test result: ok. 1315 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 188.11s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "clippy-workspace",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml clippy --workspace",
+      "started": "2026-11-02T05:33:25Z",
+      "finished": "2026-11-02T05:34:54Z",
+      "log_sha256": "0367bb2b5a96324b4aaba5dbc6674a12eed694e347dee7f1345533e1ee423874"
+    },
+    {
+      "name": "diff-check",
+      "status": 0,
+      "command": "git diff --check",
+      "started": "2026-11-02T05:34:54Z",
+      "finished": "2026-11-02T05:34:54Z",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy-all-targets",
+      "status": 0,
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml clippy --workspace --all-targets -- -D warnings",
+      "started": "2026-11-02T06:56:52Z",
+      "finished": "2026-11-02T07:00:59Z",
+      "log_sha256": "6cc49427d325dcca2cd06cc2a055ec867ec6217fd072a23b86e30bb6a34b015d"
+    }
+  ],
+  "rfuse3": "not a workspace member",
+  "source_manifest_sha256": "5e954a6ff76ac0c6fa3828d2148620c32d7eb16022d718a8f9a2f82c8fde26bf",
+  "matches_release_manifest": true,
+  "overlay_summary": "overlay-summary.json"
+}

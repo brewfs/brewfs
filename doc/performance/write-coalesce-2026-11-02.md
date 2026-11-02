@@ -1,5 +1,246 @@
 # 小随机写对象聚合验收报告
 
+## 第二轮最终源码验收（2026-11-02）
+
+**状态：第二轮合并门禁通过。** 下述原始失败、复测及测量限制均保留。
+
+本轮起点为 `d5e53e1ca532762cf7ffb361430d939a0b97eb7c`，生产代码与测试断言
+均未修改。下面的数据全部来自本轮新编译的 release；旧 v1 测量仅保留在文末
+历史记录中。升级、默认开启行为和回滚限制见[运维说明](../operations/write-coalescing.md)。
+
+### 二进制与逐文件源码身份
+
+| 项目 | 值 |
+|---|---|
+| release SHA-256 | `e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313` |
+| source manifest SHA-256 | `5e954a6ff76ac0c6fa3828d2148620c32d7eb16022d718a8f9a2f82c8fde26bf` |
+| `src/vfs/io/writer.rs` SHA-256 | `a42b77d9d0ccee4e67ced80b3d688cc02ad2d6dfe86f21565ec00b59ba2d5fee` |
+| `src/meta/stores/redis/mod.rs` SHA-256 | `ee457f68cc752e70a75fa7bdd6e4a317bb7d12b015fff521bad028fa8dd942ff` |
+
+[source-manifest.json](evidence/write-coalesce/r2/source-manifest.json) 记录全部
+1,858 个 tracked 文件各自的 SHA-256。overlay、release 构建前后、同轮 CI、测量
+起点使用相同 manifest。`--version` 中的 dirty=true 来自既有未跟踪文件
+`tools/perf/measure_observability.py`，该文件未改动且不是编译输入。
+
+构建命令为 `cargo build --locked --release --bin brewfs --features workspace-overlay,observability`，
+默认 features 开启，incremental=0、debug=0、codegen-units=256、
+`RUSTFLAGS=-C debuginfo=0`，与 v1 的优化配置一致。tmux 后台构建未加 timeout，
+主机 3072 MiB watchdog 保持运行。library 用 1 job 完成后，刚开始的 main.rs
+编译主动中断并以 4 jobs 重启，复用同源码 library；第一次 Cargo 130 和调度原因
+均已归档，不算成功构建。最终 Cargo exit 0，总耗时 102m42s（含调度切换）。
+完整配置见 [build-identity.json](evidence/write-coalesce/r2/build-identity.json)。
+
+### Overlay 与同轮 CI
+
+两次未筛选的 `cargo test -p brewfs --lib --features workspace-overlay` 均为
+**2729 passed / 0 failed / 474 既有 ignored**，第二次于 03:36:06 UTC 完成，
+距本轮开始 47m58s，满足 90 分钟定位时限。内存配置为 1 个编译 job、
+`RUST_TEST_THREADS=2`；没有修改测试选择、断言或 ignore。
+
+已知偶发用例为
+`workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`。
+五次单测重跑结果依次是 **pass / fail / pass / pass / pass（4/5）**。
+失败在 `meta_layer/tests.rs:1477:57` 的
+`observer.open(ino, OpenFlags::RDONLY).await.unwrap()`，错误为
+`Io(Os { code: 16, kind: ResourceBusy, message: "Device or resource busy" })`。
+测试、meta_layer 实现与 SQLite store 文件均与 PR base `a41b126` 一致，保留为
+既有并发 EBUSY flaky 证据。门禁依据是两次完整套件零失败，**不声称 focused 5/5 通过**。
+命令、时间和失败日志哈希见 [overlay-summary.json](evidence/write-coalesce/r2/overlay-summary.json)。
+
+同一源码迭代的最低本地 CI 与追加检查共 **17 个独立检查全部 exit 0**：fmt、4 个 shell
+语法检查、3 个 perf report 测试、Redis 故障注入、workspace check/build、
+tokio/io-uring 配置、workspace 测试、clippy workspace、diff check，及 workflow 的
+`clippy --workspace --all-targets -- -D warnings`。
+其中 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
+通过 **1315 库测试 + 2 二进制测试，0 failed，264 既有 ignored**。
+rfuse3 不在 workspace，条件检查不适用；既有依赖 warning 保留，clippy exit 0。
+完整命令和日志哈希见 [ci-summary.json](evidence/write-coalesce/r2/ci-summary.json)。
+
+### 冻结协议与最终 release 配对结果
+
+同一个最终 release，`BREWFS_WRITE_COALESCE_BYTES=0/65536` 交错 off/on。
+沿用 v1 顺序 randwrite → seqwrite → randrw，每场景 **2 对预热 + 3 对正式测量**，
+每轮 20 s。随机场景 4 KiB、4 jobs、iodepth=32、512 MiB/job；顺序写
+1 MiB、1 job、iodepth=8、512 MiB。fio buffered libaio、seed=20261101；
+混合读写 70% read / 30% write。direct guard 单独用 direct=1，不混入主 CI。
+
+隔离 compose Redis/RustFS、flat-v1、upload-before-commit、zstd、同一不可压缩
+语料；读内存/SSD cache=0、写内存=512 MiB、写 SSD=0、总预算=2 GiB。
+每 arm 清空自己的后端，重新挂载、完整预填充并严格 drain 后测量；没有全局
+drop_caches。严格 drain 要求所有写回 debt gauge 为 0 且 PUT 次数/字节连续
+3 次稳定，间隔 0.5 s、180 s 上限。下表计入 close/wall 和 drain 的结果用于
+排除把前台成本转移到尾部的假收益。完整环境与 v1 差异见
+[protocol.json](evidence/write-coalesce/r2/protocol.json)。
+
+| 场景 | off / on MiB/s，中位数 | 变化 | 配对差值 95% CI，MiB/s | off / on wall+drain MiB/s |
+|---|---|---:|---|---|
+| randwrite | 2.5057 / 5.2202 | +108.33% | [+2.5726, +2.7899] | 2.2368 / 4.7519 |
+| randrw，总吞吐 | 2.7811 / 3.4273 | +23.23% | [+0.5266, +0.7963] | 2.5546 / 3.1644 |
+| seqwrite | 135.8728 / 134.4866 | −1.02% | [−9.4185, +10.4877] | 125.9439 / 125.1858 |
+
+CI 用三对 on-minus-off 差值计算 Student t 95% 区间，自由度 2。
+有限样本和固定 off/on 顺序仍是本结果的限制；不声称 seqwrite 加速。
+
+| 场景 | off / on PUT 数 | off / on PUT 字节 | off / on avg PUT，B | off / on PUT/GiB |
+|---|---|---|---|---|
+| randwrite | 12812 / 1670 | 52518793 / 110687311 | 4099.19 / 66272.36 | 261490.89 / 16379.61 |
+| randrw | 4317 / 333 | 17660679 / 21944261 | 4090.96 / 65959.41 | 262022.61 / 16459.04 |
+| seqwrite | 680 / 673 | 2835573644 / 2806367937 | 4169996.99 / 4169937.50 | 256.19 / 256.19 |
+
+以上各列独立取三轮中位数，不能用中位 PUT bytes 除中位 PUT count 反推平均值。
+PUT/GiB 使用 fio 逻辑写入字节归一化，排除 prefill、包含 drain；on 在固定时间内
+写入更多数据，所以物理字节总量可增加。randwrite 三个 on 轮次的 PUT/GiB 均
+≤16388.87，avg PUT 均 ≥66235.45 B，分别满足 ≤26000 和 ≥40000 B 门槛。
+
+| 场景 | off p50 / p95 / p99，ms | on p50 / p95 / p99，ms | p99 变化 | off / on RSS 峰值中位数，MiB |
+|---|---|---|---:|---|
+| randwrite | 206.569 / 329.253 / 387.973 | 91.750 / 145.752 / 235.930 | −39.19% | 292.86 / 313.75 |
+| randrw，写 | 177.209 / 227.541 / 256.901 | 143.655 / 179.306 / 198.181 | −22.86% | 142.34 / 146.02 |
+| seqwrite | 32.899 / 149.946 / 170.918 | 33.161 / 149.946 / 170.918 | 0.00% | 195.02 / 185.68 |
+
+randrw 读 p99 为 270.533 → 200.278 ms（−25.97%）。RSS 为 1 Hz 采样峰值。
+randwrite active+drain 吞吐为 2.3817 → 4.9612 MiB/s；wall+drain 提升
+112.44%，未观察到收益转移到 close/drain。每轮原始 fio、PUT、分位数和 RSS
+见 [comparison.json](evidence/write-coalesce/r2/comparison.json) 与
+[逐轮表](evidence/write-coalesce/r2/comparison-table.md)。
+
+### Direct guard
+
+每场景单对 off/on，均使用最终 release 和 fio direct=1；不作为独立显著性证明。
+
+| 场景 | off / on MiB/s | off / on 写 p99，ms | off / on wall+drain MiB/s | on avg PUT，B | on PUT/GiB |
+|---|---|---|---|---:|---:|
+| randwrite-direct | 2.6187 / 5.2049 | 387.973 / 177.209 | 2.3291 / 4.7443 | 66245.06 | 16386.46 |
+| seqwrite-direct | 160.3759 / 156.5843 | 145.752 / 156.238 | 145.9903 / 145.3636 | 4172815.64 | 256.00 |
+| randrw-direct | 2.8091 / 3.4543 | 278.921 / 196.084 | 2.5237 / 3.1922 | 65914.37 | 16469.78 |
+
+randwrite-direct 满足 PUT/GiB、avg PUT 和 p99 门槛；额外 seqwrite-direct 带宽
+−2.36%、p99 +7.19%，也在 −3% / +10% 范围内。randrw-direct 读 p99 为
+278.921 → 198.181 ms。全部 **36 个主测/预热/direct arm** 严格 drain 通过，
+正常 unmount exit 0、daemon exit 0、无残留挂载。部分 direct arm 的 drain 为
+1.56–1.57 s，其成本已计入表中。
+
+### 完整 broad compose 与读性能追加取证
+
+实际运行仓库 `run_perf_in_container.sh`，包含七个 fio 场景及 metaperf、
+dirstress、dirperf，**off 10/10、on 第二次完整运行 10/10**。保留 v1 预先
+准备的负载、参数和断言；入口包装仅记录真实卸载命令与退出后挂载/进程表。
+三个 Python helper 使用内容逐字节相同的可执行副本，避免原仓库 0644 模式
+不能在镜像中直接执行的问题。没有使用 fallback 元数据探针替代真实工具。
+
+首次 on 运行不能接受：bigread 预填充第 74 秒的一个 `.stats` 样本为空，
+触发 `writeback-samples.invalid`；bigread 预填充及 bigwrite 的 fio 错误码均为
+0，但正式 bigread 未执行，后续工具因该持久无效标记而失败。stats 读取默认
+超时为 5 秒，runner 没有保存该次读取的退出码，不能把空样本的具体原因
+写成已经证实的超时。失败现场在 `broad-attempts/on-attempt1/`，原始 stage
+exit 1 在 `broad-attempts/initial-stage/`。随后保持相同断言、采样、超时和
+二进制，重新运行完整 on 组；不是删标记或只重跑 bigwrite。
+
+有效的 off/on 两组各发生 5 次普通 `fusermount3 -u`，全部 exit 0，
+退出后均无残留 FUSE 挂载；失败的第一次 on 也正常卸载。所有最终 fio
+错误码为 0，prefill、写入与元数据严格 drain 均通过，最终债务全部为 0。
+完整对比见 [broad-comparison.md](evidence/write-coalesce/r2/broad-comparison.md)，
+逐项状态、缓存、Redis commandstats 与尾部债务见
+[broad-summary.json](evidence/write-coalesce/r2/broad-summary.json)。
+
+| broad 场景（单次完整运行） | off / on MiB/s | 变化 |
+|---|---|---:|
+| seqread | 31.495 / 21.534 | −31.63% |
+| seqwrite | 38.596 / 38.891 | +0.76% |
+| randread | 1.696 / 1.605 | −5.37% |
+| randwrite | 2.388 / 4.858 | +103.42% |
+| randrw，总吞吐 | 1.587 / 1.777 | +11.99% |
+| bigread，完整 4 GiB | 37.594 / 31.795 | −15.42% |
+| bigwrite，完整 4 GiB | 178.646 / 178.872 | +0.13% |
+
+broad randrw 读/写 p99 从 434.110 / 425.722 降至 371.196 / 371.196 ms。
+broad 采用原 runner 的数据生成与准备流程，其绝对吞吐不与主配对的预填充
+语料混算。以上单对数据明确显示两个读吞吐差异，所以工具返回成功后并未
+立即接受性能；追加了事先记录顺序与门槛的读复测。
+
+对比脚本同时保留整数秒计时口径：randwrite active+drain 为 2.077 → 4.225、
+randrw 为 1.380 → 1.545 MiB/s。bigwrite 的 wall / active+drain 口径分别显示
+−4.2% / −3.7%，不能只报告 active 的 +0.13%。进一步核对原始纳秒 phase
+boundaries，bigwrite 从 tool_start 到严格 drain 完成为 26.689880 →
+26.827351 s，精确 wall+drain 为 **153.466 → 152.680 MiB/s（−0.51%）**；
+整数秒的 23/24 s tool wall 与 2/3 s drain 放大了显示差值。原始计时和计算
+同时保存在 [broad-exact-wall.json](evidence/write-coalesce/r2/broad-exact-wall.json)。
+
+seqread 的三对顺序为 off/on、on/off、off/on，其他参数及 prefill/drain/remount
+完全不变。三对 off/on MiB/s 分别为 **22.824/21.248、30.874/30.615、
+30.728/31.105**；中位数 **30.728 → 30.615（−0.37%）**，p99 中位数
+**408.945 → 438.305 ms（+7.18%）**，满足预先记录的 −3% / +10% 门槛。
+配对差值 95% CI 为 [−2.960, +1.987] MiB/s，不声称顺序读加速或严格等价。
+六臂每次卸载后均列出了完整对象清单：129 个对象、0 个共享对象，表明本次
+seqread 数据未走共享对象格式。首次 broad on 尝试（后来因空 stats 样本失效）
+中的 seqread 只有 21.472 MiB/s，
+当时 host CPU pressure 从 6.95% 升至 14.66%，S3 GET 平均延迟从 13.265 升至
+19.366 ms；这些是同时观测到的差异，不能当作已经证明的根因。
+全部原始样本与限制见 [seqread-recheck-summary.json](evidence/write-coalesce/r2/seqread-recheck-summary.json)。
+
+bigread 另补一对同配置、完整 4 GiB 的 off/on：**33.030 → 32.416 MiB/s
+（−1.86%）**，均无 fio 错误、无无效采样、正常卸载；对象清单中均无共享对象。
+平均延迟为 26918.105 → 27408.963 ms（+1.82%），最大延迟为
+32999.612 → 34191.678 ms（+3.61%）。该场景的 fio 延迟直方图在约 17.1 s
+饱和，报告的 p99 均为 17112.760 ms，低于实际均值；**不能据此证明真实
+bigread p99 没有回退**。这限制了额外读 guard 的延迟结论，不替代也不改变
+主写入矩阵已有效测得的 p99 门槛。保留一对复测的局限，不声称统计等价。
+见 [bigread-recheck-summary.json](evidence/write-coalesce/r2/bigread-recheck-summary.json)。
+
+| metaperf 操作，ops/s | off | on | 变化 |
+|---|---:|---:|---:|
+| create | 149.97 | 142.22 | −5.16% |
+| open | 1178.78 | 1287.35 | +9.21% |
+| stat | 544857.18 | 569347.42 | +4.49% |
+| readdir | 8876.67 | 9341.37 | +5.23% |
+| rename | 335.49 | 350.63 | +4.51% |
+
+元数据表也是单次 broad 观测，不声称统计显著性。明确保留 create 的下降；
+open/stat/readdir/rename 没有观察到吞吐回退。dirstress 的预期并发 errno
+原样保留，未发现 EIO 或 ENOSYS。Redis commandstats 也保留真实 failed_calls，
+不把成功完成的 workload 等同于 Redis 服务器零错误回复。
+
+### 最终 release 的内容与崩溃恢复
+
+8192 次 4 KiB 稀疏随机写产生 **512 PUT / 34,013,184 PUT bytes**，
+平均 **66,432 B**、**16,384 PUT/GiB**；所有立即读回和最终块哈希一致。
+off/on 分别在 direct 与 buffered FUSE 下运行 fsync、close 后立即 SIGKILL，
+重新挂载使用新 cache：共八个场景，每个场景全量验证 **8192 块 SHA-256**，
+空文件和单字节文件也正确。所有块哈希列表摘要一致：
+`6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90`。
+内容测试与崩溃测试合计 17 次卸载均成功，死亡守护进程退出 −9、正常退出为 0。
+此证据限定于挂载进程崩溃，没有扩大为 Redis 或对象服务器断电证明。
+见 [correctness-summary.json](evidence/write-coalesce/r2/correctness-summary.json)。
+
+### 验收范围与证据保存
+
+本轮没有新增生产代码或放宽测试断言。最终源码的 overlay、最低 CI、release
+配对矩阵、direct guard、完整 broad 与挂载进程崩溃恢复均完成。
+主 randwrite 的 PUT/GiB、avg PUT、配对置信区间、p99 和 seqwrite 回归门槛全部
+满足；randrw 吞吐、读写 p99 和计入尾部成本的指标也通过。
+完整 broad 的首次无效观测、原始读下降和追加复测均保留，未删除不利样本。
+
+本结果支持保留默认 `BREWFS_WRITE_COALESCE_BYTES=65536`，不是多窗口寻优结论。
+范围仍是 flat-v1 + Redis/SQL + UploadBeforeCommit；真实 S3/FUSE 性能使用
+Redis/RustFS，SQL 覆盖来自 SQLite 正确性测试。native-v2、packed-v3、etcd/TiKV
+和 CommitBeforeUpload 不适用。0 关闭新聚合但保留 reader；**旧二进制不能读取
+新共享对象，写入新格式后不能直接降级旧二进制**。
+
+原始目录：`/home/hxy/perf-write-coalesce-r2-20261102/`。
+仓库证据见 [r2/README.md](evidence/write-coalesce/r2/README.md)、
+[acceptance.json](evidence/write-coalesce/r2/acceptance.json) 和
+[supplemental-review.json](evidence/write-coalesce/r2/supplemental-review.json)。
+压缩包保存原始 fio、PUT、RSS、drain、CI/overlay 日志、协议与 harness；大体积
+release 二进制、CPU profile 和 FUSE trace 保留在主机原始目录。任务 compose
+服务与 volumes 已清理，没有任务挂载或 D-state 遗留；既有 JuiceFS 挂载未动。
+后续提交仅更新文档和证据，编译输入逐文件哈希继续与被测 d5e53e1 一致。
+
+---
+
+<details>
+<summary>第一轮交付与自审历史（旧 v1 数字不作为最终源码验收）</summary>
+
+
 升级、默认开启行为、混合版本挂载限制与回滚步骤见
 [运维说明](../operations/write-coalescing.md)。下文保留原交付快照；后续自审
 发现 Redis 非规范 chunk version 可导致部分发布，修复与验证状态见
@@ -353,3 +594,5 @@ v1 数值达到目标，但 v1 未通过完整正确性门禁；最终源码虽�
 validation/test-overlay.log，随后继续最终 clippy 和收尾检查。编译期间仍保留
 内存 watchdog。任务专用 compose 的清理在这些后台检查结束后执行，并保留所有
 基线、失败和已测产物。报告状态是交付快照，后续日志不自动等于 PR 已验收。
+
+</details>

@@ -307,3 +307,56 @@ returned EIO (5), matching the sticky writeback error path. The subsequent
 close returned 0; applications must check the fsync result. These are functional
 checks, not new release performance measurements. Task compose services were
 cleaned up, and accepted artifacts were preserved.
+
+## PR 404 round-two acceptance (2026-11-02)
+
+The two remaining merge blockers are cleared using production source
+`d5e53e1ca532762cf7ffb361430d939a0b97eb7c`; this round changes documentation
+and evidence only. Both full, unfiltered overlay suites passed 2729 tests
+with zero failures and 474 existing ignored tests. The second finished at
+03:36:06 UTC, 47m58s after this round started. Five focused repetitions of
+the unchanged SQLite ACL/atime test produced pass/fail/pass/pass/pass: the
+existing EBUSY flake is retained, and is not described as a 5/5 pass. No
+assertion, ignore annotation or production implementation was changed.
+
+All 17 local CI checks passed, including 1315 library plus two binary tests
+and strict all-targets workspace clippy. The final release SHA-256 is
+`e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313`.
+The 1858-file source manifest SHA-256 is
+`5e954a6ff76ac0c6fa3828d2148620c32d7eb16022d718a8f9a2f82c8fde26bf`.
+Manifest identity was checked before/after release construction and through
+the end of measurements, including writer.rs and the Redis fix. The build
+ran in tmux without timeout; the intentional compiler scheduling restart and
+the final successful build are both archived.
+
+The final-source buffered matrix contains two warmup pairs and three
+measured pairs for each of randwrite, seqwrite and randrw. Random-write
+bandwidth rose 108.33%, with paired 95% difference CI [+2.5726,+2.7899]
+MiB/s; PUT/GiB fell to 16379.61 and average PUT rose to 66272.36 B. Its p99
+fell 39.19%; sequential write changed -1.02%; mixed I/O rose 23.23% with
+improved read/write p99. Full wall-plus-drain changes were +112.44%, -0.60%
+and +23.87%, respectively. All 36 warmup/measured/direct arms drained and
+unmounted normally. Direct guards passed, and final-release content plus
+eight direct/buffered fsync/close -> SIGKILL -> fresh-cache recovery cases
+verified every one of 8192 blocks per case.
+
+The complete ten-workload compose run passed for off and the second full on
+attempt. The first on attempt had an empty stats sample and a sticky invalid
+marker; its complete failure artifact is preserved. The rerun kept the same
+binary, workloads, timeouts, sampling and assertions. Original broad read
+declines are disclosed: three predeclared seqread follow-up pairs gave
+-0.37% median bandwidth and +7.18% p99; one additional full 4 GiB bigread
+pair gave -1.86% bandwidth. Bigread's fio latency histogram is capped, so
+its reported p99 cannot prove the true p99 unchanged. Broad create ops/s
+fell 5.16% in one pair; open/stat/readdir/rename and mixed I/O improved.
+The report retains these limits and all unfavorable observations.
+
+The authoritative report is
+[the round-two performance report](../../performance/write-coalesce-2026-11-02.md),
+with [published evidence](../../performance/evidence/write-coalesce/r2/README.md).
+Raw artifacts remain in `/home/hxy/perf-write-coalesce-r2-20261102/`.
+Both acceptance summaries pass. README tables now use these final-source
+numbers, while v1 remains explicitly historical. Task compose services and
+volumes were removed; no task mount or D-state process remains. The unrelated
+JuiceFS mount and the pre-existing untracked observability script were left
+untouched.

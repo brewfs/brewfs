@@ -183,6 +183,26 @@ Result Vault：
 
 这是一组单一云端配置下的工程结果，不是所有部署场景中的普遍性能承诺。复现细节见[阿里云性能测试指南](docker/compose-xfstests/aliyun/README.md)与[基准测试指南](doc/testing/bench.md)。
 
+**2026-11-02 本地小写聚合对照**使用 `d5e53e1` 源码的 release、Redis/RustFS、
+flat-v1，同一二进制分别关闭/开启聚合。每场景两对预热、三对 20 秒正式测量；
+随机 I/O 为 4 KiB、4 jobs、512 MiB/job、buffered libaio，顺序写为 1 MiB、
+1 job。下表为计入完整 fio wall 与严格 drain 的中位数：
+
+| 本地负载 | 聚合关闭 | 聚合开启 | 变化 |
+| --- | ---: | ---: | ---: |
+| 随机写，wall + drain | 2.237 MiB/s | 4.752 MiB/s | +112.44% |
+| 混合随机 I/O，wall + drain | 2.555 MiB/s | 3.164 MiB/s | +23.87% |
+| 顺序写，wall + drain | 125.944 MiB/s | 125.186 MiB/s | −0.60% |
+| 随机写 PUT/GiB | 261490.89 | 16379.61 | −93.74% |
+| 随机写平均 PUT | 4099 B | 66272 B | +1516.72% |
+| 随机写 p99 | 387.973 ms | 235.930 ms | −39.19% |
+
+随机写 active 带宽提升 108.33%，配对差值 95% CI 为 [+2.573, +2.790] MiB/s。
+workspace、完整 overlay、direct guard、完整 compose 负载和 release 崩溃恢复
+均通过。报告保留首次 broad 无效观测、读吞吐波动、追加复测与大文件读延迟
+直方图限制，见[最终源码报告及 binary/source 哈希](doc/performance/write-coalesce-2026-11-02.md)
+和[升级兼容说明](doc/operations/write-coalescing.md)。
+
 ## 正确性与测试
 
 性能改动只有在通过正确性与 mixed-I/O 门禁后才会被接受。当前维护的验证基线包括：

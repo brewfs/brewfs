@@ -1,0 +1,132 @@
+{
+  "fio-seqwrite": {
+    "off": {
+      "bytes": 809500672,
+      "tool_wall_seconds": 20.84547309,
+      "wall_plus_drain_seconds": 23.758261428,
+      "wall_plus_drain_mib_s": 32.49396014685524,
+      "phases_ns": {
+        "tool_start": 1793599303490805605,
+        "tool_return": 1793599324336278695,
+        "post-write_drain_start": 1793599324527896679,
+        "post-write_runner_drained": 1793599324685071086,
+        "post-write_extended_drained": 1793599327249067033
+      }
+    },
+    "on": {
+      "bytes": 839909376,
+      "tool_wall_seconds": 21.308493722,
+      "wall_plus_drain_seconds": 24.211077154,
+      "wall_plus_drain_mib_s": 33.08402988041628,
+      "phases_ns": {
+        "tool_start": 1793601389097731809,
+        "tool_return": 1793601410406225531,
+        "post-write_drain_start": 1793601410612343431,
+        "post-write_runner_drained": 1793601410767421356,
+        "post-write_extended_drained": 1793601413308808963
+      }
+    },
+    "change_percent": 1.8159366568256008
+  },
+  "fio-randwrite": {
+    "off": {
+      "bytes": 50102272,
+      "tool_wall_seconds": 22.097785172,
+      "wall_plus_drain_seconds": 25.043462581,
+      "wall_plus_drain_mib_s": 1.907933052207035,
+      "phases_ns": {
+        "tool_start": 1793599555457199206,
+        "tool_return": 1793599577554984378,
+        "post-write_drain_start": 1793599577770555612,
+        "post-write_runner_drained": 1793599577940317826,
+        "post-write_extended_drained": 1793599580500661787
+      }
+    },
+    "on": {
+      "bytes": 102047744,
+      "tool_wall_seconds": 20.965183157,
+      "wall_plus_drain_seconds": 23.919754721,
+      "wall_plus_drain_mib_s": 4.068616657450883,
+      "phases_ns": {
+        "tool_start": 1793601642347513725,
+        "tool_return": 1793601663312696882,
+        "post-write_drain_start": 1793601663531827965,
+        "post-write_runner_drained": 1793601663694740875,
+        "post-write_extended_drained": 1793601666267268446
+      }
+    },
+    "change_percent": 113.24734915328602
+  },
+  "fio-randrw": {
+    "off": {
+      "bytes": 33320960,
+      "tool_wall_seconds": 20.893707384,
+      "wall_plus_drain_seconds": 23.819498194,
+      "wall_plus_drain_mib_s": 1.3340895551697447,
+      "phases_ns": {
+        "prefill_start": 1793599580569879497,
+        "prefill_end": 1793599792870873955,
+        "prefill_drain_start": 1793599792951753499,
+        "prefill_runner_drained": 1793599793123457941,
+        "prefill_extended_drained": 1793599797711241069,
+        "remount_start": 1793599797750488932,
+        "remount_end": 1793599801648746411,
+        "tool_start": 1793599801678943430,
+        "tool_return": 1793599822572650814,
+        "post-write_drain_start": 1793599822802614596,
+        "post-write_runner_drained": 1793599822960119458,
+        "post-write_extended_drained": 1793599825498441624
+      }
+    },
+    "on": {
+      "bytes": 37285888,
+      "tool_wall_seconds": 20.81351123,
+      "wall_plus_drain_seconds": 23.731183597,
+      "wall_plus_drain_mib_s": 1.498391077067693,
+      "phases_ns": {
+        "prefill_start": 1793601666352917489,
+        "prefill_end": 1793601873430485256,
+        "prefill_drain_start": 1793601873497239398,
+        "prefill_runner_drained": 1793601873656327239,
+        "prefill_extended_drained": 1793601878215823254,
+        "remount_start": 1793601878246163153,
+        "remount_end": 1793601881919425350,
+        "tool_start": 1793601881939948300,
+        "tool_return": 1793601902753459530,
+        "post-write_drain_start": 1793601902973563793,
+        "post-write_runner_drained": 1793601903128926196,
+        "post-write_extended_drained": 1793601905671131897
+      }
+    },
+    "change_percent": 12.31562913158728
+  },
+  "fio-bigwrite": {
+    "off": {
+      "bytes": 4294967296,
+      "tool_wall_seconds": 23.819194643,
+      "wall_plus_drain_seconds": 26.689880025,
+      "wall_plus_drain_mib_s": 153.46640734852835,
+      "phases_ns": {
+        "tool_start": 1793600029075933572,
+        "tool_return": 1793600052895128215,
+        "post-write_drain_start": 1793600053084316463,
+        "post-write_runner_drained": 1793600053223221288,
+        "post-write_extended_drained": 1793600055765813597
+      }
+    },
+    "on": {
+      "bytes": 4294967296,
+      "tool_wall_seconds": 23.857256673,
+      "wall_plus_drain_seconds": 26.827351093,
+      "wall_plus_drain_mib_s": 152.68000130914007,
+      "phases_ns": {
+        "tool_start": 1793602130575504801,
+        "tool_return": 1793602154432761474,
+        "post-write_drain_start": 1793602154644718663,
+        "post-write_runner_drained": 1793602154828766815,
+        "post-write_extended_drained": 1793602157402855894
+      }
+    },
+    "change_percent": -0.5124287803273564
+  }
+}

@@ -1,0 +1,331 @@
+{
+  "content": {
+    "variant": "on",
+    "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+    "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+    "started_unix": 1793597715.0994377,
+    "requested_coalesce_bytes": 65536,
+    "bytes_written": 33554432,
+    "working_set_bytes": 536870912,
+    "put_limit": 812,
+    "objects": {
+      "get": {
+        "count": 0.0,
+        "bytes": 0.0,
+        "average_bytes": null
+      },
+      "put": {
+        "count": 512.0,
+        "bytes": 34013184.0,
+        "average_bytes": 66432.0
+      }
+    },
+    "drain": {
+      "seconds": 1.563131215982139,
+      "first_clear_seconds": 0.530910582980141,
+      "stable_samples": 3,
+      "clear": true,
+      "samples": [
+        {
+          "elapsed_seconds": 0.0167291319812648,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 1048576.0,
+            "brewfs_buffer_dirty_bytes": 1048576.0,
+            "brewfs_writeback_live_dirty_bytes": 1048576.0,
+            "brewfs_writeback_live_slices": 16.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 4.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 0
+        },
+        {
+          "elapsed_seconds": 0.530910582980141,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 1
+        },
+        {
+          "elapsed_seconds": 1.0483338439953513,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 2
+        },
+        {
+          "elapsed_seconds": 1.563131215982139,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 3
+        }
+      ]
+    },
+    "immediate_reads": 8192,
+    "verified_blocks": 8192,
+    "all_sha256_match": true,
+    "puts_per_gib": 16384.0,
+    "aggregation_passed": true,
+    "finished_unix": 1793597749.5373359
+  },
+  "crash_modes": {
+    "off": {
+      "variant": "off",
+      "cases": {
+        "fsync": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793597772.8076198,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        },
+        "close": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793597802.256073,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        }
+      },
+      "started_unix": 1793597752.3301826,
+      "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "finished_unix": 1793597812.2548268
+    },
+    "on": {
+      "variant": "on",
+      "cases": {
+        "fsync": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793597828.112154,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        },
+        "close": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793597844.5175586,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        }
+      },
+      "started_unix": 1793597814.8651109,
+      "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "finished_unix": 1793597850.2023802
+    },
+    "buffered-off": {
+      "variant": "off",
+      "cases": {
+        "fsync": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793602515.1419282,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        },
+        "close": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793602550.4258728,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        }
+      },
+      "started_unix": 1793602488.1642098,
+      "fuse_direct": "0",
+      "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "finished_unix": 1793602560.8974564
+    },
+    "buffered-on": {
+      "variant": "on",
+      "cases": {
+        "fsync": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793602583.7221637,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        },
+        "close": {
+          "blocks": 8192,
+          "all_sha256_match": true,
+          "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+          "durability_boundary_unix": 1793602606.373011,
+          "immediate_reads": 8192,
+          "empty_and_single_byte": true
+        }
+      },
+      "started_unix": 1793602563.5806441,
+      "fuse_direct": "0",
+      "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "finished_unix": 1793602612.0092626
+    }
+  },
+  "teardowns": {
+    "correctness/buffered-off-fsync-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/off-fsync-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/off-fsync-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/tdd-on/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/on-close-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-on-close-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-off-close-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/off-close-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/off-close-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/on-close-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-off-fsync-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-on-fsync-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/on-fsync-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-off-close-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-on-fsync-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/on-fsync-before-kill/teardown.json": {
+      "signal": "SIGKILL",
+      "returncode": -9,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    },
+    "correctness/buffered-on-close-after-restart/teardown.json": {
+      "signal": null,
+      "returncode": 0,
+      "unmount_status": 0,
+      "unmount_stderr": "",
+      "still_mounted": false
+    }
+  }
+}

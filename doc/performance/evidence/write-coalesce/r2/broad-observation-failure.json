@@ -1,0 +1,56 @@
+{
+  "invalid_rows": [
+    "2026-11-02T06:30:12+00:00\tfio-bigread-prefill\t74\tfalse\tmissing_required_stat"
+  ],
+  "bad_samples": [
+    {
+      "file": "/home/hxy/perf-write-coalesce-r2-20261102/broad/on/stats-timeseries/fio-bigread-prefill/1793601012800329556.txt",
+      "bytes": 1,
+      "missing": {
+        "brewfs_writeback_dirty_bytes": null,
+        "brewfs_s3_put_ops_total": null,
+        "brewfs_writeback_live_slices": null,
+        "brewfs_request_chunk_lock_wait_queue_oldest_age_ns": null,
+        "brewfs_writeback_recent_pending_upload_slices": null,
+        "brewfs_request_object_put_queue_wait_queue_oldest_age_ns": null,
+        "brewfs_buffer_dirty_bytes": null,
+        "brewfs_request_fuse_queue_oldest_age_ns": null,
+        "brewfs_writeback_buffer_soft_sleep_ops": null,
+        "brewfs_fuse_write_bytes_total": null,
+        "brewfs_request_file_lock_wait_queue_depth": null,
+        "brewfs_writeback_metadata_inflight": null,
+        "brewfs_request_observation_active": null,
+        "brewfs_request_chunk_lock_wait_queue_depth": null,
+        "brewfs_writeback_remote_upload_inflight_bytes": null,
+        "brewfs_writeback_stage_inflight_bytes": null,
+        "brewfs_request_metadata_rpc_wait_queue_depth": null,
+        "brewfs_writeback_buffer_moderate_sleep_ops": null,
+        "brewfs_request_object_put_queue_wait_queue_depth": null,
+        "brewfs_writeback_recent_pending_upload_bytes": null,
+        "brewfs_request_file_lock_wait_queue_oldest_age_ns": null,
+        "brewfs_request_fuse_queue_depth": null,
+        "brewfs_writeback_buffer_hard_sleep_ops": null,
+        "brewfs_writeback_upload_batch_ops_total": null,
+        "brewfs_request_flush_wait_queue_oldest_age_ns": null,
+        "brewfs_request_flush_wait_queue_depth": null,
+        "brewfs_request_metadata_rpc_wait_queue_oldest_age_ns": null,
+        "brewfs_writeback_live_dirty_bytes": null,
+        "brewfs_s3_put_bytes_total": null,
+        "brewfs_request_observation_dropped_total": null,
+        "brewfs_writeback_recent_uploaded_bytes": null
+      },
+      "tail": "\n"
+    }
+  ],
+  "fio_errors": {
+    "fio-bigread-prefill": [
+      0
+    ],
+    "fio-bigwrite": [
+      0
+    ]
+  },
+  "classification": "invalid observation; one empty stats sample, default stats-read timeout=5s; raw read exit code was not recorded, so exact cause is not proved; sticky invalid marker propagates subsequent tool failure",
+  "archived_arm": "/home/hxy/perf-write-coalesce-r2-20261102/broad-attempts/on-attempt1",
+  "path_note": "bad_samples.file records original location before archive; replace broad/on with broad-attempts/on-attempt1 to locate preserved samples"
+}

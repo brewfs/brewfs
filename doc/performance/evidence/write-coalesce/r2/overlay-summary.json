@@ -1,0 +1,104 @@
+{
+  "classification": "pre-existing intermittent EBUSY; unchanged test and direct implementation; no production/test edits",
+  "failure_test": "workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes",
+  "failure_location": "src/workspace_overlay/meta_layer/tests.rs:1477:57",
+  "failure": "observer.open(ino, OpenFlags::RDONLY).await.unwrap(): Io(Os { code: 16, kind: ResourceBusy, message: Device or resource busy })",
+  "focused_passed": 4,
+  "focused_failed": 1,
+  "focused_total": 5,
+  "cleared_by": "two complete unscreened overlay suites with zero failed; not a claim of 5/5 focused passes",
+  "test_binary_sha256": "b92358598a9594d26019708f39d014cb70a86931113a2e36a0a680ddf972dc10",
+  "source_provenance": {
+    "src/workspace_overlay/meta_layer/tests.rs": {
+      "unchanged_from_base": true,
+      "sha256": "2defe6a72a43dd338551acbab7a9100033e5636e5d2f4cbe16e561caf3b2e209"
+    },
+    "src/workspace_overlay/meta_layer/mod.rs": {
+      "unchanged_from_base": true,
+      "sha256": "8c02dc5e6f4f2b9dd564c08f22721d6cf3420421c6df0ef0b1c7009e4ba62921"
+    },
+    "src/workspace_overlay/stores/database.rs": {
+      "unchanged_from_base": true,
+      "sha256": "ff40da8ba42ad90f3634163e0189973e3ffd0d677a2e93b8a4e916c2e01caf26"
+    }
+  },
+  "runs": [
+    {
+      "name": "overlay-full-1",
+      "status": 0,
+      "started": "2026-11-02T02:49:32Z",
+      "finished": "2026-11-02T03:27:59Z",
+      "command": "CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay",
+      "result": [
+        "test result: ok. 2729 passed; 0 failed; 474 ignored; 0 measured; 0 filtered out; finished in 453.09s"
+      ],
+      "log_sha256": "904d775fb0782f87e4554625300458e9151af46cfe93f83e689c75c76c7c73e9"
+    },
+    {
+      "name": "overlay-acl-1",
+      "status": 0,
+      "started": "2026-11-02T03:28:08Z",
+      "finished": "2026-11-02T03:28:14Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "result": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.48s"
+      ],
+      "log_sha256": "300d5450ec65d30a38a3e934191bdeea2a618914fef71e5b48a7f91408e548ac"
+    },
+    {
+      "name": "overlay-acl-2",
+      "status": 101,
+      "started": "2026-11-02T03:28:14Z",
+      "finished": "2026-11-02T03:28:16Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "result": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 0.78s"
+      ],
+      "log_sha256": "b0456457b7d499921d6514aa92fe8b01234412b5e527ebd26939fb2767ae24c6"
+    },
+    {
+      "name": "overlay-acl-3",
+      "status": 0,
+      "started": "2026-11-02T03:28:16Z",
+      "finished": "2026-11-02T03:28:20Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "result": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.72s"
+      ],
+      "log_sha256": "09576d080de26317402bc9787f332dc375f6f92d7575d45dd60762b10b903522"
+    },
+    {
+      "name": "overlay-acl-4",
+      "status": 0,
+      "started": "2026-11-02T03:28:20Z",
+      "finished": "2026-11-02T03:28:24Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "result": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.76s"
+      ],
+      "log_sha256": "1b546420f7ec7d2942da5f9f9255e8be8f9fd0c5681bfbb4ac2a48f2eaf34338"
+    },
+    {
+      "name": "overlay-acl-5",
+      "status": 0,
+      "started": "2026-11-02T03:28:24Z",
+      "finished": "2026-11-02T03:28:27Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "result": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.61s"
+      ],
+      "log_sha256": "53c57c24e00fd382dbfa1ecf9da6dcfce25ac7f888e374d818c1b3d83d5cac9c"
+    },
+    {
+      "name": "overlay-full-2",
+      "status": 0,
+      "started": "2026-11-02T03:28:27Z",
+      "finished": "2026-11-02T03:36:06Z",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay",
+      "result": [
+        "test result: ok. 2729 passed; 0 failed; 474 ignored; 0 measured; 0 filtered out; finished in 457.67s"
+      ],
+      "log_sha256": "b7b039dc28926cfcc9cb587789a933eb0a0c05a956969361a3103a1856770496"
+    }
+  ]
+}

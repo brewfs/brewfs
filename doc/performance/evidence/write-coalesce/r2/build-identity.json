@@ -1,0 +1,33 @@
+{
+  "source_commit": "d5e53e1ca532762cf7ffb361430d939a0b97eb7c",
+  "binary": "/home/hxy/perf-write-coalesce-r2-20261102/bin/brewfs-candidate",
+  "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+  "binary_bytes": 399487560,
+  "source_manifest": "/home/hxy/perf-write-coalesce-r2-20261102/build/release.sources.before.json",
+  "source_manifest_sha256": "5e954a6ff76ac0c6fa3828d2148620c32d7eb16022d718a8f9a2f82c8fde26bf",
+  "source_file_count": 1858,
+  "writer_sha256": "a42b77d9d0ccee4e67ced80b3d688cc02ad2d6dfe86f21565ec00b59ba2d5fee",
+  "redis_store_sha256": "ee457f68cc752e70a75fa7bdd6e4a317bb7d12b015fff521bad028fa8dd942ff",
+  "first_started": "2026-11-02T03:28:02Z",
+  "finished": "2026-11-02T05:10:44Z",
+  "total_elapsed_seconds": 6162.0,
+  "features": [
+    "workspace-overlay",
+    "observability"
+  ],
+  "default_features": true,
+  "profile": "release",
+  "build_environment": [
+    "CARGO_BUILD_JOBS=4",
+    "CARGO_INCREMENTAL=0",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256",
+    "CARGO_PROFILE_RELEASE_DEBUG=0",
+    "CARGO_TARGET_DIR=/home/hxy/brewfs-pkv-target",
+    "RUSTFLAGS=-C debuginfo=0"
+  ],
+  "library_build_jobs": 1,
+  "binary_build_jobs": 4,
+  "scheduling_restart": "build-library-one-job/scheduling-restart.json",
+  "tracked_source_modified": false,
+  "dirty_flag_reason": "pre-existing untracked tools/perf/measure_observability.py (not a compilation input)"
+}
