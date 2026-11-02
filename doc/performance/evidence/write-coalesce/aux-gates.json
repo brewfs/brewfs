@@ -1,0 +1,51 @@
+[
+  {
+    "gate": "delivery-diff-check",
+    "exit_code": 0,
+    "command": "git diff --check",
+    "started": "2026-11-02T01:33:18Z",
+    "finished": "2026-11-02T01:33:18Z"
+  },
+  {
+    "gate": "delivery-diff-index-check",
+    "exit_code": 0,
+    "command": "git diff --cached --check",
+    "started": "2026-11-02T01:33:18Z",
+    "finished": "2026-11-02T01:33:18Z"
+  },
+  {
+    "gate": "delivery-juicefs-direct-matrix",
+    "exit_code": 0,
+    "command": "bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+    "started": "2026-11-02T01:33:17Z",
+    "finished": "2026-11-02T01:33:17Z"
+  },
+  {
+    "gate": "delivery-juicefs-perf-report",
+    "exit_code": 0,
+    "command": "bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+    "started": "2026-11-02T01:33:17Z",
+    "finished": "2026-11-02T01:33:17Z"
+  },
+  {
+    "gate": "delivery-perf-report-delta",
+    "exit_code": 0,
+    "command": "bash docker/compose-xfstests/test_perf_report_delta.sh",
+    "started": "2026-11-02T01:33:16Z",
+    "finished": "2026-11-02T01:33:16Z"
+  },
+  {
+    "gate": "delivery-redis-coalesce",
+    "exit_code": 0,
+    "command": "python3 tests/scripts/test_write_coalesce_redis.py --port 26380 --db 1",
+    "started": "2026-11-02T01:33:17Z",
+    "finished": "2026-11-02T01:33:18Z"
+  },
+  {
+    "gate": "delivery-shell-syntax",
+    "exit_code": 0,
+    "command": "bash -n docker/compose-xfstests/run_perf_in_container.sh docker/compose-xfstests/run_redis_perf.sh docker/compose-xfstests/run_juicefs_perf_in_container.sh docker/compose-xfstests/run_juicefs_perf.sh",
+    "started": "2026-11-02T01:33:16Z",
+    "finished": "2026-11-02T01:33:16Z"
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "variant": "on",
+  "cases": {
+    "fsync": {
+      "blocks": 8192,
+      "all_sha256_match": true,
+      "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+      "durability_boundary_unix": 1793582536.4895265,
+      "immediate_reads": 8192,
+      "empty_and_single_byte": true
+    },
+    "close": {
+      "blocks": 8192,
+      "all_sha256_match": true,
+      "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+      "durability_boundary_unix": 1793582606.1204667,
+      "immediate_reads": 8192,
+      "empty_and_single_byte": true
+    }
+  },
+  "started_unix": 1793582499.407268,
+  "binary": "/home/hxy/perf-write-coalesce-20261102/bin/brewfs-final-debug",
+  "binary_sha256": "fbe0f9f64c6718fa8e8f988b6ae33e3be96f857fa692843a1687ee742fe64e91",
+  "finished_unix": 1793582637.5323794
+}

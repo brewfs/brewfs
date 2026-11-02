@@ -31,6 +31,7 @@ use crate::vfs::extract_ino_and_chunk_index;
 use crate::vfs::io::split_chunk_spans;
 use crate::vfs::memory::{MemoryBudget, MemoryConsumer, MemoryUsageGuard, PressureLevel};
 use crate::vfs::stats::{RequestObservation, RequestSegment};
+use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::Mutex as ParkingMutex;
@@ -380,6 +381,8 @@ pub(crate) struct SliceState {
     /// Set to `true` when a pipeline upload task has been spawned for this
     /// slice to prevent duplicate top-level upload tasks.
     upload_task_active: bool,
+    /// Publication must consume the shared-object member reservation.
+    coalesced_object: bool,
     /// True while this slice's bytes are included in pending-upload accounting.
     recent_pending_accounted: bool,
     /// Stable logical byte count added to pending-upload accounting.
@@ -448,6 +451,7 @@ impl SliceState {
             block_done: 0,
             in_flight: 0,
             upload_task_active: false,
+            coalesced_object: false,
             recent_pending_accounted: false,
             recent_pending_accounted_bytes: 0,
             writeback_persisted_bytes: 0,
@@ -1236,11 +1240,12 @@ where
                 }
             });
             let _metadata_inflight = self.shared.recent_pending_upload.track_metadata_commit();
+            let coalesced = self.slice.lock().coalesced_object;
             let result = self
                 .shared
                 .backend
                 .meta()
-                .write(ino, desc.chunk_id, desc, new_size)
+                .write_with_coalesced_reservation(ino, desc.chunk_id, desc, new_size, coalesced)
                 .await;
             drop(metadata_commit);
             match result {
@@ -4325,6 +4330,65 @@ where
                     None => match shared.backend.meta().next_id(SLICE_ID_KEY).await {
                         Ok(id) => {
                             let id = id as u64;
+                            let limit = shared.backend.store().write_coalesce_limit();
+                            let eligible = limit > 0
+                                && shared.backend.meta().supports_write_coalescing()
+                                && matches!(
+                                    shared.config.writeback_mode,
+                                    WriteBackMode::UploadBeforeCommit
+                                )
+                                && crate::chunk::store::coalesce::encode_id(id, 0).is_ok()
+                                && handle.with_ref(|s| {
+                                    s.state == SliceStatus::Readonly
+                                        && s.dispatched_end == 0
+                                        && s.data.len() > 0
+                                        && s.data.len() <= limit as u64
+                                        && s.data.len() <= s.data.block_size() as u64
+                                        && !(matches!(
+                                            s.freeze_reason,
+                                            Some(SliceFreezeReason::ExplicitFlush)
+                                        ) && s.offset == 0
+                                            && s.data.len() == shared.inode.file_size())
+                                });
+                            if eligible {
+                                let result = async {
+                                    let plan = handle
+                                        .prepare_upload()?
+                                        .context("coalesced upload has no data")?;
+                                    let parts: Vec<_> = plan
+                                        .data
+                                        .into_iter()
+                                        .flat_map(|(_, pages)| pages)
+                                        .collect();
+                                    let len = parts.iter().map(|part| part.len() as u64).sum();
+                                    let _remote_upload = shared
+                                        .recent_pending_upload
+                                        .track_remote_upload_inflight(len);
+                                    let stored_id = shared
+                                        .backend
+                                        .store_arc()
+                                        .write_coalesced(
+                                            id,
+                                            plan.chunk_id,
+                                            parts,
+                                            shared.backend.meta_arc(),
+                                            shared.upload_limit.clone(),
+                                        )
+                                        .await?;
+                                    handle.set_slice_id(stored_id);
+                                    handle.with_mut(|s| s.coalesced_object = true);
+                                    handle.advance_upload_range(0, 1, len);
+                                    handle.try_commit().await;
+                                    Ok::<(), anyhow::Error>(())
+                                }
+                                .await;
+                                if let Err(error) = result {
+                                    handle.mark_failed(error);
+                                }
+                                slice.lock().upload_task_active = false;
+                                shared.flush_notify.notify_waiters();
+                                return;
+                            }
                             handle.set_slice_id(id);
                             id
                         }
@@ -5317,10 +5381,18 @@ where
                         let _metadata_inflight =
                             shared.recent_pending_upload.track_metadata_commit();
 
+                        let coalesced = slice.lock().coalesced_object;
+
                         let result = shared
                             .backend
                             .meta()
-                            .write(ino, desc.chunk_id, desc, new_size)
+                            .write_with_coalesced_reservation(
+                                ino,
+                                desc.chunk_id,
+                                desc,
+                                new_size,
+                                coalesced,
+                            )
                             .instrument(tracing::trace_span!(
                                 "commit_chunk.meta_write",
                                 ino,
@@ -6695,6 +6767,10 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "writer/coalesce_tests.rs"]
+mod coalesce_tests;
 
 #[cfg(test)]
 mod tests {

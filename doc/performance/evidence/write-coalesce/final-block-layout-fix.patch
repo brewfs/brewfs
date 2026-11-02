@@ -1,0 +1,12 @@
+diff --git a/src/vfs/io/writer.rs b/src/vfs/io/writer.rs
+index 8d11f86..f7d120a 100644
+--- a/src/vfs/io/writer.rs
++++ b/src/vfs/io/writer.rs
+@@ -4343,6 +4343,7 @@ where
+                                         && s.dispatched_end == 0
+                                         && s.data.len() > 0
+                                         && s.data.len() <= limit as u64
++                                        && s.data.len() <= s.data.block_size() as u64
+                                         && !(matches!(
+                                             s.freeze_reason,
+                                             Some(SliceFreezeReason::ExplicitFlush)

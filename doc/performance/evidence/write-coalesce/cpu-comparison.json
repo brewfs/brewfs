@@ -1,0 +1,1622 @@
+{
+  "method": "self CPU periods; mutually exclusive categories after Rust demangling and removing generic type arguments; no off-CPU inference",
+  "rows": [
+    {
+      "arm": "measure-01-main",
+      "category_self_percent": {
+        "coalescing": 0.0,
+        "object_sdk_http": 12.429268292682927,
+        "checksum": 1.473170731707317,
+        "compression": 1.551219512195122,
+        "metadata": 1.9804878048780488,
+        "writer": 4.780487804878049,
+        "other": 77.78536585365853
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 0,
+        "object_sdk_http": 2553106192,
+        "checksum": 302605208,
+        "compression": 318637272,
+        "metadata": 406813624,
+        "writer": 981963920,
+        "other": 15977955784
+      },
+      "sampled_cpu_ms_per_written_mib": 387.73904969768466,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 48.19312676242443,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 5.658536585365853,
+          "cpu_period_ns": 1162324640,
+          "samples": 580,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 2.6341463414634148,
+          "cpu_period_ns": 541082160,
+          "samples": 270,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.273170731707317,
+          "cpu_period_ns": 466933864,
+          "samples": 233,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.15609756097561,
+          "cpu_period_ns": 442885768,
+          "samples": 221,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 1.6878048780487804,
+          "cpu_period_ns": 346693384,
+          "samples": 173,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.6780487804878048,
+          "cpu_period_ns": 344689376,
+          "samples": 172,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.2,
+          "cpu_period_ns": 246492984,
+          "samples": 123,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 0.9365853658536586,
+          "cpu_period_ns": 192384768,
+          "samples": 96,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.7707317073170732,
+          "cpu_period_ns": 158316632,
+          "samples": 79,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.7219512195121951,
+          "cpu_period_ns": 148296592,
+          "samples": 74,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.6439024390243903,
+          "cpu_period_ns": 132264528,
+          "samples": 66,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.6048780487804878,
+          "cpu_period_ns": 124248496,
+          "samples": 62,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.5658536585365853,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.5560975609756098,
+          "cpu_period_ns": 114228456,
+          "samples": 57,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.5463414634146342,
+          "cpu_period_ns": 112224448,
+          "samples": 56,
+          "symbol": "0x00000000000ac612"
+        },
+        {
+          "self_percent": 0.5365853658536586,
+          "cpu_period_ns": 110220440,
+          "samples": 55,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.5170731707317073,
+          "cpu_period_ns": 106212424,
+          "samples": 53,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.4975609756097561,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "aws_smithy_runtime::client::orchestrator::try_attempt::{closure#0}"
+        },
+        {
+          "self_percent": 0.4975609756097561,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.4975609756097561,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.47804878048780486,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "core::fmt::write"
+        },
+        {
+          "self_percent": 0.47804878048780486,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.4585365853658537,
+          "cpu_period_ns": 94188376,
+          "samples": 47,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.4585365853658537,
+          "cpu_period_ns": 94188376,
+          "samples": 47,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 0.4292682926829268,
+          "cpu_period_ns": 88176352,
+          "samples": 44,
+          "symbol": "0x00000000000a9bc9"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-01-main/results/main/randwrite/measure-1/cpu-report.txt"
+    },
+    {
+      "arm": "measure-01-off",
+      "category_self_percent": {
+        "coalescing": 0.2638522427440633,
+        "object_sdk_http": 11.39450796442881,
+        "checksum": 2.3551255741229356,
+        "compression": 1.3681227401544025,
+        "metadata": 1.778559562200723,
+        "writer": 5.071826443858106,
+        "other": 77.76800547249096
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 54108216,
+        "object_sdk_http": 2336673328,
+        "checksum": 482965928,
+        "compression": 280561120,
+        "metadata": 364729456,
+        "writer": 1040080152,
+        "other": 15947895664
+      },
+      "sampled_cpu_ms_per_written_mib": 421.8397387853757,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 48.066562633025306,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 5.755887813935307,
+          "cpu_period_ns": 1180360712,
+          "samples": 589,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 3.0587315547737712,
+          "cpu_period_ns": 627254504,
+          "samples": 313,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.4039871005570213,
+          "cpu_period_ns": 492985968,
+          "samples": 246,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 2.140134857812958,
+          "cpu_period_ns": 438877752,
+          "samples": 219,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 1.7590149516270888,
+          "cpu_period_ns": 360721440,
+          "samples": 180,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.6906088146193687,
+          "cpu_period_ns": 346693384,
+          "samples": 173,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.2899442978598652,
+          "cpu_period_ns": 264529056,
+          "samples": 132,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 1.211765855565328,
+          "cpu_period_ns": 248496992,
+          "samples": 124,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 1.0749535815498876,
+          "cpu_period_ns": 220440880,
+          "samples": 110,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.9479136128212645,
+          "cpu_period_ns": 194388776,
+          "samples": 97,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.8013290335190071,
+          "cpu_period_ns": 164328656,
+          "samples": 82,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.7133782859376527,
+          "cpu_period_ns": 146292584,
+          "samples": 73,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.6254275383562983,
+          "cpu_period_ns": 128256512,
+          "samples": 64,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.5667937066353953,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.5667937066353953,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.5667937066353953,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "0x00000000000ac612"
+        },
+        {
+          "self_percent": 0.5179321802013095,
+          "cpu_period_ns": 106212424,
+          "samples": 53,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.49838756962767516,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "aws_smithy_runtime::client::orchestrator::try_attempt::{closure#0}"
+        },
+        {
+          "self_percent": 0.49838756962767516,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.488615264340858,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.4690706537672237,
+          "cpu_period_ns": 96192384,
+          "samples": 48,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.42998143261995503,
+          "cpu_period_ns": 88176352,
+          "samples": 44,
+          "symbol": "0x0000000000198f2d"
+        },
+        {
+          "self_percent": 0.42020912733313787,
+          "cpu_period_ns": 86172344,
+          "samples": 43,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.42020912733313787,
+          "cpu_period_ns": 86172344,
+          "samples": 43,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.42020912733313787,
+          "cpu_period_ns": 86172344,
+          "samples": 43,
+          "symbol": "<aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder>::merge_from"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-01-off/results/off/randwrite/measure-1/cpu-report.txt"
+    },
+    {
+      "arm": "measure-01-on",
+      "category_self_percent": {
+        "coalescing": 0.738140246646863,
+        "object_sdk_http": 2.2594292915653975,
+        "checksum": 5.833108290575209,
+        "compression": 1.8723557475920425,
+        "metadata": 2.484472049689441,
+        "writer": 6.40921775137276,
+        "other": 80.40327662255828
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 164328656,
+        "object_sdk_http": 503006008,
+        "checksum": 1298597184,
+        "compression": 416833664,
+        "metadata": 553106208,
+        "writer": 1426853696,
+        "other": 17899799456
+      },
+      "sampled_cpu_ms_per_written_mib": 218.19319935803983,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 4.929921058499234,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 7.597443514267711,
+          "cpu_period_ns": 1691382752,
+          "samples": 844,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 3.77171662615897,
+          "cpu_period_ns": 839679352,
+          "samples": 419,
+          "symbol": "sha2::sha256::soft::compress"
+        },
+        {
+          "self_percent": 2.9615626969124134,
+          "cpu_period_ns": 659318632,
+          "samples": 329,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.9255558556125663,
+          "cpu_period_ns": 651302600,
+          "samples": 325,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 2.52948060131425,
+          "cpu_period_ns": 563126248,
+          "samples": 281,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 2.2954361328652446,
+          "cpu_period_ns": 511022040,
+          "samples": 255,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 2.0523899540912773,
+          "cpu_period_ns": 456913824,
+          "samples": 228,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 1.854352326942119,
+          "cpu_period_ns": 412825648,
+          "samples": 206,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 1.3862633900441084,
+          "cpu_period_ns": 308617232,
+          "samples": 154,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 1.2062291835448735,
+          "cpu_period_ns": 268537072,
+          "samples": 134,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 1.1702223422450266,
+          "cpu_period_ns": 260521040,
+          "samples": 130,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.0712035286704473,
+          "cpu_period_ns": 238476952,
+          "samples": 119,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.9721847150958682,
+          "cpu_period_ns": 216432864,
+          "samples": 108,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.9361778737960212,
+          "cpu_period_ns": 208416832,
+          "samples": 104,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.9001710324961743,
+          "cpu_period_ns": 200400800,
+          "samples": 100,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.8641641911963273,
+          "cpu_period_ns": 192384768,
+          "samples": 96,
+          "symbol": "_raw_spin_unlock_irq"
+        },
+        {
+          "self_percent": 0.801152218921595,
+          "cpu_period_ns": 178356712,
+          "samples": 89,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.6481231433972455,
+          "cpu_period_ns": 144288576,
+          "samples": 72,
+          "symbol": "0x0000000000198f2d"
+        },
+        {
+          "self_percent": 0.630119722747322,
+          "cpu_period_ns": 140280560,
+          "samples": 70,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.5581060401476281,
+          "cpu_period_ns": 124248496,
+          "samples": 62,
+          "symbol": "<brewfs::vfs::io::writer::SliceState>::has_idle_block"
+        },
+        {
+          "self_percent": 0.5491043298226663,
+          "cpu_period_ns": 122244488,
+          "samples": 61,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.5401026194977046,
+          "cpu_period_ns": 120240480,
+          "samples": 60,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.49509406787289584,
+          "cpu_period_ns": 110220440,
+          "samples": 55,
+          "symbol": "<asyncfuse::raw::connection::io_uring_conn::RingDriver>::accept"
+        },
+        {
+          "self_percent": 0.4860923575479341,
+          "cpu_period_ns": 108216432,
+          "samples": 54,
+          "symbol": "<tokio::sync::mpsc::list::Rx<asyncfuse::raw::connection::io_uring_conn::RingRequest>>::pop"
+        },
+        {
+          "self_percent": 0.4500855162480871,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "update_blocked_averages"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-01-on/results/on/randwrite/measure-1/cpu-report.txt"
+    },
+    {
+      "arm": "measure-02-main",
+      "category_self_percent": {
+        "coalescing": 0.0,
+        "object_sdk_http": 11.989723094490436,
+        "checksum": 1.6366923589304405,
+        "compression": 1.3417071081929774,
+        "metadata": 1.9792558759158816,
+        "writer": 4.434294414311543,
+        "other": 78.61832714815873
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 0,
+        "object_sdk_http": 2525050080,
+        "checksum": 344689376,
+        "compression": 282565128,
+        "metadata": 416833664,
+        "writer": 933867728,
+        "other": 16557114096
+      },
+      "sampled_cpu_ms_per_written_mib": 407.6357733579314,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 48.87440045970059,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 5.994861547245218,
+          "cpu_period_ns": 1262525040,
+          "samples": 630,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 2.7690550956323152,
+          "cpu_period_ns": 583166328,
+          "samples": 291,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.179084594157389,
+          "cpu_period_ns": 458917832,
+          "samples": 229,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 2.150537634408602,
+          "cpu_period_ns": 452905808,
+          "samples": 226,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 1.6557236654296317,
+          "cpu_period_ns": 348697392,
+          "samples": 174,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.446379293938529,
+          "cpu_period_ns": 304609216,
+          "samples": 152,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.1323627367018745,
+          "cpu_period_ns": 238476952,
+          "samples": 119,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 0.9420496717099629,
+          "cpu_period_ns": 198396792,
+          "samples": 99,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.846893139214007,
+          "cpu_period_ns": 178356712,
+          "samples": 89,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.8088305262156247,
+          "cpu_period_ns": 170340680,
+          "samples": 85,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.6470644209724997,
+          "cpu_period_ns": 136272544,
+          "samples": 68,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.6090018079741174,
+          "cpu_period_ns": 128256512,
+          "samples": 64,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.5804548482253307,
+          "cpu_period_ns": 122244488,
+          "samples": 61,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.5709391949757351,
+          "cpu_period_ns": 120240480,
+          "samples": 60,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 0.5709391949757351,
+          "cpu_period_ns": 120240480,
+          "samples": 60,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.5614235417261395,
+          "cpu_period_ns": 118236472,
+          "samples": 59,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.4948139689789704,
+          "cpu_period_ns": 104208416,
+          "samples": 52,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.4948139689789704,
+          "cpu_period_ns": 104208416,
+          "samples": 52,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.47578266247977924,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.47578266247977924,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.46626700923018366,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.4377200494813969,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.4186887429822057,
+          "cpu_period_ns": 88176352,
+          "samples": 44,
+          "symbol": "<aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder>::merge_from"
+        },
+        {
+          "self_percent": 0.3806261299838234,
+          "cpu_period_ns": 80160320,
+          "samples": 40,
+          "symbol": "core::fmt::write"
+        },
+        {
+          "self_percent": 0.3806261299838234,
+          "cpu_period_ns": 80160320,
+          "samples": 40,
+          "symbol": "0x00000000000ab115"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-02-main/results/main/randwrite/measure-2/cpu-report.txt"
+    },
+    {
+      "arm": "measure-02-off",
+      "category_self_percent": {
+        "coalescing": 0.29422930903568717,
+        "object_sdk_http": 11.693242217160213,
+        "checksum": 1.8602885345482156,
+        "compression": 1.4521640091116172,
+        "metadata": 1.7084282460136675,
+        "writer": 4.271070615034168,
+        "other": 78.72057706909644
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 62124248,
+        "object_sdk_http": 2468937856,
+        "checksum": 392785568,
+        "compression": 306613224,
+        "metadata": 360721440,
+        "writer": 901803600,
+        "other": 16621242352
+      },
+      "sampled_cpu_ms_per_written_mib": 420.57597585807656,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 49.17896756427015,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 5.628321943811693,
+          "cpu_period_ns": 1188376744,
+          "samples": 593,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 2.951784358390281,
+          "cpu_period_ns": 623246488,
+          "samples": 311,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.1735003796507213,
+          "cpu_period_ns": 458917832,
+          "samples": 229,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 1.8602885345482156,
+          "cpu_period_ns": 392785568,
+          "samples": 196,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 1.727410782080486,
+          "cpu_period_ns": 364729456,
+          "samples": 182,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.5091116173120729,
+          "cpu_period_ns": 318637272,
+          "samples": 159,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.1294608959757024,
+          "cpu_period_ns": 238476952,
+          "samples": 119,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 0.90167046317388,
+          "cpu_period_ns": 190380760,
+          "samples": 95,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 0.8542141230068337,
+          "cpu_period_ns": 180360720,
+          "samples": 90,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.8447228549734245,
+          "cpu_period_ns": 178356712,
+          "samples": 89,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.7972665148063781,
+          "cpu_period_ns": 168336672,
+          "samples": 84,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.6643887623386484,
+          "cpu_period_ns": 140280560,
+          "samples": 70,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.5504935459377372,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.5125284738041003,
+          "cpu_period_ns": 108216432,
+          "samples": 54,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.503037205770691,
+          "cpu_period_ns": 106212424,
+          "samples": 53,
+          "symbol": "0x00000000000ac612"
+        },
+        {
+          "self_percent": 0.4935459377372817,
+          "cpu_period_ns": 104208416,
+          "samples": 52,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.4745634016704632,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.4650721336370539,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.45558086560364464,
+          "cpu_period_ns": 96192384,
+          "samples": 48,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.44608959757023536,
+          "cpu_period_ns": 94188376,
+          "samples": 47,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.43659832953682615,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.4271070615034169,
+          "cpu_period_ns": 90180360,
+          "samples": 45,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.4271070615034169,
+          "cpu_period_ns": 90180360,
+          "samples": 45,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.4271070615034169,
+          "cpu_period_ns": 90180360,
+          "samples": 45,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.39863325740318906,
+          "cpu_period_ns": 84168336,
+          "samples": 42,
+          "symbol": "<asyncfuse::raw::connection::io_uring_conn::RingDriver>::accept"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-02-off/results/off/randwrite/measure-2/cpu-report.txt"
+    },
+    {
+      "arm": "measure-02-on",
+      "category_self_percent": {
+        "coalescing": 0.49706281066425667,
+        "object_sdk_http": 2.602801626751017,
+        "checksum": 6.127428829643018,
+        "compression": 1.8707636692272933,
+        "metadata": 2.5033890646181653,
+        "writer": 6.678716674197921,
+        "other": 79.71983732489832
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 110220440,
+        "object_sdk_http": 577154304,
+        "checksum": 1358717424,
+        "compression": 414829656,
+        "metadata": 555110216,
+        "writer": 1480961912,
+        "other": 17677354568
+      },
+      "sampled_cpu_ms_per_written_mib": 220.22086437987352,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 5.731912240524498,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 7.537279710799819,
+          "cpu_period_ns": 1671342672,
+          "samples": 834,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 3.9855399909624944,
+          "cpu_period_ns": 883767528,
+          "samples": 441,
+          "symbol": "sha2::sha256::soft::compress"
+        },
+        {
+          "self_percent": 3.24446452779033,
+          "cpu_period_ns": 719438872,
+          "samples": 359,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.928151830094894,
+          "cpu_period_ns": 649298592,
+          "samples": 324,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 2.6389516493447807,
+          "cpu_period_ns": 585170336,
+          "samples": 292,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 2.0063262539539086,
+          "cpu_period_ns": 444889776,
+          "samples": 222,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 1.9792137370085856,
+          "cpu_period_ns": 438877752,
+          "samples": 219,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 1.780388612742883,
+          "cpu_period_ns": 394789576,
+          "samples": 197,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 1.5725259828287392,
+          "cpu_period_ns": 348697392,
+          "samples": 174,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 1.2833258020786262,
+          "cpu_period_ns": 284569136,
+          "samples": 142,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.2562132851333032,
+          "cpu_period_ns": 278557112,
+          "samples": 139,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 1.1116131947582468,
+          "cpu_period_ns": 246492984,
+          "samples": 123,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 1.0483506552191595,
+          "cpu_period_ns": 232464928,
+          "samples": 116,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.9399005874378672,
+          "cpu_period_ns": 208416832,
+          "samples": 104,
+          "symbol": "_raw_spin_unlock_irq"
+        },
+        {
+          "self_percent": 0.8585630366018979,
+          "cpu_period_ns": 190380760,
+          "samples": 95,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.8585630366018979,
+          "cpu_period_ns": 190380760,
+          "samples": 95,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.7953004970628107,
+          "cpu_period_ns": 176352704,
+          "samples": 88,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.7230004518752824,
+          "cpu_period_ns": 160320640,
+          "samples": 80,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.7049254405784003,
+          "cpu_period_ns": 156312624,
+          "samples": 78,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.6507004066877542,
+          "cpu_period_ns": 144288576,
+          "samples": 72,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.6326253953908721,
+          "cpu_period_ns": 140280560,
+          "samples": 70,
+          "symbol": "0x0000000000198f2d"
+        },
+        {
+          "self_percent": 0.6145503840939901,
+          "cpu_period_ns": 136272544,
+          "samples": 68,
+          "symbol": "<brewfs::vfs::io::writer::SliceState>::has_idle_block"
+        },
+        {
+          "self_percent": 0.4699502937189336,
+          "cpu_period_ns": 104208416,
+          "samples": 52,
+          "symbol": "<asyncfuse::raw::connection::io_uring_conn::RingDriver>::accept"
+        },
+        {
+          "self_percent": 0.4609127880704925,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "fget"
+        },
+        {
+          "self_percent": 0.4518752824220515,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "<tokio::sync::oneshot::State>::load"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-02-on/results/on/randwrite/measure-2/cpu-report.txt"
+    },
+    {
+      "arm": "measure-03-main",
+      "category_self_percent": {
+        "coalescing": 0.0,
+        "object_sdk_http": 11.74249575231263,
+        "checksum": 1.5197281480083067,
+        "compression": 1.3026241268642629,
+        "metadata": 2.0388899377005854,
+        "writer": 4.983953181045875,
+        "other": 78.41230885406834
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 0,
+        "object_sdk_http": 2492985952,
+        "checksum": 322645288,
+        "compression": 276553104,
+        "metadata": 432865728,
+        "writer": 1058116224,
+        "other": 16647294456
+      },
+      "sampled_cpu_ms_per_written_mib": 411.3682979497426,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 48.3049049131093,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 6.088351897300359,
+          "cpu_period_ns": 1292585160,
+          "samples": 645,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 2.6052482537285258,
+          "cpu_period_ns": 553106208,
+          "samples": 276,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.303190485180291,
+          "cpu_period_ns": 488977952,
+          "samples": 244,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.2748725693788936,
+          "cpu_period_ns": 482965928,
+          "samples": 241,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 1.6613177270152917,
+          "cpu_period_ns": 352705408,
+          "samples": 176,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.529167453275439,
+          "cpu_period_ns": 324649296,
+          "samples": 162,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.2365489899943365,
+          "cpu_period_ns": 262525048,
+          "samples": 131,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 1.1327166320558806,
+          "cpu_period_ns": 240480960,
+          "samples": 120,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 1.028884274117425,
+          "cpu_period_ns": 218436872,
+          "samples": 109,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.8023409477062489,
+          "cpu_period_ns": 170340680,
+          "samples": 85,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.6607513686992638,
+          "cpu_period_ns": 140280560,
+          "samples": 70,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.613554842363602,
+          "cpu_period_ns": 130260520,
+          "samples": 65,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.585236926562205,
+          "cpu_period_ns": 124248496,
+          "samples": 62,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.5191617896922787,
+          "cpu_period_ns": 110220440,
+          "samples": 55,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.500283179158014,
+          "cpu_period_ns": 106212424,
+          "samples": 53,
+          "symbol": "0x00000000000ac612"
+        },
+        {
+          "self_percent": 0.49084387389088163,
+          "cpu_period_ns": 104208416,
+          "samples": 52,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.4625259580894846,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.4530866528223523,
+          "cpu_period_ns": 96192384,
+          "samples": 48,
+          "symbol": "0x00000000000aba60"
+        },
+        {
+          "self_percent": 0.4530866528223523,
+          "cpu_period_ns": 96192384,
+          "samples": 48,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.43420804228808757,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 0.43420804228808757,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "<aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder>::merge_from"
+        },
+        {
+          "self_percent": 0.42476873702095524,
+          "cpu_period_ns": 90180360,
+          "samples": 45,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.42476873702095524,
+          "cpu_period_ns": 90180360,
+          "samples": 45,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.4153294317538229,
+          "cpu_period_ns": 88176352,
+          "samples": 44,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.4058901264866906,
+          "cpu_period_ns": 86172344,
+          "samples": 43,
+          "symbol": "0x0000000000198c53"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-03-main/results/main/randwrite/measure-3/cpu-report.txt"
+    },
+    {
+      "arm": "measure-03-off",
+      "category_self_percent": {
+        "coalescing": 0.24925702233726393,
+        "object_sdk_http": 11.73425366695427,
+        "checksum": 2.1762055411753427,
+        "compression": 1.476368516920717,
+        "metadata": 2.013229795800978,
+        "writer": 4.3140638481449525,
+        "other": 78.03662160866648
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 52104208,
+        "object_sdk_http": 2452905792,
+        "checksum": 454909816,
+        "compression": 308617232,
+        "metadata": 420841680,
+        "writer": 901803600,
+        "other": 16312625120
+      },
+      "sampled_cpu_ms_per_written_mib": 423.0670176842438,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 49.643757036287454,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 5.867126833477135,
+          "cpu_period_ns": 1226452896,
+          "samples": 612,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 2.530917457578372,
+          "cpu_period_ns": 529058112,
+          "samples": 264,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.281660435241108,
+          "cpu_period_ns": 476953904,
+          "samples": 238,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.1378583069696098,
+          "cpu_period_ns": 446893784,
+          "samples": 223,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 1.8598408589780462,
+          "cpu_period_ns": 388777552,
+          "samples": 194,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.6297574537436488,
+          "cpu_period_ns": 340681360,
+          "samples": 170,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 1.4667817083692838,
+          "cpu_period_ns": 306613224,
+          "samples": 153,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 1.2271114945834531,
+          "cpu_period_ns": 256513024,
+          "samples": 128,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 0.8819863867318569,
+          "cpu_period_ns": 184368736,
+          "samples": 92,
+          "symbol": "sha2::sha256::soft::unroll::compress"
+        },
+        {
+          "self_percent": 0.8819863867318569,
+          "cpu_period_ns": 184368736,
+          "samples": 92,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 0.8244655354232576,
+          "cpu_period_ns": 172344688,
+          "samples": 86,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 0.8052919183203912,
+          "cpu_period_ns": 168336672,
+          "samples": 84,
+          "symbol": "0x00000000000ac178"
+        },
+        {
+          "self_percent": 0.6806634071517592,
+          "cpu_period_ns": 142284568,
+          "samples": 71,
+          "symbol": "0x00000000000abf50"
+        },
+        {
+          "self_percent": 0.48892723612309463,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.48892723612309463,
+          "cpu_period_ns": 102204408,
+          "samples": 51,
+          "symbol": "0x00000000000a9ce6"
+        },
+        {
+          "self_percent": 0.4793404275716614,
+          "cpu_period_ns": 100200400,
+          "samples": 50,
+          "symbol": "0x00000000000ac612"
+        },
+        {
+          "self_percent": 0.46975361902022816,
+          "cpu_period_ns": 98196392,
+          "samples": 49,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.46016681046879493,
+          "cpu_period_ns": 96192384,
+          "samples": 48,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.44099319336592846,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "aws_smithy_runtime::client::orchestrator::try_attempt::{closure#0}"
+        },
+        {
+          "self_percent": 0.42181957626306205,
+          "cpu_period_ns": 88176352,
+          "samples": 44,
+          "symbol": "0x00000000000abf7b"
+        },
+        {
+          "self_percent": 0.4122327677116288,
+          "cpu_period_ns": 86172344,
+          "samples": 43,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.4026459591601956,
+          "cpu_period_ns": 84168336,
+          "samples": 42,
+          "symbol": "handle_softirqs"
+        },
+        {
+          "self_percent": 0.39305915060876234,
+          "cpu_period_ns": 82164328,
+          "samples": 41,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.39305915060876234,
+          "cpu_period_ns": 82164328,
+          "samples": 41,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 0.3834723420573291,
+          "cpu_period_ns": 80160320,
+          "samples": 40,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-03-off/results/off/randwrite/measure-3/cpu-report.txt"
+    },
+    {
+      "arm": "measure-03-on",
+      "category_self_percent": {
+        "coalescing": 0.5962598247357485,
+        "object_sdk_http": 2.58379257385491,
+        "checksum": 6.278796639262806,
+        "compression": 1.6894028367512874,
+        "metadata": 2.574758334086187,
+        "writer": 6.667268949317915,
+        "other": 79.60972084199115
+      },
+      "category_cpu_period_ns": {
+        "coalescing": 132264528,
+        "object_sdk_http": 573146288,
+        "checksum": 1392785560,
+        "compression": 374749496,
+        "metadata": 571142280,
+        "writer": 1478957904,
+        "other": 17659318496
+      },
+      "sampled_cpu_ms_per_written_mib": 215.1180136870975,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 5.558203262671415,
+      "lost_samples": 0,
+      "top_symbols": [
+        {
+          "self_percent": 7.977233715782817,
+          "cpu_period_ns": 1769539064,
+          "samples": 883,
+          "symbol": "_raw_spin_unlock_irqrestore"
+        },
+        {
+          "self_percent": 4.0112024573132175,
+          "cpu_period_ns": 889779552,
+          "samples": 444,
+          "symbol": "sha2::sha256::soft::compress"
+        },
+        {
+          "self_percent": 3.2613605565091697,
+          "cpu_period_ns": 723446888,
+          "samples": 361,
+          "symbol": "brewfs::vfs::io::writer::packed_publication_drain::spawn_writer_owned::<<brewfs::vfs::io::writer::FileWriter<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::new_with_memory_budget::{closure#0}>::{closure#0}"
+        },
+        {
+          "self_percent": 2.7012376908483153,
+          "cpu_period_ns": 599198392,
+          "samples": 299,
+          "symbol": "0x0000000000198f89"
+        },
+        {
+          "self_percent": 2.4753816966302287,
+          "cpu_period_ns": 549098192,
+          "samples": 274,
+          "symbol": "finish_task_switch.isra.0"
+        },
+        {
+          "self_percent": 2.2585599421808653,
+          "cpu_period_ns": 501002000,
+          "samples": 250,
+          "symbol": "0x000000000019973a"
+        },
+        {
+          "self_percent": 2.0507724275002257,
+          "cpu_period_ns": 454909816,
+          "samples": 227,
+          "symbol": "malloc"
+        },
+        {
+          "self_percent": 2.014635468425332,
+          "cpu_period_ns": 446893784,
+          "samples": 223,
+          "symbol": "<sha1_smol::Sha1State>::process"
+        },
+        {
+          "self_percent": 1.8068479537446924,
+          "cpu_period_ns": 400801600,
+          "samples": 200,
+          "symbol": "syscall"
+        },
+        {
+          "self_percent": 1.3551359653085193,
+          "cpu_period_ns": 300601200,
+          "samples": 150,
+          "symbol": "cfree"
+        },
+        {
+          "self_percent": 1.156382690396603,
+          "cpu_period_ns": 256513024,
+          "samples": 128,
+          "symbol": "<alloc::vec::Vec<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>, core::iter::adapters::cloned::Cloned<alloc::collections::vec_deque::iter::Iter<alloc::sync::Arc<lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, brewfs::vfs::io::writer::SliceState>>>>>>::from_iter"
+        },
+        {
+          "self_percent": 1.1021772517842623,
+          "cpu_period_ns": 244488976,
+          "samples": 122,
+          "symbol": "<brewfs::vfs::io::writer::ChunkHandle<brewfs::chunk::store::ObjectBlockStore<brewfs::cadapter::s3::S3Backend>, brewfs::meta::client::MetaClient<dyn brewfs::meta::store::MetaStore>>>::write_at"
+        },
+        {
+          "self_percent": 1.0299033336344747,
+          "cpu_period_ns": 228456912,
+          "samples": 114,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::release_all"
+        },
+        {
+          "self_percent": 0.9756978950221339,
+          "cpu_period_ns": 216432864,
+          "samples": 108,
+          "symbol": "<alloc::vec::Vec<core::option::Option<brewfs::vfs::cache::page::Page>>>::extend_with"
+        },
+        {
+          "self_percent": 0.8672870177974523,
+          "cpu_period_ns": 192384768,
+          "samples": 96,
+          "symbol": "<brewfs::vfs::cache::page::CacheSlice>::freeze"
+        },
+        {
+          "self_percent": 0.8582527780287289,
+          "cpu_period_ns": 190380760,
+          "samples": 95,
+          "symbol": "_raw_spin_unlock_irq"
+        },
+        {
+          "self_percent": 0.840184298491282,
+          "cpu_period_ns": 186372744,
+          "samples": 93,
+          "symbol": "lockless_pages_from_mm"
+        },
+        {
+          "self_percent": 0.6594995031168127,
+          "cpu_period_ns": 146292584,
+          "samples": 73,
+          "symbol": "<parking_lot::condvar::Condvar>::wait_until_internal"
+        },
+        {
+          "self_percent": 0.6414310235793658,
+          "cpu_period_ns": 142284568,
+          "samples": 71,
+          "symbol": "ZSTD_compressBlock_fast_noDict_5_1"
+        },
+        {
+          "self_percent": 0.6143283042731954,
+          "cpu_period_ns": 136272544,
+          "samples": 68,
+          "symbol": "<asyncfuse::raw::connection::io_uring_conn::RingDriver>::accept"
+        },
+        {
+          "self_percent": 0.5239859065859608,
+          "cpu_period_ns": 116232464,
+          "samples": 58,
+          "symbol": "<brewfs::vfs::io::writer::SliceState>::has_idle_block"
+        },
+        {
+          "self_percent": 0.5149516668172374,
+          "cpu_period_ns": 114228456,
+          "samples": 57,
+          "symbol": "fget"
+        },
+        {
+          "self_percent": 0.4968831872797904,
+          "cpu_period_ns": 110220440,
+          "samples": 55,
+          "symbol": "do_syscall_64"
+        },
+        {
+          "self_percent": 0.47881470774234347,
+          "cpu_period_ns": 106212424,
+          "samples": 53,
+          "symbol": "<tokio::sync::mpsc::list::Rx<asyncfuse::raw::connection::io_uring_conn::RingRequest>>::pop"
+        },
+        {
+          "self_percent": 0.41557502936127927,
+          "cpu_period_ns": 92184368,
+          "samples": 46,
+          "symbol": "HIST_count_parallel_wksp"
+        }
+      ],
+      "report": "/home/hxy/perf-write-coalesce-20261102/rounds/randwrite/measure-03-on/results/on/randwrite/measure-3/cpu-report.txt"
+    }
+  ],
+  "median_categories": {
+    "off": {
+      "coalescing": 0.2638522427440633,
+      "object_sdk_http": 11.693242217160213,
+      "checksum": 2.1762055411753427,
+      "compression": 1.4521640091116172,
+      "metadata": 1.778559562200723,
+      "writer": 4.3140638481449525,
+      "other": 78.03662160866648,
+      "sampled_cpu_ms_per_written_mib": 421.8397387853757,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 49.17896756427015
+    },
+    "on": {
+      "coalescing": 0.5962598247357485,
+      "object_sdk_http": 2.58379257385491,
+      "checksum": 6.127428829643018,
+      "compression": 1.8707636692272933,
+      "metadata": 2.5033890646181653,
+      "writer": 6.667268949317915,
+      "other": 79.71983732489832,
+      "sampled_cpu_ms_per_written_mib": 218.19319935803983,
+      "object_sdk_http_sampled_cpu_ms_per_written_mib": 5.558203262671415
+    }
+  }
+}

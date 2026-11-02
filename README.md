@@ -279,6 +279,30 @@ performance claim. Reproduction details live in the
 [Aliyun performance guide](docker/compose-xfstests/aliyun/README.md) and the
 [benchmark guide](doc/testing/bench.md).
 
+The **2026-11-02 local small-write comparison** uses release source `d5e53e1`,
+Redis/RustFS, flat-v1 and the same executable with coalescing off/on. Each
+scene has two warmup pairs and three measured 20-second pairs; random I/O
+uses 4 KiB blocks, four jobs and 512 MiB/job, with buffered libaio. Sequential
+writes use 1 MiB blocks and one job. These are medians including full fio wall
+time and strict drain:
+
+| Local workload | Coalescing off | Coalescing on | Change |
+| --- | ---: | ---: | ---: |
+| Random write, wall + drain | 2.237 MiB/s | 4.752 MiB/s | +112.44% |
+| Mixed random I/O, wall + drain | 2.555 MiB/s | 3.164 MiB/s | +23.87% |
+| Sequential write, wall + drain | 125.944 MiB/s | 125.186 MiB/s | −0.60% |
+| Random-write PUT/GiB | 261,490.89 | 16,379.61 | −93.74% |
+| Random-write average PUT | 4,099 B | 66,272 B | +1516.72% |
+| Random-write p99 | 387.973 ms | 235.930 ms | −39.19% |
+
+Active random-write bandwidth rises 108.33%, with paired difference 95% CI
+[+2.573, +2.790] MiB/s. Workspace and full overlay tests, direct guards, full
+compose workloads and release crash recovery pass. The report retains an
+invalid first broad arm, read-throughput variability, follow-up measurements
+and the large-read latency histogram limit. See the
+[final-source report and binary/source hashes](doc/performance/write-coalesce-2026-11-02.md)
+and [upgrade compatibility](doc/operations/write-coalescing.md).
+
 ## Correctness and Testing
 
 Performance changes are accepted only with correctness and mixed-I/O gates.

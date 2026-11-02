@@ -40,6 +40,10 @@ where
         &self.meta
     }
 
+    pub(crate) fn meta_arc(&self) -> Arc<M> {
+        self.meta.clone()
+    }
+
     pub(crate) fn store(&self) -> &B {
         &self.store
     }

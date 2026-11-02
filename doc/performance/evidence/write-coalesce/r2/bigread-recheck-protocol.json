@@ -1,0 +1,9 @@
+{
+  "preregistered_utc": "2026-11-02T06:55:00Z",
+  "reason": "Complete broad off bigread took 109 s, on retry took 130 s. Follow up the additional read gap if seqread's three-pair guard passes.",
+  "order": ["off", "on"],
+  "config": "Unchanged final broad-compose.yml; only PERF_TOOLS=fio-bigread and artifact destination overridden. Same 8 jobs x 512 MiB, 4 MiB blocks, depth32, direct=0, complete file read, original prefill/drain/remount, one pass and zero warmups.",
+  "decision": "Require clean runner, complete samples, zero fio error, normal unmount; on throughput >=97% of off and p99 <=110% of off. Retain original broad pair and all follow-up data. This one-pair guard is not a statistical significance claim.",
+  "after_measurement_observation": "List task bucket objects after each runner has unmounted, outside the timing window.",
+  "artifact_path": "broad/bigread-recheck/pair-01-ARM"
+}

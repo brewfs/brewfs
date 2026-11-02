@@ -1,0 +1,104 @@
+{
+  "accepted": true,
+  "checks": {
+    "matrix": true,
+    "binary_identity": true,
+    "runner_fio_teardown": true,
+    "throughput_within_3_percent": true,
+    "p99_within_10_percent": true
+  },
+  "rows": [
+    {
+      "pair": 1,
+      "arm": "off",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 22.823752403259277,
+      "p99_ms": 425.721856,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-01-off"
+    },
+    {
+      "pair": 1,
+      "arm": "on",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 21.24787425994873,
+      "p99_ms": 438.304768,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-01-on"
+    },
+    {
+      "pair": 2,
+      "arm": "off",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 30.873756408691406,
+      "p99_ms": 408.94464,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-02-off"
+    },
+    {
+      "pair": 2,
+      "arm": "on",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 30.614792823791504,
+      "p99_ms": 358.612992,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-02-on"
+    },
+    {
+      "pair": 3,
+      "arm": "off",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 30.728489875793457,
+      "p99_ms": 387.97312,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-03-off"
+    },
+    {
+      "pair": 3,
+      "arm": "on",
+      "status": 0,
+      "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+      "bw_mib_s": 31.104897499084473,
+      "p99_ms": 442.499072,
+      "fio_error": 0,
+      "clean_unmount": true,
+      "source": "/home/hxy/perf-write-coalesce-r2-20261102/broad/seqread-recheck/pair-03-on"
+    }
+  ],
+  "comparison": {
+    "bw_mib_s": {
+      "off_median": 30.728489875793457,
+      "on_median": 30.614792823791504,
+      "change_percent": -0.37000533531430513
+    },
+    "p99_ms": {
+      "off_median": 408.94464,
+      "on_median": 438.304768,
+      "change_percent": 7.179487179487198
+    },
+    "paired_bw_differences": [
+      -1.5758781433105469,
+      -0.25896358489990234,
+      0.3764076232910156
+    ],
+    "paired_bw_95ci": [
+      -2.959781347116737,
+      1.9874919438371148
+    ]
+  },
+  "initial_broad_pair_retained": {
+    "off_mib_s": 31.495275497436523,
+    "on_mib_s": 21.47208595275879,
+    "change_percent": -31.82442250899995
+  }
+}

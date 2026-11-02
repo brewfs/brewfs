@@ -1,0 +1,38 @@
+{
+  "accepted": true,
+  "checks": {
+    "base_acceptance": true,
+    "seqread_followup": true,
+    "bigread_followup": true,
+    "final_source_manifest": true,
+    "strict_all_targets_clippy": true,
+    "off_release_identity": true,
+    "off_full_block_recovery": true,
+    "on_release_identity": true,
+    "on_full_block_recovery": true,
+    "buffered-off_release_identity": true,
+    "buffered-off_full_block_recovery": true,
+    "buffered-on_release_identity": true,
+    "buffered-on_full_block_recovery": true,
+    "crash_hashes_agree": true,
+    "correctness_clean_unmounts": true,
+    "broad_off_fio_errors": true,
+    "broad_off_fatal_logs": true,
+    "broad_off_final_debt": true,
+    "broad_off_redis_diagnostics_present": true,
+    "broad_off_metaperf_operations": true,
+    "broad_on_fio_errors": true,
+    "broad_on_fatal_logs": true,
+    "broad_on_final_debt": true,
+    "broad_on_redis_diagnostics_present": true,
+    "broad_on_metaperf_operations": true,
+    "broad_randrw_read_p99": true,
+    "broad_randrw_write_p99": true,
+    "broad_randrw_throughput": true
+  },
+  "source_commit": "d5e53e1ca532762cf7ffb361430d939a0b97eb7c",
+  "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+  "crash_hashes": [
+    "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90"
+  ]
+}

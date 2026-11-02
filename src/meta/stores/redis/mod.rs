@@ -634,6 +634,71 @@ const STAT_FS_MGET_BATCH_SIZE: usize = 512;
 // ARGV[1] = serialized slice data, ARGV[2] = new_size, ARGV[3] = timestamp
 // ARGV[4] = allocated_blocks_delta (512-byte units)
 const WRITE_SLICE_LUA: &str = r#"
+    if ARGV[5] == '1' then
+        -- Redis scripts do not roll back writes on runtime errors. Validate
+        -- every fallible key operation before marking publication complete.
+        local expected_types = {'list', 'string', 'string', 'hash', 'zset', 'zset', 'hash'}
+        for i, expected_type in ipairs(expected_types) do
+            local actual = redis.call('TYPE', KEYS[i])
+            if type(actual) == 'table' then actual = actual.ok end
+            if actual ~= 'none' and actual ~= expected_type then
+                return cjson.encode({ok=false, error='corrupt_coalesced_metadata'})
+            end
+        end
+        local version = redis.call('GET', KEYS[2])
+        -- Match Redis INCR's canonical integer syntax: tonumber alone also
+        -- accepts leading zeroes that INCR rejects after earlier mutations.
+        if version and ((version ~= '0' and not string.match(version, '^[1-9]%d*$'))
+            or not tonumber(version) or tonumber(version) >= 9007199254740991) then
+            return cjson.encode({ok=false, error='corrupt_chunk_version'})
+        end
+        if redis.call('HGET', KEYS[7], 'p' .. ARGV[6]) == '1' then
+            return cjson.encode({ok=true, updated=false})
+        end
+        if redis.call('HGET', KEYS[4], 'st') ~= 'pending'
+            or redis.call('HGET', KEYS[4], 'cid') ~= ARGV[8]
+            or redis.call('HGET', KEYS[4], 'sz') ~= ARGV[9]
+            or redis.call('HEXISTS', KEYS[7], 'n') == 0
+            or redis.call('HEXISTS', KEYS[7], 'd' .. ARGV[6]) == 1 then
+            return cjson.encode({ok=false, error='coalesced_reservation_lost'})
+        end
+        local raw = redis.call('GET', KEYS[3])
+        if not raw then return cjson.encode({ok=false, error='node_not_found'}) end
+        local valid, node = pcall(cjson.decode, raw)
+        local function valid_integer(value, upper)
+            return type(value) == 'number' and value >= 0 and value <= upper
+                and value % 1 == 0
+        end
+        if not valid or type(node) ~= 'table' or type(node.attr) ~= 'table'
+            or not valid_integer(node.attr.size, 9007199254740991)
+            or (node.attr.blocks ~= nil and not valid_integer(node.attr.blocks, 9007199254740991))
+            or (node.attr.mode ~= nil and not valid_integer(node.attr.mode, 4294967295)) then
+            return cjson.encode({ok=false, error='corrupt_node'})
+        end
+        -- cjson accepts non-finite numbers when decoding but rejects them
+        -- when encoding, including values outside the fields above.
+        if not pcall(cjson.encode, node) then
+            return cjson.encode({ok=false, error='corrupt_node'})
+        end
+        local writes = {
+            {'HSET', KEYS[7], 'p' .. ARGV[6], '1'},
+            {'DEL', KEYS[4]},
+            {'ZREM', KEYS[5], ARGV[7]},
+            {'ZREM', KEYS[6], ARGV[7]},
+            {'RPUSH', KEYS[1], ARGV[1]},
+            {'INCR', KEYS[2]},
+            {'SET', KEYS[3], raw}
+        }
+        for _, command in ipairs(writes) do
+            if not redis.acl_check_cmd(unpack(command)) then
+                return cjson.encode({ok=false, error='coalesced_write_permission_denied'})
+            end
+        end
+        redis.call('HSET', KEYS[7], 'p' .. ARGV[6], '1')
+        redis.call('DEL', KEYS[4])
+        redis.call('ZREM', KEYS[5], ARGV[7])
+        redis.call('ZREM', KEYS[6], ARGV[7])
+    end
     redis.call('RPUSH', KEYS[1], ARGV[1])
     redis.call('INCR', KEYS[2])
     local node_json = redis.call('GET', KEYS[3])
@@ -2816,6 +2881,136 @@ impl RedisMetaStore {
 
 #[async_trait]
 impl MetaStore for RedisMetaStore {
+    fn supports_write_coalescing(&self) -> bool {
+        true
+    }
+
+    async fn register_coalesced_group(
+        &self,
+        group: u64,
+        members: &[(u64, u64, u64)],
+    ) -> Result<(), MetaError> {
+        use crate::chunk::store::coalesce::{encode_id, ledger_key};
+        if members.is_empty() || members.len() > 32 {
+            return Err(MetaError::Internal("invalid coalesced group".into()));
+        }
+        for (slot, (id, _, len)) in members.iter().enumerate() {
+            if encode_id(group, slot).ok() != Some(*id) || *len == 0 || *len > 65536 {
+                return Err(MetaError::Internal("invalid coalesced member".into()));
+            }
+        }
+        let script = redis::Script::new(
+            r#"
+            if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+            local pending_type = redis.call('TYPE', KEYS[2])
+            if type(pending_type) == 'table' then pending_type = pending_type.ok end
+            if pending_type ~= 'none' and pending_type ~= 'zset' then
+                return redis.error_reply('invalid coalesced pending index type')
+            end
+            for i = 3, #KEYS do
+                if redis.call('EXISTS', KEYS[i]) == 1 then return 0 end
+            end
+            local writes = {{'HSET', KEYS[1], 'n', #KEYS - 2, 'dead', 0}}
+            for i = 3, #KEYS do
+                local arg = 2 + (i - 3) * 3
+                table.insert(writes, {'HSET', KEYS[i], 'cid', ARGV[arg + 1], 'sz', ARGV[arg + 2],
+                    'ca', ARGV[1], 'op', 'coalesce', 'st', 'pending'})
+                table.insert(writes, {'ZADD', KEYS[2], ARGV[1], ARGV[arg]})
+            end
+            for _, command in ipairs(writes) do
+                if not redis.acl_check_cmd(unpack(command)) then
+                    return redis.error_reply('coalesced registration permission denied')
+                end
+            end
+            for _, command in ipairs(writes) do
+                redis.call(unpack(command))
+            end
+            return 1
+        "#,
+        );
+        let mut invocation = script.prepare_invoke();
+        invocation
+            .key(ledger_key(group))
+            .key(UNCOMMITTED_PENDING_INDEX_KEY);
+        for (id, _, _) in members {
+            invocation.key(self.uncommitted_key(*id));
+        }
+        invocation.arg(Utc::now().timestamp());
+        for (id, chunk, len) in members {
+            invocation
+                .arg(id.to_string())
+                .arg(chunk.to_string())
+                .arg(len.to_string());
+        }
+        let result: i64 = invocation
+            .invoke_async(&mut self.conn.clone())
+            .await
+            .map_err(redis_err)?;
+        if result != 1 {
+            return Err(MetaError::Internal("coalesced group collision".into()));
+        }
+        Ok(())
+    }
+
+    async fn retire_coalesced_member(
+        &self,
+        group: u64,
+        slot: u8,
+    ) -> Result<Option<bool>, MetaError> {
+        let result: i64 = redis::Script::new(
+            r#"
+            local n = tonumber(redis.call('HGET', KEYS[1], 'n'))
+            if not n then return -1 end
+            local slot = tonumber(ARGV[1])
+            if slot < 0 or slot >= n then return -2 end
+            if not redis.acl_check_cmd('HSETNX', KEYS[1], 'd' .. ARGV[1], 1)
+                or not redis.acl_check_cmd('HINCRBY', KEYS[1], 'dead', 1) then
+                return redis.error_reply('coalesced retirement permission denied')
+            end
+            if redis.call('HSETNX', KEYS[1], 'd' .. ARGV[1], 1) == 1 then
+                redis.call('HINCRBY', KEYS[1], 'dead', 1)
+            end
+            if tonumber(redis.call('HGET', KEYS[1], 'dead')) == n then return 1 end
+            return 0
+        "#,
+        )
+        .key(crate::chunk::store::coalesce::ledger_key(group))
+        .arg(slot)
+        .invoke_async(&mut self.conn.clone())
+        .await
+        .map_err(redis_err)?;
+        match result {
+            -1 => Ok(None),
+            0 => Ok(Some(false)),
+            1 => Ok(Some(true)),
+            _ => Err(MetaError::Internal(
+                "invalid coalesced retirement slot".into(),
+            )),
+        }
+    }
+
+    async fn forget_coalesced_group(&self, group: u64) -> Result<(), MetaError> {
+        let result: i64 = redis::Script::new(
+            r#"
+            local n = tonumber(redis.call('HGET', KEYS[1], 'n'))
+            if not n then return 1 end
+            if tonumber(redis.call('HGET', KEYS[1], 'dead')) ~= n then return 0 end
+            redis.call('DEL', KEYS[1])
+            return 1
+        "#,
+        )
+        .key(crate::chunk::store::coalesce::ledger_key(group))
+        .invoke_async(&mut self.conn.clone())
+        .await
+        .map_err(redis_err)?;
+        if result != 1 {
+            return Err(MetaError::Internal(
+                "cannot forget live coalesced group".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn name(&self) -> &'static str {
         "redis-meta-store"
     }
@@ -4598,6 +4793,18 @@ impl MetaStore for RedisMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        self.write_with_coalesced_reservation(ino, chunk_id, slice, new_size, false)
+            .await
+    }
+
+    async fn write_with_coalesced_reservation(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slice: SliceDesc,
+        new_size: u64,
+        coalesced: bool,
+    ) -> Result<(), MetaError> {
         #[cfg(feature = "observability")]
         let _observation = crate::observability::metadata_timer(
             crate::observability::MetadataOp::Write,
@@ -4610,6 +4817,12 @@ impl MetaStore for RedisMetaStore {
         let data = crate::meta::serialization::serialize_meta(&slice)?;
         let now = current_time();
         let allocated_blocks_delta = slice.length.div_ceil(512);
+        let (group, slot) = if coalesced {
+            crate::chunk::store::coalesce::decode_id(slice.slice_id)
+                .ok_or_else(|| MetaError::Internal("invalid coalesced ID".into()))?
+        } else {
+            (0, 0)
+        };
 
         let response: LuaResponse = {
             let _txn_guard = Self::local_lock_for_key(&chunk_key).lock().await;
@@ -4618,10 +4831,19 @@ impl MetaStore for RedisMetaStore {
                 .key(&chunk_key)
                 .key(&version_key)
                 .key(&node_key)
+                .key(self.uncommitted_key(slice.slice_id))
+                .key(UNCOMMITTED_PENDING_INDEX_KEY)
+                .key(UNCOMMITTED_ORPHAN_INDEX_KEY)
+                .key(crate::chunk::store::coalesce::ledger_key(group))
                 .arg(data)
                 .arg(new_size)
                 .arg(now)
                 .arg(allocated_blocks_delta)
+                .arg(if coalesced { 1 } else { 0 })
+                .arg(slot)
+                .arg(slice.slice_id.to_string())
+                .arg(chunk_id.to_string())
+                .arg(slice.length.to_string())
                 .invoke_async(&mut self.conn.clone())
                 .await
                 .map_err(redis_err)?;
@@ -5262,7 +5484,13 @@ impl MetaStore for RedisMetaStore {
             crate::observability::MetadataOp::NextId,
             self.name(),
         );
-        self.alloc_id(key).await
+        let id = self.alloc_id(key).await?;
+        if key == SLICE_ID_KEY && crate::chunk::store::coalesce::decode_id(id as u64).is_some() {
+            return Err(MetaError::Internal(
+                "ordinary slice allocator reached reserved shared-object IDs".into(),
+            ));
+        }
+        Ok(id)
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(name))]

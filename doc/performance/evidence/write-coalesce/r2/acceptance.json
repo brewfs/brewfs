@@ -1,0 +1,501 @@
+{
+  "accepted": true,
+  "checks": {
+    "release_build": true,
+    "local_ci": true,
+    "source_stability": true,
+    "overlay_full_rerun": true,
+    "content": true,
+    "crash-off": true,
+    "crash-on": true,
+    "ab-campaign": true,
+    "direct-guard": true,
+    "broad": true,
+    "all_measurement_binaries": true,
+    "all_measurement_drains": true,
+    "randwrite_matrix": true,
+    "randwrite_p99": true,
+    "randwrite_positive_paired_ci": true,
+    "randwrite_puts_per_gib": true,
+    "randwrite_average_put": true,
+    "randrw_matrix": true,
+    "randrw_p99": true,
+    "randrw_read_p99": true,
+    "randrw_throughput": true,
+    "seqwrite_matrix": true,
+    "seqwrite_p99": true,
+    "seqwrite_throughput": true,
+    "randwrite_direct_pair": true,
+    "randwrite_direct_p99": true,
+    "randwrite_direct_average_put": true,
+    "randwrite_direct_puts_per_gib": true,
+    "measurement_teardowns": true,
+    "broad_off_workloads": true,
+    "broad_off_binary": true,
+    "broad_off_clean_unmounts": true,
+    "broad_off_no_mount_left": true,
+    "broad_off_runner_exit": true,
+    "broad_on_workloads": true,
+    "broad_on_binary": true,
+    "broad_on_clean_unmounts": true,
+    "broad_on_no_mount_left": true,
+    "broad_on_runner_exit": true
+  },
+  "details": {
+    "local_ci_statuses": {
+      "fmt": 0,
+      "syntax-run_perf_in_container": 0,
+      "syntax-run_redis_perf": 0,
+      "syntax-run_juicefs_perf_in_container": 0,
+      "syntax-run_juicefs_perf": 0,
+      "perf-report-delta": 0,
+      "juicefs-direct-matrix": 0,
+      "juicefs-perf-report": 0,
+      "redis-coalesce": 0,
+      "check-workspace": 0,
+      "build-workspace": 0,
+      "check-tokio": 0,
+      "check-io-uring": 0,
+      "test-workspace": 0,
+      "clippy-workspace": 0,
+      "diff-check": 0
+    },
+    "overlay_focused_statuses": [
+      0,
+      101,
+      0,
+      0,
+      0
+    ],
+    "overlay_full_statuses": [
+      0,
+      0
+    ],
+    "comparisons": {
+      "randrw": {
+        "pairs": [
+          1,
+          2,
+          3
+        ],
+        "paired_differences_mib_s": [
+          0.6649541854858398,
+          0.6055154800415039,
+          0.7139110565185547
+        ],
+        "paired_mean_mib_s": 0.6614602406819662,
+        "paired_mean_95ci_mib_s": [
+          0.5266158091633126,
+          0.7963046722006197
+        ],
+        "metrics": {
+          "put_count": {
+            "off_median": 4317.0,
+            "on_median": 333.0,
+            "change_percent": -92.28630993745656
+          },
+          "put_bytes": {
+            "off_median": 17660679.0,
+            "on_median": 21944261.0,
+            "change_percent": 24.25491115035838
+          },
+          "average_put_bytes": {
+            "off_median": 4090.961084086171,
+            "on_median": 65959.41033434651,
+            "change_percent": 1512.3206498083898
+          },
+          "puts_per_gib": {
+            "off_median": 262022.608937254,
+            "on_median": 16459.041221374046,
+            "change_percent": -93.7184652545325
+          },
+          "bw_mib_s": {
+            "off_median": 2.7811126708984375,
+            "on_median": 3.427267074584961,
+            "change_percent": 23.233665088361334
+          },
+          "p50_ms": {
+            "off_median": 177.209344,
+            "on_median": 143.654912,
+            "change_percent": -18.934911242603548
+          },
+          "p95_ms": {
+            "off_median": 227.540992,
+            "on_median": 179.306496,
+            "change_percent": -21.198156682027648
+          },
+          "p99_ms": {
+            "off_median": 256.90112,
+            "on_median": 198.180864,
+            "change_percent": -22.857142857142854
+          },
+          "read_p99_ms": {
+            "off_median": 270.532608,
+            "on_median": 200.278016,
+            "change_percent": -25.968992248062005
+          },
+          "rss_peak_mib": {
+            "off_median": 142.34375,
+            "on_median": 146.015625,
+            "change_percent": 2.5795828759604733
+          },
+          "wall_bw_mib_s": {
+            "off_median": 2.68348654454137,
+            "on_median": 3.3238116930608523,
+            "change_percent": 23.86168657420711
+          },
+          "active_plus_drain_bw_mib_s": {
+            "off_median": 2.642945501396424,
+            "on_median": 3.258058401525814,
+            "change_percent": 23.27376405621644
+          },
+          "wall_plus_drain_bw_mib_s": {
+            "off_median": 2.554623408102036,
+            "on_median": 3.1644258145873936,
+            "change_percent": 23.8705401567745
+          },
+          "drain_seconds": {
+            "off_median": 1.044961642997805,
+            "on_median": 1.0389751380425878,
+            "change_percent": -0.5728923157450105
+          }
+        },
+        "throughput_ci_positive": true,
+        "p99_within_10_percent": true,
+        "all_drains_clear": true
+      },
+      "randwrite": {
+        "pairs": [
+          1,
+          2,
+          3
+        ],
+        "paired_differences_mib_s": [
+          2.7144689559936523,
+          2.6316699981689453,
+          2.6975507736206055
+        ],
+        "paired_mean_mib_s": 2.681229909261068,
+        "paired_mean_95ci_mib_s": [
+          2.572559323519807,
+          2.7899004950023287
+        ],
+        "metrics": {
+          "put_count": {
+            "off_median": 12812.0,
+            "on_median": 1670.0,
+            "change_percent": -86.96534498907275
+          },
+          "put_bytes": {
+            "off_median": 52518793.0,
+            "on_median": 110687311.0,
+            "change_percent": 110.75753016639207
+          },
+          "average_put_bytes": {
+            "off_median": 4099.187714642522,
+            "on_median": 66272.35556915545,
+            "change_percent": 1516.7192181130663
+          },
+          "puts_per_gib": {
+            "off_median": 261490.8850825288,
+            "on_median": 16379.61439333104,
+            "change_percent": -93.73606678941735
+          },
+          "bw_mib_s": {
+            "off_median": 2.505711555480957,
+            "on_median": 5.220180511474609,
+            "change_percent": 108.33126223391764
+          },
+          "p50_ms": {
+            "off_median": 206.569472,
+            "on_median": 91.7504,
+            "change_percent": -55.58375634517767
+          },
+          "p95_ms": {
+            "off_median": 329.252864,
+            "on_median": 145.752064,
+            "change_percent": -55.73248407643312
+          },
+          "p99_ms": {
+            "off_median": 387.97312,
+            "on_median": 235.9296,
+            "change_percent": -39.189189189189186
+          },
+          "read_p99_ms": {
+            "off_median": 0.0,
+            "on_median": 0.0,
+            "change_percent": null
+          },
+          "rss_peak_mib": {
+            "off_median": 292.85546875,
+            "on_median": 313.75,
+            "change_percent": 7.13475877339238
+          },
+          "wall_bw_mib_s": {
+            "off_median": 2.3458862272286023,
+            "on_median": 4.988962657999545,
+            "change_percent": 112.66856849632632
+          },
+          "active_plus_drain_bw_mib_s": {
+            "off_median": 2.381662110399095,
+            "on_median": 4.961212944291325,
+            "change_percent": 108.30884963190579
+          },
+          "wall_plus_drain_bw_mib_s": {
+            "off_median": 2.2368120075057747,
+            "on_median": 4.751906585591862,
+            "change_percent": 112.44103526118946
+          },
+          "drain_seconds": {
+            "off_median": 1.0535368399578147,
+            "on_median": 1.0457806450431235,
+            "change_percent": -0.7362053817692504
+          }
+        },
+        "throughput_ci_positive": true,
+        "p99_within_10_percent": true,
+        "all_drains_clear": true
+      },
+      "seqwrite": {
+        "pairs": [
+          1,
+          2,
+          3
+        ],
+        "paired_differences_mib_s": [
+          5.154732704162598,
+          -1.5658302307128906,
+          -1.9851531982421875
+        ],
+        "paired_mean_mib_s": 0.5345830917358398,
+        "paired_mean_95ci_mib_s": [
+          -9.418502940819113,
+          10.487669124290793
+        ],
+        "metrics": {
+          "put_count": {
+            "off_median": 680.0,
+            "on_median": 673.0,
+            "change_percent": -1.0294117647058787
+          },
+          "put_bytes": {
+            "off_median": 2835573644.0,
+            "on_median": 2806367937.0,
+            "change_percent": -1.0299752595669176
+          },
+          "average_put_bytes": {
+            "off_median": 4169996.992657856,
+            "on_median": 4169937.499257058,
+            "change_percent": -0.0014267012878654839
+          },
+          "puts_per_gib": {
+            "off_median": 256.1880969875092,
+            "on_median": 256.1903345724907,
+            "change_percent": 0.0008734148884359527
+          },
+          "bw_mib_s": {
+            "off_median": 135.87282466888428,
+            "on_median": 134.48655128479004,
+            "change_percent": -1.0202727347963236
+          },
+          "p50_ms": {
+            "off_median": 32.899072,
+            "on_median": 33.161216,
+            "change_percent": 0.7968127490040056
+          },
+          "p95_ms": {
+            "off_median": 149.946368,
+            "on_median": 149.946368,
+            "change_percent": 0.0
+          },
+          "p99_ms": {
+            "off_median": 170.917888,
+            "on_median": 170.917888,
+            "change_percent": 0.0
+          },
+          "read_p99_ms": {
+            "off_median": 0.0,
+            "on_median": 0.0,
+            "change_percent": null
+          },
+          "rss_peak_mib": {
+            "off_median": 195.0234375,
+            "on_median": 185.6796875,
+            "change_percent": -4.791090814405319
+          },
+          "wall_bw_mib_s": {
+            "off_median": 132.32978693679294,
+            "on_median": 131.5860361381155,
+            "change_percent": -0.5620433735245789
+          },
+          "active_plus_drain_bw_mib_s": {
+            "off_median": 129.14912205782716,
+            "on_median": 127.80820428152865,
+            "change_percent": -1.0382709188670347
+          },
+          "wall_plus_drain_bw_mib_s": {
+            "off_median": 125.94392789173163,
+            "on_median": 125.18579620375505,
+            "change_percent": -0.6019596979922048
+          },
+          "drain_seconds": {
+            "off_median": 1.0433369639795274,
+            "on_median": 1.0451621530228294,
+            "change_percent": 0.17493763820466413
+          }
+        },
+        "throughput_ci_positive": false,
+        "p99_within_10_percent": true,
+        "all_drains_clear": true
+      }
+    },
+    "direct_rows": [
+      {
+        "variant": "off",
+        "workload": "randrw-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 4348.0,
+        "put_bytes": 17787642.0,
+        "average_put_bytes": 4090.9940202391904,
+        "write_bytes": 17817600,
+        "puts_per_gib": 262023.4740229885,
+        "bw_mib_s": 2.809117317199707,
+        "wall_bw_mib_s": 2.714861643922855,
+        "active_plus_drain_bw_mib_s": 2.604917534979359,
+        "wall_plus_drain_bw_mib_s": 2.5236681490840005,
+        "p50_ms": 173.01504,
+        "p95_ms": 235.9296,
+        "p99_ms": 278.921216,
+        "read_p99_ms": 278.921216,
+        "rss_peak_mib": 143.234375,
+        "drain_seconds": 1.56827941397205,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/randrw-direct/guard-01-off/complete.json"
+      },
+      {
+        "variant": "on",
+        "workload": "randrw-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 336.0,
+        "put_bytes": 22147227.0,
+        "average_put_bytes": 65914.36607142857,
+        "write_bytes": 21905408,
+        "puts_per_gib": 16469.78010471204,
+        "bw_mib_s": 3.454258918762207,
+        "wall_bw_mib_s": 3.352990298910097,
+        "active_plus_drain_bw_mib_s": 3.2838381583908642,
+        "wall_plus_drain_bw_mib_s": 3.192182216713226,
+        "p50_ms": 141.55776,
+        "p95_ms": 170.917888,
+        "p99_ms": 196.083712,
+        "read_p99_ms": 198.180864,
+        "rss_peak_mib": 145.67578125,
+        "drain_seconds": 1.0383048130315728,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/randrw-direct/guard-01-on/complete.json"
+      },
+      {
+        "variant": "off",
+        "workload": "randwrite-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 13396.0,
+        "put_bytes": 54914946.0,
+        "average_put_bytes": 4099.353986264557,
+        "write_bytes": 55009280,
+        "puts_per_gib": 261480.34430379746,
+        "bw_mib_s": 2.6187257766723633,
+        "wall_bw_mib_s": 2.4430401389358365,
+        "active_plus_drain_bw_mib_s": 2.488301661097092,
+        "wall_plus_drain_bw_mib_s": 2.3291481447848192,
+        "p50_ms": 200.278016,
+        "p95_ms": 337.641472,
+        "p99_ms": 387.97312,
+        "read_p99_ms": 0.0,
+        "rss_peak_mib": 310.28515625,
+        "drain_seconds": 1.0500295700039715,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/randwrite-direct/guard-01-off/complete.json"
+      },
+      {
+        "variant": "on",
+        "workload": "randwrite-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 1667.0,
+        "put_bytes": 110430508.0,
+        "average_put_bytes": 66245.05578884223,
+        "write_bytes": 109232128,
+        "puts_per_gib": 16386.457477126143,
+        "bw_mib_s": 5.204949378967285,
+        "wall_bw_mib_s": 4.982228727455311,
+        "active_plus_drain_bw_mib_s": 4.945857423680077,
+        "wall_plus_drain_bw_mib_s": 4.744328069637236,
+        "p50_ms": 93.847552,
+        "p95_ms": 139.460608,
+        "p99_ms": 177.209344,
+        "read_p99_ms": 0.0,
+        "rss_peak_mib": 293.640625,
+        "drain_seconds": 1.0484500619932078,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/randwrite-direct/guard-01-on/complete.json"
+      },
+      {
+        "variant": "off",
+        "workload": "seqwrite-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 802.0,
+        "put_bytes": 3346323940.0,
+        "average_put_bytes": 4172473.740648379,
+        "write_bytes": 3363831808,
+        "puts_per_gib": 256.0,
+        "bw_mib_s": 160.37594318389893,
+        "wall_bw_mib_s": 157.13683361159033,
+        "active_plus_drain_bw_mib_s": 148.7821005570621,
+        "wall_plus_drain_bw_mib_s": 145.99030774883016,
+        "p50_ms": 25.55904,
+        "p95_ms": 135.266304,
+        "p99_ms": 145.752064,
+        "read_p99_ms": 0.0,
+        "rss_peak_mib": 195.69921875,
+        "drain_seconds": 1.5587334880256094,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/seqwrite-direct/guard-01-off/complete.json"
+      },
+      {
+        "variant": "on",
+        "workload": "seqwrite-direct",
+        "phase": "guard",
+        "pair": 1,
+        "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+        "put_count": 783.0,
+        "put_bytes": 3267314648.0,
+        "average_put_bytes": 4172815.642401022,
+        "write_bytes": 3284140032,
+        "puts_per_gib": 256.0,
+        "bw_mib_s": 156.58434104919434,
+        "wall_bw_mib_s": 152.75430626820747,
+        "active_plus_drain_bw_mib_s": 148.82781228553057,
+        "wall_plus_drain_bw_mib_s": 145.36362918464232,
+        "p50_ms": 25.821184,
+        "p95_ms": 137.363456,
+        "p99_ms": 156.237824,
+        "read_p99_ms": 0.0,
+        "rss_peak_mib": 188.4609375,
+        "drain_seconds": 1.0424536669743247,
+        "drain_clear": true,
+        "source": "/home/hxy/perf-write-coalesce-r2-20261102/rounds/seqwrite-direct/guard-01-on/complete.json"
+      }
+    ],
+    "binary_sha256": "e2f12ee08c23f29369be8982ecf87b416d2f190a8cbf85e652c773dfffb32313",
+    "source_manifest_sha256": "5e954a6ff76ac0c6fa3828d2148620c32d7eb16022d718a8f9a2f82c8fde26bf"
+  }
+}

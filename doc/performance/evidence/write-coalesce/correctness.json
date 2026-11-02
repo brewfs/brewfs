@@ -1,0 +1,254 @@
+{
+  "tdd-main/test-result.json": {
+    "variant": "main",
+    "binary": "/home/hxy/brewfs-pkv-target/release/brewfs",
+    "started_unix": 1793568221.8686006,
+    "requested_coalesce_bytes": 65536,
+    "bytes_written": 33554432,
+    "working_set_bytes": 536870912,
+    "put_limit": 812,
+    "objects": {
+      "get": {
+        "count": 0.0,
+        "bytes": 0.0,
+        "average_bytes": null
+      },
+      "put": {
+        "count": 8192.0,
+        "bytes": 33587200.0,
+        "average_bytes": 4100.0
+      }
+    },
+    "drain": {
+      "seconds": 1.569855049951002,
+      "first_clear_seconds": 0.5353123199893162,
+      "stable_samples": 3,
+      "clear": true,
+      "samples": [
+        {
+          "elapsed_seconds": 0.017188575002364814,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 2949120.0,
+            "brewfs_buffer_dirty_bytes": 2949120.0,
+            "brewfs_writeback_live_dirty_bytes": 2949120.0,
+            "brewfs_writeback_live_slices": 45.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 139264.0,
+            "brewfs_writeback_metadata_inflight": 1.0
+          },
+          "put_count": 8192.0,
+          "put_bytes": 33587200.0,
+          "stable_samples": 0
+        },
+        {
+          "elapsed_seconds": 0.5353123199893162,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 8192.0,
+          "put_bytes": 33587200.0,
+          "stable_samples": 1
+        },
+        {
+          "elapsed_seconds": 1.0502583119668998,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 8192.0,
+          "put_bytes": 33587200.0,
+          "stable_samples": 2
+        },
+        {
+          "elapsed_seconds": 1.569855049951002,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 8192.0,
+          "put_bytes": 33587200.0,
+          "stable_samples": 3
+        }
+      ]
+    },
+    "immediate_reads": 8192,
+    "verified_blocks": 8192,
+    "all_sha256_match": true,
+    "puts_per_gib": 262144.0,
+    "aggregation_passed": false,
+    "finished_unix": 1793568284.0694108
+  },
+  "tdd-on/test-result.json": {
+    "variant": "on",
+    "binary": "/home/hxy/perf-write-coalesce-20261102/bin/brewfs-candidate",
+    "started_unix": 1793578988.7875457,
+    "requested_coalesce_bytes": 65536,
+    "bytes_written": 33554432,
+    "working_set_bytes": 536870912,
+    "put_limit": 812,
+    "objects": {
+      "get": {
+        "count": 0.0,
+        "bytes": 0.0,
+        "average_bytes": null
+      },
+      "put": {
+        "count": 512.0,
+        "bytes": 34013184.0,
+        "average_bytes": 66432.0
+      }
+    },
+    "drain": {
+      "seconds": 1.5680877470294945,
+      "first_clear_seconds": 0.5329456320032477,
+      "stable_samples": 3,
+      "clear": true,
+      "samples": [
+        {
+          "elapsed_seconds": 0.012772391026373953,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 16777216.0,
+            "brewfs_buffer_dirty_bytes": 16777216.0,
+            "brewfs_writeback_live_dirty_bytes": 16777216.0,
+            "brewfs_writeback_live_slices": 256.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 983040.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 0
+        },
+        {
+          "elapsed_seconds": 0.5329456320032477,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 1
+        },
+        {
+          "elapsed_seconds": 1.049214661004953,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 2
+        },
+        {
+          "elapsed_seconds": 1.5680877470294945,
+          "debt": {
+            "brewfs_writeback_dirty_bytes": 0.0,
+            "brewfs_buffer_dirty_bytes": 0.0,
+            "brewfs_writeback_live_dirty_bytes": 0.0,
+            "brewfs_writeback_live_slices": 0.0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0.0,
+            "brewfs_writeback_recent_pending_upload_slices": 0.0,
+            "brewfs_writeback_stage_inflight_bytes": 0.0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0.0,
+            "brewfs_writeback_metadata_inflight": 0.0
+          },
+          "put_count": 512.0,
+          "put_bytes": 34013184.0,
+          "stable_samples": 3
+        }
+      ]
+    },
+    "immediate_reads": 8192,
+    "verified_blocks": 8192,
+    "all_sha256_match": true,
+    "puts_per_gib": 16384.0,
+    "aggregation_passed": true,
+    "finished_unix": 1793579026.0830421
+  },
+  "off-summary.json": {
+    "variant": "off",
+    "cases": {
+      "fsync": {
+        "blocks": 8192,
+        "all_sha256_match": true,
+        "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+        "durability_boundary_unix": 1793568985.737111,
+        "immediate_reads": 8192,
+        "empty_and_single_byte": true
+      },
+      "close": {
+        "blocks": 8192,
+        "all_sha256_match": true,
+        "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+        "durability_boundary_unix": 1793569125.2222672,
+        "immediate_reads": 8192,
+        "empty_and_single_byte": true
+      }
+    },
+    "started_unix": 1793568963.3727746,
+    "finished_unix": 1793569242.973589
+  },
+  "on-summary.json": {
+    "variant": "on",
+    "cases": {
+      "fsync": {
+        "blocks": 8192,
+        "all_sha256_match": true,
+        "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+        "durability_boundary_unix": 1793579039.3256874,
+        "immediate_reads": 8192,
+        "empty_and_single_byte": true
+      },
+      "close": {
+        "blocks": 8192,
+        "all_sha256_match": true,
+        "digest_list_sha256": "6b63e88a9ea558535b198d528970a12eba20412ee1653a5ffb1e4222ce1a4f90",
+        "durability_boundary_unix": 1793579056.7899692,
+        "immediate_reads": 8192,
+        "empty_and_single_byte": true
+      }
+    },
+    "started_unix": 1793579028.7464087,
+    "finished_unix": 1793579062.5850296
+  }
+}

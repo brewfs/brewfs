@@ -1496,6 +1496,46 @@ pub trait MetaStore: Send + Sync {
         Err(MetaError::NotImplemented)
     }
 
+    /// Shared objects need durable member retirement and publication fencing.
+    fn supports_write_coalescing(&self) -> bool {
+        false
+    }
+
+    async fn register_coalesced_group(
+        &self,
+        _group: u64,
+        _members: &[(u64, u64, u64)],
+    ) -> Result<(), MetaError> {
+        Err(MetaError::NotImplemented)
+    }
+
+    /// None means no ledger exists; never recreate a retired ledger here.
+    async fn retire_coalesced_member(
+        &self,
+        _group: u64,
+        _slot: u8,
+    ) -> Result<Option<bool>, MetaError> {
+        Err(MetaError::NotImplemented)
+    }
+
+    async fn forget_coalesced_group(&self, _group: u64) -> Result<(), MetaError> {
+        Err(MetaError::NotImplemented)
+    }
+
+    async fn write_with_coalesced_reservation(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slice: SliceDesc,
+        new_size: u64,
+        coalesced: bool,
+    ) -> Result<(), MetaError> {
+        if coalesced {
+            return Err(MetaError::NotImplemented);
+        }
+        self.write(ino, chunk_id, slice, new_size).await
+    }
+
     async fn confirm_slice_committed(&self, slice_id: u64) -> Result<(), MetaError> {
         let _ = slice_id;
         Err(MetaError::NotImplemented)

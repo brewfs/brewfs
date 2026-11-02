@@ -1,4 +1,4 @@
-use crate::chunk::store::{BlockKey, BlockStore};
+use crate::chunk::store::BlockStore;
 use crate::meta::store::{MetaError, MetaStore};
 use std::sync::Arc;
 use std::time::Duration;
@@ -141,10 +141,8 @@ where
             Ok(orphans) if !orphans.is_empty() => {
                 let mut cleaned_slice_ids = Vec::new();
                 for (slice_id, size) in &orphans {
-                    let block_count = size.div_ceil(config.block_size);
                     if let Err(e) = self
-                        .block_store
-                        .delete_range((*slice_id, 0), block_count)
+                        .delete_slice_blocks(*slice_id, 0, *size, config.block_size)
                         .await
                     {
                         warn!(
@@ -197,6 +195,20 @@ where
         block_size: u64,
     ) -> Result<(), GCError> {
         if size == 0 {
+            return Ok(());
+        }
+
+        if let Some((group, slot)) = crate::chunk::store::coalesce::decode_id(slice_id)
+            && self.meta_store.supports_write_coalescing()
+            && let Some(all_dead) = self.meta_store.retire_coalesced_member(group, slot).await?
+        {
+            if all_dead {
+                self.block_store
+                    .delete_coalesced_group(group)
+                    .await
+                    .map_err(|e| GCError::BlockStoreError(e.to_string()))?;
+                self.meta_store.forget_coalesced_group(group).await?;
+            }
             return Ok(());
         }
 

@@ -1,0 +1,24 @@
+{
+  "binary": "/home/hxy/perf-write-coalesce-20261102/bin/brewfs-final-debug",
+  "sha256": "fbe0f9f64c6718fa8e8f988b6ae33e3be96f857fa692843a1687ee742fe64e91",
+  "profile": "dev, debug=0, incremental=0, default features, no observability feature",
+  "build_command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml build --workspace",
+  "source_sha256": {
+    "docker/compose-xfstests/docker-compose.redis-perf.yml": "e4877fb3857cc612660a2e7411162b99a016d646727dcf075ff3cea439e22ac3",
+    "docker/compose-xfstests/run_perf_in_container.sh": "be1737147f016242e0526a18c077d9132cfd72cb1bc0e84d4a04179c70f296ce",
+    "src/chunk/compact/gc.rs": "2b448b5db9ccbe5bb051e01aceb347f036a1ed1345e1f7f3e77c9e7d4745893b",
+    "src/chunk/store.rs": "eb5a59448c65d58ea43cb297ffa74470658facca8b5df582bf4966c5a4f3eed9",
+    "src/chunk/store/coalesce.rs": "11aaee6883579f06a1f4a0108135ad19bf4ab24121056707cea4e6edc381f58c",
+    "src/meta/client/mod.rs": "de009fbf5f3664e040724987ce1be593fa257c462f5617735ce86aa2028bf8ac",
+    "src/meta/layer.rs": "43ad8640468ff65d7b66b6949cf09a67a3d0d86153c25ddf74f3a1a7b7455159",
+    "src/meta/store.rs": "9e9eeeefbeaeb31091a2b88cafe12d6e0d53afb4a6949e94abc3b8a2ceb1cb30",
+    "src/meta/stores/database/mod.rs": "f9a27b3461a3ff0a53e5ef8b4f18421d7ed89851afb73519548923fedcf060c0",
+    "src/meta/stores/redis/mod.rs": "d3c08ff0e09dbce57e067254a866305acdc1180418c47ee343beaa4b4c36c74e",
+    "src/vfs/backend.rs": "d6cad2610f22e4a30292ff04400e2f43c9fa981e536a750d8832ca2a5ae093af",
+    "src/vfs/io/writer.rs": "a42b77d9d0ccee4e67ced80b3d688cc02ad2d6dfe86f21565ec00b59ba2d5fee",
+    "src/vfs/io/writer/coalesce_tests.rs": "f54ccde31e271d6c04f0899e28fe6634a10a8324ab12018534f80f19e6326377",
+    "src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs": "e4ccd44c5571038b67efbc4a8a2b7231978f913566aaa91ff9319c5fe8be063c",
+    "tests/scripts/test_write_coalesce_redis.py": "7885831fb4c4c1fd29d2c683c746fc3bc19ad62c449f47cb06fb90458123d5f3"
+  },
+  "use": "functional correctness only; not a release performance executable"
+}

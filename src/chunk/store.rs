@@ -38,10 +38,32 @@ use tokio::{
     sync::{RwLock, Semaphore},
 };
 
+pub(crate) mod coalesce;
+
 /// Abstract block store interface (cadapter/S3/etc. can implement this).
 #[async_trait]
 // ensure offset_in_block + data.len() <= block_size
 pub trait BlockStore {
+    fn write_coalesce_limit(&self) -> usize {
+        0
+    }
+
+    async fn write_coalesced(
+        self: Arc<Self>,
+        _seed: u64,
+        _chunk_id: u64,
+        _parts: Vec<Bytes>,
+        _meta: Arc<dyn crate::meta::MetaLayer>,
+        _upload_limit: Arc<Semaphore>,
+    ) -> anyhow::Result<u64> {
+        anyhow::bail!("block store does not support write coalescing")
+    }
+
+    /// Called only after the metadata ledger proves all members retired.
+    async fn delete_coalesced_group(&self, _group: u64) -> anyhow::Result<()> {
+        anyhow::bail!("block store does not support shared object retirement")
+    }
+
     /// Select the object bucket for this store's writable namespace.
     fn set_data_bucket(&self, _bucket: &str) -> anyhow::Result<()> {
         anyhow::bail!("block store does not support bucket selection")
@@ -409,10 +431,12 @@ enum ObjectLayout {
 
 /// BlockStore backed by cadapter::client.
 ///
-/// New blocks use `chunks-v2/{chunk_id}/{block_index}` and a mandatory framed
-/// payload. Existing `chunks/{chunk_id}/{block_index}` objects remain readable
-/// through an explicit legacy fallback.
+/// Ordinary new blocks use `chunks-v2/{slice_id}/{block_index}` and a framed
+/// payload. Eligible flat-v1 small slices may share an indexed object in
+/// `chunks-coalesced-v1`. Existing `chunks/{slice_id}/{block_index}` objects
+/// remain readable through an explicit legacy fallback.
 pub struct ObjectBlockStore<B: ObjectBackend> {
+    coalescer: coalesce::Coalescer,
     client: Arc<ObjectClient<B>>,
     block_cache: ChunksCache,
     /// Page-granularity (64KB) read cache for small range reads that would
@@ -467,6 +491,10 @@ pub enum ReadFetchPolicy {
 /// Configuration for ObjectBlockStore read strategy
 #[derive(Debug, Clone)]
 pub struct BlockStoreConfig {
+    /// Zero disables new coalesced writes, without disabling their reader.
+    pub write_coalesce_bytes: usize,
+    /// Zero uses the mandatory 100 ms queue safety deadline.
+    pub write_coalesce_ms: u64,
     /// Block size in bytes (default: 4MB)
     pub block_size: usize,
     /// For ranges smaller than this threshold, use direct range read instead of full block read
@@ -510,6 +538,14 @@ pub struct BlockStoreConfig {
 impl Default for BlockStoreConfig {
     fn default() -> Self {
         Self {
+            write_coalesce_bytes: std::env::var("BREWFS_WRITE_COALESCE_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(65536),
+            write_coalesce_ms: std::env::var("BREWFS_WRITE_COALESCE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             block_size: 4 * 1024 * 1024,                // 4MB
             range_read_threshold: 0.25,                 // 25% = 1MB for 4MB blocks
             page_size: DEFAULT_PAGE_SIZE,               // 64KiB
@@ -532,6 +568,14 @@ pub(crate) fn persistent_slice_cache_path(root: &Path, slice_id: u64) -> PathBuf
 
 impl BlockStoreConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.write_coalesce_bytes <= 1 << 20,
+            "write coalesce window exceeds 1 MiB"
+        );
+        anyhow::ensure!(
+            self.write_coalesce_ms <= 5000,
+            "write coalesce deadline exceeds 5 seconds"
+        );
         if self.block_size == 0 {
             anyhow::bail!("block_size must be greater than 0");
         }
@@ -586,6 +630,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         let page_cache = ReadPageCache::new(config.page_cache_capacity, config.page_size);
         Self {
             client: Arc::new(client),
+            coalescer: coalesce::Coalescer::new(),
             block_cache,
             page_cache,
             range_flight: SingleFlight::new(),
@@ -637,6 +682,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             ReadPageCache::new(store_config.page_cache_capacity, store_config.page_size);
         Ok(Self {
             client: Arc::new(client),
+            coalescer: coalesce::Coalescer::new(),
             block_cache,
             page_cache,
             range_flight: SingleFlight::new(),
@@ -666,6 +712,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             ReadPageCache::new(store_config.page_cache_capacity, store_config.page_size);
         Ok(Self {
             client: Arc::new(client),
+            coalescer: coalesce::Coalescer::new(),
             block_cache,
             page_cache,
             range_flight: SingleFlight::new(),
@@ -1147,6 +1194,39 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
 
 #[async_trait]
 impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B> {
+    fn write_coalesce_limit(&self) -> usize {
+        if self.supports_coalesced_objects() && self.config.write_coalesce_bytes != 0 {
+            coalesce::MAX_MEMBER_BYTES.min(self.config.block_size)
+        } else {
+            0
+        }
+    }
+
+    async fn write_coalesced(
+        self: Arc<Self>,
+        seed: u64,
+        chunk_id: u64,
+        parts: Vec<Bytes>,
+        meta: Arc<dyn crate::meta::MetaLayer>,
+        upload_limit: Arc<Semaphore>,
+    ) -> anyhow::Result<u64> {
+        self.enqueue_coalesced(seed, chunk_id, parts, meta, upload_limit)
+            .await
+    }
+
+    async fn delete_coalesced_group(&self, group: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.legacy_delete_allowed,
+            "native deletion requires lifecycle authorization"
+        );
+        self.client
+            .delete_object(&coalesce::object_key(group))
+            .await?;
+        self.coalescer.index.invalidate(&group).await;
+        self.object_metrics.record_delete();
+        Ok(())
+    }
+
     fn set_data_bucket(&self, bucket: &str) -> anyhow::Result<()> {
         ObjectBlockStore::set_data_bucket(self, bucket)
     }
@@ -1195,6 +1275,13 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         if len == 0 {
             tracing::Span::current().record("strategy", "empty");
             tracing::Span::current().record("read_len", 0);
+            return Ok(());
+        }
+
+        if self.supports_coalesced_objects()
+            && coalesce::decode_id(key.0).is_some()
+            && self.read_coalesced(key, offset, buf).await?
+        {
             return Ok(());
         }
 
@@ -1705,6 +1792,22 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         if !self.legacy_delete_allowed {
             anyhow::bail!(
                 "legacy block deletion is disabled for workspace-native-v2; use private-domain cleanup"
+            );
+        }
+        if let Some((group, _)) = coalesce::decode_id(key.0) {
+            let shared = self
+                .client
+                .typed_full(
+                    ReadClass::NativePayload,
+                    &coalesce::object_key(group),
+                    None,
+                    4 << 20,
+                    Ok,
+                )
+                .await?;
+            anyhow::ensure!(
+                shared.is_none(),
+                "shared object deletion requires metadata retirement proof"
             );
         }
         let (chunk_id, block_index) = key;
