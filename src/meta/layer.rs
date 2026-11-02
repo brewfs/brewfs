@@ -598,6 +598,32 @@ pub trait MetaLayer: Send + Sync {
 
     async fn next_id(&self, key: &str) -> Result<i64, MetaError>;
 
+    fn supports_write_coalescing(&self) -> bool {
+        false
+    }
+
+    async fn register_coalesced_group(
+        &self,
+        _group: u64,
+        _members: &[(u64, u64, u64)],
+    ) -> Result<(), MetaError> {
+        Err(MetaError::NotImplemented)
+    }
+
+    async fn write_with_coalesced_reservation(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slice: SliceDesc,
+        new_size: u64,
+        coalesced: bool,
+    ) -> Result<(), MetaError> {
+        if coalesced {
+            return Err(MetaError::NotImplemented);
+        }
+        self.write(ino, chunk_id, slice, new_size).await
+    }
+
     // ---------- Session lifecycle ----------
     async fn start_session(&self, session_info: SessionInfo) -> Result<(), MetaError>;
 

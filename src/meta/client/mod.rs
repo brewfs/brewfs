@@ -2094,6 +2094,19 @@ fn control_meta_error(err: MetaError) -> ControlResponse {
 
 #[async_trait]
 impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
+    fn supports_write_coalescing(&self) -> bool {
+        self.store.supports_write_coalescing()
+    }
+
+    async fn register_coalesced_group(
+        &self,
+        group: u64,
+        members: &[(u64, u64, u64)],
+    ) -> Result<(), MetaError> {
+        self.ensure_writable()?;
+        self.store.register_coalesced_group(group, members).await
+    }
+
     fn name(&self) -> &'static str {
         self.store.name()
     }
@@ -3068,10 +3081,24 @@ impl<T: MetaStore + ?Sized + 'static> MetaLayer for MetaClient<T> {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        self.write_with_coalesced_reservation(ino, chunk_id, slice, new_size, false)
+            .await
+    }
+
+    async fn write_with_coalesced_reservation(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slice: SliceDesc,
+        new_size: u64,
+        coalesced: bool,
+    ) -> Result<(), MetaError> {
         self.ensure_writable()?;
         let inode = self.check_root(ino);
         let _metadata_rpc = self.metadata_rpc_timer();
-        self.store.write(inode, chunk_id, slice, new_size).await?;
+        self.store
+            .write_with_coalesced_reservation(inode, chunk_id, slice, new_size, coalesced)
+            .await?;
         drop(_metadata_rpc);
 
         let (inode_from_chunk, chunk_index) = extract_ino_and_chunk_index(chunk_id);

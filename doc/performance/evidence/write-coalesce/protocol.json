@@ -1,0 +1,116 @@
+{
+  "created_utc": "2026-11-01T20:57:35.070551+00:00",
+  "task_started_utc": "2026-11-01T20:48:18Z",
+  "deadline_utc": "2026-11-02T01:48:18Z",
+  "git_commit": "a41b1266f4aed5e40a59f07257e1b7b96499e6f7",
+  "build": {
+    "CARGO_BUILD_JOBS": {
+      "baseline": "2",
+      "candidate": "4",
+      "note": "one cargo build at a time; scheduling only, identical release optimization/features/codegen units"
+    },
+    "RUSTFLAGS": "-C debuginfo=0",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_RELEASE_DEBUG": "0",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+    "profile": "release",
+    "default_features": true,
+    "features": [
+      "workspace-overlay",
+      "observability"
+    ]
+  },
+  "primary_instrumentation": "observability feature + runtime metrics; 1 Hz scrape; request trace disabled",
+  "warmups": 2,
+  "measurements": 3,
+  "fio_runtime_seconds": 20,
+  "fio_size_per_job_bytes": 536870912,
+  "fio_ioengine": "libaio",
+  "fio_randseed": 20261101,
+  "fio_randrepeat": true,
+  "random_iodepth": 32,
+  "sequential_jobs": 1,
+  "sequential_iodepth": 8,
+  "rwmixread": 70,
+  "cache": {
+    "read_memory_bytes": 0,
+    "read_ssd_bytes": 0,
+    "write_memory_bytes": 536870912,
+    "write_ssd_bytes": 0,
+    "memory_budget_bytes": 2147483648,
+    "prefetch_enabled": false,
+    "range_background_prefetch": false,
+    "flat_read_page_cache_capacity": 0
+  },
+  "fuse": {
+    "workers": 16,
+    "max_background": 512,
+    "requested_max_read_bytes": 4194304,
+    "requested_max_write_bytes": 4194304,
+    "requested_max_readahead_bytes": 16777216,
+    "cache_ttl_ms": 0,
+    "keep_cache": false,
+    "kernel_writeback_cache": false
+  },
+  "object_store": "isolated compose Redis/RustFS on same host; image IDs in harness/compose.yml",
+  "compression": "zstd; seeded incompressible corpus",
+  "writeback_mode": "upload_before_commit",
+  "drain": "legacy .stats extended debt gauges all zero and stable object PUT count/bytes for 3 samples, 0.5 s apart; 180 s timeout; include fio close wall time",
+  "perf": "perf record -F 499 -g --call-graph dwarf,8192 -e cpu-clock -z -p DAEMON -- sleep WINDOW; measurement interval only; software event because no virtual PMU",
+  "statistic": "paired on-minus-off differences; mean +/- t(0.975,n-1)*SD/sqrt(n); n>=3; report all rounds and median p99",
+  "limits": [
+    "buffered libaio may achieve lower depth than requested; retain iodepth distribution",
+    "fio latency includes client/kernel queues; FUSE metric histograms are separate",
+    "CPU profiles describe on-CPU cost, not off-CPU waiting",
+    "no global drop_caches; every arm begins with its own full prefill",
+    "raw numbers remain provisional until the complete same-iteration workspace and overlay CI gates pass",
+    "compose container runner broad guards are separate from the paired host FUSE campaign"
+  ],
+  "tokio_worker_threads": 1,
+  "drain_debt_gauges": [
+    "brewfs_writeback_dirty_bytes",
+    "brewfs_buffer_dirty_bytes",
+    "brewfs_writeback_live_dirty_bytes",
+    "brewfs_writeback_live_slices",
+    "brewfs_writeback_recent_pending_upload_bytes",
+    "brewfs_writeback_recent_pending_upload_slices",
+    "brewfs_writeback_stage_inflight_bytes",
+    "brewfs_writeback_remote_upload_inflight_bytes",
+    "brewfs_writeback_metadata_inflight"
+  ],
+  "amendments": [
+    {
+      "before_any_performance_measurement": true,
+      "change": "remove unrelated packed fields inherited from historical protocol; replace slow S3 per-object cleanup with stopped task-backend directory reset",
+      "reason": "all main/off/on arms receive the same clean backend state without spending the test budget deleting thousands of disposable small objects via HTTP"
+    }
+  ],
+  "ab_deadline_utc": "2026-11-01T23:48:18Z",
+  "baseline_worktree": "/home/hxy/brewfs-coalesce-baseline",
+  "baseline_target": "/home/hxy/brewfs-coalesce-baseline-target",
+  "baseline": "fresh local main binary; historical results used only for diagnosis",
+  "schedule": "fresh main: 2 warmups + 3 measurements; candidate: 2 off/on warmup pairs, then 3 off/on measured pairs",
+  "corpus_source": "/home/hxy/perf-full-state-20261101/source/large (reused immutable seeded bytes, not measurements)",
+  "round_reset": "after confirming no task FUSE mount remains, stop task RustFS, remove only its disposable objects bind directory, recreate with original ownership, restart, clear task Redis DB 0 and recreate task bucket; fresh mount and 512 MiB/file incompressible prefill with fsync and strict drain before every arm",
+  "artifact_cleanup": "delete task-owned object payloads after completed unmount; preserve all measurement artifacts",
+  "supported_volume_scope": "flat-v1 with Redis and upload_before_commit; no native-v2 or packed-v3 performance claim",
+  "baseline_deadline_utc": "2026-11-01T22:18:18Z",
+  "candidate_control": {
+    "off_bytes": 0,
+    "on_bytes": 65536,
+    "coalesce_ms": 0,
+    "on_safety_deadline_ms": 100
+  },
+  "workloads": [
+    "randwrite",
+    "seqwrite",
+    "randrw"
+  ],
+  "direct_guard": "one off/on pair per workload with fio direct=1; separate guard rows, excluded from primary confidence intervals",
+  "random_jobs": 4,
+  "random_block_bytes": 4096,
+  "sequential_block_bytes": 1048576,
+  "primary_fio_direct": 0,
+  "upload_concurrency": "existing foreground semaphore 192 and FileWriter local limit; groups acquire one permit per participating file in stable order",
+  "put_normalization": "physical PUT count including drain / logical fio write GiB, excluding prefills; mean PUT = physical bytes / physical count"
+}

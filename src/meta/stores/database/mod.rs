@@ -280,7 +280,80 @@ impl DatabaseMetaStore {
             .map(|r| r.slice_id as u64)
             .unwrap_or(0);
 
+        // Shared-object slice IDs encode a group and slot; they must not raise
+        // the ordinary allocator into the reserved high-bit namespace.
+        if let Some((group, _)) = crate::chunk::store::coalesce::decode_id(max_slice)
+            && CounterMeta::find_by_id(crate::chunk::store::coalesce::ledger_key(group))
+                .one(db)
+                .await
+                .map_err(MetaError::Database)?
+                .is_some()
+        {
+            let normal = SliceMeta::find()
+                .filter(
+                    slice_meta::Column::SliceId.lt(crate::chunk::store::coalesce::ID_FLAG as i64),
+                )
+                .order_by_desc(slice_meta::Column::SliceId)
+                .one(db)
+                .await
+                .map_err(MetaError::Database)?
+                .map_or(0, |row| row.slice_id as u64);
+            return Ok(normal.max(group) + 1);
+        }
+
         Ok(max_slice + 1)
+    }
+
+    async fn consume_coalesced_reservation(
+        txn: &DatabaseTransaction,
+        slice: SliceDesc,
+    ) -> Result<bool, MetaError> {
+        use crate::chunk::store::coalesce::{decode_id, ledger_key};
+        let (group, slot) = decode_id(slice.slice_id)
+            .ok_or_else(|| MetaError::Internal("invalid coalesced ID".into()))?;
+        let key = ledger_key(group);
+        CounterMeta::update_many()
+            .col_expr(
+                counter_meta::Column::Value,
+                sea_query::Expr::col(counter_meta::Column::Value).into(),
+            )
+            .filter(counter_meta::Column::Name.eq(&key))
+            .exec(txn)
+            .await
+            .map_err(MetaError::Database)?;
+        let row = CounterMeta::find_by_id(key.clone())
+            .one(txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or_else(|| MetaError::Internal("coalesced ledger missing".into()))?;
+        let bits = row.value as u64;
+        if slot as u64 >= bits >> 32 || bits & (1 << slot) != 0 {
+            return Err(MetaError::Internal("coalesced member retired".into()));
+        }
+        let mut published = CounterMeta::find_by_id(format!("{key}/published"))
+            .one(txn)
+            .await
+            .map_err(MetaError::Database)?
+            .ok_or_else(|| MetaError::Internal("coalesced publication ledger missing".into()))?
+            .into_active_model();
+        let published_bits = *published.value.as_ref() as u64;
+        if published_bits & (1 << slot) != 0 {
+            return Ok(false);
+        }
+        let consumed = UncommittedSlice::delete_many()
+            .filter(uncommitted_slice::Column::SliceId.eq(slice.slice_id as i64))
+            .filter(uncommitted_slice::Column::ChunkId.eq(slice.chunk_id as i64))
+            .filter(uncommitted_slice::Column::Size.eq(slice.length as i64))
+            .filter(uncommitted_slice::Column::Status.eq("pending"))
+            .exec(txn)
+            .await
+            .map_err(MetaError::Database)?;
+        if consumed.rows_affected != 1 {
+            return Err(MetaError::Internal("coalesced reservation lost".into()));
+        }
+        published.value = Set((published_bits | (1 << slot)) as i64);
+        published.update(txn).await.map_err(MetaError::Database)?;
+        Ok(true)
     }
 
     async fn init_counters(&self) -> Result<(), MetaError> {
@@ -1466,6 +1539,133 @@ impl DatabaseMetaStore {
 
 #[async_trait]
 impl MetaStore for DatabaseMetaStore {
+    fn supports_write_coalescing(&self) -> bool {
+        true
+    }
+
+    async fn register_coalesced_group(
+        &self,
+        group: u64,
+        members: &[(u64, u64, u64)],
+    ) -> Result<(), MetaError> {
+        use crate::chunk::store::coalesce::{encode_id, ledger_key};
+        if members.is_empty() || members.len() > 32 {
+            return Err(MetaError::Internal("invalid coalesced group".into()));
+        }
+        for (slot, (id, _, len)) in members.iter().enumerate() {
+            if encode_id(group, slot).ok() != Some(*id) || *len == 0 || *len > 65536 {
+                return Err(MetaError::Internal("invalid coalesced member".into()));
+            }
+        }
+        let (_guard, txn) = self.begin_transaction().await?;
+        let key = ledger_key(group);
+        counter_meta::ActiveModel {
+            name: Set(key.clone()),
+            value: Set((members.len() as i64) << 32),
+        }
+        .insert(&txn)
+        .await
+        .map_err(MetaError::Database)?;
+        counter_meta::ActiveModel {
+            name: Set(format!("{key}/published")),
+            value: Set(0),
+        }
+        .insert(&txn)
+        .await
+        .map_err(MetaError::Database)?;
+        let now = Utc::now().timestamp();
+        UncommittedSlice::insert_many(members.iter().map(|(id, chunk, len)| {
+            uncommitted_slice::ActiveModel {
+                slice_id: Set(*id as i64),
+                chunk_id: Set(*chunk as i64),
+                size: Set(*len as i64),
+                created_at: Set(now),
+                operation: Set("coalesce".into()),
+                status: Set("pending".into()),
+                ..Default::default()
+            }
+        }))
+        .exec(&txn)
+        .await
+        .map_err(MetaError::Database)?;
+        txn.commit().await.map_err(MetaError::Database)?;
+        Ok(())
+    }
+
+    async fn retire_coalesced_member(
+        &self,
+        group: u64,
+        slot: u8,
+    ) -> Result<Option<bool>, MetaError> {
+        let (_guard, txn) = self.begin_transaction().await?;
+        let key = crate::chunk::store::coalesce::ledger_key(group);
+        CounterMeta::update_many()
+            .col_expr(
+                counter_meta::Column::Value,
+                sea_query::Expr::col(counter_meta::Column::Value).into(),
+            )
+            .filter(counter_meta::Column::Name.eq(&key))
+            .exec(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+        let Some(row) = CounterMeta::find_by_id(key)
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+        else {
+            txn.commit().await.map_err(MetaError::Database)?;
+            return Ok(None);
+        };
+        let bits = row.value as u64;
+        let count = bits >> 32;
+        if slot as u64 >= count || count > 32 {
+            return Err(MetaError::Internal(
+                "invalid coalesced retirement slot".into(),
+            ));
+        }
+        let updated = bits | (1 << slot);
+        let all_dead = (updated & u32::MAX as u64) == (1u64 << count) - 1;
+        let mut row = row.into_active_model();
+        row.value = Set(updated as i64);
+        row.update(&txn).await.map_err(MetaError::Database)?;
+        txn.commit().await.map_err(MetaError::Database)?;
+        Ok(Some(all_dead))
+    }
+
+    async fn forget_coalesced_group(&self, group: u64) -> Result<(), MetaError> {
+        let (_guard, txn) = self.begin_transaction().await?;
+        let key = crate::chunk::store::coalesce::ledger_key(group);
+        CounterMeta::update_many()
+            .col_expr(
+                counter_meta::Column::Value,
+                sea_query::Expr::col(counter_meta::Column::Value).into(),
+            )
+            .filter(counter_meta::Column::Name.eq(&key))
+            .exec(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+        if let Some(row) = CounterMeta::find_by_id(key.clone())
+            .one(&txn)
+            .await
+            .map_err(MetaError::Database)?
+        {
+            let bits = row.value as u64;
+            let count = bits >> 32;
+            if count == 0 || count > 32 || (bits & u32::MAX as u64) != (1u64 << count) - 1 {
+                return Err(MetaError::Internal(
+                    "cannot forget live coalesced group".into(),
+                ));
+            }
+        }
+        CounterMeta::delete_many()
+            .filter(counter_meta::Column::Name.is_in([key.clone(), format!("{key}/published")]))
+            .exec(&txn)
+            .await
+            .map_err(MetaError::Database)?;
+        txn.commit().await.map_err(MetaError::Database)?;
+        Ok(())
+    }
+
     fn name(&self) -> &'static str {
         "database"
     }
@@ -3593,6 +3793,18 @@ impl MetaStore for DatabaseMetaStore {
         slice: SliceDesc,
         new_size: u64,
     ) -> Result<(), MetaError> {
+        self.write_with_coalesced_reservation(ino, chunk_id, slice, new_size, false)
+            .await
+    }
+
+    async fn write_with_coalesced_reservation(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slice: SliceDesc,
+        new_size: u64,
+        coalesced: bool,
+    ) -> Result<(), MetaError> {
         #[cfg(feature = "observability")]
         let _observation = crate::observability::metadata_timer(
             crate::observability::MetadataOp::Write,
@@ -3609,6 +3821,11 @@ impl MetaStore for DatabaseMetaStore {
         }
 
         let (_sqlite_txn_guard, txn) = self.begin_transaction().await?;
+
+        if coalesced && !Self::consume_coalesced_reservation(&txn, slice).await? {
+            txn.commit().await.map_err(MetaError::Database)?;
+            return Ok(());
+        }
 
         let model = slice_meta::ActiveModel {
             chunk_id: Set(chunk_id as i64),
@@ -3679,7 +3896,17 @@ impl MetaStore for DatabaseMetaStore {
             self.name(),
         );
         match key {
-            SLICE_ID_KEY | INODE_ID_KEY => self.alloc_counter_id(key).await,
+            SLICE_ID_KEY | INODE_ID_KEY => {
+                let id = self.alloc_counter_id(key).await?;
+                if key == SLICE_ID_KEY
+                    && crate::chunk::store::coalesce::decode_id(id as u64).is_some()
+                {
+                    return Err(MetaError::Internal(
+                        "ordinary slice allocator reached reserved shared-object IDs".into(),
+                    ));
+                }
+                Ok(id)
+            }
             other => Err(MetaError::NotSupported(format!(
                 "next_id not supported for key {other}"
             ))),
