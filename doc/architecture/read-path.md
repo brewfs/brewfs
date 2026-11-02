@@ -1,5 +1,33 @@
 # 读路径
 
+## 实验性 entity packed 路径的数据缓存
+
+本节对应 `workspace-overlay` 的 `--experimental-entity-mount`，与下文普通 VFS
+的 FileReader / BlockStore 是两条路径。entity packed 挂载默认启用每挂载 512 MiB
+的客户端数据缓存准入预算，按实际读取逐步填充。可用
+`--entity-read-cache-bytes BYTES` 调整容量，设为 `0` 则关闭。
+该默认值仅用于实验性 packed entity 挂载；普通 VFS、native entity 和上传恢复路径
+不启用这一层。普通 `cache.read_memory_bytes` 和 `fuse.keep_cache` 不控制此预算。
+
+缓存只保留成功认证的数据。packed lower 按 manifest digest、inode、偏移、长度识别
+已读范围；upper 按 volume、namespace、不可变 slice ID、长度和内容摘要识别对象。
+每个挂载使用独立缓存，lower 与 upper 共用一个 LRU 容量预算。覆盖写发布新的 slice，
+后续读先取得当前元数据再选择缓存项，旧内容不能覆盖新版本。命中仍保留权限、所有权、
+租约和当前数据映射检查。失败、短读和摘要错误不作为成功数据缓存。
+
+预算按实际保留的 payload 长度加每项 512 字节的管理费用计费，超预算时同步淘汰；
+过大的单项直接读取而不保留。该计数不是进程 RSS：在途读副本、元数据、
+分配器和容器预留内存另占空间，实验仍需记录 RSS 并设置客户端内存限制。
+正常关闭在排空和停止会话后清空缓存。它不提供磁盘缓存、跨挂载共享、预读或并发
+冷请求合并，也不改变同步写、fsync 和强排空；新 upper 版本首次读取仍需认证远端内容。
+
+启用 `observability` 并开启 metrics 后，`brewfs_cache_hits_total` /
+`brewfs_cache_misses_total` 的 `entity_lower_payload` 和 `entity_upper_payload`
+标签分别记录两类数据命中；`brewfs_entity_read_cache_capacity_bytes`、
+`brewfs_entity_read_cache_retained_bytes`、`brewfs_entity_read_cache_entries` 和
+`brewfs_entity_read_cache_evictions_total` 记录准入预算、驻留计费、项数和淘汰数。
+启动与退出日志也输出缓存统计。命中率应结合对象请求数核对，不能用元数据命中率替代。
+
 读路径将用户的文件读取请求转换为对对象存储的 Block 级别读取，在 Slice 层面处理覆盖、空洞，在 Block 层面利用缓存减少远程 IO。
 
 源码分布：

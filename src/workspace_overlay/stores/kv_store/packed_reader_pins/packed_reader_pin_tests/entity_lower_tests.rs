@@ -608,6 +608,78 @@ async fn packed_entity_lower_bound_memos_are_local_coalesced_and_session_fenced(
 
 #[tokio::test]
 #[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
+async fn packed_entity_lower_payload_cache_avoids_gets_and_preserves_session_fence() {
+    use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadObserver};
+    use crate::workspace_overlay::entity::payload_cache::PayloadCache;
+    let fixture = fixture(Arc::new(PinMemoryBackend::default())).await;
+    let observer = Arc::new(ReadObserver::default());
+    let client = ObjectClient::new(fixture.objects.clone()).with_read_observer(
+        observer.clone(),
+        Engine::PackedV3,
+        Phase::Runtime,
+        Origin::Demand,
+    );
+    let (volume, namespace) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut lower = PackedLower::open(
+        fixture.store.clone(),
+        client,
+        volume,
+        namespace,
+        &fixture.source,
+        fixture.binding.clone(),
+    )
+    .await
+    .unwrap();
+    let cache = PayloadCache::new(8192);
+    lower.set_payload_cache(cache.clone());
+    let keys = EntityKeys::new(volume, namespace);
+    let lifecycle = Lifecycle::new(Arc::new(MemoryEntityBackend::new(1)), keys.clone());
+    lifecycle.provision(&fixture.binding).await.unwrap();
+    let session = lifecycle.acquire(Uuid::new_v4(), 1_000_000).await.unwrap();
+    lower.bind_session(&session, &keys, 8192).await.unwrap();
+    let before = observer.snapshot().rows;
+    assert_eq!(
+        lower.read_range(400, 0, 4096).await.unwrap(),
+        fixture.payload
+    );
+    let after = observer.snapshot().rows;
+    assert_ne!(before, after, "cold payload must reach real object storage");
+    for _ in 0..16 {
+        assert_eq!(
+            lower.read_range(400, 0, 4096).await.unwrap(),
+            fixture.payload
+        );
+    }
+    assert_eq!(
+        observer.snapshot().rows,
+        after,
+        "hot payload must issue no GET"
+    );
+    assert_eq!(cache.stats().lower_hits, 16);
+    assert_eq!(cache.stats().lower_misses, 1);
+    // A distinct retained range evicts the first under the shared byte budget.
+    assert_eq!(
+        lower.read_range(400, 1, 4095).await.unwrap(),
+        fixture.payload[1..]
+    );
+    assert_eq!(cache.stats().evictions, 1);
+    let before_reload = observer.snapshot().rows;
+    assert_eq!(
+        lower.read_range(400, 0, 4096).await.unwrap(),
+        fixture.payload
+    );
+    assert_ne!(observer.snapshot().rows, before_reload);
+    lifecycle.enter_maintenance(&session).await.unwrap();
+    assert!(matches!(
+        lower.read_range(400, 0, 4096).await,
+        Err(EntityError::Fenced)
+    ));
+    cache.close();
+    assert_eq!(cache.stats().retained_bytes, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires isolated RustFS via BREWFS_PACKED_GRAPH_TEST_S3_* and AWS credentials"]
 async fn packed_entity_lower_rejects_descriptor_and_manifest_tampering() {
     let fixture = fixture(Arc::new(PinMemoryBackend::default())).await;
     let volume = Uuid::new_v4();

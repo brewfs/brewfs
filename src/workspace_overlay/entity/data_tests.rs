@@ -6,6 +6,9 @@
 #[path = "data_writeback_tests.rs"]
 mod writeback;
 
+#[path = "data_payload_cache_tests.rs"]
+mod payload_cache_tests;
+
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -29,8 +32,8 @@ use crate::workspace_overlay::entity::resolver::ImmutableLower;
 use crate::workspace_overlay::entity::resolver::test_support::MemoryLower;
 use crate::workspace_overlay::entity::test_objects;
 
-struct Objects {
-    inner: S3Backend,
+struct Objects<O = S3Backend> {
+    inner: O,
     puts: AtomicUsize,
     fail_put: AtomicUsize,
     pause_put: AtomicUsize,
@@ -42,8 +45,8 @@ struct Objects {
     resume: Notify,
 }
 
-impl Objects {
-    fn new(inner: S3Backend) -> Self {
+impl<O> Objects<O> {
+    fn new(inner: O) -> Self {
         Self {
             inner,
             puts: AtomicUsize::new(0),
@@ -66,7 +69,7 @@ impl Objects {
 }
 
 #[async_trait]
-impl ObjectBackend for Objects {
+impl<O: ObjectBackend> ObjectBackend for Objects<O> {
     fn forbids_mutation_replay(&self) -> bool {
         self.inner.forbids_mutation_replay()
     }

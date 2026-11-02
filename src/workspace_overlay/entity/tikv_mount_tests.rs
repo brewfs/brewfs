@@ -110,7 +110,7 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
         groups: vec![],
         umask: 0,
     };
-    for packed in [false, true] {
+    for (packed, cache_bytes) in [(false, 0), (true, 0), (true, 32 << 10)] {
         for asynchronous in [false, true] {
             let volume = Uuid::new_v4();
             let spool = tempfile::tempdir().unwrap();
@@ -138,6 +138,7 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
                 namespace_id: Some(Uuid::new_v4()),
                 lease_ttl_ns: 60_000_000_000,
                 chunk_size: 8,
+                read_cache_bytes: cache_bytes,
                 writeback: asynchronous.then(|| WritebackConfig {
                     directory: spool.path().into(),
                     capacity_bytes: 1 << 20,
@@ -191,6 +192,9 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
             while let Some(result) = readers.join_next().await {
                 result.unwrap();
             }
+            if cache_bytes != 0 {
+                assert!(mount.data().read_cache_stats().lower_hits >= 128);
+            }
             mount
                 .data()
                 .write(
@@ -220,6 +224,17 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
                     .unwrap(),
                 payload
             );
+            assert_eq!(
+                mount
+                    .data()
+                    .read(handle.clone(), 0, payload.len())
+                    .await
+                    .unwrap(),
+                b"frozen UPPER! source"
+            );
+            if cache_bytes != 0 && !asynchronous {
+                assert!(mount.data().read_cache_stats().upper_hits > 0);
+            }
             drop(handle);
             mount
                 .namespace()
@@ -231,6 +246,8 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
                 Err(EntityError::NotFound)
             ));
             mount.orderly_close().await.unwrap();
+            assert!(mount.data().read_cache_stats().closed);
+            assert_eq!(mount.data().read_cache_stats().retained_bytes, 0);
             let status = mount.data().writeback_status().await.unwrap();
             assert_eq!((status.pending_objects, status.pending_bytes), (0, 0));
             factory.shutdown().await.unwrap();
@@ -292,6 +309,7 @@ async fn tikv_entity_concurrent_small_writes_keep_renewal_and_uploads_live() {
                 namespace_id: Some(Uuid::new_v4()),
                 lease_ttl_ns: 60_000_000_000,
                 chunk_size: 4 << 20,
+                read_cache_bytes: 0,
                 writeback: asynchronous.then(|| WritebackConfig {
                     directory: spool.path().into(),
                     capacity_bytes: 32 << 20,

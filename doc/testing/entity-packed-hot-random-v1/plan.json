@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "experiment": "entity-packed-hot-random-v1",
+  "status": "design_only_not_executed",
+  "runner_implemented": false,
+  "runtime_changes_in_this_design": false,
+  "cloud_run_started": false,
+  "evidence_baseline_commit": "918deb90e046889d94eb8ff633822e275792ce28",
+  "candidate_commit": null,
+  "cache_candidate": {
+    "branch": "codex/entity-payload-cache",
+    "base_commit": "85fe85e6eb1e8c83d509a29d84f82b67ee32a1e8",
+    "enable_argument": "--entity-read-cache-bytes 536870912",
+    "default_capacity_bytes": 536870912,
+    "disable_argument": "--entity-read-cache-bytes 0",
+    "budget_domain": "one shared lower-range and upper-object cache per mount",
+    "entry_accounting_bytes": 512,
+    "rss_limit_remains_required": true,
+    "performance_measured": false
+  },
+  "blocking_prerequisites": [
+    "verified bounded entity lower and upper payload-cache support",
+    "effective cache configuration and independent hit evidence for both products",
+    "new native workload driver with calibrated timing and correctness checks"
+  ],
+  "dataset": {
+    "files": 1000000,
+    "file_bytes": 4096,
+    "directories": 1024,
+    "onboardings_per_product": 1,
+    "producer_temporary_inventory_placement": "data_disk",
+    "selection_seed": 9173,
+    "trace_seed": 19283,
+    "trace_sha256": null
+  },
+  "clients": ["brewfs-packed-tikv", "juicefs-tikv"],
+  "arm_order_by_round": [["brewfs", "juicefs"], ["juicefs", "brewfs"], ["brewfs", "juicefs"]],
+  "workspaces_per_cell": 4,
+  "total_cells": 6,
+  "total_workspaces": 24,
+  "hot_files_by_workspace": [1024, 1024, 16384, 16384],
+  "application_workers": 8,
+  "runtime_and_upload_workers": 8,
+  "io": {
+    "direct": true,
+    "bytes_per_operation": 4096,
+    "open_close_per_operation": true,
+    "writeback_mode": "upload_before_commit",
+    "fsync_every_write": true,
+    "compression": "none",
+    "chunk_and_block_bytes": 4194304,
+    "packed_random_frame_cap_bytes": 262144,
+    "packed_inline": false,
+    "file_writer_ownership": "one_worker_per_file"
+  },
+  "cache": {
+    "retained_payload_bytes_per_active_client": 536870912,
+    "clean_ssd_bytes": 0,
+    "prefetch": false,
+    "readahead": false,
+    "cpu_limit_client_and_workload": 8,
+    "memory_limit_client_and_workload_bytes": 8589934592,
+    "metadata_policy": "record_supported_normal_configuration_and_consistency_for_both_products",
+    "reset_domain_between_workspaces": true,
+    "prewarm_full_passes": 2,
+    "primary_data_hit_fraction_min": 0.99,
+    "gate_scope": "primary_lower_hot_set_and_committed_upper_set",
+    "capacity_sensitivity_failures": "retain_and_label_actual_residency"
+  },
+  "stages": [
+    {"name": "workspace_creation", "separate_timing": true},
+    {"name": "lower_prewarm", "full_passes": 2},
+    {"name": "hot_random_read", "operations": 65536},
+    {"name": "first_cow", "unique_files": 256, "writes": 256, "strong_drain": true},
+    {"name": "upper_prewarm", "full_passes": 2},
+    {"name": "hot_random_overwrite", "unique_files": 256, "writes": 2048},
+    {"name": "upper_rewarm", "full_passes": 2},
+    {"name": "hot_random_mixed", "unique_files": 256, "reads": 6144, "writes": 2048},
+    {"name": "strong_drain_exit_and_independent_verification", "required": true}
+  ],
+  "correctness": {
+    "full_base_namespace_passes_per_product_per_dataset": 1,
+    "full_namespace_walk_per_performance_cell": false,
+    "verify_all_returned_read_bytes": true,
+    "verify_all_modified_files_after_each_write_stage": true,
+    "verify_all_modified_files_using_cold_client_after_drain": true,
+    "verify_base_and_cross_workspace_isolation": true,
+    "untouched_file_samples_per_workspace": 1024,
+    "remote_object_integrity_checks": true,
+    "strong_drain_and_actual_exit": true,
+    "historical_evidence_immutable": true
+  },
+  "accounting": {
+    "planned_measured_reads_excluding_prewarm": 1720320,
+    "planned_writes_including_first_cow": 104448,
+    "include_import_warmup_cow_correctness_waits_collection_and_release": true,
+    "interrupted_cells_eligible_for_clean_pairing": false,
+    "experimental_unit": "paired_round_with_workspaces_as_nested_subsamples"
+  }
+}

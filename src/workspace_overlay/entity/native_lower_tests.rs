@@ -37,6 +37,7 @@ async fn native_entity_mount_bootstrap_redis_rustfs_sync_and_writeback() {
                     namespace_id: Some(Uuid::new_v4()),
                     lease_ttl_ns: 60_000_000_000,
                     chunk_size: 8,
+                    read_cache_bytes: 0,
                     writeback: asynchronous.then(|| WritebackConfig {
                         directory: spool.path().into(),
                         capacity_bytes: 1 << 20,
