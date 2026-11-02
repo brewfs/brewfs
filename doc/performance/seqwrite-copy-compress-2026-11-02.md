@@ -5,6 +5,33 @@
 当前 main：`1bd4d75f8c7c77188f52e025dcd315520353cd65`（含 #404、#405）。
 实验与原始日志：`/home/hxy/perf-seqwrite-20261102/`。
 
+## 证据存放位置
+
+完整原始证据保留在 `brewfs:/home/hxy/perf-seqwrite-20261102/`；
+报告所用的 372 个证据文件另归档于
+`brewfs:/home/hxy/opt-reports/pr407-seqwrite/seqwrite-copy-compress/`。
+其中包括配对统计、原始 fio JSON、phase 时间戳、火焰图、校验结果、CI 日志与
+复现脚本；`raw-artifact-manifest.json` 记录完整原始目录的文件哈希。
+这些证据不在 Git 中；原工作树的 `doc/performance/evidence/seqwrite-copy-compress/`
+也保留在磁盘上，仅从 Git 索引移除。归档逐文件比对一致，清单位于
+`brewfs:/home/hxy/opt-reports/pr407-seqwrite/evidence-SHA256SUMS`。
+
+下表路径相对于上述 `seqwrite-copy-compress/` 归档目录：
+
+| 关键文件 | SHA-256 |
+|---|---|
+| `ab-summary.json` | `ef97b1e9028ef4284f8e9204f123f9948b4dbc6341428b9148e261665a002bfd` |
+| `compressible-summary.json` | `3124482b7da7a2de33cc7757f1a13971d653f7706146d5a1c9947baf266aa417` |
+| `guard-review.json` | `f2111016004a7476da0fd7fa0b6cf7bc9aa9f9872250b774847f5a5bc50d6e28` |
+| `correctness.json` | `d20134180e7465b600bc48ccd1fa9e263c001c0585977420d5f69f54c0d56d4e` |
+| `baseline-copy-cost.json` | `3da0db5f71e8f2645dfb0bccaef5cd26f3c630dadc4dcc9618d01db29f7c31ae` |
+| `candidate-copy-cost.json` | `c133d8369134c62d2ec8611826f4ca2bda80cfcace872ba09923290ce3d6b432` |
+| `raw-artifact-manifest.json` | `35791446d3d8f917b2f2104ce5d8a7ea8970c98c74500f505160cbe500e182ec` |
+| `overlay-test-binaries.sha256` | `52f114233263ac4cfac1c5cf2301671baa7a23f0570a3ec5a14d398c4cb4df1e` |
+
+整个 `evidence-SHA256SUMS` 文件的 SHA-256：
+`c39e4a75fd72673a7d80e9ce97df9562f1abc5912dc0f13f545860c511617582`。
+
 ## 状态与证据边界
 
 当前 main 的 30 秒、499 Hz 全线程调用栈采样和拷贝成本表已于 09:16:18 UTC 完成，
@@ -534,8 +561,9 @@ SIGKILL，不插入 drain、等待或验证读取。重启使用新挂载和新�
 | direct_guard_complete | 是 | `{"arms": 6}` |
 | crash_teardowns | 是 | `{"count": 8}` |
 
-完整原始目录：`/home/hxy/perf-seqwrite-20261102/`；提交保留紧凑证据、
-两份火焰图和 folded、原始 fio JSON、精确 phase 时间戳、协议和复现脚本。
+完整原始目录：`brewfs:/home/hxy/perf-seqwrite-20261102/`；两份火焰图和
+folded、原始 fio JSON、精确 phase 时间戳、协议和复现脚本均留在外部归档，
+位置与 SHA-256 见「证据存放位置」，Git 仅保留本报告正文。
 脚本中的绝对路径与独立服务端口需按环境调整，依赖 Python PyYAML/boto3、
 Docker Compose、fio、perf 与 inferno。历史基线和已接受 README 表均未改写。
 

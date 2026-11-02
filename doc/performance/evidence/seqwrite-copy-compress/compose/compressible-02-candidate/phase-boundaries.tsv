@@ -1,5 +1,0 @@
-fio-seqwrite	tool_start	1793620327331671601
-fio-seqwrite	tool_return	1793620347952628598
-fio-seqwrite	post-write_drain_start	1793620348118180080
-fio-seqwrite	post-write_runner_drained	1793620348261410225
-fio-seqwrite	post-write_extended_drained	1793620350811811760

@@ -1,6 +1,0 @@
-tool	status	seconds	log
-fio-seqwrite	pass	21	/artifacts/ab-01-baseline/tools/fio-seqwrite.log
-fio-randwrite	pass	21	/artifacts/ab-01-baseline/tools/fio-randwrite.log
-fio-randread	pass	20	/artifacts/ab-01-baseline/tools/fio-randread.log
-fio-seqread	pass	21	/artifacts/ab-01-baseline/tools/fio-seqread.log
-fio-randrw	pass	21	/artifacts/ab-01-baseline/tools/fio-randrw.log

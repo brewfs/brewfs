@@ -1,4 +1,0 @@
-tool	runner_drain_s	extended_strict_drain_s	pending_bytes	dirty_bytes	buffer_dirty_bytes
-fio-seqwrite	0	2	0	0	0
-fio-randwrite	0	2	0	0	0
-fio-randrw	0	3	0	0	0

@@ -1,2 +1,0 @@
-tool	status	seconds	log
-fio-seqwrite	pass	20	/artifacts/compressible-03-candidate/tools/fio-seqwrite.log
