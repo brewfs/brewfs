@@ -73,6 +73,21 @@ def main():
             assert redis('HGET', ledger, 'p0') == '', 'failed publication marked successful'
             assert redis('HGET', reservations[0], 'st') == 'pending'
             redis('DEL', malformed_key)
+        # Redis INCR rejects leading zeroes even though Lua tonumber accepts
+        # them. A failed publication must not consume its reservation or leave
+        # an idempotency marker that makes a later retry report success.
+        for malformed_version in ['00', '01', '0001']:
+            redis('SET', version, malformed_version)
+            try:
+                invalid = commit(0)
+            except (AssertionError, json.JSONDecodeError):
+                invalid = {'ok': False}
+            assert not invalid['ok']
+            assert redis('HGET', ledger, 'p0') == '', 'invalid INCR marked publication successful'
+            assert redis('HGET', reservations[0], 'st') == 'pending'
+            assert redis('LLEN', chunk) == '0'
+            assert json.loads(redis('GET', node))['attr']['size'] == 0
+            redis('DEL', version)
         for malformed_node in ['{"attr":{"size":"0","mode":384}}',
                                '{"attr":{"size":NaN,"mode":384}}',
                                '{"attr":{"size":0,"mode":384},"other":NaN}']:
@@ -115,6 +130,7 @@ def main():
             assert redis('HGET', ledger, 'dead') == '0'
         finally:
             redis('ACL', 'DELUSER', restricted_user)
+        redis('SET', version, '0')
         assert commit(0)['ok']
         assert commit(0)['ok']
         assert redis('LLEN', chunk) == '1'

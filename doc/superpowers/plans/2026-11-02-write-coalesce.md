@@ -257,3 +257,53 @@ The final dev binary's content and SIGKILL evidence is retained separately.
 No accepted README comparison has changed. Delivery is a draft with explicit
 gaps within the five-hour timebox; the earlier 90-minute and three-hour
 milestones were missed as recorded above.
+
+## PR 404 adversarial review
+
+Review of `386ce60` reproduced a Redis publication atomicity defect. Chunk
+versions `00`/`01` pass the original decimal-digit preflight but Redis INCR
+rejects them. The script has already set the published marker, deleted the
+reservation and appended the slice. A retry then reports success while the
+durable inode size remains zero. This is a fault-injection case, not evidence
+that ordinary Redis INCR generates malformed versions.
+
+The regression test failed on the original code with `invalid INCR marked
+publication successful`. Preflight now accepts only Redis's canonical
+nonnegative integer spelling (and retains the existing exact-number limit).
+The actual embedded Lua passes the expanded Redis fault tests, including
+unchanged reservations, chunk contents and inode size on failure, followed by
+a successful publication starting from version `0`.
+
+Evidence: `/home/hxy/review-404-20261102/redis-false-success.json`,
+`redis-version-red.log`, `redis-version-green.log`. The fresh local minimum CI
+gate passed against the fix: workspace check/build; tokio/io-uring checks;
+1315 library + 2 binary tests (264 existing ignored); strict workspace clippy
+with all targets; format, shell/report scripts, Redis fault tests and diff check.
+Commands, source hashes and all 13 exit statuses are in `review-results.json`
+under that evidence directory. Dependency diagnostics remain as before.
+The original release measurements still do not match final production sources.
+Final-release paired measurements, direct guards and broad compose acceptance
+remain missing. Keep the PR draft; the small atomicity fix does not waive those
+requirements. No performance table is promoted to accepted status.
+
+The original status summary showing sixteen passing gates was incomplete:
+`/home/hxy/check-404-gates.sh` sorts status files and applies `head -16`, hiding
+later gate names. An interrupted overlay status can also remain on disk while
+a retry runs; inspect started/finished times and logs, not only the status file.
+The full self-review is `/home/hxy/REPORT-404-SELFREVIEW.md`.
+
+The earlier overlay retry subsequently finished with 2728 passed, one failed
+and 474 ignored. `writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`
+returned EBUSY at `meta_layer/tests.rs:1477`. Its test and direct implementation
+files are unchanged from the PR base. The same executable failed once in an
+isolated rerun and then passed three focused repeats; these later passes do
+not erase the full-suite failure. This remains unresolved and blocks acceptance.
+
+The fixed debug binary additionally passed Redis/RustFS FUSE fsync/close ->
+SIGKILL -> fresh-cache remount in both direct and buffered modes. Each of the
+four cases checked all 8192 blocks and clean unmounts. A real Redis allocator
+boundary test set `nextchunk=2^52-1`: buffered pwrite returned 4096, then fsync
+returned EIO (5), matching the sticky writeback error path. The subsequent
+close returned 0; applications must check the fsync result. These are functional
+checks, not new release performance measurements. Task compose services were
+cleaned up, and accepted artifacts were preserved.

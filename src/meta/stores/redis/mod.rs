@@ -646,7 +646,9 @@ const WRITE_SLICE_LUA: &str = r#"
             end
         end
         local version = redis.call('GET', KEYS[2])
-        if version and (not string.match(version, '^%d+$')
+        -- Match Redis INCR's canonical integer syntax: tonumber alone also
+        -- accepts leading zeroes that INCR rejects after earlier mutations.
+        if version and ((version ~= '0' and not string.match(version, '^[1-9]%d*$'))
             or not tonumber(version) or tonumber(version) >= 9007199254740991) then
             return cjson.encode({ok=false, error='corrupt_chunk_version'})
         end

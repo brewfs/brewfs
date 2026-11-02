@@ -1,5 +1,10 @@
 # 小随机写对象聚合验收报告
 
+升级、默认开启行为、混合版本挂载限制与回滚步骤见
+[运维说明](../operations/write-coalescing.md)。下文保留原交付快照；后续自审
+发现 Redis 非规范 chunk version 可导致部分发布，修复与验证状态见
+[实验计划的自审记录](../superpowers/plans/2026-11-02-write-coalesce.md#pr-404-adversarial-review)。
+
 开始：2026-11-02 04:48:18 Asia/Shanghai。截止：09:48:18。
 代码基点：`a41b126`；分支：`perf/write-coalesce`。
 证据目录：`/home/hxy/perf-write-coalesce-20261102/`。
