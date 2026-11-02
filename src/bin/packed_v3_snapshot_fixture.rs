@@ -87,7 +87,7 @@ struct Args {
     manifest_output: PathBuf,
     #[arg(long)]
     bucket: Option<String>,
-    /// Layout policy for new S3 Pack objects (off, auto, tiered or fixed bytes).
+    /// Layout policy for new S3 Pack objects (off, auto, tiered, range-heavy or fixed bytes).
     /// Requires the rustfs-ec-block-size-hint Cargo feature when enabled.
     #[arg(long, requires = "bucket")]
     s3_rustfs_ec_block_size_hint: Option<RustfsEcBlockSizeHint>,
@@ -1009,6 +1009,33 @@ fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod codec_control_tests {
+    #[test]
+    fn pack_uploader_accepts_range_heavy_and_rejects_unknown_profile() {
+        use clap::Parser;
+        let args = super::Args::try_parse_from([
+            "fixture",
+            "--bucket",
+            "test",
+            "--s3-rustfs-ec-block-size-hint",
+            "range-heavy",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.s3_rustfs_ec_block_size_hint,
+            Some("range-heavy".parse().unwrap())
+        );
+        assert!(
+            super::Args::try_parse_from([
+                "fixture",
+                "--bucket",
+                "test",
+                "--s3-rustfs-ec-block-size-hint",
+                "range-light",
+            ])
+            .is_err()
+        );
+    }
+
     #[test]
     fn pack_uploader_accepts_tiered_policy_only_for_s3() {
         use clap::Parser;

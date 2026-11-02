@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow};
 
 const BLOCK_SIZES: [usize; 4] = [65_536, 262_144, 1_048_576, 4_194_304];
-const POLICY_ERROR: &str = "RustFS EC block size hint must be off, auto, tiered, tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B, or 65536, 262144, 1048576, 4194304 bytes";
+const POLICY_ERROR: &str = "RustFS EC block size hint must be off, auto, tiered, range-heavy, tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B, or 65536, 262144, 1048576, 4194304 bytes";
 
 /// An exhaustive five-row table. Finite upper bounds are inclusive; the last
 /// row covers every remaining length. Private fields keep SDK callers from
@@ -86,6 +86,9 @@ pub enum RustfsEcBlockSizeHint {
     Auto,
     Fixed(usize),
     Tiered(RustfsEcBlockSizeTiers),
+    /// Preserve default small-object admission; request 64 KiB above 256 KiB.
+    /// Inline eligibility itself remains a backend decision.
+    RangeHeavy,
 }
 
 impl std::str::FromStr for RustfsEcBlockSizeHint {
@@ -96,6 +99,7 @@ impl std::str::FromStr for RustfsEcBlockSizeHint {
             "off" => Ok(Self::Off),
             "auto" => Ok(Self::Auto),
             "tiered" => Ok(Self::Tiered(RustfsEcBlockSizeTiers::default())),
+            "range-heavy" => Ok(Self::RangeHeavy),
             _ if value.starts_with("tiered:") => {
                 RustfsEcBlockSizeTiers::parse(&value[7..]).map(Self::Tiered)
             }
@@ -115,6 +119,7 @@ impl std::fmt::Display for RustfsEcBlockSizeHint {
         match self {
             Self::Off => f.write_str("off"),
             Self::Auto => f.write_str("auto"),
+            Self::RangeHeavy => f.write_str("range-heavy"),
             Self::Fixed(size) => write!(f, "{size}"),
             Self::Tiered(table) => write!(
                 f,
@@ -160,6 +165,7 @@ impl RustfsEcBlockSizeHint {
             Self::Auto if object_bytes > 1_048_576 => Some(1_048_576),
             Self::Auto => None,
             Self::Tiered(table) => table.for_object(object_bytes),
+            Self::RangeHeavy => (object_bytes > 262_144).then_some(65_536),
         }
     }
 
@@ -170,6 +176,7 @@ impl RustfsEcBlockSizeHint {
             Self::Auto => "auto-v1",
             Self::Fixed(_) => "fixed",
             Self::Tiered(_) => "tiered-v1",
+            Self::RangeHeavy => "range-heavy-v1",
         }
     }
 }
@@ -192,6 +199,47 @@ pub(crate) fn validate_rustfs_ec_block_size_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_heavy_configuration_roundtrips_and_checks_feature() {
+        let policy: RustfsEcBlockSizeHint = "range-heavy".parse().unwrap();
+        assert_eq!(policy.to_string(), "range-heavy");
+        assert_eq!(policy, policy.to_string().parse().unwrap());
+        assert!(policy.enabled());
+        let validation = validate_rustfs_ec_block_size_hint(Some(policy));
+        if cfg!(feature = "rustfs-ec-block-size-hint") {
+            validation.unwrap();
+        } else {
+            assert_eq!(
+                validation.unwrap_err().to_string(),
+                "feature not compiled: rustfs-ec-block-size-hint"
+            );
+        }
+    }
+
+    #[cfg(feature = "rustfs-ec-block-size-hint")]
+    #[test]
+    fn range_heavy_preserves_inline_admission_and_small_external_layout() {
+        let policy: RustfsEcBlockSizeHint = "range-heavy".parse().unwrap();
+        for length in [0, 1, 131_071, 131_072, 131_073, 262_143, 262_144] {
+            assert_eq!(policy.for_object(length), None, "N={length}");
+        }
+        for length in [
+            262_145,
+            524_288,
+            1_048_576,
+            2_097_152,
+            4_194_304,
+            4_194_308,
+            8_388_608,
+            16_777_216,
+            33_554_432,
+            usize::MAX,
+        ] {
+            assert_eq!(policy.for_object(length), Some(65_536), "N={length}");
+        }
+        assert_eq!(policy.version(), "range-heavy-v1");
+    }
 
     #[test]
     fn tiered_configuration_rejects_gaps_bad_order_and_unsupported_blocks() {
