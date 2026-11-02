@@ -84,6 +84,24 @@ impl Default for V3BuildPolicy {
 }
 
 impl V3BuildPolicy {
+    /// Keep sequential small-file payloads in complete, prewarmable GroupMeta
+    /// blocks without changing the wire's 256 KiB metadata bound.
+    pub const INLINE_GROUP_PAYLOAD_BYTES: usize =
+        super::super::meta::INLINE_GROUP_DATA_BUDGET_BYTES;
+
+    pub fn inline_group_needs_flush(
+        self,
+        profile: AccessProfile,
+        inline_bytes: usize,
+        next_file_bytes: usize,
+    ) -> bool {
+        self.inline_data
+            && profile == AccessProfile::SequentialSmallFile
+            && next_file_bytes != 0
+            && next_file_bytes <= Self::INLINE_GROUP_PAYLOAD_BYTES
+            && inline_bytes.saturating_add(next_file_bytes) > Self::INLINE_GROUP_PAYLOAD_BYTES
+    }
+
     pub fn select(
         self,
         size: u64,

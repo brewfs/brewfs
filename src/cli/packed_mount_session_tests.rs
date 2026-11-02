@@ -32,6 +32,127 @@ const PAYLOAD: &[u8] = b"packed-v3 actual CLI upper payload survives release and
 type Connection<B> =
     Pin<Box<dyn Future<Output = Result<B, workspace_overlay::error::WorkspaceError>> + Send>>;
 
+fn report_smallfile_hashes(stage: &str, hashes: &std::collections::BTreeMap<String, String>) {
+    use sha2::{Digest, Sha256};
+    let artifact = PathBuf::from(
+        std::env::var_os("BREWFS_TEST_SMALLFILE_ARTIFACT_DIR")
+            .expect("explicit writable directory for full crash SHA-256 manifests"),
+    );
+    let aggregate = hex::encode(Sha256::digest(serde_json::to_vec(hashes).unwrap()));
+    std::fs::write(
+        artifact.join(format!("{stage}.json")),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "files": hashes.len(), "bytes_per_file": 4096, "mismatches": 0,
+            "aggregate_sha256": aggregate, "sha256": hashes,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    eprintln!(
+        "smallfile-crash stage={stage} files={} sha256={aggregate}",
+        hashes.len()
+    );
+}
+
+fn write_smallfile_crash_corpus(
+    mount: &Path,
+    count: usize,
+) -> std::collections::BTreeMap<String, String> {
+    use sha2::{Digest, Sha256};
+    let directory = mount.join("smallfile-crash-corpus");
+    std::fs::create_dir(&directory).unwrap();
+    let mut hashes = std::collections::BTreeMap::new();
+    for index in 0..count {
+        let seed = (index as u64 + 1).to_le_bytes();
+        let payload = (0..4096)
+            .map(|offset| seed[offset % 8] ^ if offset % 2 == 0 { 0 } else { 0x80 })
+            .collect::<Vec<_>>();
+        let name = format!("f{index:06}");
+        let path = directory.join(&name);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&payload).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let expected = hex::encode(Sha256::digest(&payload));
+        assert_eq!(
+            hex::encode(Sha256::digest(std::fs::read(path).unwrap())),
+            expected
+        );
+        hashes.insert(name, expected);
+    }
+    report_smallfile_hashes("before-sigkill", &hashes);
+    hashes
+}
+
+fn measure_smallfile_write_rename(mount: &Path) {
+    let path = mount.join("smallfile-operation-guard");
+    let renamed = mount.join("smallfile-operation-guard-renamed");
+    let payload = [0x5a; 4096];
+    let mut result = serde_json::Map::new();
+    for mode in ["write", "rename"] {
+        let mut rounds = Vec::new();
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            for _ in 0..256 {
+                if mode == "write" {
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(&path)
+                        .unwrap();
+                    file.write_all(&payload).unwrap();
+                    file.sync_all().unwrap();
+                    drop(file);
+                } else {
+                    std::fs::rename(&path, &renamed).unwrap();
+                    std::fs::rename(&renamed, &path).unwrap();
+                }
+            }
+            let operations = if mode == "write" { 256.0 } else { 512.0 };
+            rounds.push(start.elapsed().as_secs_f64() * 1000.0 / operations);
+        }
+        let mut ordered = rounds.clone();
+        ordered.sort_by(f64::total_cmp);
+        result.insert(
+            mode.into(),
+            serde_json::json!({"ms_per_op": rounds, "median_ms": ordered[3]}),
+        );
+    }
+    assert_eq!(std::fs::read(path).unwrap(), payload);
+    let artifact = std::env::var_os("BREWFS_TEST_SMALLFILE_ARTIFACT_DIR").unwrap();
+    std::fs::write(
+        PathBuf::from(artifact).join("write-rename-guards.json"),
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .unwrap();
+}
+
+fn verify_smallfile_crash_corpus(
+    mount: &Path,
+    expected: &std::collections::BTreeMap<String, String>,
+) {
+    use sha2::{Digest, Sha256};
+    let directory = mount.join("smallfile-crash-corpus");
+    assert_eq!(
+        std::fs::read_dir(&directory).unwrap().count(),
+        expected.len()
+    );
+    let mut actual = std::collections::BTreeMap::new();
+    for (name, digest) in expected {
+        let bytes = std::fs::read(directory.join(name)).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        let hash = hex::encode(Sha256::digest(bytes));
+        assert_eq!(&hash, digest, "recovered content differs: {name}");
+        actual.insert(name.clone(), hash);
+    }
+    report_smallfile_hashes("after-recovery", &actual);
+}
+
 // Fault the real LocalFS PUT at the filesystem boundary while keeping the
 // original PVC writable. Restoring exact permissions lets real recovery retry.
 struct DenyObjectWrites {
@@ -646,8 +767,14 @@ async fn read_rows<B: WorkspaceKvBackend>(
 }
 
 fn native_record<T: serde::de::DeserializeOwned>(raw: &[u8]) -> T {
-    assert!(raw.starts_with(b"BWSKV001"));
-    bincode::deserialize(&raw[8..]).unwrap()
+    // WorkspaceRecord carries the writable-bucket schema envelope; leases
+    // and identifiers continue to use the ordinary native record envelope.
+    let magic: &[u8] = if std::any::type_name::<T>() == std::any::type_name::<WorkspaceRecord>() {
+        b"BWSWR002"
+    } else {
+        b"BWSKV001"
+    };
+    bincode::deserialize(raw.strip_prefix(magic).expect("native record envelope")).unwrap()
 }
 
 async fn mounted_lease<B: WorkspaceKvBackend>(
@@ -862,6 +989,7 @@ async fn actual_cli_chain<B, F>(
     connect: Arc<F>,
     killed: bool,
     pending: bool,
+    smallfile_count: usize,
 ) where
     B: WorkspaceKvBackend,
     F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
@@ -877,6 +1005,7 @@ async fn actual_cli_chain<B, F>(
     );
     let _ = executable();
     assert!(!pending || killed);
+    assert!(smallfile_count == 0 || (killed && !pending));
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("mount")).unwrap();
     let observation_budget = V3MountBudget::defaults();
@@ -1085,6 +1214,19 @@ async fn actual_cli_chain<B, F>(
         io.take().unwrap().await.unwrap().unwrap();
         child.stage("upper-sync-read-complete");
     }
+    let smallfile_hashes = if smallfile_count != 0 {
+        let mount = root.path().join("mount");
+        Some(
+            tokio::task::spawn_blocking(move || {
+                measure_smallfile_write_rename(&mount);
+                write_smallfile_crash_corpus(&mount, smallfile_count)
+            })
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     child.terminate(killed).await;
     if pending {
         let _ = tokio::time::timeout(WAIT, io.take().unwrap())
@@ -1312,7 +1454,7 @@ async fn actual_cli_chain<B, F>(
                 "real recovery PUT did not preserve pending payload"
             );
         }
-        let expected_reopened_carrier = if !pending {
+        let expected_reopened_carrier = if !pending && smallfile_count == 0 {
             // Quiesced kill/recovery exercises the real PMR publisher. The
             // pending-PUT fault pair keeps its independent replay scope.
             let original_pmr_bytes = pmr.to_vec();
@@ -1443,6 +1585,12 @@ async fn actual_cli_chain<B, F>(
         .unwrap();
         assert_eq!(upper_bytes, expected_payload);
         assert_eq!(lower_bytes, lower_payload);
+        if let Some(expected) = smallfile_hashes {
+            let mount = root.path().join("mount");
+            tokio::task::spawn_blocking(move || verify_smallfile_crash_corpus(&mount, &expected))
+                .await
+                .unwrap();
+        }
         reopened.terminate(false).await;
         drop(reopened);
         // The immutable original PMR remains cleanup evidence after a fresh
@@ -1468,7 +1616,7 @@ async fn actual_cli_chain<B, F>(
     );
 }
 
-async fn redis(killed: bool, pending: bool) {
+async fn redis_with_smallfiles(killed: bool, pending: bool, smallfile_count: usize) {
     let namespace = format!("packed-v3-cli-route-{}", Uuid::new_v4());
     let url = std::env::var("BREWFS_TEST_REDIS_URL").unwrap();
     let connect_namespace = namespace.clone();
@@ -1478,7 +1626,18 @@ async fn redis(killed: bool, pending: bool) {
         Box::pin(async move { RedisWorkspaceBackend::connect(&url, &namespace).await })
             as Connection<RedisWorkspaceBackend>
     });
-    actual_cli_chain("redis", &namespace, connect, killed, pending).await;
+    actual_cli_chain(
+        "redis",
+        &namespace,
+        connect,
+        killed,
+        pending,
+        smallfile_count,
+    )
+    .await;
+}
+async fn redis(killed: bool, pending: bool) {
+    redis_with_smallfiles(killed, pending, 0).await;
 }
 async fn tikv(killed: bool, pending: bool) {
     let namespace = format!("packed-v3-cli-route-{}", Uuid::new_v4());
@@ -1495,7 +1654,7 @@ async fn tikv(killed: bool, pending: bool) {
             TiKvWorkspaceBackend::connect_with_budget(endpoints, &namespace, budget).await
         }) as Connection<TiKvWorkspaceBackend>
     });
-    actual_cli_chain("tikv", &namespace, connect, killed, pending).await;
+    actual_cli_chain("tikv", &namespace, connect, killed, pending, 0).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1512,6 +1671,16 @@ async fn real_tikv_cli_mount_mutation_clean_release() {
 #[ignore = "real Redis, Linux FUSE, SIGKILL expiry and original PVC recovery"]
 async fn real_redis_cli_kill_expiry_pvc_recovery() {
     redis(true, false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real Redis, FUSE, 8192 fsynced files, SIGKILL and per-file SHA-256 manifests"]
+async fn real_redis_cli_smallfiles_kill_expiry_pvc_recovery() {
+    redis_with_smallfiles(true, false, 8192).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "real Redis, FUSE and isolated write/rename operation measurements"]
+async fn real_redis_cli_smallfile_operation_guards() {
+    redis_with_smallfiles(true, false, 1).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "real TiKV, Linux FUSE, SIGKILL expiry and original PVC recovery"]

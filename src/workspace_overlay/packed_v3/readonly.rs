@@ -718,10 +718,11 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
             budget.clone(),
         );
         let context = Arc::new(V3ReadonlyContext {
-            reader: super::wire005::V3IndexReader::with_budget(
+            reader: super::wire005::V3IndexReader::with_budget_for_profile(
                 client.clone(),
                 metadata_bytes,
                 budget.clone(),
+                source.profile,
             ),
             client,
             snapshot,
