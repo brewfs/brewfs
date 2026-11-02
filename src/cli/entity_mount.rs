@@ -143,6 +143,7 @@ async fn run_mount<B: EntityBackend + 'static, K: WorkspaceKvBackend>(
         namespace_id: args.workspace,
         lease_ttl_ns: LEASE_TTL_NS,
         chunk_size: args.chunk_size,
+        read_cache_bytes: args.entity_read_cache_bytes,
         writeback: matches!(args.cache.writeback_mode, WriteBackMode::CommitBeforeUpload)
             .then_some(staging),
     };
@@ -206,6 +207,7 @@ async fn run_mount<B: EntityBackend + 'static, K: WorkspaceKvBackend>(
                     "fresh_only": true,
                     "lower_manifest": String::from_utf8_lossy(&mounted.lower_binding().manifest_key),
                     "writeback_mode": format!("{:?}", args.cache.writeback_mode),
+                    "read_cache": mounted.data().read_cache_stats(),
                     "metadata_backend": format!("{:?}", args.meta_backend),
                 })
             );
@@ -240,6 +242,10 @@ async fn run_mount<B: EntityBackend + 'static, K: WorkspaceKvBackend>(
     };
     stop.stop_admission();
     let drained = mounted.orderly_close().await;
+    println!(
+        "entity_read_cache={}",
+        serde_json::to_string(&mounted.data().read_cache_stats())?
+    );
     println!(
         "entity_writeback={}",
         serde_json::to_string(&mounted.data().writeback_status().await?)?

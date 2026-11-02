@@ -29,6 +29,7 @@ use super::namespace::{EntityHandle, EntityNamespace, Prepared};
 use super::ownership::{
     DurableUpload, Ownership, SliceOwnership, plan_chunk_memberships_from_rows,
 };
+use super::payload_cache::{Key as PayloadKey, PayloadCache, PayloadCacheStats};
 use super::recovery::{DiscardProgress, Recovery, absent_intent_check, prepare_resize};
 use super::writeback::{EntityWriteback, WritebackConfig, WritebackStatus};
 use super::{EntityError, Result};
@@ -78,6 +79,7 @@ pub struct EntityData<B, L, O> {
     // Only identities that nominate keys, never cached metadata or authority.
     slice_hints: moka::sync::Cache<(i64, u64), Arc<[u64]>>,
     writeback: Option<Arc<EntityWriteback<B, O>>>,
+    payload_cache: Arc<PayloadCache>,
 }
 
 struct UploadedRange {
@@ -107,6 +109,17 @@ where
         objects: Arc<O>,
         chunk_size: u64,
         config: Option<WritebackConfig>,
+    ) -> Result<Arc<Self>> {
+        Self::new_with_payload_cache(namespace, objects, chunk_size, config, PayloadCache::new(0))
+            .await
+    }
+
+    pub(crate) async fn new_with_payload_cache(
+        namespace: Arc<EntityNamespace<B, L>>,
+        objects: Arc<O>,
+        chunk_size: u64,
+        config: Option<WritebackConfig>,
+        payload_cache: Arc<PayloadCache>,
     ) -> Result<Arc<Self>> {
         if chunk_size == 0 || chunk_size > MAX_IO_BYTES as u64 {
             return Err(EntityError::Invalid("invalid entity chunk size".into()));
@@ -178,6 +191,7 @@ where
                     config_bytes,
                     slice_hints: moka::sync::Cache::new(4096),
                     writeback,
+                    payload_cache,
                 }));
             }
         }
@@ -1002,6 +1016,16 @@ where
         {
             return Ok(bytes);
         }
+        let cache_key = PayloadKey::Upper {
+            volume: self.namespace.keys.volume_id(),
+            namespace: descriptor.namespace_id,
+            slice: descriptor.slice_id,
+            size: descriptor.size,
+            digest: descriptor.sha256,
+        };
+        if let Some(bytes) = self.payload_cache.get(&cache_key) {
+            return Ok(bytes.to_vec());
+        }
         let key = self.namespace.keys.object(descriptor.slice_id);
         // Probe one byte past the authenticated length: an exact-size range
         // would hide an appended suffix. Short EOF is checked below as well.
@@ -1035,7 +1059,16 @@ where
                 "entity object authentication failed".into(),
             ));
         }
+        self.payload_cache.insert(cache_key, &bytes);
         Ok(bytes)
+    }
+
+    pub fn read_cache_stats(&self) -> PayloadCacheStats {
+        self.payload_cache.stats()
+    }
+
+    pub(crate) fn close_read_cache(&self) {
+        self.payload_cache.close();
     }
 
     pub async fn writeback_status(&self) -> Result<WritebackStatus> {

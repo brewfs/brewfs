@@ -34,6 +34,9 @@ pub(crate) struct Metrics {
     put_count: AtomicU64,
     put_bytes: AtomicU64,
     stats: Mutex<Option<Weak<FsStats>>>,
+    #[cfg(feature = "workspace-overlay")]
+    entity_read_cache:
+        Mutex<Option<Weak<crate::workspace_overlay::entity::payload_cache::PayloadCache>>>,
     profile: String,
     backend: String,
     start: Instant,
@@ -73,6 +76,8 @@ impl Metrics {
             put_count: AtomicU64::new(0),
             put_bytes: AtomicU64::new(0),
             stats: Mutex::new(None),
+            #[cfg(feature = "workspace-overlay")]
+            entity_read_cache: Mutex::new(None),
             profile,
             backend,
             start: Instant::now(),
@@ -275,6 +280,48 @@ impl Metrics {
                 sample(&mut out, name, "", value);
             }
         }
+        #[cfg(feature = "workspace-overlay")]
+        if let Some(cache) = self
+            .entity_read_cache
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
+            let s = cache.stats();
+            for (name, hits, misses) in [
+                ("entity_lower_payload", s.lower_hits, s.lower_misses),
+                ("entity_upper_payload", s.upper_hits, s.upper_misses),
+            ] {
+                let labels = format!("cache=\"{name}\"");
+                sample(&mut out, "brewfs_cache_hits_total", &labels, hits);
+                sample(&mut out, "brewfs_cache_misses_total", &labels, misses);
+            }
+            for (name, value) in [
+                ("brewfs_entity_read_cache_capacity_bytes", s.capacity_bytes),
+                ("brewfs_entity_read_cache_retained_bytes", s.retained_bytes),
+                ("brewfs_entity_read_cache_entries", s.entries as u64),
+            ] {
+                descriptor(
+                    &mut out,
+                    name,
+                    "gauge",
+                    "Entity payload cache admission budget or retained charge.",
+                );
+                sample(&mut out, name, "", value);
+            }
+            descriptor(
+                &mut out,
+                "brewfs_entity_read_cache_evictions_total",
+                "counter",
+                "Entity payload cache capacity evictions.",
+            );
+            sample(
+                &mut out,
+                "brewfs_entity_read_cache_evictions_total",
+                "",
+                s.evictions,
+            );
+        }
         descriptor(
             &mut out,
             "brewfs_mount_info",
@@ -404,6 +451,15 @@ pub(crate) fn attach(stats: &Arc<FsStats>) {
     }
 }
 
+#[cfg(feature = "workspace-overlay")]
+pub(crate) fn attach_entity_read_cache(
+    cache: &Arc<crate::workspace_overlay::entity::payload_cache::PayloadCache>,
+) {
+    if let Some(metrics) = ACTIVE.get() {
+        *metrics.entity_read_cache.lock() = Some(Arc::downgrade(cache));
+    }
+}
+
 pub(crate) struct ObjectTimer {
     metrics: Arc<Metrics>,
     op: usize,
@@ -524,6 +580,34 @@ pub async fn start(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn entity_payload_cache_metrics_are_separate_from_metadata_hits() {
+        use crate::workspace_overlay::entity::payload_cache::{Key, PayloadCache};
+        let metrics = Metrics::new("entity".into(), "tikv".into());
+        let cache = PayloadCache::new(8192);
+        *metrics.entity_read_cache.lock() = Some(Arc::downgrade(&cache));
+        let key = Key::Lower {
+            manifest: [1; 32],
+            ino: 2,
+            offset: 0,
+            length: 4096,
+        };
+        assert!(cache.get(&key).is_none());
+        cache.insert(key.clone(), &[3; 4096]);
+        assert!(cache.get(&key).is_some());
+        let text = metrics.render();
+        assert!(text.contains("brewfs_cache_hits_total{cache=\"entity_lower_payload\"} 1\n"));
+        assert!(text.contains("brewfs_cache_misses_total{cache=\"entity_lower_payload\"} 1\n"));
+        assert!(text.contains("brewfs_cache_hits_total{cache=\"entity_upper_payload\"} 0\n"));
+        assert!(text.contains("brewfs_entity_read_cache_capacity_bytes 8192\n"));
+        assert!(text.contains("brewfs_entity_read_cache_entries 1\n"));
+        cache.close();
+        let text = metrics.render();
+        assert!(text.contains("brewfs_entity_read_cache_retained_bytes 0\n"));
+        assert!(text.contains("brewfs_cache_hits_total{cache=\"entity_lower_payload\"} 1\n"));
+    }
+
     #[tokio::test]
     async fn stream_preserves_chunks_errors_and_counts_consumed_bytes_on_cancel() {
         use bytes::Bytes;

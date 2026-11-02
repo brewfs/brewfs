@@ -16,6 +16,7 @@ use super::model::{
     ChunkMap, EntityDentry, EntityInode, EntityKind, LowerBinding, validate_name,
     validate_xattr_name,
 };
+use super::payload_cache::{Key as PayloadKey, PayloadCache};
 use super::resolver::{
     ImmutableLower, ImmutableLowerData, MAX_DIRECTORY_ENTRIES, validate_directory_page,
 };
@@ -48,6 +49,7 @@ pub struct PackedLower<O: ObjectBackend + Clone, K> {
     snapshot: AuthenticatedV3Snapshot,
     reader: V3IndexReader<O>,
     memo: memo::Memo,
+    payload_cache: Arc<PayloadCache>,
     session: OnceLock<WriterSession>,
 }
 
@@ -130,6 +132,7 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> PackedLower<O, K
             snapshot,
             reader,
             memo: memo::Memo::new(),
+            payload_cache: PayloadCache::new(0),
             session: OnceLock::new(),
         })
     }
@@ -208,8 +211,13 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> PackedLower<O, K
             snapshot,
             reader,
             memo: memo::Memo::new(),
+            payload_cache: PayloadCache::new(0),
             session: OnceLock::new(),
         })
+    }
+
+    pub(crate) fn set_payload_cache(&mut self, cache: Arc<PayloadCache>) {
+        self.payload_cache = cache;
     }
 
     /// Bind a fresh immutable memo view to one already acquired writer session.
@@ -701,6 +709,16 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> ImmutableLowerDa
                 "packed lower read exceeds immutable EOF".into(),
             ));
         }
+        let cache_key = PayloadKey::Lower {
+            manifest: self.binding.manifest_digest,
+            ino,
+            offset,
+            length,
+        };
+        if let Some(bytes) = self.payload_cache.get(&cache_key) {
+            self.end_call(&admission).await?;
+            return Ok(bytes.to_vec());
+        }
         let mut output = vec![0; length];
         self.snapshot
             .read_inode_range(
@@ -714,6 +732,7 @@ impl<O: ObjectBackend + Clone + 'static, K: WorkspaceKvBackend> ImmutableLowerDa
             .await
             .map_err(packed_error)?;
         self.end_call(&admission).await?;
+        self.payload_cache.insert(cache_key, &output);
         Ok(output)
     }
 }

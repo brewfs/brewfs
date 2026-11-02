@@ -15,6 +15,7 @@ pub mod namespace;
 pub mod native_lower;
 pub mod ownership;
 pub mod packed_lower;
+pub mod payload_cache;
 pub mod recovery;
 pub mod redis;
 pub mod resolver;

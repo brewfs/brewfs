@@ -15,6 +15,7 @@ use super::model::LowerBinding;
 use super::namespace::EntityNamespace;
 use super::native_lower::NativeLower;
 use super::packed_lower::PackedLower;
+use super::payload_cache::PayloadCache;
 use super::redis::RedisEntityBackend;
 use super::resolver::{ImmutableLower, ImmutableLowerData};
 use super::writeback::WritebackConfig;
@@ -110,6 +111,7 @@ pub(crate) struct FreshMountOptions {
     pub lease_ttl_ns: i64,
     pub chunk_size: u64,
     pub writeback: Option<WritebackConfig>,
+    pub read_cache_bytes: u64,
 }
 
 pub(crate) type RedisEntityExperiment<O> =
@@ -477,10 +479,16 @@ impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: Workspac
 
     async fn finish_entity(
         &self,
-        lower: ExperimentalLower<O, B, K>,
+        mut lower: ExperimentalLower<O, B, K>,
         namespace_id: Uuid,
         options: FreshMountOptions,
     ) -> Result<ExperimentalEntityMount<O, B, K>> {
+        let payload_cache = PayloadCache::new(options.read_cache_bytes);
+        #[cfg(feature = "observability")]
+        crate::observability::attach_entity_read_cache(&payload_cache);
+        if let ExperimentalLower::Packed(packed) = &mut lower {
+            packed.set_payload_cache(payload_cache.clone());
+        }
         let binding = lower.binding().clone();
         let keys = EntityKeys::new(self.volume_id, namespace_id);
         let lifecycle = Arc::new(Lifecycle::new(self.entity.clone(), keys.clone()));
@@ -503,11 +511,12 @@ impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: Workspac
             keys.clone(),
             session.clone(),
         );
-        let data = match EntityData::new_with_writeback(
+        let data = match EntityData::new_with_payload_cache(
             namespace.clone(),
             Arc::new(self.objects.clone()),
             options.chunk_size,
             options.writeback,
+            payload_cache,
         )
         .await
         {
@@ -555,6 +564,7 @@ impl<O: ObjectBackend + Clone + 'static, B: EntityBackend + 'static, K: Workspac
             .drain_remote(std::time::Duration::from_secs(60))
             .await?;
         self.lifecycle.enter_maintenance(&self.session).await?;
+        self.data.close_read_cache();
         Ok(())
     }
 }

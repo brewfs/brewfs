@@ -18,6 +18,7 @@ pub const DEFAULT_META_URL: &str = "sqlite::memory:";
 pub const DEFAULT_S3_PART_SIZE: usize = 16 * 1024 * 1024;
 pub const DEFAULT_S3_MAX_CONCURRENCY: usize = 32;
 pub const DEFAULT_FUSE_MAX_BACKGROUND: usize = 512;
+pub const DEFAULT_ENTITY_READ_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
 fn default_fuse_workers() -> usize {
     fuse_workers_from_parallelism(std::thread::available_parallelism())
@@ -244,6 +245,12 @@ pub struct MountArgs {
     #[cfg_attr(feature = "workspace-overlay", arg(long, default_value_t = false))]
     #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
     pub entity_recover_uploads: bool,
+
+    /// Retained authenticated payload budget for the experimental packed entity mount.
+    /// Defaults to 512 MiB for that mount only; zero disables it.
+    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "BYTES"))]
+    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    pub entity_read_cache_bytes: Option<u64>,
 
     /// Object-store key of the immutable packed-metadata manifest.
     #[arg(long, value_name = "KEY")]
@@ -1111,6 +1118,7 @@ pub struct MountConfig {
     pub entity_native_source: Option<PathBuf>,
     pub entity_native_manifest_key: Option<String>,
     pub entity_recover_uploads: bool,
+    pub entity_read_cache_bytes: u64,
     pub packed_manifest_key: Option<String>,
     pub workspace_namespace: String,
     pub workspace_operator_managed: bool,
@@ -1235,14 +1243,32 @@ impl MountConfig {
         {
             anyhow::bail!("fuse.keep_cache is unsupported by the direct-I/O entity adapter");
         }
+        let entity_read_cache_bytes = args.entity_read_cache_bytes.unwrap_or_else(|| {
+            if args.experimental_entity_mount
+                && packed_manifest_key.is_some()
+                && !args.entity_recover_uploads
+            {
+                DEFAULT_ENTITY_READ_CACHE_BYTES
+            } else {
+                0
+            }
+        });
         if (args.experimental_entity_mount
             || args.entity_volume_id.is_some()
             || args.entity_native_source.is_some()
             || args.entity_native_manifest_key.is_some()
-            || args.entity_recover_uploads)
+            || args.entity_recover_uploads
+            || entity_read_cache_bytes != 0)
             && volume_format != VolumeFormat::WorkspaceEntityV1
         {
             anyhow::bail!("experimental entity options require volume_format=workspace-entity-v1");
+        }
+        if entity_read_cache_bytes != 0
+            && (!args.experimental_entity_mount
+                || packed_manifest_key.is_none()
+                || args.entity_recover_uploads)
+        {
+            anyhow::bail!("entity read cache requires an experimental packed entity mount");
         }
         if args.experimental_entity_mount
             && (args.entity_volume_id.is_none_or(|id| id.is_nil())
@@ -1439,6 +1465,7 @@ impl MountConfig {
             entity_native_source: args.entity_native_source,
             entity_native_manifest_key: args.entity_native_manifest_key,
             entity_recover_uploads: args.entity_recover_uploads,
+            entity_read_cache_bytes,
             packed_manifest_key,
             workspace_namespace: args
                 .workspace_namespace
@@ -1867,6 +1894,7 @@ mod tests {
             entity_native_source: None,
             entity_native_manifest_key: None,
             entity_recover_uploads: false,
+            entity_read_cache_bytes: None,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2517,6 +2545,7 @@ mod tests {
             entity_native_source: None,
             entity_native_manifest_key: None,
             entity_recover_uploads: false,
+            entity_read_cache_bytes: None,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2603,6 +2632,7 @@ mod tests {
             entity_native_source: None,
             entity_native_manifest_key: None,
             entity_recover_uploads: false,
+            entity_read_cache_bytes: None,
             packed_manifest_key: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
@@ -2863,6 +2893,65 @@ mod tests {
             assert_eq!(config.meta_tikv_pd_endpoints, ["127.0.0.1:2379"]);
         }
         args.experimental_entity_mount = false;
+        assert!(MountConfig::from_sources(args).is_err());
+    }
+
+    #[test]
+    fn entity_payload_cache_defaults_are_scoped_and_preserve_sync() {
+        let mut args = empty_mount_args(None, Some("/unused-cache".into()));
+        assert_eq!(
+            MountConfig::from_sources(args.clone())
+                .unwrap()
+                .entity_read_cache_bytes,
+            0
+        );
+        args.entity_read_cache_bytes = Some(512 << 20);
+        assert!(MountConfig::from_sources(args.clone()).is_err());
+        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.workspace = Some(uuid::Uuid::new_v4());
+        args.entity_volume_id = Some(uuid::Uuid::new_v4());
+        args.meta_backend = Some(MetaBackendKind::TiKv);
+        args.meta_tikv_pd_endpoints = Some(vec!["127.0.0.1:2379".into()]);
+        args.data_backend = Some(DataBackendKind::S3);
+        args.s3_bucket = Some("isolated-entity".into());
+        args.packed_manifest_key = Some("immutable/manifest".into());
+        assert!(MountConfig::from_sources(args.clone()).is_err());
+        args.experimental_entity_mount = true;
+        args.entity_read_cache_bytes = None;
+        let config = MountConfig::from_sources(args.clone()).unwrap();
+        assert_eq!(config.entity_read_cache_bytes, 512 << 20);
+        assert_eq!(
+            config.cache.writeback_mode,
+            WriteBackMode::UploadBeforeCommit
+        );
+        for capacity in [0, 8 << 20] {
+            args.entity_read_cache_bytes = Some(capacity);
+            let config = MountConfig::from_sources(args.clone()).unwrap();
+            assert_eq!(config.entity_read_cache_bytes, capacity);
+            assert_eq!(
+                config.cache.writeback_mode,
+                WriteBackMode::UploadBeforeCommit
+            );
+        }
+        args.entity_recover_uploads = true;
+        assert!(MountConfig::from_sources(args.clone()).is_err());
+        args.entity_read_cache_bytes = None;
+        assert_eq!(
+            MountConfig::from_sources(args.clone())
+                .unwrap()
+                .entity_read_cache_bytes,
+            0
+        );
+        args.entity_recover_uploads = false;
+        args.packed_manifest_key = None;
+        args.entity_native_source = Some("/private-source".into());
+        assert_eq!(
+            MountConfig::from_sources(args.clone())
+                .unwrap()
+                .entity_read_cache_bytes,
+            0
+        );
+        args.entity_read_cache_bytes = Some(512 << 20);
         assert!(MountConfig::from_sources(args).is_err());
     }
 
