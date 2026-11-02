@@ -6,7 +6,7 @@ use crate::cadapter::read_observer::{
 use crate::chunk::bandwidth::BandwidthLimiter;
 use crate::chunk::compress::{
     Compression, PERSISTED_HEADER_LEN, PersistedHeader, decompress_bytes, decompress_framed_bytes,
-    encode_persisted_block_vectored, parse_persisted_header,
+    parse_persisted_header, prepare_persisted_upload,
 };
 use crate::chunk::page_cache::{DEFAULT_PAGE_CAPACITY, DEFAULT_PAGE_SIZE, PageKey, ReadPageCache};
 use crate::chunk::singleflight::SingleFlight;
@@ -1147,13 +1147,12 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         }
         parts.extend(chunks);
 
-        let (cache_block, upload_bytes) =
-            encode_persisted_block_vectored(&parts, self.config.compression);
-        let stored_compression = match parse_persisted_header(upload_bytes.as_ref()) {
-            PersistedHeader::Framed(compression) => compression,
-            _ => unreachable!("newly encoded persisted blocks are always framed"),
-        };
-        let upload_len = upload_bytes.len();
+        let prepared = prepare_persisted_upload(
+            &parts,
+            self.config.compression,
+            self.config.populate_write_cache_after_upload || self.config.create_only_writes,
+        );
+        let upload_len = prepared.chunks.iter().map(Bytes::len).sum::<usize>();
         self.bandwidth.acquire_upload(upload_len).await;
         self.object_metrics
             .record_put_prepare(prepare_started.elapsed());
@@ -1161,24 +1160,25 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         let started = Instant::now();
         if self.config.create_only_writes {
             self.client
-                .put_object_create_only(&object_key, &upload_bytes)
+                .put_object_create_only(&object_key, &prepared.chunks[0])
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("create-only object put failed: {object_key}, {e:?}")
                 })?;
         } else {
             self.client
-                .put_object_vectored(&object_key, vec![upload_bytes])
+                .put_object_vectored(&object_key, prepared.chunks)
                 .await
                 .map_err(|e| anyhow::anyhow!("object store put failed: {object_key}, {e:?}"))?;
         }
         self.object_metrics
             .record_put(upload_len as u64, started.elapsed());
         self.format_cache
-            .insert(key, ObjectLayout::Versioned(stored_compression))
+            .insert(key, ObjectLayout::Versioned(prepared.compression))
             .await;
 
         if self.config.populate_write_cache_after_upload
+            && let Some(cache_block) = prepared.cache_block
             && cache_block.len() <= self.config.block_size
         {
             let cache_started = Instant::now();

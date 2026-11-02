@@ -19,6 +19,8 @@ use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, sleep};
 use tokio_util::io::ReaderStream;
 
+mod vectored_body;
+
 #[cfg(test)]
 #[path = "s3/bucket_tests.rs"]
 mod bucket_tests;
@@ -822,7 +824,14 @@ impl S3Backend {
         loop {
             attempt += 1;
 
-            let body = Self::direct_stream_from_chunks(&chunks, total_size);
+            let body = if chunks.len() > 1
+                && total_size >= 1024 * 1024
+                && self.config.disable_payload_checksum
+            {
+                vectored_body::retryable_body(&chunks).into()
+            } else {
+                Self::direct_stream_from_chunks(&chunks, total_size)
+            };
             let mut request = self
                 .client
                 .put_object()
@@ -1964,6 +1973,38 @@ mod tests {
                 },
                 mutation_replay_forbidden: false,
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn large_vectored_put_retries_with_exact_length_and_md5() {
+        let mock = MockS3::new().await;
+        let mut backend = mock.backend(None);
+        backend.config.max_retries = 2;
+        backend.config.enable_md5 = true;
+        assert!(backend.config.disable_payload_checksum);
+        mock.state.fail_next_put.store(true, Ordering::SeqCst);
+        let data = Bytes::from(vec![42; 4 * 1024 * 1024]);
+        let chunks = vec![
+            Bytes::from_static(b"SF\0\0"),
+            data.slice(..65537),
+            Bytes::new(),
+            data.slice(65537..),
+        ];
+        let expected_md5 = S3Backend::md5_base64_chunks(&chunks);
+        let expected = chunks.concat();
+        backend.put_object_vectored("shared", chunks).await.unwrap();
+        let requests = mock.state.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert_eq!(request.method, Method::PUT);
+            assert_eq!(request.body.as_ref(), expected);
+            assert_eq!(
+                request.headers["content-length"],
+                expected.len().to_string()
+            );
+            assert_eq!(request.headers["content-md5"], expected_md5);
+            assert!(!request.headers.contains_key("transfer-encoding"));
         }
     }
 
