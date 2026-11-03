@@ -82,3 +82,10 @@ Plots show the tool phase including close, before the later strict-drain phase.
 Baseline internal pending gauges are absent and are not drawn as zero. The crash
 probe verifies successful fsync prefixes after mount-process death with a new
 cache; it does not test backend-server power loss or validate all failed fio data.
+
+## Generated artifacts
+
+`raw-index.json`, `review-evidence.tar.gz` and the rendered `.png`/`.svg` charts are
+not committed: they are regenerated from the CSVs plus the SHA256SUMS manifest and
+were ~40 MB of binary/large JSON in git history. The archived copy lives outside the
+repository at `brewfs:/home/hxy/issue410/` and is referenced from PR #408.
