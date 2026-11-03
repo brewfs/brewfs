@@ -6,8 +6,9 @@ use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3OwnedPermit};
 // This is a separate, finite write-side bound, never a larger read budget.
 pub(super) const RECOVERY_MAX_ROWS: usize = 8192;
 const COMPACTION_PAGE_BYTES: u64 = 128 << 10;
-// Covers decoded rows, interval/tree storage and derived writes, including
-// ownership records. At most 8192 scanned + 4096 incoming rows: 12.125 MiB.
+// Covers decoded rows and interval/tree scratch. Recovery retains at most
+// 8192 scanned rows for one chunk, plus at most 4096 incoming rows per batch.
+// Derived writes and retired ownership are admitted separately through CAS.
 const COMPACTION_ROW_BYTES: u64 = 1024;
 
 fn budget_exceeded() -> WorkspaceError {
@@ -115,21 +116,24 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         scan: &mut CompactionScan,
     ) -> Result<Vec<DataExtentDelta>, WorkspaceError> {
         let prefix = extent_chunk_prefix(layer, ino, chunk);
+        // Extent keys and values have fixed-size encodings. Redis can read a
+        // larger page in one RPC; the backend clamps physical response bytes.
+        // TiKV keeps its existing 32-data-request budget and page capacity.
+        let mut limits = KvReadLimits {
+            max_records: 128,
+            max_key_bytes: 128,
+            max_value_bytes: 128,
+            max_total_bytes: 48 << 10,
+            max_response_bytes: 64 << 10,
+            max_data_requests: 32,
+        };
+        limits.max_records = self.backend.scan_page_record_limit(limits)?;
         let mut after = None;
         let mut rows = Vec::new();
         loop {
             let page = self
                 .backend
-                .scan_prefix_page_with_byte_limits(
-                    &prefix,
-                    after.as_deref(),
-                    KvReadLimits {
-                        max_value_bytes: 512,
-                        max_total_bytes: 48 << 10,
-                        max_response_bytes: 64 << 10,
-                        ..delta_scan_limits()
-                    },
-                )
+                .scan_prefix_page_with_byte_limits(&prefix, after.as_deref(), limits)
                 .await?;
             if page.is_empty() {
                 break;
@@ -140,7 +144,12 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 .ok_or_else(budget_exceeded)?;
             scan.bytes = scan
                 .bytes
-                .checked_add(validate_delta_scan_page(&page, &prefix, after.as_deref())?)
+                .checked_add(validate_delta_scan_page_with_limit(
+                    &page,
+                    &prefix,
+                    after.as_deref(),
+                    limits.max_records,
+                )?)
                 .ok_or_else(budget_exceeded)?;
             if scan.rows > RECOVERY_MAX_ROWS || scan.bytes > DELTA_SCAN_MAX_BYTES {
                 return Err(budget_exceeded());
@@ -202,11 +211,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 COMPACTION_PAGE_BYTES + count as u64 * COMPACTION_ROW_BYTES,
             )])
             .map_err(|error| WorkspaceError::InvalidReadPlan(error.to_string()))?;
-        let mut scan = CompactionScan {
-            rows: 0,
-            bytes: 0,
-            admissions: vec![admission],
-        };
+        let mut admissions = vec![admission];
         let mut incoming: BTreeMap<(i64, u64), Vec<DataExtentDelta>> = BTreeMap::new();
         for write in writes.iter() {
             if let Some(row) = incoming_extent(write, head.layer_id)? {
@@ -231,6 +236,14 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         );
         let mut retired_slices = BTreeMap::<u64, u64>::new();
         for ((ino, chunk), incoming) in incoming {
+            // Readers bound a single chunk across its layers. An unrelated
+            // chunk in the same publication batch must not consume that bound
+            // or retain the previous chunk's temporary scan allocation.
+            let mut scan = CompactionScan {
+                rows: 0,
+                bytes: 0,
+                admissions: Vec::new(),
+            };
             let mut history = self
                 .scan_compaction_chunk(head.layer_id, ino, chunk, &mut scan)
                 .await?;
@@ -260,6 +273,36 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                 .iter()
                 .map(|row| (row.sequence, row))
                 .collect::<BTreeMap<_, _>>();
+            let stored = history[..old_count]
+                .iter()
+                .map(|row| (row.sequence, row))
+                .collect::<BTreeMap<_, _>>();
+            let deletions = history[..old_count]
+                .iter()
+                .filter(|row| !retained.contains_key(&row.sequence))
+                .count();
+            let replacements = compacted
+                .iter()
+                .filter(|row| stored.get(&row.sequence).copied() != Some(*row))
+                .count();
+            let owners = history
+                .iter()
+                .filter(|row| {
+                    !retained.contains_key(&row.sequence)
+                        && matches!(row.kind, ExtentKind::Data { .. })
+                })
+                .count();
+            // These allocations outlive the per-chunk scratch. Reserve before
+            // growing writes or retired_slices; duplicate owners deliberately
+            // overestimate the map and eventual ownership writes.
+            admissions.push(
+                self.native_auxiliary_budget()
+                    .admit(&[(
+                        V3BudgetPool::Metadata,
+                        (deletions + replacements + owners) as u64 * COMPACTION_ROW_BYTES,
+                    )])
+                    .map_err(|error| WorkspaceError::InvalidReadPlan(error.to_string()))?,
+            );
             for row in &history[..old_count] {
                 if !retained.contains_key(&row.sequence) {
                     writes.push(KvWrite::Delete {
@@ -281,10 +324,6 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
                         .or_insert(end);
                 }
             }
-            let stored = history[..old_count]
-                .iter()
-                .map(|row| (row.sequence, row))
-                .collect::<BTreeMap<_, _>>();
             for row in &compacted {
                 if stored.get(&row.sequence).copied() != Some(row) {
                     writes.push(put(extent_key(row), row)?);
@@ -293,6 +332,6 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         }
         self.retain_extent_ownership(head.layer_id, retired_slices, writes)
             .await?;
-        Ok(scan.admissions)
+        Ok(admissions)
     }
 }

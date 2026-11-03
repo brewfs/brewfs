@@ -362,6 +362,15 @@ pub trait WorkspaceKvBackend: Send + Sync + 'static {
     fn short_scan_page_is_end(&self) -> bool {
         false
     }
+
+    /// Choose a page size within a caller's existing byte and RPC budgets.
+    /// The default allows one row per data request. Backends that return a
+    /// whole page in one request can account for their protocol overhead.
+    /// The read still enforces every limit; this hint never proves EOF.
+    fn scan_page_record_limit(&self, limits: KvReadLimits) -> Result<usize, WorkspaceError> {
+        limits.validate()?;
+        Ok(limits.max_records.min(limits.max_data_requests))
+    }
     fn name(&self) -> &'static str;
 
     /// Private native-GC adapter opt-in. A positive quota selects durable,

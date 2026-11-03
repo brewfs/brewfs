@@ -227,6 +227,26 @@ return result
 const KEY_INDEX_READY: &[u8] = b"__index/ready";
 const INDEX_BATCH_SIZE: usize = 1024;
 
+fn scan_page_record_limit(
+    namespace_bytes: usize,
+    limits: KvReadLimits,
+) -> Result<usize, WorkspaceError> {
+    limits.validate()?;
+    let stored = limits.max_key_bytes + limits.max_value_bytes;
+    let response = stored
+        .checked_add(namespace_bytes)
+        .and_then(|bytes| bytes.checked_add(64))
+        .ok_or_else(|| WorkspaceError::InvalidReadPlan("Redis page size overflow".into()))?;
+    // Match BOUNDED_PREFIX_LUA's conservative RESP accounting, including the
+    // physical namespace on every key. Keep both byte caps unchanged. If one
+    // row cannot fit, the normal read must reject it, never synthesize EOF.
+    Ok(limits
+        .max_records
+        .min(limits.max_total_bytes / stored)
+        .min((limits.max_response_bytes - 32) / response)
+        .max(1))
+}
+
 #[derive(Clone)]
 pub struct RedisWorkspaceBackend {
     connection: ConnectionManager,
@@ -700,6 +720,9 @@ impl WorkspaceKvBackend for RedisWorkspaceBackend {
     fn short_scan_page_is_end(&self) -> bool {
         true
     }
+    fn scan_page_record_limit(&self, limits: KvReadLimits) -> Result<usize, WorkspaceError> {
+        scan_page_record_limit(self.prefix.len(), limits)
+    }
     fn name(&self) -> &'static str {
         "workspace-redis"
     }
@@ -977,6 +1000,37 @@ fn backend(error: impl std::fmt::Display) -> WorkspaceError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compaction_page_capacity_preserves_wire_and_stored_byte_caps() {
+        let limits = KvReadLimits {
+            max_records: 128,
+            max_key_bytes: 128,
+            max_value_bytes: 128,
+            max_total_bytes: 48 << 10,
+            max_response_bytes: 64 << 10,
+            max_data_requests: 32,
+        };
+        assert_eq!(scan_page_record_limit(32, limits).unwrap(), 128);
+        for namespace in [0, 32, 256, 1024, 16_384, 60_000] {
+            let rows = scan_page_record_limit(namespace, limits).unwrap();
+            assert!((1..=128).contains(&rows));
+            assert!(rows * 256 <= limits.max_total_bytes);
+            assert!(32 + rows * (64 + namespace + 256) <= limits.max_response_bytes);
+        }
+        assert_eq!(scan_page_record_limit(1 << 20, limits).unwrap(), 1);
+        assert!(scan_page_record_limit(usize::MAX, limits).is_err());
+        assert!(
+            scan_page_record_limit(
+                0,
+                KvReadLimits {
+                    max_records: 0,
+                    ..limits
+                }
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn timed_metadata_reads_are_transactional() {
         let packed =
