@@ -3,7 +3,8 @@
 `--read-fetch-policy sparse` selects page/range reads for small uncompressed
 misses in the ordinary `ObjectBlockStore`, including when an EC write hint is
 configured. It also disables both range-triggered speculative whole-object
-prefetch paths. `--read-fetch-policy whole-object` explicitly selects whole
+prefetch paths for random reads; a read that continues a sequential stream
+keeps the whole-block background prefetch (see below). `--read-fetch-policy whole-object` explicitly selects whole
 objects, with or without a hint. Omitting the option selects `backend-default`
 and preserves the previous decisions, including the EC hint's whole-object
 default. The CLI overrides YAML `cache.read_fetch_policy`.
@@ -48,12 +49,17 @@ whole-object repository. The authenticated paths retain their length and digest
 checks. Partial tails are checked for complete requested coverage; a read past
 the persisted end remains an error.
 
-The complete-scan guard below requests a complete 4 MiB object at once. Sparse
-mode does not infer sequential access from a series of tiny requests: such a
-fragmented scan can issue additional range GETs. End-to-end FUSE scan and mixed
-read/write performance acceptance remain separate work; this experiment does
-not establish their non-regression. No general performance comparison table is
-updated from these measurements.
+The complete-scan guard below requests a complete 4 MiB object at once. A
+fragmented scan of tiny requests is recognized per block: a read that starts
+exactly where the previous read of the same block ended, or at offset 0 of a
+block whose predecessor in the slice was read to its end, re-enables the
+whole-block background prefetch. Random reads, re-reads and adjacent-page reads
+never match exactly and stay sparse. Without this, a FUSE scan issued one range
+GET per kernel readahead window (about 17 per 4 MiB block in the 2026-11-02
+cloud acceptance) and lost 42–45% of sequential read throughput. End-to-end
+mixed read/write performance acceptance remains separate work; this experiment
+does not establish its non-regression. No general performance comparison table
+is updated from these measurements.
 
 ## Measurement method
 

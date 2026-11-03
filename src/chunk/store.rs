@@ -181,6 +181,7 @@ type PageRangeKey = (BlockKey, u32 /*start_page*/, u32 /*end_page*/);
 /// entries for large small-file scans so repeated opens do not reprobe object
 /// headers, while still bounding the process-local index.
 const DEFAULT_FORMAT_CACHE_CAPACITY: u64 = 65536;
+const SPARSE_STREAM_CAPACITY: u64 = 4096;
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -463,6 +464,10 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     range_prefetch_limit: Arc<Semaphore>,
     /// Runtime fetch/prefetch override; never part of the persisted layout.
     read_fetch_policy: ReadFetchPolicy,
+    /// End offset of the last sparse range read per block, used to recognize
+    /// sequential streams that sparse fetching would otherwise split into
+    /// one range GET per kernel readahead window.
+    sparse_streams: moka::sync::Cache<BlockKey, u64>,
     /// Configuration for read strategy
     config: BlockStoreConfig,
     /// Network bandwidth rate limiter for uploads/downloads
@@ -483,8 +488,11 @@ pub enum ReadFetchPolicy {
     BackendDefault,
     /// Coalesce misses into whole-object downloads.
     WholeObject,
-    /// Fetch small uncompressed misses in pages, without speculative full GETs.
-    /// Compressed objects and large reads still use the whole-object flight.
+    /// Fetch small uncompressed misses in pages, without speculative full GETs
+    /// for random reads. A read continuing exactly where the previous read of
+    /// the block (or the previous block of the slice) ended prefetches the
+    /// whole block in the background. Compressed objects and large reads still
+    /// use the whole-object flight.
     Sparse,
 }
 
@@ -639,6 +647,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
+            sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -691,6 +700,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
+            sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -721,6 +731,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_flight: Arc::new(SingleFlight::new()),
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
+            sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -837,6 +848,20 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                 },
             )
             .await
+    }
+
+    /// Records a sparse range read and reports whether it continues a forward
+    /// stream: it starts where the previous read of this block ended, or at
+    /// the start of a block whose predecessor in the slice was read to its end.
+    /// Random reads, re-reads and adjacent-page reads never match exactly.
+    fn sparse_read_continues_stream(&self, key: BlockKey, offset: u64, len: usize) -> bool {
+        let previous_end = self.sparse_streams.get(&key);
+        self.sparse_streams.insert(key, offset + len as u64);
+        previous_end == Some(offset)
+            || (offset == 0
+                && key.1 > 0
+                && self.sparse_streams.get(&(key.0, key.1 - 1))
+                    == Some(self.config.block_size as u64))
     }
 
     fn key_for(key: BlockKey) -> String {
@@ -1362,6 +1387,13 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         let skip_full_read_probe =
             prefer_full_objects || self.read_fetch_policy == ReadFetchPolicy::Sparse;
         let can_try_object_ranges = len > 0 && len <= range_size_threshold && !prefer_full_objects;
+        // A sparse sequential stream regains the whole-block background
+        // prefetch that sparse mode otherwise suppresses.
+        let sparse_sequential = self.read_fetch_policy == ReadFetchPolicy::Sparse
+            && can_try_object_ranges
+            && self.sparse_read_continues_stream(key, offset, len);
+        let allow_range_prefetch =
+            self.read_fetch_policy != ReadFetchPolicy::Sparse || sparse_sequential;
 
         if can_try_object_ranges
             && let Some(block_data) = self.read_flight.try_piggyback(&key).await
@@ -1556,7 +1588,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 require_complete_read(key, offset, len, total_read)?;
                 if self.config.range_background_prefetch
                     && !self.try_promote_page_cache_to_block_cache(key).await
-                    && self.read_fetch_policy != ReadFetchPolicy::Sparse
+                    && allow_range_prefetch
                 {
                     self.prefetch_full_block_background(key, key_str, object_key, layout);
                 }
@@ -1689,7 +1721,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             if range_missed
                 && self.config.range_background_prefetch
                 && !self.try_promote_page_cache_to_block_cache(key).await
-                && self.read_fetch_policy != ReadFetchPolicy::Sparse
+                && allow_range_prefetch
             {
                 self.prefetch_full_block_background(key, key_str, object_key, layout);
             }

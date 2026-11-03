@@ -39,7 +39,8 @@ and S3 constructor validation.
 whole objects, so small EC blocks would only add full-GET cost. When neither
 the CLI nor YAML sets `read_fetch_policy`, a mount using `range-heavy`
 therefore reads with `sparse`. An explicit `whole-object` or `backend-default`
-is kept and logged as a warning at startup.
+is kept and logged as a warning at startup. Sparse keeps whole-block
+background prefetch for reads that continue a sequential stream.
 
 **Default remains auto for configurations already choosing auto; the absent
 option remains unset.** Neither tiered nor range-heavy changes defaults or the
@@ -173,3 +174,36 @@ checks, strict Clippy and runtime checks passed before measurements. This is
 direct S3 mechanism evidence, without FUSE, compose, C1-C4, TiKV, independent
 disks or Pack fork qualification. Reports and frozen raw evidence are retained
 at `/mnt/brewfs-data/REPORT-402-R2.md` and `/mnt/brewfs-data/402-r2/`.
+
+## Recorded FUSE acceptance of range-heavy-v2 (2026-11-02)
+
+One bounded Aliyun run (`ecs.u1-c1m2.2xlarge`, Ubuntu 26.04, RustFS EC 2+2 on
+four directories of one PL1 ESSD, the reviewed RustFS branch at `2809f5a`)
+compared a real FUSE mount with the hint and read policy unset against
+`range-heavy` with the policy unset (implied sparse), on a 3.75 GiB sparse set
+and a 256 MiB hot set of 4 MiB files, read cache 1 GiB, compression none.
+Eight ABBA cycles, page cache dropped before every cold cell. Ratios are
+range-heavy/unset geometric means:
+
+| Cell | Ratio |
+|---|---:|
+| 4 KiB random read, 1 job, cold sparse set | 3.94 |
+| 4 KiB random read, 8 jobs, cold sparse set | 23.85 |
+| 64 KiB random read, 4 jobs, cold sparse set | 18.12 |
+| 4 KiB random read, 8 jobs, warm | 1.00 |
+| 4 KiB random read, 8 jobs, hot set cold start | 0.84 |
+| 1 MiB sequential read, cold | 0.55 |
+| cold read of a freshly written 512 MiB file | 0.58 |
+| 4 KiB randrw 70/30, 4 jobs: read / write IOPS | 0.94 / 0.94 |
+| 4 KiB randrw: read p50 | 13.7 (worse) |
+| 1 MiB sequential write with fsync | 0.96 |
+
+**range-heavy-v2 failed the per-cell 5% regression gate.** Sequential reads
+issued one range GET per readahead window (5.7x the GETs for the same bytes),
+because sparse mode also suppressed whole-block prefetch for sequential
+streams; that is addressed by the sequential-stream rule above and needs
+re-measurement. The hot-set and randrw cells, where most pages of every block
+are eventually read, still favor whole-object fetching and remain open. The
+layout-isolation arm (1 MiB hint with explicit sparse) was truncated by the
+deadline and not measured. All data, verification reads and layout checks
+passed.
