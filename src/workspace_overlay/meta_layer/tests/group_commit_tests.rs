@@ -123,6 +123,120 @@ fn enqueue<B: WorkspaceKvBackend>(
 }
 
 #[tokio::test]
+async fn uploaded_prefix_publishes_in_one_atomic_ordered_mutation() {
+    use crate::workspace_overlay::catalog::ExtentQuery;
+    use crate::workspace_overlay::model::ExtentKind;
+
+    let f = fixture_with_cache(64 << 20).await;
+    let ino = f
+        .meta
+        .create_file(1, "uploaded-prefix".into())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let slices = (0..MAX_GROUP_WRITES)
+        .map(|index| SliceDesc {
+            slice_id: 50_000 + index as u64,
+            chunk_id,
+            offset: 0,
+            length: 64,
+        })
+        .collect::<Vec<_>>();
+    let control = &f.control.group_commit;
+    control.track.store(true, Ordering::SeqCst);
+    f.meta
+        .write_batch(ino, chunk_id, &slices, 64)
+        .await
+        .unwrap();
+    assert_eq!(control.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().size, 64);
+    let chain = f.meta.chain().await.unwrap();
+    let extents = f
+        .meta
+        .store
+        .get_extent_deltas(ExtentQuery {
+            layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
+            ino,
+            chunk_index: 0,
+            range_start: 0,
+            range_end: 64,
+        })
+        .await
+        .unwrap();
+    assert_eq!(extents.len(), 1);
+    assert_eq!(
+        extents[0].kind,
+        ExtentKind::Data {
+            slice_id: slices.last().unwrap().slice_id,
+            slice_offset: 0,
+        }
+    );
+    let owned = f
+        .meta
+        .store
+        .gc_snapshot(0, 0)
+        .await
+        .unwrap()
+        .slice_references
+        .into_iter()
+        .filter(|reference| reference.layer_id == chain[0].layer_id)
+        .map(|reference| reference.slice_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(owned, slices.iter().map(|slice| slice.slice_id).collect());
+    shutdown(&f).await;
+}
+
+#[tokio::test]
+async fn uploaded_prefix_rejects_invalid_or_missing_members_without_partial_publication() {
+    let f = fixture_with_cache(64 << 20).await;
+    let ino = f
+        .meta
+        .create_file(1, "invalid-prefix".into())
+        .await
+        .unwrap();
+    let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+    let first = SliceDesc {
+        slice_id: 50_000,
+        chunk_id,
+        offset: 0,
+        length: 64,
+    };
+    let invalid = SliceDesc {
+        slice_id: 50_001,
+        offset: 4090,
+        ..first
+    };
+    let control = &f.control.group_commit;
+    control.track.store(true, Ordering::SeqCst);
+    assert!(
+        f.meta
+            .write_batch(ino, chunk_id, &[first, invalid], 4096)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.meta
+            .write_batch(ino, chunk_id, &[first; MAX_GROUP_WRITES + 1], 64)
+            .await
+            .is_err()
+    );
+    assert!(f.meta.write_batch(ino, chunk_id, &[], 64).await.is_err());
+    assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().size, 0);
+    let absent = 999_999;
+    let absent_chunk = crate::vfs::chunk_id_for(absent, 0).unwrap();
+    let missing = SliceDesc {
+        chunk_id: absent_chunk,
+        ..first
+    };
+    assert!(
+        matches!(f.meta.write_batch(absent, absent_chunk, &[missing], 64).await,
+        Err(MetaError::NotFound(value)) if value == absent)
+    );
+    assert_eq!(control.commits.load(Ordering::SeqCst), 0);
+    shutdown(&f).await;
+}
+
+#[tokio::test]
 async fn group_commit_leader_returns_before_later_commit_finishes() {
     let f = fixture_with_cache(64 << 20).await;
     let first_ino = f.meta.create_file(1, "first".into()).await.unwrap();

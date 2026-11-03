@@ -62,6 +62,7 @@ const UPLOAD_MAX_RETRIES: u64 = 5;
 const COMMIT_RETRY_BASE_MS: u64 = 20;
 const COMMIT_RETRY_MAX_MS: u64 = 2000;
 const COMMIT_META_MAX_RETRIES: u32 = 15;
+const MAX_COMMIT_BATCH_SLICES: usize = 64;
 // High-throughput foreground writes can race with background freeze/flush for
 // several scheduler turns; keep this below "spin forever", but high enough not
 // to surface an internal slice handoff as EIO.
@@ -704,6 +705,69 @@ impl ChunkState {
             slices: VecDeque::new(),
             recently_committed: VecDeque::new(),
             commit_started: false,
+        }
+    }
+}
+
+struct ClaimedCommitSlice {
+    slice: Arc<ParkingMutex<SliceState>>,
+    desc: SliceDesc,
+}
+
+/// Own only the claims acquired by this batch. Unsubmitted prefixes return
+/// their claims; a dispatched mutation must finish before another publisher.
+struct UploadedCommitBatch {
+    entries: Vec<ClaimedCommitSlice>,
+    started: bool,
+}
+
+impl UploadedCommitBatch {
+    fn claim(chunk: &ChunkState, epoch: u64, limit: usize) -> Self {
+        let mut entries = Vec::new();
+        for slice in chunk.slices.iter().take(limit.min(MAX_COMMIT_BATCH_SLICES)) {
+            let mut state = slice.lock();
+            if !matches!(state.state, SliceStatus::Uploaded)
+                || state.err.is_some()
+                || state.meta_write_started
+                || state.coalesced_object
+                || (state.frozen_epoch != 0 && state.frozen_epoch != epoch)
+                || state.data.len() == 0
+            {
+                break;
+            }
+            let Some(slice_id) = state.slice_id else {
+                break;
+            };
+            let desc = SliceDesc {
+                slice_id,
+                chunk_id: state.chunk_id,
+                offset: state.offset,
+                length: state.data.len(),
+            };
+            state.meta_write_started = true;
+            entries.push(ClaimedCommitSlice {
+                slice: slice.clone(),
+                desc,
+            });
+        }
+        Self {
+            entries,
+            started: false,
+        }
+    }
+}
+
+impl Drop for UploadedCommitBatch {
+    fn drop(&mut self) {
+        if self.started {
+            return;
+        }
+        for member in &self.entries {
+            let mut state = member.slice.lock();
+            if matches!(state.state, SliceStatus::Uploaded) {
+                state.meta_write_started = false;
+                state.notify.notify_waiters();
+            }
         }
     }
 }
@@ -5119,6 +5183,131 @@ where
         );
     }
 
+    /// Publish only a ready prefix; incomplete uploads keep the normal path.
+    async fn try_commit_uploaded_batch(shared: &Arc<Shared<B, M>>, chunk_id: u64) -> bool {
+        let limit = shared.backend.meta().atomic_write_batch_limit();
+        if limit < 2
+            || !matches!(
+                shared.config.writeback_mode,
+                WriteBackMode::UploadBeforeCommit
+            )
+        {
+            return false;
+        }
+        let mut batch = {
+            let guard = shared.inner.lock().await;
+            let Some(chunk) = guard.chunks.get(&chunk_id) else {
+                return false;
+            };
+            UploadedCommitBatch::claim(chunk, shared.inode.data_epoch(), limit)
+        };
+        if batch.entries.len() < 2 {
+            return false;
+        }
+        let (ino, chunk_index) = extract_ino_and_chunk_index(chunk_id);
+        let chunk_start = chunk_index * shared.config.layout.chunk_size;
+        let slices = batch
+            .entries
+            .iter()
+            .map(|member| member.desc)
+            .collect::<Vec<_>>();
+        let new_size = chunk_start
+            + slices
+                .iter()
+                .map(|slice| slice.offset + slice.length)
+                .max()
+                .unwrap();
+        let observation = shared.request_observation();
+        batch.started = true;
+        let mut attempts = 0;
+        loop {
+            let metadata_commit = observation.as_ref().and_then(|observer| {
+                observer.unscoped_segment_timer(RequestSegment::MetadataCommit)
+            });
+            let metadata_inflight = shared.recent_pending_upload.track_metadata_commit();
+            let result = shared
+                .backend
+                .meta()
+                .write_batch(ino, chunk_id, &slices, new_size)
+                .instrument(tracing::trace_span!(
+                    "commit_chunk.meta_write_batch",
+                    ino,
+                    chunk_id,
+                    count = slices.len()
+                ))
+                .await;
+            drop(metadata_commit);
+            drop(metadata_inflight);
+            let Err(error) = result else {
+                break;
+            };
+            attempts += 1;
+            // A transport failure may have applied the whole mutation. Replay
+            // the same ordered batch, never its older members individually.
+            if should_retry_meta_write(&error) && attempts < COMMIT_META_MAX_RETRIES {
+                let wait_start = crate::vfs::diagnostic::Instant::now();
+                tokio::time::sleep(commit_retry_backoff(attempts)).await;
+                shared
+                    .recent_pending_upload
+                    .record_commit_wait_retry(wait_start.elapsed());
+                continue;
+            }
+            warn!(
+                ino,
+                chunk_id,
+                count = slices.len(),
+                attempts,
+                ?error,
+                "atomic publication failed after retry budget"
+            );
+            for member in &batch.entries {
+                let orphan_recorded = record_uploaded_orphan(shared, member.desc).await;
+                SliceHandle { slice: &member.slice, shared }.mark_failed(anyhow::anyhow!(
+                    "metadata batch commit failed for ino {ino}, chunk {chunk_id}, slice {}: {error}",
+                    member.desc.slice_id
+                ));
+                if orphan_recorded && let Some(wb) = &shared.write_back {
+                    let key = dirty_slice_key(
+                        ino,
+                        chunk_id,
+                        member.desc.slice_id,
+                        shared.writeback_epoch,
+                    );
+                    let _ = wb.remove(&key).await;
+                }
+            }
+            return true;
+        }
+
+        shared.inode.set_committed_size(new_size);
+        for member in &batch.entries {
+            let desc = member.desc;
+            shared.inode.add_estimated_allocated_bytes(desc.length);
+            if let Some(wb) = &shared.write_back {
+                let key = dirty_slice_key(ino, chunk_id, desc.slice_id, shared.writeback_epoch);
+                let _ = wb.remove(&key).await;
+            }
+            // Every member retains its dirty overlay until reader invalidation
+            // completes. A flush must never see Committed with stale readers.
+            let _ = shared
+                .reader
+                .invalidate(
+                    ino as u64,
+                    chunk_start + desc.offset,
+                    desc.length.as_usize(),
+                )
+                .await;
+            SliceHandle {
+                slice: &member.slice,
+                shared,
+            }
+            .mark_committed();
+        }
+        // The normal commit loop consumes Committed entries in order and
+        // keeps ownership of the chunk until its queue is empty.
+        true
+    }
+
     /// The background thread for committing a chunk.
     /// It waits for Uploaded slices, appends metadata, and marks them Committed.
     /// Each chunk will have a unique committing thread.
@@ -5174,6 +5363,11 @@ where
             };
 
             Self::split_uploaded_prefix_tail(&shared, chunk_id, &slice).await;
+
+            if Self::try_commit_uploaded_batch(&shared, chunk_id).await {
+                commit_failures = 0;
+                continue;
+            }
 
             // Get a snapshot of the current slice to check its status.
             // The `notification` in `Notify` is not queued (but the waiters are), this may result in a lost wake-up.
@@ -6812,6 +7006,68 @@ mod tests {
 
     fn test_config(layout: ChunkLayout) -> Arc<WriteConfig> {
         test_config_with_writeback(layout, WriteBackMode::UploadBeforeCommit)
+    }
+
+    fn uploaded_batch_chunk(count: usize) -> ChunkState {
+        let config = test_config(ChunkLayout::default());
+        let usage = Arc::new(AtomicU64::new(0));
+        let mut chunk = ChunkState::new(17);
+        for index in 0..count {
+            let mut state = SliceState::new(17, 0, config.clone(), usage.clone(), None, 0);
+            state.data.append(&[index as u8; 64]).unwrap();
+            state.data.freeze();
+            state.slice_id = Some(100 + index as u64);
+            state.state = SliceStatus::Uploaded;
+            state.frozen_epoch = 7;
+            chunk.slices.push_back(Arc::new(ParkingMutex::new(state)));
+        }
+        chunk
+    }
+
+    #[test]
+    fn test_uploaded_batch_bounds_order_and_releases_only_owned_claims() {
+        let chunk = uploaded_batch_chunk(MAX_COMMIT_BATCH_SLICES + 1);
+        let batch = UploadedCommitBatch::claim(&chunk, 7, usize::MAX);
+        assert_eq!(batch.entries.len(), MAX_COMMIT_BATCH_SLICES);
+        assert_eq!(batch.entries.first().unwrap().desc.slice_id, 100);
+        assert_eq!(batch.entries.last().unwrap().desc.slice_id, 163);
+        assert!(!chunk.slices.back().unwrap().lock().meta_write_started);
+        chunk.slices[0].lock().state = SliceStatus::Committed;
+        drop(batch);
+        assert!(chunk.slices[0].lock().meta_write_started);
+        assert!(
+            chunk
+                .slices
+                .iter()
+                .skip(1)
+                .all(|slice| !slice.lock().meta_write_started)
+        );
+    }
+
+    #[test]
+    fn test_uploaded_batch_never_skips_upload_epoch_claim_or_reservation_barriers() {
+        for barrier in 0..7 {
+            let chunk = uploaded_batch_chunk(3);
+            {
+                let mut middle = chunk.slices[1].lock();
+                match barrier {
+                    0 => middle.state = SliceStatus::Readonly,
+                    1 => middle.frozen_epoch = 6,
+                    2 => middle.meta_write_started = true,
+                    3 => middle.coalesced_object = true,
+                    4 => middle.err = Some("failed upload".into()),
+                    5 => middle.slice_id = None,
+                    6 => middle.data = CacheSlice::new(test_config(ChunkLayout::default())),
+                    _ => unreachable!(),
+                }
+            }
+            let batch = UploadedCommitBatch::claim(&chunk, 7, 64);
+            assert_eq!(batch.entries.len(), 1, "barrier {barrier}");
+            assert!(!chunk.slices[2].lock().meta_write_started);
+            drop(batch);
+            assert!(!chunk.slices[0].lock().meta_write_started);
+            assert_eq!(chunk.slices[1].lock().meta_write_started, barrier == 2);
+        }
     }
 
     fn test_config_with_prefix_split(layout: ChunkLayout) -> Arc<WriteConfig> {

@@ -3412,6 +3412,59 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         }
     }
 
+    fn atomic_write_batch_limit(&self) -> usize {
+        MAX_GROUP_WRITES
+    }
+
+    async fn write_batch(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slices: &[SliceDesc],
+        new_size: u64,
+    ) -> Result<(), MetaError> {
+        if slices.is_empty() || slices.len() > MAX_GROUP_WRITES {
+            return Err(MetaError::InvalidPath(
+                "invalid workspace write batch size".into(),
+            ));
+        }
+        for slice in slices {
+            Self::validate_write(ino, chunk_id, slice, new_size, self.chunk_size)?;
+        }
+        // Own the same gate as queued single writes, but keep this prefix in
+        // one mutation. Splitting it at a queue boundary could let a retry of
+        // an older overlap overwrite a later, already committed member.
+        let _mutation_guard = self.mutation_gate.lock().await;
+        let mut receivers = Vec::with_capacity(slices.len());
+        let mut batch = Vec::with_capacity(slices.len());
+        for &slice in slices {
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            batch.push(PendingWrite {
+                ino,
+                chunk_id,
+                slice,
+                new_size,
+                reply,
+            });
+            receivers.push(receiver);
+        }
+        let result = self.commit_write_batch(&mut batch).await;
+        // commit_write_batch can reject a missing/non-file inode through its
+        // receipt. All members here share one inode, so that rejects them all.
+        for member in batch {
+            let _ = member.reply.send(match &result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(duplicate_write_error(error)),
+            });
+        }
+        for receiver in receivers {
+            receiver.await.map_err(|_| {
+                MetaError::Internal("workspace write batch receipt was dropped".into())
+            })??;
+        }
+        Ok(())
+    }
+
     async fn write(
         &self,
         ino: i64,
