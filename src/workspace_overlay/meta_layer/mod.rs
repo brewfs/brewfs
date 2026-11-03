@@ -866,6 +866,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// Resolve each distinct inode once per attempt, with bounded backend
     /// concurrency. Keep the results locally: cache eviction/expiry must not
     /// turn mutation construction into another round of serial snapshots.
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = batch.len()))]
     async fn prefetch_write_inodes(
         &self,
         batch: &[PendingWrite],
@@ -881,6 +882,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// Commit every write of `batch` in one versioned mutation: one inode row
     /// per distinct inode (folded in arrival order) and every visible extent
     /// in arrival order, so a later write still wins on overlap.
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = batch.len()))]
     async fn commit_write_batch(&self, batch: &mut Vec<PendingWrite>) -> Result<(), MetaError> {
         for _ in 0..64 {
             // Capture the CAS version before fetching rows, and discard all
@@ -1141,6 +1143,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         Ok(snapshot)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn mutation_version(&self) -> Result<MutationVersion, MetaError> {
         self.retain_mutation_version().await
     }
@@ -3416,6 +3419,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         MAX_GROUP_WRITES
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(ino = ino, chunk_id = chunk_id, slices = slices.len()))]
     async fn write_batch(
         &self,
         ino: i64,

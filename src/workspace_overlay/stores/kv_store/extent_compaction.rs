@@ -108,6 +108,7 @@ struct CompactionScan {
 }
 
 impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
+    #[tracing::instrument(level = "debug", skip_all, fields(ino = ino, chunk = chunk))]
     async fn scan_compaction_chunk(
         &self,
         layer: LayerId,
@@ -185,6 +186,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
     /// Called after sequence allocation, before the extent generation fence.
     /// All replacements, deletions and slice ownership join the same head CAS.
     /// The caller retains admission through that CAS (including its retry).
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = writes.len()))]
     pub(super) async fn compact_extent_history(
         &self,
         head: &LayerRecord,

@@ -68,6 +68,7 @@ pub(super) fn decode_extent_reference(
 impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
     /// The exact writable-head CAS serializes these monotone ownership rows;
     /// the native extent generation fences their movement against GC scans.
+    #[tracing::instrument(level = "debug", skip_all, fields(slices = slices.len()))]
     pub(super) async fn retain_extent_ownership(
         &self,
         head: LayerId,
