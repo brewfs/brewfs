@@ -2,7 +2,7 @@
 
 结论：**既有缺陷**，已创建 [#415](https://github.com/brewfs/brewfs/issues/415)。
 未修改的 `f5706712302435206269a253bf861a1a648761d1` 连续三轮诊断均有四个
-fio job 读 EIO；#414 原有候选也捕获到相同错误链。本次只诊断，不在 #414 修复。
+fio job 读 EIO；#414 原有候选也捕获到相同 Busy→EIO 转换链。本次只诊断，不在 #414 修复。
 这些结果不能证明候选未改变故障频率，也不作为 mixed 性能验收通过的依据。
 
 ## 完整错误链
@@ -30,7 +30,7 @@ inode/chunk `(8,6)`、`(5,2)`、`(7,2)`、`(6,5)`，使用相同的两个 layer-
 
 ## 重复复现及后端状态
 
-| 产物 | 二进制 | fio 结果 | 完整错误链 | 实际运行时长 s | 抓包丢包 |
+| 产物 | 二进制 | fio 结果 | Busy→EIO 转换链 | 实际运行时长 s | 抓包丢包 |
 |---|---|---|---:|---:|---:|
 | baseline-gdb-02 | 干净 f570671 | exit 4，四个读 EIO | 4 | 34.945 | 312 |
 | baseline-gdb-03 | 干净 f570671 | exit 4，四个读 EIO | 4 | 41.795 | 0 |
@@ -42,8 +42,9 @@ inode/chunk `(8,6)`、`(5,2)`、`(7,2)`、`(6,5)`，使用相同的两个 layer-
 旧的无 GDB 产物 `baseline-mixed-diagnostic`、`baseline-writeguard-d1` 也各有四个
 基线读 EIO；另有基线通过的旧轮次，症状具有间歇性。
 
-后三轮无抓包丢包，GET/206 请求响应对分别为 10,766 / 9,979 / 8,551，PUT/200
-分别为 4,470 / 4,150 / 3,437；没有捕获到 HTTP ≥400 或 Redis 错误回复。
+后三轮无抓包丢包，各轮 GET/206 各自计数相等，分别为 10,766 / 9,979 / 8,551；
+PUT/200 各自计数也相等，分别为 4,470 / 4,150 / 3,437，没有逐条配对 TCP 事务。
+没有捕获到 HTTP ≥400 或 Redis 错误回复。
 mixed 结束时 Redis `total_error_replies`、rejected connections、blocked clients、
 evictions 均为 0，AOF/RDB 状态为 ok；Redis/RustFS 容器健康、零重启、无 OOM。
 没有命中 Redis 后端错误转换探针。脚本在 mixed 前重置 Redis stats，不能把启动

@@ -1,0 +1,1107 @@
+{
+  "generated_utc": "2026-11-03T15:40:02.584902+00:00",
+  "artifact_root": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup",
+  "decision": "A unmet: prefix512 and lateclaim512 both rejected and reverted. Retain only ten debug instrumentation attributes after all required gates have passing results; preserve the first overlay EBUSY failure and unchanged-source full rerun. B is a preexisting defect tracked in #415. PR #414 remains draft.",
+  "limits": {
+    "active_end_to_strict_drained_s": 5,
+    "dirty_peak_mib": 256,
+    "rss_peak_mib": 700,
+    "write_clat_p99_ms": 858,
+    "active_write_mib_s": 2
+  },
+  "pressure": {
+    "control-pressure": {
+      "acceptance_sha256": "0c25967ab861bae76e1694aeadf2dd396e95b7932ea81e1f498697ad5d79f40a",
+      "acceptance": {
+        "source": {
+          "revision": "f5706712302435206269a253bf861a1a648761d1",
+          "dirty": true,
+          "diff_sha256": "1652cefa6051607483a7b0975094f5034d4a80d899d30f84903ed09d6fc755e2",
+          "features": "workspace-overlay,observability",
+          "profile": "release",
+          "CARGO_PROFILE_RELEASE_DEBUG": "0",
+          "RUSTFLAGS": "-C debuginfo=0",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_BUILD_JOBS": "4",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+          "binary_sha256": "5d7a25617f9702dda766ba53d313c826eba5682c682160bd12199f05c18df53f"
+        },
+        "exit": 0,
+        "fio_error": 0,
+        "close_errors": "",
+        "fio_version": "fio-3.39",
+        "write_io_bytes": 228208640,
+        "write_bandwidth_mib_s": 3.6265525817871094,
+        "write_iops": 928.397654,
+        "write_total_ios": 55715,
+        "write_latency": {
+          "lat_ns": {
+            "p50_ms": 139.460608,
+            "p99_ms": 265.289728
+          },
+          "clat_ns": {
+            "p50_ms": 133.69344,
+            "p99_ms": 258.998272
+          },
+          "slat_ns": {
+            "p50_ms": 3.457024,
+            "p99_ms": 17.69472
+          }
+        },
+        "active_s": 60.012,
+        "tool_wall_s": 80.010316869,
+        "close_and_tool_tail_s": 19.998316868999993,
+        "strict_drain_s": 1.6951827,
+        "strict_drain_completed": true,
+        "tool_plus_strict_drain_s": 81.871528768,
+        "effective_wall_bw_mib_s": 2.7201081968758376,
+        "effective_active_plus_drain_bw_mib_s": 3.5269268378055445,
+        "effective_tool_plus_strict_drain_bw_mib_s": 2.658271098939888,
+        "rss_peak_bytes": 324866048,
+        "process_vm_hwm_bytes": 324866048,
+        "process_swap_peak_bytes": 0,
+        "cgroup_memory_peak_sample_bytes": 322555904,
+        "rss_first_bytes": 73908224,
+        "rss_after_drain_bytes": 324702208,
+        "memory_samples": 69,
+        "memory_window_complete": true,
+        "stats_samples": 73,
+        "metrics_peak": {
+          "brewfs_writeback_dirty_bytes": 118284288,
+          "brewfs_writeback_live_dirty_bytes": 118284288,
+          "brewfs_buffer_dirty_bytes": 118284288,
+          "brewfs_writeback_live_slices": 28802,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 22880256,
+          "brewfs_writeback_metadata_inflight": 32
+        },
+        "metrics_after_drain": {
+          "brewfs_writeback_dirty_bytes": 0,
+          "brewfs_writeback_live_dirty_bytes": 0,
+          "brewfs_buffer_dirty_bytes": 0,
+          "brewfs_writeback_live_slices": 0,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 0,
+          "brewfs_writeback_metadata_inflight": 0
+        },
+        "invalid_markers": [],
+        "user_clat_p99_limit_ms": 858,
+        "gates": {
+          "no_eio": true,
+          "dirty_peak_le_256_mib": true,
+          "rss_peak_le_700_mib": true,
+          "clat_p99_le_858_ms": true,
+          "bandwidth_ge_2_mib_s": true,
+          "strict_drain_le_5_s": true,
+          "active_end_to_strict_drained_le_5_s": false,
+          "memory_window_complete": true,
+          "no_invalid_markers": true,
+          "final_debt_zero": true
+        },
+        "drain_rows": [
+          {
+            "tool": "fio-randwrite",
+            "runner_drain_s": "0",
+            "extended_strict_drain_s": "1",
+            "pending_bytes": "0",
+            "dirty_bytes": "0",
+            "buffer_dirty_bytes": "0"
+          }
+        ],
+        "effective_argv": [
+          "fio",
+          "--name=brewfs-randwrite",
+          "--directory=/mnt/brewfs/issue413/.perf-fio-randwrite",
+          "--rw=randwrite",
+          "--bs=4k",
+          "--size=512m",
+          "--numjobs=4",
+          "--ioengine=libaio",
+          "--iodepth=32",
+          "--direct=1",
+          "--runtime=60",
+          "--time_based",
+          "--group_reporting",
+          "--eta=never",
+          "--lat_percentiles=1",
+          "--clat_percentiles=1",
+          "--slat_percentiles=1",
+          "--percentile_list=50:95:99:99.9",
+          "--randseed=391",
+          "--randrepeat=1",
+          "--output-format=json",
+          "--output=/artifacts/run/results/fio-randwrite.json",
+          "--write_lat_log=/artifacts/run/results/fio-randwrite_lat",
+          "--log_avg_msec=1000"
+        ],
+        "active_end_to_strict_drained_s": 21.859528768000004,
+        "all_pressure_gates_pass": false,
+        "limitation": "Pressure cell only; CI, mixed guard and recovery are separate gates."
+      },
+      "tail_debt": {
+        "cell": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/control-pressure",
+        "limitation": "Stats sample timestamps bound observations, not exact completion events. Upload and publication overlap. Metadata timer counts cover the batch path, not every single-slice commit.",
+        "active_end_relative_s": 60.012,
+        "tool_return_relative_s": 80.010316869,
+        "strict_drained_relative_s": 81.871528768,
+        "sample_before_active_end": {
+          "relative_s": 59.577837909,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 49911,
+          "brewfs_buffer_dirty_bytes": 117452800,
+          "brewfs_writeback_dirty_bytes": 117452800,
+          "brewfs_writeback_live_dirty_bytes": 117452800,
+          "brewfs_writeback_live_slices": 28598,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 36864,
+          "brewfs_writeback_metadata_inflight": 32,
+          "brewfs_request_metadata_commit_ns_count": 529
+        },
+        "sample_after_active_end": {
+          "relative_s": 60.751127398,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 50651,
+          "brewfs_buffer_dirty_bytes": 118284288,
+          "brewfs_writeback_dirty_bytes": 118284288,
+          "brewfs_writeback_live_dirty_bytes": 118284288,
+          "brewfs_writeback_live_slices": 28802,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 1462272,
+          "brewfs_writeback_metadata_inflight": 32,
+          "brewfs_request_metadata_commit_ns_count": 534
+        },
+        "final_put_ops": 55520,
+        "uploads_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 65.941338492,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 55405,
+            "brewfs_buffer_dirty_bytes": 112484352,
+            "brewfs_writeback_dirty_bytes": 112484352,
+            "brewfs_writeback_live_dirty_bytes": 112484352,
+            "brewfs_writeback_live_slices": 27394,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 471040,
+            "brewfs_writeback_metadata_inflight": 32,
+            "brewfs_request_metadata_commit_ns_count": 556
+          },
+          "first_observed_clear": {
+            "relative_s": 67.026743943,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 55520,
+            "brewfs_buffer_dirty_bytes": 106151936,
+            "brewfs_writeback_dirty_bytes": 106151936,
+            "brewfs_writeback_live_dirty_bytes": 106151936,
+            "brewfs_writeback_live_slices": 25858,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 32,
+            "brewfs_request_metadata_commit_ns_count": 582
+          },
+          "first_clear_after_active_s": 7.014743942999999
+        },
+        "debt_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 79.665327345,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 55520,
+            "brewfs_buffer_dirty_bytes": 548864,
+            "brewfs_writeback_dirty_bytes": 548864,
+            "brewfs_writeback_live_dirty_bytes": 548864,
+            "brewfs_writeback_live_slices": 134,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 10,
+            "brewfs_request_metadata_commit_ns_count": 993
+          },
+          "first_observed_clear": {
+            "relative_s": 80.204670478,
+            "phase": "fio-randwrite-post-write",
+            "brewfs_s3_put_ops_total": 55520,
+            "brewfs_buffer_dirty_bytes": 0,
+            "brewfs_writeback_dirty_bytes": 0,
+            "brewfs_writeback_live_dirty_bytes": 0,
+            "brewfs_writeback_live_slices": 0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 0,
+            "brewfs_request_metadata_commit_ns_count": 1002
+          },
+          "first_clear_after_active_s": 20.192670477999997
+        }
+      }
+    },
+    "prefix512-pressure": {
+      "acceptance_sha256": "473afc3c0f87b671e2ab1ee0012961ee0a56f0a62b2f46663708131d33484177",
+      "acceptance": {
+        "source": {
+          "revision": "a5d2507d3fcc00e661171539ce869d1c5e77bc75",
+          "dirty": true,
+          "diff_sha256": "7b10855880ad8140d7bdf0b4450e73f7990cb24c57132fdbd70242fa8e4324f2",
+          "features": "workspace-overlay,observability",
+          "profile": "release",
+          "CARGO_PROFILE_RELEASE_DEBUG": "0",
+          "RUSTFLAGS": "-C debuginfo=0",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_BUILD_JOBS": "4",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+          "binary_sha256": "a01c3bfb997f75c607bb235a933e159b0dea1ebc86707a3c86a5bc1deb215f4c"
+        },
+        "exit": 0,
+        "fio_error": 0,
+        "close_errors": "",
+        "fio_version": "fio-3.39",
+        "write_io_bytes": 223883264,
+        "write_bandwidth_mib_s": 3.5583505630493164,
+        "write_iops": 910.937786,
+        "write_total_ios": 54659,
+        "write_latency": {
+          "lat_ns": {
+            "p50_ms": 141.55776,
+            "p99_ms": 312.475648
+          },
+          "clat_ns": {
+            "p50_ms": 135.266304,
+            "p99_ms": 304.08704
+          },
+          "slat_ns": {
+            "p50_ms": 3.653632,
+            "p99_ms": 17.69472
+          }
+        },
+        "active_s": 60.003,
+        "tool_wall_s": 63.820134573,
+        "close_and_tool_tail_s": 3.817134572999997,
+        "strict_drain_s": 1.71494003,
+        "strict_drain_completed": true,
+        "tool_plus_strict_drain_s": 65.681368211,
+        "effective_wall_bw_mib_s": 3.3455228538538546,
+        "effective_active_plus_drain_bw_mib_s": 3.459475780400573,
+        "effective_tool_plus_strict_drain_bw_mib_s": 3.2507197180195475,
+        "rss_peak_bytes": 256643072,
+        "process_vm_hwm_bytes": 256643072,
+        "process_swap_peak_bytes": 0,
+        "cgroup_memory_peak_sample_bytes": 329584640,
+        "rss_first_bytes": 74383360,
+        "rss_after_drain_bytes": 256438272,
+        "memory_samples": 53,
+        "memory_window_complete": true,
+        "stats_samples": 57,
+        "metrics_peak": {
+          "brewfs_writeback_dirty_bytes": 74498048,
+          "brewfs_writeback_live_dirty_bytes": 74498048,
+          "brewfs_buffer_dirty_bytes": 74498048,
+          "brewfs_writeback_live_slices": 18136,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 26636288,
+          "brewfs_writeback_metadata_inflight": 32
+        },
+        "metrics_after_drain": {
+          "brewfs_writeback_dirty_bytes": 0,
+          "brewfs_writeback_live_dirty_bytes": 0,
+          "brewfs_buffer_dirty_bytes": 0,
+          "brewfs_writeback_live_slices": 0,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 0,
+          "brewfs_writeback_metadata_inflight": 0
+        },
+        "invalid_markers": [],
+        "user_clat_p99_limit_ms": 858,
+        "gates": {
+          "no_eio": true,
+          "dirty_peak_le_256_mib": true,
+          "rss_peak_le_700_mib": true,
+          "clat_p99_le_858_ms": true,
+          "bandwidth_ge_2_mib_s": true,
+          "strict_drain_le_5_s": true,
+          "active_end_to_strict_drained_le_5_s": false,
+          "memory_window_complete": true,
+          "no_invalid_markers": true,
+          "final_debt_zero": true
+        },
+        "drain_rows": [
+          {
+            "tool": "fio-randwrite",
+            "runner_drain_s": "0",
+            "extended_strict_drain_s": "1",
+            "pending_bytes": "0",
+            "dirty_bytes": "0",
+            "buffer_dirty_bytes": "0"
+          }
+        ],
+        "effective_argv": [
+          "fio",
+          "--name=brewfs-randwrite",
+          "--directory=/mnt/brewfs/issue413/.perf-fio-randwrite",
+          "--rw=randwrite",
+          "--bs=4k",
+          "--size=512m",
+          "--numjobs=4",
+          "--ioengine=libaio",
+          "--iodepth=32",
+          "--direct=1",
+          "--runtime=60",
+          "--time_based",
+          "--group_reporting",
+          "--eta=never",
+          "--lat_percentiles=1",
+          "--clat_percentiles=1",
+          "--slat_percentiles=1",
+          "--percentile_list=50:95:99:99.9",
+          "--randseed=391",
+          "--randrepeat=1",
+          "--output-format=json",
+          "--output=/artifacts/run/results/fio-randwrite.json",
+          "--write_lat_log=/artifacts/run/results/fio-randwrite_lat",
+          "--log_avg_msec=1000"
+        ],
+        "active_end_to_strict_drained_s": 5.678368211000006,
+        "all_pressure_gates_pass": false,
+        "limitation": "Pressure cell only; CI, mixed guard and recovery are separate gates."
+      },
+      "tail_debt": {
+        "cell": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/prefix512-pressure",
+        "limitation": "Stats sample timestamps bound observations, not exact completion events. Upload and publication overlap. Metadata timer counts cover the batch path, not every single-slice commit.",
+        "active_end_relative_s": 60.003,
+        "tool_return_relative_s": 63.820134573,
+        "strict_drained_relative_s": 65.681368211,
+        "sample_before_active_end": {
+          "relative_s": 59.480111168,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 52662,
+          "brewfs_buffer_dirty_bytes": 46718976,
+          "brewfs_writeback_dirty_bytes": 46718976,
+          "brewfs_writeback_live_dirty_bytes": 46718976,
+          "brewfs_writeback_live_slices": 11381,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 303104,
+          "brewfs_writeback_metadata_inflight": 32,
+          "brewfs_request_metadata_commit_ns_count": 392
+        },
+        "sample_after_active_end": {
+          "relative_s": 60.647257477,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 53518,
+          "brewfs_buffer_dirty_bytes": 39612416,
+          "brewfs_writeback_dirty_bytes": 39612416,
+          "brewfs_writeback_live_dirty_bytes": 39612416,
+          "brewfs_writeback_live_slices": 9652,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 2834432,
+          "brewfs_writeback_metadata_inflight": 32,
+          "brewfs_request_metadata_commit_ns_count": 401
+        },
+        "final_put_ops": 54460,
+        "uploads_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 60.647257477,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 53518,
+            "brewfs_buffer_dirty_bytes": 39612416,
+            "brewfs_writeback_dirty_bytes": 39612416,
+            "brewfs_writeback_live_dirty_bytes": 39612416,
+            "brewfs_writeback_live_slices": 9652,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 2834432,
+            "brewfs_writeback_metadata_inflight": 32,
+            "brewfs_request_metadata_commit_ns_count": 401
+          },
+          "first_observed_clear": {
+            "relative_s": 61.832677518,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 54460,
+            "brewfs_buffer_dirty_bytes": 23101440,
+            "brewfs_writeback_dirty_bytes": 23101440,
+            "brewfs_writeback_live_dirty_bytes": 23101440,
+            "brewfs_writeback_live_slices": 5630,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 32,
+            "brewfs_request_metadata_commit_ns_count": 417
+          },
+          "first_clear_after_active_s": 1.829677517999997
+        },
+        "debt_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 62.892575706,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 54460,
+            "brewfs_buffer_dirty_bytes": 6987776,
+            "brewfs_writeback_dirty_bytes": 6987776,
+            "brewfs_writeback_live_dirty_bytes": 6987776,
+            "brewfs_writeback_live_slices": 1702,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 29,
+            "brewfs_request_metadata_commit_ns_count": 445
+          },
+          "first_observed_clear": {
+            "relative_s": 63.991731369,
+            "phase": "fio-randwrite-post-write",
+            "brewfs_s3_put_ops_total": 54460,
+            "brewfs_buffer_dirty_bytes": 0,
+            "brewfs_writeback_dirty_bytes": 0,
+            "brewfs_writeback_live_dirty_bytes": 0,
+            "brewfs_writeback_live_slices": 0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 0,
+            "brewfs_request_metadata_commit_ns_count": 472
+          },
+          "first_clear_after_active_s": 3.988731369
+        }
+      }
+    },
+    "lateclaim512-pressure": {
+      "acceptance_sha256": "724d010be1aac158e915fc4a6939ef26832a6e0543a4234e59451aa680136e50",
+      "acceptance": {
+        "source": {
+          "revision": "a5d2507d3fcc00e661171539ce869d1c5e77bc75",
+          "dirty": true,
+          "diff_sha256": "744cea21bab8018e4f1dc68d996240081619b6983881987dc23e6d70ce38d06d",
+          "features": "workspace-overlay,observability",
+          "profile": "release",
+          "CARGO_PROFILE_RELEASE_DEBUG": "0",
+          "RUSTFLAGS": "-C debuginfo=0",
+          "CARGO_INCREMENTAL": "0",
+          "CARGO_BUILD_JOBS": "4",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+          "binary_sha256": "afcf2b98ee81f67caf9117dabe55596ed6cd7a23e66d34bf688202d95a0950e8"
+        },
+        "exit": 0,
+        "fio_error": 0,
+        "close_errors": "",
+        "fio_version": "fio-3.39",
+        "write_io_bytes": 256389120,
+        "write_bandwidth_mib_s": 4.072547912597656,
+        "write_iops": 1042.572328,
+        "write_total_ios": 62595,
+        "write_latency": {
+          "lat_ns": {
+            "p50_ms": 125.304832,
+            "p99_ms": 242.221056
+          },
+          "clat_ns": {
+            "p50_ms": 122.159104,
+            "p99_ms": 235.9296
+          },
+          "slat_ns": {
+            "p50_ms": 3.260416,
+            "p99_ms": 15.269888
+          }
+        },
+        "active_s": 60.039,
+        "tool_wall_s": 70.804778182,
+        "close_and_tool_tail_s": 10.765778182000005,
+        "strict_drain_s": 1.739418631,
+        "strict_drain_completed": true,
+        "tool_plus_strict_drain_s": 72.709227344,
+        "effective_wall_bw_mib_s": 3.453322290220235,
+        "effective_active_plus_drain_bw_mib_s": 3.957882447759931,
+        "effective_tool_plus_strict_drain_bw_mib_s": 3.3628705417700635,
+        "rss_peak_bytes": 351924224,
+        "process_vm_hwm_bytes": 351924224,
+        "process_swap_peak_bytes": 0,
+        "cgroup_memory_peak_sample_bytes": 380198912,
+        "rss_first_bytes": 74948608,
+        "rss_after_drain_bytes": 351924224,
+        "memory_samples": 59,
+        "memory_window_complete": true,
+        "stats_samples": 64,
+        "metrics_peak": {
+          "brewfs_writeback_dirty_bytes": 81797120,
+          "brewfs_writeback_live_dirty_bytes": 81797120,
+          "brewfs_buffer_dirty_bytes": 81797120,
+          "brewfs_writeback_live_slices": 19909,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 43507712,
+          "brewfs_writeback_metadata_inflight": 10
+        },
+        "metrics_after_drain": {
+          "brewfs_writeback_dirty_bytes": 0,
+          "brewfs_writeback_live_dirty_bytes": 0,
+          "brewfs_buffer_dirty_bytes": 0,
+          "brewfs_writeback_live_slices": 0,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 0,
+          "brewfs_writeback_metadata_inflight": 0
+        },
+        "invalid_markers": [],
+        "user_clat_p99_limit_ms": 858,
+        "gates": {
+          "no_eio": true,
+          "dirty_peak_le_256_mib": true,
+          "rss_peak_le_700_mib": true,
+          "clat_p99_le_858_ms": true,
+          "bandwidth_ge_2_mib_s": true,
+          "strict_drain_le_5_s": true,
+          "active_end_to_strict_drained_le_5_s": false,
+          "memory_window_complete": true,
+          "no_invalid_markers": true,
+          "final_debt_zero": true
+        },
+        "drain_rows": [
+          {
+            "tool": "fio-randwrite",
+            "runner_drain_s": "0",
+            "extended_strict_drain_s": "1",
+            "pending_bytes": "0",
+            "dirty_bytes": "0",
+            "buffer_dirty_bytes": "0"
+          }
+        ],
+        "effective_argv": [
+          "fio",
+          "--name=brewfs-randwrite",
+          "--directory=/mnt/brewfs/issue413/.perf-fio-randwrite",
+          "--rw=randwrite",
+          "--bs=4k",
+          "--size=512m",
+          "--numjobs=4",
+          "--ioengine=libaio",
+          "--iodepth=32",
+          "--direct=1",
+          "--runtime=60",
+          "--time_based",
+          "--group_reporting",
+          "--eta=never",
+          "--lat_percentiles=1",
+          "--clat_percentiles=1",
+          "--slat_percentiles=1",
+          "--percentile_list=50:95:99:99.9",
+          "--randseed=391",
+          "--randrepeat=1",
+          "--output-format=json",
+          "--output=/artifacts/run/results/fio-randwrite.json",
+          "--write_lat_log=/artifacts/run/results/fio-randwrite_lat",
+          "--log_avg_msec=1000"
+        ],
+        "active_end_to_strict_drained_s": 12.670227343999997,
+        "all_pressure_gates_pass": false,
+        "limitation": "Pressure cell only; CI, mixed guard and recovery are separate gates."
+      },
+      "tail_debt": {
+        "cell": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/lateclaim512-pressure",
+        "limitation": "Stats sample timestamps bound observations, not exact completion events. Upload and publication overlap. Metadata timer counts cover the batch path, not every single-slice commit.",
+        "active_end_relative_s": 60.039,
+        "tool_return_relative_s": 70.804778182,
+        "strict_drained_relative_s": 72.709227344,
+        "sample_before_active_end": {
+          "relative_s": 58.813103843,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 52765,
+          "brewfs_buffer_dirty_bytes": 80920576,
+          "brewfs_writeback_dirty_bytes": 80920576,
+          "brewfs_writeback_live_dirty_bytes": 80920576,
+          "brewfs_writeback_live_slices": 19697,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 4083712,
+          "brewfs_writeback_metadata_inflight": 4,
+          "brewfs_request_metadata_commit_ns_count": 383
+        },
+        "sample_after_active_end": {
+          "relative_s": 60.136322252,
+          "phase": "fio-randwrite",
+          "brewfs_s3_put_ops_total": 53748,
+          "brewfs_buffer_dirty_bytes": 81797120,
+          "brewfs_writeback_dirty_bytes": 81797120,
+          "brewfs_writeback_live_dirty_bytes": 81797120,
+          "brewfs_writeback_live_slices": 19909,
+          "brewfs_writeback_recent_pending_upload_bytes": 0,
+          "brewfs_writeback_remote_upload_inflight_bytes": 3203072,
+          "brewfs_writeback_metadata_inflight": 4,
+          "brewfs_request_metadata_commit_ns_count": 387
+        },
+        "final_put_ops": 62312,
+        "uploads_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 68.828642083,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 61877,
+            "brewfs_buffer_dirty_bytes": 27492352,
+            "brewfs_writeback_dirty_bytes": 27492352,
+            "brewfs_writeback_live_dirty_bytes": 27492352,
+            "brewfs_writeback_live_slices": 6687,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 1781760,
+            "brewfs_writeback_metadata_inflight": 4,
+            "brewfs_request_metadata_commit_ns_count": 443
+          },
+          "first_observed_clear": {
+            "relative_s": 69.973513712,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 62312,
+            "brewfs_buffer_dirty_bytes": 8007680,
+            "brewfs_writeback_dirty_bytes": 8007680,
+            "brewfs_writeback_live_dirty_bytes": 8007680,
+            "brewfs_writeback_live_slices": 1948,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 4,
+            "brewfs_request_metadata_commit_ns_count": 462
+          },
+          "first_clear_after_active_s": 9.934513711999998
+        },
+        "debt_finished_observations": {
+          "last_observed_not_clear": {
+            "relative_s": 69.973513712,
+            "phase": "fio-randwrite",
+            "brewfs_s3_put_ops_total": 62312,
+            "brewfs_buffer_dirty_bytes": 8007680,
+            "brewfs_writeback_dirty_bytes": 8007680,
+            "brewfs_writeback_live_dirty_bytes": 8007680,
+            "brewfs_writeback_live_slices": 1948,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 4,
+            "brewfs_request_metadata_commit_ns_count": 462
+          },
+          "first_observed_clear": {
+            "relative_s": 71.0024667,
+            "phase": "fio-randwrite-post-write",
+            "brewfs_s3_put_ops_total": 62312,
+            "brewfs_buffer_dirty_bytes": 0,
+            "brewfs_writeback_dirty_bytes": 0,
+            "brewfs_writeback_live_dirty_bytes": 0,
+            "brewfs_writeback_live_slices": 0,
+            "brewfs_writeback_recent_pending_upload_bytes": 0,
+            "brewfs_writeback_remote_upload_inflight_bytes": 0,
+            "brewfs_writeback_metadata_inflight": 0,
+            "brewfs_request_metadata_commit_ns_count": 481
+          },
+          "first_clear_after_active_s": 10.963466699999998
+        }
+      }
+    }
+  },
+  "diagnostics": {
+    "diagnostic-pressure": {
+      "warning": "Debug trace only. Parent/child and concurrent queue durations overlap; never sum all rows as wall time.",
+      "event_count": 12428,
+      "publication_tail_stage_ms": {
+        "brewfs::workspace_overlay::meta_layer::mutation_version": 659.5237255096436,
+        "brewfs::workspace_overlay::meta_layer::prefetch_write_inodes": 854.2923927307129,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::compact_extent_history": 16665.058374404907,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::scan_compaction_chunk": 15135.262489318848,
+        "brewfs::workspace_overlay::stores::kv_store::extent_ownership::retain_extent_ownership": 2.151012420654297,
+        "brewfs::workspace_overlay::stores::kv_store::hot_mutation_for_version": 23910.560607910156,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::commit_prepared_topology_packet": 1916.9797897338867,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::prepare_topology_packet_inner": 3409.5520973205566
+      },
+      "publication_tail_service_ms": 25523.781061172485,
+      "publication_tail_queue_summary": {
+        "count": 538,
+        "mean_queue_ms": 1693.816840148699,
+        "mean_service_ms": 47.51446096654275,
+        "warning": "Concurrent queue waits overlap. Stage durations are inclusive; compaction includes scans and ownership."
+      },
+      "timing_sha256": "be4c822deebaee99287f6c593c7f0431b89ac76bbc5e96d0d1bf26ff2ea6dc7f"
+    },
+    "prefix512-diagnostic": {
+      "warning": "Debug trace only. Parent/child and concurrent queue durations overlap; never sum all rows as wall time.",
+      "event_count": 8763,
+      "publication_tail_stage_ms": {
+        "brewfs::workspace_overlay::meta_layer::mutation_version": 126.97982788085938,
+        "brewfs::workspace_overlay::meta_layer::prefetch_write_inodes": 110.28265953063965,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::compact_extent_history": 4083.6567878723145,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::scan_compaction_chunk": 3724.8361110687256,
+        "brewfs::workspace_overlay::stores::kv_store::extent_ownership::retain_extent_ownership": 0.45013427734375,
+        "brewfs::workspace_overlay::stores::kv_store::hot_mutation_for_version": 6355.094432830811,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::commit_prepared_topology_packet": 623.9078044891357,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::prepare_topology_packet_inner": 1310.105323791504
+      },
+      "publication_tail_service_ms": 6621.042728424072,
+      "publication_tail_queue_summary": {
+        "count": 90,
+        "mean_queue_ms": 3782.7205555555556,
+        "mean_service_ms": 73.83933333333333,
+        "warning": "Concurrent queue waits overlap. Stage durations are inclusive; compaction includes scans and ownership."
+      },
+      "timing_sha256": "1e9812d91ffea1c997cb7c7aca58dbbefd139ed7a11d40b93e73fbadff0477f2"
+    },
+    "lateclaim512-diagnostic": {
+      "warning": "Debug trace only. Parent/child and concurrent queue durations overlap; never sum all rows as wall time.",
+      "event_count": 8376,
+      "publication_tail_stage_ms": {
+        "brewfs::workspace_overlay::meta_layer::mutation_version": 135.99133491516113,
+        "brewfs::workspace_overlay::meta_layer::prefetch_write_inodes": 155.26556968688965,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::compact_extent_history": 4929.829120635986,
+        "brewfs::workspace_overlay::stores::kv_store::extent_compaction::scan_compaction_chunk": 4536.908149719238,
+        "brewfs::workspace_overlay::stores::kv_store::extent_ownership::retain_extent_ownership": 0.46253204345703125,
+        "brewfs::workspace_overlay::stores::kv_store::hot_mutation_for_version": 8017.74787902832,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::commit_prepared_topology_packet": 719.3949222564697,
+        "brewfs::workspace_overlay::stores::kv_store::topology_scope::prepare_topology_packet_inner": 1937.6215934753418
+      },
+      "publication_tail_service_ms": 8337.095022201538,
+      "publication_tail_queue_summary": {
+        "count": 84,
+        "mean_queue_ms": 360.5932142857143,
+        "mean_service_ms": 104.68357142857143,
+        "warning": "Concurrent queue waits overlap. Stage durations are inclusive; compaction includes scans and ownership."
+      },
+      "timing_sha256": "53bca3c2472a8b553c0152a8fb8fdef21764596ee92b52ae678f9b52f249cfae"
+    }
+  },
+  "tdd": {
+    "large-prefix-red": {
+      "expected_failure": "64-member bound fails the 400-member ready-prefix assertion",
+      "status": "101",
+      "started": "2026-11-03T12:42:35Z",
+      "finished": "2026-11-03T12:47:36Z",
+      "command": "cargo test --lib test_uploaded_batch_large_prefix_respects_backend_limit_and_upload_barrier -- --nocapture",
+      "source.patch_sha256": "90d6c5750376521e7027e6eced946fc9fb964708b6087ca8e83d32ce7a821ee6",
+      "test.log_sha256": "a42f8878163f3f49c85b53bc909f0e2c5bedb2f2bc702af3a654f4071fc35038"
+    },
+    "late-claim-red": {
+      "expected_failure": "claim before waiting sets meta_write_started while the turn is held",
+      "status": "101",
+      "started": "2026-11-03T13:40:48Z",
+      "finished": "2026-11-03T13:45:47Z",
+      "command": "cargo test --lib test_uploaded_batch_claims_latest_prefix_after_waiting_for_its_turn -- --nocapture",
+      "source.patch_sha256": "2b9b6df705a19f2f4e2c0e61ff4876e4e20abf41ba447d356be5e2fc96668381",
+      "test.log_sha256": "a4ac03f64b109b116c2380f587b8be938659ccc8f2d0919467794f8dc606469e"
+    }
+  },
+  "validation": {
+    "prefix512": {
+      "gates": {
+        "test-workspace": {
+          "status": 0,
+          "started": "2026-11-03T12:48:58Z",
+          "finished": "2026-11-03T12:59:02Z",
+          "command": "cargo test --workspace --lib --bins",
+          "log_sha256": "b26ec3f735c00a11d9e25b671d0af072e5a5ddc8b3e9e585996d289b92960120",
+          "test_summaries": [
+            "test result: ok. 1333 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 124.88s",
+            "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          ]
+        }
+      },
+      "build": {
+        "revision": "a5d2507d3fcc00e661171539ce869d1c5e77bc75",
+        "dirty": true,
+        "diff_sha256": "7b10855880ad8140d7bdf0b4450e73f7990cb24c57132fdbd70242fa8e4324f2",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "a01c3bfb997f75c607bb235a933e159b0dea1ebc86707a3c86a5bc1deb215f4c"
+      },
+      "tested_patch_sha256": "7b10855880ad8140d7bdf0b4450e73f7990cb24c57132fdbd70242fa8e4324f2",
+      "tested_head": "a5d2507d3fcc00e661171539ce869d1c5e77bc75"
+    },
+    "lateclaim512": {
+      "gates": {
+        "test-workspace": {
+          "status": 0,
+          "started": "2026-11-03T13:46:23Z",
+          "finished": "2026-11-03T13:56:41Z",
+          "command": "cargo test --workspace --lib --bins",
+          "log_sha256": "db8d256a0b366e334cf93a4fb128fbcd2c38dac0cc9e13a02fc2ae098300f3a3",
+          "test_summaries": [
+            "test result: ok. 1334 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 123.03s",
+            "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          ]
+        }
+      },
+      "build": {
+        "revision": "a5d2507d3fcc00e661171539ce869d1c5e77bc75",
+        "dirty": true,
+        "diff_sha256": "744cea21bab8018e4f1dc68d996240081619b6983881987dc23e6d70ce38d06d",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "afcf2b98ee81f67caf9117dabe55596ed6cd7a23e66d34bf688202d95a0950e8"
+      },
+      "tested_patch_sha256": "744cea21bab8018e4f1dc68d996240081619b6983881987dc23e6d70ce38d06d",
+      "tested_head": "a5d2507d3fcc00e661171539ce869d1c5e77bc75"
+    },
+    "observability-final": {
+      "gates": {
+        "build-workspace": {
+          "status": 0,
+          "started": "2026-11-03T15:21:43Z",
+          "finished": "2026-11-03T15:24:37Z",
+          "command": "cargo build --workspace",
+          "log_sha256": "fdc415a96f47feaed86dfcfb0da4364d72615ff148be00a164a0b3af1a092661"
+        },
+        "check-io-uring": {
+          "status": 0,
+          "started": "2026-11-03T15:25:27Z",
+          "finished": "2026-11-03T15:26:20Z",
+          "command": "cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime",
+          "log_sha256": "bcdb135252f269b7fdefea242782a07c7fd84802c9a282a0e9206e63915e3b91"
+        },
+        "check-tokio": {
+          "status": 0,
+          "started": "2026-11-03T15:24:37Z",
+          "finished": "2026-11-03T15:25:27Z",
+          "command": "cargo check -p brewfs --no-default-features --features fuse-tokio-runtime",
+          "log_sha256": "9ef7a4c6219849485215f753cf810b3f83221832beefc9fbd0001590058cd704"
+        },
+        "check-workspace": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:21:43Z",
+          "command": "cargo check --workspace",
+          "log_sha256": "ad191eff2999d0f393e79663440c50d2db8a5df1cfdf71e9b5964c301353b783"
+        },
+        "ci": {
+          "status": 1,
+          "started": "2026-11-03T14:40:37Z",
+          "finished": "2026-11-03T15:32:43Z"
+        },
+        "clippy-all-targets": {
+          "status": 0,
+          "started": "2026-11-03T15:17:59Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "cargo clippy --workspace --all-targets -- -D warnings",
+          "log_sha256": "f7fd81f9c95721973397a4a80bacccb54df3d6bdc90409fbc4f756a225301917"
+        },
+        "clippy-overlay": {
+          "status": 0,
+          "started": "2026-11-03T15:27:20Z",
+          "finished": "2026-11-03T15:32:43Z",
+          "command": "cargo clippy --workspace --all-targets --features workspace-overlay -- -D warnings",
+          "log_sha256": "a63090e322f7611ed9892cd2f64e31a958052978926abd81126093efacc00761"
+        },
+        "clippy-workspace": {
+          "status": 0,
+          "started": "2026-11-03T15:26:20Z",
+          "finished": "2026-11-03T15:27:20Z",
+          "command": "cargo clippy --workspace",
+          "log_sha256": "8080ce240b3256d7d06bd8529c079e02eaf814bd7d62c394014e7a6fca8ec41a"
+        },
+        "diff-check-final": {
+          "status": 0,
+          "started": "2026-11-03T15:32:43Z",
+          "finished": "2026-11-03T15:32:43Z",
+          "command": "git diff --check",
+          "log_sha256": "cd6e3abbbf2cfb66efd9ee61027d7eef2406d5d746a753b37d21de88a57951f1"
+        },
+        "diff-check": {
+          "status": 0,
+          "started": "2026-11-03T14:40:44Z",
+          "finished": "2026-11-03T14:40:44Z",
+          "command": "git diff --check",
+          "log_sha256": "c15c874d6817c73fd249f8a3eb527e72469fca0f6ce0de80454d86b1265f5a62"
+        },
+        "fmt": {
+          "status": 0,
+          "started": "2026-11-03T14:40:37Z",
+          "finished": "2026-11-03T14:40:44Z",
+          "command": "cargo fmt --all -- --check",
+          "log_sha256": "a8c9c849366b26bacb754685eb6c262ad175b66f11ad19472d4e5d9605fad77e"
+        },
+        "juicefs-direct-matrix": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
+          "log_sha256": "7a80294306e220470b0f1c05c4fc9a7f04daee7ebb26a4f4a8e8d3ff9ce7490a"
+        },
+        "juicefs-perf-report": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash docker/compose-xfstests/test_juicefs_perf_report.sh",
+          "log_sha256": "bc66d2cd07f413993ac69d860561e95b3a7abe9e1c0bb779a6cc77aeeafa57a5"
+        },
+        "overlay-full-repeat2": {
+          "status": 0,
+          "started": "2026-11-03T15:32:45Z",
+          "finished": "2026-11-03T15:38:02Z",
+          "command": "cargo test --lib --features workspace-overlay",
+          "log_sha256": "a8ecfeea168644a66ef220aba1d036230c69c33fc8472fc05f4fbb86dfabb1d4",
+          "test_summaries": [
+            "test result: ok. 2763 passed; 0 failed; 477 ignored; 0 measured; 0 filtered out; finished in 316.15s"
+          ]
+        },
+        "overlay-full": {
+          "status": 101,
+          "started": "2026-11-03T14:50:27Z",
+          "finished": "2026-11-03T15:17:59Z",
+          "command": "cargo test --lib --features workspace-overlay",
+          "log_sha256": "4a3bce221452a3fdd2ea956555ad69a64e4a8f38c002013e5fda3999b9137977",
+          "test_summaries": [
+            "test result: FAILED. 2762 passed; 1 failed; 477 ignored; 0 measured; 0 filtered out; finished in 317.56s"
+          ]
+        },
+        "perf-report-delta": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash docker/compose-xfstests/test_perf_report_delta.sh",
+          "log_sha256": "95f670a8e91144fcda6ca2c3926f41be241c95f27bace9fd554677a1868c874c"
+        },
+        "syntax-run_juicefs_perf": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash -n docker/compose-xfstests/run_juicefs_perf.sh",
+          "log_sha256": "b8f9d3e9297b6f0a669467bb0d70ace5c15ed4383458f01628e5fbafa6df8074"
+        },
+        "syntax-run_juicefs_perf_in_container": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh",
+          "log_sha256": "e4013df534a76627a45af94a1272c6ae2b2d72ac770b7aa8723e37738729e0d1"
+        },
+        "syntax-run_perf_in_container": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash -n docker/compose-xfstests/run_perf_in_container.sh",
+          "log_sha256": "71411753d7d416be7a47635e7aa2f7fba4e4f37465ea5891cae3817c052fe25f"
+        },
+        "syntax-run_redis_perf": {
+          "status": 0,
+          "started": "2026-11-03T15:20:47Z",
+          "finished": "2026-11-03T15:20:47Z",
+          "command": "bash -n docker/compose-xfstests/run_redis_perf.sh",
+          "log_sha256": "987b8388ab9c5b42d390f85248a13bc958e57bb08432ebd26bcb08e6149308b1"
+        },
+        "test-workspace": {
+          "status": 0,
+          "started": "2026-11-03T14:40:44Z",
+          "finished": "2026-11-03T14:50:27Z",
+          "command": "cargo test --workspace --lib --bins",
+          "log_sha256": "e4191421ce193eb711174c67884ff78e6f112b23112b90f6dd8f3e15c3dcae58",
+          "test_summaries": [
+            "test result: ok. 1332 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 118.04s",
+            "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          ]
+        }
+      },
+      "tested_patch_sha256": "cfaaca4b76811cf4a324b1b04b618b3d0da6382d104aeed962da20a274fc65ee",
+      "tested_head": "a5d2507d3fcc00e661171539ce869d1c5e77bc75"
+    }
+  },
+  "recovery": {},
+  "mixed_eio": {
+    "conclusion": "preexisting defect",
+    "issue": "https://github.com/brewfs/brewfs/issues/415"
+  },
+  "object_amplification": {
+    "control-pressure": {
+      "put_ops": 55520,
+      "put_bytes": 228430748,
+      "put_per_written_gib": 261226.50776272098,
+      "average_put_bytes": 4114.386671469741,
+      "tail_counters": {
+        "brewfs_writeback_upload_partial_tail_ops_total": 55520,
+        "brewfs_writeback_upload_batch_ops_total": 55520
+      }
+    },
+    "prefix512-pressure": {
+      "put_ops": 54460,
+      "put_bytes": 224101132,
+      "put_per_written_gib": 261189.59805338553,
+      "average_put_bytes": 4114.967535806096,
+      "tail_counters": {
+        "brewfs_writeback_upload_partial_tail_ops_total": 54460,
+        "brewfs_writeback_upload_batch_ops_total": 54460
+      }
+    },
+    "lateclaim512-pressure": {
+      "put_ops": 62312,
+      "put_bytes": 256638396,
+      "put_per_written_gib": 260958.81345155364,
+      "average_put_bytes": 4118.603094107074,
+      "tail_counters": {
+        "brewfs_writeback_upload_partial_tail_ops_total": 62312,
+        "brewfs_writeback_upload_batch_ops_total": 62312
+      }
+    }
+  },
+  "rollback_verification": {
+    "base_head": "a5d2507d3fcc00e661171539ce869d1c5e77bc75",
+    "restored_files": {
+      "src/vfs/io/writer.rs": {
+        "equals_base": true,
+        "sha256": "dd2c271e34fb277d0dadca2e08bf2c639bf6cf7f21fd0650fb57ff7c944299c0"
+      },
+      "src/workspace_overlay/meta_layer/tests/group_commit_tests.rs": {
+        "equals_base": true,
+        "sha256": "bc959259c75e5c9c075ef33351722602a5028d38d4edcde4932e2e2aa71be2f5"
+      }
+    },
+    "batch_limit": 64,
+    "product_diff": " src/workspace_overlay/meta_layer/mod.rs                    | 4 ++++\n src/workspace_overlay/stores/kv_store.rs                   | 1 +\n src/workspace_overlay/stores/kv_store/extent_compaction.rs | 2 ++\n src/workspace_overlay/stores/kv_store/extent_ownership.rs  | 1 +\n src/workspace_overlay/stores/kv_store/topology_scope.rs    | 2 ++\n 5 files changed, 10 insertions(+)\n"
+  },
+  "final_gate_resolution": {
+    "first_run_statuses": {
+      "build-workspace": 0,
+      "check-io-uring": 0,
+      "check-tokio": 0,
+      "check-workspace": 0,
+      "ci": 1,
+      "clippy-all-targets": 0,
+      "clippy-overlay": 0,
+      "clippy-workspace": 0,
+      "diff-check-final": 0,
+      "diff-check": 0,
+      "fmt": 0,
+      "juicefs-direct-matrix": 0,
+      "juicefs-perf-report": 0,
+      "overlay-full": 101,
+      "perf-report-delta": 0,
+      "syntax-run_juicefs_perf": 0,
+      "syntax-run_juicefs_perf_in_container": 0,
+      "syntax-run_perf_in_container": 0,
+      "syntax-run_redis_perf": 0,
+      "test-workspace": 0
+    },
+    "unchanged_test_file": "src/workspace_overlay/meta_layer/tests.rs",
+    "unchanged_since": "f5706712302435206269a253bf861a1a648761d1",
+    "test_file_sha256": "2defe6a72a43dd338551acbab7a9100033e5636e5d2f4cbe16e561caf3b2e209",
+    "test_name": "workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes",
+    "assertion_location": "src/workspace_overlay/meta_layer/tests.rs:1477",
+    "error": "observer.open returned MetaError::Io(EBUSY=16)",
+    "first_overlay_summary": [
+      "test result: FAILED. 2762 passed; 1 failed; 477 ignored; 0 measured; 0 filtered out; finished in 317.56s"
+    ],
+    "first_overlay_log_sha256": "4a3bce221452a3fdd2ea956555ad69a64e4a8f38c002013e5fda3999b9137977",
+    "prior_failure_log": "/mnt/brewfs-data/home/hxy/issue413/memory-v1/validation/overlay-full.log",
+    "prior_failure_log_sha256": "633c4137448af5e8c0e83db67fda9da8cbb9df4fe55f45579782fc0e2e2bd027",
+    "prior_failure_summary": [
+      "test result: FAILED. 2758 passed; 1 failed; 477 ignored; 0 measured; 0 filtered out; finished in 337.42s"
+    ],
+    "limitation": "The same test failed before this follow-up; this does not establish a fix or an unchanged failure frequency.",
+    "observability_accepted": true,
+    "all_required_gate_commands_have_passing_result": true,
+    "original_ci_status_preserved": 1,
+    "full_overlay_repeat_status": 0,
+    "full_overlay_repeat_summary": [
+      "test result: ok. 2763 passed; 0 failed; 477 ignored; 0 measured; 0 filtered out; finished in 316.15s"
+    ],
+    "full_overlay_repeat_started": "2026-11-03T15:32:45Z",
+    "full_overlay_repeat_finished": "2026-11-03T15:38:02Z",
+    "source_unchanged_through_full_repeat": true,
+    "tested_patch_sha256": "cfaaca4b76811cf4a324b1b04b618b3d0da6382d104aeed962da20a274fc65ee",
+    "test_environment": {
+      "CARGO_TARGET_DIR": "/home/hxy/brewfs-pkv-target",
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "RUSTFLAGS": "-C debuginfo=0",
+      "RUST_TEST_THREADS": "2"
+    },
+    "rfuse3": "not a workspace member; conditional feature checks not applicable",
+    "performance_candidates": "both rejected and reverted; no new performance optimization accepted",
+    "retained_observability_commit": "3a70bd90fc1243b6fbd62235b81405e08ed981f5",
+    "retained_source_diff_sha256": "2356ac7a0761e11b54a66af02d34715c28a1f7bb4191754ecfe0d1c2efe7db9e"
+  }
+}
