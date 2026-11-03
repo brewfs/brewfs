@@ -168,7 +168,16 @@ fn validate_delta_scan_page(
     prefix: &[u8],
     after: Option<&[u8]>,
 ) -> Result<usize, WorkspaceError> {
-    if page.len() > DELTA_SCAN_PAGE_RECORDS {
+    validate_delta_scan_page_with_limit(page, prefix, after, DELTA_SCAN_PAGE_RECORDS)
+}
+
+fn validate_delta_scan_page_with_limit(
+    page: &[KvEntry],
+    prefix: &[u8],
+    after: Option<&[u8]>,
+    max_records: usize,
+) -> Result<usize, WorkspaceError> {
+    if page.len() > max_records {
         return Err(WorkspaceError::Fenced);
     }
     let mut bytes = 0usize;
@@ -9235,6 +9244,7 @@ mod tests {
     }
 
     include!("kv_store/extent_compaction_tests.rs");
+    include!("kv_store/extent_compaction_batch_tests.rs");
     include!("kv_store/read_plan_cache_tests.rs");
     include!("kv_store/pr141_entity_cas_tests.rs");
 
