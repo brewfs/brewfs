@@ -56,7 +56,15 @@ block whose predecessor in the slice was read to its end, re-enables the
 whole-block background prefetch. Random reads, re-reads and adjacent-page reads
 never match exactly and stay sparse. Without this, a FUSE scan issued one range
 GET per kernel readahead window (about 17 per 4 MiB block in the 2026-11-02
-cloud acceptance) and lost 42–45% of sequential read throughput. End-to-end
+cloud acceptance) and lost 42–45% of sequential read throughput. Random reads
+that concentrate on one slice — at least ten page misses on the same slice
+within one second — also re-enable the whole-block prefetch: such a working set
+is small enough that whole blocks are reused (the cloud run's 256 MiB hot set
+fetched every block in 64 KiB pages and lost 16%; a 512 MiB randrw file showed
+13.7x the read p50). Misses spread over many slices, as with a working set
+larger than the cache, stay below the threshold: the cloud run's 3.75 GiB
+sparse set saw 1.6 misses per object per second at 8 jobs, while each 32 MiB
+slice of the randrw file saw 12–16. End-to-end
 mixed read/write performance acceptance remains separate work; this experiment
 does not establish its non-regression. No general performance comparison table
 is updated from these measurements.

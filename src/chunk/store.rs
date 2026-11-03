@@ -182,6 +182,10 @@ type PageRangeKey = (BlockKey, u32 /*start_page*/, u32 /*end_page*/);
 /// headers, while still bounding the process-local index.
 const DEFAULT_FORMAT_CACHE_CAPACITY: u64 = 65536;
 const SPARSE_STREAM_CAPACITY: u64 = 4096;
+/// Sparse page misses on one slice within this window that make the slice
+/// "dense": its random reads reuse blocks, so whole-block prefetch pays off.
+const SPARSE_DENSE_SLICE_MISSES: u32 = 10;
+const SPARSE_DENSITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -468,6 +472,8 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     /// sequential streams that sparse fetching would otherwise split into
     /// one range GET per kernel readahead window.
     sparse_streams: moka::sync::Cache<BlockKey, u64>,
+    /// Sparse page misses per slice in the current density window.
+    sparse_slice_misses: moka::sync::Cache<u64, (std::time::Instant, u32)>,
     /// Configuration for read strategy
     config: BlockStoreConfig,
     /// Network bandwidth rate limiter for uploads/downloads
@@ -491,8 +497,9 @@ pub enum ReadFetchPolicy {
     /// Fetch small uncompressed misses in pages, without speculative full GETs
     /// for random reads. A read continuing exactly where the previous read of
     /// the block (or the previous block of the slice) ended prefetches the
-    /// whole block in the background. Compressed objects and large reads still
-    /// use the whole-object flight.
+    /// whole block in the background, and so does a miss on a slice that had
+    /// at least `SPARSE_DENSE_SLICE_MISSES` page misses within one second.
+    /// Compressed objects and large reads still use the whole-object flight.
     Sparse,
 }
 
@@ -648,6 +655,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -701,6 +709,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -732,6 +741,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             range_prefetch_limit: Arc::new(Semaphore::new(8)),
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -862,6 +872,23 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                 && key.1 > 0
                 && self.sparse_streams.get(&(key.0, key.1 - 1))
                     == Some(self.config.block_size as u64))
+    }
+
+    /// Records a sparse page miss on `slice_id` and reports whether the slice
+    /// reached the density threshold within the current window. Random reads
+    /// spread over a working set larger than the cache stay below it.
+    fn sparse_miss_makes_slice_dense(&self, slice_id: u64) -> bool {
+        let now = std::time::Instant::now();
+        let entry =
+            self.sparse_slice_misses
+                .entry(slice_id)
+                .and_upsert_with(|current| match current.map(|entry| entry.into_value()) {
+                    Some((start, misses)) if now.duration_since(start) < SPARSE_DENSITY_WINDOW => {
+                        (start, misses.saturating_add(1))
+                    }
+                    _ => (now, 1),
+                });
+        entry.into_value().1 >= SPARSE_DENSE_SLICE_MISSES
     }
 
     fn key_for(key: BlockKey) -> String {
@@ -1586,9 +1613,11 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 self.object_metrics.record_read_range_get();
                 self.object_metrics.record_read_page_cache_miss();
                 require_complete_read(key, offset, len, total_read)?;
+                let dense_slice = self.read_fetch_policy == ReadFetchPolicy::Sparse
+                    && self.sparse_miss_makes_slice_dense(key.0);
                 if self.config.range_background_prefetch
                     && !self.try_promote_page_cache_to_block_cache(key).await
-                    && allow_range_prefetch
+                    && (allow_range_prefetch || dense_slice)
                 {
                     self.prefetch_full_block_background(key, key_str, object_key, layout);
                 }
@@ -1718,10 +1747,13 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 self.object_metrics.record_read_page_cache_hit();
             }
             require_complete_read(key, offset, len, total_read)?;
+            let dense_slice = range_missed
+                && self.read_fetch_policy == ReadFetchPolicy::Sparse
+                && self.sparse_miss_makes_slice_dense(key.0);
             if range_missed
                 && self.config.range_background_prefetch
                 && !self.try_promote_page_cache_to_block_cache(key).await
-                && allow_range_prefetch
+                && (allow_range_prefetch || dense_slice)
             {
                 self.prefetch_full_block_background(key, key_str, object_key, layout);
             }

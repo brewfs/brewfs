@@ -40,7 +40,8 @@ whole objects, so small EC blocks would only add full-GET cost. When neither
 the CLI nor YAML sets `read_fetch_policy`, a mount using `range-heavy`
 therefore reads with `sparse`. An explicit `whole-object` or `backend-default`
 is kept and logged as a warning at startup. Sparse keeps whole-block
-background prefetch for reads that continue a sequential stream.
+background prefetch for reads that continue a sequential stream and for misses
+on a slice that is being read densely (at least ten page misses per second).
 
 **Default remains auto for configurations already choosing auto; the absent
 option remains unset.** Neither tiered nor range-heavy changes defaults or the
@@ -203,7 +204,8 @@ issued one range GET per readahead window (5.7x the GETs for the same bytes),
 because sparse mode also suppressed whole-block prefetch for sequential
 streams; that is addressed by the sequential-stream rule above and needs
 re-measurement. The hot-set and randrw cells, where most pages of every block
-are eventually read, still favor whole-object fetching and remain open. The
+are eventually read, favored whole-object fetching; the slice-density rule
+above targets them and also needs re-measurement. The
 layout-isolation arm (1 MiB hint with explicit sparse) was truncated by the
 deadline and not measured. All data, verification reads and layout checks
 passed.
