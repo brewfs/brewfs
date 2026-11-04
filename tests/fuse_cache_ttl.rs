@@ -3,6 +3,7 @@
 use asyncfuse::SetAttr;
 use asyncfuse::raw::{Filesystem, Request};
 use brewfs::chunk::{ChunkLayout, store::InMemoryBlockStore};
+use brewfs::config::{Cli, Command, MountConfig};
 use brewfs::meta::MetaLayer;
 use brewfs::vfs::fs::VFS;
 use brewfs::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
@@ -10,10 +11,154 @@ use brewfs::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
 use brewfs::workspace_overlay::meta_layer::WorkspaceMetaLayer;
 use brewfs::workspace_overlay::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
 use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use clap::Parser;
 use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+
+// Set the environment before starting a fresh test process, so parallel tests
+// cannot race on process-global environment changes or the legacy TTL OnceLock.
+fn cache_ttl_test_process(test_name: &str, env_ttl: Option<&str>) -> bool {
+    const CHILD_TEST: &str = "BREWFS_CACHE_TTL_TEST_CHILD";
+    if std::env::var(CHILD_TEST).as_deref() == Ok(test_name) {
+        return true;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", test_name, "--nocapture"])
+        .env(CHILD_TEST, test_name)
+        .env_remove("BREWFS_CACHE_TTL_MS");
+    if let Some(ttl) = env_ttl {
+        child.env("BREWFS_CACHE_TTL_MS", ttl);
+    }
+    assert!(child.status().unwrap().success(), "{test_name}");
+    false
+}
+
+fn ttl_mount_config(volume_format: &str, extra_args: &[&str]) -> MountConfig {
+    let mut args = vec![
+        "brewfs",
+        "mount",
+        "/mnt/ttl-test",
+        "--volume-format",
+        volume_format,
+    ];
+    if volume_format != "flat-v1" {
+        args.extend(["--workspace", "00000000-0000-0000-0000-000000000100"]);
+    }
+    args.extend_from_slice(extra_args);
+    let Command::Mount(args) = Cli::parse_from(args).cmd else {
+        panic!("expected mount command");
+    };
+    MountConfig::from_sources(*args).unwrap()
+}
+
+#[test]
+fn workspace_cache_ttl_environment_zero() {
+    if !cache_ttl_test_process("workspace_cache_ttl_environment_zero", Some("0")) {
+        return;
+    }
+    assert_eq!(ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms, 0);
+}
+
+#[test]
+fn workspace_cache_ttl_environment_positive() {
+    if !cache_ttl_test_process("workspace_cache_ttl_environment_positive", Some("500")) {
+        return;
+    }
+    assert_eq!(ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms, 500);
+}
+
+#[test]
+fn workspace_cache_ttl_cli_overrides_environment() {
+    if !cache_ttl_test_process("workspace_cache_ttl_cli_overrides_environment", Some("500")) {
+        return;
+    }
+    assert_eq!(
+        ttl_mount_config("workspace-v1", &["--fuse-cache-ttl-ms", "300"]).fuse_cache_ttl_ms,
+        300
+    );
+}
+
+#[test]
+fn cache_ttl_unconfigured_defaults_are_unchanged() {
+    if !cache_ttl_test_process("cache_ttl_unconfigured_defaults_are_unchanged", None) {
+        return;
+    }
+    assert_eq!(
+        ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms,
+        1_000
+    );
+    assert_eq!(ttl_mount_config("flat-v1", &[]).fuse_cache_ttl_ms, 0);
+    assert_eq!(
+        ttl_mount_config("workspace-entity-v1", &[]).fuse_cache_ttl_ms,
+        0
+    );
+}
+
+#[test]
+fn cache_ttl_explicit_yaml_overrides_environment() {
+    if !cache_ttl_test_process("cache_ttl_explicit_yaml_overrides_environment", Some("500")) {
+        return;
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "fuse:\n  cache_ttl_ms: 200\n").unwrap();
+    let path = file.path().to_str().unwrap();
+    for format in ["workspace-v1", "flat-v1"] {
+        assert_eq!(
+            ttl_mount_config(format, &["--config", path]).fuse_cache_ttl_ms,
+            200
+        );
+        assert_eq!(
+            ttl_mount_config(format, &["--config", path, "--fuse-cache-ttl-ms", "300"])
+                .fuse_cache_ttl_ms,
+            300
+        );
+    }
+}
+
+#[test]
+fn cache_ttl_invalid_environment_preserves_defaults() {
+    if !cache_ttl_test_process(
+        "cache_ttl_invalid_environment_preserves_defaults",
+        Some("invalid"),
+    ) {
+        return;
+    }
+    assert_eq!(
+        ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms,
+        1_000
+    );
+    assert_eq!(ttl_mount_config("flat-v1", &[]).fuse_cache_ttl_ms, 0);
+}
+
+#[tokio::test]
+async fn strict_environment_zero_returns_zero_lookup_and_getattr_ttl() {
+    if !cache_ttl_test_process(
+        "strict_environment_zero_returns_zero_lookup_and_getattr_ttl",
+        Some("0"),
+    ) {
+        return;
+    }
+    let config = ttl_mount_config("workspace-v1", &[]);
+    let meta = Arc::new(test_meta().await);
+    let root = meta.root_ino() as u64;
+    meta.create_file(root as i64, "strict".into())
+        .await
+        .unwrap();
+    let fs = new_ttl_test_vfs(meta);
+    fs.set_fuse_cache_ttl(Duration::from_millis(config.fuse_cache_ttl_ms));
+    let req = Request::default();
+    let lookup = Filesystem::lookup(&fs, req, root, OsStr::new("strict"))
+        .await
+        .unwrap();
+    assert_eq!(lookup.ttl, Duration::ZERO);
+    let getattr = Filesystem::getattr(&fs, req, lookup.attr.ino, None, 0)
+        .await
+        .unwrap();
+    assert_eq!(getattr.ttl, Duration::ZERO);
+}
 
 async fn test_meta() -> WorkspaceMetaLayer<SqliteWorkspaceStore> {
     let store = Arc::new(

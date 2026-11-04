@@ -66,9 +66,13 @@ impl AsRef<[u8]> for MetadataReplyOwner {
 /// Legacy kernel attribute/entry cache TTL for backends without writable ACLs.
 /// Non-zero lets the kernel serve repeated getattr/lookup from its own cache
 /// without round-tripping to userspace.  Default: 1s, matching JuiceFS' usual
-/// metadata cache balance.  Override via BREWFS_CACHE_TTL_MS=0 for strict
-/// multi-client coherency or targeted debugging. Writable ACL mounts instead
-/// use the explicit per-mount --fuse-cache-ttl-ms policy (default: zero).
+/// metadata cache balance. Attr/entry caching has bounded-staleness semantics
+/// (<= TTL); it does not promise immediate cross-client visibility. For strict
+/// kernel metadata caching use --fuse-cache-ttl-ms 0 on writable ACL mounts, or
+/// BREWFS_CACHE_TTL_MS=0 without a higher-priority explicit configuration.
+/// Writable ACL mounts use the per-mount policy: CLI > YAML > environment >
+/// volume default (WorkspaceV1: 1000 ms); an unconfigured VFS uses zero.
+/// Zero TTL does not implement cross-client revocation of upstream caches.
 fn fuse_cache_ttl() -> Duration {
     static TTL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *TTL.get_or_init(|| {
