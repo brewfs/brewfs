@@ -15,6 +15,20 @@ pub(super) struct KernelCache {
     deadline: Option<Instant>,
     guard: Option<HeadGuard>,
     ttl: Duration,
+    #[cfg(test)]
+    pub(super) now: Option<Instant>,
+}
+
+impl KernelCache {
+    fn now(&self) -> Instant {
+        // Keep boundary tests independent of SQLite latency and scheduling.
+        // The override belongs to this cache instance, never a global clock.
+        #[cfg(test)]
+        if let Some(now) = self.now {
+            return now;
+        }
+        Instant::now()
+    }
 }
 
 impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
@@ -30,13 +44,13 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         let mut cache = self.kernel_cache.lock().await;
         let guard = self.guard().await;
         if let Some(deadline) = cache.deadline
-            && deadline > Instant::now()
+            && deadline > cache.now()
             && cache.guard.as_ref() == Some(&guard)
             && cache.ttl == ttl
         {
             return Ok(Some(deadline));
         }
-        let started = Instant::now();
+        let started = cache.now();
         // An unrepresentable operator TTL must fail closed, never become an
         // unbounded cache lifetime.
         let Some(deadline) = started.checked_add(ttl) else {
