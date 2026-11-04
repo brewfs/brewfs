@@ -359,12 +359,11 @@ pub struct MountArgs {
     #[arg(long)]
     pub fuse_max_background: Option<usize>,
 
-    /// Kernel permission/entry cache TTL for writable POSIX ACL mounts (default: 0).
-    /// With 1,000 ms the warm stat loop drops from 10,000 FUSE LOOKUP + 20,000 GETATTR
-    /// requests to 0, and the cost is a permission-staleness window of up to 0.876 s
-    /// (measured: 86 stale access checks after an external chmod 000, denial delayed
-    /// 0.876 s versus 0.0006 s at TTL 0). This is an explicit operator choice and the
-    /// default preserves strong consistency. Other backends retain their legacy TTL.
+    /// Kernel attr/entry cache TTL for writable POSIX ACL mounts.
+    /// CLI and YAML override BREWFS_CACHE_TTL_MS, then the volume default applies:
+    /// workspace-v1 uses 1000 ms; other formats use 0. Positive TTL permits bounded
+    /// staleness (<= TTL), without immediate cross-client visibility. Use 0 for
+    /// strict kernel metadata caching. Other backends retain their legacy TTL policy.
     #[arg(long, value_name = "MILLIS")]
     pub fuse_cache_ttl_ms: Option<u64>,
     /// Retain kernel data pages across opens on regular VFS mounts (default: false).
@@ -1445,16 +1444,17 @@ impl MountConfig {
             }
         }
 
-        // Workspace-v1 metadata reads carry the namespace/authority fence used
-        // by `fenced_metadata_read`, so a one-second kernel TTL is safe by
-        // default and avoids a userspace round trip for every repeated stat.
-        // Keep the legacy flat-v1 default strict (zero) unless explicitly
-        // configured; callers can still set zero for workspace-v1 as well.
-        let default_fuse_cache_ttl_ms = if volume_format == VolumeFormat::WorkspaceV1 {
-            1_000
-        } else {
-            0
-        };
+        // Explicit CLI/YAML settings win over the environment. Keep the existing
+        // format defaults: workspace-v1 permits bounded staleness for one second;
+        // other formats use zero here and retain their existing reply policies.
+        let default_fuse_cache_ttl_ms = std::env::var("BREWFS_CACHE_TTL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(if volume_format == VolumeFormat::WorkspaceV1 {
+                1_000
+            } else {
+                0
+            });
 
         Ok(Self {
             mount_point,
