@@ -40,8 +40,9 @@ whole objects, so small EC blocks would only add full-GET cost. When neither
 the CLI nor YAML sets `read_fetch_policy`, a mount using `range-heavy`
 therefore reads with `sparse`. An explicit `whole-object` or `backend-default`
 is kept and logged as a warning at startup. Sparse keeps whole-block
-background prefetch for reads that continue a sequential stream and for misses
-on a slice that is being read densely (at least ten page misses per second).
+background prefetch for reads that continue a sequential stream or are at least
+128 KiB (kernel readahead), and for misses on a slice that is being read densely
+(at least ten page misses per second).
 
 **Default remains auto for configurations already choosing auto; the absent
 option remains unset.** Neither tiered nor range-heavy changes defaults or the

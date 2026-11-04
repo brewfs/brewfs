@@ -186,6 +186,8 @@ const SPARSE_STREAM_CAPACITY: u64 = 4096;
 /// "dense": its random reads reuse blocks, so whole-block prefetch pays off.
 const SPARSE_DENSE_SLICE_MISSES: u32 = 10;
 const SPARSE_DENSITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+/// FUSE reads this large come from kernel readahead, i.e. a sequential stream.
+const SPARSE_SEQUENTIAL_READ_BYTES: usize = 128 * 1024;
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -497,9 +499,11 @@ pub enum ReadFetchPolicy {
     /// Fetch small uncompressed misses in pages, without speculative full GETs
     /// for random reads. A read continuing exactly where the previous read of
     /// the block (or the previous block of the slice) ended prefetches the
-    /// whole block in the background, and so does a miss on a slice that had
-    /// at least `SPARSE_DENSE_SLICE_MISSES` page misses within one second.
-    /// Compressed objects and large reads still use the whole-object flight.
+    /// whole block in the background, as does a read of at least
+    /// `SPARSE_SEQUENTIAL_READ_BYTES` (kernel readahead) and a miss on a slice
+    /// that had at least `SPARSE_DENSE_SLICE_MISSES` page misses within one
+    /// second. Compressed objects and large reads still use the whole-object
+    /// flight.
     Sparse,
 }
 
@@ -1415,10 +1419,12 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
             prefer_full_objects || self.read_fetch_policy == ReadFetchPolicy::Sparse;
         let can_try_object_ranges = len > 0 && len <= range_size_threshold && !prefer_full_objects;
         // A sparse sequential stream regains the whole-block background
-        // prefetch that sparse mode otherwise suppresses.
+        // prefetch that sparse mode otherwise suppresses. The stream record is
+        // updated on every sparse read, including readahead-sized ones.
         let sparse_sequential = self.read_fetch_policy == ReadFetchPolicy::Sparse
             && can_try_object_ranges
-            && self.sparse_read_continues_stream(key, offset, len);
+            && (self.sparse_read_continues_stream(key, offset, len)
+                || len >= SPARSE_SEQUENTIAL_READ_BYTES);
         let allow_range_prefetch =
             self.read_fetch_policy != ReadFetchPolicy::Sparse || sparse_sequential;
 

@@ -294,24 +294,24 @@ async fn sparse_fetch_policy_prefetches_the_block_once_reads_become_sequential()
     let objects = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
     let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
-    let mut window = vec![0; 128 << 10];
+    let mut window = vec![0; 64 << 10];
     store.read_range((1, 0), 0, &mut window).await?;
-    assert_eq!(window, raw[..128 << 10]);
+    assert_eq!(window, raw[..64 << 10]);
     assert_eq!(
         store.object_metrics.snapshot().read_background_prefetches,
         0
     );
     // Kernel readahead continues exactly where the previous read ended.
-    store.read_range((1, 0), 128 << 10, &mut window).await?;
-    assert_eq!(window, raw[128 << 10..256 << 10]);
+    store.read_range((1, 0), 64 << 10, &mut window).await?;
+    assert_eq!(window, raw[64 << 10..128 << 10]);
     assert_eq!(
         store.object_metrics.snapshot().read_background_prefetches,
         1
     );
     wait_for_block_cache(&store, "chunks/1/0").await;
     let gets = store.object_metrics.snapshot().get_ops;
-    store.read_range((1, 0), 256 << 10, &mut window).await?;
-    assert_eq!(window, raw[256 << 10..384 << 10]);
+    store.read_range((1, 0), 128 << 10, &mut window).await?;
+    assert_eq!(window, raw[128 << 10..192 << 10]);
     assert_eq!(
         store.object_metrics.snapshot().get_ops,
         gets,
@@ -343,7 +343,7 @@ async fn sparse_fetch_policy_carries_a_sequential_stream_into_the_next_block() -
     let objects = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
     let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 2).await?;
-    let mut window = vec![0; 128 << 10];
+    let mut window = vec![0; 64 << 10];
     let tail = raw.len() - window.len();
     store.read_range((1, 0), tail as u64, &mut window).await?;
     assert_eq!(window, raw[tail..]);
@@ -353,7 +353,7 @@ async fn sparse_fetch_policy_carries_a_sequential_stream_into_the_next_block() -
     );
     // The first read of the following block of the same slice continues the stream.
     store.read_range((1, 1), 0, &mut window).await?;
-    assert_eq!(window, raw[..128 << 10]);
+    assert_eq!(window, raw[..64 << 10]);
     assert_eq!(
         store.object_metrics.snapshot().read_background_prefetches,
         1
@@ -451,6 +451,47 @@ async fn sparse_fetch_policy_density_window_expires() -> anyhow::Result<()> {
     store
         .read_range((1, 0), 40 * DEFAULT_PAGE_SIZE as u64, &mut small)
         .await?;
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_prefetches_on_a_readahead_sized_first_read() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    // Only kernel readahead sends FUSE reads this large; random reads stay page-sized.
+    let mut window = vec![0; SPARSE_SEQUENTIAL_READ_BYTES];
+    store.read_range((1, 0), 0, &mut window).await?;
+    assert_eq!(window, raw[..SPARSE_SEQUENTIAL_READ_BYTES]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    wait_for_block_cache(&store, "chunks/1/0").await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_keeps_page_sized_first_reads_sparse() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    let mut window = vec![0; DEFAULT_PAGE_SIZE];
+    for offset in [
+        0,
+        3 * DEFAULT_PAGE_SIZE as u64,
+        40 * DEFAULT_PAGE_SIZE as u64,
+    ] {
+        store.read_range((1, 0), offset, &mut window).await?;
+        assert_eq!(
+            window,
+            raw[offset as usize..offset as usize + DEFAULT_PAGE_SIZE]
+        );
+    }
     assert_eq!(
         store.object_metrics.snapshot().read_background_prefetches,
         0

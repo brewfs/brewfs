@@ -285,8 +285,8 @@ pub struct MountArgs {
 
     /// Object read policy, independent of the EC write hint. Sparse disables
     /// speculative full-object prefetch for random small uncompressed reads;
-    /// sequential streams and densely read slices keep whole-block background
-    /// prefetch.
+    /// sequential streams (including readahead-sized reads of 128 KiB or more)
+    /// and densely read slices keep whole-block background prefetch.
     /// Omit to preserve the backend's current behavior.
     #[arg(long, value_enum)]
     pub read_fetch_policy: Option<ReadFetchPolicy>,

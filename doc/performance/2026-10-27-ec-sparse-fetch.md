@@ -53,8 +53,12 @@ The complete-scan guard below requests a complete 4 MiB object at once. A
 fragmented scan of tiny requests is recognized per block: a read that starts
 exactly where the previous read of the same block ended, or at offset 0 of a
 block whose predecessor in the slice was read to its end, re-enables the
-whole-block background prefetch. Random reads, re-reads and adjacent-page reads
-never match exactly and stay sparse. Without this, a FUSE scan issued one range
+whole-block background prefetch. So does any read of at least 128 KiB: FUSE
+only sends reads that large for kernel readahead, so the first read of a block
+in a sequential scan starts the whole-block fetch instead of waiting for the
+second (the 2026-11-03 cloud run measured 5 GETs per single-block file against
+3 for the unset policy, and 0.89 sequential throughput). Random reads, re-reads
+and adjacent-page reads never match exactly and stay sparse. Without this, a FUSE scan issued one range
 GET per kernel readahead window (about 17 per 4 MiB block in the 2026-11-02
 cloud acceptance) and lost 42–45% of sequential read throughput. Random reads
 that concentrate on one slice — at least ten page misses on the same slice
