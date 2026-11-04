@@ -1,0 +1,26 @@
+{
+  "vendor-red": {
+    "exit_code": 101,
+    "started": "Tue Nov  3 10:34:01 PM UTC 2026",
+    "results": [
+      "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.00s"
+    ],
+    "log_sha256": "b8fc973ba918f6d8edcc2674b35922d441a2a8d886cf14b83902bed3bbdf3391"
+  },
+  "vendor-green": {
+    "exit_code": 0,
+    "started": "Tue Nov  3 10:35:18 PM UTC 2026",
+    "results": [
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.00s"
+    ],
+    "log_sha256": "1a47c6bee0acb5f82d6817cb5c8b6aa6e786b4355518bcd3b6fa9711a067abc8"
+  },
+  "vendor-full": {
+    "exit_code": 0,
+    "started": "Tue Nov  3 10:35:37 PM UTC 2026",
+    "results": [
+      "test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s"
+    ],
+    "log_sha256": "160eb9e72d95c21cdb40405d29e708a3b40680719acb8141109234c134c9cc1b"
+  }
+}

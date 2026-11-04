@@ -1,0 +1,50 @@
+{
+  "build_provenance": {
+    "external_frame_count": 0,
+    "frame_class_counts": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "frame_codec_counts": [
+      0,
+      0
+    ],
+    "frame_count": 0,
+    "frame_raw_bytes": 0,
+    "frame_raw_size_counts": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "frame_stored_bytes": 0,
+    "inline_dentries": 8192,
+    "inline_payload_bytes": 33554432,
+    "metadata_codec_counts": [
+      147,
+      0
+    ],
+    "p90": null,
+    "policy": {
+      "frames": "size-only",
+      "inline_data": true,
+      "p90": null
+    },
+    "requested_data_codec": 0,
+    "requested_metadata_codec": 0,
+    "size_classes": {
+      "max_random_frame_raw_bytes": 262144,
+      "max_sequential_frame_raw_bytes": 8388608,
+      "min_frame_raw_bytes": 262144
+    }
+  },
+  "capture_scope": "generated-deterministic-corpus",
+  "files": 8192,
+  "index_payload": "IP06",
+  "logical_bytes": 33554432,
+  "manifest_digest": "82febfb2aa140bcef802c1f0c95cb8e1fb8555fa3568915ff23fcdacb82ef3a9",
+  "manifest_key": "smallfile-warm-20261104/objects/0/82febfb2aa140bcef802c1f0c95cb8e1fb8555fa3568915ff23fcdacb82ef3a9",
+  "manifest_payload": "PM11"
+}

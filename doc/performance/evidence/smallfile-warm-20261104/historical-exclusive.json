@@ -1,0 +1,27 @@
+{
+  "samples": 374,
+  "exclusive_us_per_file": {
+    "queue_wait": 80.21147745755293,
+    "file_lock": 3.516072751322751,
+    "chunk_lock": 0.0,
+    "dirty_merge": 0.0,
+    "flush": 6.906481481481481,
+    "metadata_rpc": 0.0,
+    "metadata_commit": 0.0,
+    "object_put_queue": 0.0,
+    "object_put": 0.0,
+    "reply": 224.99432327351195,
+    "handler_residual": 0.0,
+    "handler_poll": 152.18421421660102
+  },
+  "op_samples": {
+    "1": 53,
+    "3": 159,
+    "14": 26,
+    "15": 56,
+    "18": 27,
+    "25": 27,
+    "39": 26
+  },
+  "note": "Exclusive within each request; requests can overlap. Not an exclusive wall-time partition."
+}
