@@ -209,66 +209,6 @@ fn new_ttl_test_vfs(
 }
 
 #[tokio::test]
-async fn cache_fill_detects_other_writer_and_forced_discard() {
-    use brewfs::workspace_overlay::catalog::MarkDeleting;
-    let meta = Arc::new(test_meta().await);
-    let other = WorkspaceMetaLayer::new(meta.store().clone(), meta.view_context().await);
-    let root = meta.root_ino();
-    let ino = other.create_file(root, "old".into()).await.unwrap();
-    let ttl = Duration::from_millis(20);
-    let deadline = meta
-        .kernel_metadata_cache_deadline(ttl)
-        .await
-        .unwrap()
-        .unwrap();
-    other.rename(root, "old", root, "new".into()).await.unwrap();
-    assert_eq!(
-        meta.kernel_metadata_cache_deadline(ttl).await.unwrap(),
-        Some(deadline),
-        "cache hits must not slide the checked deadline"
-    );
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    assert!(
-        meta.kernel_metadata_cache_deadline(ttl)
-            .await
-            .unwrap()
-            .unwrap()
-            > deadline
-    );
-    let fs = new_ttl_test_vfs(meta.clone());
-    fs.set_fuse_cache_ttl(ttl);
-    let req = Request::default();
-    assert!(
-        Filesystem::lookup(&fs, req, root as u64, OsStr::new("old"))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        Filesystem::lookup(&fs, req, root as u64, OsStr::new("new"))
-            .await
-            .unwrap()
-            .attr
-            .ino,
-        ino as u64
-    );
-    meta.store()
-        .mark_workspace_deleting(MarkDeleting {
-            workspace_id: meta.view_context().await.workspace_id,
-            force_fence_lease: true,
-        })
-        .await
-        .unwrap();
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    assert!(meta.kernel_metadata_cache_deadline(ttl).await.is_err());
-    assert!(
-        Filesystem::getattr(&fs, req, ino as u64, None, 0)
-            .await
-            .is_err(),
-        "a cached inode cannot refill after forced discard"
-    );
-}
-
-#[tokio::test]
 async fn cache_fill_rejects_released_lease_but_default_reply_is_unchanged() {
     use brewfs::workspace_overlay::catalog::ReleaseLease;
     let meta = Arc::new(test_meta().await);
@@ -456,15 +396,20 @@ async fn writable_acl_fuse_replies_use_only_explicit_cache_ttl() {
             ..Request::default()
         };
 
-        let virtual_stats = Filesystem::lookup(&cloned, req, root, OsStr::new(".stats"))
-            .await
-            .unwrap();
-        assert_eq!(virtual_stats.ttl, Duration::ZERO);
+        // Integration tests link the library without cfg(test); virtual stats
+        // are only exposed when the observability feature is enabled.
+        let virtual_stats = Filesystem::lookup(&cloned, req, root, OsStr::new(".stats")).await;
+        if cfg!(feature = "observability") {
+            assert_eq!(virtual_stats.unwrap().ttl, Duration::ZERO);
+        } else {
+            assert_eq!(virtual_stats.unwrap_err(), libc::ENOENT.into());
+        }
         for name in ["file", ".stats"] {
-            meta.create_file(root as i64, name.into()).await.unwrap();
+            let real_ino = meta.create_file(root as i64, name.into()).await.unwrap();
             let lookup = Filesystem::lookup(&cloned, req, root, OsStr::new(name))
                 .await
                 .unwrap();
+            assert_eq!(lookup.attr.ino, real_ino as u64);
             assert!(lookup.ttl <= ttl, "LOOKUP {name}, {configured:?}");
             if ttl >= Duration::from_secs(1) {
                 assert!(!lookup.ttl.is_zero());

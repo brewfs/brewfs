@@ -5599,6 +5599,10 @@ where
     /// usage and ensure progress. It does not commit metadata directly.
     /// Use `Weak` to stop it when the `FileWriter` was dropped.
     async fn auto_flush(shared: Weak<Shared<B, M>>) {
+        Self::auto_flush_with_clock(shared, Instant::now).await;
+    }
+
+    async fn auto_flush_with_clock(shared: Weak<Shared<B, M>>, clock: impl Fn() -> Instant) {
         let idle = Duration::from_secs(1);
         let mut tick: u64 = 0;
         let cached_sub_block_idle_grace = cached_sub_block_idle_grace();
@@ -5625,7 +5629,7 @@ where
             let mut to_flush = Vec::new();
             {
                 let guard = shared.inner.lock().await;
-                let now = Instant::now();
+                let now = clock();
                 let mut total_slices = 0usize;
                 let mut chunk_slices = Vec::new();
 
@@ -9928,7 +9932,7 @@ mod tests {
         assert_eq!(after_flush.upload_partial_tail_auto_age_ops, 0);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch() {
         let layout = ChunkLayout {
             chunk_size: 16 * 1024,
@@ -9948,7 +9952,22 @@ mod tests {
             backend.clone(),
         ));
         let writer = Arc::new(DataWriter::new(test_config(layout), backend, reader, None));
-        let file_writer = writer.ensure_file(inode);
+        // Start the automatic flush loop only after its dispatch precondition
+        // holds. A 5 ms timer must not race the asynchronous slice-ID allocation.
+        let file_writer = Arc::new(FileWriter {
+            shared: Arc::new(Shared::new(
+                inode,
+                writer.config.clone(),
+                writer.backend.clone(),
+                writer.reader.clone(),
+                writer.buffer_usage.clone(),
+                None,
+                0,
+                None,
+                writer.recent_pending_upload.clone(),
+            )),
+        });
+        writer.files.insert(ino as u64, file_writer.clone());
         let len = layout.block_size as usize + 1024;
 
         file_writer
@@ -9956,9 +9975,47 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(50)).await;
+        let cid = chunk_id_for(ino, 0).unwrap();
+        let slice = file_writer.shared.inner.lock().await.chunks[&cid].slices[0].clone();
+        let notify = slice.lock().notify.clone();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let notified = notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if slice.lock().dispatched_end == 1 {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("the full block must be dispatched before checking tail grace");
+
+        let started = Instant::now();
+        {
+            let mut state = slice.lock();
+            assert_eq!(state.state, SliceStatus::Writable);
+            state.started = started;
+            state.last_mod = started;
+        }
+        {
+            let scans = std::cell::Cell::new(0);
+            let auto_flush =
+                FileWriter::auto_flush_with_clock(Arc::downgrade(&file_writer.shared), || {
+                    scans.set(scans.get() + 1);
+                    started + Duration::from_millis(50)
+                });
+            tokio::pin!(auto_flush);
+            // On this current-thread runtime the locks are uncontended, so one
+            // poll runs the first scan and stops at the loop's periodic sleep.
+            assert!(futures::poll!(auto_flush.as_mut()).is_pending());
+            assert_eq!(scans.get(), 1, "the automatic flush scan must have run");
+        }
 
         let before_flush = writer.dirty_breakdown().await;
+        assert_eq!(before_flush.upload_batch_blocks, 1);
+        assert_eq!(slice.lock().state, SliceStatus::Writable);
         assert_eq!(
             before_flush.freeze_auto_ops, 0,
             "cached partial tails should get the same coalescing grace after full blocks are dispatched"
