@@ -1,0 +1,1001 @@
+{
+  "stage-0": {
+    "stages": [
+      {
+        "mode": "compose",
+        "stage": "path.stat",
+        "start_ns": 1793756329627485577,
+        "end_ns": 1793756329633615575,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 150,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756329627609256,
+            "total_ns": 95790
+          },
+          {
+            "unique": 154,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756329627936917,
+            "total_ns": 5671932
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756329648334245,
+        "end_ns": 1793756329649061813,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 3,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 156,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756329648414449,
+            "total_ns": 79303
+          },
+          {
+            "unique": 160,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756329648640630,
+            "total_ns": 49356
+          },
+          {
+            "unique": 164,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756329648900785,
+            "total_ns": 64393
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "start_ns": 1793756329663407563,
+        "end_ns": 1793756329663987489,
+        "op_delta": {
+          "getattr": 1,
+          "read": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 168,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756329663462414,
+            "total_ns": 87879
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.close",
+        "start_ns": 1793756329678578028,
+        "end_ns": 1793756329678800691,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756329693077043,
+        "end_ns": 1793756329693961918,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 3,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 178,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756329693203407,
+            "total_ns": 118999
+          },
+          {
+            "unique": 182,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756329693573455,
+            "total_ns": 85702
+          },
+          {
+            "unique": 186,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756329693802077,
+            "total_ns": 55176
+          }
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "start_ns": 1793756329708215493,
+        "end_ns": 1793756329708730334,
+        "op_delta": {
+          "getattr": 1,
+          "read": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 190,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756329708286368,
+            "total_ns": 88167
+          }
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.close",
+        "start_ns": 1793756329723158537,
+        "end_ns": 1793756329723322996,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.open",
+        "start_ns": 1793756329737460433,
+        "end_ns": 1793756329738046177,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 2,
+          "open": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 200,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756329737604415,
+            "total_ns": 89302
+          },
+          {
+            "unique": 204,
+            "opcode": 3,
+            "file_id": 4004,
+            "received_at_ns": 1793756329737880156,
+            "total_ns": 76790
+          }
+        ]
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-data",
+        "start_ns": 1793756329752365688,
+        "end_ns": 1793756329752664426,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-eof",
+        "start_ns": 1793756329767192960,
+        "end_ns": 1793756329767396946,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.close",
+        "start_ns": 1793756329781664291,
+        "end_ns": 1793756329781839282,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      }
+    ],
+    "total_per_file": {
+      "compose": {
+        "lookup": 2,
+        "getattr": 6,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "no-explicit-stat": {
+        "lookup": 1,
+        "getattr": 4,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "raw": {
+        "lookup": 1,
+        "getattr": 2,
+        "open": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      }
+    }
+  },
+  "stage-1000": {
+    "stages": [
+      {
+        "mode": "compose",
+        "stage": "path.stat",
+        "start_ns": 1793756335398826321,
+        "end_ns": 1793756335399273419,
+        "op_delta": {
+          "lookup": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756335413882663,
+        "end_ns": 1793756335421491035,
+        "op_delta": {
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "start_ns": 1793756335435834732,
+        "end_ns": 1793756335436543827,
+        "op_delta": {
+          "read": 2
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.close",
+        "start_ns": 1793756335450823484,
+        "end_ns": 1793756335451039573,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756335465245228,
+        "end_ns": 1793756335465895049,
+        "op_delta": {
+          "lookup": 1,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "start_ns": 1793756335480181456,
+        "end_ns": 1793756335480707752,
+        "op_delta": {
+          "read": 2
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.close",
+        "start_ns": 1793756335494954295,
+        "end_ns": 1793756335495155602,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.open",
+        "start_ns": 1793756335509431191,
+        "end_ns": 1793756335510036617,
+        "op_delta": {
+          "lookup": 1,
+          "open": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-data",
+        "start_ns": 1793756335524893814,
+        "end_ns": 1793756335525217201,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-eof",
+        "start_ns": 1793756335539733318,
+        "end_ns": 1793756335539949207,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.close",
+        "start_ns": 1793756335554677920,
+        "end_ns": 1793756335554856783,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      }
+    ],
+    "total_per_file": {
+      "compose": {
+        "lookup": 1,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "no-explicit-stat": {
+        "lookup": 1,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "raw": {
+        "lookup": 1,
+        "open": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      }
+    }
+  },
+  "stage-10000": {
+    "stages": [
+      {
+        "mode": "compose",
+        "stage": "path.stat",
+        "start_ns": 1793756341200307380,
+        "end_ns": 1793756341200731541,
+        "op_delta": {
+          "lookup": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756341215574191,
+        "end_ns": 1793756341222616933,
+        "op_delta": {
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "start_ns": 1793756341237216419,
+        "end_ns": 1793756341237811676,
+        "op_delta": {
+          "read": 2
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.close",
+        "start_ns": 1793756341252225934,
+        "end_ns": 1793756341252471790,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756341266802489,
+        "end_ns": 1793756341267441194,
+        "op_delta": {
+          "lookup": 1,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "start_ns": 1793756341281940819,
+        "end_ns": 1793756341282404257,
+        "op_delta": {
+          "read": 2
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.close",
+        "start_ns": 1793756341296947468,
+        "end_ns": 1793756341297167490,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.open",
+        "start_ns": 1793756341311447583,
+        "end_ns": 1793756341311991053,
+        "op_delta": {
+          "lookup": 1,
+          "open": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-data",
+        "start_ns": 1793756341326843118,
+        "end_ns": 1793756341327193997,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-eof",
+        "start_ns": 1793756341341598388,
+        "end_ns": 1793756341341780852,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.close",
+        "start_ns": 1793756341356158677,
+        "end_ns": 1793756341356332173,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      }
+    ],
+    "total_per_file": {
+      "compose": {
+        "lookup": 1,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "no-explicit-stat": {
+        "lookup": 1,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "raw": {
+        "lookup": 1,
+        "open": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      }
+    }
+  },
+  "syscalls-raw-0": {
+    "stages": [
+      {
+        "mode": "compose",
+        "stage": "path.stat",
+        "start_ns": 1793756386729084088,
+        "end_ns": 1793756386737218750,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 150,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756386729324252,
+            "total_ns": 156881
+          },
+          {
+            "unique": 154,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756386729967184,
+            "total_ns": 7218864
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756386754541278,
+        "end_ns": 1793756386756097643,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 3,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 156,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756386754713150,
+            "total_ns": 181077
+          },
+          {
+            "unique": 160,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756386755068494,
+            "total_ns": 67318
+          },
+          {
+            "unique": 164,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756386755465839,
+            "total_ns": 128818
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "start_ns": 1793756386773192180,
+        "end_ns": 1793756386774614911,
+        "op_delta": {
+          "getattr": 1,
+          "read": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 168,
+            "opcode": 3,
+            "file_id": 4002,
+            "received_at_ns": 1793756386773575389,
+            "total_ns": 126577
+          }
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.close",
+        "start_ns": 1793756386790631054,
+        "end_ns": 1793756386790905441,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "start_ns": 1793756386807271853,
+        "end_ns": 1793756386808920021,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 3,
+          "open": 1,
+          "ioctl": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 178,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756386807480727,
+            "total_ns": 165202
+          },
+          {
+            "unique": 182,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756386808072404,
+            "total_ns": 136797
+          },
+          {
+            "unique": 186,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756386808493754,
+            "total_ns": 91644
+          }
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "start_ns": 1793756386825312977,
+        "end_ns": 1793756386826390826,
+        "op_delta": {
+          "getattr": 1,
+          "read": 2
+        },
+        "getattr_trace": [
+          {
+            "unique": 190,
+            "opcode": 3,
+            "file_id": 4003,
+            "received_at_ns": 1793756386825495980,
+            "total_ns": 166128
+          }
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.close",
+        "start_ns": 1793756386843563646,
+        "end_ns": 1793756386843832415,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.open",
+        "start_ns": 1793756386861032871,
+        "end_ns": 1793756386862264621,
+        "op_delta": {
+          "lookup": 1,
+          "getattr": 2,
+          "open": 1
+        },
+        "getattr_trace": [
+          {
+            "unique": 200,
+            "opcode": 3,
+            "file_id": 1,
+            "received_at_ns": 1793756386861387073,
+            "total_ns": 139440
+          },
+          {
+            "unique": 204,
+            "opcode": 3,
+            "file_id": 4004,
+            "received_at_ns": 1793756386861768958,
+            "total_ns": 115715
+          }
+        ]
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-data",
+        "start_ns": 1793756386879985231,
+        "end_ns": 1793756386880450891,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-eof",
+        "start_ns": 1793756386896887894,
+        "end_ns": 1793756386897251498,
+        "op_delta": {
+          "read": 1
+        },
+        "getattr_trace": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.close",
+        "start_ns": 1793756386915089996,
+        "end_ns": 1793756386915408365,
+        "op_delta": {
+          "release": 1,
+          "flush": 1
+        },
+        "getattr_trace": []
+      }
+    ],
+    "total_per_file": {
+      "compose": {
+        "lookup": 2,
+        "getattr": 6,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "no-explicit-stat": {
+        "lookup": 1,
+        "getattr": 4,
+        "open": 1,
+        "ioctl": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      },
+      "raw": {
+        "lookup": 1,
+        "getattr": 2,
+        "open": 1,
+        "read": 2,
+        "release": 1,
+        "flush": 1
+      }
+    },
+    "syscall_correlations": [
+      {
+        "mode": "compose",
+        "stage": "path.stat",
+        "syscall": "newfstatat(AT_FDCWD, \"/mnt/brewfs/f004000\", {st_mode=S_IFREG|0644, st_size=4096, ...}, 0) = 0",
+        "start_ns": 1793756386729166000,
+        "end_ns": 1793756386737129000,
+        "getattr_nodes": [
+          1,
+          4002
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "syscall": "openat(AT_FDCWD, \"/mnt/brewfs/f004000\", O_RDONLY|O_CLOEXEC) = 3",
+        "start_ns": 1793756386754578000,
+        "end_ns": 1793756386755342000,
+        "getattr_nodes": [
+          1,
+          4002
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "syscall": "fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0",
+        "start_ns": 1793756386755403000,
+        "end_ns": 1793756386755579000,
+        "getattr_nodes": [
+          4002
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "syscall": "ioctl(0x3, 0x5401, 0x7ffe6f96b510) = -1 EOPNOTSUPP (Operation not supported)",
+        "start_ns": 1793756386755682000,
+        "end_ns": 1793756386755893000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "compose",
+        "stage": "path.open-buffered",
+        "syscall": "lseek(3, 0, SEEK_CUR) = 0",
+        "start_ns": 1793756386756012000,
+        "end_ns": 1793756386756045000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "syscall": "lseek(3, 0, SEEK_CUR) = 0",
+        "start_ns": 1793756386773220000,
+        "end_ns": 1793756386773261000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "syscall": "fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0",
+        "start_ns": 1793756386773441000,
+        "end_ns": 1793756386773681000,
+        "getattr_nodes": [
+          4002
+        ]
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "syscall": "read(3, \"\"..., 4097) = 4096",
+        "start_ns": 1793756386773797000,
+        "end_ns": 1793756386774284000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.read-all",
+        "syscall": "read(3, \"\", 1)  = 0",
+        "start_ns": 1793756386774356000,
+        "end_ns": 1793756386774556000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "compose",
+        "stage": "handle.close",
+        "syscall": "close(3)        = 0",
+        "start_ns": 1793756386790657000,
+        "end_ns": 1793756386790869000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "syscall": "openat(AT_FDCWD, \"/mnt/brewfs/f004001\", O_RDONLY|O_CLOEXEC) = 3",
+        "start_ns": 1793756386807334000,
+        "end_ns": 1793756386808343000,
+        "getattr_nodes": [
+          1,
+          4003
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "syscall": "fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0",
+        "start_ns": 1793756386808415000,
+        "end_ns": 1793756386808577000,
+        "getattr_nodes": [
+          4003
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "syscall": "ioctl(0x3, 0x5401, 0x7ffe6f96b560) = -1 EOPNOTSUPP (Operation not supported)",
+        "start_ns": 1793756386808648000,
+        "end_ns": 1793756386808794000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "path.open-buffered",
+        "syscall": "lseek(3, 0, SEEK_CUR) = 0",
+        "start_ns": 1793756386808859000,
+        "end_ns": 1793756386808884000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "syscall": "lseek(3, 0, SEEK_CUR) = 0",
+        "start_ns": 1793756386825332000,
+        "end_ns": 1793756386825354000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "syscall": "fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0",
+        "start_ns": 1793756386825403000,
+        "end_ns": 1793756386825666000,
+        "getattr_nodes": [
+          4003
+        ]
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "syscall": "read(3, \"\"..., 4097) = 4096",
+        "start_ns": 1793756386825734000,
+        "end_ns": 1793756386826077000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.read-all",
+        "syscall": "read(3, \"\", 1)  = 0",
+        "start_ns": 1793756386826147000,
+        "end_ns": 1793756386826317000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "no-explicit-stat",
+        "stage": "handle.close",
+        "syscall": "close(3)        = 0",
+        "start_ns": 1793756386843590000,
+        "end_ns": 1793756386843793000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.open",
+        "syscall": "openat(AT_FDCWD, \"/mnt/brewfs/f004002\", O_RDONLY|O_CLOEXEC) = 3",
+        "start_ns": 1793756386861145000,
+        "end_ns": 1793756386862171000,
+        "getattr_nodes": [
+          1,
+          4004
+        ]
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-data",
+        "syscall": "read(3, \"\"..., 4096) = 4096",
+        "start_ns": 1793756386880007000,
+        "end_ns": 1793756386880374000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.read-eof",
+        "syscall": "read(3, \"\", 4096) = 0",
+        "start_ns": 1793756386896909000,
+        "end_ns": 1793756386897164000,
+        "getattr_nodes": []
+      },
+      {
+        "mode": "raw",
+        "stage": "os.close",
+        "syscall": "close(3)        = 0",
+        "start_ns": 1793756386915112000,
+        "end_ns": 1793756386915356000,
+        "getattr_nodes": []
+      }
+    ]
+  },
+  "rejected_tracing": {
+    "paths": [
+      "/mnt/brewfs-data/home/hxy/smallfile-warm/artifacts/ttl-20261104-probe-0",
+      "/mnt/brewfs-data/home/hxy/smallfile-warm/artifacts/ttl-20261104-probe-1000",
+      "/mnt/brewfs-data/home/hxy/smallfile-warm/artifacts/ttl-20261104-probe-10000",
+      "/mnt/brewfs-data/home/hxy/smallfile-warm/artifacts/ttl-20261104-syscalls-0"
+    ],
+    "reason": "strace -yy/-P, and then decoded ioctl, caused extra pathname resolution/getattr. Do not use these counter deltas or timings. Plain probes and strace with raw=ioctl agree exactly."
+  }
+}
