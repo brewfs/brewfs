@@ -1,0 +1,34 @@
+# compose: path.stat
+62    1793756386.729166 newfstatat(AT_FDCWD, "/mnt/brewfs/f004000", {st_mode=S_IFREG|0644, st_size=4096, ...}, 0) = 0 <0.007963>
+# compose: path.open-buffered
+62    1793756386.754578 openat(AT_FDCWD, "/mnt/brewfs/f004000", O_RDONLY|O_CLOEXEC) = 3 <0.000764>
+62    1793756386.755403 fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0 <0.000176>
+62    1793756386.755682 ioctl(0x3, 0x5401, 0x7ffe6f96b510) = -1 EOPNOTSUPP (Operation not supported) <0.000211>
+62    1793756386.756012 lseek(3, 0, SEEK_CUR) = 0 <0.000033>
+# compose: handle.read-all
+62    1793756386.773220 lseek(3, 0, SEEK_CUR) = 0 <0.000041>
+62    1793756386.773441 fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0 <0.000240>
+62    1793756386.773797 read(3, ""..., 4097) = 4096 <0.000487>
+62    1793756386.774356 read(3, "", 1)  = 0 <0.000200>
+# compose: handle.close
+62    1793756386.790657 close(3)        = 0 <0.000212>
+# no-explicit-stat: path.open-buffered
+62    1793756386.807334 openat(AT_FDCWD, "/mnt/brewfs/f004001", O_RDONLY|O_CLOEXEC) = 3 <0.001009>
+62    1793756386.808415 fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0 <0.000162>
+62    1793756386.808648 ioctl(0x3, 0x5401, 0x7ffe6f96b560) = -1 EOPNOTSUPP (Operation not supported) <0.000146>
+62    1793756386.808859 lseek(3, 0, SEEK_CUR) = 0 <0.000025>
+# no-explicit-stat: handle.read-all
+62    1793756386.825332 lseek(3, 0, SEEK_CUR) = 0 <0.000022>
+62    1793756386.825403 fstat(3, {st_mode=S_IFREG|0644, st_size=4096, ...}) = 0 <0.000263>
+62    1793756386.825734 read(3, ""..., 4097) = 4096 <0.000343>
+62    1793756386.826147 read(3, "", 1)  = 0 <0.000170>
+# no-explicit-stat: handle.close
+62    1793756386.843590 close(3)        = 0 <0.000203>
+# raw: os.open
+62    1793756386.861145 openat(AT_FDCWD, "/mnt/brewfs/f004002", O_RDONLY|O_CLOEXEC) = 3 <0.001026>
+# raw: os.read-data
+62    1793756386.880007 read(3, ""..., 4096) = 4096 <0.000367>
+# raw: os.read-eof
+62    1793756386.896909 read(3, "", 4096) = 0 <0.000255>
+# raw: os.close
+62    1793756386.915112 close(3)        = 0 <0.000244>
