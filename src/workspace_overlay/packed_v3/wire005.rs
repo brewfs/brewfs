@@ -8,11 +8,13 @@ pub(crate) use budget::V3Owned;
 pub use budget::{V3BudgetLimits, V3BudgetPool, V3MountBudget, V3OwnedBytes, V3OwnedPermit};
 mod container;
 pub use cold::{V3ColdAttributes, V3Xattr};
+mod frame_cache;
 mod frame_directory;
 pub(crate) use container::V3DirectoryMetadata;
 pub use container::{
     V3BuiltContainer, V3GroupRef, build_v3_container, build_v3_container_with_policy,
 };
+pub(crate) use frame_cache::{DecodedFrameCache, FrameCacheKey};
 mod index;
 mod inode;
 pub use inode::V3InodeLocation;

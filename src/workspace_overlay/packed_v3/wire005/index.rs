@@ -507,6 +507,7 @@ pub struct V3IndexReader<B: ObjectBackend + Clone> {
     demand_pipeline: tokio::sync::Mutex<V3ReaderRuntime<B>>,
     group_metadata: super::read_cache::RetainedMetadata<V3Owned<Arc<super::super::GroupMeta>>>,
     frame_directories: super::read_cache::RetainedMetadata<V3Owned<super::V3FrameDirectoryPage>>,
+    frame_cache: Option<Arc<dyn super::DecodedFrameCache>>,
 }
 
 struct V3ReaderRuntime<B: ObjectBackend + Clone> {
@@ -660,6 +661,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 .build(),
             cache_ownership: Arc::new(V3IndexCacheOwnership::new(cache_bytes)),
             configured_bytes: cache_bytes,
+            frame_cache: None,
             group_metadata: super::read_cache::RetainedMetadata::new(
                 group_bytes.min(budget.capacity(V3BudgetPool::Metadata) / 4),
                 budget.clone(),
@@ -680,6 +682,26 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
 
     pub fn budget(&self) -> &Arc<V3MountBudget> {
         &self.budget
+    }
+
+    /// Configure before the first payload demand. Only the entity mount opts
+    /// in; its lower frames and upper objects share the supplied byte budget.
+    pub(crate) fn set_decoded_frame_cache(
+        &mut self,
+        cache: Option<Arc<dyn super::DecodedFrameCache>>,
+    ) -> PackedResult<()> {
+        let runtime = self.demand_pipeline.get_mut();
+        if runtime.closed || runtime.coordinator.is_some() {
+            return Err(PackedWireError::Invalid(
+                "frame cache configured after reader start/close".into(),
+            ));
+        }
+        self.frame_cache = cache;
+        Ok(())
+    }
+
+    pub(super) fn decoded_frame_cache(&self) -> Option<Arc<dyn super::DecodedFrameCache>> {
+        self.frame_cache.clone()
     }
 
     pub(super) async fn group_metadata(
@@ -775,11 +797,20 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         if let Some(coordinator) = &runtime.coordinator {
             return Ok(coordinator.clone());
         }
-        let coordinator = super::pipeline::V3DemandCoordinator::new(
-            self.client.clone(),
-            self.budget.clone(),
-            super::pipeline::V3PipelineLimits::default(),
-        )?;
+        let limits = super::pipeline::V3PipelineLimits::default();
+        let coordinator = if self.frame_cache.is_some() {
+            super::pipeline::V3DemandCoordinator::new_for_retained_frames(
+                self.client.clone(),
+                self.budget.clone(),
+                limits,
+            )?
+        } else {
+            super::pipeline::V3DemandCoordinator::new(
+                self.client.clone(),
+                self.budget.clone(),
+                limits,
+            )?
+        };
         runtime.coordinator = Some(coordinator.clone());
         Ok(coordinator)
     }
@@ -1418,6 +1449,9 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
     pub(crate) async fn close(&self) {
         let mut runtime = self.demand_pipeline.lock().await;
         runtime.closed = true;
+        if let Some(cache) = &self.frame_cache {
+            cache.close();
+        }
         if let Some(pipeline) = &runtime.coordinator {
             pipeline.shutdown().await;
         }

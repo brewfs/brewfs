@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::workspace_overlay::packed_v3::wire005::{DecodedFrameCache, FrameCacheKey};
 use lru::LruCache;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -12,12 +13,7 @@ use uuid::Uuid;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum Key {
-    Lower {
-        manifest: [u8; 32],
-        ino: i64,
-        offset: u64,
-        length: usize,
-    },
+    LowerFrame(FrameCacheKey),
     Upper {
         volume: Uuid,
         namespace: Uuid,
@@ -74,8 +70,8 @@ impl PayloadCache {
         }
         let value = state.entries.get(key).cloned();
         match (key, value.is_some()) {
-            (Key::Lower { .. }, true) => state.stats.lower_hits += 1,
-            (Key::Lower { .. }, false) => state.stats.lower_misses += 1,
+            (Key::LowerFrame(_), true) => state.stats.lower_hits += 1,
+            (Key::LowerFrame(_), false) => state.stats.lower_misses += 1,
             (Key::Upper { .. }, true) => state.stats.upper_hits += 1,
             (Key::Upper { .. }, false) => state.stats.upper_misses += 1,
         }
@@ -120,17 +116,26 @@ impl PayloadCache {
     }
 }
 
+impl DecodedFrameCache for PayloadCache {
+    fn get(&self, key: &FrameCacheKey) -> Option<Arc<[u8]>> {
+        self.get(&Key::LowerFrame(*key))
+    }
+    fn insert(&self, key: FrameCacheKey, bytes: &[u8]) {
+        self.insert(Key::LowerFrame(key), bytes);
+    }
+    fn close(&self) {
+        self.close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lower(manifest: u8, offset: u64) -> Key {
-        Key::Lower {
-            manifest: [manifest; 32],
-            ino: 2,
-            offset,
-            length: 4096,
-        }
+        let mut identity = [manifest; 32];
+        identity[16..24].copy_from_slice(&offset.to_le_bytes());
+        Key::LowerFrame(FrameCacheKey(identity))
     }
 
     #[test]
