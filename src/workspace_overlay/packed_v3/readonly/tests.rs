@@ -364,6 +364,54 @@ async fn readonly_directory_fixture_with_group_size(
 }
 
 #[tokio::test]
+async fn opendir_uses_inode_identity_without_decoding_parent_contents() {
+    use super::super::meta::FULL_GROUP_DECODES;
+    let entries = [
+        (b"dir".as_slice(), 2, 2, 0o040755),
+        (b"file".as_slice(), 3, 1, 0o100644),
+    ]
+    .into_iter()
+    .map(|(name, inode, kind, mode)| GroupMetaEntry {
+        name: name.to_vec(),
+        inode,
+        kind,
+        mode,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        nlink: 1,
+        atime_ns: 0,
+        mtime_ns: 0,
+        ctime_ns: 0,
+        size: 0,
+        flags: 0,
+        inline_data: Arc::from([]),
+        extents: Vec::new(),
+    })
+    .collect();
+    let (_temp, meta) = current_readonly_directory_fixture(entries).await;
+    FULL_GROUP_DECODES
+        .scope(std::cell::Cell::new(0), async {
+            let directory = meta.opendir(2).await.unwrap();
+            assert!(
+                directory
+                    .get_entries_page_raw_owned(0, 32)
+                    .await
+                    .unwrap()
+                    .entries
+                    .is_empty()
+            );
+            assert!(matches!(
+                meta.opendir(3).await,
+                Err(MetaError::NotDirectory(3))
+            ));
+            assert!(matches!(meta.opendir(4).await, Err(MetaError::NotFound(4))));
+            assert_eq!(FULL_GROUP_DECODES.with(std::cell::Cell::get), 0);
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn paged_directory_reuses_authenticated_group_metadata() {
     use super::super::wire005::V3BudgetPool;
     use crate::cadapter::read_observer::{Ledger, ReadClass, ReadWork};

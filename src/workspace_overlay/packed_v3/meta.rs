@@ -11,10 +11,16 @@ use std::sync::Arc;
 
 use super::wire::{PackedResult, PackedWireError, Reader, Writer};
 
+pub(crate) mod directory;
+
 // GM06 is the current intermediate record-run format embedded in GM07.
 // Producer inputs and GM07 restarts share this exact layout, including the
 // inline-payload length. Historical GM04/GM05 layouts are unsupported.
 const GROUP_META_MAGIC: &[u8; 4] = b"GM06";
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static FULL_GROUP_DECODES: std::cell::Cell<usize>;
+}
 pub(crate) const GROUP_META_HEADER_LEN: usize = 12;
 // Prefix/suffix lengths, kind/flags, mode, inode, size, POSIX hot
 // attributes, and extent count.  Keeping this lower bound explicit lets the
@@ -286,59 +292,11 @@ impl GroupMeta {
     }
 
     pub fn decode_restart(bytes: &[u8]) -> PackedResult<Self> {
-        if bytes.len() > MAX_GROUP_META_BYTES {
-            return Err(PackedWireError::LimitExceeded(
-                "GM07 page exceeds 256 KiB".into(),
-            ));
-        }
-        let mut reader = Reader::new(bytes);
-        if reader.take(4)? != b"GM07" {
-            return Err(PackedWireError::UnsupportedFormat(
-                "expected GM07 restart metadata".into(),
-            ));
-        }
-        let count = reader.u32()? as usize;
-        if reader.u32()? != 32 {
-            return Err(PackedWireError::Invalid(
-                "GM07 restart interval must be 32".into(),
-            ));
-        }
-        let runs = reader.u32()? as usize;
-        if count > MAX_GROUP_META_BYTES / GROUP_META_MIN_ENTRY_BYTES || runs != count.div_ceil(32) {
-            return Err(PackedWireError::Invalid(
-                "GM07 count exceeds payload or restart budget".into(),
-            ));
-        }
-        let table_end = 16 + runs * 8;
-        let mut previous_end = table_end;
-        let mut references = Vec::with_capacity(runs);
-        for _ in 0..runs {
-            let offset = reader.u32()? as usize;
-            let length = reader.u32()? as usize;
-            let end = offset.checked_add(length).ok_or_else(|| {
-                PackedWireError::LimitExceeded("GM07 restart range overflows".into())
-            })?;
-            if offset != previous_end || length < GROUP_META_HEADER_LEN || end > bytes.len() {
-                return Err(PackedWireError::Invalid(
-                    "GM07 restart ranges are not canonical".into(),
-                ));
-            }
-            references.push((offset, end));
-            previous_end = end;
-        }
-        if previous_end != bytes.len() {
-            return Err(PackedWireError::Invalid(
-                "GM07 page has trailing bytes".into(),
-            ));
-        }
+        #[cfg(test)]
+        let _ = FULL_GROUP_DECODES.try_with(|count| count.set(count.get() + 1));
+        let (count, runs) = restart_runs(bytes)?;
         let mut entries = Vec::with_capacity(count);
-        for (run, (start, end)) in references.into_iter().enumerate() {
-            let bytes = &bytes[start..end];
-            if bytes.get(..4) != Some(GROUP_META_MAGIC.as_slice()) {
-                return Err(PackedWireError::Invalid(
-                    "GM07 restart must contain a GM06 record run".into(),
-                ));
-            }
+        for (run, bytes) in runs.into_iter().enumerate() {
             let meta = Self::decode(bytes)?;
             for entry in &meta.entries {
                 entry.validate_restart()?;
@@ -557,6 +515,60 @@ impl GroupMeta {
     }
 }
 
+fn restart_runs(bytes: &[u8]) -> PackedResult<(usize, Vec<&[u8]>)> {
+    if bytes.len() > MAX_GROUP_META_BYTES {
+        return Err(PackedWireError::LimitExceeded(
+            "GM07 page exceeds 256 KiB".into(),
+        ));
+    }
+    let mut reader = Reader::new(bytes);
+    if reader.take(4)? != b"GM07" {
+        return Err(PackedWireError::UnsupportedFormat(
+            "expected GM07 restart metadata".into(),
+        ));
+    }
+    let count = reader.u32()? as usize;
+    if reader.u32()? != 32 {
+        return Err(PackedWireError::Invalid(
+            "GM07 restart interval must be 32".into(),
+        ));
+    }
+    let runs = reader.u32()? as usize;
+    if count > MAX_GROUP_META_BYTES / GROUP_META_MIN_ENTRY_BYTES || runs != count.div_ceil(32) {
+        return Err(PackedWireError::Invalid(
+            "GM07 count exceeds payload or restart budget".into(),
+        ));
+    }
+    let mut previous_end = 16 + runs * 8;
+    let mut references = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let offset = reader.u32()? as usize;
+        let length = reader.u32()? as usize;
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| PackedWireError::LimitExceeded("GM07 restart range overflows".into()))?;
+        if offset != previous_end || length < GROUP_META_HEADER_LEN || end > bytes.len() {
+            return Err(PackedWireError::Invalid(
+                "GM07 restart ranges are not canonical".into(),
+            ));
+        }
+        let run = &bytes[offset..end];
+        if run.get(..4) != Some(GROUP_META_MAGIC.as_slice()) {
+            return Err(PackedWireError::Invalid(
+                "GM07 restart must contain a GM06 record run".into(),
+            ));
+        }
+        references.push(run);
+        previous_end = end;
+    }
+    if previous_end != bytes.len() {
+        return Err(PackedWireError::Invalid(
+            "GM07 page has trailing bytes".into(),
+        ));
+    }
+    Ok((count, references))
+}
+
 fn common_prefix_len(left: &[u8], right: &[u8]) -> usize {
     left.iter()
         .zip(right)
@@ -659,6 +671,71 @@ mod tests {
         assert_eq!(GroupMeta::decode_restart(&encoded).unwrap(), meta);
         assert!(GroupMeta::decode(&encoded).is_err());
         assert_eq!(&meta.encode().unwrap()[..4], b"GM06");
+    }
+
+    #[test]
+    fn directory_projection_preserves_raw_names_across_restarts_and_skips_payloads() {
+        use super::directory::GroupDirectory;
+        let entries = (0..70)
+            .map(|i| {
+                let mut name = format!("prefix-{i:04}").into_bytes();
+                name.push(0xff);
+                let mut value = entry(&name, i + 1);
+                if i % 2 == 0 {
+                    value.extents.clear();
+                    value.flags = INLINE_DATA_FLAG;
+                    value.inline_data = Arc::from([i as u8; 512]);
+                    value.size = 512;
+                }
+                value
+            })
+            .collect();
+        let meta = GroupMeta::new(entries).unwrap();
+        let bytes = meta.encode_restart().unwrap();
+        let names = GroupDirectory::decode(&bytes).unwrap();
+        assert_eq!(names.entries, GroupDirectory::from_metadata(&meta).entries);
+        assert!(names.owned_memory_bytes() < meta.owned_memory_bytes() as u64);
+        for length in 0..bytes.len() {
+            assert!(
+                GroupDirectory::decode(&bytes[..length]).is_err(),
+                "truncation at {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn directory_projection_defers_file_extent_validation() {
+        use super::directory::GroupDirectory;
+        let meta = GroupMeta::new(vec![entry(b"file", 7)]).unwrap();
+        let mut bytes = meta.encode_restart().unwrap();
+        let run = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+        // The fixed record lower bound includes the inline length word, which
+        // follows the extents. Corrupt the first extent's logical length only.
+        let extent = run + GROUP_META_HEADER_LEN + GROUP_META_MIN_ENTRY_BYTES - 4 + b"file".len();
+        bytes[extent + 8..extent + 12].copy_from_slice(&0u32.to_le_bytes());
+        assert!(GroupMeta::decode_restart(&bytes).is_err());
+        assert_eq!(
+            GroupDirectory::decode(&bytes).unwrap().entries,
+            GroupDirectory::from_metadata(&meta).entries
+        );
+    }
+
+    #[test]
+    fn directory_projection_rejects_invalid_namespace_records() {
+        use super::directory::GroupDirectory;
+        for value in unknown_restart_entries()
+            .into_iter()
+            .chain(invalid_restart_entries())
+        {
+            assert!(GroupDirectory::decode(&legacy_restart(value).1).is_err());
+        }
+        let meta = GroupMeta::new(vec![entry(b"file", 7)]).unwrap();
+        let bytes = meta.encode_restart().unwrap();
+        for offset in [4, 8, 12, 16, 20, 28, 32, 36] {
+            let mut corrupt = bytes.clone();
+            corrupt[offset] ^= 0x80;
+            assert!(GroupDirectory::decode(&corrupt).is_err(), "offset {offset}");
+        }
     }
 
     fn legacy_restart(value: GroupMetaEntry) -> (GroupMeta, Vec<u8>) {

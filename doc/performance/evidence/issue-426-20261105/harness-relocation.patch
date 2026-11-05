@@ -1,0 +1,27 @@
+--- /mnt/brewfs-data/home/hxy/regress-20261104/harness/analyze.py
++++ /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/analyze.py
+@@ -12 +12 @@
+-ROOT = Path('/mnt/brewfs-data/home/hxy/regress-20261104')
++ROOT = Path('/mnt/brewfs-data/home/hxy/issue-426-20261105/audit')
+--- /mnt/brewfs-data/home/hxy/regress-20261104/harness/campaign.py
++++ /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/campaign.py
+@@ -16 +16 @@
+-ROOT = Path('/mnt/brewfs-data/home/hxy/regress-20261104')
++ROOT = Path('/mnt/brewfs-data/home/hxy/issue-426-20261105/audit')
+--- /mnt/brewfs-data/home/hxy/regress-20261104/harness/compose.yml
++++ /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/compose.yml
+@@ -99,7 +99,7 @@
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/artifacts:/artifacts
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/state/${AUDIT_RUN:-unassigned}:/var/lib/brewfs
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/bin/${AUDIT_ARM:-main}/brewfs:/usr/local/bin/brewfs:ro
+-      - /mnt/brewfs-data/home/hxy/regress-20261104:/audit
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/harness/runner.sh:/usr/local/bin/run_perf_in_container.sh:ro
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/harness/perf_manifest.py:/usr/local/bin/perf_manifest.py:ro
+-      - /mnt/brewfs-data/home/hxy/regress-20261104/harness/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts:/artifacts
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/state/${AUDIT_RUN:-unassigned}:/var/lib/brewfs
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/${AUDIT_ARM:-main}/brewfs:/usr/local/bin/brewfs:ro
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit:/audit
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/runner.sh:/usr/local/bin/run_perf_in_container.sh:ro
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/perf_manifest.py:/usr/local/bin/perf_manifest.py:ro
++      - /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/harness/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro

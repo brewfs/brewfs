@@ -32,7 +32,7 @@ pub(super) struct RetainedMetadata<T> {
     capacity: u64,
     budget: Arc<V3MountBudget>,
     state: Mutex<State<T>>,
-    fetch: tokio::sync::Mutex<()>,
+    fetch: Box<[tokio::sync::Mutex<()>]>,
 }
 
 impl<T> RetainedMetadata<T> {
@@ -47,8 +47,27 @@ impl<T> RetainedMetadata<T> {
                 entries: BTreeMap::new(),
             }),
             budget,
-            fetch: tokio::sync::Mutex::new(()),
+            fetch: vec![tokio::sync::Mutex::new(())].into_boxed_slice(),
         }
+    }
+
+    /// Bounded stripes let a directory page fetch independent groups together.
+    /// Identical keys still share one fill; existing data caches stay serial.
+    pub(super) fn with_parallel_fills(capacity: u64, budget: Arc<V3MountBudget>) -> Self {
+        let mut cache = Self::new(capacity, budget);
+        cache.fetch = (0..8).map(|_| tokio::sync::Mutex::new(())).collect();
+        cache
+    }
+
+    pub(super) fn cached(
+        &self,
+        generation: ReadGeneration,
+        key: &[u8; 32],
+    ) -> PackedResult<Option<Arc<T>>> {
+        let epoch = self.prepare(generation)?;
+        let value = self.get(key, epoch);
+        self.check_epoch(epoch)?;
+        Ok(value)
     }
 
     fn prepare(&self, generation: ReadGeneration) -> PackedResult<u64> {
@@ -106,9 +125,11 @@ impl<T> RetainedMetadata<T> {
             self.check_epoch(epoch)?;
             return Ok(value);
         }
-        // Metadata fills are tiny and rare. Serialize misses independently
-        // of hits, sharing a successful fill without unbounded flight state.
-        let _fill = self.fetch.lock().await;
+        // Share successful same-key fills with bounded flight state. Namespace
+        // caches use independent stripes; other caches have one fill lock.
+        let _fill = self.fetch[usize::from(key[0]) % self.fetch.len()]
+            .lock()
+            .await;
         self.check_epoch(epoch)?;
         if let Some(value) = self.get(&key, epoch) {
             self.check_epoch(epoch)?;
@@ -207,6 +228,47 @@ mod tests {
         );
         cache.clear();
         assert_eq!(budget.state().used[V3BudgetPool::Metadata as usize], 0);
+    }
+
+    #[tokio::test]
+    async fn directory_fills_overlap_and_same_key_followers_share() {
+        let budget = V3MountBudget::defaults();
+        let cache = RetainedMetadata::with_parallel_fills(16384, budget.clone());
+        let generation = ReadGeneration::readonly([1; 32]);
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let fills = futures::future::join_all((0..8).map(|key| {
+            let barrier = Arc::clone(&barrier);
+            cache.read(generation, [key; 32], |_| 100, async move {
+                barrier.wait().await;
+                Ok(Arc::new(key))
+            })
+        }));
+        let results = tokio::time::timeout(std::time::Duration::from_secs(5), fills)
+            .await
+            .expect("independent directory fills serialized");
+        for (key, result) in results.into_iter().enumerate() {
+            assert_eq!(*result.unwrap(), key as u8);
+        }
+        cache.clear();
+        let calls = AtomicUsize::new(0);
+        let reads = futures::future::join_all((0..8).map(|_| {
+            cache.read(generation, [9; 32], |_| 100, async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                Ok(Arc::new(9u8))
+            })
+        }))
+        .await;
+        let values: Vec<_> = reads.into_iter().map(Result::unwrap).collect();
+        assert!(values.iter().all(|value| Arc::ptr_eq(value, &values[0])));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        budget.invalidate_read_caches();
+        assert!(cache.cached(generation, &[9; 32]).unwrap().is_none());
+        budget.close();
+        assert!(matches!(
+            cache.cached(generation, &[9; 32]),
+            Err(PackedWireError::ReadViewChanged)
+        ));
     }
 
     #[tokio::test]

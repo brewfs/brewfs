@@ -1,0 +1,68 @@
+[
+  {
+    "pair": 1,
+    "arm": "parent409",
+    "readdir_ms": 929.291745,
+    "group_gets": 94.0,
+    "group_bytes": 23889012.0,
+    "group_validated_ms": 831.319457,
+    "group_backend_ms": 604.79589,
+    "group_auth_ms": 188.371784,
+    "group_decode_ms": 36.699485
+  },
+  {
+    "pair": 1,
+    "arm": "main",
+    "readdir_ms": 1625.519207,
+    "group_gets": 147.0,
+    "group_bytes": 34196023.0,
+    "group_validated_ms": 1518.783471,
+    "group_backend_ms": 1179.733818,
+    "group_auth_ms": 288.289932,
+    "group_decode_ms": 48.165821
+  },
+  {
+    "pair": 2,
+    "arm": "parent409",
+    "readdir_ms": 945.280118,
+    "group_gets": 94.0,
+    "group_bytes": 23889012.0,
+    "group_validated_ms": 841.056103,
+    "group_backend_ms": 608.387014,
+    "group_auth_ms": 193.027237,
+    "group_decode_ms": 37.734903
+  },
+  {
+    "pair": 2,
+    "arm": "main",
+    "readdir_ms": 1482.779299,
+    "group_gets": 147.0,
+    "group_bytes": 34196023.0,
+    "group_validated_ms": 1392.54207,
+    "group_backend_ms": 1081.339334,
+    "group_auth_ms": 266.624648,
+    "group_decode_ms": 42.893013
+  },
+  {
+    "pair": 3,
+    "arm": "parent409",
+    "readdir_ms": 917.988091,
+    "group_gets": 94.0,
+    "group_bytes": 23889012.0,
+    "group_validated_ms": 823.817569,
+    "group_backend_ms": 598.220952,
+    "group_auth_ms": 188.991871,
+    "group_decode_ms": 35.449154
+  },
+  {
+    "pair": 3,
+    "arm": "main",
+    "readdir_ms": 1601.3699,
+    "group_gets": 147.0,
+    "group_bytes": 34196023.0,
+    "group_validated_ms": 1462.674245,
+    "group_backend_ms": 1149.758938,
+    "group_auth_ms": 264.096131,
+    "group_decode_ms": 47.047628
+  }
+]

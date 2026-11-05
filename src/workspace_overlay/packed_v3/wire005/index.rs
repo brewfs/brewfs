@@ -506,6 +506,8 @@ pub struct V3IndexReader<B: ObjectBackend + Clone> {
     budget: Arc<V3MountBudget>,
     demand_pipeline: tokio::sync::Mutex<V3ReaderRuntime<B>>,
     group_metadata: super::read_cache::RetainedMetadata<V3Owned<Arc<super::super::GroupMeta>>>,
+    group_directories:
+        super::read_cache::RetainedMetadata<V3Owned<super::super::meta::directory::GroupDirectory>>,
     frame_directories: super::read_cache::RetainedMetadata<V3Owned<super::V3FrameDirectoryPage>>,
 }
 
@@ -664,6 +666,12 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 group_bytes.min(budget.capacity(V3BudgetPool::Metadata) / 4),
                 budget.clone(),
             ),
+            group_directories: super::read_cache::RetainedMetadata::with_parallel_fills(
+                (cache_bytes / 64)
+                    .min(4 << 20)
+                    .min(budget.capacity(V3BudgetPool::Metadata) / 16),
+                budget.clone(),
+            ),
             frame_directories: super::read_cache::RetainedMetadata::new(
                 (cache_bytes / 32)
                     .min(4 << 20)
@@ -708,6 +716,42 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 |value| value.owned_memory_bytes() as u64,
                 group.read_metadata_owned(&self.client, container, allocation_limit, &self.budget),
             )
+            .await
+    }
+
+    pub(super) async fn group_directory(
+        &self,
+        generation: crate::chunk::read_plan::ReadGeneration,
+        group: &super::V3GroupRef,
+        container: &V3ObjectRef,
+        allocation_limit: usize,
+    ) -> PackedResult<super::directory::OwnedGroupDirectory> {
+        use sha2::{Digest, Sha256};
+        self.ensure_open().await?;
+        group.validate_metadata_read(container, allocation_limit)?;
+        let _request = self.budget.admit(&[
+            (V3BudgetPool::Plans, 16 << 10),
+            (V3BudgetPool::Control, 1024),
+        ])?;
+        let mut identity = Sha256::new();
+        identity.update(group.encode_value()?);
+        identity.update(container.encode_value()?);
+        let key = identity.finalize().into();
+        self.group_directories
+            .read(generation, key, |value| value.owned_memory_bytes(), async {
+                // A preceding real read may already own authenticated contents.
+                // Project that value without another GET or payload decode.
+                if let Some(metadata) = self.group_metadata.cached(generation, &key)? {
+                    let mut permit = self.budget.admit(&[(V3BudgetPool::Metadata, 6 << 20)])?;
+                    let directory =
+                        super::super::meta::directory::GroupDirectory::from_metadata(&metadata);
+                    permit.shrink(V3BudgetPool::Metadata, directory.owned_memory_bytes())?;
+                    return Ok(Arc::new(V3Owned::new(directory, permit)));
+                }
+                group
+                    .read_directory_owned(&self.client, container, allocation_limit, &self.budget)
+                    .await
+            })
             .await
     }
 
@@ -1424,6 +1468,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         drop(runtime.coordinator.take());
         self.budget.invalidate_read_caches();
         self.group_metadata.clear();
+        self.group_directories.clear();
         self.frame_directories.clear();
         self.pages.invalidate_all();
         self.pages.run_pending_tasks().await;

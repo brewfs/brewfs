@@ -1995,7 +1995,7 @@ impl MetaStore for EtcdMetaStore {
             return Ok(Vec::new());
         }
         let entry = self
-            .etcd_get_json::<EtcdEntryInfo>(&Self::etcd_reverse_key(ino))
+            .etcd_get_json_serde_only::<EtcdEntryInfo>(&Self::etcd_reverse_key(ino))
             .await?
             .ok_or(MetaError::NotFound(ino))?;
         if entry.to_file_attr(ino).kind != FileType::Dir {

@@ -7,7 +7,9 @@ mod cold;
 pub(crate) use budget::V3Owned;
 pub use budget::{V3BudgetLimits, V3BudgetPool, V3MountBudget, V3OwnedBytes, V3OwnedPermit};
 mod container;
+mod directory;
 pub use cold::{V3ColdAttributes, V3Xattr};
+pub(crate) use directory::V3DirectoryNames;
 mod frame_directory;
 pub(crate) use container::V3DirectoryMetadata;
 pub use container::{

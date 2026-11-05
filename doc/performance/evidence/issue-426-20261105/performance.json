@@ -1,0 +1,3388 @@
+{
+  "primary": [
+    {
+      "scene": "409-E",
+      "metric": "readdir_ms",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 3,
+      "df": 2,
+      "base": [
+        912.234079,
+        885.433418,
+        934.498442
+      ],
+      "main": [
+        749.4459049999999,
+        772.683361,
+        834.005508
+      ],
+      "base_median": 912.234079,
+      "main_median": 772.683361,
+      "log_paired_delta_pct": -13.829887037978944,
+      "ci95_pct": [
+        -22.524991909464052,
+        -4.158921039280096
+      ],
+      "t_log": -6.020946873873009,
+      "p_log": 0.02649351286369612,
+      "mean_difference": -125.34372166666667,
+      "ci95_difference": [
+        -207.32495291265337,
+        -43.36249042067996
+      ],
+      "t_raw": -6.57846311905353,
+      "p_raw": 0.022336121595679114,
+      "regression": false,
+      "excludes_5pct_regression": true
+    }
+  ],
+  "preservation": [
+    {
+      "scene": "409-A",
+      "metric": "scan_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": false,
+      "n": 3,
+      "df": 2,
+      "base": [
+        4.879908813476563,
+        5.280929077148437,
+        5.0469902343749995
+      ],
+      "main": [
+        4.999756591796874,
+        4.9853515625,
+        5.108228515625
+      ],
+      "base_median": 5.0469902343749995,
+      "main_median": 4.999756591796874,
+      "log_paired_delta_pct": -0.7066521082247036,
+      "ci95_pct": [
+        -11.023643503936093,
+        10.80661564281139
+      ],
+      "t_log": -0.2781269404994564,
+      "p_log": 0.8070309134995813,
+      "mean_difference": -0.03816381835937518,
+      "ci95_difference": [
+        -0.5967089475906325,
+        0.5203813108718821
+      ],
+      "t_raw": -0.29398816434726566,
+      "p_raw": 0.7964701853805763,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-A",
+      "metric": "mount_scan_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": false,
+      "n": 3,
+      "df": 2,
+      "base": [
+        5.302540873257444,
+        5.720956176251173,
+        5.4716636950317765
+      ],
+      "main": [
+        5.465936916816979,
+        5.426849365467206,
+        5.555738034915179
+      ],
+      "base_median": 5.4716636950317765,
+      "main_median": 5.465936916816979,
+      "log_paired_delta_pct": -0.2390216060615157,
+      "ci95_pct": [
+        -10.631028394417799,
+        11.361388984521106
+      ],
+      "t_log": -0.0936022437183353,
+      "p_log": 0.9339577160428746,
+      "mean_difference": -0.01554547578034319,
+      "ci95_difference": [
+        -0.6228665784944317,
+        0.5917756269337454
+      ],
+      "t_raw": -0.11013413415926016,
+      "p_raw": 0.9223584897129036,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-A",
+      "metric": "prewarm_scan_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": false,
+      "n": 3,
+      "df": 2,
+      "base": [
+        5.055505615234375,
+        5.455269165039062,
+        5.226393676757812
+      ],
+      "main": [
+        5.097561523437499,
+        5.082374877929688,
+        5.215211547851562
+      ],
+      "base_median": 5.226393676757812,
+      "main_median": 5.097561523437499,
+      "log_paired_delta_pct": -2.132295890598396,
+      "ci95_pct": [
+        -12.040554184826547,
+        8.892085652421365
+      ],
+      "t_log": -0.8688112498849636,
+      "p_log": 0.476546873198444,
+      "mean_difference": -0.11400683593749979,
+      "ci95_difference": [
+        -0.6748699364153281,
+        0.4468562645403285
+      ],
+      "t_raw": -0.874601704867232,
+      "p_raw": 0.4740210120090861,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-B",
+      "metric": "scan_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 3,
+      "df": 2,
+      "base": [
+        5.633048217773437,
+        6.190982666015625,
+        5.06909130859375
+      ],
+      "main": [
+        5.662698120117188,
+        4.938768676757813,
+        4.831298950195313
+      ],
+      "base_median": 5.633048217773437,
+      "main_median": 4.938768676757813,
+      "log_paired_delta_pct": -8.569531494376116,
+      "ci95_pct": [
+        -32.31988563791829,
+        23.51531391385134
+      ],
+      "t_log": -1.2815764275051904,
+      "p_log": 0.3284962871493031,
+      "mean_difference": -0.48678548177083264,
+      "ci95_difference": [
+        -2.1666429779037735,
+        1.1930720143621083
+      ],
+      "t_raw": -1.2468134272365061,
+      "p_raw": 0.3386832232159629,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-B",
+      "metric": "mount_scan_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 3,
+      "df": 2,
+      "base": [
+        6.168472288904711,
+        6.7444577768072485,
+        5.568137192364782
+      ],
+      "main": [
+        6.1635390408393,
+        5.45303161469847,
+        5.343404770430178
+      ],
+      "base_median": 6.168472288904711,
+      "main_median": 5.45303161469847,
+      "log_paired_delta_pct": -8.134900083183913,
+      "ci95_pct": [
+        -30.519134545439506,
+        21.460729188034065
+      ],
+      "t_log": -1.3072510593317106,
+      "p_log": 0.3212089174171222,
+      "mean_difference": -0.5070306107029312,
+      "ci95_difference": [
+        -2.216462510239756,
+        1.202401288833894
+      ],
+      "t_raw": -1.2761997958974858,
+      "p_raw": 0.3300475477861349,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-C",
+      "metric": "verify_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 3,
+      "df": 2,
+      "base": [
+        4.062143805419922,
+        4.253249899291992,
+        4.179056553466797
+      ],
+      "main": [
+        4.045479184204102,
+        4.346791601928711,
+        4.093240626342773
+      ],
+      "base_median": 4.179056553466797,
+      "main_median": 4.093240626342773,
+      "log_paired_delta_pct": -0.10343818797270692,
+      "ci95_pct": [
+        -5.279515320543934,
+        5.3554898461009035
+      ],
+      "t_log": -0.08369309326956217,
+      "p_log": 0.9409234067900125,
+      "mean_difference": -0.0029796152343749918,
+      "ci95_difference": [
+        -0.22769111218290194,
+        0.22173188171415198
+      ],
+      "t_raw": -0.057052041379108534,
+      "p_raw": 0.9596909022031508,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-D",
+      "metric": "random10_ms_file",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 9,
+      "df": 8,
+      "base": [
+        3.737856485365854,
+        3.9087101000000004,
+        3.6720057560975614,
+        3.6216774024390244,
+        4.111213684146342,
+        3.6569567158536582,
+        3.9087758048780485,
+        3.3068966109756097,
+        3.7716579926829272
+      ],
+      "main": [
+        3.394283552439024,
+        3.964079756097561,
+        3.917956826829268,
+        3.5561294512195123,
+        3.633000626829268,
+        4.082607236585366,
+        3.6423064963414635,
+        3.636792528048781,
+        3.9571354536585366
+      ],
+      "base_median": 3.737856485365854,
+      "main_median": 3.6423064963414635,
+      "log_paired_delta_pct": 0.2575544839451873,
+      "ci95_pct": [
+        -6.079236075357109,
+        7.021885375273327
+      ],
+      "t_log": 0.09084848078903333,
+      "p_log": 0.9298465100424755,
+      "mean_difference": 0.009837930623306068,
+      "ci95_difference": [
+        -0.23461946829360336,
+        0.2542953295402155
+      ],
+      "t_raw": 0.0928027083574846,
+      "p_raw": 0.9283422623020552,
+      "regression": false,
+      "excludes_5pct_regression": false
+    },
+    {
+      "scene": "409-D",
+      "metric": "random10_p99",
+      "direction": "lower",
+      "unit": "ms",
+      "decision_metric": true,
+      "n": 9,
+      "df": 8,
+      "base": [
+        7.982281,
+        7.649274,
+        7.134944,
+        7.105911,
+        7.899769,
+        6.976929,
+        7.238277,
+        5.376482,
+        7.115847
+      ],
+      "main": [
+        7.564831,
+        8.749304,
+        8.092128,
+        6.295319,
+        6.571067,
+        7.425482,
+        6.566869,
+        6.33396,
+        6.619459
+      ],
+      "base_median": 7.134944,
+      "main_median": 6.619459,
+      "log_paired_delta_pct": -0.46776826364191587,
+      "ci95_pct": [
+        -9.779052262224127,
+        9.804490008390001
+      ],
+      "t_log": -0.1100801755357893,
+      "p_log": 0.9150571589712214,
+      "mean_difference": -0.029032777777777734,
+      "ci95_difference": [
+        -0.7235301869485263,
+        0.665464631392971
+      ],
+      "t_raw": -0.0964002237056585,
+      "p_raw": 0.9255739159666051,
+      "regression": false,
+      "excludes_5pct_regression": false
+    }
+  ],
+  "method": "paired log(main/parent), Student t two-sided 95% CI; raw paired t also recorded",
+  "runs": [
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r1-main",
+      "status": {
+        "scene": "409-E",
+        "pair": 1,
+        "arm": "main",
+        "cohort": "primary",
+        "started": 1793865212.1478686,
+        "ended": 1793865252.2909632,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865250.236251,
+            "end_unix": 1793865250.3185728,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 749.4459049999999,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 144709232.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 3902672.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1110130267.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1260078492.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 973334430.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "52388457646c9d499ef6f64d83788dd24fd27cf2b09dfe9a0fb547ff762ede5e",
+        "manifest.json": "b30dbc28c1f9eb68af13ba6d57a484bc5bf8203676e623b5fc3be2f7911f5ea1",
+        "phase-boundaries.tsv": "5a9613170268fc6753a3f0ceb098047dbbba9367e17ce0901a4b84608d3400c1",
+        "host-samples.jsonl": "2f13a54061c3459a4ea50eab0075bb80205df37751ef8560b71d7ac73caf373c",
+        "teardown.jsonl": "60a7e1db9caec1e30e70d85ab496f1a2ddd2f6037ad47cef14da32bf8983df93",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "a6b69704eb50b044ea3d0ecbf332c8ea37a8a3e0245d4dcee8a9a9218e89411a",
+        "results/readdir.json": "9afa294ddde043592b192d63f5b8e7ba1580d1d66cad7830b295f75bc2a09cfc",
+        "tools/content-validation.log": "733e0527e691c51a504bcd136984659d562c6cff4b79b31f658f3b6575ff3200",
+        "tools/readdir.log": "836723baa00955534a9fa72d7364771a6cd675ff2150c24a615c39a5a021bbea",
+        "diagnostics/stats-readdir-before.txt": "96af4cc75832c7f1d387249ec32e6f08d3fe3407f2e0fcfeaa4f2d8af1921d18",
+        "diagnostics/stats-readdir-after.txt": "df4f1ab795d6e15e99bea3d34faaa8a5a4355f25b38edd6f19c9a52de63252d8"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r1-parent409",
+      "status": {
+        "scene": "409-E",
+        "pair": 1,
+        "arm": "parent409",
+        "cohort": "primary",
+        "started": 1793865124.9822161,
+        "ended": 1793865209.3984363,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865207.347935,
+            "end_unix": 1793865207.4602838,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "75a3845959b0e67d301b8c5a3abd52662bbbdc638eeb0e2177cc94f47ad0fc78",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e7135c541a6a3ae3824205200123a55a9afad3d5"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 912.234079,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 189698106.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 34207200.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 592041108.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 817308383.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 533504293.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "558c0f63b59e112edce2a8b612bb9dc2a7937409e84c4344631cdb00e4bc7264",
+        "manifest.json": "122eb1d6b78d30ac617fceeeca56de6bbb50d1657efff7b88d112ce69bf9e2aa",
+        "phase-boundaries.tsv": "9292889933180b40ed90578c9048f635bd598bc37b56e159a36679194f2fe2f0",
+        "host-samples.jsonl": "d54916081a239b28ed65be5b2af0a32a2c636673e49cbf45df28d05154c5826b",
+        "teardown.jsonl": "df7759cbb272d0238c216844b9a7a2d26173280fea7bafdd19181de1bbbcc901",
+        "binary-integrity.json": "50d8e4ba26c0a63339afc72c482acbdc16a1a8a3c0f3ce9f0334c5149847a13d",
+        "results/content-validation.json": "169c75924bc4f4992ced44a977d2f0f95bc975f098b0db325c2b6f421e557550",
+        "results/readdir.json": "7f5edae0190ad14fbd52d6db943a5e3f99c0fd0c95ccbc2043e550ed323cf722",
+        "tools/content-validation.log": "8d529a43c3b2c6cd7bb7710bb43921c03546dc42860066eb13e7d6cc3207192f",
+        "tools/readdir.log": "df9da89b9c52e9e2cca51236cb2816e21d6fc896b4b2e49fa4918bb102fe27e0",
+        "diagnostics/stats-readdir-before.txt": "60c222790bc570ba9ff650a465d338b40b925f4e8e88fcbf59c6b0225784997b",
+        "diagnostics/stats-readdir-after.txt": "2998c1771b815ec7dd096634176bf8a1e47e5f87b643f440ae7ed4ea0936e777"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r2-main",
+      "status": {
+        "scene": "409-E",
+        "pair": 2,
+        "arm": "main",
+        "cohort": "primary",
+        "started": 1793865342.6160421,
+        "ended": 1793865384.1433816,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865382.154264,
+            "end_unix": 1793865382.233735,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 772.683361,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 149382913.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 3705310.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1127340260.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1281882803.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 992787787.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "3f9d28d519b035e72c60a39a25f17fce92ac2f5feb83c5a2e03a6729c47c43e7",
+        "manifest.json": "0b86b14a6ba48ed4bfa558f539e63b0008701d69ef72bff879a2a1d066f81f8c",
+        "phase-boundaries.tsv": "1b44c080e52cd8c10b580fe580913b915e8bb1aa39b4708469384d09d0582ba3",
+        "host-samples.jsonl": "f545c22c2367c6f9124f1512cc432bc3cbaf8ba052af3b1b63aeb0e4f5fe69eb",
+        "teardown.jsonl": "4311a7b62bb1f82df142ce6228c86bde600d463aa14c628355016f506ea4b6ed",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "70ddec898a112548efcc39af60800046f5abdd5587242f303832afdc0dbc2d04",
+        "results/readdir.json": "34cb5a9e7f0c2592044aa4d1899262dea123048e2ef647b36acd32398a14cee9",
+        "tools/content-validation.log": "df4672a16e23880121ae5c02bc83341a5bb7014276369e8c2523e52b77add366",
+        "tools/readdir.log": "dd89ab081ee26298a67baacdade15f21ee3a30077383829c41a9f07500ef266a",
+        "diagnostics/stats-readdir-before.txt": "d775808d7161f9d3394e30f8af36d0ed530a22e341116397f8cb61a69643bc91",
+        "diagnostics/stats-readdir-after.txt": "7582eff39acce82e4617154cca4c33904348e40bb81baf20ea9984066c5391a4"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r2-parent409",
+      "status": {
+        "scene": "409-E",
+        "pair": 2,
+        "arm": "parent409",
+        "cohort": "primary",
+        "started": 1793865255.0854228,
+        "ended": 1793865339.899277,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865337.965369,
+            "end_unix": 1793865338.0574791,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "75a3845959b0e67d301b8c5a3abd52662bbbdc638eeb0e2177cc94f47ad0fc78",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e7135c541a6a3ae3824205200123a55a9afad3d5"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 885.433418,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 183381082.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 34192024.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 568915607.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 787793371.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 515756016.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "301eb6e1e315c9844f63f42f7961ac60a1a11d0efc20fb7d3832ffc9fa653d94",
+        "manifest.json": "48aa1720e13eabca530946dfdd754853d756206b8cf5a66799ed547e038844cd",
+        "phase-boundaries.tsv": "f1c3d85646e2d907904cd05bdd2b70fb2eb5dcb5d2b52b52aaab7d9275e46d7d",
+        "host-samples.jsonl": "38e5914a7c04056a058d7de67b962347229b4e47a2a866b4ddc480d4f58cdaa3",
+        "teardown.jsonl": "003e4b814558a528c99c3aa853437c12c3c7416cde594f56a1348fe6b22a8239",
+        "binary-integrity.json": "50d8e4ba26c0a63339afc72c482acbdc16a1a8a3c0f3ce9f0334c5149847a13d",
+        "results/content-validation.json": "1e6f1b257e798c4793d69281d61a9eac176f76cbafc34ce4d11ff13089462b44",
+        "results/readdir.json": "39cbc1932404e5dcfc851fe5f4f12af8d45bde4649a149061dc85d85d350b38e",
+        "tools/content-validation.log": "2e5fef058a9acf346fbd7edd79e262341bccf7c8a2bb8f66d4cf330c968a2765",
+        "tools/readdir.log": "8ac694b6cd6d0e5955d518920fc1c376e8514fb5268a51e852179cbcaf6ea8ba",
+        "diagnostics/stats-readdir-before.txt": "1bdcccad0d5e83da12a5ef6208bcc17f8a23140c890a23314d3fafdef5843e31",
+        "diagnostics/stats-readdir-after.txt": "8a56ef585bb7b0853b95cac864529cf11267210e4045b4cd0ef601c7cd91e59a"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r3-main",
+      "status": {
+        "scene": "409-E",
+        "pair": 3,
+        "arm": "main",
+        "cohort": "primary",
+        "started": 1793865477.2508705,
+        "ended": 1793865519.3366542,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865517.337111,
+            "end_unix": 1793865517.4221492,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 834.005508,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 156442913.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 147.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 4411129.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1196118442.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1358135375.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 1051252218.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 147.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 34196023.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "dad106b4f1dd874876ca565d8291c97058c3247efcbcb6f06c39bdeb33d3f0f4",
+        "manifest.json": "0a10dac337beff27c74d6995f58224e068d7ac6373317397063c4e8ad306d3d0",
+        "phase-boundaries.tsv": "d3906310a5072b7d6154170752ccf7efb60684832ea323390ea48506884061c1",
+        "host-samples.jsonl": "57baa9b34757f953cc429bcb9ef38ac83a79c112f223f07c9e245e30fd4310a1",
+        "teardown.jsonl": "a69841b3ed36b20f570153a9d4bedfc163956d87049a9092ec34544baa653975",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "c0ec463e8913a32c83e0b25997dbd3fead4689fc8e91988b5ede6f98b284af82",
+        "results/readdir.json": "56563708671e8ebc8d1fa9f4601e5fb62d939fb237a8f2e4512758faea6d71b8",
+        "tools/content-validation.log": "1c80b1d42cc42dc8f0b804df9a2031a93d324d86f9114842b18fc61b8d0e9279",
+        "tools/readdir.log": "7422714820be94cff5ddeeee1059cf672c1b9ce097954bd7ee7b3bf7a5f76574",
+        "diagnostics/stats-readdir-before.txt": "709592d2810f783de7ec3964a0049c221134b100397702ad07f6732facbd2655",
+        "diagnostics/stats-readdir-after.txt": "539d4beba49809a438c3763d9f19e47e7ec2c9d1e89af8eebbbdeb29de4f75d9"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/primary-409-e-r3-parent409",
+      "status": {
+        "scene": "409-E",
+        "pair": 3,
+        "arm": "parent409",
+        "cohort": "primary",
+        "started": 1793865387.0005715,
+        "ended": 1793865474.471871,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865472.409569,
+            "end_unix": 1793865472.530376,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "75a3845959b0e67d301b8c5a3abd52662bbbdc638eeb0e2177cc94f47ad0fc78",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e7135c541a6a3ae3824205200123a55a9afad3d5"
+      },
+      "metrics": {
+        "readdir_ms": {
+          "value": 934.498442,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"authentication_wall\"}": 188509626.0,
+        "brewfs_object_read_work_nanoseconds_count{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 94.0,
+        "brewfs_object_read_work_nanoseconds_sum{engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\",work=\"decode_wall\"}": 35183404.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 606940823.0,
+        "brewfs_object_read_started_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"backend_body\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 831996005.0,
+        "brewfs_object_read_started_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"validated_fetch\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_count{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_terminal_latency_nanoseconds_sum{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 545858917.0,
+        "brewfs_object_read_started_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_successful_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_failed_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_cancelled_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_inflight{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 94.0,
+        "brewfs_object_read_requested_body_unknown_operations_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_requested_body_known_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_requested_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_successful_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 23889012.0,
+        "brewfs_object_read_received_failed_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_cancelled_body_bytes_total{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0,
+        "brewfs_object_read_received_inflight_body_bytes{layer=\"http_attempt\",engine=\"packed_v3\",phase=\"runtime\",kind=\"group_metadata\",origin=\"demand\"}": 0.0
+      },
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "30566cdccaf028da1a5a6e32a19e36db62f8d5b7f6e7a1e2675872d59eec70a5",
+        "manifest.json": "5eade35b2f24cf5008885fc234f16792b0dccb387b98e8a30f63ee2d882c49cc",
+        "phase-boundaries.tsv": "c93469b3f32cf128679e4f3d865074447dadd54361a0aa7f40383a098de238c9",
+        "host-samples.jsonl": "73403015bc475c3c791dedcece4f5881e7ac460a78e87f821c6acaad262c1dd0",
+        "teardown.jsonl": "2719f42f9032389eb85863fc41dc4f1dbeb9994b5a6725c99e856a4a33982835",
+        "binary-integrity.json": "50d8e4ba26c0a63339afc72c482acbdc16a1a8a3c0f3ce9f0334c5149847a13d",
+        "results/content-validation.json": "4c1204b7f7dc1a55da5861a55e4ab854a9c710c0acb807d34bea38228a3bc517",
+        "results/readdir.json": "ad8e48b45720f56a1383f2718c8321eec94d1b9642f3c02c82234893506b8bdb",
+        "tools/content-validation.log": "aafab0ddfdc008728e432f8145bdb3c9692ef14afa713c44f92c2a26b4ab17e5",
+        "tools/readdir.log": "a9e95701eecd0e8ee2cadac13783c8df9d9cf5cb7b2cd652bbe82f772f4db417",
+        "diagnostics/stats-readdir-before.txt": "bfed6dbe9c352c1b730cb58dc77265f415db94aee7556090f733ef6ee641dfda",
+        "diagnostics/stats-readdir-after.txt": "cba7221f23d8216eeb37580584ffb5e171c9223e5a5ee8824b45356bae34f184"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r1-main",
+      "status": {
+        "scene": "409-A",
+        "pair": 1,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793865608.6075373,
+        "ended": 1793865690.5425766,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865688.684772,
+            "end_unix": 1793865688.7837553,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 4.999756591796874,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.465936916816979,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.097561523437499,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "c92679e51db104264a428301c6ece02ecbc19cf09cffe81f88cd1399cb6f994f",
+        "manifest.json": "d2243ec00b7df1d01159840ac81dba9407777b887dafdaad8c894e1d01d564f1",
+        "phase-boundaries.tsv": "78f720775607a832bfa7e926bea72ba2cf684ef4b87f8729bc1c1424d5a9fb1a",
+        "host-samples.jsonl": "f9434195b3b613b9d94fd4299af11278046ac505d2114dd338d78d5a474cf722",
+        "teardown.jsonl": "04132454c834486531f60800c53034bd975aad3d3bea6bfa5ad6a86fc4e08b44",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "016a33ad857662a33c848ec7401d822002dbd308e493844e2287403e7e300423",
+        "tools/content-validation.log": "5b8d8a79e9119b1e45d39e587d59697cf9fbc5f41bd91188a676d37452108091",
+        "tools/packed-smallfiles.log": "c3074ed08cc3922fcd72b679ac2a3219f799cb93151b2677eb1c302acd255111",
+        "tools/packed-tree.log": "c6ba538540fb3b3921469901705e9c1ecaa205b6b09287de783cebf98f597e37"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r1-oldmain",
+      "status": {
+        "scene": "409-A",
+        "pair": 1,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793865525.1418602,
+        "ended": 1793865604.2377894,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865602.055881,
+            "end_unix": 1793865602.1468852,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 4.879908813476563,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.302540873257444,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.055505615234375,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "d62bd4a717eaf10ffc45267945a2d877c29b71806dafa46b7c8c34f22d791c6e",
+        "manifest.json": "d98f3e74ecf8a0372ebaba4362b6a96f93bc3e4348f1eede058a78811f7032bd",
+        "phase-boundaries.tsv": "9dc6284b4ad8a47464eb5310fc25a3b42e95a93c01baa1a99493c4edd9a6d575",
+        "host-samples.jsonl": "305b1a6ada38b79d86e2eab615418252ed5770cc990d8601fd4c400f996238a7",
+        "teardown.jsonl": "75e95a59b19818675aeab059e2bf6310daa37544dbabb90ef0ca7de5fca21f81",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "d398bfff815159bd45a0c4fb06d5d1a759058f311c10d284345ffa4030708d0d",
+        "tools/content-validation.log": "9534b6f0f9a1e544b6ac20ef5abdc00e764a86f1badbcd8d3c2d2c6455da15c6",
+        "tools/packed-smallfiles.log": "c8d4b55dad6390200c6921e94c44a1a51ca2dfe167e9c3990c2bbb45acba6857",
+        "tools/packed-tree.log": "94cdaaf2b14db3591987cabbebb8c4ed4caf0902cbc51f6910ae07fd0506afaf"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r2-main",
+      "status": {
+        "scene": "409-A",
+        "pair": 2,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793865782.6837945,
+        "ended": 1793865863.7179039,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865861.711494,
+            "end_unix": 1793865861.8094163,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 4.9853515625,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.426849365467206,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.082374877929688,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "cedea0c2be8f91bf96e4ce9b9f8bb31dd1d3db3eca80b40a693d0b163ca81bda",
+        "manifest.json": "bbca83fcc8d3ea1d1c20bf1082c4bd278b66ecccd1aebd420a8935fadb4248c4",
+        "phase-boundaries.tsv": "1c9616547bbe84356728b0dbd8232baaeae10c23865dd00f5d123df4674b6dd8",
+        "host-samples.jsonl": "4f44458e90e0601576b40e47d2ac4c71ce338bdd402a048c1f07e83ee214daae",
+        "teardown.jsonl": "1e101060dc021909c7cfcb1b3ceb68ffd05465ac6bdefa0d803fa1898360d758",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "74a63d105581d427548d6dbf323aa75a12bbd82f8aced4f0699e991d1e46c037",
+        "tools/content-validation.log": "56ae04d5bd2aead1521a3f39188b52bd552df365a09554e44a92af08dcea3ff9",
+        "tools/packed-smallfiles.log": "c076d55351a88cf8892e2caa27f57bb2c8e3f6bc218f4f1a2c68711d94ff4a9e",
+        "tools/packed-tree.log": "6b2afe47cf479cd462900257db73a2e8485a93c02b1c69fcdeff9d5d584a67fc"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r2-oldmain",
+      "status": {
+        "scene": "409-A",
+        "pair": 2,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793865694.8308403,
+        "ended": 1793865778.4469538,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865776.426004,
+            "end_unix": 1793865776.52958,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.280929077148437,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.720956176251173,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.455269165039062,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "9df22232f0df8fd58340c6dd5e390cb46927d0743a430fe94fbecb721a134c20",
+        "manifest.json": "c397653f9bcb22e4e383ce4952958e293f776c501d60f95ff4bc5839e999dd55",
+        "phase-boundaries.tsv": "866a9858db9323bf256bcbb610231e24bdee9ce8ba78c89734fc8e9a59cdffdb",
+        "host-samples.jsonl": "482353c45975bb284f96db8074a91ef6d4420358cbcc40abf9472f6abf57df29",
+        "teardown.jsonl": "8f6d20162868249a46d82a9fbe06339112552c5aed60bcae775c142ed4b147cd",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "0b49c9aac86ea93c7242a66a76730588d7a5bf13050cedee07f45d612db5a9dc",
+        "tools/content-validation.log": "09a3a50e2c4526def3cce94911849fea7a02fec9555bebbffeab5fc8241e78f4",
+        "tools/packed-smallfiles.log": "6c8fdffa265addc6df3475b85532953013973c1fac4c64dac3f5996d0b477a64",
+        "tools/packed-tree.log": "caef7f22fcde82920424938b9df6b964e30000c46883fd61a5d4e0b220f0f968"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r3-main",
+      "status": {
+        "scene": "409-A",
+        "pair": 3,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793865954.4994352,
+        "ended": 1793866037.5144117,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866035.577259,
+            "end_unix": 1793866035.6832511,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.108228515625,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.555738034915179,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.215211547851562,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "0b713d2943dbaf322f6b9d513cc2f232afa79f47c6bbb31ed5b6e9cb4ce1ff6f",
+        "manifest.json": "3bbe89de1fb3215858103d4a0f7136055b5ec53089f62b12dc2d3144f9e19495",
+        "phase-boundaries.tsv": "4fbaff0aa961c8148c631cf4d5a5ceb89e7772b15eec949babe1c906f2935a4f",
+        "host-samples.jsonl": "d0bc4682d164c9ee787f413399be8cce954171fef4e517f19142979694c9acba",
+        "teardown.jsonl": "02806e44a6af3662828fd903cf32069f82b0704fda9e7637e7ec84337477b648",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "f9b4976010f2236d2099c79d6e4608ea1057505a77d7d2dbbbb10fa5679beb0d",
+        "tools/content-validation.log": "c70169e63adacf1547bfc2866854503c1658f4967c11a0c7c67994a4c228c04f",
+        "tools/packed-smallfiles.log": "9210407e4cde01106a33726c19c40ba50eab8a519bb1a917176467711374682e",
+        "tools/packed-tree.log": "5e02a9344784aa32621a6e8038800399be54ad10d591afac19ba0695f29734b2"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-a-r3-oldmain",
+      "status": {
+        "scene": "409-A",
+        "pair": 3,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793865868.1123762,
+        "ended": 1793865950.3541377,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793865948.51519,
+            "end_unix": 1793865948.6099627,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.0469902343749995,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.4716636950317765,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "prewarm_scan_ms_file": {
+          "value": 5.226393676757812,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "eb130f1b3db5ac09ad57b3824a9efca284b5ff6b7b23123892efb9a289f9868e",
+        "manifest.json": "49427d048bb7420df44c7087a3ef06c66f29c2128f46177bafb152c3475de00f",
+        "phase-boundaries.tsv": "09d348c13003869e4a750fb897f139e4a1d11e70daf4112ef48d8e3db5795e43",
+        "host-samples.jsonl": "8d2acd05601c2c3fbfc430a2115b15bcf02ec432b74eed61001c112ad599b14d",
+        "teardown.jsonl": "7066c16a7f3ae3de319b765a66190728bb6bea2af388ff055176e06b631d8ceb",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "242fe08af184199c3c123aa3c3619770c8a93b0c8f626dc39d13a798baa4161f",
+        "tools/content-validation.log": "656cd365f900f67a44a077a0310f3544964faf370331a1d797073c8917fbd48f",
+        "tools/packed-smallfiles.log": "cdb4ad6ed76b6c4bc7ff1d9c0dfbd2082a4b6116bc3337b6169faf0e378b28d7",
+        "tools/packed-tree.log": "e01573a82d33f807f85e3e4b571f73bcafc8c1aac7569e86e49e970288ae0e37"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r1-main",
+      "status": {
+        "scene": "409-B",
+        "pair": 1,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866140.1662107,
+        "ended": 1793866235.0773284,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "59",
+            "start_unix": 1793866147.025255,
+            "end_unix": 1793866147.1064212,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "105",
+            "start_unix": 1793866232.899819,
+            "end_unix": 1793866233.0112047,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.662698120117188,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 6.1635390408393,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "40138a7606d656dfe66360568121295178197cb292407a70203f36d6dd86f445",
+        "manifest.json": "c253d87ccd66f28bdea51138f40cd5f525b3b98462b6472f60856569065238a1",
+        "phase-boundaries.tsv": "20ae1bd37c944ef5479fbf7888c435db34d7fab7b391f9bfb9bc6b93429d66a5",
+        "host-samples.jsonl": "85dc837ea9504199ec9ff601325593e080d8d7511b2df5b9dfab6448b3004ea0",
+        "teardown.jsonl": "5c442d5a3037067d097ea02aae3ef11886726591b8ce414f713eefddc1f54c6b",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "23554a8dfa97f1d357b7b96b2b6f0904b29eea456f14f31bb4362f961aec2fe3",
+        "tools/content-validation.log": "15d49ca4aa4118186bbea3a4e8025e6f8bc462a3df3d78e31346f084fb445e76",
+        "tools/packed-smallfiles.log": "f9a9d4ea8ccbaf1065fe607ddb885e483aa1b53ad78972e653610819a7f2002c"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r1-oldmain",
+      "status": {
+        "scene": "409-B",
+        "pair": 1,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866041.8192286,
+        "ended": 1793866135.8429737,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866048.822246,
+            "end_unix": 1793866048.8919826,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "104",
+            "start_unix": 1793866133.854413,
+            "end_unix": 1793866133.9580011,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.633048217773437,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 6.168472288904711,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "e958fbae49b9c7e59c5dc21313ad9fb61853f8e920618f82b0524599fbc4aebc",
+        "manifest.json": "fd6497b8f1d1ad89132ba3c3423ec6c30da811efa7b7d6dcd7e94b71576fe311",
+        "phase-boundaries.tsv": "0cbac441a445171221b94904addc7bb16cb4392c50811e3af34f2f3f0839e99d",
+        "host-samples.jsonl": "a34e140950675677da69ab2aeefa6eeb535a32a47038b1c9dfcfa88dda561df2",
+        "teardown.jsonl": "5b95442113525710cf926d498ff5056001346d81dd03ac1a57f285063397acb4",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "8f8e14ed120eff52dd6f3bee2b2b7466ad9a9f629fd807fcc3cd63f49b603ac4",
+        "tools/content-validation.log": "4be81d481cd2819ae61e9cfbb0b9045b784ce52ba4e5cab27123c27e7bf340df",
+        "tools/packed-smallfiles.log": "bd158cfaae303d33a5aa9e457aa538133d14110a0f30473f4af7322902b19c0b"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r2-main",
+      "status": {
+        "scene": "409-B",
+        "pair": 2,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866339.4057984,
+        "ended": 1793866422.8676293,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866346.023716,
+            "end_unix": 1793866346.099765,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "104",
+            "start_unix": 1793866421.052841,
+            "end_unix": 1793866421.1498392,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 4.938768676757813,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.45303161469847,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "db7b699379e505abfae71995169099f3745fd755d67e0c3fe36d15bc3b69c3b5",
+        "manifest.json": "81f5d1eb3c6b1251372f4c0b3c4990d742a9b0437aed3e4cb80f220bd76a8e66",
+        "phase-boundaries.tsv": "19831b80c8c452a577adbfe922518e36f139ed3fd7e8156b0f01576e2a928bcc",
+        "host-samples.jsonl": "9dafeedbf535808098c30b4f869662fd86231e25c1dba86f7d6e91b8de3815f6",
+        "teardown.jsonl": "c105b2142402eedfbd5d6996ec79a4c17df8f644313206ad64327c306b323027",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "0bfa41bf9bfbf6295f02b2f2a615e60c6a898a46703701e6fe3efa45b8ec1f2e",
+        "tools/content-validation.log": "339aaa7ed753a81aadfca0e48fd802ea57a3699ae51042feb9d72091bb5b9421",
+        "tools/packed-smallfiles.log": "5d656d213a361a7396a8fa471250571361e7b2acdb8650c4ac15a8d99ef24814"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r2-oldmain",
+      "status": {
+        "scene": "409-B",
+        "pair": 2,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866239.529062,
+        "ended": 1793866335.0486739,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866246.051925,
+            "end_unix": 1793866246.1240866,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "104",
+            "start_unix": 1793866332.943702,
+            "end_unix": 1793866333.053674,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 6.190982666015625,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 6.7444577768072485,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "5042eb02ee5de607d74cd80ac55ce8477fa5893213e14ce8ec6e32645fa557c4",
+        "manifest.json": "8aad6d6609f1cd863f7040ec9dad77ad7f1fbfe9a5b347efe27de226b5c7c16f",
+        "phase-boundaries.tsv": "4913293228443310a0c61d1189204227208a9384f1d161be35181eac27184ba4",
+        "host-samples.jsonl": "d319ccf6309bf501f6a9ee0d035bb8b683353d46b649f58545d9d4fce77c75b8",
+        "teardown.jsonl": "55f886e1a2316d7dfa95d57e8def31f9846e24a1fd8a61a7b5aee4f5a75724ab",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "ffffb2f65c8b780f353bf89b0442c6df377bf7c5fbfc0ff0d6de33f50edc3174",
+        "tools/content-validation.log": "1a2d470828524db272576b5099bdc0c3e63e1d268f1b76c4a0300b2f9509ceb7",
+        "tools/packed-smallfiles.log": "be9e2e4ab2372173bd3b363d181b74ab8977f25e07deb646e0cad4a3761fae02"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r3-main",
+      "status": {
+        "scene": "409-B",
+        "pair": 3,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866514.382391,
+        "ended": 1793866597.0970712,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866521.089191,
+            "end_unix": 1793866521.1585782,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "104",
+            "start_unix": 1793866595.114575,
+            "end_unix": 1793866595.202577,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 4.831298950195313,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.343404770430178,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "86b4218f3c43c288f045c7c6f23fe12fdad4d27fd0eabbebb58601732a55e7dc",
+        "manifest.json": "3ec3386d075a684697ef8d9ba1183e7aa1d83d0b5d647414f8df8f368d859489",
+        "phase-boundaries.tsv": "7daf3f8cd26895f740d05ef0a84b1722889de0ba3b51677a62e6b518c7d168bc",
+        "host-samples.jsonl": "14bc0b701fe6fa02879b358471919ff804a84c1fd3ec367969d60abe5616b57b",
+        "teardown.jsonl": "ff4e3edbd36c0194bc532a05e38c53e323f1a50eb865eac97f77d257e3671541",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "4f73b051f189b6231c9fd63354494b539498f07f126c8757e52eae3253bd2864",
+        "tools/content-validation.log": "b41d0e5ec53262b5d5c8eade6e3c07c38f7184c475d7410ebb8c95cf8f077afe",
+        "tools/packed-smallfiles.log": "149dce5ad4df63d988867464bb8b406967a78d5b14a3573fae5b54e5129aaaf2"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-b-r3-oldmain",
+      "status": {
+        "scene": "409-B",
+        "pair": 3,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866426.9972196,
+        "ended": 1793866510.1628473,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866433.434859,
+            "end_unix": 1793866433.4878159,
+            "unmount_status": 0,
+            "process_still_live": false
+          },
+          {
+            "pid": "104",
+            "start_unix": 1793866508.278777,
+            "end_unix": 1793866508.3552315,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "scan_ms_file": {
+          "value": 5.06909130859375,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "mount_scan_ms_file": {
+          "value": 5.568137192364782,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "074b73026bc5b93baa25f920e3871c33f0a6f7409d4caf4a17b3c534298da4ce",
+        "manifest.json": "b250660975644188d6b4028b9eda2170deefec4024bb0699d45cc7c59ef16889",
+        "phase-boundaries.tsv": "73d654a2b9028cb6a78c8d3af377aff5d47ac3b056285f8be1ca615aab0628fc",
+        "host-samples.jsonl": "705acf193425a6b60db82717733f7eedfe3411050e7fdf91b8174e1957f93dd8",
+        "teardown.jsonl": "6a6f49d26d5c472ef40c28d237cbe868e403e535f381cb06851e7767a586525a",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "41fa3d8d4eca7de5f51cb41d15a2f2e8750d7cf739c24b8edc7b1324a1ec26a1",
+        "tools/content-validation.log": "ac6a930cee08f3dfa77b517833a3043b7a43f511108b5c765d19b881ca841e18",
+        "tools/packed-smallfiles.log": "474feccdea66cf378f334407fceb437f56268759e351f10cf6c09e45ff656401"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r1-main",
+      "status": {
+        "scene": "409-C",
+        "pair": 1,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866671.9706502,
+        "ended": 1793866713.487491,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866711.552904,
+            "end_unix": 1793866711.6307678,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.045479184204102,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "16c81091c85de12989ae2264e99081e77428bb5151a0c3180496fde5a36c44a2",
+        "manifest.json": "d94ab4fc9bb5b2f3a1c1b944dcc0e6c63b23a616128a8f72f08a569c291cb02b",
+        "phase-boundaries.tsv": "e0fbced51460bad5f5847c82651e07cd1fe351b645dcd104d6ef7bd7aaefdf0d",
+        "host-samples.jsonl": "50c2eeaf22886febe4f0ee1aceedb1c11a55746df523fa0544318950023821c3",
+        "teardown.jsonl": "a9c455c082ad9378e99bfde78cf3eabe17d8f1bb82e9a8b06aafdeb458bdf003",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/verify.json": "bba522e4516d699e28b9d7b75131a7341fa8af5877776476bf67d8d0e852d8a3",
+        "tools/verify.log": "5506e27862c7f37ae77f50ddd0ae6972661ed4d06391fb25b8633402be1e6a1a"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r1-oldmain",
+      "status": {
+        "scene": "409-C",
+        "pair": 1,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866614.286998,
+        "ended": 1793866655.5353029,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866653.695686,
+            "end_unix": 1793866653.7923305,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.062143805419922,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "1c0e1ea7e137368f8eafbb9e11d3ad44f4aaf05f5b2a8b86b997a1dfd6689b3c",
+        "manifest.json": "4cd32064f28467348d43042086a8121ab0d688b0e58ace41b62be94a9aaa7b04",
+        "phase-boundaries.tsv": "8e3788f16d62549e168174e6c23d9c2fa9d737d439e44beaa030dd874ce06d7c",
+        "host-samples.jsonl": "52cc104004a47508937f00605d8a9a48268f8725f111b760d7084b7160e69e8e",
+        "teardown.jsonl": "4502801f675def224077768a7b54a4c21d78bd2cdfc159a189f5c9d3a909daa6",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/verify.json": "0c640c955c957b45f700caf6f67b759e0bcb3c8b47c156026f5e1e85479b5aca",
+        "tools/verify.log": "c3c53d1f17a339421fd1c0b8aaf50ea6781143cccc18a40b529a3f56973264e8"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r2-main",
+      "status": {
+        "scene": "409-C",
+        "pair": 2,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866788.8422437,
+        "ended": 1793866832.5878453,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866830.7642,
+            "end_unix": 1793866830.8698184,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.346791601928711,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "3d460112b2426f50c3cc062b010df4f629ab5ff3c8fa41d4ef216d427c71c574",
+        "manifest.json": "0bb3e9273258c3cc67c7236428ccf93d2ffca07296ea8eea57be52b04e97e168",
+        "phase-boundaries.tsv": "c408b50a14c04c704f20163344364a557e40eef145479fafaa7242469ff5dc11",
+        "host-samples.jsonl": "329e917d52a913d799200c4e7e0281d3c281138b8a0367372a36f89562beb5b1",
+        "teardown.jsonl": "ea979ad8a791fb40b057946098ecd775e9d7ddf486ded89f91d4c81c1d501388",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/verify.json": "4ad9cf7928380906ed6883678f530e30f318af854fef8acb7c74c95bf0f093cb",
+        "tools/verify.log": "67032219e8948d0ba308ff89844993d425ec786b5b9a62c886eace7a3e6cd4c4"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r2-oldmain",
+      "status": {
+        "scene": "409-C",
+        "pair": 2,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866729.637585,
+        "ended": 1793866772.70248,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866770.798136,
+            "end_unix": 1793866770.9000514,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.253249899291992,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "c948d31e919313c6c7c98e6be06e8627de415eacf5790d2764bcf16a5477cbd2",
+        "manifest.json": "0e01d8a160d807b59c7cecb58b5653fb46b609c8b27fe8bbe721724252a2bf12",
+        "phase-boundaries.tsv": "4a875d6bb290aa4ea58d267b9fee41164cc4ebee3800afd941a3be6510f23973",
+        "host-samples.jsonl": "d5a2db6c263a9c670d7356836a41d22dc6a7ed689490c46d8176c4b7b00288ac",
+        "teardown.jsonl": "a07ab1e1336b1e8a299b4db2342a8678b005b5e6fe126a748210011ac5ddd617",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/verify.json": "d0b8b54577cc03808ee870a1d40bd9d04471620cbd5751e0a204a236094ef1dc",
+        "tools/verify.log": "90d834265ceb2be608eca022350a78f75adfaeb4dc36cde5bb7ec7457b8074b9"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r3-main",
+      "status": {
+        "scene": "409-C",
+        "pair": 3,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793866907.4214406,
+        "ended": 1793866949.0435307,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866947.170849,
+            "end_unix": 1793866947.2566183,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.093240626342773,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "c6c3a1c6f989a34591dead32a0856c0f16c04935acb8f6f34129b127ef3d3157",
+        "manifest.json": "0a649cc5da2f2ec2c1a062302ab46114f9b503d2358b444cea6a24f1ae52885b",
+        "phase-boundaries.tsv": "60b5316ef2b9db9eaabd8a89db65654ffd214becdd52b313e0398af34c9b8092",
+        "host-samples.jsonl": "b209746a5d0ccf78df44571d291f85be6b59ea8213b1da375a6a391c1287b1d7",
+        "teardown.jsonl": "1964d01a318cb390ac2c9f4a970a8e5caedb4001e72c267ee162750c7df105b2",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/verify.json": "576bddda16acd522e2bc5647279a3e50b6b085149ed67aebe12119b00517a374",
+        "tools/verify.log": "e3bda32221ea501c2247a5bba1e2c9f3a1e992708e32d514408e06fd062ea4ea"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-c-r3-oldmain",
+      "status": {
+        "scene": "409-C",
+        "pair": 3,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866849.0274787,
+        "ended": 1793866891.2942667,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793866889.305438,
+            "end_unix": 1793866889.383741,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "verify_ms_file": {
+          "value": 4.179056553466797,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "d0a1eabb26b5d7fa42ac7a7216f8f4fa19017cff6e90282692336aafab81846d",
+        "manifest.json": "28d8312892d5c723b9f423ceb6ea06117a08f71106689e77a6cb8eb47c8f7cb4",
+        "phase-boundaries.tsv": "67b79a3b6f05760245621752ead3ca222674fa56de42a8569a84d2fe0e8f86c3",
+        "host-samples.jsonl": "1a968ba6958b45495e234d42a36c0ac694ac5001105540b6fcfde1de61b996ad",
+        "teardown.jsonl": "02b9e56f3721e79ab5b826eb4c6a67cac202028f0543d5f28be81af60938337a",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/verify.json": "cdcccc18523ced8935df22c35a1bdcdf63fc761f4ad29efadeee83209e89222b",
+        "tools/verify.log": "5c4dcece21e0fa5b70b75e2756b385a7a158a5cf07cdbe7722c800c2a3c25edb"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r1-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 1,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793867036.5937994,
+        "ended": 1793867115.5937014,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867113.55886,
+            "end_unix": 1793867113.6591587,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.394283552439024,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.564831,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "1cc4273519e924b921f7814e8b819033388a8f950faabecd886f1c1492623f30",
+        "manifest.json": "47744183a21d4b3deaf98304eef8f1b6e77fa126431e9abf0f7c1550b38a11a0",
+        "phase-boundaries.tsv": "08858822d5f5d533f2b46adbe48f87c5a3248c41af75bca53ec8f3d3f0ec41d8",
+        "host-samples.jsonl": "18567a34107eea2d66892798038b049e5851ed80fefee1365670d1d4ca8a8e2a",
+        "teardown.jsonl": "11f983a44da69b16c821bd2fc1609bba3ab59a3ead15c37611ed9d34e4045feb",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "1f221da4617f3d92235e802f9915ee6d5536009be88600b6119ffd959bc2b32d",
+        "results/random10.json": "39d8bc070477f9ca3d3ca32b0e05937c107fb197dca51b8dba4762082acf81ac",
+        "tools/content-validation.log": "c2838603e7af85ac78829adb4100e3576ea51e50b45c3bf8d2adc96ceb5a0945",
+        "tools/packed-smallfiles.log": "04b615aadb55639d20f67b32af5841d26d81725e4841dad7703757d594de8e24",
+        "tools/random10.log": "6179759e1fb5ac19f1c3252d32a90fb3190d7c7c628528023881b6454679bb19"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r1-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 1,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793866952.699431,
+        "ended": 1793867032.5541673,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867030.73819,
+            "end_unix": 1793867030.8412216,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.737856485365854,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.982281,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "deabedf2a701a3bef957cb29fb10eb15e676353df2fc49ce123163e2a6cd67bf",
+        "manifest.json": "c94626a9c5df1d621387f5c34f5b3d7122ec0a4d02cc63bc4b4132bc6d73152d",
+        "phase-boundaries.tsv": "e21c5064927bacd41b361ab411f928df71fa1fa778b9590004e82ef9a9722f1c",
+        "host-samples.jsonl": "4bdf524656862bf21edecc861361c6fb034e0eaca1eb0ec7c8c479636dd07c35",
+        "teardown.jsonl": "b83fdf2b2b4080a5309b89b801e3111bc2513a930ef8483027fe2e231c4be55e",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "ed0eebea7908950c9b57176b66f0336ebabdce4b36a01e3c8759a52505e3df6e",
+        "results/random10.json": "376572a668f4a4a6954b60165c84f0f2719e26bad8f73e6ff158410c946c9e96",
+        "tools/content-validation.log": "edb92fa208a87808644f66427fa0c704c339648cbacaa93aacd58302bb6f8fed",
+        "tools/packed-smallfiles.log": "da1fba44006d76415f325cadce63476ece9cb248ddb4ed1abe391bacb4edd0bc",
+        "tools/random10.log": "e4ae3c156d361a165b72b7abb86697c7556181a7d671089c212a68c983945928"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r2-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 2,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793867205.8797312,
+        "ended": 1793867285.4502,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867283.510899,
+            "end_unix": 1793867283.6016226,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.964079756097561,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 8.749304,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "dbc2fc44568b1a6c05ab3b42cf51fcf481f9a373648fd4276adabd88e9178b76",
+        "manifest.json": "9e5be60b7e12511d0b71067af957889dc515e0f7f0bf54bb42985a3ab8720644",
+        "phase-boundaries.tsv": "905001887e2da777dd0728ce5f138cc278d70f97354c627bdbdc2d38de28022e",
+        "host-samples.jsonl": "bca7c827561dde0e13c27353eff311c839237dd0a2f6a3ec593cfd534a2fbce0",
+        "teardown.jsonl": "3be8222be605a04a1955806c2e4d7ca1b9f47f6d6c35c5d44ca0e89a7e4b6ff9",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "4ebbe2028407558976cb3840cc6e9b613579241df671a53e2d3008ac1c3c2dcd",
+        "results/random10.json": "dc7efb2bdf533f0704512ff6b9fbd2a05b14db0d42c5569dd0f75ae2030b0955",
+        "tools/content-validation.log": "9eb4ed6cc1d26a8f19fb298404c1868caa2886b0965e6b86274994d29cdc5f1b",
+        "tools/packed-smallfiles.log": "e3d0e609e2ccf649155cf940ccb157e847828caf6dd5422653fb5561cbb04624",
+        "tools/random10.log": "6f9423ed739771aeffc41c9880741b6307f2bf9e4de6feb644f5cdedf01fe661"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r2-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 2,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793867119.8420362,
+        "ended": 1793867201.5268342,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867199.66439,
+            "end_unix": 1793867199.762789,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.9087101000000004,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.649274,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "8adb153bf85390eb5e4b9577c13cdc44ce4897d6bfd411f0b65e61d77f35026c",
+        "manifest.json": "53a27dd37236ad8de9fda3ab911fec6d22b035f9c362b1908be1fbb48fc2918b",
+        "phase-boundaries.tsv": "df5ea6ac608d331b4ea0552de91ab293c1dbb3cff437ef107519cd476aa7cb8b",
+        "host-samples.jsonl": "be473e7205f95ae288aff3a8951aa5ddf394233a795a9fab00b4453602988ce6",
+        "teardown.jsonl": "74b3802ba55f61ff01e53daaf177d83ee5c869375fa8712f2dfb23f219dc0e20",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "05afa0fd005b98a2d9a5d70739c105ec309ded65b389f352230249ea57577a83",
+        "results/random10.json": "48641a8ae72f338c1eb88fbc3afde9868eb002020cb6f5ef5d853a92f95849b5",
+        "tools/content-validation.log": "372a33a115e24b2520b331c5966ec60decf7740d7f3abdb59638e4a0e10f154b",
+        "tools/packed-smallfiles.log": "057187fac3ea7a85c3918c70f72527ecbb8b15d3381896a06ed95d81fecae100",
+        "tools/random10.log": "ce61c10d6b06c6ad63cf5879bc3cddf79541ed4d87ae6269a80a54a32e835f10"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r3-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 3,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793867376.3907144,
+        "ended": 1793867458.6598785,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867456.582697,
+            "end_unix": 1793867456.6556442,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.917956826829268,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 8.092128,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "444994c48e9dd3b7d092f8283e54cd347a4e91094e3a5c22df8a3785e08253a7",
+        "manifest.json": "2f0865353994ac8afd8448cd66c888ea128a45d98ec8864d5c21d3fdaee2c80b",
+        "phase-boundaries.tsv": "e6a1efda6a7fd29fb09c4c70358eb237315948588783ea26b219a84219031d07",
+        "host-samples.jsonl": "ba10b7979ba3edbcd08f3132da7c10959b691c5126c73e87443fc3cfc08a2066",
+        "teardown.jsonl": "86ee610d6fdf09b5c8e404699ae841cf7585790693069383559b4acda9ebb473",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "754dc6fd686ad69d74bdcab4901856422eae29cac1575ac7f4acf74f8ddc1967",
+        "results/random10.json": "de19f5324ed37fc09f242aebb350320c4c26543657061a54d2113b7262a37560",
+        "tools/content-validation.log": "5037dc0cb7f8eb101531c3c841dfd5661b11b6de6d65c5d71f568179a7be0959",
+        "tools/packed-smallfiles.log": "18d54bbcd9b0b150089f26c49e2b157e0e7dcf3a9214c7586fc64b45ecad349b",
+        "tools/random10.log": "b70848d205b620f2425489afad70177e234d59b4d9356a1586692b29a4d8a1e5"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r3-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 3,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793867289.5685525,
+        "ended": 1793867372.0303147,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867370.048842,
+            "end_unix": 1793867370.154921,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.6720057560975614,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.134944,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "52fcc5dabe6aebb29dcf178376f0c3a909b421abf4282893e58ec840405f12c3",
+        "manifest.json": "35b96a40e6aa1c6c45485e7fcb6c99685c7ce7dd5b945af070ba5886e10ed3fc",
+        "phase-boundaries.tsv": "161042ee26a2477fe2602a5b731b6daa713a77034a7e54ca70173874e7f4f6ae",
+        "host-samples.jsonl": "9ae789c78fad07b42c3b6605861fff8be4537b0f23a2fde2be256eefb5746473",
+        "teardown.jsonl": "ceaafd7ca46ef5c730c5e248c4ebaf2cdac7fdf03771bd878d4278e5abd67935",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "cbca2554d7cc4d001ea91ce108ca8c9a0fc0055254dc7367bd870e8d238ca98a",
+        "results/random10.json": "0824714c064c55733341392d8907d688e589345f534245b2f6a10ebcb8939871",
+        "tools/content-validation.log": "9425d3a0f22681782a8c3c36c975aca911fabf6cd5a54acbbf87b2530b3aeae4",
+        "tools/packed-smallfiles.log": "99660891e618314b775c8a6677534d0ea63a4379e0f9b56f5e6bb0500caf7711",
+        "tools/random10.log": "adf6d1bff9aca29866a25b5bd02e531b819cfa9cb4cd5e731305b7a2416f8a6d"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r4-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 4,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793867825.2382333,
+        "ended": 1793867909.1274462,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867907.179515,
+            "end_unix": 1793867907.2601922,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.5561294512195123,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.295319,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "251d900800124b6199d652fb3294cb587d04355e702081adfa481f53fc7c2efa",
+        "manifest.json": "3b20e8e6e3195291185d21e788f0f48706a9a378851a5a171311de795c6919c9",
+        "phase-boundaries.tsv": "bb64afc6b120176a087b2b0de371f1f8a7e2ee9141710a58b55f7e441deefe72",
+        "host-samples.jsonl": "92cc0827185513085748ac789f607472dcc281fb686678768dc0eea1ee185bde",
+        "teardown.jsonl": "7d3099e48ee17a7396203968ddf2316218de1948e913577750a793fbad1f7120",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "f1d8eab672967bea23329815aeb69f50810cab22fad187f77cc80db6c1c24701",
+        "results/random10.json": "c5975b30ba2191dd44699c9cad336e2f408b4ec499656682660f171971138b4c",
+        "tools/content-validation.log": "7837ea4ddc63c5cfb73c301c883d45e269ddbe12a3ed26720a37c69280446859",
+        "tools/packed-smallfiles.log": "6041f4946d101cd707c58481da9e8c0837d78f48f5141535690d3e33e3bcb654",
+        "tools/random10.log": "00be7a001d0d4521947927fda71360aa8b1a383ee4713c83fe6cf8606ffc2ac8"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r4-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 4,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793867741.6887498,
+        "ended": 1793867820.8954604,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "59",
+            "start_unix": 1793867819.062737,
+            "end_unix": 1793867819.1542828,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.6216774024390244,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.105911,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "a0d7674e9df232068cc1eeaf3dbfa9b4c4fc556ba403ac8e4c4db12979bb53b7",
+        "manifest.json": "7cd7d159875dca0ae5e85fadf7fe35b330badf5dc6d45152f99bde485693b668",
+        "phase-boundaries.tsv": "ce2bcfbdb2590e64e9541400829021cc4422a123abb33921ca6f9b207c03c9cc",
+        "host-samples.jsonl": "d31e0962a204bdecc866efeb3a50e1ab3b67e19fd513e69a256ff0de753418f6",
+        "teardown.jsonl": "c747f4ef95c8f24bf3ca89a9215fb50c4fe3400d3d2f87f9f38fab4d93773130",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "fc3e71c9a35279fbf194f86c240a1799b5e26db6b132d857db5fda4a44352cca",
+        "results/random10.json": "4bb9bed47ec440304e9681f5401943353ab65c6fe05e8e1e90d40181d039d6f1",
+        "tools/content-validation.log": "1e3bc6efad084452a56f7107ae3131a9f9b40afddde0ef5642fd20099a71f6fb",
+        "tools/packed-smallfiles.log": "e1676d592f8cdb37c111873a49b8cd8e3986845b5ac98d728104a65908caedc8",
+        "tools/random10.log": "bf9e4de5696e0b55fcfc72971b0add17bdc6600fab0c4bf20ebff1291466b17a"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r5-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 5,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793868000.7870739,
+        "ended": 1793868083.7982297,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868081.925612,
+            "end_unix": 1793868082.038154,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.633000626829268,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.571067,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "767f92fb0ad0059589d5a1b7ed198862df57d9365125a51f7c084b2ad8a4c1c9",
+        "manifest.json": "b597cba8a67a64b4e7c02e06f2fd2e4bcc8b05888ae5d8538ee20149820876f0",
+        "phase-boundaries.tsv": "4b64b7061f52c707175b4f48e2d0f03385b53642f9ad5228473d061fb2bba9d5",
+        "host-samples.jsonl": "68cf3c14386da9e02fe4b37f38d95833a1c5523ac28ad99a969b810370980925",
+        "teardown.jsonl": "7aad68fbaf96b3dfbc6b22c1de713d00dcc7ee677b88261dde9fc1b1b7987127",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "c18a6899f5b6055fb867b33e1c66a544ac3ba90c8abc5b3bdcade6aa1cdfc433",
+        "results/random10.json": "423f11d75b2a205d493c59311d8b104255781ebe4aae1c0faf816b67ddb82cf2",
+        "tools/content-validation.log": "2088ad4116e30f3e2d55150da39aeebbb728e9ca272266f3cd906555d3b284fb",
+        "tools/packed-smallfiles.log": "d99d63852a7366e9627459ef46dc22e7762a8266305d75eaef2910519585b7b2",
+        "tools/random10.log": "08ad7475e9ee9ce52083b7c3d0d0e3f97ee3f359d3524099b9c99cdaf770a621"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r5-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 5,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793867913.1082885,
+        "ended": 1793867996.763695,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793867994.981523,
+            "end_unix": 1793867995.0678275,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 4.111213684146342,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.899769,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "b48f7dff2b4997ccb6c99802e6e8ab56da9519de0ea0f7a6c7e20b9a82c479bb",
+        "manifest.json": "314ca9c141cde88454e50bb82932bd685d47d97bc2861805b37463c10619757f",
+        "phase-boundaries.tsv": "af23039d2498afaa21ca87c7c284d4dbd98263988fb1ac02a462e9c85c460613",
+        "host-samples.jsonl": "4470d5f1d08b187b9d7c83bd6a48a443d67035ae83a9532b5590d29ec2dbbade",
+        "teardown.jsonl": "1806816910b4e551cff30c6afc1123f412ea01e6399a51e058f67b70724b0e70",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "48ff5ee68c3430dd2df1f4e1fe5c26c99d08de186b677003b9285adc6483a11f",
+        "results/random10.json": "d3cb2c30fb3b15ad72397a3083884d595d700eba06a63919b4795fec71db72a0",
+        "tools/content-validation.log": "6c81ead2267a9772acf02f758b897f32dde20f27ad1999f94d204292cd6a79b4",
+        "tools/packed-smallfiles.log": "a55c9336fae93ea0ac7430dd09ff17dffcb61082c2c3c284eaa14a8cb687c1d5",
+        "tools/random10.log": "5850406f4c27fb86f617625784842a1928ce8a6d77dad0ada7cf1c1e49d23ab1"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r6-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 6,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793868171.643804,
+        "ended": 1793868254.1858053,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868252.29016,
+            "end_unix": 1793868252.3647714,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 4.082607236585366,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.425482,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "2fcad09bbdcb39719f4887ad53b6ee51f146626e8dfefc9ad2f059a2b60324e4",
+        "manifest.json": "9c65de446726b5de529807a8b94f9236bd99498495475adbc43a894e2b7f67f4",
+        "phase-boundaries.tsv": "560cd03a3d247430a046add6ca0bc4388b765a7cc52e997539632f9a619b58a7",
+        "host-samples.jsonl": "e0c524345d31b87266f00359467799da31c75e689067ee8a6565b88b7a44f7e6",
+        "teardown.jsonl": "b05092c19f11a01ede75558f2cd4d975dfc4bb014ee6f0ae10acbbc65ab4f74a",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "c6a5816ebe74489aa6cbaf3798779df79d80159cbdc4c609eaebe098ec4777d6",
+        "results/random10.json": "204d241cadfc0dec8d4c3701466482ad0e309d3fd873b14e2f3be3b1344a1edf",
+        "tools/content-validation.log": "214be3fc40d6f3d14f14ffeec9ebe1e374cfa80b0306f8af2edd1c8e6359d116",
+        "tools/packed-smallfiles.log": "9f65dde18ad4735f570f596a8a638f4da77922be2d71a6f0d42b87d0de0fca5e",
+        "tools/random10.log": "998ecad2cb9fba9a0a8d9e467bbb6e4f6ef18e97ec16e6e36e7de6bd2b6bb0e0"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r6-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 6,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793868087.9058664,
+        "ended": 1793868167.4011638,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868165.57468,
+            "end_unix": 1793868165.6606412,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.6569567158536582,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.976929,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "8258d3b3e457253748bf4f6c63c2a646912095b1dfd09782b5c3ffb5d7bcc8b6",
+        "manifest.json": "4ddf001564e53ba3c3e2fcf22a11d751adac73eb403dc219791152f0745f9900",
+        "phase-boundaries.tsv": "77e37fc30c6d27dd489bb0fd5843eaee423c98c1736c56a0c3f3641c58b51b38",
+        "host-samples.jsonl": "6712e51fd850a6122108471f37e54444614de704ad3afd11f0634f15136865e6",
+        "teardown.jsonl": "8a259d923bee8c437b15b9d4a88c1eac9b23762c1aad80d5cb5165bfb73f82b5",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "cb4c031b63620742f7346d967db0d8e4c070a63b86bd48b2b1aefa3fe8e343e1",
+        "results/random10.json": "583a811654c2ff722f208c2ec9ffbde065954bdfa8e4476a82001004ada0f70f",
+        "tools/content-validation.log": "b5bb16cf1e972e298eddea74b0e27389907030a5e5d914e2f20eeaea5611647f",
+        "tools/packed-smallfiles.log": "8523e6385083a378c35fa63f7f84567236431608971d86b061aed51f76b00f24",
+        "tools/random10.log": "f16dee7cf5d344eb45d66ca404742dc875a30515664a4418f6641f64e69cb32f"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r7-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 7,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793868342.3651595,
+        "ended": 1793868419.126856,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868417.153849,
+            "end_unix": 1793868417.242527,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.6423064963414635,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.566869,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "8fe4f56a1580a553bedb2309b1bc31419ce3e9467e58df81fb5c35e9c8d065d2",
+        "manifest.json": "5d0378507beed81d6a132d2d5cb597897ac6058b09e2ff1463fe7069c889f6e0",
+        "phase-boundaries.tsv": "8cff183f39e2d83432749acc58e33b912c8ff40be39f4345b819486c5b0f84fe",
+        "host-samples.jsonl": "f587394a86fe071da1067e22467bdbb6d12c447adad7f3db53e66568eca1c7e6",
+        "teardown.jsonl": "c641f8e01b0c3832276baef933347eee6c75b9f40916250978385cd450db94a5",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "2427753c7cda122a9968c2ada7e2091ab60ba83c5f19652a4e96fc65f818b40d",
+        "results/random10.json": "db8c8936ddfb6e590e88a53a8256a9d4b71aacf26b0c7390b60042e2d078574b",
+        "tools/content-validation.log": "593201028acff2b31ee3caba8134b5a5a4b797643dd6cb608ba908b1041d54de",
+        "tools/packed-smallfiles.log": "1b4d857737a6795a0bbf9b02210560a192262020557476f2a81a01483b7862bb",
+        "tools/random10.log": "8b2488873f5d8d48eb8ccb024767fdffc8528d44944545f8d421e8d93d4e2622"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r7-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 7,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793868258.2481327,
+        "ended": 1793868338.3904061,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868336.559084,
+            "end_unix": 1793868336.6442099,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.9087758048780485,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.238277,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "52952478b821d8a326ec95b57cec236ae4cd93b368251316b8bafa3a1c36aeec",
+        "manifest.json": "00b3c58488894d38739ed5ec48b5c0bc93ac0c7f995ce501832d898f49b735e9",
+        "phase-boundaries.tsv": "a4a6e555874348b18e98a87637d86072fc7364d00a3416ae674f72d5e0953356",
+        "host-samples.jsonl": "4576db155d102e2fac5c74871b83377ffabc01139adbe595ad730987bf4a3f2f",
+        "teardown.jsonl": "72d55edda3982569d1670cf2b681db4af034a84f60a8a92d951c7bf5995a7291",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "a0c32fb73ac9084c57cad9b0ff2e098f42dc172d88bf8dc288dd8a6dd0db56b7",
+        "results/random10.json": "b64319c0c376c2a9cc2a48f6c35253511550a91710d5da7d05f9f614741f81b3",
+        "tools/content-validation.log": "05e139b8b6453674ab52d37a5ba4ad958594851cbec0ab963f4a30dc11a9dac2",
+        "tools/packed-smallfiles.log": "e7d6c1608dd5bf5f255f8f960dfa1af9a74a73ebfe5355be5e4bc95483d1018c",
+        "tools/random10.log": "8ec50a53ecd0b16a70398f5556370bb7ab2699571b53e0480bd6a73a0230f13b"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r8-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 8,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793868505.8496363,
+        "ended": 1793868586.348037,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868584.484367,
+            "end_unix": 1793868584.5856075,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.636792528048781,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.33396,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "f3c836f7ee3cb7ca4781c1eeebd12de960a917414aa3e5a36ca260628e29f7f2",
+        "manifest.json": "0f5f59bff3af2926b2a3f2375e500d5ef6e45d74d67cc3752ead6e5728fa49bb",
+        "phase-boundaries.tsv": "e18bf56d170816e4468e9dc7116b268ca55b28f0a5bfed74fa926d10091e6c4b",
+        "host-samples.jsonl": "669caba30e47ba73d60e7adc601bf02bae8bebaa83c938ebd62e29a4a213c2a2",
+        "teardown.jsonl": "fff6c6af188cbfb05aa87b1476caa5d496470e912f7c7086426befdd46245000",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "502a8bdcf44ac098587f84208fd92b9095532fe71999366005a52bad61d1c94a",
+        "results/random10.json": "534ee906f3d8880bdb26bb5b76660a9b62bc48da30119f1e12925c8a75e25df2",
+        "tools/content-validation.log": "dcfd7864b4d4e552e03b88fea927ff2851a590a52e54c4a5ce75d66f656fabde",
+        "tools/packed-smallfiles.log": "92792feaeea6d29fd868c65b1e0143469c87a1e95acfd4ce601248787349ee58",
+        "tools/random10.log": "f83f2ad34d1712c790382a5d42b10eb73428805292f230ca72c8843cc9b6be82"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r8-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 8,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793868423.47862,
+        "ended": 1793868501.537301,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "59",
+            "start_unix": 1793868499.710887,
+            "end_unix": 1793868499.8045006,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.3068966109756097,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 5.376482,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "19d20f6f1b995ee560f68d89555dffc6a0495443fd6fff38ee307eb87b90f1f2",
+        "manifest.json": "0016da846cf501ab4d70818c1a2a4a06da03ac1348bf993d31162cd201c81dc6",
+        "phase-boundaries.tsv": "99c45568e2fdba81917607ba977772cc988212dac5480323a0c7dccda2fefb21",
+        "host-samples.jsonl": "f5e891765b02f4ea84cfd0a8a41eac7fc76c101408b237452f75f0d36556cd2f",
+        "teardown.jsonl": "ba32e39ac510994c3d359d0bc1587c84e0997eb311fefc44807fb905409f086d",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "e9c18882bf7c6e8ab945f10548cae680e85abb922a5cc1c1e04dc665686f4626",
+        "results/random10.json": "bda04ec4fcfaa511ed159ecd2f134c5937727fdcdca4e375fc92cffe8162f138",
+        "tools/content-validation.log": "5e99964a2d67e2949afe95d79f93c805ac3cf4d6a337d559545b478d06b52cbd",
+        "tools/packed-smallfiles.log": "ed850855f5af787b1acd0796fa59cc519fc6ebadbd0e6e5321e018ce1ec3427a",
+        "tools/random10.log": "197a0ac35b2cbdaba74aaaad9f4e44eb818b534b5c09be586bf7a039e87c5a86"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r9-main",
+      "status": {
+        "scene": "409-D",
+        "pair": 9,
+        "arm": "main",
+        "cohort": "preservation",
+        "started": 1793868675.8130536,
+        "ended": 1793868760.9218786,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "58",
+            "start_unix": 1793868758.943575,
+            "end_unix": 1793868759.0487783,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.9571354536585366,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 6.619459,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "dbc73df57965944aa92bd520aa0c1c94e0496b0273bdb7bc71b6c242cf7ced8c",
+        "manifest.json": "1b797d3c736f091bb99d9a3acff3dea20786f928061af1ac67982266bffac5de",
+        "phase-boundaries.tsv": "231b2c6a7094f4a0312d88df24cb868e1bff4ea92176f45644109d4bf469c716",
+        "host-samples.jsonl": "0a418979582b4efa2c1385b32bf12c530e6675351257231218a5fc09273eed0c",
+        "teardown.jsonl": "03d8dad40e32f8c3e4e69ee7b26e58933115f69cfd1d606f497675f83da07f2b",
+        "binary-integrity.json": "5d845e21366d74b216d2e54813f27989286a160e59dabae55ab84cea54bc446b",
+        "results/content-validation.json": "c002697d40b4f319ae5637f5c6d0dadfd364249132cb21c4e7ac5c65992350bf",
+        "results/random10.json": "2040ec6749f53e1d79d86bbe0c25e54559251290cf92376cddc0e0b11e0331dd",
+        "tools/content-validation.log": "54c2b91dcf95a8f0285eb36c19bd6f669222a84d028e38082f7f46d95dcf413f",
+        "tools/packed-smallfiles.log": "57dc4b2db4aa04472e10767fedfb9f879e53dd26d3cd0aaaede8485601aa135a",
+        "tools/random10.log": "8383e866f56f22b809cb7b3cc856bf039df6693992d8ebf637231f54c1bde318"
+      }
+    },
+    {
+      "artifact": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit/artifacts/preservation-409-d-r9-oldmain",
+      "status": {
+        "scene": "409-D",
+        "pair": 9,
+        "arm": "oldmain",
+        "cohort": "preservation",
+        "started": 1793868590.3485136,
+        "ended": 1793868671.7218723,
+        "exit_code": 0,
+        "valid": true,
+        "invalid_markers": [],
+        "compiler_overlap": [],
+        "teardown": [
+          {
+            "pid": "57",
+            "start_unix": 1793868669.790007,
+            "end_unix": 1793868669.8933723,
+            "unmount_status": 0,
+            "process_still_live": false
+          }
+        ]
+      },
+      "source": {
+        "binary_sha256": "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7",
+        "dirty": false,
+        "dirty_diff_sha256": null,
+        "revision": "d1160dc67cc083e5ab3279be8cc34c57eb026254"
+      },
+      "metrics": {
+        "random10_ms_file": {
+          "value": 3.7716579926829272,
+          "direction": "lower",
+          "unit": "ms"
+        },
+        "random10_p99": {
+          "value": 7.115847,
+          "direction": "lower",
+          "unit": "ms"
+        }
+      },
+      "readdir_counter_deltas": {},
+      "verified_files": 8192,
+      "sha256": {
+        "status.json": "1c0bf3aa3cd9020c7e793618bdcc1bdb41a771e953ace6c7e6d6553754018b6c",
+        "manifest.json": "86207a460bb1447d82456d45ce01f3b4fff2096ef17897030074089cc4173ba6",
+        "phase-boundaries.tsv": "51f5db77398e9d7f16cd46788311f4da90ff61246318355ae8ac7183f620ef52",
+        "host-samples.jsonl": "578fa587a68118221cc89d3b43461a5be3bdd9a0e54f155a82ac6628faac8df2",
+        "teardown.jsonl": "92d735f5883850cb70c553d9ebb24b5b77d7e60f8fed90c37892dcd36f58ddf5",
+        "binary-integrity.json": "5106464d3923affb28fd4aa8201cf3723ab83b1d34160e11625d99f43cc45524",
+        "results/content-validation.json": "6a580b08b070606a729efcc354e1ba701f7fd30037041719141620a8a684f7df",
+        "results/random10.json": "98b230154cb9a830e899db317374cea8060c4fecafef831476ec0d451eed370e",
+        "tools/content-validation.log": "1a4fb0562af99a7d6c11ae770c9e27bce42b30573b338a92f4b26b97499aea1d",
+        "tools/packed-smallfiles.log": "cbca43ba487373cb8007171c5b559c09e31b9879c415cd8bf73511ce84535922",
+        "tools/random10.log": "c12b6c692c84f080a2936b8ac73d5b9ccc48b7715bb39c35d81f0bc1f88de779"
+      }
+    }
+  ],
+  "raw_artifact_root": "/mnt/brewfs-data/home/hxy/issue-426-20261105/audit",
+  "acceptance": "E upper 95% CI < 0; no A-D lower 95% CI > 0; nine-pair D p99 point increase <= 5%",
+  "confirmation": {
+    "scene": "409-D",
+    "extra_pairs": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "reason": "Initial three-pair p99 +7.13%, CI [-17.72%, +39.48%] required further evidence",
+    "initial_rows": [
+      {
+        "scene": "409-A",
+        "metric": "scan_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": false,
+        "n": 3,
+        "df": 2,
+        "base": [
+          4.879908813476563,
+          5.280929077148437,
+          5.0469902343749995
+        ],
+        "main": [
+          4.999756591796874,
+          4.9853515625,
+          5.108228515625
+        ],
+        "base_median": 5.0469902343749995,
+        "main_median": 4.999756591796874,
+        "log_paired_delta_pct": -0.7066521082247036,
+        "ci95_pct": [
+          -11.023643503936093,
+          10.80661564281139
+        ],
+        "t_log": -0.2781269404994564,
+        "p_log": 0.8070309134995813,
+        "mean_difference": -0.03816381835937518,
+        "ci95_difference": [
+          -0.5967089475906325,
+          0.5203813108718821
+        ],
+        "t_raw": -0.29398816434726566,
+        "p_raw": 0.7964701853805763,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-A",
+        "metric": "mount_scan_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": false,
+        "n": 3,
+        "df": 2,
+        "base": [
+          5.302540873257444,
+          5.720956176251173,
+          5.4716636950317765
+        ],
+        "main": [
+          5.465936916816979,
+          5.426849365467206,
+          5.555738034915179
+        ],
+        "base_median": 5.4716636950317765,
+        "main_median": 5.465936916816979,
+        "log_paired_delta_pct": -0.2390216060615157,
+        "ci95_pct": [
+          -10.631028394417799,
+          11.361388984521106
+        ],
+        "t_log": -0.0936022437183353,
+        "p_log": 0.9339577160428746,
+        "mean_difference": -0.01554547578034319,
+        "ci95_difference": [
+          -0.6228665784944317,
+          0.5917756269337454
+        ],
+        "t_raw": -0.11013413415926016,
+        "p_raw": 0.9223584897129036,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-A",
+        "metric": "prewarm_scan_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": false,
+        "n": 3,
+        "df": 2,
+        "base": [
+          5.055505615234375,
+          5.455269165039062,
+          5.226393676757812
+        ],
+        "main": [
+          5.097561523437499,
+          5.082374877929688,
+          5.215211547851562
+        ],
+        "base_median": 5.226393676757812,
+        "main_median": 5.097561523437499,
+        "log_paired_delta_pct": -2.132295890598396,
+        "ci95_pct": [
+          -12.040554184826547,
+          8.892085652421365
+        ],
+        "t_log": -0.8688112498849636,
+        "p_log": 0.476546873198444,
+        "mean_difference": -0.11400683593749979,
+        "ci95_difference": [
+          -0.6748699364153281,
+          0.4468562645403285
+        ],
+        "t_raw": -0.874601704867232,
+        "p_raw": 0.4740210120090861,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-B",
+        "metric": "scan_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": true,
+        "n": 3,
+        "df": 2,
+        "base": [
+          5.633048217773437,
+          6.190982666015625,
+          5.06909130859375
+        ],
+        "main": [
+          5.662698120117188,
+          4.938768676757813,
+          4.831298950195313
+        ],
+        "base_median": 5.633048217773437,
+        "main_median": 4.938768676757813,
+        "log_paired_delta_pct": -8.569531494376116,
+        "ci95_pct": [
+          -32.31988563791829,
+          23.51531391385134
+        ],
+        "t_log": -1.2815764275051904,
+        "p_log": 0.3284962871493031,
+        "mean_difference": -0.48678548177083264,
+        "ci95_difference": [
+          -2.1666429779037735,
+          1.1930720143621083
+        ],
+        "t_raw": -1.2468134272365061,
+        "p_raw": 0.3386832232159629,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-B",
+        "metric": "mount_scan_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": true,
+        "n": 3,
+        "df": 2,
+        "base": [
+          6.168472288904711,
+          6.7444577768072485,
+          5.568137192364782
+        ],
+        "main": [
+          6.1635390408393,
+          5.45303161469847,
+          5.343404770430178
+        ],
+        "base_median": 6.168472288904711,
+        "main_median": 5.45303161469847,
+        "log_paired_delta_pct": -8.134900083183913,
+        "ci95_pct": [
+          -30.519134545439506,
+          21.460729188034065
+        ],
+        "t_log": -1.3072510593317106,
+        "p_log": 0.3212089174171222,
+        "mean_difference": -0.5070306107029312,
+        "ci95_difference": [
+          -2.216462510239756,
+          1.202401288833894
+        ],
+        "t_raw": -1.2761997958974858,
+        "p_raw": 0.3300475477861349,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-C",
+        "metric": "verify_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": true,
+        "n": 3,
+        "df": 2,
+        "base": [
+          4.062143805419922,
+          4.253249899291992,
+          4.179056553466797
+        ],
+        "main": [
+          4.045479184204102,
+          4.346791601928711,
+          4.093240626342773
+        ],
+        "base_median": 4.179056553466797,
+        "main_median": 4.093240626342773,
+        "log_paired_delta_pct": -0.10343818797270692,
+        "ci95_pct": [
+          -5.279515320543934,
+          5.3554898461009035
+        ],
+        "t_log": -0.08369309326956217,
+        "p_log": 0.9409234067900125,
+        "mean_difference": -0.0029796152343749918,
+        "ci95_difference": [
+          -0.22769111218290194,
+          0.22173188171415198
+        ],
+        "t_raw": -0.057052041379108534,
+        "p_raw": 0.9596909022031508,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-D",
+        "metric": "random10_ms_file",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": true,
+        "n": 3,
+        "df": 2,
+        "base": [
+          3.737856485365854,
+          3.9087101000000004,
+          3.6720057560975614
+        ],
+        "main": [
+          3.394283552439024,
+          3.964079756097561,
+          3.917956826829268
+        ],
+        "base_median": 3.737856485365854,
+        "main_median": 3.917956826829268,
+        "log_paired_delta_pct": -0.5823322305856935,
+        "ci95_pct": [
+          -18.99454234002753,
+          22.01489813437095
+        ],
+        "t_log": -0.12269208359587071,
+        "p_log": 0.9135682576907853,
+        "mean_difference": -0.014084068699187657,
+        "ci95_difference": [
+          -0.761402962575538,
+          0.7332348251771627
+        ],
+        "t_raw": -0.08108835081432354,
+        "p_raw": 0.9427558996276142,
+        "regression": false,
+        "excludes_5pct_regression": false
+      },
+      {
+        "scene": "409-D",
+        "metric": "random10_p99",
+        "direction": "lower",
+        "unit": "ms",
+        "decision_metric": true,
+        "n": 3,
+        "df": 2,
+        "base": [
+          7.982281,
+          7.649274,
+          7.134944
+        ],
+        "main": [
+          7.564831,
+          8.749304,
+          8.092128
+        ],
+        "base_median": 7.649274,
+        "main_median": 8.092128,
+        "log_paired_delta_pct": 7.127070112242524,
+        "ci95_pct": [
+          -17.71904681438558,
+          39.47588969885399
+        ],
+        "t_log": 1.1225662248719277,
+        "p_log": 0.37828284396169365,
+        "mean_difference": 0.5465880000000002,
+        "ci95_difference": [
+          -1.534947749850148,
+          2.6281237498501486
+        ],
+        "t_raw": 1.1298284694394758,
+        "p_raw": 0.3758246579680049,
+        "regression": false,
+        "excludes_5pct_regression": false
+      }
+    ],
+    "initial_summary_sha256": "f808768489645a6d477d305e853da27a67be3b4090279549d931fa923e6b6772"
+  },
+  "source_commit": "e49fd90ffb2d1f27bf7844d2514ad21063a989f1",
+  "binary_version": "2026-11-05T07:49:13.556290Z  WARN brewfs::cli: failed to raise RLIMIT_NOFILE, soft: 65535, hard: 65535, target: 1048576, error: Os { code: 1, kind: PermissionDenied, message: \"Operation not permitted\" }\n    at src/cli.rs:222\n\nbrewfs 0.1.2\ncommit: e49fd90ffb2d1f27bf7844d2514ad21063a989f1\ncommit_short: e49fd90ffb2d\nbranch: \ndirty: false\nbuilt: unix:1793859383",
+  "binaries_sha256": [
+    "4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/main/brewfs",
+    "3721670d054fceb96e53180fa34da7d09043b2108f410c07ce49725a08ac10a0  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/main/packed_v3_snapshot_fixture",
+    "80e49c889ec47d2bda8b8af078a506d2311b7563bc05acd0658f5dd639547cc7  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/oldmain/brewfs",
+    "3721670d054fceb96e53180fa34da7d09043b2108f410c07ce49725a08ac10a0  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/oldmain/packed_v3_snapshot_fixture",
+    "0ba661d6ff78417b52f6258d4bff92f0a2a1209d8a5dccf597d70c7b9367b44c  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/parent407/brewfs",
+    "75a3845959b0e67d301b8c5a3abd52662bbbdc638eeb0e2177cc94f47ad0fc78  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/parent409/brewfs",
+    "86ecb16c20ec787ee8078b498edb54e8a1f18285e195af645477ae751faeffc6  /mnt/brewfs-data/home/hxy/issue-426-20261105/audit/bin/parent409/packed_v3_snapshot_fixture"
+  ],
+  "summary_sha256": {
+    "primary": "ee1649d9a987f0eba61699cc5c812a6877d505064c02e38d87e86bc823664ac9",
+    "preservation": "055063556a17c4698c7bfb325401a8037fb7a27c5c20e3e331bf1897e74b3395"
+  }
+}
