@@ -1,0 +1,209 @@
+{
+  "main": {
+    "rounds": [
+      {
+        "round": 1,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 54,
+          "3": 164,
+          "14": 27,
+          "15": 52,
+          "18": 26,
+          "25": 24,
+          "39": 27
+        },
+        "lifecycle_us_per_file": 1314.6828269751927,
+        "exclusive_us_per_file": {
+          "queue_wait": 216.45697204850254,
+          "file_lock": 5.84650641025641,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 11.82511858974359,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 793.2457899381558,
+          "handler_residual": 0.0,
+          "handler_poll": 287.3084399885345
+        }
+      },
+      {
+        "round": 2,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 55,
+          "3": 163,
+          "14": 26,
+          "15": 52,
+          "18": 25,
+          "25": 26,
+          "39": 27
+        },
+        "lifecycle_us_per_file": 1302.0245704897013,
+        "exclusive_us_per_file": {
+          "queue_wait": 229.86793817825892,
+          "file_lock": 5.957807692307693,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 11.757923076923078,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 772.8440705071162,
+          "handler_residual": 0.0,
+          "handler_poll": 281.5968310350953
+        }
+      },
+      {
+        "round": 3,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 54,
+          "3": 163,
+          "14": 28,
+          "15": 53,
+          "18": 24,
+          "25": 25,
+          "39": 27
+        },
+        "lifecycle_us_per_file": 1231.2044555466964,
+        "exclusive_us_per_file": {
+          "queue_wait": 228.45880782690898,
+          "file_lock": 5.907812075471698,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 11.78309,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 701.9110664943399,
+          "handler_residual": 0.0,
+          "handler_poll": 283.1436791499757
+        }
+      }
+    ],
+    "mean_exclusive_us_per_file": {
+      "queue_wait": 224.92790601789014,
+      "file_lock": 5.904042059345267,
+      "chunk_lock": 0.0,
+      "dirty_merge": 0.0,
+      "flush": 11.788710555555555,
+      "metadata_rpc": 0.0,
+      "metadata_commit": 0.0,
+      "object_put_queue": 0.0,
+      "object_put": 0.0,
+      "reply": 756.0003089798706,
+      "handler_residual": 0.0,
+      "handler_poll": 284.01631672453516
+    },
+    "mean_lifecycle_us_per_file": 1282.637284337197
+  },
+  "candidate": {
+    "rounds": [
+      {
+        "round": 1,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 53,
+          "3": 158,
+          "14": 27,
+          "15": 55,
+          "18": 27,
+          "25": 26,
+          "39": 28
+        },
+        "lifecycle_us_per_file": 510.8714644063466,
+        "exclusive_us_per_file": {
+          "queue_wait": 110.95659329381222,
+          "file_lock": 5.101774125874126,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 10.954779202279202,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 154.2248141865534,
+          "handler_residual": 0.0,
+          "handler_poll": 229.63350359782766
+        }
+      },
+      {
+        "round": 2,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 54,
+          "3": 161,
+          "14": 26,
+          "15": 54,
+          "18": 26,
+          "25": 25,
+          "39": 28
+        },
+        "lifecycle_us_per_file": 554.8005097092602,
+        "exclusive_us_per_file": {
+          "queue_wait": 128.78810289925855,
+          "file_lock": 5.670402962962963,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 10.142229230769232,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 160.8190130960344,
+          "handler_residual": 0.0,
+          "handler_poll": 249.38076152023498
+        }
+      },
+      {
+        "round": 3,
+        "samples": 374,
+        "samples_by_opcode": {
+          "1": 53,
+          "3": 161,
+          "14": 27,
+          "15": 55,
+          "18": 25,
+          "25": 25,
+          "39": 28
+        },
+        "lifecycle_us_per_file": 531.8944535171513,
+        "exclusive_us_per_file": {
+          "queue_wait": 114.4534072633085,
+          "file_lock": 5.622207272727273,
+          "chunk_lock": 0.0,
+          "dirty_merge": 0.0,
+          "flush": 10.00916,
+          "metadata_rpc": 0.0,
+          "metadata_commit": 0.0,
+          "object_put_queue": 0.0,
+          "object_put": 0.0,
+          "reply": 157.789781002596,
+          "handler_residual": 0.0,
+          "handler_poll": 244.0198979785195
+        }
+      }
+    ],
+    "mean_exclusive_us_per_file": {
+      "queue_wait": 118.06603448545975,
+      "file_lock": 5.46479478718812,
+      "chunk_lock": 0.0,
+      "dirty_merge": 0.0,
+      "flush": 10.368722811016145,
+      "metadata_rpc": 0.0,
+      "metadata_commit": 0.0,
+      "object_put_queue": 0.0,
+      "object_put": 0.0,
+      "reply": 157.61120276172792,
+      "handler_residual": 0.0,
+      "handler_poll": 241.01138769886072
+    },
+    "mean_lifecycle_us_per_file": 532.5221425442527
+  },
+  "note": "Request lifecycle estimates and within-request exclusive segments can overlap across requests; they are not a wall-clock partition."
+}

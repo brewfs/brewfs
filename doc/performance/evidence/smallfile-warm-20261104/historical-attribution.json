@@ -1,0 +1,76 @@
+{
+  "source": "/home/hxy/opt-reports/opt-b/pack-compose-artifacts/candidate-20261102T151417Z-17006-r3",
+  "historical_median_ms_per_file": 0.575641,
+  "round_3_ms_per_file": 0.5826676025390625,
+  "notes": [
+    "Reconstructed all 374 sampled records by unique ID from timeseries; final ring alone retains only 256.",
+    "Requests per file exclude observer and directory requests.",
+    "Summed FUSE lifetimes are not an exclusive wall-clock partition; RELEASE may overlap.",
+    "Captured before implementation; subsequent current-main syscall-stage attribution is in attribution.json."
+  ],
+  "rows": [
+    {
+      "opcode": 1,
+      "operation": "lookup",
+      "samples": 53,
+      "requests_per_file": 2,
+      "mean_us": 44.63337735849056,
+      "estimated_us_per_file": 89.26675471698113,
+      "estimated_reply_us_per_file": 31.847924528301885
+    },
+    {
+      "opcode": 3,
+      "operation": "getattr",
+      "samples": 159,
+      "requests_per_file": 6,
+      "mean_us": 27.839402515723272,
+      "estimated_us_per_file": 167.03641509433962,
+      "estimated_reply_us_per_file": 94.15003773584905
+    },
+    {
+      "opcode": 14,
+      "operation": "open",
+      "samples": 26,
+      "requests_per_file": 1,
+      "mean_us": 35.906076923076924,
+      "estimated_us_per_file": 35.906076923076924,
+      "estimated_reply_us_per_file": 16.140884615384614
+    },
+    {
+      "opcode": 15,
+      "operation": "read",
+      "samples": 56,
+      "requests_per_file": 2,
+      "mean_us": 47.410089285714285,
+      "estimated_us_per_file": 94.82017857142857,
+      "estimated_reply_us_per_file": 32.78771428571428
+    },
+    {
+      "opcode": 18,
+      "operation": "release",
+      "samples": 27,
+      "requests_per_file": 1,
+      "mean_us": 34.839555555555556,
+      "estimated_us_per_file": 34.839555555555556,
+      "estimated_reply_us_per_file": 20.485777777777777
+    },
+    {
+      "opcode": 25,
+      "operation": "flush",
+      "samples": 27,
+      "requests_per_file": 1,
+      "mean_us": 23.829703703703704,
+      "estimated_us_per_file": 23.829703703703704,
+      "estimated_reply_us_per_file": 14.205407407407407
+    },
+    {
+      "opcode": 39,
+      "operation": "ioctl",
+      "samples": 26,
+      "requests_per_file": 1,
+      "mean_us": 22.113884615384617,
+      "estimated_us_per_file": 22.113884615384617,
+      "estimated_reply_us_per_file": 15.376576923076923
+    }
+  ]
+}

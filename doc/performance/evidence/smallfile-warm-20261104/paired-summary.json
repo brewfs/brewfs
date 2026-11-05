@@ -1,0 +1,607 @@
+{
+  "status": "rejected: every candidate round exceeds 0.40 ms/file; validation is reported separately",
+  "source_main": "f5706712302435206269a253bf861a1a648761d1",
+  "binary_sha256": {
+    "main": "e2a308519ad1e0f5d2295e10cf3fb9eb64ce57009eb64b01c87489b51128f34f",
+    "candidate": "6fd7fb6ed2c445d6c0262876c196ec2d741b376d82deb9283a450b6315f7d1a7"
+  },
+  "candidate_patch_sha256": "1969e19bb030fc15fac4e12d8ae3ce314a71afb1f80163847b26279def96c7b5",
+  "runtime_contract": {
+    "BREWFS_VOLUME_FORMAT": "packed-metadata-v3",
+    "BREWFS_PACKED_MANIFEST_KEY": "smallfile-warm-20261104/objects/0/82febfb2aa140bcef802c1f0c95cb8e1fb8555fa3568915ff23fcdacb82ef3a9",
+    "BREWFS_PACKED_METADATA_CACHE_BYTES": "268435456",
+    "BREWFS_READ_MEMORY_BYTES": "0",
+    "BREWFS_READ_SSD_BYTES": "0",
+    "BREWFS_PREFETCH_ENABLED": "false",
+    "BREWFS_RANGE_BACKGROUND_PREFETCH": "false",
+    "BREWFS_FUSE_READ_DIRECT_IO": "1",
+    "BREWFS_FUSE_KEEP_CACHE": "0",
+    "BREWFS_CACHE_TTL_MS": "0",
+    "BREWFS_COMPRESSION": "none",
+    "BREWFS_REQUEST_TRACE": "true",
+    "BREWFS_REQUEST_TRACE_SAMPLE_RATE": "307"
+  },
+  "t_critical_df2": 4.3026527299,
+  "rows": [
+    {
+      "phase": "warm",
+      "round": 1,
+      "arm": "main",
+      "run_id": "warm-main-r1",
+      "ms_per_file": 1.6926685791015625,
+      "scan_seconds": 13.866341,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        22.115768,
+        21.557046,
+        19.119608,
+        21.48474,
+        23.617354
+      ],
+      "readdir_median_ms": 21.557046,
+      "mount_ms": 2967.062,
+      "mount_plus_scan_ms_per_file": 2.0548587646484373
+    },
+    {
+      "phase": "warm",
+      "round": 1,
+      "arm": "candidate",
+      "run_id": "warm-candidate-r1",
+      "ms_per_file": 0.9766175537109375,
+      "scan_seconds": 8.000451,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        16.789685,
+        15.58505,
+        14.669187,
+        14.164409,
+        14.954588
+      ],
+      "readdir_median_ms": 14.954588,
+      "mount_ms": 2902.993,
+      "mount_plus_scan_ms_per_file": 1.33098681640625
+    },
+    {
+      "phase": "warm",
+      "round": 2,
+      "arm": "main",
+      "run_id": "warm-main-r2",
+      "ms_per_file": 1.7366805419921874,
+      "scan_seconds": 14.226887,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        26.581423,
+        25.377547,
+        24.255681,
+        24.495894,
+        29.421191
+      ],
+      "readdir_median_ms": 25.377547,
+      "mount_ms": 2881.619,
+      "mount_plus_scan_ms_per_file": 2.0884406738281247
+    },
+    {
+      "phase": "warm",
+      "round": 2,
+      "arm": "candidate",
+      "run_id": "warm-candidate-r2",
+      "ms_per_file": 0.995991455078125,
+      "scan_seconds": 8.159162,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        16.21928,
+        15.698072,
+        16.050481,
+        20.191733,
+        17.541721
+      ],
+      "readdir_median_ms": 16.21928,
+      "mount_ms": 2907.913,
+      "mount_plus_scan_ms_per_file": 1.3509613037109376
+    },
+    {
+      "phase": "warm",
+      "round": 3,
+      "arm": "main",
+      "run_id": "warm-main-r3",
+      "ms_per_file": 1.6922083740234377,
+      "scan_seconds": 13.862571,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        24.272954,
+        26.135204,
+        22.837083,
+        22.733734,
+        21.606169
+      ],
+      "readdir_median_ms": 22.837083,
+      "mount_ms": 3037.061,
+      "mount_plus_scan_ms_per_file": 2.062943359375
+    },
+    {
+      "phase": "warm",
+      "round": 3,
+      "arm": "candidate",
+      "run_id": "warm-candidate-r3",
+      "ms_per_file": 1.020960693359375,
+      "scan_seconds": 8.36371,
+      "gets": 9.0,
+      "gets_per_file": 0.0010986328125,
+      "received_bytes": 2159520.0,
+      "readdir_ms": [
+        21.350496,
+        22.30346,
+        20.117592,
+        17.417563,
+        14.579788
+      ],
+      "readdir_median_ms": 20.117592,
+      "mount_ms": 2997.011,
+      "mount_plus_scan_ms_per_file": 1.3868067626953124
+    },
+    {
+      "phase": "cold",
+      "round": 1,
+      "arm": "main",
+      "run_id": "cold-main-r1",
+      "ms_per_file": 1.729471435546875,
+      "scan_seconds": 14.16783,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        24.537508,
+        23.773637,
+        22.861886,
+        21.272395,
+        21.288784
+      ],
+      "readdir_median_ms": 22.861886,
+      "mount_ms": 2887.355,
+      "mount_plus_scan_ms_per_file": 2.0819317626953127
+    },
+    {
+      "phase": "cold",
+      "round": 1,
+      "arm": "candidate",
+      "run_id": "cold-candidate-r1",
+      "ms_per_file": 1.0305008544921874,
+      "scan_seconds": 8.441863,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        15.322821,
+        15.255762,
+        14.850084,
+        14.485061,
+        15.87974
+      ],
+      "readdir_median_ms": 15.255762,
+      "mount_ms": 2887.848,
+      "mount_plus_scan_ms_per_file": 1.3830213623046874
+    },
+    {
+      "phase": "cold",
+      "round": 2,
+      "arm": "main",
+      "run_id": "cold-main-r2",
+      "ms_per_file": 1.7695700683593751,
+      "scan_seconds": 14.496318,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        26.649687,
+        25.117278,
+        19.571829,
+        21.338523,
+        18.216222
+      ],
+      "readdir_median_ms": 21.338523,
+      "mount_ms": 2964.589,
+      "mount_plus_scan_ms_per_file": 2.1314583740234374
+    },
+    {
+      "phase": "cold",
+      "round": 2,
+      "arm": "candidate",
+      "run_id": "cold-candidate-r2",
+      "ms_per_file": 1.079966064453125,
+      "scan_seconds": 8.847082,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        18.682776,
+        20.7232,
+        20.159306,
+        20.96449,
+        17.00473
+      ],
+      "readdir_median_ms": 20.159306,
+      "mount_ms": 2877.774,
+      "mount_plus_scan_ms_per_file": 1.4312568359375
+    },
+    {
+      "phase": "cold",
+      "round": 3,
+      "arm": "main",
+      "run_id": "cold-main-r3",
+      "ms_per_file": 1.7989569091796875,
+      "scan_seconds": 14.737055,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        19.483258,
+        19.697466,
+        18.816523,
+        19.42907,
+        20.717001
+      ],
+      "readdir_median_ms": 19.483258,
+      "mount_ms": 3053.422,
+      "mount_plus_scan_ms_per_file": 2.1716890869140624
+    },
+    {
+      "phase": "cold",
+      "round": 3,
+      "arm": "candidate",
+      "run_id": "cold-candidate-r3",
+      "ms_per_file": 1.00628076171875,
+      "scan_seconds": 8.243452,
+      "gets": 159.0,
+      "gets_per_file": 0.0194091796875,
+      "received_bytes": 36655473.0,
+      "readdir_ms": [
+        16.39405,
+        16.533619,
+        15.106351,
+        17.070965,
+        14.578732
+      ],
+      "readdir_median_ms": 16.39405,
+      "mount_ms": 2862.557,
+      "mount_plus_scan_ms_per_file": 1.3557139892578123
+    }
+  ],
+  "paired": {
+    "warm": {
+      "ms_per_file": {
+        "main": [
+          1.6926685791015625,
+          1.7366805419921874,
+          1.6922083740234377
+        ],
+        "candidate": [
+          0.9766175537109375,
+          0.995991455078125,
+          1.020960693359375
+        ],
+        "differences": [
+          -0.716051025390625,
+          -0.7406890869140623,
+          -0.6712476806640628
+        ],
+        "mean_difference": -0.7093292643229168,
+        "difference_ci95": [
+          -0.7967840999819347,
+          -0.6218744286638989
+        ],
+        "candidate_mean": 0.9978565673828125,
+        "candidate_mean_ci95": [
+          0.9426333707813632,
+          1.0530797639842617
+        ],
+        "paired_percent": [
+          -42.303084858507376,
+          -42.649702636985865,
+          -39.66696365342332
+        ],
+        "mean_paired_percent": -41.53991704963885,
+        "percent_ci95": [
+          -45.59218590032159,
+          -37.487648198956116
+        ],
+        "t": -34.897984457217966,
+        "df": 2,
+        "two_sided_p": 0.0008200962189897076
+      },
+      "gets_per_file": {
+        "main": [
+          0.0010986328125,
+          0.0010986328125,
+          0.0010986328125
+        ],
+        "candidate": [
+          0.0010986328125,
+          0.0010986328125,
+          0.0010986328125
+        ],
+        "differences": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mean_difference": 0.0,
+        "difference_ci95": [
+          0.0,
+          0.0
+        ],
+        "candidate_mean": 0.0010986328125,
+        "candidate_mean_ci95": [
+          0.0010986328125,
+          0.0010986328125
+        ],
+        "paired_percent": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mean_paired_percent": 0.0,
+        "percent_ci95": [
+          0.0,
+          0.0
+        ],
+        "t": null,
+        "df": 2,
+        "two_sided_p": 1
+      },
+      "readdir_median_ms": {
+        "main": [
+          21.557046,
+          25.377547,
+          22.837083
+        ],
+        "candidate": [
+          14.954588,
+          16.21928,
+          20.117592
+        ],
+        "differences": [
+          -6.602458,
+          -9.158266999999999,
+          -2.7194910000000014
+        ],
+        "mean_difference": -6.160072,
+        "difference_ci95": [
+          -14.213904726847751,
+          1.8937607268477512
+        ],
+        "candidate_mean": 17.09715333333333,
+        "candidate_mean_ci95": [
+          10.412030540165384,
+          23.78227612650128
+        ],
+        "paired_percent": [
+          -30.62784205219955,
+          -36.0880702930035,
+          -11.908224005666579
+        ],
+        "mean_paired_percent": -26.208045450289877,
+        "percent_ci95": [
+          -57.710319610749245,
+          5.294228710169492
+        ],
+        "t": -3.29093631642315,
+        "df": 2,
+        "two_sided_p": 0.08124076281298998
+      },
+      "mount_plus_scan_ms_per_file": {
+        "main": [
+          2.0548587646484373,
+          2.0884406738281247,
+          2.062943359375
+        ],
+        "candidate": [
+          1.33098681640625,
+          1.3509613037109376,
+          1.3868067626953124
+        ],
+        "differences": [
+          -0.7238719482421874,
+          -0.7374793701171871,
+          -0.6761365966796877
+        ],
+        "mean_difference": -0.7124959716796874,
+        "difference_ci95": [
+          -0.7925219811198422,
+          -0.6324699622395326
+        ],
+        "candidate_mean": 1.3562516276041667,
+        "candidate_mean_ci95": [
+          1.2859914802563421,
+          1.4265117749519913
+        ],
+        "paired_percent": [
+          -35.22733341559041,
+          -35.31244049012812,
+          -32.77533498954298
+        ],
+        "mean_paired_percent": -34.43836963175384,
+        "percent_ci95": [
+          -38.017661217625246,
+          -30.859078045882427
+        ],
+        "t": -38.30782965484363,
+        "df": 2,
+        "two_sided_p": 0.0006807399936566982
+      }
+    },
+    "cold": {
+      "ms_per_file": {
+        "main": [
+          1.729471435546875,
+          1.7695700683593751,
+          1.7989569091796875
+        ],
+        "candidate": [
+          1.0305008544921874,
+          1.079966064453125,
+          1.00628076171875
+        ],
+        "differences": [
+          -0.6989705810546876,
+          -0.6896040039062501,
+          -0.7926761474609376
+        ],
+        "mean_difference": -0.7270835774739585,
+        "difference_ci95": [
+          -0.8686733717244031,
+          -0.5854937832235139
+        ],
+        "candidate_mean": 1.0389158935546874,
+        "candidate_mean_ci95": [
+          0.9456203779172152,
+          1.1322114091921596
+        ],
+        "paired_percent": [
+          -40.41527178121138,
+          -38.97014400484316,
+          -44.06309808845798
+        ],
+        "mean_paired_percent": -41.149504624837505,
+        "percent_ci95": [
+          -47.669535050859494,
+          -34.629474198815515
+        ],
+        "t": -22.09472904487932,
+        "df": 2,
+        "two_sided_p": 0.0020421644029983144
+      },
+      "gets_per_file": {
+        "main": [
+          0.0194091796875,
+          0.0194091796875,
+          0.0194091796875
+        ],
+        "candidate": [
+          0.0194091796875,
+          0.0194091796875,
+          0.0194091796875
+        ],
+        "differences": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mean_difference": 0.0,
+        "difference_ci95": [
+          0.0,
+          0.0
+        ],
+        "candidate_mean": 0.0194091796875,
+        "candidate_mean_ci95": [
+          0.0194091796875,
+          0.0194091796875
+        ],
+        "paired_percent": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mean_paired_percent": 0.0,
+        "percent_ci95": [
+          0.0,
+          0.0
+        ],
+        "t": null,
+        "df": 2,
+        "two_sided_p": 1
+      },
+      "readdir_median_ms": {
+        "main": [
+          22.861886,
+          21.338523,
+          19.483258
+        ],
+        "candidate": [
+          15.255762,
+          20.159306,
+          16.39405
+        ],
+        "differences": [
+          -7.606123999999998,
+          -1.1792169999999977,
+          -3.0892079999999993
+        ],
+        "mean_difference": -3.9581829999999982,
+        "difference_ci95": [
+          -12.156824104102519,
+          4.240458104102522
+        ],
+        "candidate_mean": 17.269706,
+        "candidate_mean_ci95": [
+          10.894484159363039,
+          23.64492784063696
+        ],
+        "paired_percent": [
+          -33.269888582245564,
+          -5.526235344405039,
+          -15.855705447210111
+        ],
+        "mean_paired_percent": -18.21727645795357,
+        "percent_ci95": [
+          -53.049310945516226,
+          16.61475802960908
+        ],
+        "t": -2.0772572764371615,
+        "df": 2,
+        "two_sided_p": 0.17338422810672693
+      },
+      "mount_plus_scan_ms_per_file": {
+        "main": [
+          2.0819317626953127,
+          2.1314583740234374,
+          2.1716890869140624
+        ],
+        "candidate": [
+          1.3830213623046874,
+          1.4312568359375,
+          1.3557139892578123
+        ],
+        "differences": [
+          -0.6989104003906252,
+          -0.7002015380859374,
+          -0.8159750976562501
+        ],
+        "mean_difference": -0.7383623453776043,
+        "difference_ci95": [
+          -0.9053404067873796,
+          -0.5713842839678289
+        ],
+        "candidate_mean": 1.3899973958333331,
+        "candidate_mean_ci95": [
+          1.2949753387747376,
+          1.4850194528919287
+        ],
+        "paired_percent": [
+          -33.570283758282315,
+          -32.85081926156528,
+          -37.57329272284268
+        ],
+        "mean_paired_percent": -34.66479858089676,
+        "percent_ci95": [
+          -40.9854090709607,
+          -28.344188090832812
+        ],
+        "t": -19.025953075344123,
+        "df": 2,
+        "two_sided_p": 0.002751136068825155
+      }
+    }
+  },
+  "cold_definition": "Fresh client/mount, no packed-tree prewarm; server caches are not flushed.",
+  "content_validation": "All 12 arms have identical SHA-256 for all 8192 deterministic files."
+}

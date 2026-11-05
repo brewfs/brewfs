@@ -1,0 +1,362 @@
+{
+  "recorded_at": "2026-11-04T00:42:05.808347+00:00",
+  "disposition": "rejected: absolute warm target missed; no performance acceptance",
+  "gate_pipeline_complete": true,
+  "gates": [
+    {
+      "gate": "fmt",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:33Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "vendor-fmt",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "run_perf_in_container.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "run_redis_perf.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "run_juicefs_perf_in_container.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "run_juicefs_perf.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "test_perf_report_delta.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:41Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "test_juicefs_direct_matrix.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:42Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "test_juicefs_perf_report.sh",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:42Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "workspace-check",
+      "exit_code": 0,
+      "started": "2026-11-03T23:17:42Z",
+      "log": {
+        "bytes": 7407,
+        "sha256": "e7a2557ba2c3c8a3165c5f62163a5bb74480955f3cf95eb7b61e70d3cbab9949"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "workspace-build",
+      "exit_code": 0,
+      "started": "2026-11-03T23:18:43Z",
+      "log": {
+        "bytes": 7407,
+        "sha256": "2da5599ff920478e55e6da2fa803fb680101463cb44a47d0e8a7d6b0f5d8fc15"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "tokio-check",
+      "exit_code": 0,
+      "started": "2026-11-03T23:20:49Z",
+      "log": {
+        "bytes": 7744,
+        "sha256": "4062f213423ca3a98b57811a7873920ae793566d4d364e2d499b1edf143630b9"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "uring-check",
+      "exit_code": 0,
+      "started": "2026-11-03T23:21:50Z",
+      "log": {
+        "bytes": 7407,
+        "sha256": "338ed497807985bbb14f506ff49f3dda9cc168b92bc8df3af3ca2e432bafb00c"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "workspace-test",
+      "exit_code": 0,
+      "started": "2026-11-03T23:22:45Z",
+      "log": {
+        "bytes": 153148,
+        "sha256": "ad668b0747eadaeb8810f50eda32dc237fe90d76b29f970ca1e55887e173df95"
+      },
+      "test_results": [
+        "test result: ok. 1325 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 92.62s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "gate": "workspace-clippy",
+      "exit_code": 0,
+      "started": "2026-11-03T23:30:05Z",
+      "log": {
+        "bytes": 7407,
+        "sha256": "961a976cefef931631a35b49f4b60f9f94712bc8d802ba0950bc96fa735dbf49"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "overlay-test",
+      "exit_code": 0,
+      "started": "2026-11-03T23:32:58Z",
+      "log": {
+        "bytes": 415320,
+        "sha256": "70545f501ac5f317511d1dab639e3bd647457a086e50f211c289d90e093830f0"
+      },
+      "test_results": [
+        "test result: ok. 2694 passed; 0 failed; 477 ignored; 0 measured; 0 filtered out; finished in 109.37s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.36s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+        "test result: ok. 3 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.41s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 27.18s",
+        "test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+        "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.27s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s",
+        "test result: ok. 2 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s"
+      ]
+    },
+    {
+      "gate": "overlay-clippy",
+      "exit_code": 0,
+      "started": "2026-11-04T00:15:50Z",
+      "log": {
+        "bytes": 8774,
+        "sha256": "342d6d0f4e841f31c5bb3a088aa576a4f34aaf3a10d11dcf3b05a9918f62d490"
+      },
+      "test_results": []
+    },
+    {
+      "gate": "diff",
+      "exit_code": 0,
+      "started": "2026-11-04T00:22:38Z",
+      "log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "test_results": []
+    }
+  ],
+  "experiment_input_identity": {
+    "main-source.txt": {
+      "bytes": 41,
+      "sha256": "8857ef14e0ef16c429d68c794f95fdcdb1be1a52e5d04d6c46bcb9a5f374aa47"
+    },
+    "main-binaries.sha256": {
+      "bytes": 239,
+      "sha256": "aff35949231fe96b04a2b41231a39466c8e3f1416f0d2586c84cd6f11d1b8df9"
+    },
+    "candidate-binaries.sha256": {
+      "bytes": 382,
+      "sha256": "4c532f1b883b51722df5aa2dc56aeedcddeb273adcfbe58b3e5cfec1f402cd17"
+    },
+    "candidate-source.patch": {
+      "bytes": 11120,
+      "sha256": "1969e19bb030fc15fac4e12d8ae3ce314a71afb1f80163847b26279def96c7b5"
+    },
+    "candidate-reproduction.patch": {
+      "bytes": 16834,
+      "sha256": "5fa17b055393253565d79fd0b13da32ca172796e51126502c87915a46a197477"
+    },
+    "candidate-tokio.rs": {
+      "bytes": 28806,
+      "sha256": "b4c3d75e5253d1f4e6039ff397a45bed638459511eae78775a9e0795d0f93b0b"
+    },
+    "candidate-tokio-tests.rs": {
+      "bytes": 5345,
+      "sha256": "78e2f2b264a08802a0369ae5b301c3000352917688b04d29e2f5e01dba4647e9"
+    },
+    "build-main.sh": {
+      "bytes": 954,
+      "sha256": "21e0a58c63b0d2ef7b7b5feb5558194ce999d924093675aa7ef1bbab4d34a1d3"
+    },
+    "build-candidate.sh": {
+      "bytes": 1548,
+      "sha256": "18d5ce70beebb2eaa5bea5ba6e394268849bcb3520b51db4def814627323cd9b"
+    },
+    "rustc-serial.sh": {
+      "bytes": 262,
+      "sha256": "27515495ba1d52c38fc1df1e15eabc3f3db08d2244ceba617896766116237761"
+    },
+    "compose.yml": {
+      "bytes": 2200,
+      "sha256": "d50f2312d98b382c859578ed9b6cfd1112cd7ae3c18e0fbdc0578d527f3f95a7"
+    },
+    "compose-guard.yml": {
+      "bytes": 2091,
+      "sha256": "d7a35c30bf12fec2f582a63774a3db3c6f8dc39d84d73814bc2526eece58aa02"
+    },
+    "compose.sh": {
+      "bytes": 216,
+      "sha256": "342d59dabf2279e2e2f0c8d07c62b68f10fbab49edf0be90130611e671fbcda5"
+    },
+    "compose-guard.sh": {
+      "bytes": 296,
+      "sha256": "f5142450ad095834745f82d0cbcffe5ac190b454b5a904a967e1445dacc9ed21"
+    },
+    "make-fixture.sh": {
+      "bytes": 755,
+      "sha256": "c967a1c1c0977b4fd34dbda1bd9ff0905da3f5c0217b508c0b61aa80331d8397"
+    },
+    "manifest-key.source.json": {
+      "bytes": 1160,
+      "sha256": "e76b436c2daca9d131034eaad6ffcf1222cad8be6c4e805129d7c64bb3cdb6dd"
+    },
+    "run-pairs.sh": {
+      "bytes": 1332,
+      "sha256": "c285261c296e80adf159299edc575441fb375d153e0449b7f37778895a40153a"
+    },
+    "run-acceptance.sh": {
+      "bytes": 830,
+      "sha256": "8006d18ed81891e5682d4b0e1578ed25efcc07cac1acd2add71fb994b7be7188"
+    },
+    "post-scan.py": {
+      "bytes": 1180,
+      "sha256": "b9c21eb270b9ded886023105dd2954614d9c9f2533a1cffa50b432fe7e626ced"
+    },
+    "run-main-attribution.sh": {
+      "bytes": 482,
+      "sha256": "1927d86d6d727f1389bad61f0ea0b67e69596ffe85dbdc5d0f23a9956e5d1203"
+    },
+    "run-attribute.sh": {
+      "bytes": 366,
+      "sha256": "ce3812419e62804a7a074168737e90c530f296f5bd98d5bd4392a879b6da9e06"
+    },
+    "attribute.py": {
+      "bytes": 3623,
+      "sha256": "ca4208128a785102d63f28d8d0377da927e853495bec7c2b2c0da4afa5916d0a"
+    },
+    "candidate-attribution-after-pairs.sh": {
+      "bytes": 953,
+      "sha256": "246a657b44007a64b8486516aeb57a5b080791f97e9c34d2a0372200ac4beef1"
+    },
+    "run-gates.sh": {
+      "bytes": 2349,
+      "sha256": "19f82d747f05c8ac2b43c6cbcbda236e787e4d6da4551271083c3c2d0415ae81"
+    },
+    "run-guard-pairs.sh": {
+      "bytes": 3028,
+      "sha256": "2f09d54a3c79f46200f7322255c272145df4f8f59f27f809de24032d32c8d06d"
+    },
+    "native-xfstests.sha256": {
+      "bytes": 408,
+      "sha256": "f181159cc4a8131ceb530284194bb0f0eb3e88e080ab5f6fd476953f40e16ecf"
+    },
+    "summarize-guards.py": {
+      "bytes": 4120,
+      "sha256": "644b36fc7f7e3a10fadc0818dd47b21c95cdabfc55786bb2ad5dc144e9428f7b"
+    },
+    "run-guard-diagnostic.sh": {
+      "bytes": 1345,
+      "sha256": "8f01251980e4147c11b15e1d097263f1c2793180c5e2a69acdae0d0039ef371f"
+    },
+    "run-diagnostic-mixed-pairs.sh": {
+      "bytes": 1346,
+      "sha256": "43efbc04c81c7c03423fb7b59e0a35ed9ab7cdb7a1218d6ec10e1c1c2af03f40"
+    },
+    "capture-listener.py": {
+      "bytes": 1309,
+      "sha256": "af65dfd307db9a898b52f0831b34289423763070372ecd2a7b7685a49c57326d"
+    },
+    "run-remount-probe.sh": {
+      "bytes": 1832,
+      "sha256": "1b686af1e6868c5f02c1b781c1654cdf74559e5600ccb31e072aa5ae42350c48"
+    },
+    "run-remount-probes.sh": {
+      "bytes": 1067,
+      "sha256": "e77527800ac448ff699b00be5835d4d5f40e56a6039e74b2b63407caa8814c12"
+    },
+    "summarize-diagnostic-mixed.py": {
+      "bytes": 6536,
+      "sha256": "dca5c7acff65ffa7b6f6d79b7d34434821997c5d09544a09d267412350db87bc"
+    }
+  },
+  "validation_scope": "Preserved candidate source and binaries; final PR contains documentation only.",
+  "ignored_tests": "Ignored repository tests remain ignored; an exit-zero gate is not a claim that they ran.",
+  "compiler_serialization": "One Cargo invocation at a time; flock serializes compiler processes; no compile/perf overlap.",
+  "github_actions_used": false
+}
