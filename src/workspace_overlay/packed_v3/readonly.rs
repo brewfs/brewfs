@@ -536,7 +536,7 @@ where
 
 struct PackedDirectoryPageSource<B: ObjectBackend + Clone + 'static> {
     context: Arc<V3ReadonlyContext<B>>,
-    metadata: super::wire005::V3DirectoryMetadata,
+    metadata: super::wire005::V3DirectoryNames,
 }
 
 #[async_trait]
@@ -580,14 +580,13 @@ where
         };
         let entries = context
             .snapshot
-            .readdir_page_with_metadata(
-                &context.client,
+            .readdir_names_page(
                 &context.reader,
                 key,
                 child_offset,
                 max_entries,
                 512 * 1024,
-                Some(&self.metadata),
+                &self.metadata,
             )
             .await
             .map_err(map_error)?;
@@ -1281,15 +1280,16 @@ where
         Ok(Some((inode, file.kind)))
     }
     async fn readdir(&self, ino: i64) -> Result<Vec<DirEntry>, MetaError> {
-        let mut offset = 0usize;
+        let directory = self.opendir(ino).await?;
+        let mut offset = 0u64;
         let mut result = Vec::new();
         let mut bytes = 0usize;
         loop {
-            let page = self.readdir_page_raw(ino, offset, 256).await?;
+            let page = directory.get_entries_page_raw(offset, 256).await?;
             if page.is_empty() {
                 break;
             }
-            offset += page.len();
+            offset += page.len() as u64;
             for entry in page {
                 let entry_bytes = entry.name.len().saturating_add(32);
                 if result.len() >= MAX_LEGACY_READDIR_ENTRIES
@@ -1302,9 +1302,8 @@ where
                 bytes = bytes.saturating_add(entry_bytes);
                 result.push(DirEntry {
                     name: String::from_utf8(entry.name).map_err(|_| MetaError::InvalidFilename)?,
-                    ino: i64::try_from(entry.inode)
-                        .map_err(|_| MetaError::Internal("packed inode exceeds i64".into()))?,
-                    kind: file_type(entry.kind, entry.mode),
+                    ino: entry.ino,
+                    kind: entry.kind,
                 });
             }
         }
@@ -1315,7 +1314,7 @@ where
         let is_dir = if inode == self.context.snapshot.manifest().root_inode {
             true
         } else {
-            self.entry(inode)
+            self.index_entry(inode)
                 .await?
                 .map(|entry| file_type(entry.kind, entry.mode).is_dir())
                 .ok_or(MetaError::NotFound(ino))?
@@ -1327,7 +1326,7 @@ where
             ino,
             Arc::new(PackedDirectoryPageSource {
                 context: Arc::clone(&self.context),
-                metadata: super::wire005::V3DirectoryMetadata::new(self.context.budget.clone())
+                metadata: super::wire005::V3DirectoryNames::new(self.context.budget.clone())
                     .map_err(map_error)?,
             }),
         ))
@@ -1825,30 +1824,6 @@ where
             .iter()
             .find(|rule| rule.acl_type == acl_type && rule.qualifier == acl_id)
             .cloned())
-    }
-}
-
-impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
-    async fn readdir_page_raw(
-        &self,
-        ino: i64,
-        child_offset: usize,
-        limit: usize,
-    ) -> Result<Vec<GroupMetaEntry>, MetaError> {
-        let parent = Self::inode(ino)?;
-        let context = &self.context;
-        context
-            .snapshot
-            .readdir_page(
-                &context.client,
-                &context.reader,
-                self.parent_key(parent),
-                child_offset as u64,
-                limit,
-                512 * 1024,
-            )
-            .await
-            .map_err(map_error)
     }
 }
 

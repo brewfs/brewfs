@@ -1,0 +1,60 @@
+{
+  "comparison": "#409 merge to audited main",
+  "paths": [
+    {
+      "path": "src/workspace_overlay/packed_v3",
+      "objects": {
+        "7afce5c": "9b25b5ec3baf3efccb619bc72aecfae516cc9fcf",
+        "d1160dc": "9b25b5ec3baf3efccb619bc72aecfae516cc9fcf"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/bin/packed_v3_snapshot_fixture.rs",
+      "objects": {
+        "7afce5c": "8cdeec3bf3502dccf4b28d01e64a31a07a76dc2e",
+        "d1160dc": "8cdeec3bf3502dccf4b28d01e64a31a07a76dc2e"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/cadapter",
+      "objects": {
+        "7afce5c": "8313018e800c69b5e84c6b6b33e7648f5a563fb2",
+        "d1160dc": "8313018e800c69b5e84c6b6b33e7648f5a563fb2"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/vfs/fs/mod.rs",
+      "objects": {
+        "7afce5c": "7c4781bd8e6d4839c13643696f2700b95f3ee6c6",
+        "d1160dc": "7c4781bd8e6d4839c13643696f2700b95f3ee6c6"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/vfs/handles.rs",
+      "objects": {
+        "7afce5c": "506dfb5ced646da9584249d2ea8b904719e65b2c",
+        "d1160dc": "506dfb5ced646da9584249d2ea8b904719e65b2c"
+      },
+      "identical": true
+    },
+    {
+      "path": "src/workspace_overlay/meta_layer/packed_enumeration.rs",
+      "objects": {
+        "7afce5c": "3b1d5509acd18451872327ecffa1f6525bdc872f",
+        "d1160dc": "3b1d5509acd18451872327ecffa1f6525bdc872f"
+      },
+      "identical": true
+    }
+  ],
+  "intervening_commits": [
+    "d1160dc test: repair three non-deterministic and stale test assumptions (#423)",
+    "488e35f fix(config): make BREWFS_CACHE_TTL_MS override the volume TTL default (#420)",
+    "fb03c23 docs(perf): quantify small-file attribute TTL overhead (#417)",
+    "f570671 fix(workspace): bound extent compaction scan per publication batch (#412)"
+  ],
+  "all_relevant_objects_identical": true
+}

@@ -798,6 +798,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_names_authenticate_retry_and_fence_retained_owners() {
+        use super::super::{V3BudgetPool, V3DirectoryNames, V3IndexReader, V3MountBudget};
+        use crate::chunk::read_plan::ReadGeneration;
+        let (input, frames) = inputs();
+        for codec in [PackedCodec::Raw, PackedCodec::Zstd] {
+            let built = build_v3_container(
+                0,
+                1,
+                AccessProfile::RandomSmallFile,
+                SizeClassTable::default(),
+                (codec, codec),
+                std::slice::from_ref(&input),
+                &frames,
+            )
+            .unwrap();
+            let container =
+                V3ObjectRef::from_bytes("names".into(), V3ObjectKind::GroupContainer, &built.bytes)
+                    .unwrap();
+            let group = &built.groups[0];
+            let temp = tempfile::tempdir().unwrap();
+            let client = ObjectClient::new(LocalFsBackend::new(temp.path()));
+            client
+                .put_object(&container.key, &built.bytes)
+                .await
+                .unwrap();
+            for cache_bytes in [0, 8 << 20] {
+                let budget = V3MountBudget::defaults();
+                let reader =
+                    V3IndexReader::with_budget(client.clone(), cache_bytes, budget.clone());
+                let names = V3DirectoryNames::new(budget.clone()).unwrap();
+                let generation = ReadGeneration::readonly([1; 32]);
+                let held = names
+                    .read(group, &container, &reader, generation, 512 << 10)
+                    .await
+                    .unwrap();
+                assert_eq!(held.entries[0].name, b"file");
+                assert_eq!(held.entries[0].inode, 3);
+                assert!(Arc::ptr_eq(
+                    &held,
+                    &names
+                        .read(group, &container, &reader, generation, 512 << 10)
+                        .await
+                        .unwrap()
+                ));
+                assert!(
+                    names
+                        .read(group, &container, &reader, generation, 1)
+                        .await
+                        .is_err()
+                );
+                for field in 0..2 {
+                    let mut wrong = group.clone();
+                    if field == 0 {
+                        wrong.entry_count += 1;
+                    } else {
+                        wrong.first_name = b"fild".to_vec();
+                    }
+                    assert!(
+                        names
+                            .read(&wrong, &container, &reader, generation, 512 << 10)
+                            .await
+                            .is_err()
+                    );
+                }
+                let other = V3IndexReader::new(client.clone(), 0);
+                assert!(
+                    names
+                        .read(group, &container, &other, generation, 512 << 10)
+                        .await
+                        .is_err()
+                );
+                // A lease fence must retire both the per-handle and mount cache.
+                budget.invalidate_read_caches();
+                let mut corrupt = built.bytes.clone();
+                corrupt[group.meta_offset as usize] ^= 1;
+                client.put_object(&container.key, &corrupt).await.unwrap();
+                for _ in 0..2 {
+                    assert!(matches!(
+                        names
+                            .read(group, &container, &reader, generation, 512 << 10)
+                            .await,
+                        Err(PackedWireError::HashMismatch { .. })
+                    ));
+                }
+                client
+                    .put_object(&container.key, &built.bytes)
+                    .await
+                    .unwrap();
+                let retried = names
+                    .read(group, &container, &reader, generation, 512 << 10)
+                    .await
+                    .unwrap();
+                assert_eq!(retried.entries, held.entries);
+                drop(retried);
+                reader.close().await;
+                assert!(matches!(
+                    names
+                        .read(group, &container, &reader, generation, 512 << 10)
+                        .await,
+                    Err(PackedWireError::LimitExceeded(message)) if message.contains("reader is closed")
+                ));
+                drop(names);
+                assert_eq!(
+                    budget.state().used[V3BudgetPool::Metadata as usize],
+                    held.owned_memory_bytes()
+                );
+                drop(held);
+                assert_eq!(budget.state().used, [0; 8]);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn directory_metadata_checks_context_retries_failures_and_preserves_owners() {
         let (group, frames) = inputs();
         for codec in [PackedCodec::Raw, PackedCodec::Zstd] {

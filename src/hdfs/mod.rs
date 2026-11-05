@@ -1397,7 +1397,7 @@ mod tests {
     fn c_abi_round_trip_local_file() {
         let tmp = tempdir().unwrap();
         let root = tmp.path().to_string_lossy().into_owned();
-        let mut options = BrewFsClientOptionsV1 {
+        let options = BrewFsClientOptionsV1 {
             struct_size: std::mem::size_of::<BrewFsClientOptionsV1>() as u32,
             flags: 0,
             data_dir: root.as_ptr(),
@@ -1413,7 +1413,7 @@ mod tests {
         };
         let mut client = ptr::null_mut();
         assert_eq!(
-            brewfs_v1_client_open(&mut options, &mut client),
+            brewfs_v1_client_open(&options, &mut client),
             BrewFsStatus::Ok
         );
         let path = b"/hello";
@@ -1485,12 +1485,12 @@ mod tests {
         };
         let mut client = ptr::null_mut();
         assert_eq!(
-            brewfs_v1_client_open(&mut options, &mut client),
+            brewfs_v1_client_open(&options, &mut client),
             BrewFsStatus::InvalidArgument
         );
         options.struct_size = 4;
         assert_eq!(
-            brewfs_v1_client_open(&mut options, &mut client),
+            brewfs_v1_client_open(&options, &mut client),
             BrewFsStatus::InvalidArgument
         );
         assert!(client.is_null());
@@ -1502,8 +1502,10 @@ mod tests {
         let root = tmp.path().to_string_lossy().into_owned();
         let client = open_test_client(&root);
         let path = b"/stat-guard";
-        let mut output = BrewFsStatV1::default();
-        output.struct_size = 0;
+        let mut output = BrewFsStatV1 {
+            struct_size: 0,
+            ..Default::default()
+        };
         assert_eq!(
             unsafe { brewfs_v1_stat(client, path.as_ptr(), path.len(), &mut output) },
             BrewFsStatus::InvalidArgument
@@ -1513,8 +1515,10 @@ mod tests {
             unsafe { brewfs_v1_stat(client, path.as_ptr(), path.len(), &mut output) },
             BrewFsStatus::InvalidArgument
         );
-        let mut statfs = BrewFsStatFsV1::default();
-        statfs.struct_size = 0;
+        let mut statfs = BrewFsStatFsV1 {
+            struct_size: 0,
+            ..Default::default()
+        };
         assert_eq!(
             unsafe { brewfs_v1_statfs(client, &mut statfs) },
             BrewFsStatus::InvalidArgument
@@ -1582,8 +1586,10 @@ mod tests {
             unsafe { brewfs_v1_open(client, path.as_ptr(), path.len(), &append, &mut file) },
             BrewFsStatus::Ok
         );
-        let mut stat = BrewFsStatV1::default();
-        stat.struct_size = std::mem::size_of::<BrewFsStatV1>() as u32;
+        let mut stat = BrewFsStatV1 {
+            struct_size: std::mem::size_of::<BrewFsStatV1>() as u32,
+            ..Default::default()
+        };
         assert_eq!(
             unsafe { brewfs_v1_stat(client, path.as_ptr(), path.len(), &mut stat) },
             BrewFsStatus::Ok
@@ -1598,8 +1604,10 @@ mod tests {
             BrewFsStatus::Ok
         );
         assert_eq!(unsafe { brewfs_v1_file_close(file) }, BrewFsStatus::Ok);
-        let mut stat = BrewFsStatV1::default();
-        stat.struct_size = std::mem::size_of::<BrewFsStatV1>() as u32;
+        let mut stat = BrewFsStatV1 {
+            struct_size: std::mem::size_of::<BrewFsStatV1>() as u32,
+            ..Default::default()
+        };
         assert_eq!(
             unsafe { brewfs_v1_stat(client, path.as_ptr(), path.len(), &mut stat) },
             BrewFsStatus::Ok
@@ -1609,7 +1617,7 @@ mod tests {
     }
 
     fn open_test_client(root: &str) -> *mut BrewFsClient {
-        let mut options = BrewFsClientOptionsV1 {
+        let options = BrewFsClientOptionsV1 {
             struct_size: std::mem::size_of::<BrewFsClientOptionsV1>() as u32,
             flags: 0,
             data_dir: root.as_ptr(),
@@ -1625,7 +1633,7 @@ mod tests {
         };
         let mut client = ptr::null_mut();
         assert_eq!(
-            brewfs_v1_client_open(&mut options, &mut client),
+            brewfs_v1_client_open(&options, &mut client),
             BrewFsStatus::Ok
         );
         client

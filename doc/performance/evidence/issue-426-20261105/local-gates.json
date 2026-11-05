@@ -1,0 +1,183 @@
+{
+  "gates": [
+    {
+      "name": "fmt-final",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 fmt --all -- --check",
+      "exit_code": 0,
+      "started": "2026-11-05T04:55:05Z",
+      "finished": "2026-11-05T04:55:15Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/fmt-final.log",
+      "log_sha256": "36ed6b614942fec6f7efeff2ca02b75a18ebf95ff165dfed49b9f8230ebcfe68"
+    },
+    {
+      "name": "clippy-final",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 clippy --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "started": "2026-11-05T06:06:21Z",
+      "finished": "2026-11-05T06:14:56Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/clippy-final.log",
+      "log_sha256": "2f2de89bf654dc8706e68f31adbdb975de2f750c1908bae2df193232ab0f53b8"
+    },
+    {
+      "name": "test-overlay-final",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 test --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib workspace_overlay:: -- --test-threads=4",
+      "exit_code": 0,
+      "started": "2026-11-05T04:55:15Z",
+      "finished": "2026-11-05T05:22:01Z",
+      "test_summaries": [
+        "test result: ok. 1265 passed; 0 failed; 181 ignored; 0 measured; 1728 filtered out; finished in 184.10s"
+      ],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/test-overlay-final.log",
+      "log_sha256": "0bb828e7dff92fa1e445f83fdd163b9266a4232a99613c4f43dd290ee35217ff"
+    },
+    {
+      "name": "check-workspace",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 check --workspace",
+      "exit_code": 0,
+      "started": "2026-11-05T05:22:01Z",
+      "finished": "2026-11-05T05:29:08Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/check-workspace.log",
+      "log_sha256": "1859ca1dd473b68b5388929f4bf6453a5599ac796eb7df8a46a46ca509501329"
+    },
+    {
+      "name": "build-workspace",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 build --workspace",
+      "exit_code": 0,
+      "started": "2026-11-05T05:29:08Z",
+      "finished": "2026-11-05T05:37:47Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/build-workspace.log",
+      "log_sha256": "3f3681af855e61f9b83455a5bbb2a7272a64266c3f54a46fb17a8336f87c41ff"
+    },
+    {
+      "name": "check-tokio",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 check -p brewfs --no-default-features --features fuse-tokio-runtime",
+      "exit_code": 0,
+      "started": "2026-11-05T05:37:47Z",
+      "finished": "2026-11-05T05:44:26Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/check-tokio.log",
+      "log_sha256": "7e7334614f13e1990ea14e48bf6c912047414e1cc9538735446f1a9bd1a958b6"
+    },
+    {
+      "name": "check-uring",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 check -p brewfs --no-default-features --features fuse-io-uring-runtime",
+      "exit_code": 0,
+      "started": "2026-11-05T05:44:26Z",
+      "finished": "2026-11-05T05:45:57Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/check-uring.log",
+      "log_sha256": "e7bbea25aa4210a6a9ef2a121bbd43e4caef3da80541639004b970b291bf6e13"
+    },
+    {
+      "name": "test-workspace",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 test --workspace --lib --bins",
+      "exit_code": 0,
+      "started": "2026-11-05T05:45:57Z",
+      "finished": "2026-11-05T06:00:49Z",
+      "test_summaries": [
+        "test result: ok. 1325 passed; 0 failed; 264 ignored; 0 measured; 0 filtered out; finished in 148.23s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/test-workspace.log",
+      "log_sha256": "37740e7dc6591c7ee0f082995ae2c1cf28bb79c7ad5c2ecbd94884547d18a47e"
+    },
+    {
+      "name": "clippy-workspace",
+      "command": "/home/hxy/.cargo/bin/cargo +1.99.0 clippy --workspace --all-targets -- -D warnings",
+      "exit_code": 0,
+      "started": "2026-11-05T06:00:49Z",
+      "finished": "2026-11-05T06:06:21Z",
+      "test_summaries": [],
+      "log": "/mnt/brewfs-data/home/hxy/issue-426-20261105/gates/clippy-workspace.log",
+      "log_sha256": "4f28a46822a066b7d809d20833e8d9b68f0a4d66635e5d95fcc1ec9006f22f8c"
+    }
+  ],
+  "shell_gates": [
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docker/compose-xfstests/run_perf_in_container.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.1960075
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docker/compose-xfstests/run_redis_perf.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.2028048
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docker/compose-xfstests/run_juicefs_perf_in_container.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.211589
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docker/compose-xfstests/run_juicefs_perf.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.2168632
+    },
+    {
+      "command": [
+        "bash",
+        "docker/compose-xfstests/test_perf_report_delta.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.4466069
+    },
+    {
+      "command": [
+        "bash",
+        "docker/compose-xfstests/test_juicefs_direct_matrix.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.6013062
+    },
+    {
+      "command": [
+        "bash",
+        "docker/compose-xfstests/test_juicefs_perf_report.sh"
+      ],
+      "exit": 0,
+      "finished": 1793845534.765634
+    }
+  ],
+  "diff_check_exit": 0,
+  "source_sha256": {
+    "src/hdfs/mod.rs": "13c9e207f625cefb6f9b67906e46534144d6e0254ca10f7f721162a309bddf40",
+    "src/meta/stores/etcd/mod.rs": "351601637a027420722bc2ecfdc8ab8991fa6fae1bcc278305fd7def6e1448a7",
+    "src/workspace_overlay/packed_v3/meta.rs": "ef5fbc5fef96c572d8d618d19006024379cb28f8fad950ce8f6bd2298ae71d17",
+    "src/workspace_overlay/packed_v3/meta/directory.rs": "f9c2d5234765e02ea6826a4c60641fb91ecbd6061eb665b80168ec75e46a8270",
+    "src/workspace_overlay/packed_v3/readonly.rs": "162a747f79ae41df5710331fc60ae8d229606559d347c71259770cde615327ce",
+    "src/workspace_overlay/packed_v3/readonly/tests.rs": "177b8e76158690fbf312ce9f91ce07abb10d35d9845384630c9076d6e376caba",
+    "src/workspace_overlay/packed_v3/wire005.rs": "7045a297964e29e865f97abd5bc73578eb244a9c7ed0b952617a70a3f2e8c51b",
+    "src/workspace_overlay/packed_v3/wire005/container.rs": "baa91a9d7da518d3fdb08db69a33e062c8366e06de226d3f4e6456167245d034",
+    "src/workspace_overlay/packed_v3/wire005/directory.rs": "9a094e49360cc27f6aa9e5bc4ffb1b60b435bbb80def718beff9c9ff9d1ff0ce",
+    "src/workspace_overlay/packed_v3/wire005/index.rs": "5cd8162584159d2a70084d1efd2a14bb1dd2bce59a699b524fdbf6a997dec800",
+    "src/workspace_overlay/packed_v3/wire005/metadata_cache_tests.rs": "35d1ecd1985477171ce13b7e3ea795ca5ea706c4142e149d8f1dd6006c1b87d8",
+    "src/workspace_overlay/packed_v3/wire005/read_cache.rs": "eb7e6528fb039d7aff92fb5040035c2aed0db4c1cb1e05e7641c64d6f65c4445"
+  },
+  "github_actions_used": false,
+  "memory_max_bytes": 25769803776,
+  "memory_swap_max_bytes": 42949672960,
+  "rust_toolchain": "1.99.0",
+  "test_profile": "debug; test debug info disabled",
+  "rfuse3_workspace_member": false
+}

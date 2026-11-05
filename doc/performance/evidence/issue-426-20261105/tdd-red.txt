@@ -1,0 +1,43 @@
+     Running unittests src/lib.rs (/home/hxy/brewfs-pkv-target/debug/deps/brewfs-dd2081c41c31136e)
+
+running 1 test
+
+thread 'workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents' (99551) panicked at src/workspace_overlay/packed_v3/wire005/metadata_cache_tests.rs:311:9:
+assertion `left == right` failed: pure readdir eagerly decoded inline file contents across 147 groups
+  left: 147
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents ... FAILED
+
+failures:
+
+failures:
+    workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3166 filtered out; finished in 47.51s
+
+error: test failed, to rerun pass `--lib`
+Command exited with non-zero status 101
+	Command being timed: "/home/hxy/.cargo/bin/cargo +1.99.0 test --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib readdir_8192_inline_files_does_not_decode_file_contents -- --nocapture"
+	User time (seconds): 1936.27
+	System time (seconds): 168.03
+	Percent of CPU this job got: 134%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 26:04.13
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 25516508
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 570771
+	Minor (reclaiming a frame) page faults: 24489328
+	Voluntary context switches: 701614
+	Involuntary context switches: 99115
+	Swaps: 0
+	File system inputs: 9600296
+	File system outputs: 12281296
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101
