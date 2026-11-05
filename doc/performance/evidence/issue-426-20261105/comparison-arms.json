@@ -16,6 +16,6 @@
     "baseline": "oldmain (d1160dc)",
     "candidate": "main (fix/426-packed-readdir-regression)"
   },
-  "method": "Unmodified campaign.py run_arm and analyze.py paired log-ratio t; three alternating baseline/candidate pairs per scene.",
+  "method": "Unmodified campaign.py run_arm and analyze.py paired log-ratio t; three alternating baseline/candidate pairs for E/A/B/C and nine for D. D includes a fixed six-pair follow-up; all initial samples are retained.",
   "fixture_producer": "Archived main fixture producer reused: no encoder or layout changes in fix."
 }

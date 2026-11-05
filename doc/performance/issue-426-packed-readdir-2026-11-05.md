@@ -108,9 +108,11 @@ test lints (unnecessary mutable arguments and fields reassigned after default
 construction). Those test expressions now use shared arguments and direct
 initializers, with the same values and assertions.
 
-Matched performance acceptance will use `primary` for three E pairs against
-`e7135c5`, and `preservation` for three A–D pairs against the archived main
-`d1160dc`. The latter is the direct guard on the benefits retained by this fix.
+Matched performance acceptance uses `primary` for three E pairs against
+`e7135c5`, and `preservation` for three A–C pairs and nine D pairs against the
+archived main `d1160dc`. The latter is the direct guard on the benefits retained
+by this fix. D includes a fixed six-pair follow-up to the initial three pairs,
+as described below; every sample is retained.
 The harness copy changes only absolute paths; workloads, options, pairing and
 statistics remain the archived versions. `oldmain` is an explicitly named
 baseline arm using the original binary and fixture producer.
@@ -152,6 +154,104 @@ Exact commands, test summaries, log hashes and validated source hashes are
 recorded in `evidence/issue-426-20261105/local-gates.json`. GitHub Actions was
 not used.
 
-Performance measurements remain pending. Historical numbers above are
-attribution evidence, not candidate results; no performance acceptance or
-merge is claimed yet.
+## Matched E result
+
+Candidate source: `e49fd90ffb2d1f27bf7844d2514ad21063a989f1`, built from a
+clean detached worktree with Rust 1.99.0 and the archived command:
+
+```bash
+cargo +1.99.0 rustc --locked --release --no-default-features \
+  --features fuse-tokio-runtime,workspace-overlay,observability \
+  --bin brewfs -- -C opt-level=1 -C debuginfo=0
+```
+
+The candidate binary SHA-256 is
+`4e7d45cf06adb3ffccd84e871b47e1a113f879407ce86bbeb65255dd5bbd9d90`.
+Toolchain hashes match the archived build; the candidate reports `dirty=false`.
+Host `vm.swappiness` was restored to its original zero before measurements.
+
+```bash
+audit=/mnt/brewfs-data/home/hxy/issue-426-20261105/audit
+python3 "$audit/harness/campaign.py" measure --cohort primary --pairs 3 --scenes 409-E
+python3 "$audit/harness/analyze.py" primary
+```
+
+| Pair | Parent `e7135c5`, readdir ms | Candidate, readdir ms |
+| --- | ---: | ---: |
+| 1 | 912.234079 | 749.445905 |
+| 2 | 885.433418 | 772.683361 |
+| 3 | 934.498442 | 834.005508 |
+| Median | 912.234079 | 772.683361 |
+
+Paired log-ratio change: **−13.8299%**, two-sided 95% CI
+**[−22.5250%, −4.1589%]**, t = −6.02095, p = 0.0264935, n = 3, df = 2.
+The raw paired mean difference is −125.3437 ms, 95% CI
+[−207.3250, −43.3625] ms. All three pairs favor the candidate, and the complete
+confidence interval excludes zero in the required direction.
+
+All six E runs are valid: no compiler overlap, binary change, content mismatch
+or teardown failure. Every round verified all 8,192 files after the timed phase.
+Raw evidence is under `audit/artifacts/primary-409-e-r{1,2,3}-{parent409,main}`.
+
+## Direct A–D preservation results
+
+These comparisons use the same archived workloads and paired log-ratio
+Student t analysis, with archived main `d1160dc` as baseline. Lower is better
+for every metric. Medians are descriptive; the paired change is calculated
+from each pair's log ratio, not from the ratio of medians.
+Scan/verify means are in ms/file; D p99 is per-operation latency in ms.
+
+| Scene / metric | Pairs | Baseline median | Candidate median | Paired change | 95% CI |
+| --- | ---: | ---: | ---: | ---: | --- |
+| A scan | 3 | 5.046990 | 4.999757 | −0.71% | [−11.02%, +10.81%] |
+| A mount + scan | 3 | 5.471664 | 5.465937 | −0.24% | [−10.63%, +11.36%] |
+| A prewarm + scan | 3 | 5.226394 | 5.097562 | −2.13% | [−12.04%, +8.89%] |
+| B scan | 3 | 5.633048 | 4.938769 | −8.57% | [−32.32%, +23.52%] |
+| B mount + scan | 3 | 6.168472 | 5.453032 | −8.13% | [−30.52%, +21.46%] |
+| C verify | 3 | 4.179057 | 4.093241 | −0.10% | [−5.28%, +5.36%] |
+| D random10 mean | 9 | 3.737856 | 3.642306 | +0.26% | [−6.08%, +7.02%] |
+| D random10 p99 latency, ms | 9 | 7.134944 | 6.619459 | −0.47% | [−9.78%, +9.80%] |
+
+The initial three D pairs gave a p99 point increase of +7.13%, CI
+[−17.72%, +39.48%]. Before inspecting additional samples, the follow-up was
+fixed at six more pairs (4–9), with no code/build changes and no sample
+discarding. The final table analyzes all nine pairs; the original three-pair
+summary and its hash are also preserved. D mean has p=0.929847 and p99 has
+p=0.915057. The initial tail increase was not reproduced in the combined data.
+
+Each A–D metric is evaluated independently. No A–D interval has a positive
+lower bound, including possible regressions below the archived analyzer's
+5% threshold. These results show no reproducible regression in the measured
+workloads; the intervals still allow regressions and do **not** establish
+equivalence or exclude a 5% regression. E's improvement is not used to offset
+any other metric. The historical A–D gains are not recalculated by comparing
+today's absolute timings to yesterday's results.
+
+The initial A–D campaign used `campaign.py one --cohort preservation` for
+each scene and three alternating `oldmain`/`main` pairs, followed by
+`analyze.py preservation`. The fixed D extension was:
+
+```bash
+for pair in 4 5 6 7 8 9; do
+    for arm in oldmain main; do
+        python3 "$audit/harness/campaign.py" one --cohort preservation \
+            --scenes 409-D --pair "$pair" --arm "$arm"
+    done
+done
+python3 "$audit/harness/analyze.py" preservation
+```
+
+All **42/42** runs are valid (six E plus 36 preservation runs). Every run
+verified 8,192 files, retained clean source/binary identity, had no compiler
+overlap, and completed unmount without a surviving FUSE process.
+[`performance.json`](evidence/issue-426-20261105/performance.json) contains
+every paired value, original and final summaries, per-run status, counter
+deltas, source identity and raw-artifact hashes. Full artifacts remain under
+the local evidence root; the original audit was preserved.
+
+Final self-review found no unresolved correctness issue in namespace parsing,
+cookie/rewind ordering, authentication, cache identity/fencing or memory
+ownership. All 12 changed source hashes match the completed local gates and
+the measured clean build. The local gates and matched performance acceptance
+are complete. Compose services were stopped with `down -v --remove-orphans`,
+and `vm.swappiness` is restored to zero.
