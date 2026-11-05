@@ -1,0 +1,294 @@
+$ cargo test --config profile.test.package.brewfs.codegen-units=512 --test getlk_owner_regression --test compaction_orphan_claim_test -- --ignored tikv --nocapture
+   Compiling rustls v0.23.36
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.7
+   Compiling arrayvec v0.7.8
+   Compiling aws-smithy-http-client v1.4.0
+   Compiling rust_decimal v1.40.0
+   Compiling aws-smithy-runtime v1.14.0
+   Compiling mime_guess v2.0.5
+   Compiling sqlx-core v0.8.6
+   Compiling aws-runtime v1.9.2
+   Compiling tower-http v0.6.8
+   Compiling sqlx-postgres v0.8.6
+   Compiling sqlx-sqlite v0.8.6
+   Compiling xml v1.4.0
+   Compiling sea-query v0.32.7
+   Compiling sqlx v0.8.6
+   Compiling tonic v0.14.4
+   Compiling headers-core v0.3.0
+   Compiling simdutf8 v0.1.5
+   Compiling std-next v0.1.9
+   Compiling kube-client v0.96.0
+   Compiling headers v0.4.1
+   Compiling tonic-prost v0.14.4
+   Compiling aws-sdk-sts v1.98.0
+   Compiling sea-query-binder v0.7.0
+   Compiling brewfs v0.1.2 (/home/hxy/brewfs-424)
+   Compiling fs-err v3.3.1
+   Compiling io-uring v0.7.12
+   Compiling xml-rs v1.0.0
+   Compiling xmltree v0.12.0
+   Compiling aws-sdk-sso v1.94.0
+   Compiling aws-sdk-ssooidc v1.96.0
+   Compiling hex-simd v0.8.0
+   Compiling atoi v3.1.0
+   Compiling transform-stream v0.3.1
+   Compiling bytestring v1.5.1
+   Compiling nom v8.0.0
+   Compiling quick-xml v0.41.0
+   Compiling htmlescape v0.3.1
+   Compiling dyn-clone v1.0.20
+   Compiling xxhash-rust v0.8.18
+   Compiling numeric_cast v0.3.0
+   Compiling s3s v0.15.0
+   Compiling sea-orm v1.1.19
+   Compiling dav-server v0.11.0
+warning: associated functions `new` and `with_decoding_limit` are never used
+   --> vendor/tikv-client/src/pd/cluster.rs:124:12
+    |
+123 | impl Connection {
+    | --------------- associated functions in this implementation
+124 |     pub fn new(security_mgr: Arc<SecurityManager>) -> Connection {
+    |            ^^^
+...
+131 |     pub fn with_decoding_limit(
+    |            ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `StreamBackupError` is never constructed
+   --> vendor/tikv-client/src/generated/backup.rs:744:12
+    |
+744 | pub struct StreamBackupError {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `FileDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:29:12
+   |
+29 | pub struct FileDictionary {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `KeyDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:53:12
+   |
+53 | pub struct KeyDictionary {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKey` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:64:12
+   |
+64 | pub struct MasterKey {
+   |            ^^^^^^^^^
+
+warning: struct `MasterKeyPlaintext` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:84:12
+   |
+84 | pub struct MasterKeyPlaintext {}
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `MasterKeyFile` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:89:12
+   |
+89 | pub struct MasterKeyFile {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKeyKms` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:98:12
+   |
+98 | pub struct MasterKeyKms {
+   |            ^^^^^^^^^^^^
+
+warning: struct `EncryptedContent` is never constructed
+   --> vendor/tikv-client/src/generated/encryptionpb.rs:114:12
+    |
+114 | pub struct EncryptedContent {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: enum `Backend` is never used
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:72:14
+   |
+72 |     pub enum Backend {
+   |              ^^^^^^^
+
+warning: struct `Http` is never constructed
+ --> vendor/tikv-client/src/generated/google.api.rs:7:12
+  |
+7 | pub struct Http {
+  |            ^^^^
+
+warning: struct `HttpRule` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:306:12
+    |
+306 | pub struct HttpRule {
+    |            ^^^^^^^^
+
+warning: struct `CustomHttpPattern` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:374:12
+    |
+374 | pub struct CustomHttpPattern {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `Pattern` is never used
+   --> vendor/tikv-client/src/generated/google.api.rs:346:14
+    |
+346 |     pub enum Pattern {
+    |              ^^^^^^^
+
+warning: struct `RaftResponseHeader` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:508:12
+    |
+508 | pub struct RaftResponseHeader {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdRequest` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:518:12
+    |
+518 | pub struct RaftCmdRequest {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdResponse` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:532:12
+    |
+532 | pub struct RaftCmdResponse {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `SnapshotCfFile` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:43:12
+   |
+43 | pub struct SnapshotCfFile {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `SnapshotMeta` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:53:12
+   |
+53 | pub struct SnapshotMeta {
+   |            ^^^^^^^^^^^^
+
+warning: struct `RaftSnapshotData` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:192:12
+    |
+192 | pub struct RaftSnapshotData {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `StoreRecoverState` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:220:12
+    |
+220 | pub struct StoreRecoverState {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `RegionSequenceNumberRelation` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:312:12
+    |
+312 | pub struct RegionSequenceNumberRelation {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+   --> vendor/tikv-client/src/generated/resource_manager.rs:279:12
+    |
+279 | pub struct Participant {
+    |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/schedulingpb.rs:31:12
+   |
+31 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/tsopb.rs:63:12
+   |
+63 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> vendor/tikv-client/src/region_cache.rs:64:12
+   |
+63 | impl<Client> RegionCache<Client> {
+   | -------------------------------- associated function in this implementation
+64 |     pub fn new(inner_client: Arc<Client>) -> RegionCache<Client> {
+   |            ^^^
+
+warning: `tikv-client` (lib) generated 26 warnings
+   Compiling asyncfuse v0.1.12 (/home/hxy/brewfs-424/vendor/asyncfuse)
+warning: constant `DEFAULT_POOL_CAPACITY` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:27:7
+   |
+27 | const DEFAULT_POOL_CAPACITY: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `try_new` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:47:12
+   |
+45 | impl AlignedBuffer {
+   | ------------------ associated function in this implementation
+46 |     /// Create a new aligned buffer with the specified size
+47 |     pub fn try_new(size: usize) -> Result<Self, Box<dyn Error + Send + Sync>> {
+   |            ^^^^^^^
+
+warning: associated items `new`, `with_capacity`, `try_acquire`, `release`, `available`, and `stats` are never used
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:139:12
+    |
+137 | impl BufferPool {
+    | --------------- associated items in this implementation
+138 |     /// Create a new buffer pool with the specified buffer size
+139 |     pub fn new(buffer_size: usize) -> Self {
+    |            ^^^
+...
+144 |     pub fn with_capacity(buffer_size: usize, max_capacity: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+189 |     pub fn try_acquire(&self) -> Option<IoResult<AlignedBuffer>> {
+    |            ^^^^^^^^^^^
+...
+215 |     pub async fn release(&self, buf: AlignedBuffer) {
+    |                  ^^^^^^^
+...
+244 |     pub async fn available(&self) -> usize {
+    |                  ^^^^^^^^^
+...
+249 |     pub fn stats(&self) -> BufferPoolStats {
+    |            ^^^^^
+
+warning: struct `BufferPoolStats` is never constructed
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:267:12
+    |
+267 | pub struct BufferPoolStats {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `asyncfuse` (lib) generated 4 warnings
+   Compiling aws-sdk-s3 v1.145.0
+   Compiling aws-config v1.8.14
+   Compiling axum-server v0.8.0
+   Compiling etcd-client v0.17.0
+   Compiling kube v0.96.0
+   Compiling num-format v0.4.4
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling inferno v0.11.21
+   Compiling reqwest v0.13.2
+   Compiling qlean v0.2.3
+   Compiling pprof v0.15.0
+    Finished `test` profile [unoptimized] target(s) in 11m 46s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running tests/compaction_orphan_claim_test.rs (/home/hxy/brewfs-pkv-target/debug/deps/compaction_orphan_claim_test-1f48ae9fc2fbe029)
+
+running 1 test
+skip: BREWFS_TIKV_PD_ENDPOINTS is unset
+test tikv_compaction_gc_claim_fences_publication ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/getlk_owner_regression.rs (/home/hxy/brewfs-pkv-target/debug/deps/getlk_owner_regression-a64bcf36f419df2e)
+
+running 1 test
+skip: BREWFS_TIKV_TEST_PD_ENDPOINT is unset
+test tikv_getlk_ignores_own_lock ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+
+exit_code=0
+elapsed_seconds=706.29

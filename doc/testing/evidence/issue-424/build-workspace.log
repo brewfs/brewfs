@@ -1,0 +1,389 @@
+$ cargo build --workspace
+   Compiling mio v1.2.3
+   Compiling zeroize v1.9.0
+   Compiling tokio v1.53.1
+   Compiling tokio-util v0.7.18
+   Compiling num-traits v0.2.19
+   Compiling getrandom v0.2.17
+   Compiling either v1.15.0
+   Compiling generic-array v0.14.7
+   Compiling num-integer v0.1.46
+   Compiling ring v0.17.14
+   Compiling zerocopy v0.8.39
+   Compiling ppv-lite86 v0.2.21
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling digest v0.10.7
+   Compiling rustls-pki-types v1.14.0
+   Compiling rand_core v0.6.4
+   Compiling aws-lc-rs v1.15.4
+   Compiling bytes-utils v0.1.4
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.1
+   Compiling rustls v0.23.36
+   Compiling aws-smithy-types v1.6.3
+   Compiling rustls-webpki v0.103.9
+   Compiling zerovec v0.11.5
+   Compiling h2 v0.4.19
+   Compiling aws-smithy-async v1.3.0
+   Compiling aws-smithy-runtime-api v1.16.0
+   Compiling hyper v1.11.1
+   Compiling rand_chacha v0.9.0
+   Compiling tinystr v0.8.2
+   Compiling hyper-util v0.1.20
+   Compiling icu_locale_core v2.1.1
+   Compiling rand v0.9.2
+   Compiling zerotrie v0.2.3
+   Compiling potential_utf v0.1.4
+   Compiling sync_wrapper v1.0.2
+   Compiling icu_collections v2.1.1
+   Compiling icu_provider v2.1.1
+   Compiling base64ct v1.8.3
+   Compiling pem-rfc7468 v0.7.0
+   Compiling uuid v1.21.0
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.26.4
+   Compiling hmac v0.12.1
+   Compiling icu_normalizer v2.1.1
+   Compiling icu_properties v2.1.2
+   Compiling der v0.7.10
+   Compiling sha2 v0.10.9
+   Compiling h2 v0.3.27
+   Compiling chrono v0.4.45
+   Compiling hyper v0.14.32
+   Compiling spki v0.7.3
+   Compiling idna_adapter v1.2.1
+   Compiling rustls-webpki v0.101.7
+   Compiling sct v0.7.1
+   Compiling idna v1.1.0
+   Compiling rustls v0.21.12
+   Compiling pkcs8 v0.10.2
+   Compiling ff v0.13.1
+   Compiling sec1 v0.7.3
+   Compiling rustls-native-certs v0.8.3
+   Compiling group v0.13.0
+   Compiling tokio-rustls v0.24.1
+   Compiling url v2.5.8
+   Compiling crypto-bigint v0.5.5
+   Compiling rand_chacha v0.3.1
+   Compiling tokio-stream v0.1.18
+   Compiling rand v0.8.5
+   Compiling elliptic-curve v0.13.8
+   Compiling hyper-rustls v0.27.7
+   Compiling aws-smithy-eventstream v0.61.2
+   Compiling aws-smithy-schema v0.2.0
+   Compiling aws-smithy-http v0.64.0
+   Compiling rfc6979 v0.4.0
+   Compiling signature v2.2.0
+   Compiling num-bigint v0.4.6
+   Compiling lazy_static v1.5.0
+   Compiling ecdsa v0.16.9
+   Compiling primeorder v0.13.6
+   Compiling hyper-rustls v0.24.2
+   Compiling aws-credential-types v1.3.0
+   Compiling aws-smithy-http-client v1.4.0
+   Compiling p256 v0.13.2
+   Compiling bigdecimal v0.4.10
+   Compiling rust_decimal v1.40.0
+   Compiling aws-smithy-observability v0.3.0
+   Compiling webpki-roots v1.0.6
+   Compiling webpki-roots v0.26.11
+   Compiling aws-smithy-runtime v1.14.0
+   Compiling aws-sigv4 v1.5.1
+   Compiling aws-types v1.6.0
+   Compiling rustix v0.38.44
+   Compiling sqlx-core v0.8.6
+   Compiling aws-runtime v1.9.2
+   Compiling hyper-timeout v0.5.2
+   Compiling atoi v2.0.0
+   Compiling ordered-float v2.10.1
+   Compiling serde-value v0.7.0
+   Compiling hkdf v0.12.4
+   Compiling axum-core v0.5.6
+   Compiling aws-smithy-http v0.63.4
+   Compiling aws-smithy-observability v0.2.5
+   Compiling aws-smithy-json v0.62.4
+   Compiling md-5 v0.10.6
+   Compiling spin v0.10.0
+   Compiling byteorder v1.5.0
+   Compiling sqlx-postgres v0.8.6
+   Compiling axum v0.8.8
+   Compiling crc-fast v1.10.0
+   Compiling sqlx-sqlite v0.8.6
+   Compiling rand_chacha v0.2.2
+   Compiling k8s-openapi v0.23.0
+   Compiling tower v0.4.13
+   Compiling ordered-float v4.6.0
+   Compiling tokio-io-timeout v1.2.1
+   Compiling signal-hook v0.3.18
+   Compiling axum v0.6.20
+   Compiling tower-http v0.6.8
+   Compiling sea-query v0.32.7
+   Compiling hyper-timeout v0.4.1
+   Compiling kube-core v0.96.0
+   Compiling rand v0.7.3
+   Compiling jsonpath-rust v0.5.1
+   Compiling sqlx v0.8.6
+   Compiling tonic v0.14.4
+   Compiling aws-smithy-query v0.60.14
+   Compiling sharded-slab v0.1.7
+   Compiling sha1 v0.10.6
+   Compiling rustls-pemfile v2.2.0
+   Compiling secrecy v0.10.3
+   Compiling tracing-subscriber v0.3.22
+   Compiling kube-client v0.96.0
+   Compiling headers v0.4.1
+   Compiling tonic-prost v0.14.4
+   Compiling aws-sdk-sts v1.98.0
+   Compiling tonic v0.10.2
+   Compiling sea-query-binder v0.7.0
+   Compiling fail v0.4.0
+   Compiling brewfs v0.1.2 (/home/hxy/brewfs-424)
+   Compiling fs-err v3.3.1
+   Compiling prometheus v0.13.4
+   Compiling aws-smithy-checksums v0.65.0
+   Compiling aws-sdk-sso v1.94.0
+   Compiling aws-sdk-ssooidc v1.96.0
+   Compiling which v4.4.2
+   Compiling aws-smithy-xml v0.62.0
+   Compiling tokio-retry v0.3.0
+   Compiling aws-smithy-json v0.63.0
+   Compiling atoi v3.1.0
+   Compiling combine v4.6.7
+   Compiling tikv-client v0.4.0 (/home/hxy/brewfs-424/vendor/tikv-client)
+warning: associated functions `new` and `with_decoding_limit` are never used
+   --> vendor/tikv-client/src/pd/cluster.rs:124:12
+    |
+123 | impl Connection {
+    | --------------- associated functions in this implementation
+124 |     pub fn new(security_mgr: Arc<SecurityManager>) -> Connection {
+    |            ^^^
+...
+131 |     pub fn with_decoding_limit(
+    |            ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `StreamBackupError` is never constructed
+   --> vendor/tikv-client/src/generated/backup.rs:744:12
+    |
+744 | pub struct StreamBackupError {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `FileDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:29:12
+   |
+29 | pub struct FileDictionary {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `KeyDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:53:12
+   |
+53 | pub struct KeyDictionary {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKey` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:64:12
+   |
+64 | pub struct MasterKey {
+   |            ^^^^^^^^^
+
+warning: struct `MasterKeyPlaintext` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:84:12
+   |
+84 | pub struct MasterKeyPlaintext {}
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `MasterKeyFile` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:89:12
+   |
+89 | pub struct MasterKeyFile {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKeyKms` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:98:12
+   |
+98 | pub struct MasterKeyKms {
+   |            ^^^^^^^^^^^^
+
+warning: struct `EncryptedContent` is never constructed
+   --> vendor/tikv-client/src/generated/encryptionpb.rs:114:12
+    |
+114 | pub struct EncryptedContent {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: enum `Backend` is never used
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:72:14
+   |
+72 |     pub enum Backend {
+   |              ^^^^^^^
+
+warning: struct `Http` is never constructed
+ --> vendor/tikv-client/src/generated/google.api.rs:7:12
+  |
+7 | pub struct Http {
+  |            ^^^^
+
+warning: struct `HttpRule` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:306:12
+    |
+306 | pub struct HttpRule {
+    |            ^^^^^^^^
+
+warning: struct `CustomHttpPattern` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:374:12
+    |
+374 | pub struct CustomHttpPattern {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `Pattern` is never used
+   --> vendor/tikv-client/src/generated/google.api.rs:346:14
+    |
+346 |     pub enum Pattern {
+    |              ^^^^^^^
+
+warning: struct `RaftResponseHeader` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:508:12
+    |
+508 | pub struct RaftResponseHeader {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdRequest` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:518:12
+    |
+518 | pub struct RaftCmdRequest {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdResponse` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:532:12
+    |
+532 | pub struct RaftCmdResponse {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `SnapshotCfFile` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:43:12
+   |
+43 | pub struct SnapshotCfFile {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `SnapshotMeta` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:53:12
+   |
+53 | pub struct SnapshotMeta {
+   |            ^^^^^^^^^^^^
+
+warning: struct `RaftSnapshotData` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:192:12
+    |
+192 | pub struct RaftSnapshotData {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `StoreRecoverState` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:220:12
+    |
+220 | pub struct StoreRecoverState {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `RegionSequenceNumberRelation` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:312:12
+    |
+312 | pub struct RegionSequenceNumberRelation {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+   --> vendor/tikv-client/src/generated/resource_manager.rs:279:12
+    |
+279 | pub struct Participant {
+    |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/schedulingpb.rs:31:12
+   |
+31 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/tsopb.rs:63:12
+   |
+63 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> vendor/tikv-client/src/region_cache.rs:64:12
+   |
+63 | impl<Client> RegionCache<Client> {
+   | -------------------------------- associated function in this implementation
+64 |     pub fn new(inner_client: Arc<Client>) -> RegionCache<Client> {
+   |            ^^^
+
+warning: `tikv-client` (lib) generated 26 warnings
+   Compiling governor v0.8.1
+   Compiling asyncfuse v0.1.12 (/home/hxy/brewfs-424/vendor/asyncfuse)
+warning: constant `DEFAULT_POOL_CAPACITY` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:27:7
+   |
+27 | const DEFAULT_POOL_CAPACITY: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `try_new` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:47:12
+   |
+45 | impl AlignedBuffer {
+   | ------------------ associated function in this implementation
+46 |     /// Create a new aligned buffer with the specified size
+47 |     pub fn try_new(size: usize) -> Result<Self, Box<dyn Error + Send + Sync>> {
+   |            ^^^^^^^
+
+warning: associated items `new`, `with_capacity`, `try_acquire`, `release`, `available`, and `stats` are never used
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:139:12
+    |
+137 | impl BufferPool {
+    | --------------- associated items in this implementation
+138 |     /// Create a new buffer pool with the specified buffer size
+139 |     pub fn new(buffer_size: usize) -> Self {
+    |            ^^^
+...
+144 |     pub fn with_capacity(buffer_size: usize, max_capacity: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+189 |     pub fn try_acquire(&self) -> Option<IoResult<AlignedBuffer>> {
+    |            ^^^^^^^^^^^
+...
+215 |     pub async fn release(&self, buf: AlignedBuffer) {
+    |                  ^^^^^^^
+...
+244 |     pub async fn available(&self) -> usize {
+    |                  ^^^^^^^^^
+...
+249 |     pub fn stats(&self) -> BufferPoolStats {
+    |            ^^^^^
+
+warning: struct `BufferPoolStats` is never constructed
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:267:12
+    |
+267 | pub struct BufferPoolStats {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `asyncfuse` (lib) generated 4 warnings
+   Compiling sea-orm v1.1.19
+   Compiling moka v0.12.13
+   Compiling s3s v0.15.0
+   Compiling redis v0.26.1
+   Compiling dav-server v0.11.0
+   Compiling aws-sdk-s3 v1.145.0
+   Compiling aws-config v1.8.14
+   Compiling signal-hook-mio v0.2.5
+   Compiling axum-server v0.8.0
+   Compiling etcd-client v0.17.0
+   Compiling kube v0.96.0
+   Compiling tracing-appender v0.2.4
+   Compiling crossterm v0.28.1
+   Compiling brewfs-stats v0.1.0 (/home/hxy/brewfs-424/tools/stats)
+    Finished `dev` profile [unoptimized] target(s) in 6m 29s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+exit_code=0
+Completion confirmed from the exited shim child before retiring the paused gate scheduler.

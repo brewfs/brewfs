@@ -1,0 +1,26 @@
+$ cargo fmt --all -- --check
+exit_code=0
+
+$ bash -n docker/compose-xfstests/run_perf_in_container.sh
+exit_code=0
+
+$ bash -n docker/compose-xfstests/run_redis_perf.sh
+exit_code=0
+
+$ bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh
+exit_code=0
+
+$ bash -n docker/compose-xfstests/run_juicefs_perf.sh
+exit_code=0
+
+$ bash docker/compose-xfstests/test_perf_report_delta.sh
+exit_code=0
+
+$ bash docker/compose-xfstests/test_juicefs_direct_matrix.sh
+exit_code=0
+
+$ bash docker/compose-xfstests/test_juicefs_perf_report.sh
+exit_code=0
+
+$ git diff --check
+exit_code=0

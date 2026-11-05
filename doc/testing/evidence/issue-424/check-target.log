@@ -1,0 +1,8 @@
+    Blocking waiting for file lock on build directory
+   Compiling brewfs v0.1.2 (/home/hxy/brewfs-424)
+    Checking asyncfuse v0.1.12 (/home/hxy/brewfs-424/vendor/asyncfuse)
+    Checking tikv-client v0.4.0 (/home/hxy/brewfs-424/vendor/tikv-client)
+
+exit_code=0
+
+This opportunistic check was interrupted and is not counted as acceptance evidence. Final workspace and runtime checks are recorded separately.

@@ -1,0 +1,21 @@
+Self-review of issue #424 implementation
+Reviewed commit: cbf3c17677ddb28a3a33f9d0858ace6c692e5aa5 (PR #429 squash)
+Equivalent original branch tree: 2728dbef0e045b3163c75f0a5d8739d9c819d97f
+Baseline for final code diff: 3fc7db90e8f374899470e7f02bd89c46169187ee
+
+Reviewed all 42 changed Rust files, including the new helper.
+- Guards precede connections and test scenarios, including shared macro fixtures.
+- Configured endpoint vectors reach the existing backend and cleanup code.
+- Connection failures with configured endpoints remain fatal.
+- Legacy endpoint variables and their parsing conventions remain supported.
+- TLS fixture guards its own environment variables.
+- CLI config writer's expect is protected by its test entrypoint guard.
+- Helper child processes isolate environment changes from parallel tests.
+- Source audit: 2,200 existing assertion bodies, 386 loop headers, and 476
+  existing test/ignore attributes unchanged.
+- Original uppercase-TIKV ignore inventory: 71 entries; all covered.
+- Main PD environment reads: 47 before, one safe helper read after.
+- Requested rg pipeline: zero PD-environment lines containing unwrap.
+- Final diff contains no etcd or HDFS lint fixes; those are already upstream.
+
+No blocking findings. Real TiKV execution was not performed in this task.

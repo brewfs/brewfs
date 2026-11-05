@@ -1,0 +1,9 @@
+$ cargo check --workspace
+    Blocking waiting for file lock on build directory
+    Checking mio v1.2.3
+    Checking tokio v1.53.1
+
+exit_code=0
+elapsed_seconds=1503.48
+
+Manually interrupted while waiting for build resources; reported exit code is not accepted as a gate.
