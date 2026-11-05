@@ -210,3 +210,44 @@ above targets them and also needs re-measurement. The
 layout-isolation arm (1 MiB hint with explicit sparse) was truncated by the
 deadline and not measured. All data, verification reads and layout checks
 passed.
+
+## Recorded FUSE acceptance of the sealed read policy (2026-11-05)
+
+The final run measured commit `56308a7` (range-heavy-v2 plus the sequential,
+readahead-size and dense-slice sparse rules) on the same footprint, with a
+256 MiB write file, no S3 deletes, and the comparisons executed cycle by cycle:
+unset → range-heavy, unset → 256 KiB hint with explicit sparse, range-heavy →
+256 KiB, and an A/A. All 104 executions completed and every fresh write passed
+its crc32c read-back.
+
+Cold reads of the long-lived datasets degraded to about 0.6 s per GET for every
+arm from the ninth execution on, while writes, reads of freshly written files
+and warm reads stayed stable. Only the first two cycles are usable for the cold
+dataset cells. The cause is not established; it is not S3 deletion, and it
+appears only when `drop_caches` also evicts inodes. Ratios in those cycles
+(range-heavy/unset):
+
+| Cell | Cycle 1 / 2 |
+|---|---:|
+| 4 KiB random read, 8 jobs, cold sparse set | 24.2 / 22.7 |
+| 64 KiB random read, 4 jobs, cold sparse set | 18.7 / 15.1 |
+| 4 KiB random read, 1 job, cold sparse set | 3.56 / n/a |
+| 4 KiB random read, 8 jobs, hot set cold start | 0.99 / 1.05 |
+| 1 MiB sequential read, cold | 1.00 / 0.96 |
+| cold read of a freshly written 256 MiB file | 0.97 / 0.97 |
+| 4 KiB randrw: read IOPS / read p50 | 1.01 / 0.99, 1.00 / 0.99 |
+| 256 MiB sequential write with fsync | 0.91 / 0.91 |
+
+Warm reads and randrw p50 were within 1% over all eight cycles. The 256 KiB
+layout read freshly written files exactly as fast as the 64 KiB layout
+(1.00 / 1.00) and gave up 35–50% of the sparse-read gain, so range-heavy keeps
+64 KiB blocks up to 8 MiB.
+
+Known costs of this profile, accepted for the sealed version:
+
+- Sequential writes take a fixed extra ~0.25 s per write burst (93 vs
+  102 MB/s on 256 MiB; 0.967 on 512 MiB in the 2026-11-03 run). The source is
+  not yet identified.
+- Cold reads of freshly written files are about 3% slower.
+
+range-heavy remains an explicit opt-in profile; defaults are unchanged.
