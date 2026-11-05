@@ -610,11 +610,10 @@ async fn real_redis_authenticated_initial_history_final_delete_and_native_gc() {
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; owns UUID namespace and actual LocalFS graph"]
 async fn real_tikv_authenticated_initial_history_final_delete_and_native_gc() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("g12-initial-history-{}", Uuid::new_v4());
     isolated(
         TiKvWorkspaceBackend::connect(endpoints, &namespace)

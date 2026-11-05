@@ -78,11 +78,10 @@ async fn real_redis_publication_contract(contract: PublicationContract) {
 
 async fn real_tikv_publication_contract(contract: PublicationContract) {
     let budget = V3MountBudget::defaults();
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS must point at an isolated TiKV cluster")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("g12-real-{}", Uuid::new_v4().simple());
     let backend = TiKvWorkspaceBackend::connect_with_budget(endpoints, &namespace, budget.clone())
         .await

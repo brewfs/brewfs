@@ -1046,11 +1046,10 @@ async fn redis(delivery: Delivery) {
     .await;
 }
 async fn tikv(delivery: Delivery) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("g12-native-factory-{}", Uuid::new_v4());
     if matches!(delivery, Delivery::ForkAliases) {
         let connect: ForkConnect<TiKvWorkspaceBackend> = Arc::new(move |budget| {

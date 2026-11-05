@@ -394,8 +394,8 @@ fn write_mount_config(
     } else {
         assert_eq!(backend, "tikv");
         serde_json::json!({"backend": "tikv", "tikv": {
-            "pd_endpoints": std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS").unwrap()
-                .split(',').map(str::to_owned).collect::<Vec<_>>(),
+            "pd_endpoints": crate::test_support::tikv_endpoints()
+                .expect("TiKV test entry point validated endpoints"),
         }})
     };
     let value = serde_json::json!({
@@ -1641,11 +1641,10 @@ async fn redis(killed: bool, pending: bool) {
 }
 async fn tikv(killed: bool, pending: bool) {
     let namespace = format!("packed-v3-cli-route-{}", Uuid::new_v4());
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let connect_namespace = namespace.clone();
     let connect = Arc::new(move |budget: Arc<V3MountBudget>| {
         let endpoints = endpoints.clone();

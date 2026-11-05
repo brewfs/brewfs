@@ -978,11 +978,10 @@ async fn real_redis_initial_packed_bootstrap_source_staging_unknown_reopen_and_q
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; real root/objects, isolated UUID namespace"]
 async fn real_tikv_initial_packed_bootstrap_source_staging_unknown_reopen_and_quarantine() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     isolated(
         TiKvWorkspaceBackend::connect(
             endpoints,

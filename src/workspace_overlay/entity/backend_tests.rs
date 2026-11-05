@@ -9,11 +9,10 @@ use crate::workspace_overlay::entity::{keys::EntityKeys, redis::RedisEntityBacke
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS pointing to isolated local PD/TiKV"]
 async fn tikv_entity_backend_and_allocator_conformance() {
     use crate::workspace_overlay::entity::tikv::TiKvEntityBackend;
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated TiKV endpoints")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     for case in 0..3 {
         let volume = Uuid::new_v4();
         let keys = EntityKeys::new(volume, Uuid::new_v4());

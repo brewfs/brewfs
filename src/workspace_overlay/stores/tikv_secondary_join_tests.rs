@@ -4,11 +4,10 @@ use futures::FutureExt;
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS"]
 async fn real_tikv_secondary_join_multikey_cas_allows_immediate_bounded_point_and_scan() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("secondary-join-{}", uuid::Uuid::new_v4().simple());
     let budget = V3MountBudget::defaults();
     let backend = TiKvWorkspaceBackend::connect_with_budget(endpoints, &namespace, budget.clone())

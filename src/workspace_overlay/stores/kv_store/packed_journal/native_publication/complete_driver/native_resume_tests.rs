@@ -461,11 +461,10 @@ async fn redis_resume(crash: Crash) {
     .await;
 }
 async fn tikv_resume(crash: Crash) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let budget = V3MountBudget::defaults();
     isolated_resume(
         TiKvWorkspaceBackend::connect_with_budget(

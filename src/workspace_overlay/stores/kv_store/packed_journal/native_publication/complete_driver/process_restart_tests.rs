@@ -1350,11 +1350,10 @@ async fn tikv(boundary: Boundary) {
 }
 async fn tikv_case(boundary: Boundary, persist_upper: bool) {
     let namespace = format!("native-process-{}", Uuid::new_v4());
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     isolated(
         TiKvWorkspaceBackend::connect(endpoints, &namespace)
             .await
@@ -1426,11 +1425,10 @@ async fn real_native_process_restart_helper() {
             run_helper(backend, &root, boundary, &phase, persist_upper).await;
         }
         "tikv" => {
-            let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-                .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-                .split(',')
-                .map(str::to_owned)
-                .collect();
+            let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+                eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+                return;
+            };
             let backend = Arc::new(
                 TiKvWorkspaceBackend::connect(endpoints, &namespace)
                     .await

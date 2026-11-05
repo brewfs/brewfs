@@ -897,11 +897,10 @@ async fn g13_real_redis_destructive_revalidation_contract() {
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; uses fresh per-case UUID namespaces"]
 async fn g13_real_tikv_destructive_revalidation_contract() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS is required")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     for case in CASES {
         let namespace = format!("g13real-{}", Uuid::new_v4().simple());
         let a = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)

@@ -1265,11 +1265,10 @@ async fn run_redis(case: Case) {
 }
 
 async fn run_tikv(case: Case) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("owned TiKV PD endpoints required")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("sid-real-{}", Uuid::new_v4().simple());
     let budget = V3MountBudget::defaults();
     let objects = Objects::connect().await;

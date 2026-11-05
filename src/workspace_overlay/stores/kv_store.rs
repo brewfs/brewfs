@@ -8767,11 +8767,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
     async fn tikv_backend_passes_distributed_catalog_contract() {
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS must list TiKV PD endpoints")
-            .split(',')
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
         let namespace = format!("test{}", Uuid::now_v7().simple());
         let backend_a = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)
             .await

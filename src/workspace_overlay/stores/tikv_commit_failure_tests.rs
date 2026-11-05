@@ -253,11 +253,10 @@ async fn revoke_test_pessimistic_locks(
     let helper = std::env::var("BREWFS_TEST_TIKV_ROLLBACK_FAULT_HELPER")
         .expect("absolute Python rollback fault helper path is required");
     assert!(std::path::Path::new(&helper).is_absolute());
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let inventory = serde_json::json!({
         "namespace": namespace,
         "pd_endpoints": endpoints,
@@ -560,11 +559,10 @@ async fn cleanup_namespace(backend: &TiKvWorkspaceBackend) {
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; real scoped lock revocation"]
 async fn real_tikv_commit_failure_does_not_replay_as_mismatch() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated BREWFS_TEST_TIKV_PD_ENDPOINTS is required")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("commitred-{}", Uuid::new_v4().simple());
     eprintln!("real commit-failure namespace: {namespace}");
     let a = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)

@@ -67,11 +67,10 @@ async fn real_redis_clock_cas_rejects_expired_deadline_without_writes() {
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
 async fn real_tikv_clock_cas_rejects_expired_deadline_without_writes() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let backend = TiKvWorkspaceBackend::connect(
         endpoints,
         &format!("g10c-clock-{}", uuid::Uuid::new_v4().simple()),

@@ -1153,11 +1153,10 @@ async fn redis_recovery(case: RecoveryCase) {
     .await;
 }
 async fn tikv_recovery(case: RecoveryCase) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let budget = V3MountBudget::defaults();
     isolated_recovery(
         TiKvWorkspaceBackend::connect_with_budget(

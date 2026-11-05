@@ -522,11 +522,10 @@ async fn redis(expired: bool) {
     .await;
 }
 async fn tikv(expired: bool) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     isolated(
         TiKvWorkspaceBackend::connect(endpoints, &format!("native-prepare-{}", Uuid::new_v4()))
             .await

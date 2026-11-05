@@ -18,12 +18,19 @@ macro_rules! run_scenarios_on_tikv {
             #[tokio::test]
             #[ignore = "requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster"]
             async fn $name() {
-                let endpoints: Vec<String> = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
-                    .expect("BREWFS_TIKV_PD_ENDPOINTS must list scratch-cluster PD endpoints")
+                let Ok(endpoints) = std::env::var("BREWFS_TIKV_PD_ENDPOINTS") else {
+                    eprintln!("skip: BREWFS_TIKV_PD_ENDPOINTS is unset");
+                    return;
+                };
+                let endpoints: Vec<String> = endpoints
                     .split(',')
                     .map(|endpoint| endpoint.trim().to_string())
                     .filter(|endpoint| !endpoint.is_empty())
                     .collect();
+                if endpoints.is_empty() {
+                    eprintln!("skip: BREWFS_TIKV_PD_ENDPOINTS is empty");
+                    return;
+                }
                 let store: Arc<dyn ControlStore> =
                     Arc::new(TiKvControlStore::connect(&endpoints).await.unwrap());
                 tests::$name(store).await;
@@ -59,12 +66,19 @@ run_scenarios_on_tikv! {
 #[tokio::test]
 #[ignore = "requires BREWFS_TIKV_PD_ENDPOINTS pointing at a scratch TiKV cluster"]
 async fn independent_stores_racing_same_head_commit_once() {
-    let endpoints: Vec<String> = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TIKV_PD_ENDPOINTS must list scratch-cluster PD endpoints")
+    let Ok(endpoints) = std::env::var("BREWFS_TIKV_PD_ENDPOINTS") else {
+        eprintln!("skip: BREWFS_TIKV_PD_ENDPOINTS is unset");
+        return;
+    };
+    let endpoints: Vec<String> = endpoints
         .split(',')
         .map(|endpoint| endpoint.trim().to_string())
         .filter(|endpoint| !endpoint.is_empty())
         .collect();
+    if endpoints.is_empty() {
+        eprintln!("skip: BREWFS_TIKV_PD_ENDPOINTS is empty");
+        return;
+    }
     let first: Arc<dyn ControlStore> =
         Arc::new(TiKvControlStore::connect(&endpoints).await.unwrap());
     let second: Arc<dyn ControlStore> =
