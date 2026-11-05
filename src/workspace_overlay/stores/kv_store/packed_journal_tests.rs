@@ -1300,9 +1300,13 @@ async fn real_redis_packed_journal_reopen_staging_and_abort() {
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS"]
 async fn real_tikv_packed_journal_reopen_staging_and_abort() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS missing")
-        .split(',')
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let endpoints = endpoints
+        .iter()
+        .map(String::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)

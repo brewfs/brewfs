@@ -152,11 +152,10 @@ async fn redis(case: Case) {
 }
 
 async fn tikv(case: Case) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let budget = V3MountBudget::from_env().unwrap();
     isolated(
         TiKvWorkspaceBackend::connect_with_budget(

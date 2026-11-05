@@ -84,11 +84,15 @@ async fn drained_ledger(budget: &Arc<V3MountBudget>) {
 #[tokio::test]
 #[ignore = "requires the dedicated owner-isolated PD/TiKV TLS runner"]
 async fn real_tikv_dual_tls_operator_gate_and_all_client_drain() {
-    let source = PathBuf::from(
-        std::env::var("BREWFS_TEST_TIKV_TLS_DIR").expect("dedicated TLS fixture directory"),
-    );
-    let endpoint =
-        std::env::var("BREWFS_TEST_TIKV_TLS_PD_ENDPOINT").expect("dedicated TLS PD endpoint");
+    let Ok(source) = std::env::var("BREWFS_TEST_TIKV_TLS_DIR") else {
+        eprintln!("skip: BREWFS_TEST_TIKV_TLS_DIR is unset");
+        return;
+    };
+    let Ok(endpoint) = std::env::var("BREWFS_TEST_TIKV_TLS_PD_ENDPOINT") else {
+        eprintln!("skip: BREWFS_TEST_TIKV_TLS_PD_ENDPOINT is unset");
+        return;
+    };
+    let source = PathBuf::from(source);
     let namespace = format!("dual-tls-{}", uuid::Uuid::new_v4().simple());
 
     let budget = V3MountBudget::defaults();

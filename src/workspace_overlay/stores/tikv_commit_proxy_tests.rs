@@ -177,11 +177,10 @@ async fn unknown_commit_case(
 #[tokio::test]
 #[ignore = "requires isolated TiKV advertised through commit_reply_proxy.py and its control URL"]
 async fn real_tikv_lost_successful_commit_reply_does_not_replay() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated BREWFS_TEST_TIKV_PD_ENDPOINTS is required")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let control_url = std::env::var("BREWFS_TEST_TIKV_COMMIT_PROXY_CONTROL_URL")
         .expect("BREWFS_TEST_TIKV_COMMIT_PROXY_CONTROL_URL is required");
     let health = proxy_control(&control_url, "/health", None).await;

@@ -251,9 +251,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
     async fn real_tikv_native_deadline_and_owner_are_checked_with_the_write() {
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .unwrap()
-            .split(',')
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
+        let endpoints = endpoints
+            .into_iter()
             .map(|value| value.trim().to_owned())
             .collect::<Vec<_>>();
         let store = TiKvControlStore::connect(&endpoints).await.unwrap();

@@ -25,6 +25,8 @@ pub mod observability;
 mod observation_macros;
 pub(crate) mod posix;
 pub mod sdk_fs;
+#[cfg(test)]
+pub(crate) mod test_support;
 // Expose vfs for E2E testing - tests should rely on design contracts, not impl details
 pub mod vfs;
 

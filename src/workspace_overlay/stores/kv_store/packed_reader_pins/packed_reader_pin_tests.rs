@@ -1315,11 +1315,10 @@ async fn real_redis_packed_reader_pin_reopen_and_crashed_reader_expiry() {
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; owns one UUID namespace"]
 async fn real_tikv_packed_reader_pin_reopen_and_crashed_reader_expiry() {
-    let endpoints: Vec<String> = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("g12-reader-pins-{}", Uuid::new_v4());
     isolated_contract(
         TiKvWorkspaceBackend::connect(endpoints, &namespace)

@@ -239,11 +239,10 @@ async fn lost_whole_authentication_commit_reply_case(
 }
 
 async fn run_whole_authentication_postsubmission_case(lost_reply: bool) {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated BREWFS_TEST_TIKV_PD_ENDPOINTS is required")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let control_url = if lost_reply {
         let url = std::env::var("BREWFS_TEST_TIKV_COMMIT_PROXY_CONTROL_URL")
             .expect("BREWFS_TEST_TIKV_COMMIT_PROXY_CONTROL_URL is required");

@@ -675,11 +675,10 @@ async fn real_redis_initial_root_birth_has_complete_native_reverse_authority() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; actual first native root CAS and UUID namespace"]
 async fn real_tikv_initial_root_birth_has_complete_native_reverse_authority() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("packed-v3-initial-reverse-birth-{}", uuid::Uuid::new_v4());
     initial_root_reverse_birth(move |budget| {
         let endpoints = endpoints.clone();
@@ -707,11 +706,10 @@ async fn real_redis_initial_composer_snapshot_reopen_carrier_fork_and_actual_roo
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS; actual full composer, LocalFS and UUID namespace"]
 async fn real_tikv_initial_composer_snapshot_reopen_carrier_fork_and_actual_root_read() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("packed-v3-initial-composer-{}", uuid::Uuid::new_v4());
     isolated(move |budget| {
         let endpoints = endpoints.clone();

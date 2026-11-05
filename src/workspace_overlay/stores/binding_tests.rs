@@ -1871,11 +1871,10 @@ async fn public_real_redis_binding_contract() {
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
 async fn public_real_tikv_binding_contract() {
     let budget = V3MountBudget::defaults();
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let backend = TiKvWorkspaceBackend::connect_with_budget(
         endpoints,
         &format!("g10c-{}", Uuid::new_v4().simple()),

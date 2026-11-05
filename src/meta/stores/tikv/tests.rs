@@ -50,21 +50,25 @@ fn test_config(namespace: &str) -> Config {
     }
 }
 
-fn integration_config(test_name: &str) -> Config {
-    let pd_endpoints = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
+fn integration_config(test_name: &str) -> Option<Config> {
+    let endpoints = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
         .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
-        .unwrap_or_else(|_| "127.0.0.1:2379".to_string())
+        .ok()?;
+    let pd_endpoints: Vec<_> = endpoints
         .split(',')
         .map(str::trim)
         .filter(|endpoint| !endpoint.is_empty())
         .map(ToOwned::to_owned)
         .collect();
+    if pd_endpoints.is_empty() {
+        return None;
+    }
     let namespace = format!(
         "brewfs-test-{test_name}-{}",
         Utc::now().timestamp_nanos_opt().unwrap_or(0)
     );
 
-    Config {
+    Some(Config {
         database: DatabaseConfig {
             db_config: DatabaseType::TiKv {
                 pd_endpoints,
@@ -74,7 +78,7 @@ fn integration_config(test_name: &str) -> Config {
         cache: CacheConfig::default(),
         client: ClientOptions::default(),
         compact: CompactConfig::default(),
-    }
+    })
 }
 
 #[test]
@@ -336,7 +340,13 @@ async fn rejects_empty_pd_endpoints() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_factory_initializes_root() {
-    let handle = MetaStoreFactory::<TiKvMetaStore>::create_from_config(integration_config("root"))
+    let Some(config) = integration_config("root") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let handle = MetaStoreFactory::<TiKvMetaStore>::create_from_config(config)
         .await
         .expect("factory should create and initialize tikv store");
     let store = handle.store();
@@ -355,16 +365,26 @@ async fn tikv_factory_initializes_root() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn directory_pages_follow_namespace_mutations() {
-    let store = TiKvMetaStore::from_config(integration_config("directory-pages"))
-        .await
-        .unwrap();
+    let Some(config) = integration_config("directory-pages") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config).await.unwrap();
     super::super::readdir_tests::directory_pages_follow_namespace_mutations(&store).await;
 }
 
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_transactional_namespace_schema() {
-    let store = TiKvMetaStore::from_config(integration_config("namespace"))
+    let Some(config) = integration_config("namespace") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -416,7 +436,13 @@ async fn tikv_transactional_namespace_schema() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_rejects_non_empty_rmdir() {
-    let store = TiKvMetaStore::from_config(integration_config("rmdir"))
+    let Some(config) = integration_config("rmdir") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -439,7 +465,13 @@ async fn tikv_rejects_non_empty_rmdir() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_chunk_discovery_visits_later_keys_across_clones_and_wraps() {
-    let store = TiKvMetaStore::from_config(integration_config("chunk-discovery"))
+    let Some(config) = integration_config("chunk-discovery") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -478,7 +510,13 @@ async fn tikv_chunk_discovery_visits_later_keys_across_clones_and_wraps() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_transactional_file_data_schema() {
-    let store = TiKvMetaStore::from_config(integration_config("file-data"))
+    let Some(config) = integration_config("file-data") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -540,8 +578,14 @@ async fn tikv_transactional_file_data_schema() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_serializes_hot_inode_and_parent_transactions() {
+    let Some(config) = integration_config("hot-inode") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
     let store = Arc::new(
-        TiKvMetaStore::from_config(integration_config("hot-inode"))
+        TiKvMetaStore::from_config(config)
             .await
             .expect("tikv store should connect"),
     );
@@ -594,7 +638,13 @@ async fn tikv_serializes_hot_inode_and_parent_transactions() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_compaction_gc_workflow() {
-    let store = TiKvMetaStore::from_config(integration_config("gc"))
+    let Some(config) = integration_config("gc") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -662,7 +712,13 @@ async fn tikv_compaction_gc_workflow() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_allocates_generic_counters_transactionally() {
-    let store = TiKvMetaStore::from_config(integration_config("counters"))
+    let Some(config) = integration_config("counters") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -674,7 +730,13 @@ async fn tikv_allocates_generic_counters_transactionally() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_rename_overwrites_file_and_tombstones_destination() {
-    let store = TiKvMetaStore::from_config(integration_config("rename-overwrite"))
+    let Some(config) = integration_config("rename-overwrite") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -697,7 +759,13 @@ async fn tikv_rename_overwrites_file_and_tombstones_destination() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_rename_exchange_swaps_entries() {
-    let store = TiKvMetaStore::from_config(integration_config("rename-exchange"))
+    let Some(config) = integration_config("rename-exchange") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();
@@ -732,11 +800,13 @@ async fn tikv_rename_exchange_swaps_entries() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_rename_transactions_prevent_concurrent_parent_cycle() {
-    let store = Arc::new(
-        TiKvMetaStore::from_config(integration_config("rename-cycle-race"))
-            .await
-            .unwrap(),
-    );
+    let Some(config) = integration_config("rename-cycle-race") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = Arc::new(TiKvMetaStore::from_config(config).await.unwrap());
     store.initialize().await.unwrap();
     let root = store.root_ino();
     let a = store.mkdir(root, "a".into()).await.unwrap();
@@ -782,7 +852,13 @@ async fn tikv_rename_transactions_prevent_concurrent_parent_cycle() {
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_link_and_symlink_extensions() {
-    let store = TiKvMetaStore::from_config(integration_config("links"))
+    let Some(config) = integration_config("links") else {
+        eprintln!(
+            "skip: BREWFS_TIKV_PD_ENDPOINTS and BREWFS_META_TIKV_PD_ENDPOINTS are unset or empty"
+        );
+        return;
+    };
+    let store = TiKvMetaStore::from_config(config)
         .await
         .expect("tikv store should connect");
     store.initialize().await.unwrap();

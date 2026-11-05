@@ -203,8 +203,12 @@ async fn etcd_getlk_ignores_own_lock() {
 #[tokio::test]
 #[ignore = "requires TiKV via BREWFS_TIKV_TEST_PD_ENDPOINT"]
 async fn tikv_getlk_ignores_own_lock() {
+    let Ok(endpoint) = std::env::var("BREWFS_TIKV_TEST_PD_ENDPOINT") else {
+        eprintln!("skip: BREWFS_TIKV_TEST_PD_ENDPOINT is unset");
+        return;
+    };
     verify_getlk(DatabaseType::TiKv {
-        pd_endpoints: vec![std::env::var("BREWFS_TIKV_TEST_PD_ENDPOINT").unwrap()],
+        pd_endpoints: vec![endpoint],
         namespace: format!("getlk-{}", uuid::Uuid::new_v4()),
     })
     .await;

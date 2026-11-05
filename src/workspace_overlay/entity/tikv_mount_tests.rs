@@ -94,11 +94,10 @@ async fn packed_manifest(objects: S3Backend, payload: &[u8]) -> String {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV and RustFS; ENTITY_DATA_TIKV=true tools/testing/run_entity_data_tests.sh"]
 async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let source = tempfile::tempdir().unwrap();
     let payload = b"frozen native source";
     std::fs::write(source.path().join("file"), payload).unwrap();
@@ -258,11 +257,10 @@ async fn tikv_entity_both_lowers_keep_cow_and_writeback_contract() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires isolated PD/TiKV and RustFS"]
 async fn tikv_entity_concurrent_small_writes_keep_renewal_and_uploads_live() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("file"), b"lower").unwrap();
     let objects = test_objects::backend().await;

@@ -209,7 +209,10 @@ async fn redis_compaction_publication_and_gc_are_exclusive() {
 #[tokio::test]
 #[ignore = "requires isolated TiKV via BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_compaction_gc_claim_fences_publication() {
-    let endpoints = std::env::var("BREWFS_TIKV_PD_ENDPOINTS").expect("isolated TiKV required");
+    let Ok(endpoints) = std::env::var("BREWFS_TIKV_PD_ENDPOINTS") else {
+        eprintln!("skip: BREWFS_TIKV_PD_ENDPOINTS is unset");
+        return;
+    };
     let store = brewfs::TiKvMetaStore::from_config(config(DatabaseType::TiKv {
         pd_endpoints: endpoints.split(',').map(str::to_owned).collect(),
         namespace: format!("fix-240-{}", uuid::Uuid::new_v4()),

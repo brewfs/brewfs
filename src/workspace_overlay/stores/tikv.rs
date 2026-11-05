@@ -1717,11 +1717,10 @@ mod tests {
         use crate::workspace_overlay::model::{ValueOp, XattrDelta};
         use futures::FutureExt;
 
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .unwrap()
-            .split(',')
-            .map(str::to_owned)
-            .collect();
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
         let budget = V3MountBudget::defaults();
         let backend = TiKvWorkspaceBackend::connect_with_budget(
             endpoints,
@@ -1894,11 +1893,10 @@ mod tests {
     async fn real_tikv_bounded_values_use_hard_cap_for_corrupt_oversized_point_and_scan() {
         use super::*;
         use futures::FutureExt;
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .unwrap()
-            .split(',')
-            .map(str::to_owned)
-            .collect();
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
         let namespace = format!("kv-bytes-{}", uuid::Uuid::new_v4().simple());
         let budget = V3MountBudget::defaults();
         let backend =
@@ -2032,11 +2030,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
     async fn real_tikv_bounded_keyset_pages_complete_large_prefix() {
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .unwrap()
-            .split(',')
-            .map(str::to_owned)
-            .collect();
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
         let backend = super::TiKvWorkspaceBackend::connect(
             endpoints,
             &format!("kv-pages-{}", uuid::Uuid::new_v4().simple()),
@@ -2050,11 +2047,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
     async fn real_tikv_clock_window_fences_reap_and_advances_generation_atomically() {
-        let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-            .unwrap()
-            .split(',')
-            .map(str::to_owned)
-            .collect();
+        let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+            eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+            return;
+        };
         let backend = super::TiKvWorkspaceBackend::connect(
             endpoints,
             &format!("g12-pin-clock-{}", uuid::Uuid::new_v4().simple()),

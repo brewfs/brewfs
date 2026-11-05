@@ -189,11 +189,10 @@ async fn real_redis_manager_ownership_and_empty_root_contract() {
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; real Manager ownership and strict root bootstrap"]
 async fn real_tikv_manager_ownership_and_empty_root_contract() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("manager-guard-{}", Uuid::new_v4().simple());
     let first = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)
         .await
@@ -354,11 +353,10 @@ async fn real_redis_manager_bootstrap_rechecks_native_locator_atomically() {
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; native locator inserted after preflight"]
 async fn real_tikv_manager_bootstrap_rechecks_native_locator_atomically() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let wire = tikv_client::TransactionClient::new(endpoints.clone())
         .await
         .unwrap();

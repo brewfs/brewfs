@@ -156,17 +156,9 @@ fn tikv_entity_clock_and_prefix_boundaries() {
     assert!(prefix_end(b"\xff").is_err());
 }
 
-fn endpoints() -> Vec<String> {
-    std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated TiKV endpoints")
-        .split(',')
-        .map(str::to_owned)
-        .collect()
-}
-
-async fn fixture() -> (TiKvEntityBackend, EntityKeys, TransactionAuthority) {
+async fn fixture(endpoints: Vec<String>) -> (TiKvEntityBackend, EntityKeys, TransactionAuthority) {
     let keys = EntityKeys::new(Uuid::new_v4(), Uuid::new_v4());
-    let backend = TiKvEntityBackend::connect(endpoints(), keys.volume_id(), None)
+    let backend = TiKvEntityBackend::connect(endpoints, keys.volume_id(), None)
         .await
         .unwrap();
     let initial = TransactionAuthority::from_validated(
@@ -262,7 +254,11 @@ async fn wait_for_lock_waiters(client: &MetricsClient, endpoint: &str, expected:
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV and BREWFS_TEST_TIKV_STATUS_ENDPOINT"]
 async fn tikv_entity_waiting_mutation_retains_its_ordered_lock_prefix() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let endpoint = std::env::var("BREWFS_TEST_TIKV_STATUS_ENDPOINT").unwrap();
     let metrics = MetricsClient::new();
     let first = keys.descriptor();
@@ -360,7 +356,11 @@ async fn tikv_entity_waiting_mutation_retains_its_ordered_lock_prefix() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV and BREWFS_TEST_TIKV_STATUS_ENDPOINT"]
 async fn tikv_entity_allocation_retains_counter_until_object_reservation() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let counter = keys.counter("slice");
     assert_eq!(
         backend
@@ -463,7 +463,11 @@ async fn tikv_entity_allocation_retains_counter_until_object_reservation() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_allocation_lost_commit_ack_is_not_replayed() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let counter = keys.counter("slice");
     backend
         .commit(
@@ -521,8 +525,12 @@ async fn tikv_entity_allocation_lost_commit_ack_is_not_replayed() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_expiry_is_checked_after_reads_and_before_success() {
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     for read_only in [false, true] {
-        let (backend, keys, authority) = fixture().await;
+        let (backend, keys, authority) = fixture(endpoints.clone()).await;
         let now = backend.read(&[]).await.unwrap().now_ns;
         let expired_after_pause =
             TransactionAuthority::from_validated(authority.checks, Some(now + 500_000_000))
@@ -552,7 +560,11 @@ async fn tikv_entity_expiry_is_checked_after_reads_and_before_success() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_lost_commit_ack_is_not_replayed() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let before = backend.inner.control.commits.load(Ordering::SeqCst);
     backend.inner.control.lose_ack.store(true, Ordering::SeqCst);
     assert!(matches!(
@@ -573,7 +585,11 @@ async fn tikv_entity_lost_commit_ack_is_not_replayed() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_cancelled_caller_keeps_commit_and_shutdown_obligation() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let (entered, resume) = backend.inner.control.pause();
     let request = {
         let backend = backend.clone();
@@ -597,7 +613,7 @@ async fn tikv_entity_cancelled_caller_keeps_commit_and_shutdown_obligation() {
     );
     resume.add_permits(1);
     shutdown.await.unwrap().unwrap();
-    let reopened = TiKvEntityBackend::connect(endpoints(), keys.volume_id(), None)
+    let reopened = TiKvEntityBackend::connect(endpoints, keys.volume_id(), None)
         .await
         .unwrap();
     assert_eq!(
@@ -610,7 +626,11 @@ async fn tikv_entity_cancelled_caller_keeps_commit_and_shutdown_obligation() {
 #[tokio::test]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_read_validation_does_not_lock_out_renewal() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let (entered, resume) = backend.inner.control.pause();
     let read = {
         let backend = backend.clone();
@@ -679,7 +699,11 @@ async fn tikv_entity_read_validation_does_not_lock_out_renewal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires isolated PD/TiKV"]
 async fn tikv_entity_eight_readers_leave_renewal_live() {
-    let (backend, keys, authority) = fixture().await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    let (backend, keys, authority) = fixture(endpoints.clone()).await;
     let barrier = Arc::new(tokio::sync::Barrier::new(9));
     let mut readers = tokio::task::JoinSet::new();
     for _ in 0..8 {

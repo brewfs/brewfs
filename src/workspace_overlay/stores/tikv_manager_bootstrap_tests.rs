@@ -59,11 +59,10 @@ async fn bootstrap_wait_case(
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; actual pre-init barrier wait and fresh range snapshot"]
 async fn real_tikv_manager_bootstrap_observes_writer_committed_after_its_start() {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("commitred-{}", Uuid::new_v4().simple());
     let writer = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)
         .await

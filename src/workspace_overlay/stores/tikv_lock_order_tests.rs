@@ -89,11 +89,10 @@ where
     F: FnOnce(TiKvWorkspaceBackend) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("isolated BREWFS_TEST_TIKV_PD_ENDPOINTS is required")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     // Reuse the exact scoped cleanup helper's existing UUID allowlist.
     let namespace = format!("commitred-{}", Uuid::new_v4().simple());
     let budget = V3MountBudget::defaults();

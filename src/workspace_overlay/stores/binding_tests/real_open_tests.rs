@@ -216,11 +216,10 @@ async fn public_real_redis_v3_open_contract() {
 #[tokio::test]
 #[ignore = "requires BREWFS_TEST_TIKV_PD_ENDPOINTS"]
 async fn public_real_tikv_v3_open_contract() {
-    let endpoints: Vec<_> = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("v3-open-{}", Uuid::new_v4().simple());
     let first = TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)
         .await

@@ -17,19 +17,19 @@ use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
-pub(super) enum Remote {
+pub(super) enum Remote<'a> {
     Redis,
-    TiKv,
+    TiKv(&'a [String]),
 }
 
-impl Remote {
+impl Remote<'_> {
     pub(super) fn config(self, namespace: &str) -> serde_json::Value {
         match self {
             Self::Redis => {
                 serde_json::json!({"backend":"redis", "url_env":"BREWFS_TEST_REDIS_URL", "namespace":namespace, "stable_cluster_id":"isolated-manager-redis"})
             }
-            Self::TiKv => {
-                serde_json::json!({"backend":"tikv", "pd_endpoints":std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS").unwrap().split(',').collect::<Vec<_>>(), "namespace":namespace, "stable_cluster_id":"isolated-manager-tikv"})
+            Self::TiKv(endpoints) => {
+                serde_json::json!({"backend":"tikv", "pd_endpoints":endpoints, "namespace":namespace, "stable_cluster_id":"isolated-manager-tikv"})
             }
         }
     }
@@ -44,17 +44,10 @@ impl Remote {
                 .await
                 .unwrap(),
             ),
-            Self::TiKv => Arc::new(
-                TiKvWorkspaceBackend::connect(
-                    std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-                        .unwrap()
-                        .split(',')
-                        .map(str::to_owned)
-                        .collect(),
-                    namespace,
-                )
-                .await
-                .unwrap(),
+            Self::TiKv(endpoints) => Arc::new(
+                TiKvWorkspaceBackend::connect(endpoints.to_vec(), namespace)
+                    .await
+                    .unwrap(),
             ),
         }
     }
@@ -69,17 +62,10 @@ impl Remote {
                 .await
                 .unwrap(),
             )),
-            Self::TiKv => Arc::new(KvWorkspaceStore::new(
-                TiKvWorkspaceBackend::connect(
-                    std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-                        .unwrap()
-                        .split(',')
-                        .map(str::to_owned)
-                        .collect(),
-                    namespace,
-                )
-                .await
-                .unwrap(),
+            Self::TiKv(endpoints) => Arc::new(KvWorkspaceStore::new(
+                TiKvWorkspaceBackend::connect(endpoints.to_vec(), namespace)
+                    .await
+                    .unwrap(),
             )),
         }
     }
@@ -99,16 +85,10 @@ impl Remote {
                     .await
                     .unwrap(),
                 ),
-                Self::TiKv => Arc::new(
-                    crate::native_base::write::tikv::TiKvControlStore::connect(
-                        &std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-                            .unwrap()
-                            .split(',')
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>(),
-                    )
-                    .await
-                    .unwrap(),
+                Self::TiKv(endpoints) => Arc::new(
+                    crate::native_base::write::tikv::TiKvControlStore::connect(endpoints)
+                        .await
+                        .unwrap(),
                 ),
             };
             let mut txn = Txn::new();
@@ -231,7 +211,7 @@ async fn initialized(manager: &Manager, format: &str) -> (Operation, VolumeView)
     (completed, volume)
 }
 
-async fn recovery_contract(remote: Remote, format: &str) {
+async fn recovery_contract(remote: Remote<'_>, format: &str) {
     let namespace = format!("manager-recover-{}", Uuid::new_v4().simple());
     let dir = tempfile::tempdir().unwrap();
     configure(dir.path(), remote.config(&namespace));
@@ -584,7 +564,7 @@ async fn native_progressed_reply_recovery(
     reopened
 }
 
-async fn ownership_contract(remote: Remote) {
+async fn ownership_contract(remote: Remote<'_>) {
     let namespace = format!("manager-owners-{}", Uuid::new_v4().simple());
     let dir = tempfile::tempdir().unwrap();
     let other_dir = tempfile::tempdir().unwrap();
@@ -647,7 +627,7 @@ async fn ownership_contract(remote: Remote) {
     remote.cleanup(&namespace, Some(volume.id)).await;
 }
 
-async fn foreign_namespace_contract(remote: Remote, format: &str) {
+async fn foreign_namespace_contract(remote: Remote<'_>, format: &str) {
     let namespace = format!("manager-foreign-{}", Uuid::new_v4().simple());
     let dir = tempfile::tempdir().unwrap();
     configure(dir.path(), remote.config(&namespace));
@@ -687,7 +667,7 @@ async fn foreign_namespace_contract(remote: Remote, format: &str) {
     remote.cleanup(&namespace, None).await;
 }
 
-async fn reopen_configuration_contract(remote: Remote) {
+async fn reopen_configuration_contract(remote: Remote<'_>) {
     let namespace = format!("manager-config-{}", Uuid::new_v4().simple());
     let rebound_namespace = format!("manager-rebound-{}", Uuid::new_v4().simple());
     let dir = tempfile::tempdir().unwrap();
@@ -714,7 +694,7 @@ async fn reopen_configuration_contract(remote: Remote) {
             unavailable["url_env"] =
                 format!("BREWFS_MANAGER_MISSING_{}", Uuid::new_v4().simple()).into()
         }
-        Remote::TiKv => {
+        Remote::TiKv(_) => {
             unavailable["tls"] = serde_json::json!({"ca_path":dir.path().join("missing-ca.pem"), "cert_path":dir.path().join("missing-cert.pem"), "key_path":dir.path().join("missing-key.pem")})
         }
     }
@@ -776,7 +756,7 @@ async fn reopen_configuration_contract(remote: Remote) {
     remote.cleanup(&rebound_namespace, None).await;
 }
 
-async fn manager_contract(remote: Remote) {
+async fn manager_contract(remote: Remote<'_>) {
     foreign_namespace_contract(remote, "workspace-v1").await;
     recovery_contract(remote, "workspace-v1").await;
     ownership_contract(remote).await;
@@ -789,7 +769,7 @@ async fn manager_contract(remote: Remote) {
     }
 }
 
-async fn expired_crash_session_contract(remote: Remote) {
+async fn expired_crash_session_contract(remote: Remote<'_>) {
     let namespace = format!("manager-crash-session-{}", Uuid::new_v4().simple());
     let dir = tempfile::tempdir().unwrap();
     configure(dir.path(), remote.config(&namespace));
@@ -884,5 +864,9 @@ async fn real_redis_manager_lifecycle_recovery_and_ownership() {
 #[tokio::test]
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; actual Manager APIs and durable journals"]
 async fn real_tikv_manager_lifecycle_recovery_and_ownership() {
-    manager_contract(Remote::TiKv).await;
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
+    manager_contract(Remote::TiKv(&endpoints)).await;
 }

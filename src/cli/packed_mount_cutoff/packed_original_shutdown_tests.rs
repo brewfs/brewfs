@@ -1700,11 +1700,10 @@ async fn redis(case: Case) {
 }
 
 async fn tikv(case: Case) {
-    let endpoints: Vec<String> = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .expect("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .split(',')
-        .map(str::to_owned)
-        .collect();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let namespace = format!("original-shutdown-{}", Uuid::new_v4());
     isolated(
         move |budget| {

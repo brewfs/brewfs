@@ -53,7 +53,7 @@ async fn rejected_registration(manager: &Manager, volume: Uuid, key: &str, code:
 
 async fn assert_contract<B: WorkspaceKvBackend>(
     manager: &Manager,
-    remote: Remote,
+    remote: Remote<'_>,
     catalog: Arc<KvWorkspaceStore<B>>,
     fixture: &NativeP1RuntimeFixture,
     seed: &Seed,
@@ -359,7 +359,7 @@ async fn assert_contract<B: WorkspaceKvBackend>(
 }
 
 async fn qualification<B: WorkspaceKvBackend>(
-    remote: Remote,
+    remote: Remote<'_>,
     namespace: String,
     catalog: Arc<KvWorkspaceStore<B>>,
     control: Arc<dyn ControlStore>,
@@ -429,11 +429,10 @@ async fn real_redis_manager_native_p1_nonempty_fork_runtime() {
 #[ignore = "requires isolated BREWFS_TEST_TIKV_PD_ENDPOINTS; real Manager native P1 namespace/data qualification"]
 async fn real_tikv_manager_native_p1_nonempty_fork_runtime() {
     let namespace = format!("manager-native-runtime-{}", Uuid::new_v4().simple());
-    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .unwrap()
-        .split(',')
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let Some(endpoints) = crate::test_support::tikv_endpoints() else {
+        eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
+        return;
+    };
     let catalog = Arc::new(KvWorkspaceStore::new(
         TiKvWorkspaceBackend::connect(endpoints.clone(), &namespace)
             .await
@@ -444,5 +443,5 @@ async fn real_tikv_manager_native_p1_nonempty_fork_runtime() {
             .await
             .unwrap(),
     );
-    qualification(Remote::TiKv, namespace, catalog, control).await;
+    qualification(Remote::TiKv(&endpoints), namespace, catalog, control).await;
 }
