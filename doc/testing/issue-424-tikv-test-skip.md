@@ -49,7 +49,7 @@ Logs: [red](evidence/issue-424/helper-red.log),
 
 ## Local gates
 
-All Cargo builds and tests use dev/test profiles, with
+All acceptance builds and tests use dev/test profiles, with
 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`.
 The first debug test compilation with three build jobs hit the cargo shim's
 24 GiB memory cgroup limit; the kernel reported an OOM kill before any test
@@ -62,28 +62,35 @@ The large debug test build scopes were temporarily allowed up to 28 GiB within
 the 32 GB host budget. The first successful build peaked at 23.7 GiB; scope
 settings and resource evidence are in
 [debug-build-memory.log](evidence/issue-424/debug-build-memory.log).
-No release tests or GitHub Actions are used.
+An attempt after the base update also hit the host OOM limit while an unrelated
+compiler was running. Its failure is preserved in
+[no-tikv-real_tikv-global-oom.log](evidence/issue-424/no-tikv-real_tikv-global-oom.log).
+Final acceptance runs avoid simultaneous active compilers; interrupted and
+OOM logs are diagnostic evidence, not successful gates.
+A further retry failed because a frozen compiler still retained about 8 GiB
+while the test compiler needed about 22 GiB. That failed run is recorded in
+[no-tikv-real_tikv-frozen-memory-oom.log](evidence/issue-424/no-tikv-real_tikv-frozen-memory-oom.log).
+Large test builds must wait for competing compilers to exit and release their
+memory; freezing a compiler does not release its resident pages.
+No release tests are run. Acceptance is based on local gates, independently of
+GitHub Actions.
 
-The first strict all-features Clippy run exposed an existing compile failure:
-etcd `readdir_page` passed `EtcdEntryInfo` to the rkyv-aware reader even though
-that type is stored as serde JSON. Switching this call to the existing
-`etcd_get_json_serde_only` reader matches the surrounding attribute reads.
-The failing invocation is preserved in
-[clippy-all-features-before-fix.log](evidence/issue-424/clippy-all-features-before-fix.log).
+Earlier strict Clippy failures involved the existing etcd/rkyv reader and HDFS
+test lints. Both fixes landed upstream before this change was merged, so neither
+is part of the final TiKV diff. Their diagnostic logs remain available as
+[the initial compile failure](evidence/issue-424/clippy-all-features-before-fix.log)
+and [the HDFS lint failures](evidence/issue-424/clippy-all-features-hdfs-before-fix.log).
+The final change consists of 42 Rust files, including the new helper and its
+one regression test. Source audit confirmed that all 2,200 existing assertion
+bodies, 386 loop headers, and 476 test/ignore attributes are unchanged.
 
-The next strict Clippy run found eight existing HDFS test lints. Removing
-unnecessary mutable borrows and initializing struct fields directly fixes
-those lints without changing expected results or the C ABI. This gate-only
-cleanup is separate from the TiKV fixtures; their original assertion bodies
-remain byte-for-byte unchanged. The failure is preserved in
-[clippy-all-features-hdfs-before-fix.log](evidence/issue-424/clippy-all-features-hdfs-before-fix.log).
-
-While these checks ran, main incorporated both gate fixes in the #426 work.
-The branch was updated to `3fc7db9`; the etcd and HDFS changes are therefore
-absent from this PR's final diff. The final change consists of 42 Rust files,
-including the new helper and its one regression test. Strict Clippy and the
-requested real_tikv selection are rerun on that updated base. Earlier logs
-remain available with `before-main-update` filenames.
+The implementation was squash-merged in [PR #429](https://github.com/brewfs/brewfs/pull/429)
+as `cbf3c17677ddb28a3a33f9d0858ace6c692e5aa5`. Its source tree is identical to
+the checked branch commit `2728dbef0e045b3163c75f0a5d8739d9c819d97f`.
+The final local gate logs below validate that source tree. The expanded
+127-case fixture run predates the base update; those fixture sources did not
+change in the update. Earlier target and Clippy logs are retained with
+`before-main-update` filenames.
 
 The required `real_tikv` selection produces 81 explicit skip messages and
 `test result: ok. 81 passed; 0 failed` with PD endpoints unset. The helper also
@@ -98,8 +105,29 @@ Clippy command exits 0. Full logs:
 - [Format, shell checks, and diff whitespace](evidence/issue-424/format-shell-diff.log)
 - [Source audit](evidence/issue-424/source-audit.log)
 - [Changed Rust file manifest](evidence/issue-424/changed-rust-files.txt)
+- [Self-review](evidence/issue-424/self-review.log)
+- [Coverage of all 71 inventory entries](evidence/issue-424/inventory-coverage.log)
 
-Additional gate results are recorded below after the sequential matrix finishes.
+The final sequential matrix completed with exit code 0 for every command:
+
+- `cargo fmt --all -- --check`: pass, 32.15 s ([fmt-final](evidence/issue-424/fmt-final.log)).
+- Strict `cargo clippy --all-targets --all-features -- -D warnings`: pass, 332.55 s ([clippy-all-features](evidence/issue-424/clippy-all-features.log)).
+- Requested no-environment selection: 81 passed, 0 failed ([no-tikv-real_tikv](evidence/issue-424/no-tikv-real_tikv.log)).
+- Visible skip selection: 81 passed, 0 failed, with explicit `skip:` output ([no-tikv-visible-skips](evidence/issue-424/no-tikv-visible-skips.log)).
+- Helper regression: 1 passed, 0 failed ([helper-cargo](evidence/issue-424/helper-cargo.log)).
+- `cargo check --workspace`: pass ([check-workspace](evidence/issue-424/check-workspace.log)).
+- `cargo check -p brewfs` with tokio and io-uring runtimes: both pass ([tokio](evidence/issue-424/check-fuse-tokio.log), [io-uring](evidence/issue-424/check-fuse-io-uring.log)).
+- `cargo test --workspace --lib --bins`: 1,326 passed, 0 failed, 264 ignored, plus the two binary targets ([test-workspace](evidence/issue-424/test-workspace.log)).
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass ([clippy-workspace](evidence/issue-424/clippy-workspace.log)).
+
+The default-feature integration smoke selection also passed both tests with
+explicit skips ([no-tikv-integration](evidence/issue-424/no-tikv-integration.log)).
+The expanded frozen-base-metadata fixture selection passed 127 tests with
+explicit skips ([no-tikv-complete-fixtures](evidence/issue-424/no-tikv-complete-fixtures.log)).
+
+Real TiKV regression tests were not run in this task because no isolated TiKV
+test cluster was configured. The 8/8 xattr result reported on issue #424 is
+prior evidence, not a new execution against this change.
 
 ## Original 71-item inventory
 
@@ -123,8 +151,8 @@ explicit missing-configuration guard, either directly or in its shared fixture.
 | 13 | `src/meta/stores/tikv/tests.rs:698` | `tikv_rename_exchange_swaps_entries` | integration_config → Option + 用例入口 guard；保留 BREWFS_META_TIKV_PD_ENDPOINTS fallback |
 | 14 | `src/meta/stores/tikv/tests.rs:733` | `tikv_rename_transactions_prevent_concurrent_parent_cycle` | integration_config → Option + 用例入口 guard；保留 BREWFS_META_TIKV_PD_ENDPOINTS fallback |
 | 15 | `src/meta/stores/tikv/tests.rs:783` | `tikv_link_and_symlink_extensions` | integration_config → Option + 用例入口 guard；保留 BREWFS_META_TIKV_PD_ENDPOINTS fallback |
-| 16 | `src/native_base/write/tests_tikv.rs:19` | `$name` | 原有 BREWFS_TIKV_PD_ENDPOINTS 入口 guard（宏覆盖 19 个展开用例） |
-| 17 | `src/native_base/write/tests_tikv.rs:60` | `independent_stores_racing_same_head_commit_once` | 原有 BREWFS_TIKV_PD_ENDPOINTS 入口 guard |
+| 16 | `src/native_base/write/tests_tikv.rs:19` | `$name` | BREWFS_TIKV_PD_ENDPOINTS 入口 guard（宏覆盖 19 个展开用例） |
+| 17 | `src/native_base/write/tests_tikv.rs:60` | `independent_stores_racing_same_head_commit_once` | BREWFS_TIKV_PD_ENDPOINTS 入口 guard |
 | 18 | `src/native_base/write/tikv.rs:252` | `real_tikv_native_deadline_and_owner_are_checked_with_the_write` | tikv_endpoints + 用例入口 guard |
 | 19 | `src/workspace_overlay/entity/backend_tests.rs:9` | `tikv_entity_backend_and_allocator_conformance` | tikv_endpoints + 用例入口 guard |
 | 20 | `src/workspace_overlay/entity/tikv_mount_tests.rs:95` | `tikv_entity_both_lowers_keep_cow_and_writeback_contract` | tikv_endpoints + 用例入口 guard |

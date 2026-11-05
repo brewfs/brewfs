@@ -1,0 +1,399 @@
+$ cargo test --config profile.test.package.brewfs.codegen-units=512 --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib -- --ignored real_tikv --nocapture --test-threads=1
+Owned gate service: cargo-1793887587410101988-68435.service; MemoryMax=28G
+warning: associated functions `new` and `with_decoding_limit` are never used
+   --> vendor/tikv-client/src/pd/cluster.rs:124:12
+    |
+123 | impl Connection {
+    | --------------- associated functions in this implementation
+124 |     pub fn new(security_mgr: Arc<SecurityManager>) -> Connection {
+    |            ^^^
+...
+131 |     pub fn with_decoding_limit(
+    |            ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `StreamBackupError` is never constructed
+   --> vendor/tikv-client/src/generated/backup.rs:744:12
+    |
+744 | pub struct StreamBackupError {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `FileDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:29:12
+   |
+29 | pub struct FileDictionary {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `KeyDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:53:12
+   |
+53 | pub struct KeyDictionary {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKey` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:64:12
+   |
+64 | pub struct MasterKey {
+   |            ^^^^^^^^^
+
+warning: struct `MasterKeyPlaintext` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:84:12
+   |
+84 | pub struct MasterKeyPlaintext {}
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `MasterKeyFile` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:89:12
+   |
+89 | pub struct MasterKeyFile {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKeyKms` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:98:12
+   |
+98 | pub struct MasterKeyKms {
+   |            ^^^^^^^^^^^^
+
+warning: struct `EncryptedContent` is never constructed
+   --> vendor/tikv-client/src/generated/encryptionpb.rs:114:12
+    |
+114 | pub struct EncryptedContent {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: enum `Backend` is never used
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:72:14
+   |
+72 |     pub enum Backend {
+   |              ^^^^^^^
+
+warning: struct `Http` is never constructed
+ --> vendor/tikv-client/src/generated/google.api.rs:7:12
+  |
+7 | pub struct Http {
+  |            ^^^^
+
+warning: struct `HttpRule` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:306:12
+    |
+306 | pub struct HttpRule {
+    |            ^^^^^^^^
+
+warning: struct `CustomHttpPattern` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:374:12
+    |
+374 | pub struct CustomHttpPattern {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `Pattern` is never used
+   --> vendor/tikv-client/src/generated/google.api.rs:346:14
+    |
+346 |     pub enum Pattern {
+    |              ^^^^^^^
+
+warning: struct `RaftResponseHeader` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:508:12
+    |
+508 | pub struct RaftResponseHeader {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdRequest` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:518:12
+    |
+518 | pub struct RaftCmdRequest {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdResponse` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:532:12
+    |
+532 | pub struct RaftCmdResponse {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `SnapshotCfFile` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:43:12
+   |
+43 | pub struct SnapshotCfFile {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `SnapshotMeta` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:53:12
+   |
+53 | pub struct SnapshotMeta {
+   |            ^^^^^^^^^^^^
+
+warning: struct `RaftSnapshotData` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:192:12
+    |
+192 | pub struct RaftSnapshotData {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `StoreRecoverState` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:220:12
+    |
+220 | pub struct StoreRecoverState {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `RegionSequenceNumberRelation` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:312:12
+    |
+312 | pub struct RegionSequenceNumberRelation {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+   --> vendor/tikv-client/src/generated/resource_manager.rs:279:12
+    |
+279 | pub struct Participant {
+    |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/schedulingpb.rs:31:12
+   |
+31 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/tsopb.rs:63:12
+   |
+63 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> vendor/tikv-client/src/region_cache.rs:64:12
+   |
+63 | impl<Client> RegionCache<Client> {
+   | -------------------------------- associated function in this implementation
+64 |     pub fn new(inner_client: Arc<Client>) -> RegionCache<Client> {
+   |            ^^^
+
+warning: `tikv-client` (lib) generated 26 warnings
+warning: constant `DEFAULT_POOL_CAPACITY` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:27:7
+   |
+27 | const DEFAULT_POOL_CAPACITY: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `try_new` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:47:12
+   |
+45 | impl AlignedBuffer {
+   | ------------------ associated function in this implementation
+46 |     /// Create a new aligned buffer with the specified size
+47 |     pub fn try_new(size: usize) -> Result<Self, Box<dyn Error + Send + Sync>> {
+   |            ^^^^^^^
+
+warning: associated items `new`, `with_capacity`, `try_acquire`, `release`, `available`, and `stats` are never used
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:139:12
+    |
+137 | impl BufferPool {
+    | --------------- associated items in this implementation
+138 |     /// Create a new buffer pool with the specified buffer size
+139 |     pub fn new(buffer_size: usize) -> Self {
+    |            ^^^
+...
+144 |     pub fn with_capacity(buffer_size: usize, max_capacity: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+189 |     pub fn try_acquire(&self) -> Option<IoResult<AlignedBuffer>> {
+    |            ^^^^^^^^^^^
+...
+215 |     pub async fn release(&self, buf: AlignedBuffer) {
+    |                  ^^^^^^^
+...
+244 |     pub async fn available(&self) -> usize {
+    |                  ^^^^^^^^^
+...
+249 |     pub fn stats(&self) -> BufferPoolStats {
+    |            ^^^^^
+
+warning: struct `BufferPoolStats` is never constructed
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:267:12
+    |
+267 | pub struct BufferPoolStats {
+    |            ^^^^^^^^^^^^^^^
+
+warning: variant `Fatal` is never constructed
+   --> vendor/asyncfuse/src/raw/session/utils.rs:106:5
+    |
+104 | pub(super) enum ReadResult {
+    |                 ---------- variant in this enum
+105 |     Destroy,
+106 |     Fatal(std::io::Error),
+    |     ^^^^^
+
+warning: `asyncfuse` (lib) generated 5 warnings
+    Finished `test` profile [unoptimized] target(s) in 0.42s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (/home/hxy/brewfs-pkv-target/debug/deps/brewfs-25c8ea171d9b0d09)
+
+running 81 tests
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::packed_headless_route_tests::real_tikv_original_packed_headless_route_fences_actual_successors_aliases_and_budget ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::packed_headless_snapshot_tests::real_tikv_original_packed_shutdown_to_headless_snapshot_persists_carrier_and_reads_both_sources ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_actual_later_lease_grant_fences_ticket_without_mutation ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_actual_later_open_grant_fences_ticket_without_mutation ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_cancel_constructor_waits_actual_lower_transport ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_cancel_release_keeps_owned_budget_until_cas ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_clean_receipt_same_budget ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_reader_error_retains_pin_and_cleanup_budget ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_release_error_never_writes_receipt ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_unknown_reply_exact_full_packet_without_replay ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_cutoff::packed_original_shutdown_tests::real_tikv_original_packed_shutdown_unknown_then_actual_grant_rejects_stale_confirmation ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_session_tests::real_tikv_cli_kill_expiry_pvc_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_session_tests::real_tikv_cli_mount_mutation_clean_release ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test cli::packed_mount_session_tests::real_tikv_cli_pending_upload_kill_pvc_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test manager::backend_tests::real_tikv_manager_lifecycle_recovery_and_ownership ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test native_base::write::tikv::tests::real_tikv_native_deadline_and_owner_are_checked_with_the_write ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::binding_tests::public_real_tikv_binding_contract ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::binding_tests::real_open_tests::public_real_tikv_v3_open_contract ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::binding_tests::real_publication_tests::public_real_tikv_g12_inode_expansion_rejects_issued_ids ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::binding_tests::real_publication_tests::public_real_tikv_g12_inode_expansion_reserves_unissued_range_and_retries ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::binding_tests::real_publication_tests::public_real_tikv_g12_same_head_publication_retries_exactly ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::clock_cas_tests::real_tikv_clock_cas_rejects_expired_deadline_without_writes ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_admin::headless::initial_snapshot::tests::real_tikv_initial_composer_snapshot_reopen_carrier_fork_and_actual_root_read ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_admin::headless::initial_snapshot::tests::real_tikv_initial_root_birth_has_complete_native_reverse_authority ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_admin::tests::real_tikv_packed_clean_source_expired_without_original_drain_receipt ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_admin::tests::real_tikv_packed_clean_source_released_without_original_drain_receipt ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::carrier_basis_tests::real_tikv_carrier_basis_counterfactual_native_revision_rejected_before_final ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::carrier_basis_tests::real_tikv_carrier_basis_final_cas_false_has_no_partial_write_or_second_final ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::fork_alias_tests::real_tikv_native_carrier_fork_alias_siblings_pins_journals_and_retirement ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::history_retirement_tests::real_tikv_authenticated_history_grace_reader_drain_membership_and_delete ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::native_lease_reaper_tests::real_tikv_authenticated_native_lease_grace_releases_only_lease_hold ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::native_lease_reaper_tests::real_tikv_authenticated_native_lease_prepare_before_pnb_retains_hold ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::prepare_tests::real_tikv_prepare_expired_lease_unique_owner_first_pnb_factory ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::prepare_tests::real_tikv_prepare_original_lease_fresh_store_first_pnb_factory ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::process_restart_tests::real_tikv_process_death_pnb_then_independent_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::process_restart_tests::real_tikv_process_death_prepare_then_independent_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::process_restart_tests::real_tikv_process_death_prepare_with_persistent_upper_payload ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::process_restart_tests::real_tikv_process_death_quiesced_then_independent_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::real_tikv_native_factory_atomic_carrier_head_pwb_ppj_registry ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::real_tikv_native_factory_cancelled_waiter_keeps_owned_final_driver ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::real_tikv_native_factory_lost_reply_exact_confirmation_without_reissue ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::real_tikv_native_factory_unknown_before_cannot_resubmit_packet ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_actual_put_lost_reply_full_auth_no_reput ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_building_empty ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_dispatch_without_physical_put_quarantine_new_attempt ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_readback_cancelled_before_first_object ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_uploaded_manifest_before_target ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::native_resume_tests::real_tikv_native_resume_uploading_before_readback ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_cancel_claim_waiter_keeps_held_actual_cas_owner ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_cancel_final_waiter_keeps_fresh_source_and_graph ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_expired_lease_new_store_typed_capture_hash_factory ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_held_final_rejects_actual_open_owner_expiry ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_lost_claim_reply_exact_same_incarnation ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::recovery_tests::real_tikv_recovery_lost_final_reply_confirms_new_lease_open_claim_successors ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::registry::admin_gc::facade::native::slice_real_rustfs_tests::real_tikv_rustfs_sid_publication_wins ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::registry::admin_gc::facade::native::slice_real_rustfs_tests::real_tikv_rustfs_sid_reservation_wins ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::registry::admin_gc::facade::native::slice_real_rustfs_tests::real_tikv_rustfs_sid_sixty_five_block_recovery ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::registry::initial_bootstrap::tests::real_tikv_initial_packed_bootstrap_source_staging_unknown_reopen_and_quarantine ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::registry::initial_history_real_tests::real_tikv_authenticated_initial_history_final_delete_and_native_gc ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_journal::tests::real_tikv_packed_journal_reopen_staging_and_abort ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::real_tikv_packed_reader_pin_reopen_and_crashed_reader_expiry ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::kv_store::tests::g13_real_backend_candidates::g13_real_tikv_destructive_revalidation_contract ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::manager_backend_tests::real_tikv_manager_bootstrap_rechecks_native_locator_atomically ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::manager_backend_tests::real_tikv_manager_ownership_and_empty_root_contract ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::admin_tls_tests::real_tikv_dual_tls_operator_gate_and_all_client_drain ... skip: BREWFS_TEST_TIKV_TLS_DIR is unset
+ok
+test workspace_overlay::stores::tikv::secondary_join_tests::real_tikv_secondary_join_multikey_cas_allows_immediate_bounded_point_and_scan ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_authentication_lost_successful_commit_reply_does_not_replay ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_authentication_prewrite_failure_does_not_replay ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_commit_failure_does_not_replay_as_mismatch ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_bounded_duplicate_is_rejected_before_transaction ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_duplicate_checks_keep_all_expectations ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_duplicate_writes_keep_original_last_write ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_exact_check_paths_are_caller_independent ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_unknown_auth_commit_reply_is_not_replayed ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lock_order_write_only_and_checked_union_are_sorted ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_lost_successful_commit_reply_does_not_replay ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::commit_failure_candidates::real_tikv_manager_bootstrap_observes_writer_committed_after_its_start ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::real_tikv_bounded_keyset_pages_complete_large_prefix ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::real_tikv_bounded_values_use_hard_cap_for_corrupt_oversized_point_and_scan ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+test workspace_overlay::stores::tikv::tests::real_tikv_clock_window_fences_reap_and_advances_generation_atomically ... skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty
+ok
+
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 3094 filtered out; finished in 0.03s
+
+
+exit_code=0
+elapsed_seconds=0.65

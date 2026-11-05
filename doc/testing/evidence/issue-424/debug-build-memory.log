@@ -1,0 +1,17 @@
+MemoryPeak=25455677440
+MemoryMax=30064771072
+MemorySwapMax=42949672960
+MemoryPeak=4381356032
+MemoryMax=30064771072
+
+Full fixture build scope: cargo-1793872526083652951-46458.service
+Nov 05 17:55:25 brewfs-build systemd[1]: cargo-1793870678474387650-38732.service: Deactivated successfully.
+Nov 05 17:55:25 brewfs-build systemd[1]: cargo-1793870678474387650-38732.service: Consumed 18min 34.251s CPU time, 23.7G memory peak, 0B memory swap peak.
+Nov 05 18:26:19 brewfs-build systemd[1]: cargo-1793872526083652951-46458.service: Deactivated successfully.
+Nov 05 18:26:19 brewfs-build systemd[1]: cargo-1793872526083652951-46458.service: Consumed 32min 29.528s CPU time, 24.2G memory peak, 0B memory swap peak.
+MemoryPeak=131956736
+MemoryMax=30064771072
+
+Final current-base real_tikv build scope: cargo-1793874812965010627-59608.service, pid 59617
+
+Final Clippy service cargo-1793879615434293169-65853.service: initial 6 GiB cap raised to 10 GiB for test-target metadata; competing restoration compiler frozen.

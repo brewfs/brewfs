@@ -1,0 +1,19 @@
+baseline: 9a048e1629571602c4a366e71ed6e78263978ca6
+original #[ignore] declarations containing TIKV: 71
+existing assertion macro bodies unchanged: 2200
+tracked Rust files reviewed: 41
+existing test/ignore attributes unchanged in all modified files
+existing loop headers unchanged: 386
+original direct PD environment reads: 47
+remaining direct PD environment reads: 1 (unified helper using .ok()?)
+rg BREWFS_TEST_TIKV_PD_ENDPOINTS src tests | rg unwrap matches: 0
+Final TiKV change review (excludes new helper and two documented gate-only fixes):
+unchanged assertion bodies / loop headers / test attributes: [2200, 386, 476]
+Updated branch base: 3fc7db90e8f374899470e7f02bd89c46169187ee
+The two gate-only fixes now exist identically upstream and are absent from this PR diff. Final Rust file count including helper: 42.
+
+Current merged-source audit
+source commit: cbf3c17677ddb28a3a33f9d0858ace6c692e5aa5
+uppercase-TIKV ignore entries: 71
+BREWFS_TEST_TIKV_PD_ENDPOINTS lines containing unwrap: 0
+all BREWFS_TEST_TIKV_PD_ENDPOINTS occurrences: 103

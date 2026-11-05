@@ -1,0 +1,3 @@
+cargo metadata --no-deps --format-version 1: exit_code=0
+rfuse3 workspace member: False
+rfuse3 runtime matrix: not applicable (vendored asyncfuse is excluded from workspace)

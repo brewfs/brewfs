@@ -1,0 +1,669 @@
+ Downloading crates ...
+  Downloaded axum-server v0.8.0
+  Downloaded atoi v3.1.0
+  Downloaded bytecheck v0.8.2
+  Downloaded bytecheck_derive v0.8.2
+  Downloaded bytestring v1.5.1
+  Downloaded console-api v0.9.0
+  Downloaded console-subscriber v0.5.0
+  Downloaded dav-server v0.11.0
+  Downloaded derive-where v1.6.1
+  Downloaded dyn-clone v1.0.20
+  Downloaded fs-err v3.3.1
+  Downloaded hex-simd v0.8.0
+  Downloaded htmlescape v0.3.1
+  Downloaded humantime v2.3.0
+  Downloaded hdrhistogram v7.5.4
+  Downloaded io-uring v0.7.12
+  Downloaded munge v0.4.7
+  Downloaded munge_macro v0.4.7
+  Downloaded minimal-lexical v0.2.1
+  Downloaded nom v8.0.0
+  Downloaded nom v7.1.3
+  Downloaded numeric_cast v0.3.0
+  Downloaded ptr_meta v0.3.1
+  Downloaded ptr_meta_derive v0.3.1
+  Downloaded quick-xml v0.41.0
+  Downloaded rancor v0.1.1
+  Downloaded rend v0.5.3
+  Downloaded rkyv_derive v0.8.15
+  Downloaded rkyv v0.8.15
+  Downloaded s3s v0.15.0
+  Downloaded std-next v0.1.9
+  Downloaded tikv-jemallocator v0.5.4
+  Downloaded tikv-jemalloc-sys v0.5.4+5.3.0-patched
+  Downloaded tracing-flame v0.2.0
+  Downloaded transform-stream v0.3.1
+  Downloaded xml v1.4.0
+  Downloaded xml-rs v1.0.0
+  Downloaded xxhash-rust v0.8.18
+  Downloaded xmltree v0.12.0
+    Checking zeroize v1.9.0
+    Checking getrandom v0.2.17
+    Checking num-traits v0.2.19
+    Checking zerocopy v0.8.39
+    Checking generic-array v0.14.7
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking rand_core v0.6.4
+    Checking digest v0.10.7
+    Checking either v1.15.0
+    Checking num-integer v0.1.46
+    Checking ring v0.17.14
+    Checking block-padding v0.3.3
+    Checking inout v0.1.4
+    Checking sha2 v0.10.9
+    Checking cipher v0.4.4
+    Checking rustls-pki-types v1.14.0
+    Checking hmac v0.12.1
+    Checking base64ct v1.8.3
+    Checking untrusted v0.7.1
+    Checking aws-lc-rs v1.15.4
+    Checking stable_deref_trait v1.2.1
+   Compiling rustls v0.23.36
+    Checking pem-rfc7468 v0.7.0
+    Checking yoke v0.8.1
+    Checking pbkdf2 v0.12.2
+    Checking aes v0.8.4
+    Checking der v0.7.10
+    Checking rustls-webpki v0.103.9
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.2
+    Checking cbc v0.1.2
+    Checking salsa20 v0.10.2
+    Checking bytes-utils v0.1.4
+    Checking zerovec v0.11.5
+    Checking aws-smithy-types v1.6.3
+    Checking scrypt v0.11.0
+    Checking spki v0.7.3
+    Checking pkcs5 v0.7.1
+    Checking uuid v1.21.0
+    Checking rand_chacha v0.3.1
+    Checking sync_wrapper v1.0.2
+    Checking hyper-util v0.1.20
+    Checking rand v0.8.5
+    Checking pkcs8 v0.10.2
+    Checking tower v0.5.3
+    Checking tinystr v0.8.2
+    Checking hkdf v0.12.4
+    Checking icu_locale_core v2.1.1
+    Checking aws-smithy-runtime-api v1.16.0
+    Checking tokio-rustls v0.26.4
+    Checking zerotrie v0.2.3
+    Checking potential_utf v0.1.4
+    Checking lazy_static v1.5.0
+    Checking signature v2.2.0
+    Checking icu_collections v2.1.1
+    Checking ff v0.13.1
+    Checking icu_provider v2.1.1
+    Checking sec1 v0.7.3
+    Checking group v0.13.0
+    Checking crypto-bigint v0.5.5
+    Checking icu_properties v2.1.2
+    Checking icu_normalizer v2.1.1
+    Checking chrono v0.4.45
+    Checking elliptic-curve v0.13.8
+    Checking rustls-native-certs v0.8.3
+    Checking idna_adapter v1.2.1
+    Checking idna v1.1.0
+    Checking rfc6979 v0.4.0
+    Checking ecdsa v0.16.9
+    Checking url v2.5.8
+    Checking primeorder v0.13.6
+    Checking sct v0.7.1
+    Checking rustls-webpki v0.101.7
+    Checking arrayvec v0.7.8
+    Checking rustls v0.21.12
+    Checking hyper-rustls v0.27.7
+    Checking num-bigint v0.4.6
+    Checking byteorder v1.5.0
+    Checking p256 v0.13.2
+    Checking aws-smithy-eventstream v0.61.2
+    Checking aws-smithy-schema v0.2.0
+    Checking aws-smithy-http v0.64.0
+    Checking tokio-rustls v0.24.1
+   Compiling mime_guess v2.0.5
+    Checking hyper-rustls v0.24.2
+    Checking aws-credential-types v1.3.0
+    Checking aws-smithy-http-client v1.4.0
+    Checking bigdecimal v0.4.10
+    Checking rust_decimal v1.40.0
+    Checking aws-smithy-observability v0.3.0
+    Checking hyper-timeout v0.5.2
+    Checking webpki-roots v1.0.6
+    Checking webpki-roots v0.26.11
+    Checking aws-smithy-runtime v1.14.0
+    Checking aws-sigv4 v1.5.1
+    Checking aws-types v1.6.0
+    Checking axum-core v0.5.6
+    Checking sqlx-core v0.8.6
+    Checking sharded-slab v0.1.7
+    Checking axum v0.8.8
+    Checking sha1 v0.10.6
+    Checking atoi v2.0.0
+    Checking ordered-float v2.10.1
+    Checking universal-hash v0.5.1
+    Checking spin v0.10.0
+   Compiling ptr_meta_derive v0.3.1
+    Checking aws-runtime v1.9.2
+    Checking iri-string v0.7.10
+    Checking simdutf8 v0.1.5
+    Checking opaque-debug v0.3.1
+    Checking tracing-subscriber v0.3.22
+    Checking tonic v0.14.4
+    Checking tower-http v0.6.8
+    Checking ptr_meta v0.3.1
+    Checking hax-lib v0.3.5
+    Checking serde-value v0.7.0
+    Checking aws-smithy-http v0.63.4
+    Checking aws-smithy-observability v0.2.5
+    Checking aws-smithy-json v0.62.4
+    Checking md-5 v0.10.6
+    Checking sqlx-postgres v0.8.6
+    Checking sqlx-sqlite v0.8.6
+    Checking tonic-prost v0.14.4
+    Checking rand_chacha v0.2.2
+    Checking const-random v0.1.18
+    Checking k8s-openapi v0.23.0
+    Checking rancor v0.1.1
+    Checking tower v0.4.13
+    Checking polyval v0.6.2
+    Checking crc-fast v1.10.0
+    Checking ordered-float v4.6.0
+   Compiling tikv-jemalloc-sys v0.5.4+5.3.0-patched
+   Compiling fs-err v3.3.1
+   Compiling bytecheck_derive v0.8.2
+   Compiling io-uring v0.7.12
+    Checking xml v1.4.0
+    Checking minimal-lexical v0.2.1
+    Checking nom v7.1.3
+    Checking axum v0.6.20
+    Checking bytecheck v0.8.2
+    Checking sea-query v0.32.7
+    Checking ghash v0.5.1
+    Checking sqlx v0.8.6
+    Checking ahash v0.8.12
+    Checking rand v0.7.3
+    Checking jsonpath-rust v0.5.1
+    Checking aws-smithy-query v0.60.14
+    Checking libcrux-secrets v0.0.4
+    Checking prost-types v0.14.3
+    Checking ssh-encoding v0.2.0
+    Checking kube-core v0.96.0
+    Checking rustls-pemfile v2.2.0
+    Checking ctr v0.9.2
+    Checking num-iter v0.1.45
+    Checking headers-core v0.3.0
+    Checking aead v0.5.2
+    Checking secrecy v0.10.3
+   Compiling munge_macro v0.4.7
+    Checking munge v0.4.7
+    Checking curve25519-dalek v4.1.3
+    Checking kube-client v0.96.0
+    Checking aes-gcm v0.10.3
+    Checking headers v0.4.1
+    Checking num-bigint-dig v0.8.6
+    Checking console-api v0.9.0
+    Checking tonic v0.10.2
+    Checking aws-sdk-sts v1.98.0
+    Checking libcrux-traits v0.0.4
+    Checking fail v0.4.0
+    Checking sea-query-binder v0.7.0
+   Compiling brewfs v0.1.2 (/home/hxy/brewfs-424)
+    Checking libcrux-intrinsics v0.0.4
+    Checking rend v0.5.3
+    Checking hdrhistogram v7.5.4
+    Checking xml-rs v1.0.0
+    Checking xmltree v0.12.0
+    Checking prometheus v0.13.4
+    Checking which v4.4.2
+    Checking aws-smithy-checksums v0.65.0
+    Checking aws-sdk-sso v1.94.0
+    Checking aws-sdk-ssooidc v1.96.0
+    Checking poly1305 v0.8.0
+    Checking aws-smithy-xml v0.62.0
+    Checking std-next v0.1.9
+    Checking crossbeam-deque v0.8.6
+    Checking aws-smithy-json v0.63.0
+    Checking blowfish v0.9.1
+    Checking tokio-retry v0.3.0
+    Checking ed25519 v2.2.3
+    Checking pkcs1 v0.7.5
+    Checking half v2.7.1
+    Checking hex-simd v0.8.0
+    Checking password-hash v0.5.0
+    Checking chacha20 v0.9.1
+    Checking blake2 v0.10.6
+    Checking atoi v3.1.0
+    Checking transform-stream v0.3.1
+    Checking bytestring v1.5.1
+    Checking quick-xml v0.41.0
+    Checking nom v8.0.0
+    Checking libcrux-platform v0.0.2
+   Compiling rkyv_derive v0.8.15
+   Compiling derive-where v1.6.1
+    Checking numeric_cast v0.3.0
+    Checking ciborium-io v0.2.2
+    Checking htmlescape v0.3.1
+    Checking xxhash-rust v0.8.18
+    Checking plotters-backend v0.3.7
+    Checking dyn-clone v1.0.20
+    Checking humantime v2.3.0
+    Checking same-file v1.0.6
+    Checking redis v0.26.1
+    Checking dav-server v0.11.0
+    Checking walkdir v2.5.0
+    Checking console-subscriber v0.5.0
+    Checking blake3 v1.8.7
+    Checking asyncfuse v0.1.12 (/home/hxy/brewfs-424/vendor/asyncfuse)
+    Checking moka v0.12.13
+    Checking governor v0.8.1
+    Checking plotters-svg v0.3.7
+    Checking s3s v0.15.0
+warning: constant `DEFAULT_POOL_CAPACITY` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:27:7
+   |
+27 | const DEFAULT_POOL_CAPACITY: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `try_new` is never used
+  --> vendor/asyncfuse/src/raw/buffer_pool.rs:47:12
+   |
+45 | impl AlignedBuffer {
+   | ------------------ associated function in this implementation
+46 |     /// Create a new aligned buffer with the specified size
+47 |     pub fn try_new(size: usize) -> Result<Self, Box<dyn Error + Send + Sync>> {
+   |            ^^^^^^^
+
+warning: associated items `new`, `with_capacity`, `try_acquire`, `release`, `available`, and `stats` are never used
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:139:12
+    |
+137 | impl BufferPool {
+    | --------------- associated items in this implementation
+138 |     /// Create a new buffer pool with the specified buffer size
+139 |     pub fn new(buffer_size: usize) -> Self {
+    |            ^^^
+...
+144 |     pub fn with_capacity(buffer_size: usize, max_capacity: usize) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+189 |     pub fn try_acquire(&self) -> Option<IoResult<AlignedBuffer>> {
+    |            ^^^^^^^^^^^
+...
+215 |     pub async fn release(&self, buf: AlignedBuffer) {
+    |                  ^^^^^^^
+...
+244 |     pub async fn available(&self) -> usize {
+    |                  ^^^^^^^^^
+...
+249 |     pub fn stats(&self) -> BufferPoolStats {
+    |            ^^^^^
+
+warning: struct `BufferPoolStats` is never constructed
+   --> vendor/asyncfuse/src/raw/buffer_pool.rs:267:12
+    |
+267 | pub struct BufferPoolStats {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `asyncfuse` (lib) generated 4 warnings
+    Checking ciborium-ll v0.2.2
+    Checking sea-orm v1.1.19
+    Checking tikv-client v0.4.0 (/home/hxy/brewfs-424/vendor/tikv-client)
+    Checking tls_codec v0.4.2
+    Checking rkyv v0.8.15
+    Checking libcrux-sha3 v0.0.4
+    Checking argon2 v0.5.3
+    Checking ssh-cipher v0.2.0
+    Checking rsa v0.9.10
+    Checking aws-sdk-s3 v1.145.0
+warning: associated functions `new` and `with_decoding_limit` are never used
+   --> vendor/tikv-client/src/pd/cluster.rs:124:12
+    |
+123 | impl Connection {
+    | --------------- associated functions in this implementation
+124 |     pub fn new(security_mgr: Arc<SecurityManager>) -> Connection {
+    |            ^^^
+...
+131 |     pub fn with_decoding_limit(
+    |            ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `StreamBackupError` is never constructed
+   --> vendor/tikv-client/src/generated/backup.rs:744:12
+    |
+744 | pub struct StreamBackupError {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `FileDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:29:12
+   |
+29 | pub struct FileDictionary {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `KeyDictionary` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:53:12
+   |
+53 | pub struct KeyDictionary {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKey` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:64:12
+   |
+64 | pub struct MasterKey {
+   |            ^^^^^^^^^
+
+warning: struct `MasterKeyPlaintext` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:84:12
+   |
+84 | pub struct MasterKeyPlaintext {}
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `MasterKeyFile` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:89:12
+   |
+89 | pub struct MasterKeyFile {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `MasterKeyKms` is never constructed
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:98:12
+   |
+98 | pub struct MasterKeyKms {
+   |            ^^^^^^^^^^^^
+
+warning: struct `EncryptedContent` is never constructed
+   --> vendor/tikv-client/src/generated/encryptionpb.rs:114:12
+    |
+114 | pub struct EncryptedContent {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: enum `Backend` is never used
+  --> vendor/tikv-client/src/generated/encryptionpb.rs:72:14
+   |
+72 |     pub enum Backend {
+   |              ^^^^^^^
+
+warning: struct `Http` is never constructed
+ --> vendor/tikv-client/src/generated/google.api.rs:7:12
+  |
+7 | pub struct Http {
+  |            ^^^^
+
+warning: struct `HttpRule` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:306:12
+    |
+306 | pub struct HttpRule {
+    |            ^^^^^^^^
+
+warning: struct `CustomHttpPattern` is never constructed
+   --> vendor/tikv-client/src/generated/google.api.rs:374:12
+    |
+374 | pub struct CustomHttpPattern {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `Pattern` is never used
+   --> vendor/tikv-client/src/generated/google.api.rs:346:14
+    |
+346 |     pub enum Pattern {
+    |              ^^^^^^^
+
+warning: struct `RaftResponseHeader` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:508:12
+    |
+508 | pub struct RaftResponseHeader {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdRequest` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:518:12
+    |
+518 | pub struct RaftCmdRequest {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `RaftCmdResponse` is never constructed
+   --> vendor/tikv-client/src/generated/raft_cmdpb.rs:532:12
+    |
+532 | pub struct RaftCmdResponse {
+    |            ^^^^^^^^^^^^^^^
+
+warning: struct `SnapshotCfFile` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:43:12
+   |
+43 | pub struct SnapshotCfFile {
+   |            ^^^^^^^^^^^^^^
+
+warning: struct `SnapshotMeta` is never constructed
+  --> vendor/tikv-client/src/generated/raft_serverpb.rs:53:12
+   |
+53 | pub struct SnapshotMeta {
+   |            ^^^^^^^^^^^^
+
+warning: struct `RaftSnapshotData` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:192:12
+    |
+192 | pub struct RaftSnapshotData {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `StoreRecoverState` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:220:12
+    |
+220 | pub struct StoreRecoverState {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `RegionSequenceNumberRelation` is never constructed
+   --> vendor/tikv-client/src/generated/raft_serverpb.rs:312:12
+    |
+312 | pub struct RegionSequenceNumberRelation {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+   --> vendor/tikv-client/src/generated/resource_manager.rs:279:12
+    |
+279 | pub struct Participant {
+    |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/schedulingpb.rs:31:12
+   |
+31 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: struct `Participant` is never constructed
+  --> vendor/tikv-client/src/generated/tsopb.rs:63:12
+   |
+63 | pub struct Participant {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> vendor/tikv-client/src/region_cache.rs:64:12
+   |
+63 | impl<Client> RegionCache<Client> {
+   | -------------------------------- associated function in this implementation
+64 |     pub fn new(inner_client: Arc<Client>) -> RegionCache<Client> {
+   |            ^^^
+
+warning: `tikv-client` (lib) generated 26 warnings
+    Checking ed25519-dalek v2.2.0
+    Checking bcrypt-pbkdf v0.10.0
+    Checking rayon-core v1.13.0
+    Checking aws-config v1.8.14
+    Checking tikv-jemallocator v0.5.4
+    Checking axum-server v0.8.0
+    Checking etcd-client v0.17.0
+    Checking nix v0.30.1
+    Checking kube v0.96.0
+    Checking tracing-appender v0.2.4
+    Checking tracing-chrome v0.7.2
+    Checking tracing-flame v0.2.0
+    Checking vmm-sys-util v0.15.0
+    Checking p521 v0.13.3
+    Checking p384 v0.13.1
+    Checking debugid v0.8.0
+    Checking itertools v0.10.5
+    Checking memmap2 v0.9.9
+    Checking is-terminal v0.4.17
+    Checking num_cpus v1.17.0
+    Checking bytemuck v1.25.0
+    Checking gimli v0.32.3
+    Checking rustc-demangle v0.1.27
+    Checking cast v0.3.0
+    Checking seize v0.3.3
+    Checking flurry v0.5.2
+    Checking criterion-plot v0.5.0
+    Checking addr2line v0.25.1
+    Checking rgb v0.8.52
+    Checking equator v0.4.2
+    Checking symbolic-common v12.17.2
+    Checking internal-russh-forked-ssh-key v0.6.11+upstream-0.6.7
+    Checking kvm-bindings v0.14.0
+    Checking vsock v0.5.2
+    Checking rayon v1.11.0
+    Checking libcrux-ml-kem v0.0.4
+    Checking ciborium v0.2.2
+    Checking plotters v0.3.7
+    Checking object v0.37.3
+    Checking cpp_demangle v0.5.1
+    Checking russh-cryptovec v0.52.0
+    Checking libyml v0.0.5
+    Checking num-format v0.4.4
+    Checking rustls-platform-verifier v0.6.2
+    Checking generic-array v1.3.5
+    Checking tinytemplate v1.2.1
+    Checking russh-util v0.52.0
+    Checking sysinfo v0.35.2
+    Checking quick-xml v0.26.0
+    Checking encoding_rs v0.8.35
+    Checking unicode-width v0.2.2
+    Checking anes v0.1.6
+    Checking numtoa v0.2.4
+    Checking oorandom v11.1.5
+    Checking hex-literal v0.4.1
+    Checking sdd v3.0.10
+    Checking data-encoding v2.10.0
+    Checking str_stack v0.1.0
+    Checking inferno v0.11.21
+    Checking reqwest v0.13.2
+    Checking russh v0.55.0
+    Checking backtrace v0.3.76
+    Checking scc v2.4.0
+    Checking criterion v0.5.1
+    Checking termion v4.0.6
+    Checking console v0.16.2
+    Checking dir-lock v0.5.0
+    Checking symbolic-demangle v12.17.2
+    Checking serde_yml v0.0.12
+    Checking tokio-vsock v0.7.2
+    Checking kvm-ioctls v0.24.0
+    Checking findshlibs v0.10.2
+    Checking aligned-vec v0.6.4
+    Checking russh-sftp v2.1.1
+    Checking directories v6.0.0
+    Checking nix v0.26.4
+    Checking nanoid v0.4.0
+    Checking tokio-fd v0.3.0
+    Checking shell-escape v0.1.5
+    Checking serial_test v3.3.1
+    Checking pprof v0.15.0
+    Checking qlean v0.2.3
+error[E0277]: the trait bound `meta::entities::etcd::EtcdEntryInfo: rkyv::Archive` is not satisfied
+    --> src/meta/stores/etcd/mod.rs:1998:30
+     |
+1998 |             .etcd_get_json::<EtcdEntryInfo>(&Self::etcd_reverse_key(ino))
+     |              -------------   ^^^^^^^^^^^^^ unsatisfied trait bound
+     |              |
+     |              required by a bound introduced by this call
+     |
+help: the trait `rkyv::Archive` is not implemented for `meta::entities::etcd::EtcdEntryInfo`
+    --> src/meta/entities/etcd.rs:12:1
+     |
+  12 | pub struct EtcdEntryInfo {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: the following other types implement trait `rkyv::Archive`:
+               ()
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+               (T0, T1, T2, T3, T4)
+               (T0, T1, T2, T3, T4, T5)
+               (T0, T1, T2, T3, T4, T5, T6)
+               (T0, T1, T2, T3, T4, T5, T6, T7)
+             and 115 others
+note: required by a bound in `meta::stores::etcd::EtcdMetaStore::etcd_get_json`
+    --> src/meta/stores/etcd/mod.rs:350:12
+     |
+ 348 |     async fn etcd_get_json<T>(&self, key: &str) -> Result<Option<T>, MetaError>
+     |              ------------- required by a bound in this associated function
+ 349 |     where
+ 350 |         T: rkyv::Archive,
+     |            ^^^^^^^^^^^^^ required by this bound in `EtcdMetaStore::etcd_get_json`
+
+error[E0277]: the trait bound `meta::entities::etcd::EtcdEntryInfo: rkyv::Archive` is not satisfied
+    --> src/meta/stores/etcd/mod.rs:1997:21
+     |
+1997 |           let entry = self
+     |  _____________________^
+1998 | |             .etcd_get_json::<EtcdEntryInfo>(&Self::etcd_reverse_key(ino))
+     | |_________________________________________________________________________^ unsatisfied trait bound
+     |
+help: the trait `rkyv::Archive` is not implemented for `meta::entities::etcd::EtcdEntryInfo`
+    --> src/meta/entities/etcd.rs:12:1
+     |
+  12 | pub struct EtcdEntryInfo {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: the following other types implement trait `rkyv::Archive`:
+               ()
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+               (T0, T1, T2, T3, T4)
+               (T0, T1, T2, T3, T4, T5)
+               (T0, T1, T2, T3, T4, T5, T6)
+               (T0, T1, T2, T3, T4, T5, T6, T7)
+             and 115 others
+note: required by a bound in `meta::stores::etcd::EtcdMetaStore::etcd_get_json`
+    --> src/meta/stores/etcd/mod.rs:350:12
+     |
+ 348 |     async fn etcd_get_json<T>(&self, key: &str) -> Result<Option<T>, MetaError>
+     |              ------------- required by a bound in this associated function
+ 349 |     where
+ 350 |         T: rkyv::Archive,
+     |            ^^^^^^^^^^^^^ required by this bound in `EtcdMetaStore::etcd_get_json`
+
+error[E0277]: the trait bound `meta::entities::etcd::EtcdEntryInfo: rkyv::Archive` is not satisfied
+    --> src/meta/stores/etcd/mod.rs:1999:14
+     |
+1999 |             .await?
+     |              ^^^^^ unsatisfied trait bound
+     |
+help: the trait `rkyv::Archive` is not implemented for `meta::entities::etcd::EtcdEntryInfo`
+    --> src/meta/entities/etcd.rs:12:1
+     |
+  12 | pub struct EtcdEntryInfo {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: the following other types implement trait `rkyv::Archive`:
+               ()
+               (T0, T1)
+               (T0, T1, T2)
+               (T0, T1, T2, T3)
+               (T0, T1, T2, T3, T4)
+               (T0, T1, T2, T3, T4, T5)
+               (T0, T1, T2, T3, T4, T5, T6)
+               (T0, T1, T2, T3, T4, T5, T6, T7)
+             and 115 others
+note: required by a bound in `meta::stores::etcd::EtcdMetaStore::etcd_get_json`
+    --> src/meta/stores/etcd/mod.rs:350:12
+     |
+ 348 |     async fn etcd_get_json<T>(&self, key: &str) -> Result<Option<T>, MetaError>
+     |              ------------- required by a bound in this associated function
+ 349 |     where
+ 350 |         T: rkyv::Archive,
+     |            ^^^^^^^^^^^^^ required by this bound in `EtcdMetaStore::etcd_get_json`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `brewfs` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `brewfs` (lib test) due to 3 previous errors
+
+exit_code=101
