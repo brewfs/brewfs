@@ -18,6 +18,8 @@ use std::ops::Bound;
 use async_trait::async_trait;
 use tikv_client::{BoundRange, CheckLevel, Key, KvPair, TransactionClient, TransactionOptions};
 
+use crate::tikv_transaction::TiKvTxnGuard;
+
 use super::store::{ControlStore, StoreError, Txn, expect_matches};
 
 const SCAN_BATCH_LIMIT: u32 = 1024;
@@ -52,11 +54,12 @@ impl TiKvControlStore {
         } else {
             options
         };
-        let mut transaction = self
+        let transaction = self
             .client
             .begin_with_options(options)
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "native.run_transaction");
         // Every guard and business check is locked until commit. Use one key
         // order so a namespace lease renewal cannot introduce a lock cycle.
         let mut checks: Vec<_> = txn.checks.iter().collect();
@@ -171,11 +174,12 @@ fn take_prefix_batch(prefix: &[u8], batch: Vec<KvPair>) -> (Vec<KvPair>, bool) {
 impl ControlStore for TiKvControlStore {
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
-        let mut transaction = self
+        let transaction = self
             .client
             .begin_with_options(options)
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "native.get");
         let value = match transaction.get(key.to_vec()).await {
             Ok(value) => value,
             Err(error) => {
@@ -201,11 +205,12 @@ impl ControlStore for TiKvControlStore {
 
     async fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
         let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
-        let mut transaction = self
+        let transaction = self
             .client
             .begin_with_options(options)
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "native.scan");
         let upper = match prefix_range_end(prefix) {
             Some(end) => Bound::Excluded(Key::from(end)),
             None => Bound::Unbounded,

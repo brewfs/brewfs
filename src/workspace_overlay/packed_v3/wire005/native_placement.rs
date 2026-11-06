@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
-use tikv_client::{CheckLevel, Transaction, TransactionClient, TransactionOptions};
+use tikv_client::{CheckLevel, TransactionClient, TransactionOptions};
 
 use super::budget::V3Owned;
 use super::manifest::V3ReadPlacementInput;
@@ -25,6 +25,7 @@ use crate::meta::store::{
     AclRule, CreateEntryResult, DirEntry, FileAttr, FileType, MetaError, OpenFlags, SetAttrFlags,
     SetAttrRequest, StatFsSnapshot, stat_fs_snapshot_from_usage,
 };
+use crate::tikv_transaction::TiKvTxnGuard;
 use crate::vfs::handles::{DirHandle, DirectoryPageSource, OwnedDirectoryPage, RawDirEntry};
 use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError, Reader, Writer};
 use crate::workspace_overlay::packed_v3::{GroupMetaEntry, GroupMetaExtent};
@@ -84,13 +85,16 @@ struct TiKvPlacementKv {
     client: TransactionClient,
 }
 impl TiKvPlacementKv {
-    async fn begin(&self) -> PackedResult<Transaction> {
-        // Backend errors and dropped read futures must remain recoverable;
-        // tikv-client's default panic-on-unfinished-transaction is unsuitable.
-        self.client
+    async fn begin(&self) -> PackedResult<TiKvTxnGuard> {
+        let transaction = self
+            .client
             .begin_with_options(TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn))
             .await
-            .map_err(backend)
+            .map_err(backend)?;
+        Ok(TiKvTxnGuard::new_tikv(
+            transaction,
+            "packed.native_placement",
+        ))
     }
 }
 #[async_trait]

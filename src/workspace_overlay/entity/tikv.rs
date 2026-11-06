@@ -22,6 +22,8 @@ use tikv_client::{
 use tokio::sync::{OwnedRwLockReadGuard, RwLock};
 use uuid::Uuid;
 
+use crate::tikv_transaction::TiKvTxnGuard;
+
 use super::{EntityError, Result, backend::*, codec::MAX_ROW_BYTES, keys::EntityKeys};
 
 const POINT_BATCH: usize = 16;
@@ -284,12 +286,15 @@ impl TiKvEntityBackend {
     }
 
     async fn read_transaction(&self) -> Result<Transaction> {
+        // `read_only` transactions enter the SDK's terminal ReadOnly state;
+        // Warn keeps accidental future changes visible without suppressing
+        // the active-transaction diagnostic.
         self.inner
             .client
             .begin_with_options(
                 TransactionOptions::new_optimistic()
                     .read_only()
-                    .drop_check(CheckLevel::None),
+                    .drop_check(CheckLevel::Warn),
             )
             .await
             .map_err(backend)
@@ -362,7 +367,7 @@ impl TiKvEntityBackend {
                 Some(Allocation::Slices(_)) => "slice_allocation",
             };
             for _ in 0..MAX_PRECOMMIT_ATTEMPTS {
-                let mut transaction = this
+                let transaction = this
                     .inner
                     .client
                     .begin_with_options(
@@ -372,6 +377,8 @@ impl TiKvEntityBackend {
                     )
                     .await
                     .map_err(backend)?;
+                let mut transaction =
+                    TiKvTxnGuard::new_tikv(transaction, "workspace.entity.commit");
                 let prepared = async {
                     let mut actual = plan.clone();
                     let mut held = LockedRows::new();

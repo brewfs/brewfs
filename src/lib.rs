@@ -33,6 +33,7 @@ pub mod vfs;
 #[cfg(feature = "workspace-overlay")]
 pub mod workspace_overlay;
 
+pub(crate) mod tikv_transaction;
 pub(crate) mod utils;
 
 // Public SDK surface for external users.
