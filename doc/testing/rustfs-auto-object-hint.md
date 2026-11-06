@@ -1,5 +1,7 @@
 # BrewFS 根据已定型对象自动选择 RustFS hint
 
+新增显式候选策略 `tiered` 见 [多档对象 hint 策略与资格验收](rustfs-tiered-object-hint.md)。本文的 `auto` 行为及历史测量保持不变。省略 hint 不等于对象全部 inline：当前默认 2+2 普通 PUT 的边界为 256 KiB，版本化时为 32 KiB，MPU 另走外部 part 路径。#362 后可用 `read_fetch_policy` 显式控制 GET/Range 与预取；下文历史“整块读取联动”不代表启用 hint 会覆盖该显式配置。
+
 自动 hint 基于 `codex/rustfs-ec-block-size-hint` 的 `e779c079b4cdcf472645249ab79edd766efce58a`；整块读取联动基于后续 `de77445`，已交付组合为 `e5fec71`。当前实现进一步释放已上传块的写预算、共享缓存热读回复，并根据 ACS 整文件对照修正 auto。下面区分当前策略、最新确认及历史实验，历史 4 MiB auto 数据不代表当前策略。
 
 ## 从本地缓存获取可靠大小

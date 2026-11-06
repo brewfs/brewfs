@@ -681,10 +681,9 @@ async fn tikv_entity_read_validation_does_not_lock_out_renewal() {
     let renewed = tokio::time::timeout(Duration::from_secs(2), &mut renewal).await;
     let concurrent = renewed.is_ok();
     resume.add_permits(1);
-    if renewed.is_err() {
-        assert_eq!(renewal.await.unwrap().unwrap(), CommitOutcome::Committed);
-    } else {
-        assert_eq!(renewed.unwrap().unwrap().unwrap(), CommitOutcome::Committed);
+    match renewed {
+        Ok(joined) => assert_eq!(joined.unwrap().unwrap(), CommitOutcome::Committed),
+        Err(_) => assert_eq!(renewal.await.unwrap().unwrap(), CommitOutcome::Committed),
     }
     // This read linearizes at its earlier snapshot, before the renewal.
     assert_eq!(read.await.unwrap().unwrap(), CommitOutcome::Committed);

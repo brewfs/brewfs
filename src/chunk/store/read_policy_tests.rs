@@ -246,3 +246,255 @@ async fn sparse_fetch_policy_piggybacks_the_whole_object_publication_flight() ->
     assert_eq!(store.object_metrics.snapshot().read_piggyback_full, 1);
     Ok(())
 }
+
+async fn sparse_store_with_blocks(
+    objects: &std::path::Path,
+    cache: &std::path::Path,
+    blocks: u32,
+) -> anyhow::Result<(ObjectBlockStore<CountingBackend>, Vec<u8>)> {
+    let raw: Vec<u8> = (0..4 << 20).map(|i: u32| (i % 251) as u8).collect();
+    let backend = CountingBackend {
+        inner: LocalFsBackend::new(objects),
+        prefer_full: true,
+    };
+    for index in 0..blocks {
+        backend
+            .put_object(
+                &format!("chunks-v2/1/{index}"),
+                &encode_persisted_block(&raw, Compression::None),
+            )
+            .await?;
+    }
+    let store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend),
+        ChunksCacheConfig::with_budgets(16 << 20, 0, cache.to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            ..Default::default()
+        },
+    )
+    .await?
+    .with_read_fetch_policy(ReadFetchPolicy::Sparse);
+    Ok((store, raw))
+}
+
+async fn wait_for_block_cache(store: &ObjectBlockStore<CountingBackend>, key: &str) {
+    for _ in 0..1000 {
+        if store.block_cache.get(&key.to_string()).await.is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("background prefetch did not publish {key}");
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_prefetches_the_block_once_reads_become_sequential()
+-> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    let mut window = vec![0; 64 << 10];
+    store.read_range((1, 0), 0, &mut window).await?;
+    assert_eq!(window, raw[..64 << 10]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    // Kernel readahead continues exactly where the previous read ended.
+    store.read_range((1, 0), 64 << 10, &mut window).await?;
+    assert_eq!(window, raw[64 << 10..128 << 10]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    wait_for_block_cache(&store, "chunks/1/0").await;
+    let gets = store.object_metrics.snapshot().get_ops;
+    store.read_range((1, 0), 128 << 10, &mut window).await?;
+    assert_eq!(window, raw[128 << 10..192 << 10]);
+    assert_eq!(
+        store.object_metrics.snapshot().get_ops,
+        gets,
+        "the stream continues from the block cache"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_keeps_random_reads_sparse() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    let mut small = vec![0; 4096];
+    // Adjacent pages and a re-read of the same bytes are not a forward stream.
+    for offset in [1 << 20, 0, 1 << 20, 65536, 3 << 20, 2 << 20] {
+        store.read_range((1, 0), offset, &mut small).await?;
+        assert_eq!(small, raw[offset as usize..offset as usize + 4096]);
+    }
+    let stats = store.object_metrics.snapshot();
+    assert_eq!(stats.read_background_prefetches, 0);
+    assert_eq!(stats.read_full_gets, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_carries_a_sequential_stream_into_the_next_block() -> anyhow::Result<()>
+{
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 2).await?;
+    let mut window = vec![0; 64 << 10];
+    let tail = raw.len() - window.len();
+    store.read_range((1, 0), tail as u64, &mut window).await?;
+    assert_eq!(window, raw[tail..]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    // The first read of the following block of the same slice continues the stream.
+    store.read_range((1, 1), 0, &mut window).await?;
+    assert_eq!(window, raw[..64 << 10]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    wait_for_block_cache(&store, "chunks/1/1").await;
+    Ok(())
+}
+
+async fn sparse_store_with_slices(
+    objects: &std::path::Path,
+    cache: &std::path::Path,
+    slices: u64,
+) -> anyhow::Result<(ObjectBlockStore<CountingBackend>, Vec<u8>)> {
+    let raw: Vec<u8> = (0..4 << 20).map(|i: u32| (i % 251) as u8).collect();
+    let backend = CountingBackend {
+        inner: LocalFsBackend::new(objects),
+        prefer_full: true,
+    };
+    for slice in 1..=slices {
+        backend
+            .put_object(
+                &format!("chunks-v2/{slice}/0"),
+                &encode_persisted_block(&raw, Compression::None),
+            )
+            .await?;
+    }
+    let store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend),
+        ChunksCacheConfig::with_budgets(16 << 20, 0, cache.to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            ..Default::default()
+        },
+    )
+    .await?
+    .with_read_fetch_policy(ReadFetchPolicy::Sparse);
+    Ok((store, raw))
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_prefetches_blocks_of_a_densely_missed_slice() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_slices(objects.path(), cache.path(), 1).await?;
+    let mut small = vec![0; 4096];
+    // Non-adjacent pages, so the sequential-stream rule never applies.
+    for page in 0..SPARSE_DENSE_SLICE_MISSES as u64 {
+        assert_eq!(
+            store.object_metrics.snapshot().read_background_prefetches,
+            0
+        );
+        let offset = page * 2 * DEFAULT_PAGE_SIZE as u64 + 512;
+        store.read_range((1, 0), offset, &mut small).await?;
+        assert_eq!(small, raw[offset as usize..offset as usize + 4096]);
+    }
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    wait_for_block_cache(&store, "chunks/1/0").await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_keeps_misses_spread_over_slices_sparse() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let slices = u64::from(SPARSE_DENSE_SLICE_MISSES) * 2;
+    let (store, raw) = sparse_store_with_slices(objects.path(), cache.path(), slices).await?;
+    let mut small = vec![0; 4096];
+    for slice in 1..=slices {
+        let offset = (slice % 60) * DEFAULT_PAGE_SIZE as u64 + 512;
+        store.read_range((slice, 0), offset, &mut small).await?;
+        assert_eq!(small, raw[offset as usize..offset as usize + 4096]);
+    }
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_density_window_expires() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, _) = sparse_store_with_slices(objects.path(), cache.path(), 1).await?;
+    let mut small = vec![0; 4096];
+    for page in 0..u64::from(SPARSE_DENSE_SLICE_MISSES) - 1 {
+        store
+            .read_range((1, 0), page * 2 * DEFAULT_PAGE_SIZE as u64, &mut small)
+            .await?;
+    }
+    tokio::time::sleep(SPARSE_DENSITY_WINDOW + std::time::Duration::from_millis(100)).await;
+    store
+        .read_range((1, 0), 40 * DEFAULT_PAGE_SIZE as u64, &mut small)
+        .await?;
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_prefetches_on_a_readahead_sized_first_read() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    // Only kernel readahead sends FUSE reads this large; random reads stay page-sized.
+    let mut window = vec![0; SPARSE_SEQUENTIAL_READ_BYTES];
+    store.read_range((1, 0), 0, &mut window).await?;
+    assert_eq!(window, raw[..SPARSE_SEQUENTIAL_READ_BYTES]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    wait_for_block_cache(&store, "chunks/1/0").await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sparse_fetch_policy_keeps_page_sized_first_reads_sparse() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw) = sparse_store_with_blocks(objects.path(), cache.path(), 1).await?;
+    let mut window = vec![0; DEFAULT_PAGE_SIZE];
+    for offset in [
+        0,
+        3 * DEFAULT_PAGE_SIZE as u64,
+        40 * DEFAULT_PAGE_SIZE as u64,
+    ] {
+        store.read_range((1, 0), offset, &mut window).await?;
+        assert_eq!(
+            window,
+            raw[offset as usize..offset as usize + DEFAULT_PAGE_SIZE]
+        );
+    }
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        0
+    );
+    Ok(())
+}

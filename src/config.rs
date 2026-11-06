@@ -284,7 +284,9 @@ pub struct MountArgs {
     pub s3_bucket: Option<String>,
 
     /// Object read policy, independent of the EC write hint. Sparse disables
-    /// speculative full-object prefetch for small uncompressed reads.
+    /// speculative full-object prefetch for random small uncompressed reads;
+    /// sequential streams (including readahead-sized reads of 128 KiB or more)
+    /// and densely read slices keep whole-block background prefetch.
     /// Omit to preserve the backend's current behavior.
     #[arg(long, value_enum)]
     pub read_fetch_policy: Option<ReadFetchPolicy>,
@@ -315,10 +317,13 @@ pub struct MountArgs {
     pub s3_disable_payload_checksum: Option<bool>,
 
     /// RustFS EC block size: auto (omit for objects <=1 MiB, else 1 MiB),
-    /// or fixed bytes (65536, 262144, 1048576 or 4194304).
+    /// tiered (candidate size table), tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B,
+    /// range-heavy[:INLINE_BYTES] (omit through 256 KiB or INLINE_BYTES, 64 KiB through 8 MiB,
+    /// else 256 KiB; defaults read_fetch_policy to sparse),
+    /// off, or fixed bytes (65536, 262144, 1048576 or 4194304).
     /// Omit to disable. Requires the s3 backend and a compatible RustFS server.
     /// Requires compilation with the rustfs-ec-block-size-hint Cargo feature.
-    #[arg(long, value_name = "auto|BYTES", value_parser = parse_rustfs_ec_block_size_hint,
+    #[arg(long, value_name = "off|auto|tiered[:TABLE]|range-heavy[:INLINE_BYTES]|BYTES", value_parser = parse_rustfs_ec_block_size_hint,
         hide = !cfg!(feature = "rustfs-ec-block-size-hint"))]
     pub s3_rustfs_ec_block_size_hint: Option<RustfsEcBlockSizeHint>,
 
@@ -651,10 +656,13 @@ pub struct ObjectPutBenchArgs {
     pub s3_disable_payload_checksum: bool,
 
     /// RustFS EC block size: auto (omit for objects <=1 MiB, else 1 MiB),
-    /// or fixed bytes (65536, 262144, 1048576 or 4194304).
+    /// tiered (candidate size table), tiered:MAX=off,MAX=B,MAX=B,MAX=B,*=B,
+    /// range-heavy[:INLINE_BYTES] (omit through 256 KiB or INLINE_BYTES, 64 KiB through 8 MiB,
+    /// else 256 KiB; defaults read_fetch_policy to sparse),
+    /// off, or fixed bytes (65536, 262144, 1048576 or 4194304).
     /// Omit to disable. Requires a compatible RustFS server.
     /// Requires compilation with the rustfs-ec-block-size-hint Cargo feature.
-    #[arg(long, value_name = "auto|BYTES", value_parser = parse_rustfs_ec_block_size_hint,
+    #[arg(long, value_name = "off|auto|tiered[:TABLE]|range-heavy[:INLINE_BYTES]|BYTES", value_parser = parse_rustfs_ec_block_size_hint,
         hide = !cfg!(feature = "rustfs-ec-block-size-hint"))]
     pub s3_rustfs_ec_block_size_hint: Option<RustfsEcBlockSizeHint>,
 
@@ -1337,6 +1345,7 @@ impl MountConfig {
         {
             anyhow::bail!("native volume controls require volume.format=workspace-native-v2");
         }
+        let explicit_read_fetch_policy = args.read_fetch_policy.or(cache_cfg.read_fetch_policy);
         let mut cache = cache_cfg.into_cache_config()?;
         if let Some(policy) = args.read_fetch_policy {
             cache.read_fetch_policy = policy;
@@ -1349,8 +1358,22 @@ impl MountConfig {
             .s3_rustfs_ec_block_size_hint
             .or(s3_cfg.rustfs_ec_block_size_hint);
         validate_rustfs_ec_block_size_hint(s3_rustfs_ec_block_size_hint)?;
-        if s3_rustfs_ec_block_size_hint.is_some() && !matches!(data_backend, DataBackendKind::S3) {
+        if s3_rustfs_ec_block_size_hint.is_some_and(RustfsEcBlockSizeHint::enabled)
+            && !matches!(data_backend, DataBackendKind::S3)
+        {
             anyhow::bail!("RustFS EC block size hint requires data.backend=s3");
+        }
+        // An enabled hint makes the backend default fetch whole objects, which
+        // would leave a range-heavy layout with its full-GET cost and no Range reads.
+        if s3_rustfs_ec_block_size_hint.is_some_and(RustfsEcBlockSizeHint::implies_sparse_reads) {
+            match explicit_read_fetch_policy {
+                None => cache.read_fetch_policy = ReadFetchPolicy::Sparse,
+                Some(ReadFetchPolicy::Sparse) => {}
+                Some(policy) => tracing::warn!(
+                    read_fetch_policy = ?policy,
+                    "range-heavy RustFS layout without sparse reads: small EC blocks add full-GET cost but no Range reads"
+                ),
+            }
         }
 
         if matches!(cache.writeback_mode, WriteBackMode::CommitBeforeUpload)
@@ -2094,6 +2117,185 @@ mod tests {
                 .to_string()
                 .contains("requires data.backend=s3")
         );
+    }
+
+    #[cfg(feature = "rustfs-ec-block-size-hint")]
+    #[test]
+    fn range_heavy_defaults_reads_to_sparse_but_keeps_explicit_read_policy() {
+        // An enabled hint otherwise makes the backend default fetch whole objects,
+        // so a range-heavy layout would add its full-GET cost without any Range read.
+        let yaml = |extra: &str| {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), format!("mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: range-heavy\n{extra}")).unwrap();
+            file
+        };
+        let implicit = yaml("");
+        let config =
+            MountConfig::from_sources(empty_mount_args(Some(implicit.path().into()), None))
+                .unwrap();
+        assert_eq!(config.cache.read_fetch_policy, ReadFetchPolicy::Sparse);
+
+        for (policy, expected) in [
+            ("whole-object", ReadFetchPolicy::WholeObject),
+            ("backend-default", ReadFetchPolicy::BackendDefault),
+        ] {
+            let explicit = yaml(&format!("cache:\n  read_fetch_policy: {policy}\n"));
+            let config =
+                MountConfig::from_sources(empty_mount_args(Some(explicit.path().into()), None))
+                    .unwrap();
+            assert_eq!(config.cache.read_fetch_policy, expected, "YAML {policy}");
+            let mut args = empty_mount_args(Some(implicit.path().into()), None);
+            args.read_fetch_policy = Some(expected);
+            let config = MountConfig::from_sources(args).unwrap();
+            assert_eq!(config.cache.read_fetch_policy, expected, "CLI {policy}");
+        }
+
+        for value in ["auto", "tiered", "65536"] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), format!("mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: '{value}'\n")).unwrap();
+            let config =
+                MountConfig::from_sources(empty_mount_args(Some(file.path().into()), None))
+                    .unwrap();
+            assert_eq!(
+                config.cache.read_fetch_policy,
+                ReadFetchPolicy::BackendDefault,
+                "{value}"
+            );
+        }
+    }
+
+    #[cfg(feature = "rustfs-ec-block-size-hint")]
+    #[test]
+    fn rustfs_ec_hint_profiles_cli_yaml_and_off_override_preserve_read_policy() {
+        for value in [
+            "range-heavy",
+            "tiered",
+            "tiered:524288=off,2097152=65536,8388608=65536,33554432=65536,*=65536",
+        ] {
+            for command in ["mount", "object-put-bench"] {
+                let cli = Cli::try_parse_from([
+                    "brewfs",
+                    command,
+                    "--s3-bucket",
+                    "test",
+                    "--s3-rustfs-ec-block-size-hint",
+                    value,
+                ])
+                .unwrap();
+                let hint = match cli.cmd {
+                    Command::Mount(args) => args.s3_rustfs_ec_block_size_hint,
+                    Command::ObjectPutBench(args) => args.s3_rustfs_ec_block_size_hint,
+                    _ => unreachable!(),
+                };
+                assert_eq!(hint, Some(value.parse().unwrap()));
+            }
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), format!("mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: '{value}'\ncache:\n  read_fetch_policy: sparse\n")).unwrap();
+            let args = || empty_mount_args(Some(file.path().to_path_buf()), None);
+            let config = MountConfig::from_sources(args()).unwrap();
+            assert_eq!(
+                config.s3_rustfs_ec_block_size_hint,
+                Some(value.parse().unwrap())
+            );
+            assert_eq!(config.cache.read_fetch_policy, ReadFetchPolicy::Sparse);
+            assert_eq!(config.block_size, DEFAULT_BLOCK_SIZE);
+            let mut off = args();
+            off.s3_rustfs_ec_block_size_hint = Some("off".parse().unwrap());
+            let config = MountConfig::from_sources(off).unwrap();
+            assert_eq!(
+                config.s3_rustfs_ec_block_size_hint,
+                Some(RustfsEcBlockSizeHint::Off)
+            );
+            assert_eq!(config.cache.read_fetch_policy, ReadFetchPolicy::Sparse);
+        }
+    }
+
+    #[cfg(not(feature = "rustfs-ec-block-size-hint"))]
+    #[test]
+    fn rustfs_ec_hint_range_heavy_requires_feature_at_startup() {
+        for command in ["mount", "object-put-bench"] {
+            let error = Cli::try_parse_from([
+                "brewfs",
+                command,
+                "--s3-bucket",
+                "test",
+                "--s3-rustfs-ec-block-size-hint",
+                "range-heavy",
+            ])
+            .err()
+            .expect("range-heavy requires the feature");
+            assert!(
+                error
+                    .to_string()
+                    .contains("feature not compiled: rustfs-ec-block-size-hint")
+            );
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: range-heavy\n").unwrap();
+        let args = || empty_mount_args(Some(file.path().to_path_buf()), None);
+        assert_eq!(
+            MountConfig::from_sources(args()).unwrap_err().to_string(),
+            "feature not compiled: rustfs-ec-block-size-hint"
+        );
+        let mut off = args();
+        off.s3_rustfs_ec_block_size_hint = Some("off".parse().unwrap());
+        assert!(MountConfig::from_sources(off).is_ok());
+    }
+
+    #[test]
+    fn rustfs_ec_hint_unknown_profiles_fail_cli_and_yaml_startup() {
+        for value in ["range_heavy", "range-heavy:65536", "range-light", "unknown"] {
+            for command in ["mount", "object-put-bench"] {
+                let error = Cli::try_parse_from([
+                    "brewfs",
+                    command,
+                    "--s3-bucket",
+                    "test",
+                    "--s3-rustfs-ec-block-size-hint",
+                    value,
+                ])
+                .err()
+                .expect("unknown profile must be rejected");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("RustFS EC block size hint must be")
+                );
+            }
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), format!("mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: {value}\n")).unwrap();
+            let error =
+                MountConfig::from_sources(empty_mount_args(Some(file.path().to_path_buf()), None))
+                    .unwrap_err();
+            assert!(format!("{error:#}").contains("RustFS EC block size hint must be"));
+        }
+    }
+
+    #[cfg(not(feature = "rustfs-ec-block-size-hint"))]
+    #[test]
+    fn rustfs_ec_hint_tiered_requires_feature_but_off_does_not() {
+        let cli = Cli::try_parse_from([
+            "brewfs",
+            "mount",
+            "--s3-rustfs-ec-block-size-hint",
+            "tiered",
+        ])
+        .err()
+        .expect("tiered must be rejected without the feature");
+        assert!(
+            cli.to_string()
+                .contains("feature not compiled: rustfs-ec-block-size-hint")
+        );
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "mount_point: /mnt/test\ndata:\n  backend: s3\n  s3:\n    rustfs_ec_block_size_hint: tiered\n").unwrap();
+        let args = || empty_mount_args(Some(file.path().to_path_buf()), None);
+        assert_eq!(
+            MountConfig::from_sources(args()).unwrap_err().to_string(),
+            "feature not compiled: rustfs-ec-block-size-hint"
+        );
+        let mut off = args();
+        off.s3_rustfs_ec_block_size_hint = Some("off".parse().unwrap());
+        assert!(MountConfig::from_sources(off).is_ok());
     }
 
     #[cfg(not(feature = "rustfs-ec-block-size-hint"))]

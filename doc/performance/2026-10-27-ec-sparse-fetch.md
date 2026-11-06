@@ -3,7 +3,8 @@
 `--read-fetch-policy sparse` selects page/range reads for small uncompressed
 misses in the ordinary `ObjectBlockStore`, including when an EC write hint is
 configured. It also disables both range-triggered speculative whole-object
-prefetch paths. `--read-fetch-policy whole-object` explicitly selects whole
+prefetch paths for random reads; a read that continues a sequential stream
+keeps the whole-block background prefetch (see below). `--read-fetch-policy whole-object` explicitly selects whole
 objects, with or without a hint. Omitting the option selects `backend-default`
 and preserves the previous decisions, including the EC hint's whole-object
 default. The CLI overrides YAML `cache.read_fetch_policy`.
@@ -48,12 +49,29 @@ whole-object repository. The authenticated paths retain their length and digest
 checks. Partial tails are checked for complete requested coverage; a read past
 the persisted end remains an error.
 
-The complete-scan guard below requests a complete 4 MiB object at once. Sparse
-mode does not infer sequential access from a series of tiny requests: such a
-fragmented scan can issue additional range GETs. End-to-end FUSE scan and mixed
-read/write performance acceptance remain separate work; this experiment does
-not establish their non-regression. No general performance comparison table is
-updated from these measurements.
+The complete-scan guard below requests a complete 4 MiB object at once. A
+fragmented scan of tiny requests is recognized per block: a read that starts
+exactly where the previous read of the same block ended, or at offset 0 of a
+block whose predecessor in the slice was read to its end, re-enables the
+whole-block background prefetch. So does any read of at least 128 KiB: FUSE
+only sends reads that large for kernel readahead, so the first read of a block
+in a sequential scan starts the whole-block fetch instead of waiting for the
+second (the 2026-11-03 cloud run measured 5 GETs per single-block file against
+3 for the unset policy, and 0.89 sequential throughput). Random reads, re-reads
+and adjacent-page reads never match exactly and stay sparse. Without this, a FUSE scan issued one range
+GET per kernel readahead window (about 17 per 4 MiB block in the 2026-11-02
+cloud acceptance) and lost 42–45% of sequential read throughput. Random reads
+that concentrate on one slice — at least ten page misses on the same slice
+within one second — also re-enable the whole-block prefetch: such a working set
+is small enough that whole blocks are reused (the cloud run's 256 MiB hot set
+fetched every block in 64 KiB pages and lost 16%; a 512 MiB randrw file showed
+13.7x the read p50). Misses spread over many slices, as with a working set
+larger than the cache, stay below the threshold: the cloud run's 3.75 GiB
+sparse set saw 1.6 misses per object per second at 8 jobs, while each 32 MiB
+slice of the randrw file saw 12–16. End-to-end
+mixed read/write performance acceptance remains separate work; this experiment
+does not establish its non-regression. No general performance comparison table
+is updated from these measurements.
 
 ## Measurement method
 
