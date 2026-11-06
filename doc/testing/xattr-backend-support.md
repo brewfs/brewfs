@@ -117,3 +117,114 @@ overlay TiKV 的成功测试只证明 overlay KV 的 bounded 记录读写和清�
   测试也会被该过滤词选中）。overlay 测试名为
   `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners`，
   MetaStore 测试名为 `real_tikv_meta_store_xattr_is_not_implemented`。
+
+## JuiceFS（外部 baseline）的 xattr 与 attr cache 配置
+
+本节回答 C2/C3 对比里「JuiceFS 那边 xattr 能不能用、attr cache 怎么配」，
+避免把 BrewFS 的 TTL 语义与 JuiceFS 的挂载默认值混为一谈。
+
+### 1. xattr 能力（从 JuiceFS 源码核实，不是猜）
+
+来源：JuiceFS `pkg/vfs/vfs.go`（本地镜像 `research/juicefs-ttl/vfs_vfs.go`）
+
+| 项 | 事实 |
+|---|---|
+| 单值上限 | **65536 字节（64 KiB）**，超过返回 `ERANGE`（Linux） |
+| 名字上限 | **255 字节** |
+| `user.*` / `trusted.*` | 默认可用（`isXattrEnabled` 直接返回 true） |
+| `security.capability` | 需 `Security.EnableCap` 能力开关，否则不可用 |
+| `security.selinux` | 需 `Security.EnableSELinux` |
+| `system.posix_acl_access` / `_default` | 需 `Format.EnableACL` |
+| 全局关闭 | `DisableXAttrs` 可整体关闭 xattr |
+
+**对比要点**：JuiceFS 的 xattr 单值上限是 **64 KiB**。BrewFS 的 64 KiB+ 分页读取测试
+（`real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners`）覆盖的正是这个边界。
+做 C3 xattr 对比时必须用 ≤64 KiB 的值，否则 JuiceFS 侧会 `ERANGE`，两边不可比。
+
+### 2. attr / entry cache 旋钮（JuiceFS）
+
+| 旋钮 | 默认 | 影响 |
+|---|---|---|
+| `--attr-cache` | 1 s | `getattr`/`stat` 的属性缓存 |
+| `--entry-cache` | 1 s | 文件 `lookup`（路径→inode）缓存 |
+| `--dir-entry-cache` | 1 s | 目录项枚举（readdir 结果）缓存 |
+| `--negative-entry-cache` | 0 s | 不存在路径的负缓存（默认关） |
+| `--open-cache` | 0（关） | 打开句柄复用；破坏 close-to-open，属激进选项 |
+
+**核实方式（部署时必做，本表不能当运行时证据）**：
+
+```bash
+juicefs version
+juicefs mount --help | grep -E 'attr-cache|entry-cache|dir-entry-cache|negative-entry-cache|open-cache'
+```
+
+本轮 campaign 使用的 JuiceFS 版本为 **1.4.2**；上表是文档默认值，实际生效值以挂载命令
+与 `/proc/mounts` 记录为准。
+
+### 3. 可运行验证脚本
+
+```bash
+#!/bin/bash
+# 用法: verify-juicefs-xattr.sh <meta-url> <mountpoint>
+# 例:  ATTR_CACHE=0 verify-juicefs-xattr.sh redis://127.0.0.1:6379/9 /mnt/jfs-xattr
+set -euo pipefail
+META=${1:?meta url}
+MP=${2:?mount point}
+ATTR=${ATTR_CACHE:-1}
+ENTRY=${ENTRY_CACHE:-1}
+DIRENTRY=${DIR_ENTRY_CACHE:-1}
+NEG=${NEG_ENTRY_CACHE:-0}
+
+juicefs format --storage file --bucket /tmp/jfs-bucket "$META" jfs-xattr >/dev/null
+mkdir -p /tmp/jfs-bucket "$MP"
+juicefs mount -d \
+  --attr-cache="$ATTR" --entry-cache="$ENTRY" \
+  --dir-entry-cache="$DIRENTRY" --negative-entry-cache="$NEG" \
+  "$META" "$MP"
+sleep 2
+trap 'juicefs umount "$MP" 2>/dev/null || true' EXIT
+
+f="$MP/probe"
+echo hello > "$f"
+
+# a) user.* 往返
+setfattr -n user.demo -v alpha "$f"
+printf 'getfattr user.demo: '; getfattr --only-values -n user.demo "$f"; echo
+
+# b) listxattr 覆盖
+printf 'listxattr: '; getfattr -d "$f" 2>/dev/null | tr '\n' ' '; echo
+
+# c) 边界：64 KiB 通过、64 KiB+1 应被拒
+python3 - "$f" <<'PY'
+import os, sys
+p = sys.argv[1]
+os.setxattr(p, "user.big", b"x" * 65536)
+print("  64KiB setxattr: ok, read back", len(os.getxattr(p, "user.big")))
+try:
+    os.setxattr(p, "user.toobig", b"x" * 65537)
+    print("  WARN: 65537 bytes accepted (source says 64KiB limit; re-check version)")
+except OSError as e:
+    print("  65537 bytes rejected:", e)
+PY
+
+# d) 缓存语义：改属性后立即读，受 --attr-cache 影响
+setfattr -n user.demo -v beta "$f"
+printf 'after set, immediate read: '; getfattr --only-values -n user.demo "$f"; echo
+echo "attr-cache=${ATTR}s entry-cache=${ENTRY}s dir-entry-cache=${DIRENTRY}s negative=${NEG}s"
+echo "（用 ATTR_CACHE=0 再跑一次，对比 d) 的时序差异即为缓存效应）"
+```
+
+### 4. 与 BrewFS 旋钮的对照（C2/C3 对比必须对齐）
+
+| 语义 | JuiceFS | BrewFS |
+|---|---|---|
+| 属性缓存（stat） | `--attr-cache`（1 s） | `fuse.cache_ttl_ms`（实验 0/1000）→ 待拆 attr TTL（#422） |
+| 路径 lookup | `--entry-cache`（1 s） | 同上，待拆 entry TTL |
+| 目录枚举 | `--dir-entry-cache`（1 s） | 同上，待拆 dir-entry TTL |
+| 负缓存 | `--negative-entry-cache`（0） | 同上，待拆 negative TTL |
+| 打开复用 | `--open-cache`（默认关） | 无对应；BrewFS 不做破坏 close-to-open 的缓存 |
+
+**结论（对比口径）**：JuiceFS 默认 4 个缓存里 3 个是 1 s、负缓存 0；BrewFS 当前是单一
+`cache_ttl_ms`。严格对齐的做法：BrewFS 侧 `cache_ttl_ms=1000` 对齐 JuiceFS 的
+attr/entry/dir-entry=1 s，negative 两边都为 0；若研究差异，必须显式记录各自四个旋钮值，
+不能只写「都用默认」。
