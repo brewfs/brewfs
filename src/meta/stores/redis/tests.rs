@@ -78,7 +78,8 @@ async fn local_txlock_serializes_same_primary_key() {
 }
 
 fn redis_test_url() -> String {
-    std::env::var("BREWFS_REDIS_TEST_URL")
+    std::env::var("BREWFS_TEST_REDIS_URL")
+        .or_else(|_| std::env::var("BREWFS_REDIS_TEST_URL"))
         .unwrap_or_else(|_| "redis://127.0.0.1:6379/0".to_string())
 }
 

@@ -334,6 +334,52 @@ async fn rejects_empty_pd_endpoints() {
 }
 
 #[tokio::test]
+#[ignore = "requires a running TiKV/PD cluster; set BREWFS_TEST_TIKV_PD_ENDPOINTS"]
+async fn real_tikv_meta_store_xattr_is_not_implemented() {
+    let pd_endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
+        .or_else(|_| std::env::var("BREWFS_TIKV_PD_ENDPOINTS"))
+        .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
+        .unwrap_or_else(|_| "127.0.0.1:2379".to_string())
+        .split(',')
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let config = Config {
+        database: DatabaseConfig {
+            db_config: DatabaseType::TiKv {
+                pd_endpoints,
+                namespace: format!("brewfs-test-xattr-not-implemented-{}", Uuid::new_v4()),
+            },
+        },
+        cache: CacheConfig::default(),
+        client: ClientOptions::default(),
+        compact: CompactConfig::default(),
+    };
+    let store = TiKvMetaStore::from_config(config)
+        .await
+        .expect("TiKv metadata store should connect before checking optional methods");
+    assert!(!store.capabilities().xattr);
+
+    assert!(matches!(
+        store.set_xattr(1, "user.test", b"value", 0).await,
+        Err(MetaError::NotImplemented)
+    ));
+    assert!(matches!(
+        store.get_xattr(1, "user.test").await,
+        Err(MetaError::NotImplemented)
+    ));
+    assert!(matches!(
+        store.list_xattr(1).await,
+        Err(MetaError::NotImplemented)
+    ));
+    assert!(matches!(
+        store.remove_xattr(1, "user.test").await,
+        Err(MetaError::NotImplemented)
+    ));
+}
+
+#[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TIKV_PD_ENDPOINTS"]
 async fn tikv_factory_initializes_root() {
     let handle = MetaStoreFactory::<TiKvMetaStore>::create_from_config(integration_config("root"))
