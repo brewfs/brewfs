@@ -12,6 +12,7 @@ use tikv_client::{BoundRange, CheckLevel, Key, KvPair, TransactionClient, Transa
 use super::kv_backend::{
     KvCheck, KvEntry, KvReadLimits, KvWrite, WorkspaceKvBackend, validate_cas_time_window,
 };
+use crate::tikv_transaction::TiKvTxnGuard;
 use crate::workspace_overlay::error::WorkspaceError;
 use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3MountBudget};
 
@@ -427,12 +428,13 @@ impl TiKvWorkspaceBackend {
         &self,
     ) -> Result<Option<Vec<u8>>, WorkspaceError> {
         let _operation = self.operations.enter()?;
-        let mut transaction = self
+        let transaction = self
             .main_client()
             .await?
             .begin_with_options(TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn))
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "workspace.load_manager_locator");
         let value = transaction
             .get(format!("nb2/header/{}", self.namespace))
             .await;
@@ -684,12 +686,13 @@ impl TiKvWorkspaceBackend {
         // finish.  Exhaustion becomes Busy for the caller's outer CAS retry.
         for lock_attempt in 0..=BOUNDED_SCAN_LOCK_RETRIES {
             let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
-            let mut transaction = self
+            let transaction = self
                 .main_client()
                 .await?
                 .begin_with_options(options)
                 .await
                 .map_err(backend)?;
+            let mut transaction = TiKvTxnGuard::new_tikv(transaction, "workspace.scan");
             let mut lower = Bound::Included(Key::from(scoped_prefix.clone()));
             let mut entries = Vec::new();
             let mut retry = false;
@@ -796,12 +799,13 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
         let _operation = self.operations.enter()?;
         let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
-        let mut transaction = self
+        let transaction = self
             .main_client()
             .await?
             .begin_with_options(options)
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "workspace.get");
         let value = transaction.get(self.scoped(key)).await.map_err(backend)?;
         if let Err(error) = transaction.rollback().await {
             log::debug!("TiKV workspace get rollback failed: {error}");
@@ -893,12 +897,13 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
             return Ok((Vec::new(), pd_physical_ms_to_ns(timestamp.physical)?));
         }
         let options = TransactionOptions::new_optimistic().drop_check(CheckLevel::Warn);
-        let mut transaction = self
+        let transaction = self
             .main_client()
             .await?
             .begin_with_options(options)
             .await
             .map_err(backend)?;
+        let mut transaction = TiKvTxnGuard::new_tikv(transaction, "workspace.batch_get");
         let now = pd_physical_ms_to_ns(transaction.start_timestamp().physical)?;
         let scoped = keys.iter().map(|key| self.scoped(key)).collect::<Vec<_>>();
         let found = transaction
@@ -979,7 +984,9 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
         validate_cas_time_window(None, Some(expires_at_ns))?;
         let _operation = self.operations.enter()?;
         let ordered_checks = pessimistic_checks_in_key_order(checks);
-        let mut transaction = self.bounded_authentication_transaction(limits).await?;
+        let transaction = self.bounded_authentication_transaction(limits).await?;
+        let mut transaction =
+            TiKvTxnGuard::new_tikv(transaction, "workspace.bounded_authentication");
         let mut context = bounded_read::BoundedPointReadContext::new(
             limits.max_data_requests,
             checks.len(),
@@ -1062,8 +1069,12 @@ impl WorkspaceKvBackend for TiKvWorkspaceBackend {
                                 )
                                 && context.reset_authentication_originals(checks.len())
                             {
-                                transaction =
+                                let replacement =
                                     self.bounded_authentication_transaction(limits).await?;
+                                transaction = TiKvTxnGuard::new_tikv(
+                                    replacement,
+                                    "workspace.bounded_authentication",
+                                );
                                 continue 'authentication;
                             }
                             return Ok(false);
@@ -1193,12 +1204,13 @@ impl TiKvWorkspaceBackend {
             let options = TransactionOptions::new_pessimistic()
                 .wait_for_secondary_commit()
                 .drop_check(CheckLevel::Warn);
-            let mut transaction = self
+            let transaction = self
                 .main_client()
                 .await?
                 .begin_with_options(options)
                 .await
                 .map_err(backend)?;
+            let mut transaction = TiKvTxnGuard::new_tikv(transaction, "workspace.cas");
 
             if preinitialization {
                 #[cfg(test)]

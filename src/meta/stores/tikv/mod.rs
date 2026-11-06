@@ -16,6 +16,7 @@ use crate::meta::store::{
     stat_fs_snapshot_from_usage, stat_fs_used_bytes,
 };
 use crate::meta::{INODE_ID_KEY, SLICE_ID_KEY};
+use crate::tikv_transaction::TiKvTxnGuard;
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::{RngCore, rng};
@@ -255,14 +256,14 @@ impl TiKvMetaStore {
             .map_err(|e| Self::tikv_err(operation, e))
     }
 
-    async fn commit_write(&self, txn: &mut Transaction, operation: &str) -> Result<(), MetaError> {
+    async fn commit_write(&self, txn: &mut TiKvTxnGuard, operation: &str) -> Result<(), MetaError> {
         txn.commit()
             .await
             .map(|_| ())
             .map_err(|e| Self::tikv_err(operation, e))
     }
 
-    async fn rollback_best_effort(txn: &mut Transaction, operation: &str) {
+    async fn rollback_best_effort(txn: &mut TiKvTxnGuard, operation: &str) {
         if let Err(err) = txn.rollback().await {
             log::debug!("TiKV {operation} rollback failed: {err}");
         }
@@ -289,12 +290,13 @@ impl TiKvMetaStore {
         F: for<'txn> FnMut(&'txn TiKvMetaStore, &'txn mut Transaction) -> TiKvTxnFuture<'txn, T>,
     {
         for attempt in 0..TXN_MAX_RETRIES {
-            let mut txn = match mode {
+            let transaction = match mode {
                 TiKvTxnMode::Read => self.begin_read(operation).await?,
                 TiKvTxnMode::Write => self.begin_write(operation).await?,
             };
+            let mut txn = TiKvTxnGuard::new_tikv(transaction, operation);
 
-            let result = task(self, &mut txn).await;
+            let result = task(self, txn.transaction_mut()).await;
             match (mode, result) {
                 (TiKvTxnMode::Read, Ok(value)) => {
                     Self::rollback_best_effort(&mut txn, operation).await;
