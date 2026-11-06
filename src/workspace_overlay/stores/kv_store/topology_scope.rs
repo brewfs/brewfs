@@ -445,6 +445,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             .await
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = writes.len()))]
     async fn prepare_topology_packet_inner(
         &self,
         mut checks: Vec<KvCheck>,
@@ -588,6 +589,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
         })
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     pub(super) async fn commit_prepared_topology_packet(
         &self,
         packet: &PreparedTopologyPacket,

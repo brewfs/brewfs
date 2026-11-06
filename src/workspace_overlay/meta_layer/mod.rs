@@ -866,6 +866,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// Resolve each distinct inode once per attempt, with bounded backend
     /// concurrency. Keep the results locally: cache eviction/expiry must not
     /// turn mutation construction into another round of serial snapshots.
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = batch.len()))]
     async fn prefetch_write_inodes(
         &self,
         batch: &[PendingWrite],
@@ -881,6 +882,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// Commit every write of `batch` in one versioned mutation: one inode row
     /// per distinct inode (folded in arrival order) and every visible extent
     /// in arrival order, so a later write still wins on overlap.
+    #[tracing::instrument(level = "debug", skip_all, fields(writes = batch.len()))]
     async fn commit_write_batch(&self, batch: &mut Vec<PendingWrite>) -> Result<(), MetaError> {
         for _ in 0..64 {
             // Capture the CAS version before fetching rows, and discard all
@@ -1141,6 +1143,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         Ok(snapshot)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn mutation_version(&self) -> Result<MutationVersion, MetaError> {
         self.retain_mutation_version().await
     }
@@ -3410,6 +3413,60 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         } else {
             Err(MetaError::NotFound(ino))
         }
+    }
+
+    fn atomic_write_batch_limit(&self) -> usize {
+        MAX_GROUP_WRITES
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(ino = ino, chunk_id = chunk_id, slices = slices.len()))]
+    async fn write_batch(
+        &self,
+        ino: i64,
+        chunk_id: u64,
+        slices: &[SliceDesc],
+        new_size: u64,
+    ) -> Result<(), MetaError> {
+        if slices.is_empty() || slices.len() > MAX_GROUP_WRITES {
+            return Err(MetaError::InvalidPath(
+                "invalid workspace write batch size".into(),
+            ));
+        }
+        for slice in slices {
+            Self::validate_write(ino, chunk_id, slice, new_size, self.chunk_size)?;
+        }
+        // Own the same gate as queued single writes, but keep this prefix in
+        // one mutation. Splitting it at a queue boundary could let a retry of
+        // an older overlap overwrite a later, already committed member.
+        let _mutation_guard = self.mutation_gate.lock().await;
+        let mut receivers = Vec::with_capacity(slices.len());
+        let mut batch = Vec::with_capacity(slices.len());
+        for &slice in slices {
+            let (reply, receiver) = tokio::sync::oneshot::channel();
+            batch.push(PendingWrite {
+                ino,
+                chunk_id,
+                slice,
+                new_size,
+                reply,
+            });
+            receivers.push(receiver);
+        }
+        let result = self.commit_write_batch(&mut batch).await;
+        // commit_write_batch can reject a missing/non-file inode through its
+        // receipt. All members here share one inode, so that rejects them all.
+        for member in batch {
+            let _ = member.reply.send(match &result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(duplicate_write_error(error)),
+            });
+        }
+        for receiver in receivers {
+            receiver.await.map_err(|_| {
+                MetaError::Internal("workspace write batch receipt was dropped".into())
+            })??;
+        }
+        Ok(())
     }
 
     async fn write(

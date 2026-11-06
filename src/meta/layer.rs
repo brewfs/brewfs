@@ -583,6 +583,25 @@ pub trait MetaLayer: Send + Sync {
         new_size: u64,
     ) -> Result<(), MetaError>;
 
+    /// Maximum ordered slice prefix that can be published in one atomic
+    /// metadata mutation. Backends without this capability keep single writes.
+    fn atomic_write_batch_limit(&self) -> usize {
+        1
+    }
+
+    /// Publish uploaded, non-coalesced slices from one chunk in input order.
+    /// Implementations must validate the entire batch before mutation and must
+    /// not expose a partially applied batch, including on a returned error.
+    async fn write_batch(
+        &self,
+        _ino: i64,
+        _chunk_id: u64,
+        _slices: &[SliceDesc],
+        _new_size: u64,
+    ) -> Result<(), MetaError> {
+        Err(MetaError::NotImplemented)
+    }
+
     // ---------- Metadata + ID utilities ----------
     async fn get_deleted_files(&self) -> Result<Vec<i64>, MetaError>;
 

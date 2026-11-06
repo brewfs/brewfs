@@ -1544,6 +1544,7 @@ where
         self.hot_mutation_for_version(guard, None, operation).await
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn hot_mutation_for_version<R, F>(
         &self,
         guard: &HeadGuard,

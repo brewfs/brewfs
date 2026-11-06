@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::io::{Cursor, Read, Write};
 use std::mem::take;
 use std::sync::Arc;
@@ -19,7 +21,9 @@ pub(crate) struct CacheSlice {
     config: Arc<WriteConfig>,
     len: u64,
     alloc_bytes: u64,
-    pages: Vec<Option<Page>>,
+    // Only materialize the index for pages that contain data. Most random
+    // write slices hold one short page, even with a 64 MiB chunk layout.
+    pages: BTreeMap<usize, Page>,
     written_ranges: Vec<(u64, u64)>,
 }
 
@@ -39,24 +43,11 @@ impl CacheSlice {
             "The block size must be a multiple of the page size"
         );
 
-        let (chunk_size, block_size, page_size) = (
-            config.layout.chunk_size,
-            config.layout.block_size as u64,
-            config.page_size as u64,
-        );
-
-        let (blocks, pages_per_block) = (
-            chunk_size.div_ceil(block_size) as usize,
-            block_size.div_ceil(page_size) as usize,
-        );
-
-        let pages = vec![None; blocks * pages_per_block];
-
         Self {
             config,
             len: 0,
             alloc_bytes: 0,
-            pages,
+            pages: BTreeMap::new(),
             written_ranges: Vec::new(),
         }
     }
@@ -190,7 +181,7 @@ impl CacheSlice {
                 );
 
                 let slice = {
-                    let page = self.ensure_page_mut(flat_idx, page_size as usize);
+                    let page = self.ensure_page_mut(flat_idx, end)?;
                     page.write_slice(page_span.offset.as_usize(), end)?
                 };
 
@@ -214,10 +205,11 @@ impl CacheSlice {
 
         while position < buf.len() {
             let (flat_idx, within_page) = self.next_write_slot_flat();
+            let end = page_size.min(within_page + buf.len() - position);
 
             let read = {
-                let page = self.ensure_page_mut(flat_idx, page_size);
-                cursor.read(page.write_slice(within_page, page_size)?)?
+                let page = self.ensure_page_mut(flat_idx, end)?;
+                cursor.read(page.write_slice(within_page, end)?)?
             };
 
             if read == 0 {
@@ -275,7 +267,7 @@ impl CacheSlice {
                 let start = page_span.offset.as_usize();
                 let end = (page_span.offset + page_span.len).as_usize();
 
-                if let Some(page) = self.pages[flat_idx].as_ref() {
+                if let Some(page) = self.pages.get(&flat_idx) {
                     page.copy_slice(start, end, &mut cursor)?;
                 } else {
                     cursor.write_all(&vec![0; end - start])?;
@@ -295,17 +287,16 @@ impl CacheSlice {
     }
 
     pub(crate) fn stats(&self) -> CacheSliceStats {
-        let pages_used = self.pages.iter().filter(|p| p.is_some()).count();
         CacheSliceStats {
             len: self.len,
             alloc_bytes: self.alloc_bytes,
-            pages_total: self.pages.len(),
-            pages_used,
+            pages_total: self.config.layout.blocks_per_chunk() as usize * self.pages_per_block(),
+            pages_used: self.pages.len(),
         }
     }
 
     pub(crate) fn freeze(&mut self) {
-        for page in self.pages.iter_mut().flatten() {
+        for page in self.pages.values_mut() {
             page.freeze();
         }
     }
@@ -315,23 +306,24 @@ impl CacheSlice {
 
         let (start_idx, end_idx) = (start * pages_per_block, end * pages_per_block);
 
-        for page in self.pages[start_idx..end_idx].iter_mut().flatten() {
+        for (_, page) in self.pages.range_mut(start_idx..end_idx) {
             page.freeze();
         }
     }
 
     pub fn release_block(&mut self, idx: Vec<usize>) -> u64 {
-        let (page_size, pages_per_block, mut freed) =
-            (self.config.page_size as u64, self.pages_per_block(), 0);
+        let (pages_per_block, mut freed) = (self.pages_per_block(), 0);
 
         for block_idx in idx {
             let range = self.block_page_range(block_idx, pages_per_block);
 
-            for page in self.pages[range].iter_mut() {
-                if page.is_some() {
-                    *page = None;
-                    freed += page_size;
-                }
+            let keys = self
+                .pages
+                .range(range)
+                .map(|(&key, _)| key)
+                .collect::<Vec<_>>();
+            for key in keys {
+                freed += self.pages.remove(&key).unwrap().allocated_len() as u64;
             }
         }
 
@@ -341,9 +333,7 @@ impl CacheSlice {
 
     pub(crate) fn release_all(&mut self) -> u64 {
         let freed = self.alloc_bytes;
-        for page in &mut self.pages {
-            *page = None;
-        }
+        self.pages.clear();
         self.alloc_bytes = 0;
         freed
     }
@@ -358,11 +348,14 @@ impl CacheSlice {
         let page_size = self.config.page_size as u64;
         let first_released = len.div_ceil(page_size).as_usize();
         let mut freed = 0_u64;
-        for page in &mut self.pages[first_released..] {
-            if page.take().is_some() {
-                freed += page_size;
+        self.pages.retain(|&idx, page| {
+            if idx >= first_released {
+                freed += page.allocated_len() as u64;
+                false
+            } else {
+                true
             }
-        }
+        });
 
         self.alloc_bytes = self.alloc_bytes.saturating_sub(freed);
         self.len = len;
@@ -403,9 +396,13 @@ impl CacheSlice {
                     self.flat_index(block_idx, page_idx, pages_per_block),
                 );
 
-                if let Some(page) = self.pages[flat_idx].as_ref() {
+                if let Some(page) = self.pages.get(&flat_idx) {
                     let bytes = page.bytes()?;
-                    pages.push(bytes.slice(0..take));
+                    let allocated = take.min(bytes.len());
+                    pages.push(bytes.slice(0..allocated));
+                    // A sparse write can leave the rest of this logical page
+                    // unallocated. Preserve its zero padding in the upload.
+                    pages.extend(make_zero_bytes(take - allocated));
                 } else {
                     pages.extend(make_zero_bytes(take));
                 }
@@ -453,13 +450,25 @@ impl CacheSlice {
         start..end
     }
 
-    fn ensure_page_mut(&mut self, flat_idx: usize, page_size: usize) -> &mut Page {
-        if self.pages[flat_idx].is_none() {
-            self.pages[flat_idx] = Some(Page::new(page_size));
-            self.alloc_bytes += page_size as u64;
-        }
-
-        self.pages[flat_idx].as_mut().unwrap()
+    fn ensure_page_mut(&mut self, flat_idx: usize, end: usize) -> anyhow::Result<&mut Page> {
+        // Keep the configured logical page/block boundaries, but charge and
+        // retain only the backing buffer needed so far. Geometric growth
+        // bounds copying for small appends; full-page writes allocate once.
+        let size = end
+            .next_power_of_two()
+            .max(4096)
+            .min(self.config.page_size as usize);
+        Ok(match self.pages.entry(flat_idx) {
+            Entry::Vacant(entry) => {
+                self.alloc_bytes += size as u64;
+                entry.insert(Page::new(size))
+            }
+            Entry::Occupied(entry) => {
+                let page = entry.into_mut();
+                self.alloc_bytes += page.grow(size)?;
+                page
+            }
+        })
     }
 
     pub(crate) fn alloc_bytes(&self) -> u64 {
@@ -532,6 +541,29 @@ impl Page {
         }
     }
 
+    fn allocated_len(&self) -> usize {
+        match &self.data {
+            PageBuf::Mutable(buf) => buf.len(),
+            PageBuf::Frozen(buf) => buf.len(),
+        }
+    }
+
+    fn grow(&mut self, size: usize) -> anyhow::Result<u64> {
+        let old_size = self.allocated_len();
+        if size <= old_size {
+            return Ok(0);
+        }
+        let PageBuf::Mutable(buf) = &mut self.data else {
+            anyhow::bail!("attempt to grow frozen page");
+        };
+        // Allocate an exact-sized zeroed buffer rather than retaining spare
+        // BytesMut capacity that would escape dirty-memory accounting.
+        let mut grown = BytesMut::zeroed(size);
+        grown[..old_size].copy_from_slice(buf);
+        *buf = grown;
+        Ok((size - old_size) as u64)
+    }
+
     fn write_slice(&mut self, start: usize, end: usize) -> anyhow::Result<&mut [u8]> {
         match &mut self.data {
             PageBuf::Mutable(buf) => Ok(&mut buf[start..end]),
@@ -567,9 +599,16 @@ impl Page {
         end: usize,
         cursor: &mut Cursor<&mut [u8]>,
     ) -> anyhow::Result<()> {
-        match &self.data {
-            PageBuf::Frozen(buf) => cursor.write_all(&buf[start..end])?,
-            PageBuf::Mutable(buf) => cursor.write_all(&buf[start..end])?,
+        let buf: &[u8] = match &self.data {
+            PageBuf::Frozen(buf) => buf,
+            PageBuf::Mutable(buf) => buf,
+        };
+        let allocated_end = end.min(buf.len());
+        if start < allocated_end {
+            cursor.write_all(&buf[start..allocated_end])?;
+        }
+        for zeros in make_zero_bytes(end - start.max(allocated_end)) {
+            cursor.write_all(&zeros)?;
         }
         Ok(())
     }
@@ -624,6 +663,122 @@ mod tests {
     }
 
     #[test]
+    fn test_demand_pages_empty_slice_has_no_index_entries() {
+        let slice = CacheSlice::new(Arc::new(WriteConfig::new(ChunkLayout::default())));
+        assert!(
+            slice.pages.is_empty(),
+            "an empty slice must not allocate page slots"
+        );
+        assert_eq!(slice.alloc_bytes(), 0);
+    }
+
+    #[test]
+    fn test_demand_pages_small_write_keeps_only_a_small_buffer() {
+        let mut slice = CacheSlice::new(Arc::new(WriteConfig::new(ChunkLayout::default())));
+        let data = patterned(4096, 29);
+        slice.append(&data).unwrap();
+        assert_eq!(
+            slice.alloc_bytes(),
+            4096,
+            "a 4 KiB write must not retain a 64 KiB page"
+        );
+        slice.freeze();
+        assert_eq!(collect_all(&mut slice), data);
+        assert_eq!(slice.release_all(), 4096);
+        assert!(
+            slice.pages.is_empty(),
+            "release must also return the page index"
+        );
+    }
+
+    fn demand_page_config() -> Arc<WriteConfig> {
+        Arc::new(
+            WriteConfig::new(ChunkLayout {
+                chunk_size: 256 * 1024,
+                block_size: 128 * 1024,
+            })
+            .page_size(64 * 1024),
+        )
+    }
+
+    #[test]
+    fn test_demand_pages_grow_across_page_boundaries_and_keep_overwrites() {
+        let mut slice = CacheSlice::new(demand_page_config());
+        let mut expected = patterned(4096, 7);
+        slice.append(&expected).unwrap();
+        let tail = patterned(70_000, 13);
+        slice.append(&tail).unwrap();
+        expected.extend(tail);
+        let patch = patterned(10_000, 29);
+        slice.write_at(60_000, &patch).unwrap();
+        expected[60_000..70_000].copy_from_slice(&patch);
+        let mut read = vec![0; expected.len()];
+        assert_eq!(slice.copy_into(0, &mut read).unwrap(), expected.len());
+        assert_eq!(read, expected);
+        assert!(slice.alloc_bytes() >= expected.len() as u64);
+        assert!(slice.alloc_bytes() <= expected.len() as u64 + 64 * 1024);
+        slice.freeze();
+        assert_eq!(collect_all(&mut slice), expected);
+    }
+
+    #[test]
+    fn test_demand_pages_zero_unallocated_tails_and_release_actual_bytes() {
+        let mut slice = CacheSlice::new(demand_page_config());
+        let first = patterned(4096, 31);
+        let tail = patterned(4096, 57);
+        slice.append(&first).unwrap();
+        slice
+            .write(128 * 1024, &tail, WriteAction::GapAppend)
+            .unwrap();
+        assert_eq!(slice.alloc_bytes(), 8192);
+        assert_eq!(slice.stats().pages_used, 2);
+        assert_eq!(slice.stats().pages_total, 4);
+        let mut expected = vec![0; 128 * 1024 + tail.len()];
+        expected[..first.len()].copy_from_slice(&first);
+        expected[128 * 1024..].copy_from_slice(&tail);
+        let mut read = vec![0xAA; expected.len()];
+        slice.copy_into(0, &mut read).unwrap();
+        assert_eq!(read, expected);
+        // Also start entirely beyond a short page's backing allocation.
+        let mut hole = vec![0xAA; 8192];
+        slice.copy_into(8192, &mut hole).unwrap();
+        assert_eq!(hole, vec![0; 8192]);
+        slice.freeze_blocks(0, 1);
+        let first_block = slice.collect_pages(0, 1).unwrap().pop().unwrap().1;
+        assert_eq!(flatten(first_block.clone()), expected[..128 * 1024]);
+        assert_eq!(slice.release_block(vec![0, 0]), 4096);
+        assert_eq!(slice.alloc_bytes(), 4096);
+        slice.freeze_blocks(1, 2);
+        let second_block = slice.collect_pages(1, 2).unwrap().pop().unwrap().1;
+        assert_eq!(flatten(second_block.clone()), tail);
+        assert_eq!(slice.release_all(), 4096);
+        assert_eq!(slice.alloc_bytes(), 0);
+        assert!(slice.pages.is_empty());
+        // Upload readers that already own Bytes keep the frozen contents.
+        assert_eq!(flatten(first_block), expected[..128 * 1024]);
+        assert_eq!(flatten(second_block), tail);
+    }
+
+    #[test]
+    fn test_demand_pages_truncate_sparse_tail_and_reject_frozen_growth() {
+        let mut slice = CacheSlice::new(demand_page_config());
+        let data = patterned(4096, 41);
+        slice.append(&data).unwrap();
+        slice
+            .write(128 * 1024, &data, WriteAction::GapAppend)
+            .unwrap();
+        assert_eq!(slice.truncate(64 * 1024).unwrap(), 4096);
+        assert_eq!(slice.alloc_bytes(), 4096);
+        slice.freeze();
+        let mut expected = data.clone();
+        expected.resize(64 * 1024, 0);
+        assert_eq!(collect_all(&mut slice), expected);
+        assert!(slice.write_at(4096, &data).is_err());
+        assert_eq!(slice.alloc_bytes(), 4096);
+        assert_eq!(collect_all(&mut slice), expected);
+    }
+
+    #[test]
     fn test_append_single_page() {
         let (mut slice, data) = (CacheSlice::new(config()), patterned(512, 1));
 
@@ -631,7 +786,7 @@ mod tests {
         slice.freeze();
 
         assert_eq!(slice.len, data.len() as u64);
-        assert_eq!(slice.pages.iter().filter(|p| p.is_some()).count(), 1);
+        assert_eq!(slice.stats().pages_used, 1);
         assert_eq!(collect_all(&mut slice), data);
     }
 
@@ -643,7 +798,7 @@ mod tests {
         slice.freeze();
 
         assert_eq!(slice.len, data.len() as u64);
-        assert_eq!(slice.pages.iter().filter(|p| p.is_some()).count(), 2);
+        assert_eq!(slice.stats().pages_used, 2);
         assert_eq!(collect_all(&mut slice), data);
     }
 
@@ -660,10 +815,7 @@ mod tests {
         );
 
         let pages_per_block = block_size.div_ceil(page_size);
-        assert_eq!(
-            slice.pages.iter().filter(|p| p.is_some()).count(),
-            pages_per_block + 1
-        );
+        assert_eq!(slice.stats().pages_used, pages_per_block + 1);
         assert_eq!(collect_all(&mut slice), data);
     }
 

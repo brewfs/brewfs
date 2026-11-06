@@ -1,0 +1,1623 @@
+{
+  "scope": "correctness diagnostics only; no performance acceptance",
+  "runs": [
+    {
+      "name": "baseline-gdb-01",
+      "artifact_path": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/mixed-eio/baseline-gdb-01",
+      "started_utc": "2026-11-03T12:04:15Z",
+      "finished_utc": "2026-11-03T12:06:06Z",
+      "exit_status": 0,
+      "source": {
+        "revision": "f5706712302435206269a253bf861a1a648761d1",
+        "dirty": false,
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "bcf76670ea63c7e6b44e1f79be8f0c60f8e9e8fa4af08deb64fe2b7c9aa901ac"
+      },
+      "fio_argv": [
+        "fio",
+        "--name=brewfs-randrw",
+        "--directory=/mnt/brewfs/issue413/.perf-fio-randrw",
+        "--rw=randrw",
+        "--bs=4k",
+        "--size=512m",
+        "--numjobs=4",
+        "--ioengine=libaio",
+        "--iodepth=32",
+        "--direct=1",
+        "--runtime=20",
+        "--time_based",
+        "--group_reporting",
+        "--eta=never",
+        "--rwmixread=70",
+        "--lat_percentiles=1",
+        "--clat_percentiles=1",
+        "--slat_percentiles=1",
+        "--percentile_list=50:95:99:99.9",
+        "--randseed=391",
+        "--randrepeat=1",
+        "--output-format=json",
+        "--output=/artifacts/run/results/fio-randrw.json",
+        "--write_lat_log=/artifacts/run/results/fio-randrw_lat",
+        "--log_avg_msec=1000"
+      ],
+      "fio_read_errors": [],
+      "probe_event_counts": {
+        "ready": 1
+      },
+      "probe_events": [],
+      "packet_kernel_drops": 2962,
+      "redis_after": {
+        "redis_version": "7.2.16",
+        "total_error_replies": "0",
+        "rejected_connections": "0",
+        "blocked_clients": "0",
+        "evicted_keys": "0",
+        "aof_last_write_status": "ok",
+        "aof_last_bgrewrite_status": "ok",
+        "rdb_last_bgsave_status": "ok"
+      },
+      "containers_after": [
+        {
+          "name": "/issue413-redis-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        },
+        {
+          "name": "/issue413-rustfs-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        }
+      ],
+      "image_ids": [
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0",
+        "sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2",
+        "sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f",
+        "sha256:8120a9cea4c812deaa358840535b57e920253441e4af20d3e0cfaad7d97e6ad2"
+      ],
+      "probe_limitation": "Probe setup failed to resolve the executable; no error-chain conclusion from this run."
+    },
+    {
+      "name": "baseline-gdb-02",
+      "artifact_path": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/mixed-eio/baseline-gdb-02",
+      "started_utc": "2026-11-03T12:06:19Z",
+      "finished_utc": "2026-11-03T12:08:46Z",
+      "exit_status": 4,
+      "source": {
+        "revision": "f5706712302435206269a253bf861a1a648761d1",
+        "dirty": false,
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "bcf76670ea63c7e6b44e1f79be8f0c60f8e9e8fa4af08deb64fe2b7c9aa901ac"
+      },
+      "fio_argv": [
+        "fio",
+        "--name=brewfs-randrw",
+        "--directory=/mnt/brewfs/issue413/.perf-fio-randrw",
+        "--rw=randrw",
+        "--bs=4k",
+        "--size=512m",
+        "--numjobs=4",
+        "--ioengine=libaio",
+        "--iodepth=32",
+        "--direct=1",
+        "--runtime=60",
+        "--time_based",
+        "--group_reporting",
+        "--eta=never",
+        "--rwmixread=70",
+        "--lat_percentiles=1",
+        "--clat_percentiles=1",
+        "--slat_percentiles=1",
+        "--percentile_list=50:95:99:99.9",
+        "--randseed=391",
+        "--randrepeat=1",
+        "--output-format=json",
+        "--output=/artifacts/run/results/fio-randrw.json",
+        "--write_lat_log=/artifacts/run/results/fio-randrw_lat",
+        "--log_avg_msec=1000"
+      ],
+      "fio_read_errors": [
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.2.0: Input/output error: read offset=173658112, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.1.0: Input/output error: read offset=121991168, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.3.0: Input/output error: read offset=16773120, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.0.0: Input/output error: read offset=180211712, buflen=4096"
+      ],
+      "probe_event_counts": {
+        "ready": 1,
+        "workspace-to-meta": 4,
+        "workspace-to-meta-return": 4,
+        "vfs-to-errno": 4,
+        "vfs-to-errno-return": 4
+      },
+      "probe_events": [
+        {
+          "wall_ns": 1793707708096305323,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:08:28.096305+00:00"
+        },
+        {
+          "wall_ns": 1793707708096914079,
+          "event": "workspace-to-meta-return",
+          "eax": -2047261872,
+          "output_words": [
+            32,
+            68719476738,
+            191,
+            191,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:08:28.096914+00:00"
+        },
+        {
+          "wall_ns": 1793707708098548348,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:08:28.098548+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108045006762776,
+                1,
+                0,
+                127721614302592,
+                32,
+                127721590286706,
+                127721594955040,
+                32,
+                68719476738,
+                191,
+                191,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707708099117759,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:08:28.099118+00:00"
+        },
+        {
+          "wall_ns": 1793707711069268296,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:08:31.069268+00:00"
+        },
+        {
+          "wall_ns": 1793707711070002126,
+          "event": "workspace-to-meta-return",
+          "eax": -2047261872,
+          "output_words": [
+            32,
+            68719476738,
+            230,
+            230,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:08:31.070002+00:00"
+        },
+        {
+          "wall_ns": 1793707711071966816,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:08:31.071967+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108045006762776,
+                1,
+                0,
+                127721620903424,
+                32,
+                127721590138098,
+                127721598966704,
+                32,
+                68719476738,
+                230,
+                230,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707711072540563,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:08:31.072541+00:00"
+        },
+        {
+          "wall_ns": 1793707716927806916,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:08:36.927807+00:00"
+        },
+        {
+          "wall_ns": 1793707716928284608,
+          "event": "workspace-to-meta-return",
+          "eax": -2047261872,
+          "output_words": [
+            288,
+            68719476738,
+            325,
+            325,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:08:36.928285+00:00"
+        },
+        {
+          "wall_ns": 1793707716930142086,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:08:36.930142+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108045006762776,
+                1,
+                127721690149632,
+                127721593382224,
+                32,
+                127721590105074,
+                127721590974272,
+                288,
+                68719476738,
+                325,
+                325,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707716930742942,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:08:36.930743+00:00"
+        },
+        {
+          "wall_ns": 1793707718718778514,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:08:38.718779+00:00"
+        },
+        {
+          "wall_ns": 1793707718719283224,
+          "event": "workspace-to-meta-return",
+          "eax": -2047261872,
+          "output_words": [
+            32,
+            68719476738,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:08:38.719283+00:00"
+        },
+        {
+          "wall_ns": 1793707718720473599,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:08:38.720474+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108045006762776,
+                1,
+                0,
+                127721594039040,
+                32,
+                127721590154610,
+                127721617958368,
+                32,
+                68719476738,
+                0,
+                0,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707718720957476,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:08:38.720958+00:00"
+        }
+      ],
+      "packet_kernel_drops": 312,
+      "backend": {
+        "packets": 192027,
+        "payload_bytes": 873476435,
+        "first_wall_ns": 1793707683488255000,
+        "last_wall_ns": 1793707721087598000,
+        "http_status_counts": {
+          "206": 9734,
+          "200": 4011
+        },
+        "http_request_methods": {
+          "GET": 9731,
+          "PUT": 4014
+        },
+        "http_errors": [],
+        "redis_error_lines": [],
+        "limitation": "Packet header inventory; see tcpdump.log for drops. Redis INFO and gdb probes are independent."
+      },
+      "redis_after": {
+        "redis_version": "7.2.16",
+        "total_error_replies": "0",
+        "rejected_connections": "0",
+        "blocked_clients": "0",
+        "evicted_keys": "0",
+        "aof_last_write_status": "ok",
+        "aof_last_bgrewrite_status": "ok",
+        "rdb_last_bgsave_status": "ok"
+      },
+      "containers_after": [
+        {
+          "name": "/issue413-redis-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        },
+        {
+          "name": "/issue413-rustfs-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        }
+      ],
+      "image_ids": [
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0",
+        "sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2",
+        "sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f",
+        "sha256:8120a9cea4c812deaa358840535b57e920253441e4af20d3e0cfaad7d97e6ad2"
+      ]
+    },
+    {
+      "name": "baseline-gdb-03",
+      "artifact_path": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/mixed-eio/baseline-gdb-03",
+      "started_utc": "2026-11-03T12:09:35Z",
+      "finished_utc": "2026-11-03T12:12:07Z",
+      "exit_status": 4,
+      "source": {
+        "revision": "f5706712302435206269a253bf861a1a648761d1",
+        "dirty": false,
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "bcf76670ea63c7e6b44e1f79be8f0c60f8e9e8fa4af08deb64fe2b7c9aa901ac"
+      },
+      "fio_argv": [
+        "fio",
+        "--name=brewfs-randrw",
+        "--directory=/mnt/brewfs/issue413/.perf-fio-randrw",
+        "--rw=randrw",
+        "--bs=4k",
+        "--size=512m",
+        "--numjobs=4",
+        "--ioengine=libaio",
+        "--iodepth=32",
+        "--direct=1",
+        "--runtime=60",
+        "--time_based",
+        "--group_reporting",
+        "--eta=never",
+        "--rwmixread=70",
+        "--lat_percentiles=1",
+        "--clat_percentiles=1",
+        "--slat_percentiles=1",
+        "--percentile_list=50:95:99:99.9",
+        "--randseed=391",
+        "--randrepeat=1",
+        "--output-format=json",
+        "--output=/artifacts/run/results/fio-randrw.json",
+        "--write_lat_log=/artifacts/run/results/fio-randrw_lat",
+        "--log_avg_msec=1000"
+      ],
+      "fio_read_errors": [
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.0.0: Input/output error: read offset=257679360, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.2.0: Input/output error: read offset=115884032, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.3.0: Input/output error: read offset=531496960, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.1.0: Input/output error: read offset=36163584, buflen=4096"
+      ],
+      "probe_event_counts": {
+        "ready": 1,
+        "workspace-to-meta": 4,
+        "workspace-to-meta-return": 4,
+        "vfs-to-errno": 4,
+        "vfs-to-errno-return": 4
+      },
+      "probe_events": [
+        {
+          "wall_ns": 1793707900730537936,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:11:40.730538+00:00"
+        },
+        {
+          "wall_ns": 1793707900732462994,
+          "event": "workspace-to-meta-return",
+          "eax": 2063438672,
+          "output_words": [
+            32,
+            68719476738,
+            181,
+            181,
+            0,
+            8,
+            0,
+            4
+          ],
+          "utc": "2026-11-03T12:11:40.732463+00:00"
+        },
+        {
+          "wall_ns": 1793707900734885881,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:11:40.734886+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                95012399645464,
+                1,
+                18446744073709551360,
+                132849590489488,
+                32,
+                132849579960562,
+                132849582907040,
+                32,
+                68719476738,
+                181,
+                181,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707900735652994,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:11:40.735653+00:00"
+        },
+        {
+          "wall_ns": 1793707912316597092,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:11:52.316597+00:00"
+        },
+        {
+          "wall_ns": 1793707912317080326,
+          "event": "workspace-to-meta-return",
+          "eax": 2063438672,
+          "output_words": [
+            288,
+            68719476738,
+            280,
+            280,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:11:52.317080+00:00"
+        },
+        {
+          "wall_ns": 1793707912318425863,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:11:52.318426+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                95012399645464,
+                1,
+                0,
+                132849599032064,
+                32,
+                132849579844978,
+                132849580574528,
+                288,
+                68719476738,
+                280,
+                280,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707912318955432,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:11:52.318955+00:00"
+        },
+        {
+          "wall_ns": 1793707915226585252,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:11:55.226585+00:00"
+        },
+        {
+          "wall_ns": 1793707915230202853,
+          "event": "workspace-to-meta-return",
+          "eax": 2063438672,
+          "output_words": [
+            32,
+            68719476738,
+            132849696867664,
+            95012398481442,
+            144115707019543602,
+            0,
+            946080042,
+            132848533589525
+          ],
+          "utc": "2026-11-03T12:11:55.230203+00:00"
+        },
+        {
+          "wall_ns": 1793707915234294942,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:11:55.234295+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                95012399645464,
+                1,
+                0,
+                132849601187200,
+                32,
+                132849579977074,
+                132849591255776,
+                32,
+                68719476738,
+                132849696867664,
+                95012398481442,
+                144115707019543602
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707915237030541,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:11:55.237031+00:00"
+        },
+        {
+          "wall_ns": 1793707919378713703,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:11:59.378714+00:00"
+        },
+        {
+          "wall_ns": 1793707919379530636,
+          "event": "workspace-to-meta-return",
+          "eax": 2063438672,
+          "output_words": [
+            288,
+            68719476738,
+            338,
+            338,
+            144115707019529526,
+            0,
+            946080047,
+            132847652306663
+          ],
+          "utc": "2026-11-03T12:11:59.379531+00:00"
+        },
+        {
+          "wall_ns": 1793707919381190381,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:11:59.381190+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                95012399645464,
+                1,
+                0,
+                132849598596352,
+                32,
+                132849579960562,
+                132849595814224,
+                288,
+                68719476738,
+                338,
+                338,
+                144115707019529526
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793707919381656323,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:11:59.381656+00:00"
+        }
+      ],
+      "packet_kernel_drops": 0,
+      "backend": {
+        "packets": 215898,
+        "payload_bytes": 985400791,
+        "first_wall_ns": 1793707877293439000,
+        "last_wall_ns": 1793707920958570000,
+        "http_status_counts": {
+          "206": 10766,
+          "200": 4470
+        },
+        "http_request_methods": {
+          "GET": 10766,
+          "PUT": 4470
+        },
+        "http_errors": [],
+        "redis_error_lines": [],
+        "limitation": "Packet header inventory; see tcpdump.log for drops. Redis INFO and gdb probes are independent."
+      },
+      "redis_after": {
+        "redis_version": "7.2.16",
+        "total_error_replies": "0",
+        "rejected_connections": "0",
+        "blocked_clients": "0",
+        "evicted_keys": "0",
+        "aof_last_write_status": "ok",
+        "aof_last_bgrewrite_status": "ok",
+        "rdb_last_bgsave_status": "ok"
+      },
+      "containers_after": [
+        {
+          "name": "/issue413-redis-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        },
+        {
+          "name": "/issue413-rustfs-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        }
+      ],
+      "image_ids": [
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0",
+        "sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2",
+        "sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f",
+        "sha256:8120a9cea4c812deaa358840535b57e920253441e4af20d3e0cfaad7d97e6ad2"
+      ]
+    },
+    {
+      "name": "baseline-gdb-04",
+      "artifact_path": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/mixed-eio/baseline-gdb-04",
+      "started_utc": "2026-11-03T12:13:25Z",
+      "finished_utc": "2026-11-03T12:15:50Z",
+      "exit_status": 4,
+      "source": {
+        "revision": "f5706712302435206269a253bf861a1a648761d1",
+        "dirty": false,
+        "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "bcf76670ea63c7e6b44e1f79be8f0c60f8e9e8fa4af08deb64fe2b7c9aa901ac"
+      },
+      "fio_argv": [
+        "fio",
+        "--name=brewfs-randrw",
+        "--directory=/mnt/brewfs/issue413/.perf-fio-randrw",
+        "--rw=randrw",
+        "--bs=4k",
+        "--size=512m",
+        "--numjobs=4",
+        "--ioengine=libaio",
+        "--iodepth=32",
+        "--direct=1",
+        "--runtime=60",
+        "--time_based",
+        "--group_reporting",
+        "--eta=never",
+        "--rwmixread=70",
+        "--lat_percentiles=1",
+        "--clat_percentiles=1",
+        "--slat_percentiles=1",
+        "--percentile_list=50:95:99:99.9",
+        "--randseed=391",
+        "--randrepeat=1",
+        "--output-format=json",
+        "--output=/artifacts/run/results/fio-randrw.json",
+        "--write_lat_log=/artifacts/run/results/fio-randrw_lat",
+        "--log_avg_msec=1000"
+      ],
+      "fio_read_errors": [
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.1.0: Input/output error: read offset=452509696, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.0.0: Input/output error: read offset=172285952, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.2.0: Input/output error: read offset=156835840, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.3.0: Input/output error: read offset=357728256, buflen=4096"
+      ],
+      "probe_event_counts": {
+        "ready": 1,
+        "extent-read-retries-exhausted": 4,
+        "workspace-to-meta": 4,
+        "workspace-to-meta-return": 4,
+        "vfs-to-errno": 4,
+        "vfs-to-errno-return": 4
+      },
+      "probe_events": [
+        {
+          "wall_ns": 1793708134172152174,
+          "event": "extent-read-retries-exhausted",
+          "attempts": [
+            3,
+            3
+          ],
+          "query_words": [
+            2,
+            128585241569392,
+            2,
+            8,
+            6,
+            0,
+            67108864
+          ],
+          "generation_keys": [
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fea38cb5d107",
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fe9dcf26aae8"
+          ],
+          "utc": "2026-11-03T12:15:34.172152+00:00"
+        },
+        {
+          "wall_ns": 1793708134173402715,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:15:34.173403+00:00"
+        },
+        {
+          "wall_ns": 1793708134173887468,
+          "event": "workspace-to-meta-return",
+          "eax": -1735310512,
+          "output_words": [
+            32,
+            68719476738,
+            213,
+            213,
+            224,
+            0,
+            946080033,
+            128582966903417
+          ],
+          "utc": "2026-11-03T12:15:34.173887+00:00"
+        },
+        {
+          "wall_ns": 1793708134175326566,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:15:34.175326+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108913390969624,
+                1,
+                0,
+                128585241835008,
+                32,
+                128585214125426,
+                128585241042208,
+                32,
+                68719476738,
+                213,
+                213,
+                224
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708134175844247,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:15:34.175844+00:00"
+        },
+        {
+          "wall_ns": 1793708135956186182,
+          "event": "extent-read-retries-exhausted",
+          "attempts": [
+            3,
+            3
+          ],
+          "query_words": [
+            2,
+            128585238474224,
+            2,
+            5,
+            2,
+            0,
+            67108864
+          ],
+          "generation_keys": [
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fea38cb5d107",
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fe9dcf26aae8"
+          ],
+          "utc": "2026-11-03T12:15:35.956186+00:00"
+        },
+        {
+          "wall_ns": 1793708135958477631,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:15:35.958477+00:00"
+        },
+        {
+          "wall_ns": 1793708135959146124,
+          "event": "workspace-to-meta-return",
+          "eax": -1735310512,
+          "output_words": [
+            32,
+            68719476738,
+            245,
+            245,
+            0,
+            8,
+            0,
+            4
+          ],
+          "utc": "2026-11-03T12:15:35.959146+00:00"
+        },
+        {
+          "wall_ns": 1793708135960760225,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:15:35.960760+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108913390969624,
+                1,
+                0,
+                128585241227136,
+                32,
+                128585214075890,
+                128585247290544,
+                32,
+                68719476738,
+                245,
+                245,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708135961230563,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:15:35.961231+00:00"
+        },
+        {
+          "wall_ns": 1793708137735686274,
+          "event": "extent-read-retries-exhausted",
+          "attempts": [
+            3,
+            3
+          ],
+          "query_words": [
+            2,
+            128585238539568,
+            2,
+            7,
+            2,
+            0,
+            67108864
+          ],
+          "generation_keys": [
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fea38cb5d107",
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fe9dcf26aae8"
+          ],
+          "utc": "2026-11-03T12:15:37.735686+00:00"
+        },
+        {
+          "wall_ns": 1793708137736890851,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:15:37.736891+00:00"
+        },
+        {
+          "wall_ns": 1793708137737438106,
+          "event": "workspace-to-meta-return",
+          "eax": -1735310512,
+          "output_words": [
+            32,
+            68719476738,
+            250,
+            250,
+            224,
+            0,
+            946080036,
+            128583530368892
+          ],
+          "utc": "2026-11-03T12:15:37.737438+00:00"
+        },
+        {
+          "wall_ns": 1793708137738607517,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:15:37.738608+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108913390969624,
+                1,
+                128585231047168,
+                128585247291520,
+                32,
+                128585214307058,
+                128585215001504,
+                32,
+                68719476738,
+                250,
+                250,
+                224
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708137739094731,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:15:37.739095+00:00"
+        },
+        {
+          "wall_ns": 1793708142574153852,
+          "event": "extent-read-retries-exhausted",
+          "attempts": [
+            3,
+            3
+          ],
+          "query_words": [
+            2,
+            128585230461952,
+            2,
+            6,
+            5,
+            0,
+            67108864
+          ],
+          "generation_keys": [
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fea38cb5d107",
+            "packed/v3/native-extent-generation/01a1a154-3900-7f02-90cf-fe9dcf26aae8"
+          ],
+          "utc": "2026-11-03T12:15:42.574154+00:00"
+        },
+        {
+          "wall_ns": 1793708142613922249,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:15:42.613922+00:00"
+        },
+        {
+          "wall_ns": 1793708142615335796,
+          "event": "workspace-to-meta-return",
+          "eax": -1735310512,
+          "output_words": [
+            32,
+            68719476738,
+            0,
+            108913768122976,
+            0,
+            8,
+            0,
+            4
+          ],
+          "utc": "2026-11-03T12:15:42.615336+00:00"
+        },
+        {
+          "wall_ns": 1793708142617416011,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:15:42.617416+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                108913390969624,
+                1,
+                18446744073709551615,
+                128585239974016,
+                32,
+                128585214224498,
+                128585241565936,
+                32,
+                68719476738,
+                0,
+                108913768122976,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/baseline-build/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708142618212886,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:15:42.618213+00:00"
+        }
+      ],
+      "packet_kernel_drops": 0,
+      "backend": {
+        "packets": 194437,
+        "payload_bytes": 895824369,
+        "first_wall_ns": 1793708105889999000,
+        "last_wall_ns": 1793708145011566000,
+        "http_status_counts": {
+          "206": 9979,
+          "200": 4150
+        },
+        "http_request_methods": {
+          "GET": 9979,
+          "PUT": 4150
+        },
+        "http_errors": [],
+        "redis_error_lines": [],
+        "limitation": "Packet header inventory; see tcpdump.log for drops. Redis INFO and gdb probes are independent."
+      },
+      "redis_after": {
+        "redis_version": "7.2.16",
+        "total_error_replies": "0",
+        "rejected_connections": "0",
+        "blocked_clients": "0",
+        "evicted_keys": "0",
+        "aof_last_write_status": "ok",
+        "aof_last_bgrewrite_status": "ok",
+        "rdb_last_bgsave_status": "ok"
+      },
+      "containers_after": [
+        {
+          "name": "/issue413-redis-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        },
+        {
+          "name": "/issue413-rustfs-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        }
+      ],
+      "image_ids": [
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0",
+        "sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2",
+        "sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f",
+        "sha256:8120a9cea4c812deaa358840535b57e920253441e4af20d3e0cfaad7d97e6ad2"
+      ]
+    },
+    {
+      "name": "candidate-gdb-01",
+      "artifact_path": "/mnt/brewfs-data/home/hxy/issue413/close-tail-followup/mixed-eio/candidate-gdb-01",
+      "started_utc": "2026-11-03T12:16:56Z",
+      "finished_utc": "2026-11-03T12:19:20Z",
+      "exit_status": 4,
+      "source": {
+        "revision": "f5706712302435206269a253bf861a1a648761d1",
+        "dirty": true,
+        "diff_sha256": "1652cefa6051607483a7b0975094f5034d4a80d899d30f84903ed09d6fc755e2",
+        "features": "workspace-overlay,observability",
+        "profile": "release",
+        "CARGO_PROFILE_RELEASE_DEBUG": "0",
+        "RUSTFLAGS": "-C debuginfo=0",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "256",
+        "binary_sha256": "5d7a25617f9702dda766ba53d313c826eba5682c682160bd12199f05c18df53f"
+      },
+      "fio_argv": [
+        "fio",
+        "--name=brewfs-randrw",
+        "--directory=/mnt/brewfs/issue413/.perf-fio-randrw",
+        "--rw=randrw",
+        "--bs=4k",
+        "--size=512m",
+        "--numjobs=4",
+        "--ioengine=libaio",
+        "--iodepth=32",
+        "--direct=1",
+        "--runtime=60",
+        "--time_based",
+        "--group_reporting",
+        "--eta=never",
+        "--rwmixread=70",
+        "--lat_percentiles=1",
+        "--clat_percentiles=1",
+        "--slat_percentiles=1",
+        "--percentile_list=50:95:99:99.9",
+        "--randseed=391",
+        "--randrepeat=1",
+        "--output-format=json",
+        "--output=/artifacts/run/results/fio-randrw.json",
+        "--write_lat_log=/artifacts/run/results/fio-randrw_lat",
+        "--log_avg_msec=1000"
+      ],
+      "fio_read_errors": [
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.3.0: Input/output error: read offset=292904960, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.0.0: Input/output error: read offset=42758144, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.1.0: Input/output error: read offset=223531008, buflen=4096",
+        "fio: io_u error on file /mnt/brewfs/issue413/.perf-fio-randrw/brewfs-randrw.2.0: Input/output error: read offset=517455872, buflen=4096"
+      ],
+      "probe_event_counts": {
+        "ready": 1,
+        "workspace-to-meta": 4,
+        "workspace-to-meta-return": 4,
+        "vfs-to-errno": 4,
+        "vfs-to-errno-return": 4
+      },
+      "probe_events": [
+        {
+          "wall_ns": 1793708337304447041,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:18:57.304447+00:00"
+        },
+        {
+          "wall_ns": 1793708337305717104,
+          "event": "workspace-to-meta-return",
+          "eax": -921865392,
+          "output_words": [
+            32,
+            68719476738,
+            135,
+            135,
+            1,
+            133001246550144,
+            133001246550032,
+            133001246900912
+          ],
+          "utc": "2026-11-03T12:18:57.305717+00:00"
+        },
+        {
+          "wall_ns": 1793708337307486448,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:18:57.307487+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                96772971579680,
+                1,
+                0,
+                133001250354944,
+                32,
+                133001245820402,
+                133001249304480,
+                32,
+                68719476738,
+                135,
+                135,
+                1
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708337308035550,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:18:57.308036+00:00"
+        },
+        {
+          "wall_ns": 1793708338393753931,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:18:58.393754+00:00"
+        },
+        {
+          "wall_ns": 1793708338394710264,
+          "event": "workspace-to-meta-return",
+          "eax": -921865392,
+          "output_words": [
+            32,
+            68719476738,
+            142,
+            142,
+            144115707611976635,
+            0,
+            946080023,
+            132998531283232
+          ],
+          "utc": "2026-11-03T12:18:58.394710+00:00"
+        },
+        {
+          "wall_ns": 1793708338397309096,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:18:58.397309+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                96772971579680,
+                1,
+                133001248189440,
+                133001247279488,
+                32,
+                133001245853810,
+                133001248435344,
+                32,
+                68719476738,
+                142,
+                142,
+                144115707611976635
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708338398285583,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:18:58.398286+00:00"
+        },
+        {
+          "wall_ns": 1793708342080023933,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:19:02.080024+00:00"
+        },
+        {
+          "wall_ns": 1793708342080598807,
+          "event": "workspace-to-meta-return",
+          "eax": -921865392,
+          "output_words": [
+            32,
+            68719476738,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "utc": "2026-11-03T12:19:02.080599+00:00"
+        },
+        {
+          "wall_ns": 1793708342081921456,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:19:02.081922+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                96772971579680,
+                1,
+                0,
+                133001247613056,
+                32,
+                133001245920626,
+                133001250547328,
+                32,
+                68719476738,
+                0,
+                0,
+                0
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708342082374057,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:19:02.082374+00:00"
+        },
+        {
+          "wall_ns": 1793708352957439809,
+          "event": "workspace-to-meta",
+          "workspace_variant": "Busy",
+          "utc": "2026-11-03T12:19:12.957440+00:00"
+        },
+        {
+          "wall_ns": 1793708352958157110,
+          "event": "workspace-to-meta-return",
+          "eax": -921865392,
+          "output_words": [
+            133001330385952,
+            68719476738,
+            133001330386528,
+            133001246239998,
+            133001246239872,
+            96773998914240,
+            104,
+            133001247994368
+          ],
+          "utc": "2026-11-03T12:19:12.958157+00:00"
+        },
+        {
+          "wall_ns": 1793708352959618784,
+          "event": "vfs-to-errno",
+          "utc": "2026-11-03T12:19:12.959619+00:00",
+          "vfs_discriminant_byte": 82,
+          "nested_headers": [
+            {
+              "words": [
+                96772971579680,
+                1,
+                0,
+                133001250563504,
+                32,
+                133001245820402,
+                133001250785712,
+                133001330385952,
+                68719476738,
+                133001330386528,
+                133001246239998,
+                133001246239872
+              ],
+              "vtable_symbols": [
+                "anyhow::error::object_drop::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_ref::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_reallocate_boxed::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_downcast::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::object_drop_front::<brewfs::meta::store::MetaError> in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs",
+                "anyhow::error::no_backtrace in section .text of /mnt/brewfs-data/home/hxy/issue413/batch-v2/candidate/brewfs"
+              ]
+            }
+          ]
+        },
+        {
+          "wall_ns": 1793708352960133341,
+          "event": "vfs-to-errno-return",
+          "eax": 5,
+          "output_words": null,
+          "utc": "2026-11-03T12:19:12.960133+00:00"
+        }
+      ],
+      "packet_kernel_drops": 0,
+      "backend": {
+        "packets": 174993,
+        "payload_bytes": 742604882,
+        "first_wall_ns": 1793708319656924000,
+        "last_wall_ns": 1793708354884586000,
+        "http_status_counts": {
+          "206": 8551,
+          "200": 3437
+        },
+        "http_request_methods": {
+          "GET": 8551,
+          "PUT": 3437
+        },
+        "http_errors": [],
+        "redis_error_lines": [],
+        "limitation": "Packet header inventory; see tcpdump.log for drops. Redis INFO and gdb probes are independent."
+      },
+      "redis_after": {
+        "redis_version": "7.2.16",
+        "total_error_replies": "0",
+        "rejected_connections": "0",
+        "blocked_clients": "0",
+        "evicted_keys": "0",
+        "aof_last_write_status": "ok",
+        "aof_last_bgrewrite_status": "ok",
+        "rdb_last_bgsave_status": "ok"
+      },
+      "containers_after": [
+        {
+          "name": "/issue413-redis-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        },
+        {
+          "name": "/issue413-rustfs-1",
+          "status": "running",
+          "oom_killed": false,
+          "restarts": 0,
+          "health": "healthy"
+        }
+      ],
+      "image_ids": [
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0",
+        "sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2",
+        "sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f",
+        "sha256:8120a9cea4c812deaa358840535b57e920253441e4af20d3e0cfaad7d97e6ad2"
+      ]
+    }
+  ],
+  "issue": "https://github.com/brewfs/brewfs/issues/415",
+  "conclusion": "preexisting defect; diagnostic runs are not performance comparisons",
+  "source_evidence_sha256": "3bcdb3eabca5ea70b185a354e0b86eef6730e70bc1b08ddc22ed817c7fa6e9d6"
+}
