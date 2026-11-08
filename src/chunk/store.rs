@@ -188,6 +188,12 @@ const SPARSE_DENSE_SLICE_MISSES: u32 = 10;
 const SPARSE_DENSITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 /// FUSE reads this large come from kernel readahead, i.e. a sequential stream.
 const SPARSE_SEQUENTIAL_READ_BYTES: usize = 128 * 1024;
+/// Distinct blocks tracked by the working-set estimator.
+///
+/// The window must exceed the number of blocks that fit in the block cache,
+/// otherwise the estimate saturates below the configured working-set limit and
+/// the prefetch guard never fires.
+const WORKING_SET_WINDOW_BLOCKS: usize = 8192;
 
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -241,6 +247,7 @@ pub struct ObjectStoreStatsSnapshot {
     pub read_piggyback_full: u64,
     pub read_background_prefetches: u64,
     pub read_background_prefetch_dropped: u64,
+    pub read_background_prefetch_suppressed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -262,6 +269,7 @@ pub struct ObjectStoreMetrics {
     read_piggyback_full: crate::vfs::diagnostic::Counter,
     read_background_prefetches: crate::vfs::diagnostic::Counter,
     read_background_prefetch_dropped: crate::vfs::diagnostic::Counter,
+    read_background_prefetch_suppressed: crate::vfs::diagnostic::Counter,
 }
 
 impl ObjectStoreMetrics {
@@ -285,6 +293,9 @@ impl ObjectStoreMetrics {
             read_background_prefetches: self.read_background_prefetches.load(Ordering::Relaxed),
             read_background_prefetch_dropped: self
                 .read_background_prefetch_dropped
+                .load(Ordering::Relaxed),
+            read_background_prefetch_suppressed: self
+                .read_background_prefetch_suppressed
                 .load(Ordering::Relaxed),
         }
     }
@@ -361,6 +372,11 @@ impl ObjectStoreMetrics {
     #[inline(always)]
     fn record_read_background_prefetch_dropped(&self) {
         self.read_background_prefetch_dropped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_read_background_prefetch_suppressed(&self) {
+        self.read_background_prefetch_suppressed
             .fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -476,6 +492,19 @@ pub struct ObjectBlockStore<B: ObjectBackend> {
     sparse_streams: moka::sync::Cache<BlockKey, u64>,
     /// Sparse page misses per slice in the current density window.
     sparse_slice_misses: moka::sync::Cache<u64, (std::time::Instant, u32)>,
+    /// End offset of the last range read per block, used to recognize a
+    /// forward stream for the background prefetch admission check.
+    ///
+    /// A read that continues exactly where the previous read of the block
+    /// ended is about to consume the rest of the block, so the whole-block
+    /// prefetch serves the data the caller is about to ask for.
+    prefetch_streams: moka::sync::Cache<BlockKey, u64>,
+    /// Distinct blocks recently fetched, used to estimate the working set.
+    ///
+    /// A speculative whole-block prefetch only pays off while the working set
+    /// fits in the block cache. This estimator bounds the read amplification a
+    /// random small-read workload can cause.
+    working_set: working_set::WorkingSetEstimator,
     /// Configuration for read strategy
     config: BlockStoreConfig,
     /// Network bandwidth rate limiter for uploads/downloads
@@ -526,6 +555,21 @@ pub struct BlockStoreConfig {
     pub page_cache_capacity: usize,
     /// Whether a page-cache range miss should schedule a best-effort full-block prefetch.
     pub range_background_prefetch: bool,
+    /// Factor applied to the block cache's memory budget to derive the
+    /// estimated working set that still justifies a speculative whole-block
+    /// background prefetch.
+    ///
+    /// A range miss that reads a single page downloads the whole block in the
+    /// background. That pays off only when the block is read again while it is
+    /// still cached, i.e. when the working set is small relative to the cache.
+    /// Once the working set exceeds the cache by this factor, a prefetched
+    /// block is evicted before it is reused, so the download is pure waste: it
+    /// transfers `block_size` bytes to serve one page and competes with
+    /// foreground range GETs for bandwidth.
+    ///
+    /// Zero disables the estimate and keeps the unconditional prefetch, which
+    /// is the legacy behavior.
+    pub range_prefetch_working_set_factor: u32,
     /// Block compression algorithm for storage and transfer.
     /// Blocks are compressed before S3 upload and decompressed on read.
     pub compression: Compression,
@@ -570,6 +614,8 @@ impl Default for BlockStoreConfig {
             page_size: DEFAULT_PAGE_SIZE,               // 64KiB
             page_cache_capacity: DEFAULT_PAGE_CAPACITY, // 32768 pages × 64KiB = 2GiB
             range_background_prefetch: true,
+            range_prefetch_working_set_factor:
+                crate::vfs::cache::config::DEFAULT_RANGE_PREFETCH_WORKING_SET_FACTOR,
             compression: Compression::Lz4,
             populate_write_cache_after_upload: true,
             persist_write_cache_after_upload: false,
@@ -660,6 +706,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -714,6 +762,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -746,6 +796,8 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             read_fetch_policy: ReadFetchPolicy::default(),
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
+            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -1110,6 +1162,65 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         true
     }
 
+    /// Records a range read and reports whether it continues a forward stream:
+    /// it starts exactly where the previous read of this block ended, or at the
+    /// start of a block whose predecessor in the slice was read to its end.
+    ///
+    /// Random reads, re-reads and adjacent-page reads never match, so they
+    /// never classify as a stream. A stream is about to consume the rest of
+    /// the block, which is precisely what a whole-block prefetch provides.
+    fn range_read_continues_stream(&self, key: BlockKey, offset: u64, len: usize) -> bool {
+        let previous_end = self.prefetch_streams.get(&key);
+        self.prefetch_streams.insert(key, offset + len as u64);
+        previous_end == Some(offset)
+            || (offset == 0
+                && key.1 > 0
+                && self.prefetch_streams.get(&(key.0, key.1 - 1))
+                    == Some(self.config.block_size as u64))
+    }
+
+    /// Decides whether a range miss may schedule a whole-block background
+    /// prefetch.
+    ///
+    /// The prefetch is only worth its `block_size` of traffic when the block
+    /// is read again before it leaves the block cache. That requires the
+    /// working set to fit in the cache. Once the working set grows past the
+    /// configured limit, the prefetched block is evicted before it is reused,
+    /// so the download is pure waste: it moves a whole block to serve one
+    /// page and competes with foreground range GETs for bandwidth.
+    ///
+    /// `key` is the block the read missed, which the estimator records as a
+    /// cold touch before deciding. `sequential` marks a read that continues a
+    /// forward stream, which the prefetch serves by definition.
+    fn allow_range_background_prefetch(&self, key: BlockKey, sequential: bool) -> bool {
+        if !self.config.range_background_prefetch {
+            return false;
+        }
+        let factor = self.config.range_prefetch_working_set_factor;
+        if factor == 0 {
+            // No estimate configured: keep the legacy unconditional prefetch.
+            return true;
+        }
+        self.working_set.touch(key);
+        let estimated = self.working_set.estimated_bytes(self.config.block_size);
+        let limit = self
+            .block_cache
+            .max_hot_bytes()
+            .saturating_mul(factor as u64);
+        if sequential || estimated <= limit {
+            return true;
+        }
+        self.object_metrics
+            .record_read_background_prefetch_suppressed();
+        tracing::debug!(
+            ?key,
+            estimated_working_set_bytes = estimated,
+            limit_bytes = limit,
+            "background block prefetch suppressed: working set exceeds the cache budget"
+        );
+        false
+    }
+
     fn prefetch_full_block_background(
         &self,
         key: BlockKey,
@@ -1427,6 +1538,18 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 || len >= SPARSE_SEQUENTIAL_READ_BYTES);
         let allow_range_prefetch =
             self.read_fetch_policy != ReadFetchPolicy::Sparse || sparse_sequential;
+        // A read that continues a forward stream is about to consume the rest
+        // of the block, so the whole-block background prefetch serves data the
+        // caller asks for instead of speculating. The stream record is
+        // separate from the sparse one: it gates the prefetch admission for
+        // every fetch policy.
+        //
+        // Only an exact continuation counts. A large read is not evidence of a
+        // stream: kernel readahead also produces large requests for a random
+        // access, and treating those as sequential would restore exactly the
+        // read amplification this guard removes.
+        let prefetch_sequential =
+            can_try_object_ranges && self.range_read_continues_stream(key, offset, len);
 
         if can_try_object_ranges
             && let Some(block_data) = self.read_flight.try_piggyback(&key).await
@@ -1621,7 +1744,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 require_complete_read(key, offset, len, total_read)?;
                 let dense_slice = self.read_fetch_policy == ReadFetchPolicy::Sparse
                     && self.sparse_miss_makes_slice_dense(key.0);
-                if self.config.range_background_prefetch
+                if self.allow_range_background_prefetch(key, prefetch_sequential)
                     && !self.try_promote_page_cache_to_block_cache(key).await
                     && (allow_range_prefetch || dense_slice)
                 {
@@ -1757,7 +1880,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 && self.read_fetch_policy == ReadFetchPolicy::Sparse
                 && self.sparse_miss_makes_slice_dense(key.0);
             if range_missed
-                && self.config.range_background_prefetch
+                && self.allow_range_background_prefetch(key, prefetch_sequential)
                 && !self.try_promote_page_cache_to_block_cache(key).await
                 && (allow_range_prefetch || dense_slice)
             {
@@ -1941,7 +2064,12 @@ pub type LocalFsBlockStore = ObjectBlockStore<crate::cadapter::localfs::LocalFsB
 mod framed_write_tests;
 
 #[cfg(test)]
+mod read_amplification_tests;
+
+#[cfg(test)]
 mod read_policy_tests;
+
+pub(crate) mod working_set;
 
 #[cfg(all(test, feature = "rustfs-ec-block-size-hint"))]
 mod read_policy_s3_evidence;

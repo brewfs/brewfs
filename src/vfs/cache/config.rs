@@ -10,6 +10,14 @@ use crate::chunk::store::ReadFetchPolicy;
 #[cfg(test)]
 static TEST_CACHE_ROOT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Default working-set factor for speculative whole-block background prefetch.
+///
+/// The block cache holds `read_memory_bytes`; a prefetched block is only worth
+/// its traffic while it survives until the next read of the same block. A
+/// working set of four times the cache budget makes that reuse unlikely, so
+/// the default stops the speculative download past that point.
+pub const DEFAULT_RANGE_PREFETCH_WORKING_SET_FACTOR: u32 = 4;
+
 fn default_cache_root() -> PathBuf {
     #[cfg(test)]
     {
@@ -72,6 +80,12 @@ pub struct CacheConfig {
     pub prefetch_max_bytes: u64,
     pub prefetch_concurrency: usize,
     pub range_background_prefetch: bool,
+    /// Factor applied to the block cache's memory budget to derive the
+    /// estimated working set that still justifies a speculative whole-block
+    /// background prefetch.
+    ///
+    /// Zero keeps the unconditional prefetch (legacy behavior).
+    pub range_prefetch_working_set_factor: u32,
     pub read_fetch_policy: ReadFetchPolicy,
     pub populate_write_cache_after_upload: bool,
     pub persist_write_cache_after_upload: bool,
@@ -118,6 +132,7 @@ impl Default for CacheConfig {
             prefetch_max_bytes: 128 * 1024 * 1024,
             prefetch_concurrency: 64,
             range_background_prefetch: true,
+            range_prefetch_working_set_factor: DEFAULT_RANGE_PREFETCH_WORKING_SET_FACTOR,
             read_fetch_policy: ReadFetchPolicy::default(),
             populate_write_cache_after_upload: true,
             persist_write_cache_after_upload: false,

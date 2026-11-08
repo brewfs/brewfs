@@ -2691,6 +2691,15 @@ impl ChunksCache {
         bytes <= self.config.max_hot_bytes || bytes <= self.config.max_disk_bytes
     }
 
+    /// Memory budget of the in-memory read tier, in bytes.
+    ///
+    /// The read path uses this to compare the estimated working set against
+    /// the cache capacity before spending a whole-block download on a
+    /// speculative prefetch.
+    pub fn max_hot_bytes(&self) -> u64 {
+        self.config.max_hot_bytes
+    }
+
     pub async fn insert(&self, key: &str, data: &Vec<u8>) -> anyhow::Result<()> {
         let generation = self.disk_storage.store_generation(key);
         self.insert_hot_at_generation(key, bytes::Bytes::from(data.clone()), generation)

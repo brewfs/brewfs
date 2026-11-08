@@ -1308,6 +1308,7 @@ pub struct FsStatsSnapshot {
     pub read_piggyback_full: u64,
     pub read_background_prefetches: u64,
     pub read_background_prefetch_dropped: u64,
+    pub read_background_prefetch_suppressed: u64,
     pub meta_stat_cache_hit: u64,
     pub meta_stat_cache_miss: u64,
     pub meta_stat_fresh_store_hit: u64,
@@ -1725,6 +1726,8 @@ pub struct FsStats {
     pub read_background_prefetches: AtomicU64,
     /// Background full-block prefetches dropped before execution
     pub read_background_prefetch_dropped: AtomicU64,
+    /// Background full-block prefetches suppressed by the working-set guard
+    pub read_background_prefetch_suppressed: AtomicU64,
     /// Metadata stat cache hits
     pub meta_stat_cache_hit: AtomicU64,
     /// Metadata stat cache misses
@@ -1935,6 +1938,7 @@ impl FsStats {
             read_piggyback_full: AtomicU64::new(0),
             read_background_prefetches: AtomicU64::new(0),
             read_background_prefetch_dropped: AtomicU64::new(0),
+            read_background_prefetch_suppressed: AtomicU64::new(0),
             meta_stat_cache_hit: AtomicU64::new(0),
             meta_stat_cache_miss: AtomicU64::new(0),
             meta_stat_fresh_store_hit: AtomicU64::new(0),
@@ -2245,6 +2249,7 @@ impl FsStats {
             read_piggyback_full: self.read_piggyback_full.load(ORD),
             read_background_prefetches: self.read_background_prefetches.load(ORD),
             read_background_prefetch_dropped: self.read_background_prefetch_dropped.load(ORD),
+            read_background_prefetch_suppressed: self.read_background_prefetch_suppressed.load(ORD),
             meta_stat_cache_hit: self.meta_stat_cache_hit.load(ORD),
             meta_stat_cache_miss: self.meta_stat_cache_miss.load(ORD),
             meta_stat_fresh_store_hit: self.meta_stat_fresh_store_hit.load(ORD),
@@ -2694,6 +2699,7 @@ impl FsStats {
         piggyback_full: u64,
         background_prefetches: u64,
         background_prefetch_dropped: u64,
+        background_prefetch_suppressed: u64,
     ) {
         self.read_block_cache_hits.store(block_cache_hits, ORD);
         self.read_page_cache_hits.store(page_cache_hits, ORD);
@@ -2705,6 +2711,8 @@ impl FsStats {
             .store(background_prefetches, ORD);
         self.read_background_prefetch_dropped
             .store(background_prefetch_dropped, ORD);
+        self.read_background_prefetch_suppressed
+            .store(background_prefetch_suppressed, ORD);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3598,6 +3606,10 @@ impl FsStats {
         out.push_str(&format!(
             "brewfs_read_background_prefetch_dropped_total {}\n",
             snapshot.read_background_prefetch_dropped
+        ));
+        out.push_str(&format!(
+            "brewfs_read_background_prefetch_suppressed_total {}\n",
+            snapshot.read_background_prefetch_suppressed
         ));
         out.push_str(&format!(
             "brewfs_meta_stat_cache_hit_total {}\n",

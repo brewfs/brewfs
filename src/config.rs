@@ -291,6 +291,15 @@ pub struct MountArgs {
     #[arg(long, value_enum)]
     pub read_fetch_policy: Option<ReadFetchPolicy>,
 
+    /// Factor applied to the block cache's memory budget to bound the
+    /// estimated working set that still justifies a speculative whole-block
+    /// background prefetch. A range miss downloads one page but prefetches the
+    /// whole block; past this working set the prefetched block is evicted
+    /// before it is reused, so the download is pure waste. Zero keeps the
+    /// unconditional prefetch.
+    #[arg(long, value_name = "FACTOR")]
+    pub range_prefetch_working_set_factor: Option<u32>,
+
     /// S3-compatible endpoint URL (only for s3 backend).
     #[arg(long, value_name = "URL")]
     pub s3_endpoint: Option<String>,
@@ -1094,6 +1103,7 @@ pub struct CacheFileConfig {
     pub prefetch_max_bytes: Option<u64>,
     pub prefetch_concurrency: Option<usize>,
     pub range_background_prefetch: Option<bool>,
+    pub range_prefetch_working_set_factor: Option<u32>,
     pub read_fetch_policy: Option<ReadFetchPolicy>,
     pub populate_write_cache_after_upload: Option<bool>,
     pub persist_write_cache_after_upload: Option<bool>,
@@ -1349,6 +1359,9 @@ impl MountConfig {
         let mut cache = cache_cfg.into_cache_config()?;
         if let Some(policy) = args.read_fetch_policy {
             cache.read_fetch_policy = policy;
+        }
+        if let Some(factor) = args.range_prefetch_working_set_factor {
+            cache.range_prefetch_working_set_factor = factor;
         }
         let data_backend = args
             .data_backend
@@ -1758,6 +1771,9 @@ impl CacheFileConfig {
         if let Some(range_background_prefetch) = self.range_background_prefetch {
             cache.range_background_prefetch = range_background_prefetch;
         }
+        if let Some(range_prefetch_working_set_factor) = self.range_prefetch_working_set_factor {
+            cache.range_prefetch_working_set_factor = range_prefetch_working_set_factor;
+        }
         if let Some(policy) = self.read_fetch_policy {
             cache.read_fetch_policy = policy;
         }
@@ -1926,6 +1942,7 @@ mod tests {
             data_dir: None,
             s3_bucket: None,
             read_fetch_policy: None,
+            range_prefetch_working_set_factor: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,
@@ -2756,6 +2773,7 @@ mod tests {
             data_dir: None,
             s3_bucket: None,
             read_fetch_policy: None,
+            range_prefetch_working_set_factor: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,
@@ -2843,6 +2861,7 @@ mod tests {
             data_dir: None,
             s3_bucket: None,
             read_fetch_policy: None,
+            range_prefetch_working_set_factor: None,
             s3_endpoint: None,
             s3_region: None,
             s3_part_size: None,
