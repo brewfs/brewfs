@@ -1,2 +1,0 @@
-{"operations":65536,"read_bytes":34397,"seconds":30.963404517,"write_bytes":13261430}
-Error: "mismatch at 91065: \"chown\" Ok(Number(0))"
