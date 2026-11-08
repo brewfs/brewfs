@@ -1,0 +1,4 @@
+data:
+  bucket: c4ws-20261108
+  endpoint: "http://10.20.0.13:9000"
+  region: us-east-1

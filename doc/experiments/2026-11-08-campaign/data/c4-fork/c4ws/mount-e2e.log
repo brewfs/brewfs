@@ -1,0 +1,37 @@
+  [2m2026-11-08T00:30:04.915654Z[0m [32m INFO[0m [1;32mbrewfs::cli[0m[32m: [32mraised RLIMIT_NOFILE, [1;32msoft[0m[32m: 1048576, [1;32mhard[0m[32m: 1048576[0m
+    [2;3mat[0m src/cli.rs:196
+
+  [2m2026-11-08T00:30:04.916159Z[0m [32m INFO[0m [1;32mbrewfs::cli[0m[32m: [32mmount startup begin, [1;32mmount_point[0m[32m: /mnt/c4e2e, [1;32mmeta_backend[0m[32m: TiKv, [1;32mdata_backend[0m[32m: S3[0m
+    [2;3mat[0m src/cli.rs:430
+
+  [2m2026-11-08T00:30:04.916189Z[0m [32m INFO[0m [1;32mbrewfs::cadapter::s3[0m[32m: [32ms3 backend aws config load begin, [1;32mendpoint[0m[32m: Some("http://10.20.0.13:9000"), [1;32mregion[0m[32m: Some("us-east-1"), [1;32mbucket[0m[32m: c4ws-20261108[0m
+    [2;3mat[0m src/cadapter/s3.rs:386
+
+  [2m2026-11-08T00:30:04.926646Z[0m [32m INFO[0m [1;32mbrewfs::cadapter::s3[0m[32m: [32ms3 backend aws config load complete[0m
+    [2;3mat[0m src/cadapter/s3.rs:396
+
+  [2m2026-11-08T00:30:04.926933Z[0m [32m INFO[0m [1;32mbrewfs::cadapter::s3[0m[32m: [32ms3 backend client ready[0m
+    [2;3mat[0m src/cadapter/s3.rs:444
+
+  [2m2026-11-08T00:30:04.926951Z[0m [32m INFO[0m [1;32mbrewfs::cli[0m[32m: [32mmount startup s3 client ready[0m
+    [2;3mat[0m src/cli.rs:459
+
+  [2m2026-11-08T00:30:04.929882Z[0m [32m INFO[0m [1;32mbrewfs::chunk::cache[0m[32m: [32mCreating cache directory: "/root/.cache/brewfs/workspace-blocks/01a1b88f-f618-7c81-a817-5efb219656d9/chunks/v2-crc32c"[0m
+    [2;3mat[0m src/chunk/cache.rs:419
+
+  [2m2026-11-08T00:30:04.937908Z[0m [32m INFO[0m [1;32mbrewfs::chunk::cache[0m[32m: [32mCreating Policy with configuration: base_threshold=5.00, short_weight=0.75, medium_weight=0.25, adaptive=true[0m
+    [2;3mat[0m src/chunk/cache.rs:1821
+
+  [2m2026-11-08T00:30:04.937946Z[0m [32m INFO[0m [1;32mbrewfs::chunk::cache[0m[32m: [32mChunksCache created successfully[0m
+    [2;3mat[0m src/chunk/cache.rs:2191
+
+  [2m2026-11-08T00:30:04.938187Z[0m [32m INFO[0m [1;32mbrewfs::workspace_overlay::packed_v3::wire005::pipeline[0m[32m: [32mpacked frame verification memo (requires immutable objects), [1;32menabled[0m[32m: true, [1;32mcapacity_entries[0m[32m: 8192, [1;32mmetadata_reservation_bytes[0m[32m: 1572864, [1;32mpayload_cache_bytes[0m[32m: 0[0m
+    [2;3mat[0m src/workspace_overlay/packed_v3/wire005/pipeline.rs:32
+
+mounted workspace 01a1b88f-f618-7c81-a817-5efb219656d9 at /mnt/c4e2e
+  [2m2026-11-08T00:30:05.148675Z[0m [32m INFO[0m [1;32mbrewfs::vfs::fs[0m[32m: [32mrelease dir handle: fh=1, ino=1, entries=0[0m
+    [2;3mat[0m src/vfs/fs/mod.rs:7023
+
+  [2m2026-11-08T00:30:05.150636Z[0m [31mERROR[0m [1;31mbrewfs::fuse[0m[31m: [31mstatfs failed: unsupported[0m
+    [2;3mat[0m src/fuse/mod.rs:1589
+

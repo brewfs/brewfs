@@ -1,0 +1,27 @@
+{"operations":65536,"read_bytes":13065332,"seconds":8.088508932,"write_bytes":34303675}
+{"operations":131072,"read_bytes":42513295,"seconds":15.146832208,"write_bytes":60762195}
+{"operations":196608,"read_bytes":49542782,"seconds":24.34130993,"write_bytes":96533119}
+{"operations":262144,"read_bytes":52813061,"seconds":31.827157211,"write_bytes":104055966}
+{"operations":327680,"read_bytes":56378963,"seconds":39.967075895,"write_bytes":119446670}
+{"operations":393216,"read_bytes":60045270,"seconds":47.249389152,"write_bytes":131774320}
+{"operations":458752,"read_bytes":64407750,"seconds":52.908378538,"write_bytes":137121872}
+{"operations":524288,"read_bytes":64407750,"seconds":59.162517002,"write_bytes":143138598}
+{"operations":589824,"read_bytes":66962920,"seconds":66.190916764,"write_bytes":154399451}
+{"operations":655360,"read_bytes":71450313,"seconds":72.749763745,"write_bytes":168865650}
+{"operations":720896,"read_bytes":75902593,"seconds":77.917409458,"write_bytes":177870617}
+{"operations":786432,"read_bytes":90042431,"seconds":80.565745398,"write_bytes":179728212}
+{"operations":851968,"read_bytes":102559056,"seconds":82.50989281,"write_bytes":180840108}
+{"operations":917504,"read_bytes":109457092,"seconds":85.763076267,"write_bytes":181601523}
+{"operations":983040,"read_bytes":119419406,"seconds":87.749234014,"write_bytes":182242452}
+{"operations":1048576,"read_bytes":130460019,"seconds":89.72157095,"write_bytes":183572904}
+{"operations":1114112,"read_bytes":147703377,"seconds":92.66035593,"write_bytes":185982296}
+{"operations":1179648,"read_bytes":159525776,"seconds":94.515913457,"write_bytes":186711309}
+{"operations":1245184,"read_bytes":173472609,"seconds":96.28945441,"write_bytes":187501686}
+{"operations":1310720,"read_bytes":193992332,"seconds":98.218625541,"write_bytes":188559683}
+{"operations":1376256,"read_bytes":206514612,"seconds":100.041095739,"write_bytes":189692763}
+{"operations":1441792,"read_bytes":213491077,"seconds":101.569192752,"write_bytes":190084137}
+{"operations":1507328,"read_bytes":232704971,"seconds":103.82507058,"write_bytes":191599702}
+{"operations":1572864,"read_bytes":245679606,"seconds":105.934650643,"write_bytes":192411043}
+{"operations":1638400,"read_bytes":258900841,"seconds":107.775915641,"write_bytes":193094167}
+{"operations":1703936,"read_bytes":270385392,"seconds":109.676209398,"write_bytes":193846674}
+validated 1747109 callbacks; read 281774624 write 194706661

@@ -1,0 +1,19 @@
+{
+  "active_replay_seconds": 2606.133078171,
+  "actual_read_bytes": 2292334532,
+  "actual_write_bytes": 284748789,
+  "completed": true,
+  "execution_seconds": 2606.133078171,
+  "expected_errors": 381851,
+  "mode": "strict",
+  "operations": 57787980,
+  "probe_errno_differences": 0,
+  "remaining_handles": 0,
+  "scope": "serialized FUSE callback operations replayed via POSIX; no process scheduling or local lock replay",
+  "think_time": {
+    "actual_sleep_seconds": 0.0,
+    "enabled": false,
+    "planned_total_ms": 0
+  },
+  "valid": true
+}
