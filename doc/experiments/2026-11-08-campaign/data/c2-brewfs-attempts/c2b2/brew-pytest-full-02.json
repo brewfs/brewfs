@@ -1,0 +1,24 @@
+{
+  "actual": "Err(Os { code: 95, kind: Unsupported, message: \"Operation not supported\" })",
+  "completed": false,
+  "event": {
+    "args": [
+      "/state/data/opencode/opencode.db-journal",
+      "security.capability"
+    ],
+    "end_ns": 15380291703477,
+    "errno": 61,
+    "gid": 0,
+    "op": "getxattr",
+    "pid": 298444,
+    "result": null,
+    "seq": 203,
+    "start_ns": 15380291664116,
+    "uid": 0
+  },
+  "seq": 203,
+  "think_time": {
+    "enabled": false
+  },
+  "valid": false
+}

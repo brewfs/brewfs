@@ -1,0 +1,3 @@
+data:
+  backend: local-fs
+  dir: /srv/ax-data/sealtest/data

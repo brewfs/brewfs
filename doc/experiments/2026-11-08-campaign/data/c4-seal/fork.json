@@ -1,0 +1,57 @@
+  [2m2026-11-08T13:20:07.468752Z[0m [32m INFO[0m [1;32mbrewfs::cli[0m[32m: [32mraised RLIMIT_NOFILE, [1;32msoft[0m[32m: 1048576, [1;32mhard[0m[32m: 1048576[0m
+    [2;3mat[0m src/cli.rs:198
+
+  [2m2026-11-08T13:20:07.469317Z[0m [32m INFO[0m [1;32mbrewfs::workspace_overlay::packed_v3::wire005::pipeline[0m[32m: [32mpacked frame verification memo (requires immutable objects), [1;32menabled[0m[32m: true, [1;32mcapacity_entries[0m[32m: 8192, [1;32mmetadata_reservation_bytes[0m[32m: 1572864, [1;32mpayload_cache_bytes[0m[32m: 0[0m
+    [2;3mat[0m src/workspace_overlay/packed_v3/wire005/pipeline.rs:32
+
+[
+  {
+    "workspace_id": "01a1bb50-f52f-7ce0-af2d-746f45fe94b3",
+    "head_layer_id": "01a1bb50-f52f-7ce0-af2d-7474067d8a94",
+    "head_epoch": 0,
+    "fork_base": {
+      "layer_id": "01a1bb50-f0b7-71e1-9cbb-239efa53e80b",
+      "sealed_version": 1,
+      "root_hash": [
+        219,
+        245,
+        31,
+        166,
+        115,
+        123,
+        104,
+        128,
+        74,
+        202,
+        112,
+        94,
+        72,
+        165,
+        153,
+        206,
+        47,
+        93,
+        250,
+        211,
+        112,
+        237,
+        250,
+        114,
+        213,
+        103,
+        132,
+        35,
+        133,
+        127,
+        46,
+        154
+      ]
+    },
+    "owner_id": null,
+    "state": "Active",
+    "active_lease": null,
+    "created_at_ns": 1794144007472012316,
+    "updated_at_ns": 1794144007472012316,
+    "upper_bucket": null
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "actual": "Ok(Number(0))",
+  "completed": false,
+  "event": {
+    "args": [
+      "/state/data/opencode/bin/rg",
+      1001,
+      127
+    ],
+    "end_ns": 194794108176662,
+    "errno": 1,
+    "gid": 0,
+    "op": "chown",
+    "pid": 968403,
+    "result": null,
+    "seq": 90830,
+    "start_ns": 194794108149800,
+    "uid": 0
+  },
+  "seq": 90830,
+  "think_time": {
+    "enabled": false
+  },
+  "valid": false
+}
