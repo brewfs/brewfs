@@ -1,3 +1,0 @@
-  count=1  62 ms  (62.00 ms/fork)  rc=0  new_ws=1
-  count=10  443 ms  (44.30 ms/fork)  rc=0  new_ws=10
-  count=100  4146 ms  (41.46 ms/fork)  rc=0  new_ws=100

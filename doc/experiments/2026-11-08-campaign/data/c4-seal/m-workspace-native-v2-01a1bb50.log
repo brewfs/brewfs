@@ -1,4 +1,0 @@
-  [2m2026-11-08T13:21:07.127237Z[0m [32m INFO[0m [1;32mbrewfs::cli[0m[32m: [32mraised RLIMIT_NOFILE, [1;32msoft[0m[32m: 1048576, [1;32mhard[0m[32m: 1048576[0m
-    [2;3mat[0m src/cli.rs:198
-
-Error: workspace-native-v2 requires an explicit volume.format declaration
