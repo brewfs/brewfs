@@ -358,7 +358,14 @@ mkdir -p "$ARTIFACTS_DIR"
 
 # 预清理：杀掉占用目标端口的残留容器，确保 compose up 不会端口冲突
 preclean_ports() {
-    local -a ports=(16379 19000 19001)
+    # Use the ports this run actually binds. Another perf session on the same
+    # host may own the defaults, and killing its containers would tear down
+    # a campaign that is still measuring.
+    local -a ports=(
+        "${REDIS_HOST_PORT:-16379}"
+        "${RUSTFS_S3_HOST_PORT:-19000}"
+        "${RUSTFS_CONSOLE_HOST_PORT:-19001}"
+    )
     for port in "${ports[@]}"; do
         local pid
         pid=$(ss -tlnp 2>/dev/null | awk -v p=":${port}\$" '$0 ~ p {sub(/.*pid=/, ""); sub(/,.*/, ""); print $0}') || true

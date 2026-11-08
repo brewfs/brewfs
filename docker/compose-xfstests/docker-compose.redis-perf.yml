@@ -1,7 +1,7 @@
 services:
   redis:
     image: docker.io/library/redis:7.2-alpine
-    container_name: redis-brewfs-perf
+    container_name: ${PERF_CONTAINER_REDIS_BREWFS_PERF:-redis-brewfs-perf}
     command: >
       redis-server
       --save ""
@@ -23,7 +23,7 @@ services:
 
   rustfs:
     image: ${RUSTFS_IMAGE:-w23geq7ncegg6etqsl.xuanyuan.run/rustfs/rustfs:latest}
-    container_name: rustfs-brewfs-perf-redis
+    container_name: ${PERF_CONTAINER_RUSTFS_BREWFS_PERF_REDIS:-rustfs-brewfs-perf-redis}
     expose:
       - "9000"
       - "9001"
@@ -66,8 +66,11 @@ services:
         printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
         timeout 180 sh -ec '
           while true; do
-            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            # Check for the bucket first. Calling create-bucket on a bucket
+            # that already exists makes this RustFS build hang instead of
+            # returning an error, which would stall the whole run.
             aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
             sleep 2
           done
         '
@@ -81,7 +84,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: minio-brewfs-perf-redis
+    container_name: ${PERF_CONTAINER_MINIO_BREWFS_PERF_REDIS:-minio-brewfs-perf-redis}
     expose:
       - "9000"
       - "9001"
