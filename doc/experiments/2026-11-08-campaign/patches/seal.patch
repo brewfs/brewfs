@@ -1,0 +1,1568 @@
+diff --git a/doc/testing/xattr-backend-support.md b/doc/testing/xattr-backend-support.md
+index ab41e04..51f343c 100644
+--- a/doc/testing/xattr-backend-support.md
++++ b/doc/testing/xattr-backend-support.md
+@@ -5,8 +5,8 @@
+ 
+ * **元数据后端（`MetaStore`）**保存 inode、目录项和文件元数据。挂载点的
+   `setxattr(2)`、`getxattr(2)`、`listxattr(2)`、`removexattr(2)`最终调用这一层。
+-* **workspace overlay KV 存储**保存 overlay 的增量记录。TiKV 在这一层有
+-  `xattr/` 记录的读写实现；这不代表 TiKV 作为 `MetaStore` 也支持 xattr。
++* **workspace overlay KV 存储**保存 overlay 的增量记录。TiKV 在这一层和
++  `MetaStore` 层都有独立的 `xattr/` 记录读写实现；两者的键空间和测试不同。
+ 
+ ## 支持矩阵
+ 
+@@ -19,14 +19,14 @@
+ | --- | --- | --- | --- | --- | --- |
+ | SQLite（`DatabaseMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/database/mod.rs:1673-1688` 将 `xattr` 能力置为 true；四个方法在 `src/meta/stores/database/mod.rs:4121-4229`，其中 `XATTR_CREATE`/`XATTR_REPLACE` 语义在 `set_xattr` 中处理。`src/meta/stores/database/tests.rs:602-620` 验证 xattr 变更的 ctime。 |
+ | Redis（`RedisMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/redis/mod.rs:3018-3041` 声明能力并实现四个方法（实现从 `:3041` 开始）；`test_redis_xattr_crud_flags_and_binary_values`（`src/meta/stores/redis/tests.rs:5560-5645`）覆盖 CRUD、二进制值、空值和 create/replace 标志，另有 ctime 和并发 create 测试。 |
+-| TiKV 元数据后端（`TiKvMetaStore`） | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | `src/meta/stores/tikv/mod.rs:1380-1391` 没有打开 `xattr` 能力，且文件中没有四个方法的实现，因此使用 `MetaStore` 默认实现 `src/meta/store.rs:1364-1388`。新增的 ignored 真集群测试 `real_tikv_meta_store_xattr_is_not_implemented`（`src/meta/stores/tikv/tests.rs:336-379`）直接断言四个调用均返回 `MetaError::NotImplemented`。 |
++| TiKV 元数据后端（`TiKvMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/tikv/mod.rs:1437` 将 `xattr` 能力置为 true；`xattr/<ino>/<name>` key 由 `src/meta/stores/tikv/mod.rs:185-193` 构造，四个方法在 `src/meta/stores/tikv/mod.rs:2838-2995`。`real_tikv_meta_store_xattr_crud_flags_and_binary_values`（`src/meta/stores/tikv/tests.rs:374`）覆盖 CRUD、二进制/空值、`XATTR_CREATE`/`XATTR_REPLACE`、ctime 和缺失 inode；`real_tikv_meta_store_xattr_inode_cleanup`（`src/meta/stores/tikv/tests.rs:481`）覆盖 `rmdir`、unlink 后 GC、rename 覆盖目录三条清理路径。 |
+ | etcd 元数据后端（`EtcdMetaStore`） | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | `src/meta/stores/etcd/mod.rs:1697-1717` 将 `xattr` 能力置为 false，且没有四个方法的实现；因此同样落到 `MetaStore` 默认实现 `src/meta/store.rs:1364-1388`。 |
+ | S3 gateway（网关层，不是 `MetaStore`） | ↪ | ↪ | — | ↪ | gateway 的对象 ETag、对象 metadata 和目录对象标记分别通过 `src/gateway/s3/store.rs:253-283` 的 get/set helper 读写下层 xattr；`src/gateway/s3/store_xattr_tests.rs` 的错误注入测试验证这些读取错误不会被当成“没有 xattr”。网关是否可用取决于所选 `MetaStore`，不会增加 TiKV/etcd 的能力。 |
+ 
+ S3 gateway 的 `—` 只表示它没有向 S3 客户端暴露 POSIX `listxattr(2)`；它的
+ 内部元数据仍然依赖下层的 get/set/remove。使用 SQLite 或 Redis 时这些内部
+-属性可用；使用 TiKV-MetaStore 或 etcd 时，涉及这些属性的网关操作会沿着
+-下层的 unsupported 错误失败。
++属性可用；TiKV-MetaStore 现在也支持这些内部 get/set/remove 操作。使用
++etcd 时，涉及这些属性的网关操作仍会沿着下层的 unsupported 错误失败。
+ 
+ ### workspace overlay 的 TiKV KV 存储
+ 
+@@ -62,17 +62,15 @@ cargo test --no-default-features \
+ 
+ ### TiKV overlay 和 TiKV MetaStore
+ 
+-PD 必须可从本机访问，且至少有一个 store 已注册。用单个 `xattr` 过滤词
+-会运行 Redis xattr 测试、overlay 的真实 TiKV xattr 测试和新增的
+-TiKV-MetaStore unsupported 断言：
++PD 必须可从本机访问，且至少有一个 store 已注册。只验证 TiKV-MetaStore
++xattr 时可使用下面的过滤词（它会选中 CRUD 和 inode 清理两条 ignored 测试）：
+ 
+ ```bash
+-BREWFS_TEST_TIKV_PD_ENDPOINTS=172.24.86.193:2379 \
++BREWFS_TEST_TIKV_PD_ENDPOINTS=127.0.0.1:2379 \
+ CARGO_TARGET_DIR=/home/hxy/xattr-target \
+ CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+-cargo test --no-default-features \
+-  --features fuse-tokio-runtime,workspace-overlay \
+-  --lib -- --ignored xattr
++cargo test -p brewfs --lib \
++  meta::stores::tikv::tests::real_tikv_meta_store_xattr -- --ignored
+ ```
+ 
+ TiKV 相关测试都是 ignored 集成测试，并使用随机 namespace/前缀，避免相互
+@@ -85,7 +83,7 @@ SQLite 的 xattr 单元测试不需要外部服务；可以用同一组 feature
+ 
+ ## 挂载点上的错误码和限制
+ 
+-对普通 `user.*` xattr，TiKV-MetaStore 或 etcd 的调用路径是：
++etcd 仍未实现 xattr；对普通 `user.*` xattr，它的调用路径是：
+ 
+ 1. `MetaStore` 默认方法返回 `MetaError::NotImplemented`
+    （`src/meta/store.rs:1364-1388`）。
+@@ -95,28 +93,28 @@ SQLite 的 xattr 单元测试不需要外部服务；可以用同一组 feature
+    `ENOSYS`（`src/fuse/mod.rs:2273-2282`、`:2315-2323`、`:2352-2358`、
+    `:2442-2449`）。
+ 
+-因此在 TiKV-MetaStore 或 etcd 挂载点上执行
++因此在 etcd 挂载点上执行
+ `setfattr -n user.test -v value <path>`，预期失败并返回 errno **38
+ （`ENOSYS`，通常显示为 “Function not implemented”）**；get/list/remove 的
+ 普通 user xattr 也走同一错误码。`system.posix_acl_*` 是单独的 ACL 路径，
+ 其 capability 检查可能返回 `EOPNOTSUPP`，不要用它替代普通 user xattr 的
+ 结论。
+ 
+-overlay TiKV 的成功测试只证明 overlay KV 的 bounded 记录读写和清理，不能
+-改变 TiKV-MetaStore 的上述结果。当前工作范围也不包含为 TiKV-MetaStore
+-新增 xattr 持久化实现。
++TiKV-MetaStore 已不再走上述 `NotImplemented` 路径。普通 `user.*` xattr
++缺失时 `get_xattr` 返回 `Ok(None)`，FUSE 层映射为 `ENODATA`；
++`remove_xattr` 和 `XATTR_REPLACE` 针对缺失属性返回 `MetaError::NotFound`，
++FUSE 层同样映射为 `ENODATA`；`XATTR_CREATE` 针对已有属性返回
++`MetaError::AlreadyExists`，映射为 `EEXIST`。
+ 
+ ## 本次实测摘要
+ 
+ 本分支实测摘要：
+ 
+-* Redis：`test result: ok. 5 passed; 0 failed; 0 ignored`（5 个
+-  `redis_xattr` 测试）。
+-* TiKV/overlay 与 TiKV-MetaStore：`test result: ok. 9 passed; 0 failed;
+-  0 ignored`（单一 `xattr` 过滤词；其中 Redis 的 7 个 xattr 清理/CRUD
+-  测试也会被该过滤词选中）。overlay 测试名为
+-  `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners`，
+-  MetaStore 测试名为 `real_tikv_meta_store_xattr_is_not_implemented`。
++* TiKV 模块常规测试：`test result: ok. 13 passed; 0 failed; 15 ignored`。
++* TiKV-MetaStore 真集群 xattr（本地 PD/TiKV 8.5.0）：
++  `test result: ok. 2 passed; 0 failed; 0 ignored`，测试名为
++  `real_tikv_meta_store_xattr_crud_flags_and_binary_values` 和
++  `real_tikv_meta_store_xattr_inode_cleanup`。
+ 
+ ## JuiceFS（外部 baseline）的 xattr 与 attr cache 配置
+ 
+diff --git a/src/cli.rs b/src/cli.rs
+index 7e8ef0c..b170659 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -98,6 +98,8 @@ use crate::workspace_overlay::packed_v3::PackedV3ReadonlyMeta;
+ #[cfg(feature = "workspace-overlay")]
+ use crate::workspace_overlay::publish::diff::WorkspaceDiff;
+ #[cfg(feature = "workspace-overlay")]
++use crate::workspace_overlay::seal::WorkspaceSealer;
++#[cfg(feature = "workspace-overlay")]
+ use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
+ #[cfg(feature = "workspace-overlay")]
+ use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
+@@ -2762,6 +2764,11 @@ where
+                 workspace_bucket::fork(store, revision, count, owner, &data_config).await?;
+             print_json(&created)?;
+         }
++        WorkspaceCommand::Seal { workspace } => {
++            validate_workspace_header(&store).await?;
++            let sealed = WorkspaceSealer::new(store).seal(workspace).await?;
++            println!("{}", sealed.revision);
++        }
+         WorkspaceCommand::List => {
+             validate_workspace_header(&store).await?;
+             print_json(&store.list_workspaces().await?)?;
+diff --git a/src/config.rs b/src/config.rs
+index 4ffebae..342bb46 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -538,6 +538,11 @@ pub enum WorkspaceCommand {
+         #[arg(long)]
+         owner: Option<String>,
+     },
++    /// Seal a workspace's current writable head into an immutable revision.
++    /// The workspace must not have an active writer lease.
++    Seal {
++        workspace: crate::workspace_overlay::ids::WorkspaceId,
++    },
+     /// List workspaces.
+     List,
+     /// Inspect one workspace and its active lease state.
+diff --git a/src/meta/stores/tikv/mod.rs b/src/meta/stores/tikv/mod.rs
+index 5c2ca8d..c67604f 100644
+--- a/src/meta/stores/tikv/mod.rs
++++ b/src/meta/stores/tikv/mod.rs
+@@ -51,6 +51,7 @@ const UNCOMMITTED_PENDING_PREFIX: &str = "gc/uncommitted/pending/";
+ const UNCOMMITTED_ORPHAN_PREFIX: &str = "gc/uncommitted/orphan/";
+ const DELAYED_ID_COUNTER: &str = "gc/delayed/id";
+ const UNCOMMITTED_ID_COUNTER: &str = "gc/uncommitted/id";
++const XATTR_PREFIX: &str = "xattr/";
+ 
+ type TiKvTxnFuture<'txn, T> = Pin<Box<dyn Future<Output = Result<T, MetaError>> + Send + 'txn>>;
+ 
+@@ -181,6 +182,16 @@ impl TiKvMetaStore {
+         self.key_bytes(&format!("plock/{ino}"))
+     }
+ 
++    fn xattr_prefix(&self, ino: i64) -> Vec<u8> {
++        self.key_bytes(&format!("{XATTR_PREFIX}{ino}/"))
++    }
++
++    fn xattr_key(&self, ino: i64, name: &str) -> Vec<u8> {
++        let mut key = self.xattr_prefix(ino);
++        key.extend_from_slice(name.as_bytes());
++        key
++    }
++
+     fn delayed_pending_key(&self, id: i64) -> Vec<u8> {
+         self.key_bytes(&format!("{DELAYED_PENDING_PREFIX}{id}"))
+     }
+@@ -489,6 +500,26 @@ impl TiKvMetaStore {
+             .collect())
+     }
+ 
++    async fn txn_batch_get_raw(
++        txn: &mut Transaction,
++        mut keys: Vec<Vec<u8>>,
++        operation: &str,
++    ) -> Result<HashMap<Vec<u8>, Vec<u8>>, MetaError> {
++        keys.sort_unstable();
++        keys.dedup();
++        let pairs = txn
++            .batch_get(keys)
++            .await
++            .map_err(|e| Self::tikv_err(operation, e))?;
++        Ok(pairs
++            .into_iter()
++            .map(|pair| {
++                let key: Vec<u8> = pair.key().clone().into();
++                (key, pair.value().to_vec())
++            })
++            .collect())
++    }
++
+     async fn txn_put_raw(
+         txn: &mut Transaction,
+         key: Vec<u8>,
+@@ -510,6 +541,20 @@ impl TiKvMetaStore {
+             .map_err(|e| Self::tikv_err(operation, e))
+     }
+ 
++    async fn txn_delete_xattrs(
++        &self,
++        txn: &mut Transaction,
++        ino: i64,
++        operation: &str,
++    ) -> Result<(), MetaError> {
++        let pairs = Self::txn_scan_prefix(txn, self.xattr_prefix(ino), None, operation).await?;
++        for pair in pairs {
++            let key: Vec<u8> = pair.key().clone().into();
++            Self::txn_delete_raw(txn, key, operation).await?;
++        }
++        Ok(())
++    }
++
+     async fn txn_scan_prefix(
+         txn: &mut Transaction,
+         prefix: Vec<u8>,
+@@ -1389,6 +1434,7 @@ impl MetaStore for TiKvMetaStore {
+             stat_fs: true,
+             compaction: true,
+             plocks: true,
++            xattr: true,
+             ..MetaStoreCapabilities::default()
+         }
+     }
+@@ -1667,6 +1713,7 @@ impl MetaStore for TiKvMetaStore {
+                 parent_node.ctime = now;
+                 store.txn_put_node(txn, &parent_node, operation).await?;
+                 Self::txn_delete_raw(txn, store.dentry_key(parent, &name), operation).await?;
++                store.txn_delete_xattrs(txn, dentry.ino, operation).await?;
+                 Self::txn_delete_raw(txn, store.inode_key(dentry.ino), operation).await
+             })
+         })
+@@ -2105,6 +2152,9 @@ impl MetaStore for TiKvMetaStore {
+                                 operation,
+                             )
+                             .await?;
++                            store
++                                .txn_delete_xattrs(txn, dest_dentry.ino, operation)
++                                .await?;
+                             Self::txn_delete_raw(txn, store.inode_key(dest_dentry.ino), operation)
+                                 .await?;
+                             store
+@@ -2776,6 +2826,8 @@ impl MetaStore for TiKvMetaStore {
+         let operation = "remove_file_metadata";
+         self.write_txn(operation, |store, txn| {
+             Box::pin(async move {
++                let _ = Self::txn_get_raw(txn, store.inode_key(ino), true, operation).await?;
++                store.txn_delete_xattrs(txn, ino, operation).await?;
+                 Self::txn_delete_raw(txn, store.inode_key(ino), operation).await?;
+                 store.txn_delete_link_parents(txn, ino, operation).await
+             })
+@@ -2783,6 +2835,165 @@ impl MetaStore for TiKvMetaStore {
+         .await
+     }
+ 
++    async fn set_xattr(
++        &self,
++        inode: i64,
++        name: &str,
++        value: &[u8],
++        flags: u32,
++    ) -> Result<(), MetaError> {
++        #[cfg(feature = "observability")]
++        let _observation = crate::observability::metadata_timer(
++            crate::observability::MetadataOp::SetXattr,
++            self.name(),
++        );
++        let create_only = flags & (libc::XATTR_CREATE as u32) != 0;
++        let replace_only = flags & (libc::XATTR_REPLACE as u32) != 0;
++        let allowed_flags = (libc::XATTR_CREATE | libc::XATTR_REPLACE) as u32;
++        if flags & !allowed_flags != 0 || (create_only && replace_only) {
++            return Err(MetaError::InvalidPath("invalid setxattr flags".to_string()));
++        }
++
++        let operation = "set_xattr";
++        let name = name.to_string();
++        let value = value.to_vec();
++        self.write_txn_serialized(operation, inode as u64, |store, txn| {
++            let name = name.clone();
++            let value = value.clone();
++            Box::pin(async move {
++                let inode_key = store.inode_key(inode);
++                let xattr_key = store.xattr_key(inode, &name);
++                let mut rows = Self::txn_batch_get_for_update_raw(
++                    txn,
++                    vec![inode_key.clone(), xattr_key.clone()],
++                    operation,
++                )
++                .await?;
++                let mut node = rows
++                    .remove(&inode_key)
++                    .as_deref()
++                    .map(Self::decode_node)
++                    .transpose()?
++                    .ok_or(MetaError::NotFound(inode))?;
++                let exists = rows.contains_key(&xattr_key);
++                if create_only && exists {
++                    return Err(MetaError::AlreadyExists {
++                        parent: inode,
++                        name,
++                    });
++                }
++                if replace_only && !exists {
++                    return Err(MetaError::NotFound(inode));
++                }
++
++                Self::txn_put_raw(txn, xattr_key, value, operation).await?;
++                node.ctime = Self::now();
++                store.txn_put_node(txn, &node, operation).await
++            })
++        })
++        .await
++    }
++
++    async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
++        #[cfg(feature = "observability")]
++        let _observation = crate::observability::metadata_timer(
++            crate::observability::MetadataOp::GetXattr,
++            self.name(),
++        );
++        let operation = "get_xattr";
++        let name = name.to_string();
++        self.read_txn(operation, |store, txn| {
++            let name = name.clone();
++            Box::pin(async move {
++                let inode_key = store.inode_key(inode);
++                let xattr_key = store.xattr_key(inode, &name);
++                let mut rows = Self::txn_batch_get_raw(
++                    txn,
++                    vec![inode_key.clone(), xattr_key.clone()],
++                    operation,
++                )
++                .await?;
++                let _node = rows
++                    .remove(&inode_key)
++                    .as_deref()
++                    .map(Self::decode_node)
++                    .transpose()?
++                    .ok_or(MetaError::NotFound(inode))?;
++                Ok(rows.remove(&xattr_key))
++            })
++        })
++        .await
++    }
++
++    async fn list_xattr(&self, inode: i64) -> Result<Vec<String>, MetaError> {
++        #[cfg(feature = "observability")]
++        let _observation = crate::observability::metadata_timer(
++            crate::observability::MetadataOp::ListXattr,
++            self.name(),
++        );
++        let operation = "list_xattr";
++        self.read_txn(operation, |store, txn| {
++            Box::pin(async move {
++                store
++                    .txn_get_node(txn, inode, false, operation)
++                    .await?
++                    .ok_or(MetaError::NotFound(inode))?;
++                let prefix = store.xattr_prefix(inode);
++                let pairs = Self::txn_scan_prefix(txn, prefix.clone(), None, operation).await?;
++                pairs
++                    .into_iter()
++                    .map(|pair| {
++                        let key: Vec<u8> = pair.key().clone().into();
++                        let name = key.get(prefix.len()..).ok_or_else(|| {
++                            MetaError::Internal("TiKV xattr key outside prefix".to_string())
++                        })?;
++                        String::from_utf8(name.to_vec()).map_err(|e| {
++                            MetaError::Serialization(format!("TiKV xattr name decode failed: {e}"))
++                        })
++                    })
++                    .collect()
++            })
++        })
++        .await
++    }
++
++    async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
++        #[cfg(feature = "observability")]
++        let _observation = crate::observability::metadata_timer(
++            crate::observability::MetadataOp::RemoveXattr,
++            self.name(),
++        );
++        let operation = "remove_xattr";
++        let name = name.to_string();
++        self.write_txn_serialized(operation, inode as u64, |store, txn| {
++            let name = name.clone();
++            Box::pin(async move {
++                let inode_key = store.inode_key(inode);
++                let xattr_key = store.xattr_key(inode, &name);
++                let mut rows = Self::txn_batch_get_for_update_raw(
++                    txn,
++                    vec![inode_key.clone(), xattr_key.clone()],
++                    operation,
++                )
++                .await?;
++                let mut node = rows
++                    .remove(&inode_key)
++                    .as_deref()
++                    .map(Self::decode_node)
++                    .transpose()?
++                    .ok_or(MetaError::NotFound(inode))?;
++                if !rows.contains_key(&xattr_key) {
++                    return Err(MetaError::NotFound(inode));
++                }
++
++                Self::txn_delete_raw(txn, xattr_key, operation).await?;
++                node.ctime = Self::now();
++                store.txn_put_node(txn, &node, operation).await
++            })
++        })
++        .await
++    }
++
+     async fn get_slices(&self, chunk_id: u64) -> Result<Vec<SliceDesc>, MetaError> {
+         #[cfg(feature = "observability")]
+         let _observation = crate::observability::metadata_timer(
+diff --git a/src/meta/stores/tikv/tests.rs b/src/meta/stores/tikv/tests.rs
+index 0565c67..fb0ed73 100644
+--- a/src/meta/stores/tikv/tests.rs
++++ b/src/meta/stores/tikv/tests.rs
+@@ -51,7 +51,8 @@ fn test_config(namespace: &str) -> Config {
+ }
+ 
+ fn integration_config(test_name: &str) -> Option<Config> {
+-    let endpoints = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
++    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
++        .or_else(|_| std::env::var("BREWFS_TIKV_PD_ENDPOINTS"))
+         .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
+         .ok()?;
+     let pd_endpoints: Vec<_> = endpoints
+@@ -81,6 +82,37 @@ fn integration_config(test_name: &str) -> Option<Config> {
+     })
+ }
+ 
++async fn xattr_test_store(test_name: &str) -> Option<TiKvMetaStore> {
++    let config = integration_config(test_name)?;
++    let store = TiKvMetaStore::from_config(config)
++        .await
++        .expect("TiKV metadata store should connect");
++    store.initialize().await.unwrap();
++    Some(store)
++}
++
++async fn raw_xattr_keys(store: &TiKvMetaStore, ino: i64) -> Vec<Vec<u8>> {
++    let prefix = store.xattr_prefix(ino);
++    store
++        .read_txn("test_raw_xattr_keys", move |_store, txn| {
++            let prefix = prefix.clone();
++            Box::pin(async move {
++                let pairs =
++                    TiKvMetaStore::txn_scan_prefix(txn, prefix, None, "test_raw_xattr_keys")
++                        .await?;
++                Ok(pairs
++                    .into_iter()
++                    .map(|pair| {
++                        let key: Vec<u8> = pair.key().clone().into();
++                        key
++                    })
++                    .collect())
++            })
++        })
++        .await
++        .unwrap()
++}
++
+ #[test]
+ fn parses_tikv_database_config_from_yaml() {
+     let config: Config = serde_yaml::from_str(
+@@ -339,48 +371,177 @@ async fn rejects_empty_pd_endpoints() {
+ 
+ #[tokio::test]
+ #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TEST_TIKV_PD_ENDPOINTS"]
+-async fn real_tikv_meta_store_xattr_is_not_implemented() {
+-    let pd_endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
+-        .or_else(|_| std::env::var("BREWFS_TIKV_PD_ENDPOINTS"))
+-        .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
+-        .unwrap_or_else(|_| "127.0.0.1:2379".to_string())
+-        .split(',')
+-        .map(str::trim)
+-        .filter(|endpoint| !endpoint.is_empty())
+-        .map(ToOwned::to_owned)
+-        .collect();
+-    let config = Config {
+-        database: DatabaseConfig {
+-            db_config: DatabaseType::TiKv {
+-                pd_endpoints,
+-                namespace: format!("brewfs-test-xattr-not-implemented-{}", Uuid::new_v4()),
+-            },
+-        },
+-        cache: CacheConfig::default(),
+-        client: ClientOptions::default(),
+-        compact: CompactConfig::default(),
++async fn real_tikv_meta_store_xattr_crud_flags_and_binary_values() {
++    let Some(store) = xattr_test_store("xattr-crud").await else {
++        eprintln!("skip: TiKV PD endpoints are unset or empty");
++        return;
+     };
+-    let store = TiKvMetaStore::from_config(config)
++    let root = store.root_ino();
++    assert!(store.capabilities().xattr);
++
++    let inode = store
++        .create_file(root, "xattr-crud.bin".to_string())
++        .await
++        .unwrap();
++    assert_eq!(store.get_xattr(inode, "missing").await.unwrap(), None);
++    assert!(store.list_xattr(inode).await.unwrap().is_empty());
++    assert!(raw_xattr_keys(&store, inode).await.is_empty());
++
++    let before = store.stat(inode).await.unwrap().unwrap();
++    store
++        .set_xattr(inode, "user.test", b"first", 0)
++        .await
++        .unwrap();
++    let after_create = store.stat(inode).await.unwrap().unwrap();
++    assert!(after_create.ctime > before.ctime);
++    assert_eq!(after_create.mtime, before.mtime);
++    assert_eq!(
++        store.get_xattr(inode, "user.test").await.unwrap(),
++        Some(b"first".to_vec())
++    );
++
++    store
++        .set_xattr(inode, "user.test", b"second", 0)
+         .await
+-        .expect("TiKv metadata store should connect before checking optional methods");
+-    assert!(!store.capabilities().xattr);
++        .unwrap();
++    assert_eq!(
++        store.get_xattr(inode, "user.test").await.unwrap(),
++        Some(b"second".to_vec())
++    );
+ 
++    let create_result = store
++        .set_xattr(inode, "user.test", b"third", libc::XATTR_CREATE as u32)
++        .await;
+     assert!(matches!(
+-        store.set_xattr(1, "user.test", b"value", 0).await,
+-        Err(MetaError::NotImplemented)
++        create_result,
++        Err(MetaError::AlreadyExists { parent, name }) if parent == inode && name == "user.test"
+     ));
++
++    store
++        .set_xattr(inode, "user.test", b"replaced", libc::XATTR_REPLACE as u32)
++        .await
++        .unwrap();
++    assert_eq!(
++        store.get_xattr(inode, "user.test").await.unwrap(),
++        Some(b"replaced".to_vec())
++    );
++
++    let replace_missing = store
++        .set_xattr(inode, "user.missing", b"value", libc::XATTR_REPLACE as u32)
++        .await;
++    assert!(matches!(replace_missing, Err(MetaError::NotFound(found)) if found == inode));
++
++    let conflicting_flags = (libc::XATTR_CREATE | libc::XATTR_REPLACE) as u32;
+     assert!(matches!(
+-        store.get_xattr(1, "user.test").await,
+-        Err(MetaError::NotImplemented)
++        store
++            .set_xattr(inode, "user.test", b"value", conflicting_flags)
++            .await,
++        Err(MetaError::InvalidPath(_))
+     ));
++
++    let binary = vec![0, 0xff, 0x80, b'\n', 0];
++    store
++        .set_xattr(inode, "user.binary", &binary, 0)
++        .await
++        .unwrap();
++    store.set_xattr(inode, "user.empty", &[], 0).await.unwrap();
++    assert_eq!(
++        store.get_xattr(inode, "user.binary").await.unwrap(),
++        Some(binary)
++    );
++    assert_eq!(
++        store.get_xattr(inode, "user.empty").await.unwrap(),
++        Some(Vec::new())
++    );
++
++    let mut names = store.list_xattr(inode).await.unwrap();
++    names.sort();
++    assert_eq!(names, vec!["user.binary", "user.empty", "user.test"]);
++    assert_eq!(raw_xattr_keys(&store, inode).await.len(), 3);
++
++    store.remove_xattr(inode, "user.test").await.unwrap();
++    assert_eq!(store.get_xattr(inode, "user.test").await.unwrap(), None);
+     assert!(matches!(
+-        store.list_xattr(1).await,
+-        Err(MetaError::NotImplemented)
++        store.remove_xattr(inode, "user.test").await,
++        Err(MetaError::NotFound(found)) if found == inode
+     ));
++
++    for operation in [
++        store.get_xattr(999_999, "x").await.map(|_| ()),
++        store.list_xattr(999_999).await.map(|_| ()),
++        store.remove_xattr(999_999, "x").await,
++        store.set_xattr(999_999, "x", b"x", 0).await,
++    ] {
++        assert!(matches!(operation, Err(MetaError::NotFound(found)) if found == 999_999));
++    }
++}
++
++#[tokio::test]
++#[ignore = "requires a running TiKV/PD cluster; set BREWFS_TEST_TIKV_PD_ENDPOINTS"]
++async fn real_tikv_meta_store_xattr_inode_cleanup() {
++    let Some(store) = xattr_test_store("xattr-cleanup").await else {
++        eprintln!("skip: TiKV PD endpoints are unset or empty");
++        return;
++    };
++    let root = store.root_ino();
++
++    let dir = store.mkdir(root, "xattr-dir".to_string()).await.unwrap();
++    store
++        .set_xattr(dir, "user.dir", b"directory", 0)
++        .await
++        .unwrap();
++    assert_eq!(raw_xattr_keys(&store, dir).await.len(), 1);
++    store.rmdir(root, "xattr-dir").await.unwrap();
++    assert!(raw_xattr_keys(&store, dir).await.is_empty());
++
++    let file = store
++        .create_file(root, "xattr-file".to_string())
++        .await
++        .unwrap();
++    store
++        .set_xattr(file, "user.file", b"file", 0)
++        .await
++        .unwrap();
++    store.unlink(root, "xattr-file").await.unwrap();
++    assert_eq!(
++        store.get_xattr(file, "user.file").await.unwrap(),
++        Some(b"file".to_vec())
++    );
++    assert_eq!(raw_xattr_keys(&store, file).await.len(), 1);
++    store.remove_file_metadata(file).await.unwrap();
++    assert!(raw_xattr_keys(&store, file).await.is_empty());
+     assert!(matches!(
+-        store.remove_xattr(1, "user.test").await,
+-        Err(MetaError::NotImplemented)
++        store.get_xattr(file, "user.file").await,
++        Err(MetaError::NotFound(found)) if found == file
+     ));
++    store.remove_file_metadata(file).await.unwrap();
++    assert!(raw_xattr_keys(&store, file).await.is_empty());
++
++    let source = store.mkdir(root, "xattr-source".to_string()).await.unwrap();
++    let destination = store
++        .mkdir(root, "xattr-destination".to_string())
++        .await
++        .unwrap();
++    store
++        .set_xattr(destination, "user.replaced", b"stale", 0)
++        .await
++        .unwrap();
++    let outcome = store
++        .rename_with_mode(
++            root,
++            "xattr-source",
++            root,
++            "xattr-destination".to_string(),
++            false,
++        )
++        .await
++        .unwrap();
++    assert_eq!(outcome.replaced_ino, Some(destination));
++    assert!(raw_xattr_keys(&store, destination).await.is_empty());
++    assert_eq!(
++        store.lookup(root, "xattr-destination").await.unwrap(),
++        Some(source)
++    );
+ }
+ 
+ #[tokio::test]
+diff --git a/src/workspace_overlay/catalog.rs b/src/workspace_overlay/catalog.rs
+index e55789f..e669334 100644
+--- a/src/workspace_overlay/catalog.rs
++++ b/src/workspace_overlay/catalog.rs
+@@ -8,8 +8,8 @@ use super::error::WorkspaceError;
+ use super::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
+ use super::model::{
+     AclDelta, BaseRevision, DataExtentDelta, DentryDelta, InodeDelta, InodeState, LayerRecord,
+-    LayerState, SealJournal, SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader, WorkspaceRecord,
+-    XattrDelta,
++    LayerState, SealJournal, SealResult, SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader,
++    WorkspaceRecord, XattrDelta,
+ };
+ 
+ /// Shared by packed extent readers and writable-head publication admission.
+@@ -116,6 +116,31 @@ pub struct CreateSnapshot {
+     pub owner_id: Option<String>,
+ }
+ 
++/// Start an offline seal before the merged immutable layer is materialized.
++/// The transaction fences the workspace without changing the writable head,
++/// so a crash leaves a resumable, still-readable chain.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct BeginWorkspaceSeal {
++    pub workspace_id: WorkspaceId,
++    pub journal_id: JournalId,
++    pub new_head_layer_id: LayerId,
++}
++
++/// Atomically publish a fully materialized flat base and switch the workspace
++/// to a fresh empty writable head.
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct CommitWorkspaceSeal {
++    pub journal_id: JournalId,
++    pub sealed_layer_id: LayerId,
++    pub delta: CanonicalLayerDelta,
++}
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct AbortWorkspaceSeal {
++    pub journal_id: JournalId,
++    pub reason: String,
++}
++
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct MarkDeleting {
+     pub workspace_id: WorkspaceId,
+@@ -863,6 +888,16 @@ pub trait WorkspaceStore: Send + Sync {
+         &self,
+         layer_id: LayerId,
+     ) -> Result<CanonicalLayerDelta, WorkspaceError>;
++    async fn begin_workspace_seal(
++        &self,
++        request: BeginWorkspaceSeal,
++    ) -> Result<SealJournal, WorkspaceError>;
++    async fn commit_workspace_seal(
++        &self,
++        request: CommitWorkspaceSeal,
++    ) -> Result<SealResult, WorkspaceError>;
++    async fn abort_workspace_seal(&self, request: AbortWorkspaceSeal)
++    -> Result<(), WorkspaceError>;
+     async fn load_seal_journal(&self, journal_id: JournalId)
+     -> Result<SealJournal, WorkspaceError>;
+     /// 列出指定 workspace 的所有 seal journal，包括终止状态的记录。
+diff --git a/src/workspace_overlay/meta_layer/tests/packed_lower_tests/default_reader_attach_contracts.rs b/src/workspace_overlay/meta_layer/tests/packed_lower_tests/default_reader_attach_contracts.rs
+index ca4f531..470a9b0 100644
+--- a/src/workspace_overlay/meta_layer/tests/packed_lower_tests/default_reader_attach_contracts.rs
++++ b/src/workspace_overlay/meta_layer/tests/packed_lower_tests/default_reader_attach_contracts.rs
+@@ -205,6 +205,24 @@ impl<W: WorkspaceStore + 'static> WorkspaceStore for BindingWithoutPins<W> {
+     ) -> Result<CanonicalLayerDelta, WorkspaceError> {
+         self.inner.load_layer_delta(layer_id).await
+     }
++    async fn begin_workspace_seal(
++        &self,
++        request: BeginWorkspaceSeal,
++    ) -> Result<SealJournal, WorkspaceError> {
++        self.inner.begin_workspace_seal(request).await
++    }
++    async fn commit_workspace_seal(
++        &self,
++        request: CommitWorkspaceSeal,
++    ) -> Result<SealResult, WorkspaceError> {
++        self.inner.commit_workspace_seal(request).await
++    }
++    async fn abort_workspace_seal(
++        &self,
++        request: AbortWorkspaceSeal,
++    ) -> Result<(), WorkspaceError> {
++        self.inner.abort_workspace_seal(request).await
++    }
+     async fn load_seal_journal(
+         &self,
+         journal_id: JournalId,
+diff --git a/src/workspace_overlay/mod.rs b/src/workspace_overlay/mod.rs
+index b72703b..8a8b13a 100644
+--- a/src/workspace_overlay/mod.rs
++++ b/src/workspace_overlay/mod.rs
+@@ -26,4 +26,5 @@ pub use stores::kv_store::packed_admin;
+ pub mod packed_v3;
+ pub mod publish;
+ pub mod resolver;
++pub mod seal;
+ pub mod stores;
+diff --git a/src/workspace_overlay/stores/database.rs b/src/workspace_overlay/stores/database.rs
+index 803947b..7b502e7 100644
+--- a/src/workspace_overlay/stores/database.rs
++++ b/src/workspace_overlay/stores/database.rs
+@@ -17,12 +17,13 @@ use tokio::sync::Mutex;
+ use uuid::Uuid;
+ 
+ use crate::workspace_overlay::catalog::{
+-    AclMutation, AclQuery, AcquireLease, AppendDataExtent, CreateSnapshot, CreateVolumeRoot,
+-    CreateWorkspace, DataMutation, DataMutationResult, DeleteLayerMetadata, DentryQuery,
+-    ExtentQuery, GcSnapshot, HeadGuard, InodeMutation, InodeQuery, MarkDeleting, MutationResult,
+-    NamespaceMutation, PermissionMutation, PermissionSnapshot, PermissionSnapshotQuery,
+-    RecordOrphanSlice, ReleaseLease, RenewLease, SliceReference, VersionedMutation, WorkspaceStore,
+-    WorkspaceStoreCapabilities, XattrMutation, XattrQuery,
++    AbortWorkspaceSeal, AclMutation, AclQuery, AcquireLease, AppendDataExtent, BeginWorkspaceSeal,
++    CommitWorkspaceSeal, CreateSnapshot, CreateVolumeRoot, CreateWorkspace, DataMutation,
++    DataMutationResult, DeleteLayerMetadata, DentryQuery, ExtentQuery, GcSnapshot, HeadGuard,
++    InodeMutation, InodeQuery, MarkDeleting, MutationResult, NamespaceMutation, PermissionMutation,
++    PermissionSnapshot, PermissionSnapshotQuery, RecordOrphanSlice, ReleaseLease, RenewLease,
++    SliceReference, VersionedMutation, WorkspaceStore, WorkspaceStoreCapabilities, XattrMutation,
++    XattrQuery,
+ };
+ #[cfg(test)]
+ use crate::workspace_overlay::catalog::{InstallTestBase, TestBaseResult};
+@@ -31,9 +32,9 @@ use crate::workspace_overlay::error::WorkspaceError;
+ use crate::workspace_overlay::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
+ use crate::workspace_overlay::model::{
+     AclDelta, BaseRevision, DataExtentDelta, DentryDelta, DentryOp, ExtentKind, InodeDelta,
+-    InodeState, LayerRecord, LayerState, LeaseState, SealJournal, SealPhase, SnapshotLease,
+-    SnapshotRecord, ValueOp, VolumeHeader, WORKSPACE_SCHEMA_VERSION, WorkspaceRecord,
+-    WorkspaceState, XattrDelta,
++    InodeState, LayerRecord, LayerState, LeaseState, SealJournal, SealPhase, SealResult,
++    SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader, WORKSPACE_SCHEMA_VERSION,
++    WorkspaceRecord, WorkspaceState, XattrDelta,
+ };
+ use crate::workspace_overlay::publish::binding::{
+     InstallPackedLowerBinding, PackedLowerBindingRecord, PublishPackedLowerBinding,
+@@ -3302,6 +3303,416 @@ impl WorkspaceStore for SqliteWorkspaceStore {
+         load_layer_delta_pool(&self.pool, layer_id).await
+     }
+ 
++    async fn begin_workspace_seal(
++        &self,
++        request: BeginWorkspaceSeal,
++    ) -> Result<SealJournal, WorkspaceError> {
++        let _guard = self.write_gate.lock().await;
++        let mut tx = self.begin_write().await?;
++        let workspace = load_workspace_tx(&mut tx, request.workspace_id).await?;
++        if request.new_head_layer_id == workspace.head_layer_id {
++            return Err(WorkspaceError::CorruptMetadata(
++                "seal replacement head must differ from the current head".into(),
++            ));
++        }
++        if workspace.state != WorkspaceState::Active {
++            return Err(WorkspaceError::InvalidStateTransition {
++                from: format!("{:?}", workspace.state),
++                to: "Sealing".into(),
++            });
++        }
++        if workspace.active_lease.is_some() {
++            return Err(WorkspaceError::Busy);
++        }
++        let head = sea_orm::sqlx::query(
++            "SELECT state, owner_workspace_id FROM ws_v1_layers WHERE layer_id = ?",
++        )
++        .bind(workspace.head_layer_id.as_bytes().as_slice())
++        .fetch_optional(&mut *tx)
++        .await
++        .map_err(backend)?
++        .ok_or(WorkspaceError::LayerNotFound(workspace.head_layer_id))?;
++        let head_state = LayerState::try_from(to_u8(
++            head.try_get("state").map_err(backend)?,
++            "layer state",
++        )?)?;
++        let owner = head
++            .try_get::<Option<Vec<u8>>, _>("owner_workspace_id")
++            .map_err(backend)?;
++        if head_state != LayerState::Writable
++            || owner.as_deref() != Some(request.workspace_id.as_bytes().as_slice())
++        {
++            return Err(WorkspaceError::Fenced);
++        }
++        let pending: i64 = sea_orm::sqlx::query_scalar(
++            "SELECT COUNT(*) FROM ws_v1_seal_journal
++             WHERE workspace_id = ? AND phase NOT IN (?, ?)",
++        )
++        .bind(request.workspace_id.as_bytes().as_slice())
++        .bind(SealPhase::Completed.discriminant() as i64)
++        .bind(SealPhase::Aborted.discriminant() as i64)
++        .fetch_one(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if pending != 0 {
++            return Err(WorkspaceError::Busy);
++        }
++        let now = now_ns()?;
++        sea_orm::sqlx::query(
++            "INSERT INTO ws_v1_seal_journal
++             (journal_id, workspace_id, old_head_layer_id, expected_head_epoch,
++              phase, pending_bytes, delta_digest, root_hash, new_head_layer_id,
++              last_error, created_at_ns, updated_at_ns)
++             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, ?)",
++        )
++        .bind(request.journal_id.as_bytes().as_slice())
++        .bind(request.workspace_id.as_bytes().as_slice())
++        .bind(workspace.head_layer_id.as_bytes().as_slice())
++        .bind(to_i64(workspace.head_epoch, "head epoch")?)
++        .bind(SealPhase::Prepare.discriminant() as i64)
++        .bind(request.new_head_layer_id.as_bytes().as_slice())
++        .bind(now)
++        .bind(now)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        let fenced = sea_orm::sqlx::query(
++            "UPDATE ws_v1_workspaces SET state = ?, updated_at_ns = ?
++             WHERE workspace_id = ? AND state = ? AND head_layer_id = ?
++               AND head_epoch = ? AND active_lease IS NULL",
++        )
++        .bind(WorkspaceState::Sealing.discriminant() as i64)
++        .bind(now)
++        .bind(request.workspace_id.as_bytes().as_slice())
++        .bind(WorkspaceState::Active.discriminant() as i64)
++        .bind(workspace.head_layer_id.as_bytes().as_slice())
++        .bind(to_i64(workspace.head_epoch, "head epoch")?)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if fenced.rows_affected() != 1 {
++            return Err(WorkspaceError::Fenced);
++        }
++        tx.commit().await.map_err(backend)?;
++        Ok(SealJournal {
++            journal_id: request.journal_id,
++            workspace_id: request.workspace_id,
++            old_head_layer_id: workspace.head_layer_id,
++            expected_head_epoch: workspace.head_epoch,
++            phase: SealPhase::Prepare,
++            pending_bytes: 0,
++            delta_digest: None,
++            root_hash: None,
++            new_head_layer_id: Some(request.new_head_layer_id),
++            last_error: None,
++            created_at_ns: now,
++            updated_at_ns: now,
++        })
++    }
++
++    async fn commit_workspace_seal(
++        &self,
++        request: CommitWorkspaceSeal,
++    ) -> Result<SealResult, WorkspaceError> {
++        let _guard = self.write_gate.lock().await;
++        let mut tx = self.begin_write().await?;
++        let journal = load_seal_journal_tx(&mut tx, request.journal_id).await?;
++        let new_head = journal.new_head_layer_id.ok_or_else(|| {
++            WorkspaceError::CorruptMetadata("seal journal has no replacement head".into())
++        })?;
++        if journal.phase == SealPhase::Completed {
++            let workspace = load_workspace_tx(&mut tx, journal.workspace_id).await?;
++            let revision = workspace.fork_base.ok_or_else(|| {
++                WorkspaceError::CorruptMetadata("completed seal has no fork base".into())
++            })?;
++            if revision.layer_id != request.sealed_layer_id || workspace.head_layer_id != new_head {
++                return Err(WorkspaceError::CorruptMetadata(
++                    "completed seal disagrees with the workspace head/base".into(),
++                ));
++            }
++            return Ok(SealResult {
++                revision,
++                new_head_layer_id: new_head,
++                head_epoch: workspace.head_epoch,
++            });
++        }
++        if journal.phase != SealPhase::Prepare {
++            return Err(WorkspaceError::InvalidStateTransition {
++                from: format!("{:?}", journal.phase),
++                to: "Completed".into(),
++            });
++        }
++        for layer_id in request
++            .delta
++            .dentries
++            .iter()
++            .map(|row| row.layer_id)
++            .chain(request.delta.inodes.iter().map(|row| row.layer_id))
++            .chain(request.delta.xattrs.iter().map(|row| row.layer_id))
++            .chain(request.delta.acls.iter().map(|row| row.layer_id))
++            .chain(request.delta.extents.iter().map(|row| row.layer_id))
++        {
++            if layer_id != request.sealed_layer_id {
++                return Err(WorkspaceError::CorruptMetadata(
++                    "seal delta contains a foreign layer ID".into(),
++                ));
++            }
++        }
++        let digest = delta_digest(&request.delta)?;
++        let root = root_hash([0; 32], digest);
++        let next_sequence = request
++            .delta
++            .dentries
++            .iter()
++            .map(|row| row.sequence)
++            .chain(request.delta.inodes.iter().map(|row| row.sequence))
++            .chain(request.delta.xattrs.iter().map(|row| row.sequence))
++            .chain(request.delta.acls.iter().map(|row| row.sequence))
++            .chain(request.delta.extents.iter().map(|row| row.sequence))
++            .max()
++            .unwrap_or(0)
++            .checked_add(1)
++            .ok_or_else(|| WorkspaceError::CorruptMetadata("sequence overflows".into()))?;
++        let workspace = load_workspace_tx(&mut tx, journal.workspace_id).await?;
++        if workspace.state != WorkspaceState::Sealing
++            || workspace.head_layer_id != journal.old_head_layer_id
++            || workspace.head_epoch != journal.expected_head_epoch
++            || workspace.active_lease.is_some()
++        {
++            return Err(WorkspaceError::Fenced);
++        }
++        let head = sea_orm::sqlx::query(
++            "SELECT parent_layer_id, state, owner_workspace_id, depth
++             FROM ws_v1_layers WHERE layer_id = ?",
++        )
++        .bind(journal.old_head_layer_id.as_bytes().as_slice())
++        .fetch_optional(&mut *tx)
++        .await
++        .map_err(backend)?
++        .ok_or(WorkspaceError::LayerNotFound(journal.old_head_layer_id))?;
++        let head_state = LayerState::try_from(to_u8(
++            head.try_get("state").map_err(backend)?,
++            "layer state",
++        )?)?;
++        let owner = head
++            .try_get::<Option<Vec<u8>>, _>("owner_workspace_id")
++            .map_err(backend)?;
++        let parent = head
++            .try_get::<Option<Vec<u8>>, _>("parent_layer_id")
++            .map_err(backend)?
++            .ok_or_else(|| WorkspaceError::CorruptMetadata("seal head has no parent".into()))?;
++        if head_state != LayerState::Writable
++            || owner.as_deref() != Some(journal.workspace_id.as_bytes().as_slice())
++            || to_u32(head.try_get("depth").map_err(backend)?, "layer depth")? != 2
++        {
++            return Err(WorkspaceError::Fenced);
++        }
++        let parent = LayerId::from_uuid(uuid_from_blob(parent, "seal head parent")?);
++        let parent_state: i64 =
++            sea_orm::sqlx::query_scalar("SELECT state FROM ws_v1_layers WHERE layer_id = ?")
++                .bind(parent.as_bytes().as_slice())
++                .fetch_optional(&mut *tx)
++                .await
++                .map_err(backend)?
++                .ok_or(WorkspaceError::LayerNotFound(parent))?;
++        if LayerState::try_from(to_u8(parent_state, "layer state")?)? != LayerState::Sealed {
++            return Err(WorkspaceError::CorruptMetadata(
++                "seal source parent is not a sealed base".into(),
++            ));
++        }
++        let output_count: i64 = sea_orm::sqlx::query_scalar(
++            "SELECT COUNT(*) FROM ws_v1_layers WHERE layer_id = ? OR layer_id = ?",
++        )
++        .bind(request.sealed_layer_id.as_bytes().as_slice())
++        .bind(new_head.as_bytes().as_slice())
++        .fetch_one(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if output_count != 0 {
++            return Err(WorkspaceError::CorruptMetadata(
++                "seal output layer already exists".into(),
++            ));
++        }
++        let now = now_ns()?;
++        let sealed_version = to_u64(
++            allocate_id_tx(&mut tx, "sealed_version").await?,
++            "sealed version",
++        )?;
++        sea_orm::sqlx::query(
++            "INSERT INTO ws_v1_layers
++             (layer_id, parent_layer_id, state, schema_version, sealed_version,
++              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
++              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
++             VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?, 0, 0, ?, ?)",
++        )
++        .bind(request.sealed_layer_id.as_bytes().as_slice())
++        .bind(LayerState::Sealed.discriminant() as i64)
++        .bind(WORKSPACE_SCHEMA_VERSION as i64)
++        .bind(to_i64(sealed_version, "sealed version")?)
++        .bind(digest.as_slice())
++        .bind(root.as_slice())
++        .bind(to_i64(next_sequence, "next sequence")?)
++        .bind(now)
++        .bind(now)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        for row in &request.delta.dentries {
++            upsert_dentry(&mut tx, row).await?;
++        }
++        for row in &request.delta.inodes {
++            upsert_inode(&mut tx, row).await?;
++        }
++        for row in &request.delta.xattrs {
++            upsert_xattr(&mut tx, row).await?;
++        }
++        for row in &request.delta.acls {
++            upsert_acl(&mut tx, row).await?;
++        }
++        for row in &request.delta.extents {
++            insert_extent(&mut tx, row).await?;
++        }
++        insert_writable_layer(
++            &mut tx,
++            new_head,
++            request.sealed_layer_id,
++            2,
++            journal.workspace_id,
++            now,
++        )
++        .await?;
++        let epoch = workspace
++            .head_epoch
++            .checked_add(1)
++            .ok_or_else(|| WorkspaceError::CorruptMetadata("head epoch overflows".into()))?;
++        let switched = sea_orm::sqlx::query(
++            "UPDATE ws_v1_workspaces
++             SET head_layer_id = ?, head_epoch = ?, fork_base_layer_id = ?,
++                 fork_base_version = ?, fork_base_root_hash = ?, state = ?, updated_at_ns = ?
++             WHERE workspace_id = ? AND head_layer_id = ? AND head_epoch = ?
++               AND state = ? AND active_lease IS NULL",
++        )
++        .bind(new_head.as_bytes().as_slice())
++        .bind(to_i64(epoch, "head epoch")?)
++        .bind(request.sealed_layer_id.as_bytes().as_slice())
++        .bind(to_i64(sealed_version, "sealed version")?)
++        .bind(root.as_slice())
++        .bind(WorkspaceState::Active.discriminant() as i64)
++        .bind(now)
++        .bind(journal.workspace_id.as_bytes().as_slice())
++        .bind(journal.old_head_layer_id.as_bytes().as_slice())
++        .bind(to_i64(journal.expected_head_epoch, "head epoch")?)
++        .bind(WorkspaceState::Sealing.discriminant() as i64)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if switched.rows_affected() != 1 {
++            return Err(WorkspaceError::Fenced);
++        }
++        sea_orm::sqlx::query(
++            "UPDATE ws_v1_layers SET state = ?, owner_workspace_id = NULL
++             WHERE layer_id = ? AND state = ?",
++        )
++        .bind(LayerState::Deleting.discriminant() as i64)
++        .bind(journal.old_head_layer_id.as_bytes().as_slice())
++        .bind(LayerState::Writable.discriminant() as i64)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        let pending_bytes = request
++            .delta
++            .extents
++            .iter()
++            .map(|row| row.length)
++            .fold(0_u64, u64::saturating_add);
++        let completed = sea_orm::sqlx::query(
++            "UPDATE ws_v1_seal_journal
++             SET phase = ?, pending_bytes = ?, delta_digest = ?, root_hash = ?, updated_at_ns = ?
++             WHERE journal_id = ? AND phase = ?",
++        )
++        .bind(SealPhase::Completed.discriminant() as i64)
++        .bind(to_i64(pending_bytes, "pending bytes")?)
++        .bind(digest.as_slice())
++        .bind(root.as_slice())
++        .bind(now)
++        .bind(request.journal_id.as_bytes().as_slice())
++        .bind(SealPhase::Prepare.discriminant() as i64)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if completed.rows_affected() != 1 {
++            return Err(WorkspaceError::Fenced);
++        }
++        tx.commit().await.map_err(backend)?;
++        Ok(SealResult {
++            revision: BaseRevision {
++                layer_id: request.sealed_layer_id,
++                sealed_version,
++                root_hash: root,
++            },
++            new_head_layer_id: new_head,
++            head_epoch: epoch,
++        })
++    }
++
++    async fn abort_workspace_seal(
++        &self,
++        request: AbortWorkspaceSeal,
++    ) -> Result<(), WorkspaceError> {
++        let _guard = self.write_gate.lock().await;
++        let mut tx = self.begin_write().await?;
++        let journal = load_seal_journal_tx(&mut tx, request.journal_id).await?;
++        if matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted) {
++            return Ok(());
++        }
++        if journal.phase != SealPhase::Prepare {
++            return Err(WorkspaceError::InvalidStateTransition {
++                from: format!("{:?}", journal.phase),
++                to: "Aborted".into(),
++            });
++        }
++        let now = now_ns()?;
++        let restored = sea_orm::sqlx::query(
++            "UPDATE ws_v1_workspaces SET state = ?, updated_at_ns = ?
++             WHERE workspace_id = ? AND head_layer_id = ? AND head_epoch = ? AND state = ?",
++        )
++        .bind(WorkspaceState::Active.discriminant() as i64)
++        .bind(now)
++        .bind(journal.workspace_id.as_bytes().as_slice())
++        .bind(journal.old_head_layer_id.as_bytes().as_slice())
++        .bind(to_i64(journal.expected_head_epoch, "head epoch")?)
++        .bind(WorkspaceState::Sealing.discriminant() as i64)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if restored.rows_affected() == 0 {
++            let current = load_workspace_tx(&mut tx, journal.workspace_id).await?;
++            if current.head_layer_id != journal.old_head_layer_id
++                || current.head_epoch != journal.expected_head_epoch
++                || current.state != WorkspaceState::Sealing
++            {
++                return Err(WorkspaceError::Fenced);
++            }
++        }
++        let aborted = sea_orm::sqlx::query(
++            "UPDATE ws_v1_seal_journal SET phase = ?, last_error = ?, updated_at_ns = ?
++             WHERE journal_id = ? AND phase = ?",
++        )
++        .bind(SealPhase::Aborted.discriminant() as i64)
++        .bind(request.reason)
++        .bind(now)
++        .bind(request.journal_id.as_bytes().as_slice())
++        .bind(SealPhase::Prepare.discriminant() as i64)
++        .execute(&mut *tx)
++        .await
++        .map_err(backend)?;
++        if aborted.rows_affected() != 1 {
++            return Err(WorkspaceError::Fenced);
++        }
++        tx.commit().await.map_err(backend)?;
++        Ok(())
++    }
++
+     async fn load_seal_journal(
+         &self,
+         journal_id: JournalId,
+diff --git a/src/workspace_overlay/stores/kv_store.rs b/src/workspace_overlay/stores/kv_store.rs
+index de47465..e74956e 100644
+--- a/src/workspace_overlay/stores/kv_store.rs
++++ b/src/workspace_overlay/stores/kv_store.rs
+@@ -4372,6 +4372,321 @@ where
+         self.layer_delta_unchecked(layer_id).await
+     }
+ 
++    async fn begin_workspace_seal(
++        &self,
++        request: BeginWorkspaceSeal,
++    ) -> Result<SealJournal, WorkspaceError> {
++        self.require_admin_access()?;
++        let now = self.now_ns().await?;
++        self.update_control(|state, _writes| {
++            let workspace = state
++                .workspaces
++                .get(&request.workspace_id)
++                .cloned()
++                .ok_or(WorkspaceError::WorkspaceNotFound(request.workspace_id))?;
++            if workspace.state != WorkspaceState::Active {
++                return Err(WorkspaceError::InvalidStateTransition {
++                    from: format!("{:?}", workspace.state),
++                    to: "Sealing".into(),
++                });
++            }
++            if workspace.active_lease.is_some()
++                || request.new_head_layer_id == workspace.head_layer_id
++            {
++                return Err(WorkspaceError::Busy);
++            }
++            let head = state
++                .layers
++                .get(&workspace.head_layer_id)
++                .ok_or(WorkspaceError::LayerNotFound(workspace.head_layer_id))?;
++            if head.state != LayerState::Writable
++                || head.owner_workspace_id != Some(request.workspace_id)
++            {
++                return Err(WorkspaceError::Fenced);
++            }
++            if state.journals.values().any(|journal| {
++                journal.workspace_id == request.workspace_id
++                    && !matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted)
++            }) {
++                return Err(WorkspaceError::Busy);
++            }
++            let journal = SealJournal {
++                journal_id: request.journal_id,
++                workspace_id: request.workspace_id,
++                old_head_layer_id: workspace.head_layer_id,
++                expected_head_epoch: workspace.head_epoch,
++                phase: SealPhase::Prepare,
++                pending_bytes: 0,
++                delta_digest: None,
++                root_hash: None,
++                new_head_layer_id: Some(request.new_head_layer_id),
++                last_error: None,
++                created_at_ns: now,
++                updated_at_ns: now,
++            };
++            state.journals.insert(journal.journal_id, journal.clone());
++            let workspace = state
++                .workspaces
++                .get_mut(&request.workspace_id)
++                .ok_or(WorkspaceError::WorkspaceNotFound(request.workspace_id))?;
++            workspace.state = WorkspaceState::Sealing;
++            workspace.updated_at_ns = now;
++            Ok(journal)
++        })
++        .await
++    }
++
++    async fn commit_workspace_seal(
++        &self,
++        request: CommitWorkspaceSeal,
++    ) -> Result<SealResult, WorkspaceError> {
++        self.require_admin_access()?;
++        for layer_id in request
++            .delta
++            .dentries
++            .iter()
++            .map(|row| row.layer_id)
++            .chain(request.delta.inodes.iter().map(|row| row.layer_id))
++            .chain(request.delta.xattrs.iter().map(|row| row.layer_id))
++            .chain(request.delta.acls.iter().map(|row| row.layer_id))
++            .chain(request.delta.extents.iter().map(|row| row.layer_id))
++        {
++            if layer_id != request.sealed_layer_id {
++                return Err(WorkspaceError::CorruptMetadata(
++                    "seal delta contains a foreign layer ID".into(),
++                ));
++            }
++        }
++        let digest = delta_digest(&request.delta)?;
++        let root = root_hash([0; 32], digest);
++        let next_sequence = request
++            .delta
++            .dentries
++            .iter()
++            .map(|row| row.sequence)
++            .chain(request.delta.inodes.iter().map(|row| row.sequence))
++            .chain(request.delta.xattrs.iter().map(|row| row.sequence))
++            .chain(request.delta.acls.iter().map(|row| row.sequence))
++            .chain(request.delta.extents.iter().map(|row| row.sequence))
++            .max()
++            .unwrap_or(0)
++            .checked_add(1)
++            .ok_or_else(|| WorkspaceError::CorruptMetadata("sequence overflows".into()))?;
++        let now = self.now_ns().await?;
++        self.update_control(|state, writes| {
++            let journal = state
++                .journals
++                .get(&request.journal_id)
++                .cloned()
++                .ok_or_else(|| {
++                    WorkspaceError::Backend(format!(
++                        "seal journal not found: {}",
++                        request.journal_id
++                    ))
++                })?;
++            let new_head = journal.new_head_layer_id.ok_or_else(|| {
++                WorkspaceError::CorruptMetadata("seal journal has no replacement head".into())
++            })?;
++            if journal.phase == SealPhase::Completed {
++                let workspace = state
++                    .workspaces
++                    .get(&journal.workspace_id)
++                    .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
++                let revision = workspace.fork_base.clone().ok_or_else(|| {
++                    WorkspaceError::CorruptMetadata("completed seal has no fork base".into())
++                })?;
++                if revision.layer_id != request.sealed_layer_id
++                    || workspace.head_layer_id != new_head
++                {
++                    return Err(WorkspaceError::CorruptMetadata(
++                        "completed seal disagrees with the workspace head/base".into(),
++                    ));
++                }
++                return Ok(SealResult {
++                    revision,
++                    new_head_layer_id: new_head,
++                    head_epoch: workspace.head_epoch,
++                });
++            }
++            if journal.phase != SealPhase::Prepare {
++                return Err(WorkspaceError::InvalidStateTransition {
++                    from: format!("{:?}", journal.phase),
++                    to: "Completed".into(),
++                });
++            }
++            let workspace = state
++                .workspaces
++                .get(&journal.workspace_id)
++                .cloned()
++                .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
++            if workspace.state != WorkspaceState::Sealing
++                || workspace.head_layer_id != journal.old_head_layer_id
++                || workspace.head_epoch != journal.expected_head_epoch
++                || workspace.active_lease.is_some()
++            {
++                return Err(WorkspaceError::Fenced);
++            }
++            let head = state
++                .layers
++                .get(&journal.old_head_layer_id)
++                .cloned()
++                .ok_or(WorkspaceError::LayerNotFound(journal.old_head_layer_id))?;
++            let parent = head
++                .parent_layer_id
++                .ok_or_else(|| WorkspaceError::CorruptMetadata("seal head has no parent".into()))?;
++            if head.state != LayerState::Writable
++                || head.owner_workspace_id != Some(journal.workspace_id)
++                || head.depth != 2
++                || state
++                    .layers
++                    .get(&parent)
++                    .is_none_or(|layer| layer.state != LayerState::Sealed)
++            {
++                return Err(WorkspaceError::Fenced);
++            }
++            if state.layers.contains_key(&request.sealed_layer_id)
++                || state.layers.contains_key(&new_head)
++            {
++                return Err(WorkspaceError::CorruptMetadata(
++                    "seal output layer already exists".into(),
++                ));
++            }
++            let sealed_version = u64::try_from(allocate_id_state(state, "sealed_version")?)
++                .map_err(|_| WorkspaceError::CorruptMetadata("negative sealed version".into()))?;
++            state.layers.insert(
++                request.sealed_layer_id,
++                LayerRecord {
++                    layer_id: request.sealed_layer_id,
++                    parent_layer_id: None,
++                    state: LayerState::Sealed,
++                    schema_version: WORKSPACE_SCHEMA_VERSION,
++                    sealed_version: Some(sealed_version),
++                    delta_digest: Some(digest),
++                    root_hash: Some(root),
++                    depth: 1,
++                    owner_workspace_id: None,
++                    next_sequence,
++                    owned_slice_count: 0,
++                    owned_bytes: 0,
++                    created_at_ns: now,
++                    sealed_at_ns: Some(now),
++                },
++            );
++            state.layers.insert(
++                new_head,
++                writable_layer(
++                    new_head,
++                    request.sealed_layer_id,
++                    2,
++                    journal.workspace_id,
++                    now,
++                ),
++            );
++            let revision = BaseRevision {
++                layer_id: request.sealed_layer_id,
++                sealed_version,
++                root_hash: root,
++            };
++            let epoch = workspace
++                .head_epoch
++                .checked_add(1)
++                .ok_or_else(|| WorkspaceError::CorruptMetadata("head epoch overflows".into()))?;
++            let mut workspace = workspace;
++            workspace.head_layer_id = new_head;
++            workspace.head_epoch = epoch;
++            workspace.fork_base = Some(revision.clone());
++            workspace.state = WorkspaceState::Active;
++            workspace.updated_at_ns = now;
++            state.workspaces.insert(journal.workspace_id, workspace);
++            let mut old_head = head;
++            old_head.state = LayerState::Deleting;
++            old_head.owner_workspace_id = None;
++            state.layers.insert(old_head.layer_id, old_head);
++            let pending_bytes = request
++                .delta
++                .extents
++                .iter()
++                .map(|row| row.length)
++                .fold(0_u64, u64::saturating_add);
++            let mut completed = journal;
++            completed.phase = SealPhase::Completed;
++            completed.pending_bytes = pending_bytes;
++            completed.delta_digest = Some(digest);
++            completed.root_hash = Some(root);
++            completed.updated_at_ns = now;
++            state.journals.insert(completed.journal_id, completed);
++            for row in &request.delta.dentries {
++                writes.push(put(dentry_key(row), row)?);
++            }
++            for row in &request.delta.inodes {
++                writes.push(put(inode_key(row), row)?);
++            }
++            for row in &request.delta.xattrs {
++                writes.push(put(xattr_key(row), row)?);
++            }
++            for row in &request.delta.acls {
++                writes.push(put(acl_key(row), row)?);
++            }
++            for row in &request.delta.extents {
++                writes.push(put(extent_key(row), row)?);
++            }
++            Ok(SealResult {
++                revision,
++                new_head_layer_id: new_head,
++                head_epoch: epoch,
++            })
++        })
++        .await
++    }
++
++    async fn abort_workspace_seal(
++        &self,
++        request: AbortWorkspaceSeal,
++    ) -> Result<(), WorkspaceError> {
++        self.require_admin_access()?;
++        let now = self.now_ns().await?;
++        self.update_control(|state, _writes| {
++            let journal = state
++                .journals
++                .get(&request.journal_id)
++                .cloned()
++                .ok_or_else(|| {
++                    WorkspaceError::Backend(format!(
++                        "seal journal not found: {}",
++                        request.journal_id
++                    ))
++                })?;
++            if matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted) {
++                return Ok(());
++            }
++            if journal.phase != SealPhase::Prepare {
++                return Err(WorkspaceError::InvalidStateTransition {
++                    from: format!("{:?}", journal.phase),
++                    to: "Aborted".into(),
++                });
++            }
++            let workspace = state
++                .workspaces
++                .get_mut(&journal.workspace_id)
++                .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
++            if workspace.head_layer_id != journal.old_head_layer_id
++                || workspace.head_epoch != journal.expected_head_epoch
++                || workspace.state != WorkspaceState::Sealing
++            {
++                return Err(WorkspaceError::Fenced);
++            }
++            workspace.state = WorkspaceState::Active;
++            workspace.updated_at_ns = now;
++            let mut aborted = journal;
++            aborted.phase = SealPhase::Aborted;
++            aborted.last_error = Some(request.reason.clone());
++            aborted.updated_at_ns = now;
++            state.journals.insert(aborted.journal_id, aborted);
++            Ok(())
++        })
++        .await
++    }
++
+     async fn load_seal_journal(
+         &self,
+         journal_id: JournalId,
