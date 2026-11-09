@@ -48,6 +48,14 @@ impl<S: BlockStore + Send + Sync> BlockStore for RuntimeBlockStore<S> {
         self.inner.read_range(key, offset, buf).await
     }
 
+    async fn read_cached_range(&self, key: BlockKey, offset: u64, len: usize) -> Option<Bytes> {
+        self.inner.read_cached_range(key, offset, len).await
+    }
+
+    async fn warm_range(&self, key: BlockKey, offset: u64, len: usize) -> anyhow::Result<()> {
+        self.inner.warm_range(key, offset, len).await
+    }
+
     async fn delete_range(&self, _key: BlockKey, _block_count: u64) -> anyhow::Result<()> {
         anyhow::bail!("operator runtime does not hold object deletion authority")
     }

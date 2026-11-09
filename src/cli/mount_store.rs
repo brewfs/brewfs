@@ -57,6 +57,20 @@ impl<S: BlockStore + Send + Sync> BlockStore for MountStore<S> {
         }
     }
 
+    async fn read_cached_range(&self, key: BlockKey, offset: u64, len: usize) -> Option<Bytes> {
+        match self {
+            Self::Standalone(store) => store.read_cached_range(key, offset, len).await,
+            Self::Operator(store) => store.read_cached_range(key, offset, len).await,
+        }
+    }
+
+    async fn warm_range(&self, key: BlockKey, offset: u64, len: usize) -> anyhow::Result<()> {
+        match self {
+            Self::Standalone(store) => store.warm_range(key, offset, len).await,
+            Self::Operator(store) => store.warm_range(key, offset, len).await,
+        }
+    }
+
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()> {
         match self {
             Self::Standalone(store) => store.delete_range(key, block_count).await,

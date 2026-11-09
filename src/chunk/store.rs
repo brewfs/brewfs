@@ -43,7 +43,7 @@ pub(crate) mod coalesce;
 /// Abstract block store interface (cadapter/S3/etc. can implement this).
 #[async_trait]
 // ensure offset_in_block + data.len() <= block_size
-pub trait BlockStore {
+pub trait BlockStore: Send + Sync {
     fn write_coalesce_limit(&self) -> usize {
         0
     }
