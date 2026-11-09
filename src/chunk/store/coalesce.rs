@@ -271,7 +271,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> ObjectBlockStore<B> {
         } else if first {
             let store = self.clone();
             let deadline = if self.config.write_coalesce_ms == 0 {
-                100
+                10
             } else {
                 self.config.write_coalesce_ms
             };

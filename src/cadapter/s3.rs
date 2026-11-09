@@ -1194,12 +1194,10 @@ impl ObjectBackend for S3Backend {
 
     #[cfg(feature = "rustfs-ec-block-size-hint")]
     fn prefers_full_object_reads(&self) -> bool {
-        // Compatibility default only. ObjectBlockStore's read_fetch_policy
-        // can override fetching/prefetching without changing this write hint
-        // or the existing block-cache admission policy.
-        self.config
-            .rustfs_ec_block_size_hint
-            .is_some_and(RustfsEcBlockSizeHint::enabled)
+        // Keep EC block-size write hints decoupled from client read fetch and
+        // cache eviction policy so small random reads still use 64 KiB Range
+        // GETs and WorkingSetEstimator prefetch admission under backend-default.
+        false
     }
 
     fn forbids_mutation_replay(&self) -> bool {
@@ -2705,7 +2703,8 @@ mod tests {
         );
         for policy in ["auto", "tiered", "65536", "262144", "1048576", "4194304"] {
             assert!(
-                mock.backend(Some(policy.parse().unwrap()))
+                !mock
+                    .backend(Some(policy.parse().unwrap()))
                     .prefers_full_object_reads()
             );
         }

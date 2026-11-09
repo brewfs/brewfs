@@ -16,7 +16,7 @@ static TEST_CACHE_ROOT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// its traffic while it survives until the next read of the same block. A
 /// working set of four times the cache budget makes that reuse unlikely, so
 /// the default stops the speculative download past that point.
-pub const DEFAULT_RANGE_PREFETCH_WORKING_SET_FACTOR: u32 = 4;
+pub const DEFAULT_RANGE_PREFETCH_WORKING_SET_FACTOR: u32 = 1;
 
 fn default_cache_root() -> PathBuf {
     #[cfg(test)]

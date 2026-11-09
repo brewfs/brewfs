@@ -383,6 +383,7 @@ pub(crate) struct SliceState {
     upload_task_active: bool,
     /// Publication must consume the shared-object member reservation.
     coalesced_object: bool,
+    bypass_write_coalesce: bool,
     /// True while this slice's bytes are included in pending-upload accounting.
     recent_pending_accounted: bool,
     /// Stable logical byte count added to pending-upload accounting.
@@ -452,6 +453,7 @@ impl SliceState {
             in_flight: 0,
             upload_task_active: false,
             coalesced_object: false,
+            bypass_write_coalesce: false,
             recent_pending_accounted: false,
             recent_pending_accounted_bytes: 0,
             writeback_persisted_bytes: 0,
@@ -4091,12 +4093,16 @@ where
                 captured_slices = captured_slices.saturating_add(slices.len() as u64);
 
                 // Freeze any that are still writable and kick off their uploads.
+                let coalesce_explicit_flush = slices.len() > 1;
                 for slice in &slices {
                     let handle = SliceHandle {
                         slice,
                         shared: &self.shared,
                     };
                     if handle.freeze_with_reason(SliceFreezeReason::ExplicitFlush) {
+                        if !coalesce_explicit_flush {
+                            handle.with_mut(|s| s.bypass_write_coalesce = true);
+                        }
                         Self::spawn_flush_slice(self.shared.clone(), slice.clone());
                     }
                 }
@@ -4344,11 +4350,7 @@ where
                                         && s.data.len() > 0
                                         && s.data.len() <= limit as u64
                                         && s.data.len() <= s.data.block_size() as u64
-                                        && !(matches!(
-                                            s.freeze_reason,
-                                            Some(SliceFreezeReason::ExplicitFlush)
-                                        ) && s.offset == 0
-                                            && s.data.len() == shared.inode.file_size())
+                                        && !s.bypass_write_coalesce
                                 });
                             if eligible {
                                 let result = async {

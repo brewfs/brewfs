@@ -102,6 +102,7 @@ impl std::ops::DerefMut for ReadReply {
 }
 
 const DEFAULT_TOTAL_AHEAD_LIMIT: u64 = 256 * 1024 * 1024;
+const MIN_STREAM_READ_BYTES: u64 = 128 * 1024;
 const READ_SESSIONS: usize = 2;
 const MAX_SLICE_READ_RETRIES: u32 = 5;
 #[cfg(feature = "workspace-overlay")]
@@ -240,7 +241,7 @@ where
     pub(crate) fn submit_prefetch(&self, ino: i64, fh: u64, offset: u64, read_len: u64) {
         if let Some(prefetcher) = &self.prefetcher {
             let block_size = self.config.layout.block_size as u64;
-            if read_len < block_size {
+            if read_len < block_size && read_len < MIN_STREAM_READ_BYTES {
                 return;
             }
 
@@ -252,7 +253,17 @@ where
                 return;
             }
 
-            let mut ahead_len = read_len.max(block_size);
+            let (ahead_start, mut ahead_len) = if read_len < block_size {
+                let Some(reader) = self.reader_for_handle(ino as u64, fh) else {
+                    return;
+                };
+                let Some(range) = reader.prefetch_range_after_read(offset, read_len) else {
+                    return;
+                };
+                range
+            } else {
+                (offset + read_len, read_len.max(block_size))
+            };
             if let Some(budget) = &self.memory_budget {
                 ahead_len = ((ahead_len as f64 * budget.readahead_factor()).ceil() as u64)
                     .max(block_size)
@@ -261,7 +272,7 @@ where
 
             let task = PrefetchTask {
                 ino,
-                start: offset + read_len,
+                start: ahead_start,
                 len: ahead_len,
                 priority: PrefetchPriority::Sequential,
                 owner_fh: fh,
@@ -336,6 +347,7 @@ struct Session {
     ahead: u64,
     last_off: u64,
     total: u64,
+    prefetched_until: u64,
     atime: Instant,
 }
 
@@ -345,6 +357,7 @@ impl Default for Session {
             ahead: 0,
             last_off: 0,
             total: 0,
+            prefetched_until: 0,
             atime: Instant::now(),
         }
     }
@@ -355,6 +368,7 @@ impl Session {
         self.last_off = off;
         self.total = 0;
         self.ahead = 0;
+        self.prefetched_until = 0;
         self.atime = Instant::now();
     }
 
@@ -629,6 +643,9 @@ where
                         )
                         .await
                     {
+                        if actual_len >= MIN_STREAM_READ_BYTES || actual_len >= block_size {
+                            let _ahead = self.check_session(offset, actual_len as usize);
+                        }
                         return Ok(ReadReply::Cached(data));
                     }
                 }
@@ -783,28 +800,29 @@ where
             return None;
         }
 
-        let ahead = {
-            let sessions = self.sessions.lock();
-            sessions
-                .iter()
-                .filter(|session| {
-                    session.total > 0 && session.last_off == read_end && session.ahead >= block_size
-                })
-                .map(|session| session.ahead)
-                .max()
-        }?;
-
-        let ahead_start = align_up_to(read_end, block_size);
-        if ahead_start >= file_size {
+        let base_start = align_up_to(read_end, block_size);
+        if base_start >= file_size {
             return None;
         }
 
+        let mut sessions = self.sessions.lock();
+        let session = sessions
+            .iter_mut()
+            .filter(|session| {
+                session.total > 0 && session.last_off == read_end && session.ahead >= block_size
+            })
+            .max_by_key(|session| session.ahead)?;
+        let ahead = session.ahead;
         let requested = read_len.max(block_size).min(ahead);
-        let remaining = file_size - ahead_start;
+        let remaining = file_size - base_start;
         let ahead_len = requested.min(remaining);
-        let ahead_end = align_up_to(ahead_start.saturating_add(ahead_len), block_size);
-        let ahead_len = ahead_end.min(file_size).saturating_sub(ahead_start);
-        (ahead_len > 0).then_some((ahead_start, ahead_len))
+        let ahead_end = align_up_to(base_start.saturating_add(ahead_len), block_size).min(file_size);
+        let ahead_start = base_start.max(session.prefetched_until);
+        if ahead_end <= ahead_start {
+            return None;
+        }
+        session.prefetched_until = ahead_end;
+        Some((ahead_start, ahead_end - ahead_start))
     }
 
     async fn clean_evictable_slices(&self, offset: u64, len: usize) {
@@ -1065,7 +1083,7 @@ where
         let spans = tracing::trace_span!("read_at.split_spans", offset, len = actual_len)
             .in_scope(|| split_chunk_spans(self.config.layout, offset, actual_len));
 
-        if track_read_slices {
+        if track_read_slices || actual_len as u64 >= MIN_STREAM_READ_BYTES {
             let _ahead = self.check_session(offset, actual_len);
         }
 
