@@ -5,8 +5,8 @@
 
 * **元数据后端（`MetaStore`）**保存 inode、目录项和文件元数据。挂载点的
   `setxattr(2)`、`getxattr(2)`、`listxattr(2)`、`removexattr(2)`最终调用这一层。
-* **workspace overlay KV 存储**保存 overlay 的增量记录。TiKV 在这一层有
-  `xattr/` 记录的读写实现；这不代表 TiKV 作为 `MetaStore` 也支持 xattr。
+* **workspace overlay KV 存储**保存 overlay 的增量记录。TiKV 在这一层和
+  `MetaStore` 层都有独立的 `xattr/` 记录读写实现；两者的键空间和测试不同。
 
 ## 支持矩阵
 
@@ -19,14 +19,14 @@
 | --- | --- | --- | --- | --- | --- |
 | SQLite（`DatabaseMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/database/mod.rs:1673-1688` 将 `xattr` 能力置为 true；四个方法在 `src/meta/stores/database/mod.rs:4121-4229`，其中 `XATTR_CREATE`/`XATTR_REPLACE` 语义在 `set_xattr` 中处理。`src/meta/stores/database/tests.rs:602-620` 验证 xattr 变更的 ctime。 |
 | Redis（`RedisMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/redis/mod.rs:3018-3041` 声明能力并实现四个方法（实现从 `:3041` 开始）；`test_redis_xattr_crud_flags_and_binary_values`（`src/meta/stores/redis/tests.rs:5560-5645`）覆盖 CRUD、二进制值、空值和 create/replace 标志，另有 ctime 和并发 create 测试。 |
-| TiKV 元数据后端（`TiKvMetaStore`） | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | `src/meta/stores/tikv/mod.rs:1380-1391` 没有打开 `xattr` 能力，且文件中没有四个方法的实现，因此使用 `MetaStore` 默认实现 `src/meta/store.rs:1364-1388`。新增的 ignored 真集群测试 `real_tikv_meta_store_xattr_is_not_implemented`（`src/meta/stores/tikv/tests.rs:336-379`）直接断言四个调用均返回 `MetaError::NotImplemented`。 |
+| TiKV 元数据后端（`TiKvMetaStore`） | ✅ | ✅ | ✅ | ✅ | `src/meta/stores/tikv/mod.rs:1437` 将 `xattr` 能力置为 true；`xattr/<ino>/<name>` key 由 `src/meta/stores/tikv/mod.rs:185-193` 构造，四个方法在 `src/meta/stores/tikv/mod.rs:2838-2995`。`real_tikv_meta_store_xattr_crud_flags_and_binary_values`（`src/meta/stores/tikv/tests.rs:374`）覆盖 CRUD、二进制/空值、`XATTR_CREATE`/`XATTR_REPLACE`、ctime 和缺失 inode；`real_tikv_meta_store_xattr_inode_cleanup`（`src/meta/stores/tikv/tests.rs:481`）覆盖 `rmdir`、unlink 后 GC、rename 覆盖目录三条清理路径。 |
 | etcd 元数据后端（`EtcdMetaStore`） | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | ❌ `NotImplemented` | `src/meta/stores/etcd/mod.rs:1697-1717` 将 `xattr` 能力置为 false，且没有四个方法的实现；因此同样落到 `MetaStore` 默认实现 `src/meta/store.rs:1364-1388`。 |
 | S3 gateway（网关层，不是 `MetaStore`） | ↪ | ↪ | — | ↪ | gateway 的对象 ETag、对象 metadata 和目录对象标记分别通过 `src/gateway/s3/store.rs:253-283` 的 get/set helper 读写下层 xattr；`src/gateway/s3/store_xattr_tests.rs` 的错误注入测试验证这些读取错误不会被当成“没有 xattr”。网关是否可用取决于所选 `MetaStore`，不会增加 TiKV/etcd 的能力。 |
 
 S3 gateway 的 `—` 只表示它没有向 S3 客户端暴露 POSIX `listxattr(2)`；它的
 内部元数据仍然依赖下层的 get/set/remove。使用 SQLite 或 Redis 时这些内部
-属性可用；使用 TiKV-MetaStore 或 etcd 时，涉及这些属性的网关操作会沿着
-下层的 unsupported 错误失败。
+属性可用；TiKV-MetaStore 现在也支持这些内部 get/set/remove 操作。使用
+etcd 时，涉及这些属性的网关操作仍会沿着下层的 unsupported 错误失败。
 
 ### workspace overlay 的 TiKV KV 存储
 
@@ -62,17 +62,15 @@ cargo test --no-default-features \
 
 ### TiKV overlay 和 TiKV MetaStore
 
-PD 必须可从本机访问，且至少有一个 store 已注册。用单个 `xattr` 过滤词
-会运行 Redis xattr 测试、overlay 的真实 TiKV xattr 测试和新增的
-TiKV-MetaStore unsupported 断言：
+PD 必须可从本机访问，且至少有一个 store 已注册。只验证 TiKV-MetaStore
+xattr 时可使用下面的过滤词（它会选中 CRUD 和 inode 清理两条 ignored 测试）：
 
 ```bash
-BREWFS_TEST_TIKV_PD_ENDPOINTS=172.24.86.193:2379 \
+BREWFS_TEST_TIKV_PD_ENDPOINTS=127.0.0.1:2379 \
 CARGO_TARGET_DIR=/home/hxy/xattr-target \
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-cargo test --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay \
-  --lib -- --ignored xattr
+cargo test -p brewfs --lib \
+  meta::stores::tikv::tests::real_tikv_meta_store_xattr -- --ignored
 ```
 
 TiKV 相关测试都是 ignored 集成测试，并使用随机 namespace/前缀，避免相互
@@ -85,7 +83,7 @@ SQLite 的 xattr 单元测试不需要外部服务；可以用同一组 feature 
 
 ## 挂载点上的错误码和限制
 
-对普通 `user.*` xattr，TiKV-MetaStore 或 etcd 的调用路径是：
+etcd 仍未实现 xattr；对普通 `user.*` xattr，它的调用路径是：
 
 1. `MetaStore` 默认方法返回 `MetaError::NotImplemented`
    （`src/meta/store.rs:1364-1388`）。
@@ -95,28 +93,28 @@ SQLite 的 xattr 单元测试不需要外部服务；可以用同一组 feature 
    `ENOSYS`（`src/fuse/mod.rs:2273-2282`、`:2315-2323`、`:2352-2358`、
    `:2442-2449`）。
 
-因此在 TiKV-MetaStore 或 etcd 挂载点上执行
+因此在 etcd 挂载点上执行
 `setfattr -n user.test -v value <path>`，预期失败并返回 errno **38
 （`ENOSYS`，通常显示为 “Function not implemented”）**；get/list/remove 的
 普通 user xattr 也走同一错误码。`system.posix_acl_*` 是单独的 ACL 路径，
 其 capability 检查可能返回 `EOPNOTSUPP`，不要用它替代普通 user xattr 的
 结论。
 
-overlay TiKV 的成功测试只证明 overlay KV 的 bounded 记录读写和清理，不能
-改变 TiKV-MetaStore 的上述结果。当前工作范围也不包含为 TiKV-MetaStore
-新增 xattr 持久化实现。
+TiKV-MetaStore 已不再走上述 `NotImplemented` 路径。普通 `user.*` xattr
+缺失时 `get_xattr` 返回 `Ok(None)`，FUSE 层映射为 `ENODATA`；
+`remove_xattr` 和 `XATTR_REPLACE` 针对缺失属性返回 `MetaError::NotFound`，
+FUSE 层同样映射为 `ENODATA`；`XATTR_CREATE` 针对已有属性返回
+`MetaError::AlreadyExists`，映射为 `EEXIST`。
 
 ## 本次实测摘要
 
 本分支实测摘要：
 
-* Redis：`test result: ok. 5 passed; 0 failed; 0 ignored`（5 个
-  `redis_xattr` 测试）。
-* TiKV/overlay 与 TiKV-MetaStore：`test result: ok. 9 passed; 0 failed;
-  0 ignored`（单一 `xattr` 过滤词；其中 Redis 的 7 个 xattr 清理/CRUD
-  测试也会被该过滤词选中）。overlay 测试名为
-  `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners`，
-  MetaStore 测试名为 `real_tikv_meta_store_xattr_is_not_implemented`。
+* TiKV 模块常规测试：`test result: ok. 13 passed; 0 failed; 15 ignored`。
+* TiKV-MetaStore 真集群 xattr（本地 PD/TiKV 8.5.0）：
+  `test result: ok. 2 passed; 0 failed; 0 ignored`，测试名为
+  `real_tikv_meta_store_xattr_crud_flags_and_binary_values` 和
+  `real_tikv_meta_store_xattr_inode_cleanup`。
 
 ## JuiceFS（外部 baseline）的 xattr 与 attr cache 配置
 

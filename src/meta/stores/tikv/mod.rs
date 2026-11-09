@@ -51,6 +51,7 @@ const UNCOMMITTED_PENDING_PREFIX: &str = "gc/uncommitted/pending/";
 const UNCOMMITTED_ORPHAN_PREFIX: &str = "gc/uncommitted/orphan/";
 const DELAYED_ID_COUNTER: &str = "gc/delayed/id";
 const UNCOMMITTED_ID_COUNTER: &str = "gc/uncommitted/id";
+const XATTR_PREFIX: &str = "xattr/";
 
 type TiKvTxnFuture<'txn, T> = Pin<Box<dyn Future<Output = Result<T, MetaError>> + Send + 'txn>>;
 
@@ -179,6 +180,16 @@ impl TiKvMetaStore {
 
     fn plock_key(&self, ino: i64) -> Vec<u8> {
         self.key_bytes(&format!("plock/{ino}"))
+    }
+
+    fn xattr_prefix(&self, ino: i64) -> Vec<u8> {
+        self.key_bytes(&format!("{XATTR_PREFIX}{ino}/"))
+    }
+
+    fn xattr_key(&self, ino: i64, name: &str) -> Vec<u8> {
+        let mut key = self.xattr_prefix(ino);
+        key.extend_from_slice(name.as_bytes());
+        key
     }
 
     fn delayed_pending_key(&self, id: i64) -> Vec<u8> {
@@ -489,6 +500,26 @@ impl TiKvMetaStore {
             .collect())
     }
 
+    async fn txn_batch_get_raw(
+        txn: &mut Transaction,
+        mut keys: Vec<Vec<u8>>,
+        operation: &str,
+    ) -> Result<HashMap<Vec<u8>, Vec<u8>>, MetaError> {
+        keys.sort_unstable();
+        keys.dedup();
+        let pairs = txn
+            .batch_get(keys)
+            .await
+            .map_err(|e| Self::tikv_err(operation, e))?;
+        Ok(pairs
+            .into_iter()
+            .map(|pair| {
+                let key: Vec<u8> = pair.key().clone().into();
+                (key, pair.value().to_vec())
+            })
+            .collect())
+    }
+
     async fn txn_put_raw(
         txn: &mut Transaction,
         key: Vec<u8>,
@@ -508,6 +539,20 @@ impl TiKvMetaStore {
         txn.delete(key)
             .await
             .map_err(|e| Self::tikv_err(operation, e))
+    }
+
+    async fn txn_delete_xattrs(
+        &self,
+        txn: &mut Transaction,
+        ino: i64,
+        operation: &str,
+    ) -> Result<(), MetaError> {
+        let pairs = Self::txn_scan_prefix(txn, self.xattr_prefix(ino), None, operation).await?;
+        for pair in pairs {
+            let key: Vec<u8> = pair.key().clone().into();
+            Self::txn_delete_raw(txn, key, operation).await?;
+        }
+        Ok(())
     }
 
     async fn txn_scan_prefix(
@@ -1389,6 +1434,7 @@ impl MetaStore for TiKvMetaStore {
             stat_fs: true,
             compaction: true,
             plocks: true,
+            xattr: true,
             ..MetaStoreCapabilities::default()
         }
     }
@@ -1667,6 +1713,7 @@ impl MetaStore for TiKvMetaStore {
                 parent_node.ctime = now;
                 store.txn_put_node(txn, &parent_node, operation).await?;
                 Self::txn_delete_raw(txn, store.dentry_key(parent, &name), operation).await?;
+                store.txn_delete_xattrs(txn, dentry.ino, operation).await?;
                 Self::txn_delete_raw(txn, store.inode_key(dentry.ino), operation).await
             })
         })
@@ -2105,6 +2152,9 @@ impl MetaStore for TiKvMetaStore {
                                 operation,
                             )
                             .await?;
+                            store
+                                .txn_delete_xattrs(txn, dest_dentry.ino, operation)
+                                .await?;
                             Self::txn_delete_raw(txn, store.inode_key(dest_dentry.ino), operation)
                                 .await?;
                             store
@@ -2776,8 +2826,169 @@ impl MetaStore for TiKvMetaStore {
         let operation = "remove_file_metadata";
         self.write_txn(operation, |store, txn| {
             Box::pin(async move {
+                let _ = Self::txn_get_raw(txn, store.inode_key(ino), true, operation).await?;
+                store.txn_delete_xattrs(txn, ino, operation).await?;
                 Self::txn_delete_raw(txn, store.inode_key(ino), operation).await?;
                 store.txn_delete_link_parents(txn, ino, operation).await
+            })
+        })
+        .await
+    }
+
+    async fn set_xattr(
+        &self,
+        inode: i64,
+        name: &str,
+        value: &[u8],
+        flags: u32,
+    ) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::SetXattr,
+            self.name(),
+        );
+        let create_only = flags & (libc::XATTR_CREATE as u32) != 0;
+        let replace_only = flags & (libc::XATTR_REPLACE as u32) != 0;
+        let allowed_flags = (libc::XATTR_CREATE | libc::XATTR_REPLACE) as u32;
+        if flags & !allowed_flags != 0 || (create_only && replace_only) {
+            return Err(MetaError::InvalidPath("invalid setxattr flags".to_string()));
+        }
+
+        let operation = "set_xattr";
+        let name = name.to_string();
+        let value = value.to_vec();
+        self.write_txn_serialized(operation, inode as u64, |store, txn| {
+            let name = name.clone();
+            let value = value.clone();
+            Box::pin(async move {
+                let inode_key = store.inode_key(inode);
+                let xattr_key = store.xattr_key(inode, &name);
+                let mut rows = Self::txn_batch_get_for_update_raw(
+                    txn,
+                    vec![inode_key.clone(), xattr_key.clone()],
+                    operation,
+                )
+                .await?;
+                let mut node = rows
+                    .remove(&inode_key)
+                    .as_deref()
+                    .map(Self::decode_node)
+                    .transpose()?
+                    .ok_or(MetaError::NotFound(inode))?;
+                let exists = rows.contains_key(&xattr_key);
+                if create_only && exists {
+                    return Err(MetaError::AlreadyExists {
+                        parent: inode,
+                        name,
+                    });
+                }
+                if replace_only && !exists {
+                    return Err(MetaError::NotFound(inode));
+                }
+
+                Self::txn_put_raw(txn, xattr_key, value, operation).await?;
+                node.ctime = Self::now();
+                store.txn_put_node(txn, &node, operation).await
+            })
+        })
+        .await
+    }
+
+    async fn get_xattr(&self, inode: i64, name: &str) -> Result<Option<Vec<u8>>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::GetXattr,
+            self.name(),
+        );
+        let operation = "get_xattr";
+        let name = name.to_string();
+        self.read_txn(operation, |store, txn| {
+            let name = name.clone();
+            Box::pin(async move {
+                let inode_key = store.inode_key(inode);
+                let xattr_key = store.xattr_key(inode, &name);
+                let mut rows = Self::txn_batch_get_raw(
+                    txn,
+                    vec![inode_key.clone(), xattr_key.clone()],
+                    operation,
+                )
+                .await?;
+                let _node = rows
+                    .remove(&inode_key)
+                    .as_deref()
+                    .map(Self::decode_node)
+                    .transpose()?
+                    .ok_or(MetaError::NotFound(inode))?;
+                Ok(rows.remove(&xattr_key))
+            })
+        })
+        .await
+    }
+
+    async fn list_xattr(&self, inode: i64) -> Result<Vec<String>, MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::ListXattr,
+            self.name(),
+        );
+        let operation = "list_xattr";
+        self.read_txn(operation, |store, txn| {
+            Box::pin(async move {
+                store
+                    .txn_get_node(txn, inode, false, operation)
+                    .await?
+                    .ok_or(MetaError::NotFound(inode))?;
+                let prefix = store.xattr_prefix(inode);
+                let pairs = Self::txn_scan_prefix(txn, prefix.clone(), None, operation).await?;
+                pairs
+                    .into_iter()
+                    .map(|pair| {
+                        let key: Vec<u8> = pair.key().clone().into();
+                        let name = key.get(prefix.len()..).ok_or_else(|| {
+                            MetaError::Internal("TiKV xattr key outside prefix".to_string())
+                        })?;
+                        String::from_utf8(name.to_vec()).map_err(|e| {
+                            MetaError::Serialization(format!("TiKV xattr name decode failed: {e}"))
+                        })
+                    })
+                    .collect()
+            })
+        })
+        .await
+    }
+
+    async fn remove_xattr(&self, inode: i64, name: &str) -> Result<(), MetaError> {
+        #[cfg(feature = "observability")]
+        let _observation = crate::observability::metadata_timer(
+            crate::observability::MetadataOp::RemoveXattr,
+            self.name(),
+        );
+        let operation = "remove_xattr";
+        let name = name.to_string();
+        self.write_txn_serialized(operation, inode as u64, |store, txn| {
+            let name = name.clone();
+            Box::pin(async move {
+                let inode_key = store.inode_key(inode);
+                let xattr_key = store.xattr_key(inode, &name);
+                let mut rows = Self::txn_batch_get_for_update_raw(
+                    txn,
+                    vec![inode_key.clone(), xattr_key.clone()],
+                    operation,
+                )
+                .await?;
+                let mut node = rows
+                    .remove(&inode_key)
+                    .as_deref()
+                    .map(Self::decode_node)
+                    .transpose()?
+                    .ok_or(MetaError::NotFound(inode))?;
+                if !rows.contains_key(&xattr_key) {
+                    return Err(MetaError::NotFound(inode));
+                }
+
+                Self::txn_delete_raw(txn, xattr_key, operation).await?;
+                node.ctime = Self::now();
+                store.txn_put_node(txn, &node, operation).await
             })
         })
         .await

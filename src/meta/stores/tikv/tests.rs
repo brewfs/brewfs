@@ -51,7 +51,8 @@ fn test_config(namespace: &str) -> Config {
 }
 
 fn integration_config(test_name: &str) -> Option<Config> {
-    let endpoints = std::env::var("BREWFS_TIKV_PD_ENDPOINTS")
+    let endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
+        .or_else(|_| std::env::var("BREWFS_TIKV_PD_ENDPOINTS"))
         .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
         .ok()?;
     let pd_endpoints: Vec<_> = endpoints
@@ -79,6 +80,37 @@ fn integration_config(test_name: &str) -> Option<Config> {
         client: ClientOptions::default(),
         compact: CompactConfig::default(),
     })
+}
+
+async fn xattr_test_store(test_name: &str) -> Option<TiKvMetaStore> {
+    let config = integration_config(test_name)?;
+    let store = TiKvMetaStore::from_config(config)
+        .await
+        .expect("TiKV metadata store should connect");
+    store.initialize().await.unwrap();
+    Some(store)
+}
+
+async fn raw_xattr_keys(store: &TiKvMetaStore, ino: i64) -> Vec<Vec<u8>> {
+    let prefix = store.xattr_prefix(ino);
+    store
+        .read_txn("test_raw_xattr_keys", move |_store, txn| {
+            let prefix = prefix.clone();
+            Box::pin(async move {
+                let pairs =
+                    TiKvMetaStore::txn_scan_prefix(txn, prefix, None, "test_raw_xattr_keys")
+                        .await?;
+                Ok(pairs
+                    .into_iter()
+                    .map(|pair| {
+                        let key: Vec<u8> = pair.key().clone().into();
+                        key
+                    })
+                    .collect())
+            })
+        })
+        .await
+        .unwrap()
 }
 
 #[test]
@@ -339,48 +371,177 @@ async fn rejects_empty_pd_endpoints() {
 
 #[tokio::test]
 #[ignore = "requires a running TiKV/PD cluster; set BREWFS_TEST_TIKV_PD_ENDPOINTS"]
-async fn real_tikv_meta_store_xattr_is_not_implemented() {
-    let pd_endpoints = std::env::var("BREWFS_TEST_TIKV_PD_ENDPOINTS")
-        .or_else(|_| std::env::var("BREWFS_TIKV_PD_ENDPOINTS"))
-        .or_else(|_| std::env::var("BREWFS_META_TIKV_PD_ENDPOINTS"))
-        .unwrap_or_else(|_| "127.0.0.1:2379".to_string())
-        .split(',')
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
-    let config = Config {
-        database: DatabaseConfig {
-            db_config: DatabaseType::TiKv {
-                pd_endpoints,
-                namespace: format!("brewfs-test-xattr-not-implemented-{}", Uuid::new_v4()),
-            },
-        },
-        cache: CacheConfig::default(),
-        client: ClientOptions::default(),
-        compact: CompactConfig::default(),
+async fn real_tikv_meta_store_xattr_crud_flags_and_binary_values() {
+    let Some(store) = xattr_test_store("xattr-crud").await else {
+        eprintln!("skip: TiKV PD endpoints are unset or empty");
+        return;
     };
-    let store = TiKvMetaStore::from_config(config)
-        .await
-        .expect("TiKv metadata store should connect before checking optional methods");
-    assert!(!store.capabilities().xattr);
+    let root = store.root_ino();
+    assert!(store.capabilities().xattr);
 
+    let inode = store
+        .create_file(root, "xattr-crud.bin".to_string())
+        .await
+        .unwrap();
+    assert_eq!(store.get_xattr(inode, "missing").await.unwrap(), None);
+    assert!(store.list_xattr(inode).await.unwrap().is_empty());
+    assert!(raw_xattr_keys(&store, inode).await.is_empty());
+
+    let before = store.stat(inode).await.unwrap().unwrap();
+    store
+        .set_xattr(inode, "user.test", b"first", 0)
+        .await
+        .unwrap();
+    let after_create = store.stat(inode).await.unwrap().unwrap();
+    assert!(after_create.ctime > before.ctime);
+    assert_eq!(after_create.mtime, before.mtime);
+    assert_eq!(
+        store.get_xattr(inode, "user.test").await.unwrap(),
+        Some(b"first".to_vec())
+    );
+
+    store
+        .set_xattr(inode, "user.test", b"second", 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_xattr(inode, "user.test").await.unwrap(),
+        Some(b"second".to_vec())
+    );
+
+    let create_result = store
+        .set_xattr(inode, "user.test", b"third", libc::XATTR_CREATE as u32)
+        .await;
     assert!(matches!(
-        store.set_xattr(1, "user.test", b"value", 0).await,
-        Err(MetaError::NotImplemented)
+        create_result,
+        Err(MetaError::AlreadyExists { parent, name }) if parent == inode && name == "user.test"
     ));
+
+    store
+        .set_xattr(inode, "user.test", b"replaced", libc::XATTR_REPLACE as u32)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_xattr(inode, "user.test").await.unwrap(),
+        Some(b"replaced".to_vec())
+    );
+
+    let replace_missing = store
+        .set_xattr(inode, "user.missing", b"value", libc::XATTR_REPLACE as u32)
+        .await;
+    assert!(matches!(replace_missing, Err(MetaError::NotFound(found)) if found == inode));
+
+    let conflicting_flags = (libc::XATTR_CREATE | libc::XATTR_REPLACE) as u32;
     assert!(matches!(
-        store.get_xattr(1, "user.test").await,
-        Err(MetaError::NotImplemented)
+        store
+            .set_xattr(inode, "user.test", b"value", conflicting_flags)
+            .await,
+        Err(MetaError::InvalidPath(_))
     ));
+
+    let binary = vec![0, 0xff, 0x80, b'\n', 0];
+    store
+        .set_xattr(inode, "user.binary", &binary, 0)
+        .await
+        .unwrap();
+    store.set_xattr(inode, "user.empty", &[], 0).await.unwrap();
+    assert_eq!(
+        store.get_xattr(inode, "user.binary").await.unwrap(),
+        Some(binary)
+    );
+    assert_eq!(
+        store.get_xattr(inode, "user.empty").await.unwrap(),
+        Some(Vec::new())
+    );
+
+    let mut names = store.list_xattr(inode).await.unwrap();
+    names.sort();
+    assert_eq!(names, vec!["user.binary", "user.empty", "user.test"]);
+    assert_eq!(raw_xattr_keys(&store, inode).await.len(), 3);
+
+    store.remove_xattr(inode, "user.test").await.unwrap();
+    assert_eq!(store.get_xattr(inode, "user.test").await.unwrap(), None);
     assert!(matches!(
-        store.list_xattr(1).await,
-        Err(MetaError::NotImplemented)
+        store.remove_xattr(inode, "user.test").await,
+        Err(MetaError::NotFound(found)) if found == inode
     ));
+
+    for operation in [
+        store.get_xattr(999_999, "x").await.map(|_| ()),
+        store.list_xattr(999_999).await.map(|_| ()),
+        store.remove_xattr(999_999, "x").await,
+        store.set_xattr(999_999, "x", b"x", 0).await,
+    ] {
+        assert!(matches!(operation, Err(MetaError::NotFound(found)) if found == 999_999));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a running TiKV/PD cluster; set BREWFS_TEST_TIKV_PD_ENDPOINTS"]
+async fn real_tikv_meta_store_xattr_inode_cleanup() {
+    let Some(store) = xattr_test_store("xattr-cleanup").await else {
+        eprintln!("skip: TiKV PD endpoints are unset or empty");
+        return;
+    };
+    let root = store.root_ino();
+
+    let dir = store.mkdir(root, "xattr-dir".to_string()).await.unwrap();
+    store
+        .set_xattr(dir, "user.dir", b"directory", 0)
+        .await
+        .unwrap();
+    assert_eq!(raw_xattr_keys(&store, dir).await.len(), 1);
+    store.rmdir(root, "xattr-dir").await.unwrap();
+    assert!(raw_xattr_keys(&store, dir).await.is_empty());
+
+    let file = store
+        .create_file(root, "xattr-file".to_string())
+        .await
+        .unwrap();
+    store
+        .set_xattr(file, "user.file", b"file", 0)
+        .await
+        .unwrap();
+    store.unlink(root, "xattr-file").await.unwrap();
+    assert_eq!(
+        store.get_xattr(file, "user.file").await.unwrap(),
+        Some(b"file".to_vec())
+    );
+    assert_eq!(raw_xattr_keys(&store, file).await.len(), 1);
+    store.remove_file_metadata(file).await.unwrap();
+    assert!(raw_xattr_keys(&store, file).await.is_empty());
     assert!(matches!(
-        store.remove_xattr(1, "user.test").await,
-        Err(MetaError::NotImplemented)
+        store.get_xattr(file, "user.file").await,
+        Err(MetaError::NotFound(found)) if found == file
     ));
+    store.remove_file_metadata(file).await.unwrap();
+    assert!(raw_xattr_keys(&store, file).await.is_empty());
+
+    let source = store.mkdir(root, "xattr-source".to_string()).await.unwrap();
+    let destination = store
+        .mkdir(root, "xattr-destination".to_string())
+        .await
+        .unwrap();
+    store
+        .set_xattr(destination, "user.replaced", b"stale", 0)
+        .await
+        .unwrap();
+    let outcome = store
+        .rename_with_mode(
+            root,
+            "xattr-source",
+            root,
+            "xattr-destination".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.replaced_ino, Some(destination));
+    assert!(raw_xattr_keys(&store, destination).await.is_empty());
+    assert_eq!(
+        store.lookup(root, "xattr-destination").await.unwrap(),
+        Some(source)
+    );
 }
 
 #[tokio::test]
