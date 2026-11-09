@@ -188,13 +188,6 @@ const SPARSE_DENSE_SLICE_MISSES: u32 = 10;
 const SPARSE_DENSITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 /// FUSE reads this large come from kernel readahead, i.e. a sequential stream.
 const SPARSE_SEQUENTIAL_READ_BYTES: usize = 128 * 1024;
-/// Distinct blocks tracked by the working-set estimator.
-///
-/// The window must exceed the number of blocks that fit in the block cache,
-/// otherwise the estimate saturates below the configured working-set limit and
-/// the prefetch guard never fires.
-const WORKING_SET_WINDOW_BLOCKS: usize = 8192;
-
 /// A metadata-referenced block did not contain the complete requested range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
@@ -693,6 +686,11 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         let config = BlockStoreConfig::default();
         config.validate().expect("default config must be valid");
         let page_cache = ReadPageCache::new(config.page_cache_capacity, config.page_size);
+        let working_set = working_set::WorkingSetEstimator::new(working_set::window_blocks_for(
+            block_cache.max_hot_bytes(),
+            config.block_size,
+            config.range_prefetch_working_set_factor,
+        ));
         Self {
             client: Arc::new(client),
             coalescer: coalesce::Coalescer::new(),
@@ -707,7 +705,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
-            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
+            working_set,
             config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -749,6 +747,11 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             .map_err(|e| anyhow::anyhow!("Failed to create cache: {}", e))?;
         let page_cache =
             ReadPageCache::new(store_config.page_cache_capacity, store_config.page_size);
+        let working_set = working_set::WorkingSetEstimator::new(working_set::window_blocks_for(
+            block_cache.max_hot_bytes(),
+            store_config.block_size,
+            store_config.range_prefetch_working_set_factor,
+        ));
         Ok(Self {
             client: Arc::new(client),
             coalescer: coalesce::Coalescer::new(),
@@ -763,7 +766,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
-            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
+            working_set,
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
@@ -783,6 +786,11 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         let block_cache = Self::cache_for_client(&client, cache_config).await?;
         let page_cache =
             ReadPageCache::new(store_config.page_cache_capacity, store_config.page_size);
+        let working_set = working_set::WorkingSetEstimator::new(working_set::window_blocks_for(
+            block_cache.max_hot_bytes(),
+            store_config.block_size,
+            store_config.range_prefetch_working_set_factor,
+        ));
         Ok(Self {
             client: Arc::new(client),
             coalescer: coalesce::Coalescer::new(),
@@ -797,7 +805,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             sparse_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             sparse_slice_misses: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
             prefetch_streams: moka::sync::Cache::new(SPARSE_STREAM_CAPACITY),
-            working_set: working_set::WorkingSetEstimator::new(WORKING_SET_WINDOW_BLOCKS),
+            working_set,
             config: store_config,
             bandwidth: BandwidthLimiter::unlimited(),
             object_metrics: Arc::new(ObjectStoreMetrics::default()),
