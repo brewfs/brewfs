@@ -168,6 +168,7 @@ async fn persistent_upper(root: &Path, phase: &str) -> Arc<LocalFsBlockStore> {
                 versioned_objects_uncompressed: true,
                 write_coalesce_bytes: 0,
                 write_coalesce_ms: 0,
+                ..Default::default()
             },
         )
         .await
