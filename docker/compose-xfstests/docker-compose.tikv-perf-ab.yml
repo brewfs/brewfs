@@ -1,0 +1,195 @@
+services:
+  pd:
+    image: pingcap/pd:v8.5.0
+    container_name: brewfs-ab-pd-perf-tikv
+    command:
+      - --name=pd
+      - --data-dir=/data/pd
+      - --client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://pd:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-peer-urls=http://pd:2380
+      - --initial-cluster=pd=http://pd:2380
+      - --log-level=warn
+    ports:
+      - "${TIKV_PD_HOST_BIND:-127.0.0.1}:${TIKV_PD_HOST_PORT:-0}:2379"
+    volumes:
+      - ${TIKV_PD_PERF_DATA_MOUNT:-pd-data-perf-tikv}:/data/pd
+    networks:
+      - brewfs-xfstests
+
+  tikv:
+    image: pingcap/tikv:v8.5.0
+    container_name: brewfs-ab-tikv-perf
+    depends_on:
+      pd:
+        condition: service_started
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=tikv:20160
+      - --status-addr=0.0.0.0:20180
+      - --pd=pd:2379
+      - --data-dir=/data/tikv
+      - --log-level=warn
+    ports:
+      - "${TIKV_HOST_BIND:-127.0.0.1}:${TIKV_STATUS_HOST_PORT:-0}:20180"
+    volumes:
+      - ${TIKV_PERF_DATA_MOUNT:-tikv-data-perf}:/data/tikv
+    networks:
+      - brewfs-xfstests
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+
+  tikv-ready:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      pd:
+        condition: service_started
+      tikv:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        timeout 180 sh -ec '
+          ready_count=0
+          while true; do
+            body="$$(curl -fsS http://pd:2379/pd/api/v1/stores 2>/dev/null || true)"
+            if echo "$$body" | grep -Eq "\"state_name\"[[:space:]]*:[[:space:]]*\"Up\""; then
+              ready_count=$$((ready_count + 1))
+              [ "$$ready_count" -ge 3 ] && exit 0
+            else
+              ready_count=0
+            fi
+            sleep 2
+          done
+        '
+    networks:
+      - brewfs-xfstests
+
+  rustfs:
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:local}
+    container_name: brewfs-ab-rustfs-perf-tikv
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_S3_HOST_PORT:-0}:9000"
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_CONSOLE_HOST_PORT:-0}:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+    volumes:
+      - ${TIKV_PERF_RUSTFS_DATA_MOUNT:-rustfs-data-perf-tikv}:/data
+    networks:
+      - brewfs-xfstests
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 180 sh -ec '
+          while true; do
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+    networks:
+      - brewfs-xfstests
+
+  perf:
+    image: brewfs-xfstests-perf:local
+    build:
+      context: ../..
+      dockerfile: docker/compose-xfstests/Dockerfile
+    depends_on:
+      tikv-ready:
+        condition: service_completed_successfully
+    environment:
+      BREWFS_META_BACKEND: tikv
+      BREWFS_META_TIKV_PD_ENDPOINTS: pd:2379
+      BREWFS_META_TIKV_NAMESPACE: ${BREWFS_META_TIKV_NAMESPACE:-brewfs}
+      BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
+      BREWFS_DATA_DIR: /var/lib/brewfs/data
+      BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
+      BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
+      BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
+      BREWFS_LOG_FILE: /artifacts/brewfs.log
+      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+      BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
+      BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
+      BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
+      BREWFS_NOFILE_LIMIT: ${BREWFS_NOFILE_LIMIT:-1048576}
+      BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      XFSTESTS_DIR: /opt/xfstests-dev
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-error}
+    entrypoint: ["/usr/bin/tini", "--", "bash", "/usr/local/bin/run_perf_in_container.sh"]
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    volumes:
+      - ./artifacts:/artifacts
+      - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
+      - ../../tools/perf/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
+      - ${TIKV_PERF_STATE_MOUNT:-brewfs-state-perf-tikv}:/var/lib/brewfs
+      # Optional second data mount for perf runs that need the BrewFS
+      # cache on a different physical device than the object store.
+      - ${TIKV_PERF_CACHE_MOUNT:-brewfs-perf-cache-tikv}:/var/brewfs-cache
+    networks:
+      - brewfs-xfstests
+
+networks:
+  brewfs-xfstests:
+    driver: bridge
+
+volumes:
+  brewfs-perf-cache-tikv:
+  brewfs-state-perf-tikv:
+  pd-data-perf-tikv:
+  tikv-data-perf:
+  rustfs-data-perf-tikv:

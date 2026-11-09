@@ -1,7 +1,7 @@
 services:
   pd:
     image: pingcap/pd:v8.5.0
-    container_name: pd-brewfs-perf-tikv
+    container_name: ${PERF_CONTAINER_PD_BREWFS_PERF_TIKV:-pd-brewfs-perf-tikv}
     command:
       - --name=pd
       - --data-dir=/data/pd
@@ -14,13 +14,13 @@ services:
     ports:
       - "${TIKV_PD_HOST_BIND:-127.0.0.1}:${TIKV_PD_HOST_PORT:-12379}:2379"
     volumes:
-      - pd-data-perf-tikv:/data/pd
+      - ${TIKV_PD_PERF_DATA_MOUNT:-pd-data-perf-tikv}:/data/pd
     networks:
       - brewfs-xfstests
 
   tikv:
     image: pingcap/tikv:v8.5.0
-    container_name: tikv-brewfs-perf
+    container_name: ${PERF_CONTAINER_TIKV_BREWFS_PERF:-tikv-brewfs-perf}
     depends_on:
       pd:
         condition: service_started
@@ -34,7 +34,7 @@ services:
     ports:
       - "${TIKV_HOST_BIND:-127.0.0.1}:${TIKV_STATUS_HOST_PORT:-20180}:20180"
     volumes:
-      - tikv-data-perf:/data/tikv
+      - ${TIKV_PERF_DATA_MOUNT:-tikv-data-perf}:/data/tikv
     networks:
       - brewfs-xfstests
     ulimits:
@@ -70,7 +70,7 @@ services:
 
   rustfs:
     image: ${RUSTFS_IMAGE:-w23geq7ncegg6etqsl.xuanyuan.run/rustfs/rustfs:latest}
-    container_name: rustfs-brewfs-perf-tikv
+    container_name: ${PERF_CONTAINER_RUSTFS_BREWFS_PERF_TIKV:-rustfs-brewfs-perf-tikv}
     expose:
       - "9000"
       - "9001"
@@ -97,7 +97,7 @@ services:
       retries: 60
       start_period: 5s
     volumes:
-      - rustfs-data-perf-tikv:/data
+      - ${TIKV_PERF_RUSTFS_DATA_MOUNT:-rustfs-data-perf-tikv}:/data
     networks:
       - brewfs-xfstests
 
@@ -175,7 +175,11 @@ services:
     volumes:
       - ./artifacts:/artifacts
       - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
-      - brewfs-state-perf-tikv:/var/lib/brewfs
+      - ../../tools/perf/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
+      - ${TIKV_PERF_STATE_MOUNT:-brewfs-state-perf-tikv}:/var/lib/brewfs
+      # Optional second data mount for perf runs that need the BrewFS
+      # cache on a different physical device than the object store.
+      - ${TIKV_PERF_CACHE_MOUNT:-brewfs-perf-cache-tikv}:/var/brewfs-cache
     networks:
       - brewfs-xfstests
 
@@ -184,6 +188,7 @@ networks:
     driver: bridge
 
 volumes:
+  brewfs-perf-cache-tikv:
   brewfs-state-perf-tikv:
   pd-data-perf-tikv:
   tikv-data-perf:
