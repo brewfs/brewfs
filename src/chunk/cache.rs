@@ -2326,6 +2326,34 @@ impl ChunksCache {
         Some(value.slice(offset..offset + len))
     }
 
+    /// Recheck in-memory tiers after entering a SingleFlight without
+    /// double-counting a cache miss or repeating a cold disk open.
+    pub(crate) async fn get_recheck(&self, key: &String) -> Option<bytes::Bytes> {
+        if let Some(value) = self.write_hot_cache.get(key) {
+            #[cfg(any(test, feature = "observability"))]
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            self.policy.record_cache_request(true);
+            return Some(value);
+        }
+        if let Some(value) = self.hot_cache.get(key).await {
+            #[cfg(any(test, feature = "observability"))]
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            self.policy.record_cache_request(true);
+            return Some(value);
+        }
+        if self.config.max_hot_bytes == 0
+            && self.config.max_disk_bytes > 0
+            && let Ok(Some(value)) = self.disk_storage.load_with_health(key).await
+            && !value.is_empty()
+        {
+            #[cfg(any(test, feature = "observability"))]
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+            self.policy.record_cache_request(true);
+            return Some(value);
+        }
+        None
+    }
+
     pub async fn get_range_into(
         &self,
         key: &String,

@@ -110,6 +110,12 @@ pub trait BlockStore {
         None
     }
 
+    /// Warm a block range into the store's read cache without copying into a caller buffer.
+    async fn warm_range(&self, key: BlockKey, offset: u64, len: usize) -> anyhow::Result<()> {
+        let mut buf = vec![0u8; len];
+        self.read_range(key, offset, &mut buf).await
+    }
+
     /// Delete `block_count` blocks starting from `key.1` (block_index) for slice `key.0`.
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()>;
 
@@ -1439,6 +1445,113 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         Some(data)
     }
 
+    async fn warm_range(&self, key: BlockKey, offset: u64, len: usize) -> anyhow::Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        if offset != 0
+            || len < self.config.block_size
+            || self.config.persistent_slice_cache_dir.is_some()
+            || (self.supports_coalesced_objects() && coalesce::decode_id(key.0).is_some())
+        {
+            let mut buf = vec![0u8; len];
+            return self.read_range(key, offset, &mut buf).await;
+        }
+
+        let key_str = Self::key_for(key);
+        if let Some(cached) = self.block_cache.get(&key_str).await
+            && cached.len() >= len
+        {
+            self.client
+                .read_event(ReadClass::NativePayload, ReadEvent::CacheHit);
+            self.object_metrics.record_read_block_cache_hit();
+            return Ok(());
+        }
+
+        self.client
+            .read_event(ReadClass::NativePayload, ReadEvent::CacheLookupMiss);
+        let prefer_full_objects = match self.read_fetch_policy {
+            ReadFetchPolicy::BackendDefault => self.client.prefers_full_object_reads(),
+            ReadFetchPolicy::WholeObject => true,
+            ReadFetchPolicy::Sparse => false,
+        };
+        let skip_full_read_probe = prefer_full_objects
+            || self.client.skip_full_read_layout_probe()
+            || self.read_fetch_policy == ReadFetchPolicy::Sparse;
+        let client = &self.client;
+        let object_metrics = self.object_metrics.clone();
+        let compression = self.config.compression;
+
+        let block_data = self
+            .read_flight
+            .execute(key, || async move {
+                if let Some(data) = self.block_cache.get_recheck(&key_str).await {
+                    return Ok::<_, anyhow::Error>(data);
+                }
+                let layout = if skip_full_read_probe {
+                    self.format_cache
+                        .get(&key)
+                        .await
+                        .unwrap_or(ObjectLayout::Versioned(Compression::None))
+                } else {
+                    self.resolve_object_layout(key).await?
+                };
+                let object_key = Self::object_key_for(key, layout);
+                self.bandwidth
+                    .acquire_download(self.config.block_size)
+                    .await;
+                let mut started = Instant::now();
+                client.read_event(ReadClass::NativePayload, ReadEvent::FetchLeader);
+                let mut fetched = Self::observed_full(
+                    client,
+                    &object_key,
+                    layout,
+                    compression,
+                    self.config.block_size,
+                )
+                .await?;
+                object_metrics.record_read_full_get();
+                if fetched.is_none()
+                    && skip_full_read_probe
+                    && !self.config.versioned_objects_only
+                    && matches!(layout, ObjectLayout::Versioned(_))
+                {
+                    object_metrics.record_get(0, started.elapsed());
+                    started = Instant::now();
+                    fetched = Self::observed_full(
+                        client,
+                        &Self::key_for(key),
+                        ObjectLayout::Legacy,
+                        compression,
+                        self.config.block_size,
+                    )
+                    .await?;
+                    object_metrics.record_read_full_get();
+                    self.format_cache.insert(key, ObjectLayout::Legacy).await;
+                }
+                match fetched {
+                    Some((stored, data)) => {
+                        object_metrics.record_get(stored as u64, started.elapsed());
+                        if !data.is_empty() {
+                            self.block_cache
+                                .insert_opportunistic(key_str, data.clone())
+                                .await;
+                        }
+                        Ok::<_, anyhow::Error>(data)
+                    }
+                    None => {
+                        object_metrics.record_get(0, started.elapsed());
+                        Ok(Bytes::new())
+                    }
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("SingleFlight read failed: {e}"))?;
+
+        let copy_len = block_data.len().min(len);
+        require_complete_read(key, 0, len, copy_len)
+    }
+
     #[tracing::instrument(
         name = "ObjectBlockStore.read_range",
         level = "trace",
@@ -1534,8 +1647,9 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         // Explicit policies can classify a full response from its own header.
         // In particular, opting into sparse misses must not add a header GET
         // to complete-object scans. Preserve the legacy default exactly.
-        let skip_full_read_probe =
-            prefer_full_objects || self.read_fetch_policy == ReadFetchPolicy::Sparse;
+        let skip_full_read_probe = prefer_full_objects
+            || self.client.skip_full_read_layout_probe()
+            || self.read_fetch_policy == ReadFetchPolicy::Sparse;
         let can_try_object_ranges = len > 0 && len <= range_size_threshold && !prefer_full_objects;
         // A sparse sequential stream regains the whole-block background
         // prefetch that sparse mode otherwise suppresses. The stream record is
@@ -1907,7 +2021,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         let block_data = self
             .read_flight
             .execute(key, || async move {
-                if let Some(data) = self.block_cache.get(&key_str).await {
+                if let Some(data) = self.block_cache.get_recheck(&key_str).await {
                     return Ok::<_, anyhow::Error>(data);
                 }
                 let layout = match layout {

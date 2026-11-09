@@ -53,6 +53,29 @@ fn visible_reads(slices: &[SliceDesc], offset: u64, len: usize) -> Vec<VisibleRe
     need_read
 }
 
+/// Return the single newest slice that completely covers `[offset, offset + len)`,
+/// or `None` if the range spans a hole, slice boundary, or partial overlay.
+pub(crate) fn single_visible_slice(
+    slices: &[SliceDesc],
+    offset: u64,
+    len: u64,
+) -> Option<SliceDesc> {
+    if len == 0 {
+        return None;
+    }
+    let end = offset.checked_add(len)?;
+    for slice in slices.iter().copied().rev() {
+        let slice_end = slice.offset.saturating_add(slice.length);
+        if slice.offset <= offset && end <= slice_end {
+            return Some(slice);
+        }
+        if slice.offset < end && offset < slice_end {
+            return None;
+        }
+    }
+    None
+}
+
 pub(crate) struct DataFetcher<'a, B, M> {
     layout: ChunkLayout,
     id: u64,
@@ -126,6 +149,45 @@ where
             len,
         )
         .await
+    }
+
+    /// Warm the block cache for `[offset, offset + len)` without allocating a
+    /// temporary output buffer.
+    pub(crate) async fn warm_at(&mut self, offset: ChunkOffset, len: usize) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        ensure!(
+            self.prepared,
+            "DataFetcher::warm_at requires prepare_slices() to run first"
+        );
+        let offset = offset.get();
+        let need_read = visible_reads(&self.slices, offset, len);
+        let backend = self.backend;
+        let layout = self.layout;
+        let mut futures = FuturesUnordered::new();
+
+        for (l, r, slice) in need_read {
+            let slice_offset = SliceOffset::from(l - slice.offset);
+            let slice_len = r - l;
+            let slice_id = slice.slice_id;
+            for block in block_span_iter_slice(slice_offset, slice_len, layout) {
+                let take = block.len.as_usize();
+                let block_key = (slice_id, block.index.as_u32());
+                let block_offset = block.offset;
+                futures.push(async move {
+                    backend
+                        .store()
+                        .warm_range(block_key, block_offset, take)
+                        .await
+                });
+            }
+        }
+
+        while let Some(res) = futures.next().await {
+            res?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn read_at_from_slices(
