@@ -5,6 +5,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 JUICEFS_META_BACKEND_VALUE="${JUICEFS_META_BACKEND:-redis}"
+# Allow a caller to point the runner at an alternative compose file. The
+# BrewFS runner already exposes BREWFS_PERF_COMPOSE_FILE for the same reason:
+# an isolated compose file keeps a concurrent perf session on this host from
+# tearing down this run's containers (the compose files pin container names).
+JUICEFS_PERF_COMPOSE_FILE_OVERRIDE="${JUICEFS_PERF_COMPOSE_FILE:-}"
 case "$JUICEFS_META_BACKEND_VALUE" in
     redis)
         COMPOSE_FILE="$SCRIPT_DIR/docker-compose.juicefs-perf.yml"
@@ -17,6 +22,9 @@ case "$JUICEFS_META_BACKEND_VALUE" in
         exit 1
         ;;
 esac
+if [[ -n "$JUICEFS_PERF_COMPOSE_FILE_OVERRIDE" ]]; then
+    COMPOSE_FILE="$JUICEFS_PERF_COMPOSE_FILE_OVERRIDE"
+fi
 ARTIFACTS_DIR="$SCRIPT_DIR/artifacts"
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -173,9 +181,9 @@ mkdir -p "$ARTIFACTS_DIR"
 preclean_ports() {
     local -a ports
     if [[ "$JUICEFS_META_BACKEND_VALUE" == "tikv" ]]; then
-        ports=("${JUICEFS_TIKV_PD_HOST_PORT:-22379}" "${JUICEFS_TIKV_STATUS_HOST_PORT:-30180}" 19000 19001)
+        ports=("${JUICEFS_TIKV_PD_HOST_PORT:-22379}" "${JUICEFS_TIKV_STATUS_HOST_PORT:-30180}" "${RUSTFS_S3_HOST_PORT:-19000}" "${RUSTFS_CONSOLE_HOST_PORT:-19001}")
     else
-        ports=(16379 19000 19001)
+        ports=("${REDIS_HOST_PORT:-16379}" "${RUSTFS_S3_HOST_PORT:-19000}" "${RUSTFS_CONSOLE_HOST_PORT:-19001}")
     fi
     for port in "${ports[@]}"; do
         local pid

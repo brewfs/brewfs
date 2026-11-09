@@ -1,0 +1,215 @@
+name: brewfs-jfs-perf
+services:
+  redis:
+    image: docker.io/library/redis:7.2-alpine
+    container_name: ${PERF_CONTAINER_REDIS_BREWFS_PERF:-redis-jfs-perf}
+    command: >
+      redis-server
+      --save ""
+      --appendonly yes
+      --appendfsync everysec
+      --stop-writes-on-bgsave-error no
+      --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_HOST_PORT:-16379}:6379"
+    volumes:
+      - ${REDIS_PERF_DATA_MOUNT:-redis-data-jfs-perf}:/data
+    networks:
+      - brewfs-jfs
+
+  rustfs:
+    image: ${RUSTFS_IMAGE:-w23geq7ncegg6etqsl.xuanyuan.run/rustfs/rustfs:latest}
+    container_name: ${PERF_CONTAINER_RUSTFS_BREWFS_PERF_REDIS:-rustfs-jfs-perf-redis}
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_S3_HOST_PORT:-19000}:9000"
+      - "${RUSTFS_HOST_BIND:-127.0.0.1}:${RUSTFS_CONSOLE_HOST_PORT:-19001}:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+    command:
+      - --address
+      - :9000
+      - --console-enable
+      - --access-key
+      - ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      - --secret-key
+      - ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      - /data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+    volumes:
+      - ${BREWFS_PERF_RUSTFS_DATA_MOUNT:-rustfs-data-jfs-perf-redis}:/data
+    networks:
+      - brewfs-jfs
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mkdir -p /root/.aws
+        printf '[default]\ns3 =\n  addressing_style = path\n' > /root/.aws/config
+        timeout 180 sh -ec '
+          while true; do
+            # Check for the bucket first. Calling create-bucket on a bucket
+            # that already exists makes this RustFS build hang instead of
+            # returning an error, which would stall the whole run.
+            aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket ${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+    networks:
+      - brewfs-jfs
+
+  minio:
+    image: minio/minio:latest
+    container_name: ${PERF_CONTAINER_MINIO_BREWFS_PERF_REDIS:-minio-jfs-perf-redis}
+    expose:
+      - "9000"
+      - "9001"
+    ports:
+      - "${MINIO_HOST_BIND:-127.0.0.1}:${MINIO_S3_HOST_PORT:-19000}:9000"
+      - "${MINIO_HOST_BIND:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-19001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    volumes:
+      - ${BREWFS_PERF_MINIO_DATA_MOUNT:-minio-data-jfs-perf-redis}:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      - brewfs-jfs
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        timeout 180 sh -ec '
+          while true; do
+            mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} >/dev/null 2>&1 || { sleep 2; continue; }
+            mc mb --ignore-existing local/${BREWFS_S3_BUCKET:-brewfs-data} >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+        '
+    networks:
+      - brewfs-jfs
+
+  perf:
+    image: brewfs-jfs-perf:local
+    build:
+      context: ../..
+      dockerfile: ${BREWFS_PERF_DOCKERFILE:-docker/compose-xfstests/Dockerfile}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      BREWFS_META_BACKEND: ${BREWFS_META_BACKEND:-redis}
+      BREWFS_META_URL: ${BREWFS_META_URL-redis://redis:6379/0}
+      BREWFS_VOLUME_FORMAT: ${BREWFS_VOLUME_FORMAT:-}
+      BREWFS_PACKED_MANIFEST_KEY: ${BREWFS_PACKED_MANIFEST_KEY:-}
+      BREWFS_WORKSPACE_ID: ${BREWFS_WORKSPACE_ID:-}
+      BREWFS_WORKSPACE_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-}
+      BREWFS_WRITEBACK_MODE: ${BREWFS_WRITEBACK_MODE:-}
+      BREWFS_WRITE_COALESCE_BYTES: ${BREWFS_WRITE_COALESCE_BYTES:-}
+      BREWFS_WRITE_COALESCE_MS: ${BREWFS_WRITE_COALESCE_MS:-}
+      BREWFS_REQUEST_TRACE: ${BREWFS_REQUEST_TRACE:-}
+      BREWFS_REQUEST_TRACE_SAMPLE_RATE: ${BREWFS_REQUEST_TRACE_SAMPLE_RATE:-}
+      TOKIO_WORKER_THREADS:
+      BREWFS_DATA_BACKEND: ${BREWFS_DATA_BACKEND:-local-fs}
+      BREWFS_DATA_DIR: /var/lib/brewfs/data
+      BREWFS_S3_BUCKET: ${BREWFS_S3_BUCKET:-brewfs-data}
+      BREWFS_S3_ENDPOINT: ${BREWFS_S3_ENDPOINT:-http://rustfs:9000}
+      BREWFS_S3_REGION: ${BREWFS_S3_REGION:-us-east-1}
+      BREWFS_S3_FORCE_PATH_STYLE: ${BREWFS_S3_FORCE_PATH_STYLE:-true}
+      BREWFS_S3_PART_SIZE: ${BREWFS_S3_PART_SIZE:-}
+      BREWFS_S3_MAX_CONCURRENCY: ${BREWFS_S3_MAX_CONCURRENCY:-}
+      BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM: ${BREWFS_S3_DISABLE_PAYLOAD_CHECKSUM:-}
+      BREWFS_CONFIG_PATH: /run/brewfs/config.yaml
+      BREWFS_LOG_FILE: /artifacts/brewfs.log
+      BREWFS_FUSE_OP_LOG: ${BREWFS_FUSE_OP_LOG:-0}
+      BREWFS_MOUNT_WAIT_SECS: ${BREWFS_MOUNT_WAIT_SECS:-60}
+      BREWFS_PRE_MOUNT_WAIT_SECS: ${BREWFS_PRE_MOUNT_WAIT_SECS:-10}
+      BREWFS_MOUNT_READY_DELAY_SECS: ${BREWFS_MOUNT_READY_DELAY_SECS:-1}
+      BREWFS_NOFILE_LIMIT: ${BREWFS_NOFILE_LIMIT:-1048576}
+      BREWFS_FUSE_DIRECT_IO: ${BREWFS_FUSE_DIRECT_IO:-}
+      BREWFS_FUSE_READ_DIRECT_IO: ${BREWFS_FUSE_READ_DIRECT_IO:-}
+      BREWFS_FUSE_WRITE_DIRECT_IO: ${BREWFS_FUSE_WRITE_DIRECT_IO:-}
+      BREWFS_FUSE_KEEP_CACHE: ${BREWFS_FUSE_KEEP_CACHE:-}
+      BREWFS_FUSE_WRITEBACK: ${BREWFS_FUSE_WRITEBACK:-}
+      BREWFS_FUSE_LOG_FILE: /artifacts/brewfs_fuse_ops.log
+      ASYNCFUSE_PREPOST_READ: ${ASYNCFUSE_PREPOST_READ:-}
+      BREWFS_WRITEBACK_UPLOAD_CONCURRENCY: ${BREWFS_WRITEBACK_UPLOAD_CONCURRENCY:-}
+      BREWFS_CACHED_BLOCK_ASSEMBLER: ${BREWFS_CACHED_BLOCK_ASSEMBLER:-}
+      BREWFS_UPLOAD_LIMIT_MIBPS: ${BREWFS_UPLOAD_LIMIT_MIBPS:-}
+      BREWFS_DOWNLOAD_LIMIT_MIBPS: ${BREWFS_DOWNLOAD_LIMIT_MIBPS:-}
+      BREWFS_ARTIFACT_DIR: ${BREWFS_ARTIFACT_DIR:-}
+      BREWFS_ARTIFACT_ROOT: /artifacts
+      XFSTESTS_DIR: /opt/xfstests-dev
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: ${AWS_EC2_METADATA_DISABLED:-true}
+      RUST_LOG: ${RUST_LOG:-error}
+    entrypoint: ["/usr/bin/tini", "--", "bash", "/usr/local/bin/run_perf_in_container.sh"]
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    volumes:
+      - ./artifacts:/artifacts
+      - ./run_perf_in_container.sh:/usr/local/bin/run_perf_in_container.sh:ro
+      - ../../tools/perf/perf_lines_observe.py:/usr/local/bin/perf_lines_observe.py:ro
+      - ${BREWFS_PERF_STATE_MOUNT:-brewfs-state-jfs-perf-redis}:/var/lib/brewfs
+    networks:
+      - brewfs-jfs
+
+networks:
+  brewfs-jfs:
+    driver: bridge
+
+volumes:
+  brewfs-state-jfs-perf-redis:
+  redis-data-jfs-perf:
+  rustfs-data-jfs-perf-redis:
+  minio-data-jfs-perf-redis:
