@@ -26,4 +26,5 @@ pub use stores::kv_store::packed_admin;
 pub mod packed_v3;
 pub mod publish;
 pub mod resolver;
+pub mod seal;
 pub mod stores;

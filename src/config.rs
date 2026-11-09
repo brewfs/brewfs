@@ -547,6 +547,11 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         owner: Option<String>,
     },
+    /// Seal a workspace's current writable head into an immutable revision.
+    /// The workspace must not have an active writer lease.
+    Seal {
+        workspace: crate::workspace_overlay::ids::WorkspaceId,
+    },
     /// List workspaces.
     List,
     /// Inspect one workspace and its active lease state.

@@ -8,8 +8,8 @@ use super::error::WorkspaceError;
 use super::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
 use super::model::{
     AclDelta, BaseRevision, DataExtentDelta, DentryDelta, InodeDelta, InodeState, LayerRecord,
-    LayerState, SealJournal, SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader, WorkspaceRecord,
-    XattrDelta,
+    LayerState, SealJournal, SealResult, SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader,
+    WorkspaceRecord, XattrDelta,
 };
 
 /// Shared by packed extent readers and writable-head publication admission.
@@ -114,6 +114,31 @@ pub struct CreateSnapshot {
     pub name: Option<String>,
     pub revision: BaseRevision,
     pub owner_id: Option<String>,
+}
+
+/// Start an offline seal before the merged immutable layer is materialized.
+/// The transaction fences the workspace without changing the writable head,
+/// so a crash leaves a resumable, still-readable chain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeginWorkspaceSeal {
+    pub workspace_id: WorkspaceId,
+    pub journal_id: JournalId,
+    pub new_head_layer_id: LayerId,
+}
+
+/// Atomically publish a fully materialized flat base and switch the workspace
+/// to a fresh empty writable head.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitWorkspaceSeal {
+    pub journal_id: JournalId,
+    pub sealed_layer_id: LayerId,
+    pub delta: CanonicalLayerDelta,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AbortWorkspaceSeal {
+    pub journal_id: JournalId,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -863,6 +888,16 @@ pub trait WorkspaceStore: Send + Sync {
         &self,
         layer_id: LayerId,
     ) -> Result<CanonicalLayerDelta, WorkspaceError>;
+    async fn begin_workspace_seal(
+        &self,
+        request: BeginWorkspaceSeal,
+    ) -> Result<SealJournal, WorkspaceError>;
+    async fn commit_workspace_seal(
+        &self,
+        request: CommitWorkspaceSeal,
+    ) -> Result<SealResult, WorkspaceError>;
+    async fn abort_workspace_seal(&self, request: AbortWorkspaceSeal)
+    -> Result<(), WorkspaceError>;
     async fn load_seal_journal(&self, journal_id: JournalId)
     -> Result<SealJournal, WorkspaceError>;
     /// 列出指定 workspace 的所有 seal journal，包括终止状态的记录。

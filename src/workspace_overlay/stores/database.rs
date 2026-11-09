@@ -17,12 +17,13 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::workspace_overlay::catalog::{
-    AclMutation, AclQuery, AcquireLease, AppendDataExtent, CreateSnapshot, CreateVolumeRoot,
-    CreateWorkspace, DataMutation, DataMutationResult, DeleteLayerMetadata, DentryQuery,
-    ExtentQuery, GcSnapshot, HeadGuard, InodeMutation, InodeQuery, MarkDeleting, MutationResult,
-    NamespaceMutation, PermissionMutation, PermissionSnapshot, PermissionSnapshotQuery,
-    RecordOrphanSlice, ReleaseLease, RenewLease, SliceReference, VersionedMutation, WorkspaceStore,
-    WorkspaceStoreCapabilities, XattrMutation, XattrQuery,
+    AbortWorkspaceSeal, AclMutation, AclQuery, AcquireLease, AppendDataExtent, BeginWorkspaceSeal,
+    CommitWorkspaceSeal, CreateSnapshot, CreateVolumeRoot, CreateWorkspace, DataMutation,
+    DataMutationResult, DeleteLayerMetadata, DentryQuery, ExtentQuery, GcSnapshot, HeadGuard,
+    InodeMutation, InodeQuery, MarkDeleting, MutationResult, NamespaceMutation, PermissionMutation,
+    PermissionSnapshot, PermissionSnapshotQuery, RecordOrphanSlice, ReleaseLease, RenewLease,
+    SliceReference, VersionedMutation, WorkspaceStore, WorkspaceStoreCapabilities, XattrMutation,
+    XattrQuery,
 };
 #[cfg(test)]
 use crate::workspace_overlay::catalog::{InstallTestBase, TestBaseResult};
@@ -31,9 +32,9 @@ use crate::workspace_overlay::error::WorkspaceError;
 use crate::workspace_overlay::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
 use crate::workspace_overlay::model::{
     AclDelta, BaseRevision, DataExtentDelta, DentryDelta, DentryOp, ExtentKind, InodeDelta,
-    InodeState, LayerRecord, LayerState, LeaseState, SealJournal, SealPhase, SnapshotLease,
-    SnapshotRecord, ValueOp, VolumeHeader, WORKSPACE_SCHEMA_VERSION, WorkspaceRecord,
-    WorkspaceState, XattrDelta,
+    InodeState, LayerRecord, LayerState, LeaseState, SealJournal, SealPhase, SealResult,
+    SnapshotLease, SnapshotRecord, ValueOp, VolumeHeader, WORKSPACE_SCHEMA_VERSION,
+    WorkspaceRecord, WorkspaceState, XattrDelta,
 };
 use crate::workspace_overlay::publish::binding::{
     InstallPackedLowerBinding, PackedLowerBindingRecord, PublishPackedLowerBinding,
@@ -3300,6 +3301,416 @@ impl WorkspaceStore for SqliteWorkspaceStore {
     ) -> Result<CanonicalLayerDelta, WorkspaceError> {
         self.load_layer(layer_id).await?;
         load_layer_delta_pool(&self.pool, layer_id).await
+    }
+
+    async fn begin_workspace_seal(
+        &self,
+        request: BeginWorkspaceSeal,
+    ) -> Result<SealJournal, WorkspaceError> {
+        let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
+        let workspace = load_workspace_tx(&mut tx, request.workspace_id).await?;
+        if request.new_head_layer_id == workspace.head_layer_id {
+            return Err(WorkspaceError::CorruptMetadata(
+                "seal replacement head must differ from the current head".into(),
+            ));
+        }
+        if workspace.state != WorkspaceState::Active {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: format!("{:?}", workspace.state),
+                to: "Sealing".into(),
+            });
+        }
+        if workspace.active_lease.is_some() {
+            return Err(WorkspaceError::Busy);
+        }
+        let head = sea_orm::sqlx::query(
+            "SELECT state, owner_workspace_id FROM ws_v1_layers WHERE layer_id = ?",
+        )
+        .bind(workspace.head_layer_id.as_bytes().as_slice())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?
+        .ok_or(WorkspaceError::LayerNotFound(workspace.head_layer_id))?;
+        let head_state = LayerState::try_from(to_u8(
+            head.try_get("state").map_err(backend)?,
+            "layer state",
+        )?)?;
+        let owner = head
+            .try_get::<Option<Vec<u8>>, _>("owner_workspace_id")
+            .map_err(backend)?;
+        if head_state != LayerState::Writable
+            || owner.as_deref() != Some(request.workspace_id.as_bytes().as_slice())
+        {
+            return Err(WorkspaceError::Fenced);
+        }
+        let pending: i64 = sea_orm::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ws_v1_seal_journal
+             WHERE workspace_id = ? AND phase NOT IN (?, ?)",
+        )
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(SealPhase::Completed.discriminant() as i64)
+        .bind(SealPhase::Aborted.discriminant() as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if pending != 0 {
+            return Err(WorkspaceError::Busy);
+        }
+        let now = now_ns()?;
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_seal_journal
+             (journal_id, workspace_id, old_head_layer_id, expected_head_epoch,
+              phase, pending_bytes, delta_digest, root_hash, new_head_layer_id,
+              last_error, created_at_ns, updated_at_ns)
+             VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, ?)",
+        )
+        .bind(request.journal_id.as_bytes().as_slice())
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(workspace.head_layer_id.as_bytes().as_slice())
+        .bind(to_i64(workspace.head_epoch, "head epoch")?)
+        .bind(SealPhase::Prepare.discriminant() as i64)
+        .bind(request.new_head_layer_id.as_bytes().as_slice())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let fenced = sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET state = ?, updated_at_ns = ?
+             WHERE workspace_id = ? AND state = ? AND head_layer_id = ?
+               AND head_epoch = ? AND active_lease IS NULL",
+        )
+        .bind(WorkspaceState::Sealing.discriminant() as i64)
+        .bind(now)
+        .bind(request.workspace_id.as_bytes().as_slice())
+        .bind(WorkspaceState::Active.discriminant() as i64)
+        .bind(workspace.head_layer_id.as_bytes().as_slice())
+        .bind(to_i64(workspace.head_epoch, "head epoch")?)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if fenced.rows_affected() != 1 {
+            return Err(WorkspaceError::Fenced);
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(SealJournal {
+            journal_id: request.journal_id,
+            workspace_id: request.workspace_id,
+            old_head_layer_id: workspace.head_layer_id,
+            expected_head_epoch: workspace.head_epoch,
+            phase: SealPhase::Prepare,
+            pending_bytes: 0,
+            delta_digest: None,
+            root_hash: None,
+            new_head_layer_id: Some(request.new_head_layer_id),
+            last_error: None,
+            created_at_ns: now,
+            updated_at_ns: now,
+        })
+    }
+
+    async fn commit_workspace_seal(
+        &self,
+        request: CommitWorkspaceSeal,
+    ) -> Result<SealResult, WorkspaceError> {
+        let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
+        let journal = load_seal_journal_tx(&mut tx, request.journal_id).await?;
+        let new_head = journal.new_head_layer_id.ok_or_else(|| {
+            WorkspaceError::CorruptMetadata("seal journal has no replacement head".into())
+        })?;
+        if journal.phase == SealPhase::Completed {
+            let workspace = load_workspace_tx(&mut tx, journal.workspace_id).await?;
+            let revision = workspace.fork_base.ok_or_else(|| {
+                WorkspaceError::CorruptMetadata("completed seal has no fork base".into())
+            })?;
+            if revision.layer_id != request.sealed_layer_id || workspace.head_layer_id != new_head {
+                return Err(WorkspaceError::CorruptMetadata(
+                    "completed seal disagrees with the workspace head/base".into(),
+                ));
+            }
+            return Ok(SealResult {
+                revision,
+                new_head_layer_id: new_head,
+                head_epoch: workspace.head_epoch,
+            });
+        }
+        if journal.phase != SealPhase::Prepare {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: format!("{:?}", journal.phase),
+                to: "Completed".into(),
+            });
+        }
+        for layer_id in request
+            .delta
+            .dentries
+            .iter()
+            .map(|row| row.layer_id)
+            .chain(request.delta.inodes.iter().map(|row| row.layer_id))
+            .chain(request.delta.xattrs.iter().map(|row| row.layer_id))
+            .chain(request.delta.acls.iter().map(|row| row.layer_id))
+            .chain(request.delta.extents.iter().map(|row| row.layer_id))
+        {
+            if layer_id != request.sealed_layer_id {
+                return Err(WorkspaceError::CorruptMetadata(
+                    "seal delta contains a foreign layer ID".into(),
+                ));
+            }
+        }
+        let digest = delta_digest(&request.delta)?;
+        let root = root_hash([0; 32], digest);
+        let next_sequence = request
+            .delta
+            .dentries
+            .iter()
+            .map(|row| row.sequence)
+            .chain(request.delta.inodes.iter().map(|row| row.sequence))
+            .chain(request.delta.xattrs.iter().map(|row| row.sequence))
+            .chain(request.delta.acls.iter().map(|row| row.sequence))
+            .chain(request.delta.extents.iter().map(|row| row.sequence))
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| WorkspaceError::CorruptMetadata("sequence overflows".into()))?;
+        let workspace = load_workspace_tx(&mut tx, journal.workspace_id).await?;
+        if workspace.state != WorkspaceState::Sealing
+            || workspace.head_layer_id != journal.old_head_layer_id
+            || workspace.head_epoch != journal.expected_head_epoch
+            || workspace.active_lease.is_some()
+        {
+            return Err(WorkspaceError::Fenced);
+        }
+        let head = sea_orm::sqlx::query(
+            "SELECT parent_layer_id, state, owner_workspace_id, depth
+             FROM ws_v1_layers WHERE layer_id = ?",
+        )
+        .bind(journal.old_head_layer_id.as_bytes().as_slice())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?
+        .ok_or(WorkspaceError::LayerNotFound(journal.old_head_layer_id))?;
+        let head_state = LayerState::try_from(to_u8(
+            head.try_get("state").map_err(backend)?,
+            "layer state",
+        )?)?;
+        let owner = head
+            .try_get::<Option<Vec<u8>>, _>("owner_workspace_id")
+            .map_err(backend)?;
+        let parent = head
+            .try_get::<Option<Vec<u8>>, _>("parent_layer_id")
+            .map_err(backend)?
+            .ok_or_else(|| WorkspaceError::CorruptMetadata("seal head has no parent".into()))?;
+        if head_state != LayerState::Writable
+            || owner.as_deref() != Some(journal.workspace_id.as_bytes().as_slice())
+            || to_u32(head.try_get("depth").map_err(backend)?, "layer depth")? != 2
+        {
+            return Err(WorkspaceError::Fenced);
+        }
+        let parent = LayerId::from_uuid(uuid_from_blob(parent, "seal head parent")?);
+        let parent_state: i64 =
+            sea_orm::sqlx::query_scalar("SELECT state FROM ws_v1_layers WHERE layer_id = ?")
+                .bind(parent.as_bytes().as_slice())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(backend)?
+                .ok_or(WorkspaceError::LayerNotFound(parent))?;
+        if LayerState::try_from(to_u8(parent_state, "layer state")?)? != LayerState::Sealed {
+            return Err(WorkspaceError::CorruptMetadata(
+                "seal source parent is not a sealed base".into(),
+            ));
+        }
+        let output_count: i64 = sea_orm::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ws_v1_layers WHERE layer_id = ? OR layer_id = ?",
+        )
+        .bind(request.sealed_layer_id.as_bytes().as_slice())
+        .bind(new_head.as_bytes().as_slice())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if output_count != 0 {
+            return Err(WorkspaceError::CorruptMetadata(
+                "seal output layer already exists".into(),
+            ));
+        }
+        let now = now_ns()?;
+        let sealed_version = to_u64(
+            allocate_id_tx(&mut tx, "sealed_version").await?,
+            "sealed version",
+        )?;
+        sea_orm::sqlx::query(
+            "INSERT INTO ws_v1_layers
+             (layer_id, parent_layer_id, state, schema_version, sealed_version,
+              delta_digest, root_hash, depth, owner_workspace_id, next_sequence,
+              owned_slice_count, owned_bytes, created_at_ns, sealed_at_ns)
+             VALUES (?, NULL, ?, ?, ?, ?, ?, 1, NULL, ?, 0, 0, ?, ?)",
+        )
+        .bind(request.sealed_layer_id.as_bytes().as_slice())
+        .bind(LayerState::Sealed.discriminant() as i64)
+        .bind(WORKSPACE_SCHEMA_VERSION as i64)
+        .bind(to_i64(sealed_version, "sealed version")?)
+        .bind(digest.as_slice())
+        .bind(root.as_slice())
+        .bind(to_i64(next_sequence, "next sequence")?)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        for row in &request.delta.dentries {
+            upsert_dentry(&mut tx, row).await?;
+        }
+        for row in &request.delta.inodes {
+            upsert_inode(&mut tx, row).await?;
+        }
+        for row in &request.delta.xattrs {
+            upsert_xattr(&mut tx, row).await?;
+        }
+        for row in &request.delta.acls {
+            upsert_acl(&mut tx, row).await?;
+        }
+        for row in &request.delta.extents {
+            insert_extent(&mut tx, row).await?;
+        }
+        insert_writable_layer(
+            &mut tx,
+            new_head,
+            request.sealed_layer_id,
+            2,
+            journal.workspace_id,
+            now,
+        )
+        .await?;
+        let epoch = workspace
+            .head_epoch
+            .checked_add(1)
+            .ok_or_else(|| WorkspaceError::CorruptMetadata("head epoch overflows".into()))?;
+        let switched = sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces
+             SET head_layer_id = ?, head_epoch = ?, fork_base_layer_id = ?,
+                 fork_base_version = ?, fork_base_root_hash = ?, state = ?, updated_at_ns = ?
+             WHERE workspace_id = ? AND head_layer_id = ? AND head_epoch = ?
+               AND state = ? AND active_lease IS NULL",
+        )
+        .bind(new_head.as_bytes().as_slice())
+        .bind(to_i64(epoch, "head epoch")?)
+        .bind(request.sealed_layer_id.as_bytes().as_slice())
+        .bind(to_i64(sealed_version, "sealed version")?)
+        .bind(root.as_slice())
+        .bind(WorkspaceState::Active.discriminant() as i64)
+        .bind(now)
+        .bind(journal.workspace_id.as_bytes().as_slice())
+        .bind(journal.old_head_layer_id.as_bytes().as_slice())
+        .bind(to_i64(journal.expected_head_epoch, "head epoch")?)
+        .bind(WorkspaceState::Sealing.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if switched.rows_affected() != 1 {
+            return Err(WorkspaceError::Fenced);
+        }
+        sea_orm::sqlx::query(
+            "UPDATE ws_v1_layers SET state = ?, owner_workspace_id = NULL
+             WHERE layer_id = ? AND state = ?",
+        )
+        .bind(LayerState::Deleting.discriminant() as i64)
+        .bind(journal.old_head_layer_id.as_bytes().as_slice())
+        .bind(LayerState::Writable.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let pending_bytes = request
+            .delta
+            .extents
+            .iter()
+            .map(|row| row.length)
+            .fold(0_u64, u64::saturating_add);
+        let completed = sea_orm::sqlx::query(
+            "UPDATE ws_v1_seal_journal
+             SET phase = ?, pending_bytes = ?, delta_digest = ?, root_hash = ?, updated_at_ns = ?
+             WHERE journal_id = ? AND phase = ?",
+        )
+        .bind(SealPhase::Completed.discriminant() as i64)
+        .bind(to_i64(pending_bytes, "pending bytes")?)
+        .bind(digest.as_slice())
+        .bind(root.as_slice())
+        .bind(now)
+        .bind(request.journal_id.as_bytes().as_slice())
+        .bind(SealPhase::Prepare.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if completed.rows_affected() != 1 {
+            return Err(WorkspaceError::Fenced);
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(SealResult {
+            revision: BaseRevision {
+                layer_id: request.sealed_layer_id,
+                sealed_version,
+                root_hash: root,
+            },
+            new_head_layer_id: new_head,
+            head_epoch: epoch,
+        })
+    }
+
+    async fn abort_workspace_seal(
+        &self,
+        request: AbortWorkspaceSeal,
+    ) -> Result<(), WorkspaceError> {
+        let _guard = self.write_gate.lock().await;
+        let mut tx = self.begin_write().await?;
+        let journal = load_seal_journal_tx(&mut tx, request.journal_id).await?;
+        if matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted) {
+            return Ok(());
+        }
+        if journal.phase != SealPhase::Prepare {
+            return Err(WorkspaceError::InvalidStateTransition {
+                from: format!("{:?}", journal.phase),
+                to: "Aborted".into(),
+            });
+        }
+        let now = now_ns()?;
+        let restored = sea_orm::sqlx::query(
+            "UPDATE ws_v1_workspaces SET state = ?, updated_at_ns = ?
+             WHERE workspace_id = ? AND head_layer_id = ? AND head_epoch = ? AND state = ?",
+        )
+        .bind(WorkspaceState::Active.discriminant() as i64)
+        .bind(now)
+        .bind(journal.workspace_id.as_bytes().as_slice())
+        .bind(journal.old_head_layer_id.as_bytes().as_slice())
+        .bind(to_i64(journal.expected_head_epoch, "head epoch")?)
+        .bind(WorkspaceState::Sealing.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if restored.rows_affected() == 0 {
+            let current = load_workspace_tx(&mut tx, journal.workspace_id).await?;
+            if current.head_layer_id != journal.old_head_layer_id
+                || current.head_epoch != journal.expected_head_epoch
+                || current.state != WorkspaceState::Sealing
+            {
+                return Err(WorkspaceError::Fenced);
+            }
+        }
+        let aborted = sea_orm::sqlx::query(
+            "UPDATE ws_v1_seal_journal SET phase = ?, last_error = ?, updated_at_ns = ?
+             WHERE journal_id = ? AND phase = ?",
+        )
+        .bind(SealPhase::Aborted.discriminant() as i64)
+        .bind(request.reason)
+        .bind(now)
+        .bind(request.journal_id.as_bytes().as_slice())
+        .bind(SealPhase::Prepare.discriminant() as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if aborted.rows_affected() != 1 {
+            return Err(WorkspaceError::Fenced);
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(())
     }
 
     async fn load_seal_journal(

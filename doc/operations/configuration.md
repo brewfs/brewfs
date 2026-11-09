@@ -451,7 +451,7 @@ uses Tokio's blocking pool. See [the measured scope and caveats](../testing/toki
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `cache.root` / `cache.cache_root` | `$XDG_CACHE_HOME/brewfs` 或 `/tmp/brewfs` | 本地缓存根目录。 |
+| `cache.root` / `cache.cache_root` | `$XDG_CACHE_HOME/brewfs` 或 `/tmp/brewfs` | 本地缓存根目录。应放在与对象存储落盘不同的物理设备上，见[部署建议](#部署建议)。 |
 | `cache.read_memory_bytes` | `8589934592` | 读缓存内存预算，默认 8 GiB。 |
 | `cache.read_ssd_bytes` | `68719476736` | 读缓存磁盘预算，默认 64 GiB。 |
 | `cache.write_memory_bytes` | `805306368` | 写缓存内存预算，默认 768 MiB。 |
@@ -553,6 +553,7 @@ compact:
 - `data.s3.force_path_style=true`
 - `data.s3.disable_payload_checksum=true`
 - cache root 放到可靠 SSD
+- **cache root 不要和对象存储的落盘盘放在同一块物理设备上。** 写路径同时产生两股磁盘写入：对象存储的 PUT 落盘，和本地写回缓存的 staging。同盘时二者互相抢带宽，PUT 延迟会被抬高到数百毫秒，实测顺序写端到端吞吐因此下降。把 cache root 放到另一块设备后，同一场景的排空后顺序写吞吐提升约 17%，写延迟同步下降。读多写少的混合负载（`fio-randrw`）收益不明显，拆分前需按负载类型实测。
 - 如启用 `commit_before_upload`，必须理解本地写回缓存丢失风险
 - 大读吞吐测试可用 `docker/compose-xfstests/run_redis_perf.sh --read-throughput-profile`，该 profile 会设置 `BREWFS_FUSE_READ_DIRECT_IO=1`，减少 buffered FUSE 大读拆分；它只适合性能 profile，因为对应只读 fd 会禁用 mmap。
 - 大写吞吐测试可用 `docker/compose-xfstests/run_redis_perf.sh --bigwrite-throughput-profile --tools fio-bigwrite`。该 profile 是 `--writeback-throughput-profile` 的明确别名，会启用 `commit_before_upload`、更大的本地读写缓存和写回队列，并在 fio 后等待写回 drain；它适合验证 `fio-bigwrite` 上限，不建议替代默认 `upload_before_commit` 语义。

@@ -205,6 +205,24 @@ impl<W: WorkspaceStore + 'static> WorkspaceStore for BindingWithoutPins<W> {
     ) -> Result<CanonicalLayerDelta, WorkspaceError> {
         self.inner.load_layer_delta(layer_id).await
     }
+    async fn begin_workspace_seal(
+        &self,
+        request: BeginWorkspaceSeal,
+    ) -> Result<SealJournal, WorkspaceError> {
+        self.inner.begin_workspace_seal(request).await
+    }
+    async fn commit_workspace_seal(
+        &self,
+        request: CommitWorkspaceSeal,
+    ) -> Result<SealResult, WorkspaceError> {
+        self.inner.commit_workspace_seal(request).await
+    }
+    async fn abort_workspace_seal(
+        &self,
+        request: AbortWorkspaceSeal,
+    ) -> Result<(), WorkspaceError> {
+        self.inner.abort_workspace_seal(request).await
+    }
     async fn load_seal_journal(
         &self,
         journal_id: JournalId,

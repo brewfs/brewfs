@@ -4372,6 +4372,321 @@ where
         self.layer_delta_unchecked(layer_id).await
     }
 
+    async fn begin_workspace_seal(
+        &self,
+        request: BeginWorkspaceSeal,
+    ) -> Result<SealJournal, WorkspaceError> {
+        self.require_admin_access()?;
+        let now = self.now_ns().await?;
+        self.update_control(|state, _writes| {
+            let workspace = state
+                .workspaces
+                .get(&request.workspace_id)
+                .cloned()
+                .ok_or(WorkspaceError::WorkspaceNotFound(request.workspace_id))?;
+            if workspace.state != WorkspaceState::Active {
+                return Err(WorkspaceError::InvalidStateTransition {
+                    from: format!("{:?}", workspace.state),
+                    to: "Sealing".into(),
+                });
+            }
+            if workspace.active_lease.is_some()
+                || request.new_head_layer_id == workspace.head_layer_id
+            {
+                return Err(WorkspaceError::Busy);
+            }
+            let head = state
+                .layers
+                .get(&workspace.head_layer_id)
+                .ok_or(WorkspaceError::LayerNotFound(workspace.head_layer_id))?;
+            if head.state != LayerState::Writable
+                || head.owner_workspace_id != Some(request.workspace_id)
+            {
+                return Err(WorkspaceError::Fenced);
+            }
+            if state.journals.values().any(|journal| {
+                journal.workspace_id == request.workspace_id
+                    && !matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted)
+            }) {
+                return Err(WorkspaceError::Busy);
+            }
+            let journal = SealJournal {
+                journal_id: request.journal_id,
+                workspace_id: request.workspace_id,
+                old_head_layer_id: workspace.head_layer_id,
+                expected_head_epoch: workspace.head_epoch,
+                phase: SealPhase::Prepare,
+                pending_bytes: 0,
+                delta_digest: None,
+                root_hash: None,
+                new_head_layer_id: Some(request.new_head_layer_id),
+                last_error: None,
+                created_at_ns: now,
+                updated_at_ns: now,
+            };
+            state.journals.insert(journal.journal_id, journal.clone());
+            let workspace = state
+                .workspaces
+                .get_mut(&request.workspace_id)
+                .ok_or(WorkspaceError::WorkspaceNotFound(request.workspace_id))?;
+            workspace.state = WorkspaceState::Sealing;
+            workspace.updated_at_ns = now;
+            Ok(journal)
+        })
+        .await
+    }
+
+    async fn commit_workspace_seal(
+        &self,
+        request: CommitWorkspaceSeal,
+    ) -> Result<SealResult, WorkspaceError> {
+        self.require_admin_access()?;
+        for layer_id in request
+            .delta
+            .dentries
+            .iter()
+            .map(|row| row.layer_id)
+            .chain(request.delta.inodes.iter().map(|row| row.layer_id))
+            .chain(request.delta.xattrs.iter().map(|row| row.layer_id))
+            .chain(request.delta.acls.iter().map(|row| row.layer_id))
+            .chain(request.delta.extents.iter().map(|row| row.layer_id))
+        {
+            if layer_id != request.sealed_layer_id {
+                return Err(WorkspaceError::CorruptMetadata(
+                    "seal delta contains a foreign layer ID".into(),
+                ));
+            }
+        }
+        let digest = delta_digest(&request.delta)?;
+        let root = root_hash([0; 32], digest);
+        let next_sequence = request
+            .delta
+            .dentries
+            .iter()
+            .map(|row| row.sequence)
+            .chain(request.delta.inodes.iter().map(|row| row.sequence))
+            .chain(request.delta.xattrs.iter().map(|row| row.sequence))
+            .chain(request.delta.acls.iter().map(|row| row.sequence))
+            .chain(request.delta.extents.iter().map(|row| row.sequence))
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| WorkspaceError::CorruptMetadata("sequence overflows".into()))?;
+        let now = self.now_ns().await?;
+        self.update_control(|state, writes| {
+            let journal = state
+                .journals
+                .get(&request.journal_id)
+                .cloned()
+                .ok_or_else(|| {
+                    WorkspaceError::Backend(format!(
+                        "seal journal not found: {}",
+                        request.journal_id
+                    ))
+                })?;
+            let new_head = journal.new_head_layer_id.ok_or_else(|| {
+                WorkspaceError::CorruptMetadata("seal journal has no replacement head".into())
+            })?;
+            if journal.phase == SealPhase::Completed {
+                let workspace = state
+                    .workspaces
+                    .get(&journal.workspace_id)
+                    .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
+                let revision = workspace.fork_base.clone().ok_or_else(|| {
+                    WorkspaceError::CorruptMetadata("completed seal has no fork base".into())
+                })?;
+                if revision.layer_id != request.sealed_layer_id
+                    || workspace.head_layer_id != new_head
+                {
+                    return Err(WorkspaceError::CorruptMetadata(
+                        "completed seal disagrees with the workspace head/base".into(),
+                    ));
+                }
+                return Ok(SealResult {
+                    revision,
+                    new_head_layer_id: new_head,
+                    head_epoch: workspace.head_epoch,
+                });
+            }
+            if journal.phase != SealPhase::Prepare {
+                return Err(WorkspaceError::InvalidStateTransition {
+                    from: format!("{:?}", journal.phase),
+                    to: "Completed".into(),
+                });
+            }
+            let workspace = state
+                .workspaces
+                .get(&journal.workspace_id)
+                .cloned()
+                .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
+            if workspace.state != WorkspaceState::Sealing
+                || workspace.head_layer_id != journal.old_head_layer_id
+                || workspace.head_epoch != journal.expected_head_epoch
+                || workspace.active_lease.is_some()
+            {
+                return Err(WorkspaceError::Fenced);
+            }
+            let head = state
+                .layers
+                .get(&journal.old_head_layer_id)
+                .cloned()
+                .ok_or(WorkspaceError::LayerNotFound(journal.old_head_layer_id))?;
+            let parent = head
+                .parent_layer_id
+                .ok_or_else(|| WorkspaceError::CorruptMetadata("seal head has no parent".into()))?;
+            if head.state != LayerState::Writable
+                || head.owner_workspace_id != Some(journal.workspace_id)
+                || head.depth != 2
+                || state
+                    .layers
+                    .get(&parent)
+                    .is_none_or(|layer| layer.state != LayerState::Sealed)
+            {
+                return Err(WorkspaceError::Fenced);
+            }
+            if state.layers.contains_key(&request.sealed_layer_id)
+                || state.layers.contains_key(&new_head)
+            {
+                return Err(WorkspaceError::CorruptMetadata(
+                    "seal output layer already exists".into(),
+                ));
+            }
+            let sealed_version = u64::try_from(allocate_id_state(state, "sealed_version")?)
+                .map_err(|_| WorkspaceError::CorruptMetadata("negative sealed version".into()))?;
+            state.layers.insert(
+                request.sealed_layer_id,
+                LayerRecord {
+                    layer_id: request.sealed_layer_id,
+                    parent_layer_id: None,
+                    state: LayerState::Sealed,
+                    schema_version: WORKSPACE_SCHEMA_VERSION,
+                    sealed_version: Some(sealed_version),
+                    delta_digest: Some(digest),
+                    root_hash: Some(root),
+                    depth: 1,
+                    owner_workspace_id: None,
+                    next_sequence,
+                    owned_slice_count: 0,
+                    owned_bytes: 0,
+                    created_at_ns: now,
+                    sealed_at_ns: Some(now),
+                },
+            );
+            state.layers.insert(
+                new_head,
+                writable_layer(
+                    new_head,
+                    request.sealed_layer_id,
+                    2,
+                    journal.workspace_id,
+                    now,
+                ),
+            );
+            let revision = BaseRevision {
+                layer_id: request.sealed_layer_id,
+                sealed_version,
+                root_hash: root,
+            };
+            let epoch = workspace
+                .head_epoch
+                .checked_add(1)
+                .ok_or_else(|| WorkspaceError::CorruptMetadata("head epoch overflows".into()))?;
+            let mut workspace = workspace;
+            workspace.head_layer_id = new_head;
+            workspace.head_epoch = epoch;
+            workspace.fork_base = Some(revision.clone());
+            workspace.state = WorkspaceState::Active;
+            workspace.updated_at_ns = now;
+            state.workspaces.insert(journal.workspace_id, workspace);
+            let mut old_head = head;
+            old_head.state = LayerState::Deleting;
+            old_head.owner_workspace_id = None;
+            state.layers.insert(old_head.layer_id, old_head);
+            let pending_bytes = request
+                .delta
+                .extents
+                .iter()
+                .map(|row| row.length)
+                .fold(0_u64, u64::saturating_add);
+            let mut completed = journal;
+            completed.phase = SealPhase::Completed;
+            completed.pending_bytes = pending_bytes;
+            completed.delta_digest = Some(digest);
+            completed.root_hash = Some(root);
+            completed.updated_at_ns = now;
+            state.journals.insert(completed.journal_id, completed);
+            for row in &request.delta.dentries {
+                writes.push(put(dentry_key(row), row)?);
+            }
+            for row in &request.delta.inodes {
+                writes.push(put(inode_key(row), row)?);
+            }
+            for row in &request.delta.xattrs {
+                writes.push(put(xattr_key(row), row)?);
+            }
+            for row in &request.delta.acls {
+                writes.push(put(acl_key(row), row)?);
+            }
+            for row in &request.delta.extents {
+                writes.push(put(extent_key(row), row)?);
+            }
+            Ok(SealResult {
+                revision,
+                new_head_layer_id: new_head,
+                head_epoch: epoch,
+            })
+        })
+        .await
+    }
+
+    async fn abort_workspace_seal(
+        &self,
+        request: AbortWorkspaceSeal,
+    ) -> Result<(), WorkspaceError> {
+        self.require_admin_access()?;
+        let now = self.now_ns().await?;
+        self.update_control(|state, _writes| {
+            let journal = state
+                .journals
+                .get(&request.journal_id)
+                .cloned()
+                .ok_or_else(|| {
+                    WorkspaceError::Backend(format!(
+                        "seal journal not found: {}",
+                        request.journal_id
+                    ))
+                })?;
+            if matches!(journal.phase, SealPhase::Completed | SealPhase::Aborted) {
+                return Ok(());
+            }
+            if journal.phase != SealPhase::Prepare {
+                return Err(WorkspaceError::InvalidStateTransition {
+                    from: format!("{:?}", journal.phase),
+                    to: "Aborted".into(),
+                });
+            }
+            let workspace = state
+                .workspaces
+                .get_mut(&journal.workspace_id)
+                .ok_or(WorkspaceError::WorkspaceNotFound(journal.workspace_id))?;
+            if workspace.head_layer_id != journal.old_head_layer_id
+                || workspace.head_epoch != journal.expected_head_epoch
+                || workspace.state != WorkspaceState::Sealing
+            {
+                return Err(WorkspaceError::Fenced);
+            }
+            workspace.state = WorkspaceState::Active;
+            workspace.updated_at_ns = now;
+            let mut aborted = journal;
+            aborted.phase = SealPhase::Aborted;
+            aborted.last_error = Some(request.reason.clone());
+            aborted.updated_at_ns = now;
+            state.journals.insert(aborted.journal_id, aborted);
+            Ok(())
+        })
+        .await
+    }
+
     async fn load_seal_journal(
         &self,
         journal_id: JournalId,

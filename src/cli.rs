@@ -98,6 +98,8 @@ use crate::workspace_overlay::packed_v3::PackedV3ReadonlyMeta;
 #[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay::publish::diff::WorkspaceDiff;
 #[cfg(feature = "workspace-overlay")]
+use crate::workspace_overlay::seal::WorkspaceSealer;
+#[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
 #[cfg(feature = "workspace-overlay")]
 use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
@@ -2762,6 +2764,11 @@ where
             let created =
                 workspace_bucket::fork(store, revision, count, owner, &data_config).await?;
             print_json(&created)?;
+        }
+        WorkspaceCommand::Seal { workspace } => {
+            validate_workspace_header(&store).await?;
+            let sealed = WorkspaceSealer::new(store).seal(workspace).await?;
+            print_json(&sealed)?;
         }
         WorkspaceCommand::List => {
             validate_workspace_header(&store).await?;
