@@ -1639,6 +1639,7 @@ where
                             object.read_piggyback_full,
                             object.read_background_prefetches,
                             object.read_background_prefetch_dropped,
+                            object.read_background_prefetch_suppressed,
                         );
                     }
                     if let Some(meta_metrics) = &meta_metrics {

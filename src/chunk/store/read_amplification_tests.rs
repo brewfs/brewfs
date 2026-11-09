@@ -1,0 +1,380 @@
+//! Read-amplification regression tests for the background whole-block prefetch.
+//!
+//! A random small read that misses the page cache used to schedule a
+//! background download of the whole block. When the working set is much larger
+//! than the cache, that block is evicted before anybody reads it again, so
+//! every small read paid for a whole block of traffic.
+//!
+//! The tests below run the same workload twice — once with the legacy
+//! unconditional prefetch and once with the working-set guard — and require the
+//! guarded run to transfer less than a small fraction of the legacy traffic.
+
+use super::*;
+use crate::cadapter::localfs::LocalFsBackend;
+use crate::chunk::compress::encode_persisted_block;
+
+/// Backend that records the traffic it served.
+///
+/// `get_object` transfers a whole block, `get_object_range` transfers a range.
+#[derive(Clone)]
+struct CountingBackend {
+    inner: LocalFsBackend,
+    prefer_full: bool,
+    full_gets: Arc<AtomicU64>,
+    range_gets: Arc<AtomicU64>,
+    full_bytes: Arc<AtomicU64>,
+    range_bytes: Arc<AtomicU64>,
+}
+
+impl CountingBackend {
+    fn new(root: &std::path::Path, prefer_full: bool) -> Self {
+        Self {
+            inner: LocalFsBackend::new(root),
+            prefer_full,
+            full_gets: Arc::new(AtomicU64::new(0)),
+            range_gets: Arc::new(AtomicU64::new(0)),
+            full_bytes: Arc::new(AtomicU64::new(0)),
+            range_bytes: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn total_gets(&self) -> u64 {
+        self.full_gets.load(Ordering::Relaxed) + self.range_gets.load(Ordering::Relaxed)
+    }
+
+    fn total_bytes(&self) -> u64 {
+        self.full_bytes.load(Ordering::Relaxed) + self.range_bytes.load(Ordering::Relaxed)
+    }
+
+    fn full_gets(&self) -> u64 {
+        self.full_gets.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait]
+impl ObjectBackend for CountingBackend {
+    fn prefers_full_object_reads(&self) -> bool {
+        self.prefer_full
+    }
+
+    async fn put_object(&self, key: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.put_object(key, data).await
+    }
+
+    async fn get_object(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.full_gets.fetch_add(1, Ordering::Relaxed);
+        let data = self.inner.get_object(key).await?;
+        if let Some(bytes) = data.as_ref() {
+            self.full_bytes
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
+        Ok(data)
+    }
+
+    async fn get_object_range(
+        &self,
+        key: &str,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> anyhow::Result<usize> {
+        self.range_gets.fetch_add(1, Ordering::Relaxed);
+        let read = self.inner.get_object_range(key, offset, buf).await?;
+        self.range_bytes.fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
+
+    async fn get_etag(&self, key: &str) -> anyhow::Result<String> {
+        self.inner.get_etag(key).await
+    }
+
+    async fn delete_object(&self, key: &str) -> anyhow::Result<()> {
+        self.inner.delete_object(key).await
+    }
+}
+
+/// One measurement of a random small-read workload.
+struct Workload {
+    backend: CountingBackend,
+    stats: ObjectStoreStatsSnapshot,
+}
+
+impl Workload {
+    fn bytes(&self) -> u64 {
+        self.backend.total_bytes()
+    }
+
+    fn gets(&self) -> u64 {
+        self.backend.total_gets()
+    }
+}
+
+/// Builds a store whose objects hold one block per slice.
+async fn store_with_slices(
+    objects: &std::path::Path,
+    cache: &std::path::Path,
+    slices: u64,
+    block_size: usize,
+    working_set_factor: u32,
+    read_memory_bytes: u64,
+) -> anyhow::Result<(ObjectBlockStore<CountingBackend>, Vec<u8>, CountingBackend)> {
+    let raw: Vec<u8> = (0..block_size).map(|i: usize| (i % 251) as u8).collect();
+    let backend = CountingBackend::new(objects, false);
+    for slice in 1..=slices {
+        backend
+            .put_object(
+                &format!("chunks-v2/{slice}/0"),
+                &encode_persisted_block(&raw, Compression::None),
+            )
+            .await?;
+    }
+    let store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend.clone()),
+        ChunksCacheConfig::with_budgets(read_memory_bytes, 0, cache.to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            block_size,
+            range_prefetch_working_set_factor: working_set_factor,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((store, raw, backend))
+}
+
+/// Reads one 4 KiB page from every slice, each from a different block.
+async fn random_small_reads(
+    store: &ObjectBlockStore<CountingBackend>,
+    slices: u64,
+    raw: &[u8],
+) -> anyhow::Result<()> {
+    let mut buf = vec![0u8; 4096];
+    for slice in 1..=slices {
+        // A distinct page per slice, so no two reads share a block.
+        let offset = ((slice * 7) % (raw.len() / 4096) as u64) * 4096;
+        store.read_range((slice, 0), offset, &mut buf).await?;
+        let start = offset as usize;
+        assert_eq!(buf, raw[start..start + 4096]);
+    }
+    Ok(())
+}
+
+/// Waits until the background prefetches have settled.
+async fn wait_for_prefetch_settle(store: &ObjectBlockStore<CountingBackend>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut previous = store.object_metrics.snapshot().read_background_prefetches;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let current = store.object_metrics.snapshot().read_background_prefetches;
+        if current == previous {
+            return;
+        }
+        previous = current;
+    }
+}
+
+/// Runs the workload with the given working-set factor.
+async fn run_workload(
+    working_set_factor: u32,
+    slices: u64,
+    block_size: usize,
+    read_memory_bytes: u64,
+) -> anyhow::Result<Workload> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw, backend) = store_with_slices(
+        objects.path(),
+        cache.path(),
+        slices,
+        block_size,
+        working_set_factor,
+        read_memory_bytes,
+    )
+    .await?;
+    random_small_reads(&store, slices, &raw).await?;
+    wait_for_prefetch_settle(&store).await;
+    let stats = store.object_metrics.snapshot();
+    Ok(Workload { backend, stats })
+}
+
+#[tokio::test]
+async fn a_working_set_above_the_cache_budget_does_not_amplify_reads() -> anyhow::Result<()> {
+    let block_size = 4 << 20;
+    let slices = 64u64;
+    // The block cache holds a single block, so a working set of many blocks
+    // can never be served from it: every prefetched block is dead weight.
+    let read_memory_bytes = block_size as u64;
+
+    let legacy = run_workload(0, slices, block_size, read_memory_bytes).await?;
+    let guarded = run_workload(4, slices, block_size, read_memory_bytes).await?;
+
+    assert_eq!(
+        legacy.stats.read_background_prefetches, slices as u64,
+        "the legacy path prefetches a whole block for every cold miss"
+    );
+    assert_eq!(
+        legacy.backend.full_gets(),
+        slices as u64,
+        "the legacy path downloads one whole object per read"
+    );
+
+    assert_eq!(
+        guarded.stats.read_background_prefetch_suppressed > 0,
+        true,
+        "the guard must report the prefetches it suppressed"
+    );
+    assert!(
+        guarded.backend.full_gets() < slices as u64,
+        "the guarded path must not download a whole object per read, got {}",
+        guarded.backend.full_gets()
+    );
+
+    // The FINDING measured 12.1 MB pulled for every 4 KiB read. The guarded
+    // path must stay close to the page granularity the read actually needs.
+    let legacy_amplification = legacy.bytes() as f64 / (slices * 4096) as f64;
+    let guarded_amplification = guarded.bytes() as f64 / (slices * 4096) as f64;
+    println!(
+        "legacy: bytes={} gets={} full_gets={} ampl={legacy_amplification:.1}",
+        legacy.bytes(),
+        legacy.gets(),
+        legacy.backend.full_gets()
+    );
+    println!(
+        "guarded: bytes={} gets={} full_gets={} ampl={guarded_amplification:.1}",
+        guarded.bytes(),
+        guarded.gets(),
+        guarded.backend.full_gets()
+    );
+    assert!(
+        guarded_amplification * 2.0 < legacy_amplification,
+        "the guarded path ({guarded_amplification:.1}x) must transfer far less than \
+         the legacy path ({legacy_amplification:.1}x)"
+    );
+    assert!(
+        guarded_amplification * 4.0 < legacy_amplification,
+        "the guarded path ({guarded_amplification:.1}x) must transfer far less \
+         than the legacy path ({legacy_amplification:.1}x)"
+    );
+
+    // The property that matters: the traffic the guard spends on speculative
+    // whole-block downloads is bounded by the cache, not by the working set.
+    // The legacy path scales with the working set — 64 blocks in, 64 whole
+    // blocks out — while the guarded path stops after the cache budget is
+    // reached, so the same reads cost a bounded number of blocks.
+    let speculative_bytes = guarded.backend.full_bytes.load(Ordering::Relaxed);
+    // The persisted frame adds a small header per object, so the traffic is
+    // the cache budget plus one header per prefetched block.
+    let cache_budget = read_memory_bytes * 4 + slices * PERSISTED_HEADER_LEN as u64;
+    assert!(
+        speculative_bytes <= cache_budget,
+        "speculative whole-block traffic {speculative_bytes} must stay within \
+         the cache budget {cache_budget}"
+    );
+    assert!(
+        guarded.backend.full_gets() <= 5,
+        "the guard must stop prefetching once the cache budget is reached, \
+         got {} whole-object GETs",
+        guarded.backend.full_gets()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_working_set_inside_the_cache_budget_still_prefetches() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let block_size = 4 << 20;
+    let slices = 4u64;
+    // A cache that holds every block of the working set many times over: the
+    // prefetch pays off and must not be suppressed.
+    let read_memory_bytes = block_size as u64 * slices * 4;
+    let (store, raw, _backend) = store_with_slices(
+        objects.path(),
+        cache.path(),
+        slices,
+        block_size,
+        4,
+        read_memory_bytes,
+    )
+    .await?;
+
+    random_small_reads(&store, slices, &raw).await?;
+
+    let stats = store.object_metrics.snapshot();
+    assert_eq!(
+        stats.read_background_prefetch_suppressed, 0,
+        "a working set inside the cache budget must not suppress prefetches"
+    );
+    assert_eq!(
+        stats.read_background_prefetches, slices as u64,
+        "each cold block miss still schedules its background prefetch"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_zero_factor_keeps_the_unconditional_prefetch() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let block_size = 4 << 20;
+    let slices = 8u64;
+    let (store, raw, _backend) = store_with_slices(
+        objects.path(),
+        cache.path(),
+        slices,
+        block_size,
+        0,
+        block_size as u64,
+    )
+    .await?;
+
+    random_small_reads(&store, slices, &raw).await?;
+
+    let stats = store.object_metrics.snapshot();
+    assert_eq!(
+        stats.read_background_prefetch_suppressed, 0,
+        "a zero factor disables the estimate and keeps the legacy behavior"
+    );
+    assert_eq!(
+        stats.read_background_prefetches, slices as u64,
+        "every range miss still schedules its background prefetch"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_disabled_prefetch_never_downloads_a_whole_block() -> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let block_size = 4 << 20;
+    let slices = 8u64;
+    let raw: Vec<u8> = (0..block_size).map(|i: usize| (i % 251) as u8).collect();
+    let backend = CountingBackend::new(objects.path(), false);
+    for slice in 1..=slices {
+        backend
+            .put_object(
+                &format!("chunks-v2/{slice}/0"),
+                &encode_persisted_block(&raw, Compression::None),
+            )
+            .await?;
+    }
+    let store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend.clone()),
+        ChunksCacheConfig::with_budgets(block_size as u64, 0, cache.path().to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            block_size,
+            range_background_prefetch: false,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    random_small_reads(&store, slices, &raw).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let stats = store.object_metrics.snapshot();
+    assert_eq!(stats.read_background_prefetches, 0);
+    assert_eq!(stats.read_full_gets, 0);
+    assert_eq!(backend.full_gets(), 0);
+    Ok(())
+}

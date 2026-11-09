@@ -1468,6 +1468,7 @@ where
         block_size: layout.block_size as usize,
         compression: cache.compression,
         range_background_prefetch: cache.range_background_prefetch,
+        range_prefetch_working_set_factor: cache.range_prefetch_working_set_factor,
         populate_write_cache_after_upload: cache.populate_write_cache_after_upload,
         persist_write_cache_after_upload: cache.persist_write_cache_after_upload
             && !reuse_writeback_stage,

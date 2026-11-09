@@ -62,6 +62,7 @@ usage() {
   BREWFS_READ_MEMORY_BYTES BREWFS_READ_SSD_BYTES BREWFS_WRITE_MEMORY_BYTES BREWFS_WRITE_SSD_BYTES
   BREWFS_DIRTY_SLICE_TARGET_SIZE BREWFS_DIRTY_SLICE_MAX_AGE_MS BREWFS_UPLOAD_CONCURRENCY
   BREWFS_PREFETCH_ENABLED BREWFS_PREFETCH_MAX_BYTES BREWFS_PREFETCH_CONCURRENCY BREWFS_RANGE_BACKGROUND_PREFETCH BREWFS_MEMORY_BUDGET_BYTES
+  BREWFS_RANGE_PREFETCH_WORKING_SET_FACTOR
   BREWFS_FUSE_WORKERS BREWFS_FUSE_MAX_BACKGROUND BREWFS_FUSE_DIRECT_IO BREWFS_FUSE_READ_DIRECT_IO BREWFS_FUSE_WRITE_DIRECT_IO BREWFS_FUSE_KEEP_CACHE BREWFS_FUSE_WRITEBACK
   BREWFS_REQUEST_TRACE BREWFS_REQUEST_TRACE_SAMPLE_RATE TOKIO_WORKER_THREADS
   BREWFS_WRITEBACK_UPLOAD_CONCURRENCY
@@ -357,7 +358,14 @@ mkdir -p "$ARTIFACTS_DIR"
 
 # 预清理：杀掉占用目标端口的残留容器，确保 compose up 不会端口冲突
 preclean_ports() {
-    local -a ports=(16379 19000 19001)
+    # Use the ports this run actually binds. Another perf session on the same
+    # host may own the defaults, and killing its containers would tear down
+    # a campaign that is still measuring.
+    local -a ports=(
+        "${REDIS_HOST_PORT:-16379}"
+        "${RUSTFS_S3_HOST_PORT:-19000}"
+        "${RUSTFS_CONSOLE_HOST_PORT:-19001}"
+    )
     for port in "${ports[@]}"; do
         local pid
         pid=$(ss -tlnp 2>/dev/null | awk -v p=":${port}\$" '$0 ~ p {sub(/.*pid=/, ""); sub(/,.*/, ""); print $0}') || true
@@ -778,6 +786,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
     -e BREWFS_PREFETCH_MAX_BYTES \
     -e BREWFS_PREFETCH_CONCURRENCY \
     -e BREWFS_RANGE_BACKGROUND_PREFETCH \
+    -e BREWFS_RANGE_PREFETCH_WORKING_SET_FACTOR \
     -e BREWFS_MEMORY_BUDGET_BYTES \
     -e BREWFS_COMPRESSION \
     -e ASYNCFUSE_PREPOST_READ \
