@@ -833,7 +833,8 @@ where
         let requested = ahead.max(block_size);
         let remaining = file_size - base_start;
         let ahead_len = requested.min(remaining);
-        let ahead_end = align_up_to(base_start.saturating_add(ahead_len), block_size).min(file_size);
+        let ahead_end =
+            align_up_to(base_start.saturating_add(ahead_len), block_size).min(file_size);
         let ahead_start = base_start.max(session.prefetched_until);
         if ahead_end <= ahead_start {
             return None;

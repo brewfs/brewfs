@@ -208,22 +208,21 @@ async fn a_working_set_above_the_cache_budget_does_not_amplify_reads() -> anyhow
     let guarded = run_workload(4, slices, block_size, read_memory_bytes).await?;
 
     assert_eq!(
-        legacy.stats.read_background_prefetches, slices as u64,
+        legacy.stats.read_background_prefetches, slices,
         "the legacy path prefetches a whole block for every cold miss"
     );
     assert_eq!(
         legacy.backend.full_gets(),
-        slices as u64,
+        slices,
         "the legacy path downloads one whole object per read"
     );
 
-    assert_eq!(
+    assert!(
         guarded.stats.read_background_prefetch_suppressed > 0,
-        true,
         "the guard must report the prefetches it suppressed"
     );
     assert!(
-        guarded.backend.full_gets() < slices as u64,
+        guarded.backend.full_gets() < slices,
         "the guarded path must not download a whole object per read, got {}",
         guarded.backend.full_gets()
     );
@@ -305,7 +304,7 @@ async fn a_working_set_inside_the_cache_budget_still_prefetches() -> anyhow::Res
         "a working set inside the cache budget must not suppress prefetches"
     );
     assert_eq!(
-        stats.read_background_prefetches, slices as u64,
+        stats.read_background_prefetches, slices,
         "each cold block miss still schedules its background prefetch"
     );
     Ok(())
@@ -335,7 +334,7 @@ async fn the_zero_factor_keeps_the_unconditional_prefetch() -> anyhow::Result<()
         "a zero factor disables the estimate and keeps the legacy behavior"
     );
     assert_eq!(
-        stats.read_background_prefetches, slices as u64,
+        stats.read_background_prefetches, slices,
         "every range miss still schedules its background prefetch"
     );
     Ok(())
