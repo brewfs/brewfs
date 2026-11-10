@@ -253,32 +253,43 @@ where
                 return;
             }
 
-            let (ahead_start, mut ahead_len) = if read_len < block_size {
-                let Some(reader) = self.reader_for_handle(ino as u64, fh) else {
+            let (ahead_start, ahead_len) =
+                if let Some(reader) = self.reader_for_handle(ino as u64, fh) {
+                    let Some(range) = reader.prefetch_range_after_read(offset, read_len) else {
+                        return;
+                    };
+                    range
+                } else if read_len >= block_size {
+                    let mut len = read_len.max(block_size);
+                    if let Some(budget) = &self.memory_budget {
+                        len = ((len as f64 * budget.readahead_factor()).ceil() as u64)
+                            .max(block_size)
+                            .min(self.config.max_ahead.max(block_size));
+                    }
+                    (offset + read_len, len)
+                } else {
                     return;
                 };
-                let Some(range) = reader.prefetch_range_after_read(offset, read_len) else {
-                    return;
-                };
-                range
-            } else {
-                (offset + read_len, read_len.max(block_size))
-            };
-            if let Some(budget) = &self.memory_budget {
-                ahead_len = ((ahead_len as f64 * budget.readahead_factor()).ceil() as u64)
-                    .max(block_size)
-                    .min(self.config.max_ahead.max(block_size));
-            }
 
-            let task = PrefetchTask {
-                ino,
-                start: ahead_start,
-                len: ahead_len,
-                priority: PrefetchPriority::Sequential,
-                owner_fh: fh,
-            };
             let p = prefetcher.clone();
-            tokio::spawn(async move { p.submit(task).await });
+            let end = ahead_start.saturating_add(ahead_len);
+            tokio::spawn(async move {
+                let mut cursor = ahead_start;
+                while cursor < end {
+                    let next_boundary = ((cursor / block_size) + 1).saturating_mul(block_size);
+                    let chunk_end = next_boundary.min(end);
+                    let len = chunk_end - cursor;
+                    p.submit(PrefetchTask {
+                        ino,
+                        start: cursor,
+                        len,
+                        priority: PrefetchPriority::Sequential,
+                        owner_fh: fh,
+                    })
+                    .await;
+                    cursor = chunk_end;
+                }
+            });
         }
     }
 
@@ -411,13 +422,11 @@ impl Session {
             // block, then grow if the stream proves sequential.
             ahead = block_size.min(max_ahead);
         } else if ahead < max_ahead
-            && self.total >= ahead
+            && self.total > len
             && total_ahead_limit > usage.saturating_add(ahead.saturating_mul(4))
         {
             ahead = ahead.saturating_mul(2).min(max_ahead);
-        } else if ahead >= block_size
-            && (total_ahead_limit < usage.saturating_add(ahead / 2) || self.total < ahead / 4)
-        {
+        } else if ahead >= block_size && total_ahead_limit < usage.saturating_add(ahead / 2) {
             ahead /= 2;
         }
 
@@ -621,17 +630,25 @@ where
         let chunk_offset = offset % layout.chunk_size;
         if actual_len > 0 && actual_len <= layout.chunk_size - chunk_offset {
             let chunk_id = chunk_id_for(self.inode.ino(), offset / layout.chunk_size)?;
-            let slices = self.chunk_slices.get(&chunk_id).map(|entry| entry.clone());
+            let slices = match self.chunk_slices.get(&chunk_id) {
+                Some(entry) => Some(entry.clone()),
+                None => match self.backend.meta().get_slices(chunk_id).await {
+                    Ok(fetched) => {
+                        let arc = Arc::new(fetched);
+                        self.chunk_slices.insert(chunk_id, arc.clone());
+                        Some(arc)
+                    }
+                    Err(_) => None,
+                },
+            };
             if let Some(slices) = slices
-                && let Some(slice) = slices.last()
-                && chunk_offset >= slice.offset
+                && let Some(slice) =
+                    crate::chunk::reader::single_visible_slice(&slices, chunk_offset, actual_len)
             {
                 let relative = chunk_offset - slice.offset;
                 let block_size = u64::from(layout.block_size);
                 let block_offset = relative % block_size;
-                if actual_len <= slice.length.saturating_sub(relative)
-                    && actual_len <= block_size - block_offset
-                {
+                if actual_len <= block_size - block_offset {
                     self.back_pressure().await?;
                     if let Some(data) = self
                         .backend
@@ -813,7 +830,7 @@ where
             })
             .max_by_key(|session| session.ahead)?;
         let ahead = session.ahead;
-        let requested = read_len.max(block_size).min(ahead);
+        let requested = ahead.max(block_size);
         let remaining = file_size - base_start;
         let ahead_len = requested.min(remaining);
         let ahead_end = align_up_to(base_start.saturating_add(ahead_len), block_size).min(file_size);
@@ -2413,6 +2430,19 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].start, layout.block_size as u64 * 5);
         assert_eq!(tasks[0].len, layout.block_size as u64);
+
+        let third_offset = layout.block_size as u64 * 5;
+        let ahead = file_reader.check_session(third_offset, read_len);
+        assert_eq!(ahead, layout.block_size as u64 * 2);
+        reader.submit_prefetch(ino, fh, third_offset, read_len as u64);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let tasks = capture.tasks();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[1].start, layout.block_size as u64 * 6);
+        assert_eq!(tasks[1].len, layout.block_size as u64);
+        assert_eq!(tasks[2].start, layout.block_size as u64 * 7);
+        assert_eq!(tasks[2].len, layout.block_size as u64);
     }
 
     #[derive(Default)]

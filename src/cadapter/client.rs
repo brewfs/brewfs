@@ -32,6 +32,12 @@ pub trait ObjectBackend: Send + Sync {
         false
     }
 
+    /// Whether a cold full-block read can skip the separate 8-byte layout probe
+    /// GET and classify the frame directly from the full object response body.
+    fn skip_full_read_layout_probe(&self) -> bool {
+        self.prefers_full_object_reads()
+    }
+
     /// True only when the concrete transport/client cannot automatically
     /// resend a physical PUT/DELETE after an uncertain mutation outcome.
     fn forbids_mutation_replay(&self) -> bool {
@@ -374,6 +380,10 @@ impl<B: ObjectBackend> ObjectClient<B> {
     }
     pub(crate) fn prefers_full_object_reads(&self) -> bool {
         self.backend.prefers_full_object_reads()
+    }
+
+    pub(crate) fn skip_full_read_layout_probe(&self) -> bool {
+        self.backend.skip_full_read_layout_probe()
     }
 
     pub fn forbids_mutation_replay(&self) -> bool {

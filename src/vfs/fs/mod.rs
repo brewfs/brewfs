@@ -616,7 +616,7 @@ where
                                     return;
                                 }
                                 let _ =
-                                    fetcher.read_at(span.offset.into(), span.len as usize).await;
+                                    fetcher.warm_at(span.offset.into(), span.len as usize).await;
                             }));
                         }
                         for t in tasks {
