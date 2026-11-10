@@ -393,7 +393,7 @@ async fn full_object_read_without_probe_populates_format_cache_for_subsequent_ra
         )
         .await?;
 
-    let mut store = ObjectBlockStore::new_with_configs_async(
+    let store = ObjectBlockStore::new_with_configs_async(
         ObjectClient::new(backend.clone()),
         // Zero block cache budget so the subsequent range read misses block_cache.
         ChunksCacheConfig::with_budgets(0, 0, cache.path().to_path_buf()),
@@ -416,7 +416,7 @@ async fn full_object_read_without_probe_populates_format_cache_for_subsequent_ra
 
     // Switch to Sparse range reads: since format_cache was populated by the full GET,
     // a 4 KiB range read must issue exactly 1 payload range GET and 0 layout-probe GETs.
-    store.set_read_fetch_policy(ReadFetchPolicy::Sparse);
+    let store = store.with_read_fetch_policy(ReadFetchPolicy::Sparse);
     let mut page = vec![0u8; 4096];
     store.read_range((42, 0), 4096, &mut page).await?;
     assert_eq!(&page[..], &raw[4096..8192]);
