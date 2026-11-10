@@ -377,3 +377,54 @@ async fn the_disabled_prefetch_never_downloads_a_whole_block() -> anyhow::Result
     assert_eq!(backend.full_gets(), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn full_object_read_without_probe_populates_format_cache_for_subsequent_range_reads()
+-> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let block_size = 64 << 10;
+    let raw: Vec<u8> = (0..block_size).map(|i: usize| (i % 251) as u8).collect();
+    let backend = CountingBackend::new(objects.path(), true);
+    backend
+        .put_object(
+            "chunks-v2/42/0",
+            &encode_persisted_block(&raw, Compression::None),
+        )
+        .await?;
+
+    let mut store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend.clone()),
+        // Zero block cache budget so the subsequent range read misses block_cache.
+        ChunksCacheConfig::with_budgets(0, 0, cache.path().to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            block_size,
+            range_background_prefetch: false,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    // First read uses WholeObject (skip_full_read_probe = true), issuing 1 full GET
+    // and 0 range GETs while learning the persisted ObjectLayout from the 4-byte header.
+    let mut full_buf = vec![0u8; block_size];
+    store.read_range((42, 0), 0, &mut full_buf).await?;
+    assert_eq!(full_buf, raw);
+    assert_eq!(backend.full_gets(), 1);
+    assert_eq!(backend.range_gets.load(Ordering::Relaxed), 0);
+
+    // Switch to Sparse range reads: since format_cache was populated by the full GET,
+    // a 4 KiB range read must issue exactly 1 payload range GET and 0 layout-probe GETs.
+    store.set_read_fetch_policy(ReadFetchPolicy::Sparse);
+    let mut page = vec![0u8; 4096];
+    store.read_range((42, 0), 4096, &mut page).await?;
+    assert_eq!(&page[..], &raw[4096..8192]);
+    assert_eq!(backend.full_gets(), 1);
+    assert_eq!(
+        backend.range_gets.load(Ordering::Relaxed),
+        1,
+        "format_cache hit from prior full GET must avoid a 4-byte layout probe range GET"
+    );
+    Ok(())
+}

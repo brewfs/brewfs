@@ -881,10 +881,19 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         layout: ObjectLayout,
         compression: Compression,
         block_size: usize,
-    ) -> anyhow::Result<Option<(usize, Bytes)>> {
-        Self::observed_full_from(client, key, layout, compression, block_size, Origin::Demand).await
+    ) -> anyhow::Result<Option<(usize, ObjectLayout, Bytes)>> {
+        Self::observed_full_with_layout_from(
+            client,
+            key,
+            layout,
+            compression,
+            block_size,
+            Origin::Demand,
+        )
+        .await
     }
 
+    #[cfg(test)]
     async fn observed_full_from(
         client: &ObjectClient<B>,
         key: &str,
@@ -893,6 +902,26 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
         block_size: usize,
         origin: Origin,
     ) -> anyhow::Result<Option<(usize, Bytes)>> {
+        Ok(Self::observed_full_with_layout_from(
+            client,
+            key,
+            layout,
+            compression,
+            block_size,
+            origin,
+        )
+        .await?
+        .map(|(stored, _, decoded)| (stored, decoded)))
+    }
+
+    async fn observed_full_with_layout_from(
+        client: &ObjectClient<B>,
+        key: &str,
+        layout: ObjectLayout,
+        compression: Compression,
+        block_size: usize,
+        origin: Origin,
+    ) -> anyhow::Result<Option<(usize, ObjectLayout, Bytes)>> {
         // Framed LZ4/Zstd can be slightly larger than raw. Two raw blocks plus
         // 1 MiB admits valid writer output and prevents unbounded full bodies.
         let limit = (block_size as u64)
@@ -913,6 +942,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                         origin,
                         ReadWork::Decode,
                     );
+                    let resolved_layout = Self::actual_object_layout(layout, &bytes);
                     let decoded =
                         Self::decode_object(layout, compression, Bytes::from(bytes), block_size)
                             .map_err(|error| (FailureClass::Decode, error))?;
@@ -924,7 +954,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                             ),
                         ));
                     }
-                    Ok((stored, decoded))
+                    Ok((stored, resolved_layout, decoded))
                 },
             )
             .await
@@ -1077,6 +1107,16 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             .await
             .map_err(|error| anyhow::anyhow!("object layout probe failed: {error}"))?;
         Ok(*layout)
+    }
+
+    fn actual_object_layout(layout: ObjectLayout, bytes: &[u8]) -> ObjectLayout {
+        match layout {
+            ObjectLayout::Versioned(_) => match parse_persisted_header(bytes) {
+                PersistedHeader::Framed(compression) => ObjectLayout::Versioned(compression),
+                _ => layout,
+            },
+            ObjectLayout::Legacy => ObjectLayout::Legacy,
+        }
     }
 
     fn decode_object(
@@ -1244,6 +1284,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     ) {
         self.object_metrics.record_read_background_prefetch();
         let cache = self.block_cache.clone();
+        let format_cache = self.format_cache.clone();
         let client = self.client.clone();
         let read_flight = self.read_flight.clone();
         let prefetch_limit = self.range_prefetch_limit.clone();
@@ -1264,7 +1305,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
             let block_data = read_flight
                 .execute(key, || async move {
                     // Another leader may have published after our first miss.
-                    if let Some(data) = cache.get(&cache_key).await {
+                    if let Some(data) = cache.get_recheck(&cache_key).await {
                         return Ok::<_, anyhow::Error>(data);
                     }
                     bandwidth.acquire_download(block_size).await;
@@ -1274,7 +1315,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                         Origin::Prefetch,
                         ReadEvent::FetchLeader,
                     );
-                    let fetched = Self::observed_full_from(
+                    let fetched = Self::observed_full_with_layout_from(
                         &client,
                         &object_key,
                         layout,
@@ -1284,9 +1325,10 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
                     )
                     .await?;
                     match fetched {
-                        Some((stored, data)) => {
+                        Some((stored, resolved_layout, data)) => {
                             object_metrics.record_get(stored as u64, started.elapsed());
                             if !data.is_empty() {
+                                format_cache.insert(key, resolved_layout).await;
                                 cache.insert_opportunistic(cache_key, data.clone()).await;
                             }
                             Ok::<_, anyhow::Error>(data)
@@ -1530,9 +1572,12 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                     self.format_cache.insert(key, ObjectLayout::Legacy).await;
                 }
                 match fetched {
-                    Some((stored, data)) => {
+                    Some((stored, resolved_layout, data)) => {
                         object_metrics.record_get(stored as u64, started.elapsed());
                         if !data.is_empty() {
+                            if skip_full_read_probe {
+                                self.format_cache.insert(key, resolved_layout).await;
+                            }
                             self.block_cache
                                 .insert_opportunistic(key_str, data.clone())
                                 .await;
@@ -2069,9 +2114,12 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                     self.format_cache.insert(key, ObjectLayout::Legacy).await;
                 }
                 match fetched {
-                    Some((stored, data)) => {
+                    Some((stored, resolved_layout, data)) => {
                         object_metrics.record_get(stored as u64, started.elapsed());
                         if !data.is_empty() {
+                            if skip_full_read_probe {
+                                self.format_cache.insert(key, resolved_layout).await;
+                            }
                             self.block_cache
                                 .insert_opportunistic(key_str, data.clone())
                                 .await;
