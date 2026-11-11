@@ -1202,6 +1202,10 @@ impl ObjectBackend for S3Backend {
             .is_some_and(RustfsEcBlockSizeHint::enabled)
     }
 
+    fn skip_full_read_layout_probe(&self) -> bool {
+        true
+    }
+
     fn forbids_mutation_replay(&self) -> bool {
         self.mutation_replay_forbidden
     }

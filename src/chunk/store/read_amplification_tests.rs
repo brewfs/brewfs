@@ -208,22 +208,21 @@ async fn a_working_set_above_the_cache_budget_does_not_amplify_reads() -> anyhow
     let guarded = run_workload(4, slices, block_size, read_memory_bytes).await?;
 
     assert_eq!(
-        legacy.stats.read_background_prefetches, slices as u64,
+        legacy.stats.read_background_prefetches, slices,
         "the legacy path prefetches a whole block for every cold miss"
     );
     assert_eq!(
         legacy.backend.full_gets(),
-        slices as u64,
+        slices,
         "the legacy path downloads one whole object per read"
     );
 
-    assert_eq!(
+    assert!(
         guarded.stats.read_background_prefetch_suppressed > 0,
-        true,
         "the guard must report the prefetches it suppressed"
     );
     assert!(
-        guarded.backend.full_gets() < slices as u64,
+        guarded.backend.full_gets() < slices,
         "the guarded path must not download a whole object per read, got {}",
         guarded.backend.full_gets()
     );
@@ -305,7 +304,7 @@ async fn a_working_set_inside_the_cache_budget_still_prefetches() -> anyhow::Res
         "a working set inside the cache budget must not suppress prefetches"
     );
     assert_eq!(
-        stats.read_background_prefetches, slices as u64,
+        stats.read_background_prefetches, slices,
         "each cold block miss still schedules its background prefetch"
     );
     Ok(())
@@ -335,7 +334,7 @@ async fn the_zero_factor_keeps_the_unconditional_prefetch() -> anyhow::Result<()
         "a zero factor disables the estimate and keeps the legacy behavior"
     );
     assert_eq!(
-        stats.read_background_prefetches, slices as u64,
+        stats.read_background_prefetches, slices,
         "every range miss still schedules its background prefetch"
     );
     Ok(())
@@ -376,5 +375,56 @@ async fn the_disabled_prefetch_never_downloads_a_whole_block() -> anyhow::Result
     assert_eq!(stats.read_background_prefetches, 0);
     assert_eq!(stats.read_full_gets, 0);
     assert_eq!(backend.full_gets(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_object_read_without_probe_populates_format_cache_for_subsequent_range_reads()
+-> anyhow::Result<()> {
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let block_size = 64 << 10;
+    let raw: Vec<u8> = (0..block_size).map(|i: usize| (i % 251) as u8).collect();
+    let backend = CountingBackend::new(objects.path(), true);
+    backend
+        .put_object(
+            "chunks-v2/42/0",
+            &encode_persisted_block(&raw, Compression::None),
+        )
+        .await?;
+
+    let store = ObjectBlockStore::new_with_configs_async(
+        ObjectClient::new(backend.clone()),
+        // Zero block cache budget so the subsequent range read misses block_cache.
+        ChunksCacheConfig::with_budgets(0, 0, cache.path().to_path_buf()),
+        BlockStoreConfig {
+            compression: Compression::None,
+            block_size,
+            range_background_prefetch: false,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    // First read uses WholeObject (skip_full_read_probe = true), issuing 1 full GET
+    // and 0 range GETs while learning the persisted ObjectLayout from the 4-byte header.
+    let mut full_buf = vec![0u8; block_size];
+    store.read_range((42, 0), 0, &mut full_buf).await?;
+    assert_eq!(full_buf, raw);
+    assert_eq!(backend.full_gets(), 1);
+    assert_eq!(backend.range_gets.load(Ordering::Relaxed), 0);
+
+    // Switch to Sparse range reads: since format_cache was populated by the full GET,
+    // a 4 KiB range read must issue exactly 1 payload range GET and 0 layout-probe GETs.
+    let store = store.with_read_fetch_policy(ReadFetchPolicy::Sparse);
+    let mut page = vec![0u8; 4096];
+    store.read_range((42, 0), 4096, &mut page).await?;
+    assert_eq!(&page[..], &raw[4096..8192]);
+    assert_eq!(backend.full_gets(), 1);
+    assert_eq!(
+        backend.range_gets.load(Ordering::Relaxed),
+        1,
+        "format_cache hit from prior full GET must avoid a 4-byte layout probe range GET"
+    );
     Ok(())
 }
