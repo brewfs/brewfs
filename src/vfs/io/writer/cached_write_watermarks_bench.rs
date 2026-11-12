@@ -187,7 +187,7 @@ async fn cached_watermark_filewriter_comparison() {
                 .await
                 .unwrap();
             assert_eq!(bytes.len(), count * 4096);
-            for (i, page) in bytes.chunks_exact(4096).enumerate() {
+            for (i, page) in bytes.as_chunks::<4096>().0.iter().enumerate() {
                 assert!(page.iter().all(|&b| b == (i % 251) as u8));
             }
             println!(
