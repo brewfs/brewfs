@@ -12,6 +12,7 @@
 use super::*;
 use crate::cadapter::localfs::LocalFsBackend;
 use crate::chunk::compress::encode_persisted_block;
+use tokio::sync::Notify;
 
 /// Backend that records the traffic it served.
 ///
@@ -21,6 +22,9 @@ struct CountingBackend {
     inner: LocalFsBackend,
     prefer_full: bool,
     full_gets: Arc<AtomicU64>,
+    full_gets_completed: Arc<AtomicU64>,
+    full_gets_changed: Arc<Notify>,
+    full_get_gate: Arc<Semaphore>,
     range_gets: Arc<AtomicU64>,
     full_bytes: Arc<AtomicU64>,
     range_bytes: Arc<AtomicU64>,
@@ -32,6 +36,9 @@ impl CountingBackend {
             inner: LocalFsBackend::new(root),
             prefer_full,
             full_gets: Arc::new(AtomicU64::new(0)),
+            full_gets_completed: Arc::new(AtomicU64::new(0)),
+            full_gets_changed: Arc::new(Notify::new()),
+            full_get_gate: Arc::new(Semaphore::new(1)),
             range_gets: Arc::new(AtomicU64::new(0)),
             full_bytes: Arc::new(AtomicU64::new(0)),
             range_bytes: Arc::new(AtomicU64::new(0)),
@@ -62,12 +69,16 @@ impl ObjectBackend for CountingBackend {
     }
 
     async fn get_object(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        self.full_gets.fetch_add(1, Ordering::Relaxed);
+        self.full_gets.fetch_add(1, Ordering::Release);
+        self.full_gets_changed.notify_waiters();
+        let _gate = self.full_get_gate.acquire().await?;
         let data = self.inner.get_object(key).await?;
         if let Some(bytes) = data.as_ref() {
             self.full_bytes
                 .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         }
+        self.full_gets_completed.fetch_add(1, Ordering::Release);
+        self.full_gets_changed.notify_waiters();
         Ok(data)
     }
 
@@ -144,6 +155,7 @@ async fn store_with_slices(
 /// Reads one 4 KiB page from every slice, each from a different block.
 async fn random_small_reads(
     store: &ObjectBlockStore<CountingBackend>,
+    backend: &CountingBackend,
     slices: u64,
     raw: &[u8],
 ) -> anyhow::Result<()> {
@@ -154,22 +166,107 @@ async fn random_small_reads(
         store.read_range((slice, 0), offset, &mut buf).await?;
         let start = offset as usize;
         assert_eq!(buf, raw[start..start + 4096]);
+        // This is a serial traffic property, not a concurrency benchmark.
+        // Drain each accepted prefetch before the next miss: the production
+        // eight-slot limiter deliberately drops speculation when it is busy.
+        wait_for_prefetch_settle(store, backend).await;
     }
     Ok(())
 }
 
-/// Waits until the background prefetches have settled.
-async fn wait_for_prefetch_settle(store: &ObjectBlockStore<CountingBackend>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut previous = store.object_metrics.snapshot().read_background_prefetches;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let current = store.object_metrics.snapshot().read_background_prefetches;
-        if current == previous {
-            return;
+/// Wait for real backend completion, then for cache publication to release
+/// the worker's permit. The scheduling counter alone is never a drain signal.
+async fn wait_for_prefetch_settle(
+    store: &ObjectBlockStore<CountingBackend>,
+    backend: &CountingBackend,
+) {
+    let scheduled = store.object_metrics.snapshot().read_background_prefetches;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let changed = backend.full_gets_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if backend.full_gets_completed.load(Ordering::Acquire) == scheduled {
+                break;
+            }
+            changed.await;
         }
-        previous = current;
-    }
+        // Do not acquire these before observing backend completion: doing so
+        // could make an unpolled spawned worker fail try_acquire and be dropped.
+        let _drained = store
+            .range_prefetch_limit
+            .clone()
+            .acquire_many_owned(8)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .object_metrics
+                .snapshot()
+                .read_background_prefetch_dropped,
+            0
+        );
+        assert_eq!(backend.full_gets(), scheduled);
+    })
+    .await
+    .expect("scheduled prefetches must finish backend IO and cache publication");
+}
+
+#[tokio::test]
+async fn prefetch_settle_waits_for_backend_completion_and_cache_publication() -> anyhow::Result<()>
+{
+    let objects = tempfile::tempdir()?;
+    let cache = tempfile::tempdir()?;
+    let (store, raw, backend) =
+        store_with_slices(objects.path(), cache.path(), 1, 64 << 10, 0, 64 << 10).await?;
+    let gate = backend.full_get_gate.acquire().await?;
+    let mut page = vec![0; 4096];
+    store.read_range((1, 0), 4096, &mut page).await?;
+    assert_eq!(page, raw[4096..8192]);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let changed = backend.full_gets_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if backend.full_gets() == 1 {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("the real prefetch must enter the gated full GET");
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
+    assert_eq!(store.range_prefetch_limit.available_permits(), 7);
+    assert_eq!(backend.full_gets_completed.load(Ordering::Acquire), 0);
+
+    let settle = wait_for_prefetch_settle(&store, &backend);
+    tokio::pin!(settle);
+    // The old helper returned after 20 ms of an unchanged scheduling count.
+    // A held backend gate must keep the drain pending regardless of that count.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut settle)
+            .await
+            .is_err(),
+        "settle returned before the gated backend completed"
+    );
+    drop(gate);
+    settle.await;
+    assert_eq!(backend.full_gets_completed.load(Ordering::Acquire), 1);
+    assert_eq!(store.range_prefetch_limit.available_permits(), 8);
+    assert_eq!(
+        store
+            .block_cache
+            .get(&ObjectBlockStore::<CountingBackend>::key_for((1, 0)))
+            .await,
+        Some(Bytes::from(raw)),
+        "the worker must finish cache publication before drain returns"
+    );
+    Ok(())
 }
 
 /// Runs the workload with the given working-set factor.
@@ -190,8 +287,7 @@ async fn run_workload(
         read_memory_bytes,
     )
     .await?;
-    random_small_reads(&store, slices, &raw).await?;
-    wait_for_prefetch_settle(&store).await;
+    random_small_reads(&store, &backend, slices, &raw).await?;
     let stats = store.object_metrics.snapshot();
     Ok(Workload { backend, stats })
 }
@@ -286,7 +382,7 @@ async fn a_working_set_inside_the_cache_budget_still_prefetches() -> anyhow::Res
     // A cache that holds every block of the working set many times over: the
     // prefetch pays off and must not be suppressed.
     let read_memory_bytes = block_size as u64 * slices * 4;
-    let (store, raw, _backend) = store_with_slices(
+    let (store, raw, backend) = store_with_slices(
         objects.path(),
         cache.path(),
         slices,
@@ -296,7 +392,7 @@ async fn a_working_set_inside_the_cache_budget_still_prefetches() -> anyhow::Res
     )
     .await?;
 
-    random_small_reads(&store, slices, &raw).await?;
+    random_small_reads(&store, &backend, slices, &raw).await?;
 
     let stats = store.object_metrics.snapshot();
     assert_eq!(
@@ -316,7 +412,7 @@ async fn the_zero_factor_keeps_the_unconditional_prefetch() -> anyhow::Result<()
     let cache = tempfile::tempdir()?;
     let block_size = 4 << 20;
     let slices = 8u64;
-    let (store, raw, _backend) = store_with_slices(
+    let (store, raw, backend) = store_with_slices(
         objects.path(),
         cache.path(),
         slices,
@@ -326,7 +422,7 @@ async fn the_zero_factor_keeps_the_unconditional_prefetch() -> anyhow::Result<()
     )
     .await?;
 
-    random_small_reads(&store, slices, &raw).await?;
+    random_small_reads(&store, &backend, slices, &raw).await?;
 
     let stats = store.object_metrics.snapshot();
     assert_eq!(
@@ -368,8 +464,7 @@ async fn the_disabled_prefetch_never_downloads_a_whole_block() -> anyhow::Result
     )
     .await?;
 
-    random_small_reads(&store, slices, &raw).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    random_small_reads(&store, &backend, slices, &raw).await?;
 
     let stats = store.object_metrics.snapshot();
     assert_eq!(stats.read_background_prefetches, 0);
