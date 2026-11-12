@@ -666,7 +666,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 group_bytes.min(budget.capacity(V3BudgetPool::Metadata) / 4),
                 budget.clone(),
             ),
-            group_directories: super::read_cache::RetainedMetadata::with_parallel_fills(
+            group_directories: super::read_cache::RetainedMetadata::new(
                 (cache_bytes / 64)
                     .min(4 << 20)
                     .min(budget.capacity(V3BudgetPool::Metadata) / 16),

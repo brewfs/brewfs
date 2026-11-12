@@ -10,6 +10,37 @@ use crate::workspace_overlay::packed_v3::wire::{PackedResult, PackedWireError};
 // Covers the fixed digest key, BTree node, Arc and entry bookkeeping. The
 // decoded value independently retains its original mount budget permit.
 const ENTRY_BYTES: u64 = 512;
+const MAX_FILLS: usize = 8;
+// Covers even the first BTree leaf's spare key/value slots, plus the Fill,
+// Arc, mutex and permit. The decoded value retains its own payload permit.
+const FILL_BYTES: u64 = 1024;
+
+struct Fill<T> {
+    value: tokio::sync::Mutex<Option<Arc<T>>>,
+    _permit: V3OwnedPermit,
+}
+
+struct FillGuard<'a, T> {
+    cache: &'a RetainedMetadata<T>,
+    key: (u64, [u8; 32]),
+    fill: Option<Arc<Fill<T>>>,
+}
+
+impl<T> Drop for FillGuard<'_, T> {
+    fn drop(&mut self) {
+        let mut fills = self.cache.fills.lock().unwrap();
+        // The map and this guard are the final owners. Waiting followers also
+        // own guards, so a non-retained result survives until they consume it.
+        let fill = self.fill.take().unwrap();
+        if Arc::strong_count(&fill) == 2 {
+            fills.remove(&self.key);
+            // Release the final allocation/permit before waking a contender
+            // whose Control budget may have room for exactly one fill.
+            drop(fill);
+            self.cache.fill_changed.notify_waiters();
+        }
+    }
+}
 
 struct Entry<T> {
     value: Arc<T>,
@@ -32,7 +63,8 @@ pub(super) struct RetainedMetadata<T> {
     capacity: u64,
     budget: Arc<V3MountBudget>,
     state: Mutex<State<T>>,
-    fetch: Box<[tokio::sync::Mutex<()>]>,
+    fills: Mutex<BTreeMap<(u64, [u8; 32]), Arc<Fill<T>>>>,
+    fill_changed: tokio::sync::Notify,
 }
 
 impl<T> RetainedMetadata<T> {
@@ -47,16 +79,48 @@ impl<T> RetainedMetadata<T> {
                 entries: BTreeMap::new(),
             }),
             budget,
-            fetch: vec![tokio::sync::Mutex::new(())].into_boxed_slice(),
+            fills: Mutex::new(BTreeMap::new()),
+            fill_changed: tokio::sync::Notify::new(),
         }
     }
 
-    /// Bounded stripes let a directory page fetch independent groups together.
-    /// Identical keys still share one fill; existing data caches stay serial.
-    pub(super) fn with_parallel_fills(capacity: u64, budget: Arc<V3MountBudget>) -> Self {
-        let mut cache = Self::new(capacity, budget);
-        cache.fetch = (0..8).map(|_| tokio::sync::Mutex::new(())).collect();
-        cache
+    async fn fill(&self, epoch: u64, key: [u8; 32]) -> PackedResult<FillGuard<'_, T>> {
+        loop {
+            let changed = self.fill_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            self.check_epoch(epoch)?;
+            {
+                let mut fills = self.fills.lock().unwrap();
+                let key = (epoch, key);
+                if let Some(fill) = fills.get(&key) {
+                    return Ok(FillGuard {
+                        cache: self,
+                        key,
+                        fill: Some(fill.clone()),
+                    });
+                }
+                if fills.len() < MAX_FILLS {
+                    let permit = self.budget.admit(&[(V3BudgetPool::Control, FILL_BYTES)])?;
+                    let fill = Arc::new(Fill {
+                        value: tokio::sync::Mutex::new(None),
+                        _permit: permit,
+                    });
+                    fills.insert(key, fill.clone());
+                    return Ok(FillGuard {
+                        cache: self,
+                        key,
+                        fill: Some(fill),
+                    });
+                }
+            }
+            tokio::select! {
+                () = changed => {},
+                () = self.budget.wait_read_cache_epoch_changed(epoch) => {
+                    return Err(PackedWireError::ReadViewChanged);
+                }
+            }
+        }
     }
 
     pub(super) fn cached(
@@ -125,17 +189,29 @@ impl<T> RetainedMetadata<T> {
             self.check_epoch(epoch)?;
             return Ok(value);
         }
-        // Share successful same-key fills with bounded flight state. Namespace
-        // caches use independent stripes; other caches have one fill lock.
-        let _fill = self.fetch[usize::from(key[0]) % self.fetch.len()]
-            .lock()
-            .await;
+        // Only identical epoch/digest pairs wait on each other. The map is
+        // bounded, its owners are charged, and no registry lock spans I/O.
+        let fill = self.fill(epoch, key).await?;
+        let mut completed = tokio::select! {
+            completed = fill.fill.as_ref().unwrap().value.lock() => completed,
+            () = self.budget.wait_read_cache_epoch_changed(epoch) => {
+                return Err(PackedWireError::ReadViewChanged);
+            }
+        };
         self.check_epoch(epoch)?;
+        if let Some(value) = completed.as_ref() {
+            return Ok(value.clone());
+        }
         if let Some(value) = self.get(&key, epoch) {
             self.check_epoch(epoch)?;
             return Ok(value);
         }
-        let value = fetch.await?;
+        let value = tokio::select! {
+            value = fetch => value?,
+            () = self.budget.wait_read_cache_epoch_changed(epoch) => {
+                return Err(PackedWireError::ReadViewChanged);
+            }
+        };
         let bytes = weight(&value).saturating_add(ENTRY_BYTES);
         let mut state = self.state.lock().unwrap();
         if state.epoch != epoch || self.budget.read_cache_epoch() != epoch {
@@ -171,6 +247,7 @@ impl<T> RetainedMetadata<T> {
                 state.bytes += bytes;
             }
         }
+        *completed = Some(value.clone());
         Ok(value)
     }
 
@@ -192,6 +269,175 @@ impl<T> RetainedMetadata<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn unrelated_digest_fills_do_not_wait_for_each_other() {
+        let budget = V3MountBudget::defaults();
+        let cache = RetainedMetadata::new(8192, budget);
+        let generation = ReadGeneration::readonly([1; 32]);
+        let mut other_key = [0; 32];
+        other_key[31] = 1; // Deliberately collide in the old striped lock scheme.
+        let first = cache.read(generation, [0; 32], |_| 100, async {
+            std::future::pending::<PackedResult<Arc<u64>>>().await
+        });
+        tokio::pin!(first);
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        let second = cache.read(generation, other_key, |_| 100, async { Ok(Arc::new(2)) });
+        tokio::pin!(second);
+        assert!(
+            matches!(futures::poll!(second.as_mut()), std::task::Poll::Ready(Ok(value)) if *value == 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn same_key_followers_share_even_when_value_is_too_large_to_retain() {
+        let budget = V3MountBudget::defaults();
+        let cache = RetainedMetadata::new(1, budget);
+        let generation = ReadGeneration::readonly([1; 32]);
+        let calls = AtomicUsize::new(0);
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let first = cache.read(generation, [1; 32], |_| 100, async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            wait.await.unwrap();
+            Ok(Arc::new(1))
+        });
+        let second = cache.read(generation, [1; 32], |_| 100, async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(2))
+        });
+        tokio::pin!(first, second);
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        release.send(()).unwrap();
+        let first = first.await.unwrap();
+        let second = second.await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(cache.state.lock().unwrap().entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fill_limit_and_cancellation_release_registry_and_permits() {
+        let budget = V3MountBudget::defaults();
+        let cache = RetainedMetadata::new(8192, budget.clone());
+        let generation = ReadGeneration::readonly([1; 32]);
+        let calls = AtomicUsize::new(0);
+        let mut fills: Vec<_> = (0..=MAX_FILLS)
+            .map(|key| {
+                Box::pin(cache.read(generation, [key as u8; 32], |_| 100, async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::pending::<PackedResult<Arc<u64>>>().await
+                }))
+            })
+            .collect();
+        for fill in &mut fills {
+            assert!(futures::poll!(fill.as_mut()).is_pending());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_FILLS);
+        assert_eq!(cache.fills.lock().unwrap().len(), MAX_FILLS);
+        assert_eq!(
+            budget.state().used[V3BudgetPool::Control as usize],
+            MAX_FILLS as u64 * FILL_BYTES
+        );
+        drop(fills.remove(0));
+        assert!(futures::poll!(fills.last_mut().unwrap().as_mut()).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_FILLS + 1);
+        drop(fills);
+        assert!(cache.fills.lock().unwrap().is_empty());
+        assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_leader_and_failed_leader_allow_followers_to_retry() {
+        for cancel in [true, false] {
+            let budget = V3MountBudget::defaults();
+            let cache = RetainedMetadata::new(8192, budget.clone());
+            let generation = ReadGeneration::readonly([1; 32]);
+            let (release, wait) = tokio::sync::oneshot::channel();
+            let mut first = Box::pin(cache.read(generation, [1; 32], |_| 100, async {
+                let _ = wait.await;
+                Err::<Arc<u64>, _>(PackedWireError::Invalid("failed fill".into()))
+            }));
+            let mut second =
+                Box::pin(cache.read(generation, [1; 32], |_| 100, async { Ok(Arc::new(2)) }));
+            assert!(futures::poll!(first.as_mut()).is_pending());
+            assert!(futures::poll!(second.as_mut()).is_pending());
+            if cancel {
+                drop(first);
+                drop(release);
+            } else {
+                release.send(()).unwrap();
+                assert!(first.await.is_err());
+            }
+            assert_eq!(*second.await.unwrap(), 2);
+            assert!(cache.fills.lock().unwrap().is_empty());
+            assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn close_or_generation_fence_wakes_leaders_and_all_queued_fill_waiters() {
+        for close in [true, false] {
+            let budget = V3MountBudget::defaults();
+            let cache = RetainedMetadata::new(8192, budget.clone());
+            let generation = ReadGeneration::readonly([1; 32]);
+            // Eight leaders, one new-key slot waiter, and one same-key waiter.
+            let mut fills: Vec<_> = (0..=MAX_FILLS)
+                .chain(std::iter::once(0))
+                .map(|key| {
+                    Box::pin(cache.read(generation, [key as u8; 32], |_| 100, async {
+                        std::future::pending::<PackedResult<Arc<u64>>>().await
+                    }))
+                })
+                .collect();
+            for fill in &mut fills {
+                assert!(futures::poll!(fill.as_mut()).is_pending());
+            }
+            if close {
+                budget.close();
+            } else {
+                let mut next = generation;
+                next.workspace_head_epoch += 1;
+                assert!(cache.cached(next, &[0; 32]).unwrap().is_none());
+            }
+            for mut fill in fills {
+                assert!(matches!(
+                    futures::poll!(fill.as_mut()),
+                    std::task::Poll::Ready(Err(PackedWireError::ReadViewChanged))
+                ));
+            }
+            assert!(cache.fills.lock().unwrap().is_empty());
+            assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
+            assert!(cache.state.lock().unwrap().entries.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn exhausted_control_budget_rejects_fill_before_backend_and_leaks_nothing() {
+        let budget = V3MountBudget::defaults();
+        let held = budget
+            .admit(&[(
+                V3BudgetPool::Control,
+                budget.capacity(V3BudgetPool::Control),
+            )])
+            .unwrap();
+        let cache = RetainedMetadata::new(8192, budget.clone());
+        let generation = ReadGeneration::readonly([1; 32]);
+        let result = cache
+            .read(generation, [1; 32], |_| 100, async {
+                panic!("an unadmitted fill must not start backend I/O");
+                #[allow(unreachable_code)]
+                Ok(Arc::new(1u64))
+            })
+            .await;
+        assert!(matches!(result, Err(PackedWireError::LimitExceeded(_))));
+        assert!(cache.fills.lock().unwrap().is_empty());
+        drop(held);
+        assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
+        let calls = AtomicUsize::new(0);
+        assert_eq!(*read(&cache, generation, 1, &calls).await, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     async fn read(
         cache: &RetainedMetadata<u64>,
@@ -233,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn directory_fills_overlap_and_same_key_followers_share() {
         let budget = V3MountBudget::defaults();
-        let cache = RetainedMetadata::with_parallel_fills(16384, budget.clone());
+        let cache = RetainedMetadata::new(16384, budget.clone());
         let generation = ReadGeneration::readonly([1; 32]);
         let barrier = Arc::new(tokio::sync::Barrier::new(8));
         let fills = futures::future::join_all((0..8).map(|key| {
