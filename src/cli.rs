@@ -2286,6 +2286,16 @@ where
 }
 
 #[cfg(feature = "workspace-overlay")]
+fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u64> {
+    let bytes = value.map(str::parse::<u64>).transpose()?.unwrap_or(8 << 20);
+    anyhow::ensure!(
+        bytes == 0 || (513..=64 << 20).contains(&bytes),
+        "BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES must be 0 or 513 bytes through 64 MiB"
+    );
+    Ok(bytes)
+}
+
+#[cfg(feature = "workspace-overlay")]
 async fn attach_workspace_packed_lower<B, S, W>(
     meta: WorkspaceMetaLayer<W>,
     binding: workspace_overlay::catalog::PackedLowerBinding,
@@ -2356,21 +2366,13 @@ where
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(256 << 20);
-        // Retention is shared by both arms of a hot-lower comparison. Only
-        // fully authenticated payload frames may enter this bounded cache.
+        // Retain a small working set by default. The retaining reader hashes
+        // every fetched frame, independently of the verification memo switch.
         let retained_payload = match std::env::var("BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES") {
-            Ok(value) => value.parse::<u64>()?,
-            Err(std::env::VarError::NotPresent) => 0,
+            Ok(value) => workspace_packed_payload_cache_bytes(Some(&value))?,
+            Err(std::env::VarError::NotPresent) => workspace_packed_payload_cache_bytes(None)?,
             Err(error) => return Err(error.into()),
         };
-        if retained_payload > 0
-            && !matches!(
-                std::env::var("BREWFS_PACKED_VERIFY_MEMO").as_deref(),
-                Ok("0")
-            )
-        {
-            anyhow::bail!("retained Packed payload requires BREWFS_PACKED_VERIFY_MEMO=0");
-        }
         let lower = Arc::new(PackedV3ReadonlyMeta::from_v3_budget_with_payload_retention(
             client,
             snapshot,
@@ -3143,6 +3145,40 @@ fn database_type_from_url(url: &str) -> DatabaseType {
 #[cfg(test)]
 mod volume_format_tests {
     use super::*;
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn workspace_payload_cache_defaults_to_eight_mib_and_can_be_disabled() {
+        assert_eq!(workspace_packed_payload_cache_bytes(None).unwrap(), 8 << 20);
+        assert_eq!(workspace_packed_payload_cache_bytes(Some("0")).unwrap(), 0);
+        assert_eq!(
+            workspace_packed_payload_cache_bytes(Some("513")).unwrap(),
+            513
+        );
+        assert_eq!(
+            workspace_packed_payload_cache_bytes(Some("67108864")).unwrap(),
+            64 << 20
+        );
+    }
+
+    #[cfg(feature = "workspace-overlay")]
+    #[test]
+    fn workspace_payload_cache_rejects_invalid_or_unbounded_capacity() {
+        for value in [
+            "",
+            "-1",
+            "1",
+            "512",
+            "67108865",
+            "8MiB",
+            "18446744073709551616",
+        ] {
+            assert!(
+                workspace_packed_payload_cache_bytes(Some(value)).is_err(),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn entity_format_is_explicit_and_mount_fails_closed() {

@@ -165,6 +165,9 @@ flowchart LR
     Base -. shared immutable blocks .-> Objects[(Object storage)]
 ```
 
+Workspace mounts enable bounded upper-result caching and an 8 MiB authenticated
+lower-frame cache by default. See [cache limits and configuration](doc/operations/workspace-read-cache.md).
+
 The feature is opt-in and does not alter regular flat volumes:
 
 ```bash

@@ -707,6 +707,11 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             self.payload_retention = Some(Arc::new(
                 super::payload_retention::PayloadRetention::new(capacity, self.budget.clone())?,
             ));
+            tracing::info!(
+                capacity_bytes = capacity,
+                verify_every_fetched_frame = true,
+                "packed retained payload cache"
+            );
         }
         Ok(self)
     }
@@ -850,11 +855,19 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
         if let Some(coordinator) = &runtime.coordinator {
             return Ok(coordinator.clone());
         }
-        let coordinator = super::pipeline::V3DemandCoordinator::new(
-            self.client.clone(),
-            self.budget.clone(),
-            super::pipeline::V3PipelineLimits::default(),
-        )?;
+        let coordinator = if self.payload_retention.is_some() {
+            super::pipeline::V3DemandCoordinator::new_authenticated(
+                self.client.clone(),
+                self.budget.clone(),
+                super::pipeline::V3PipelineLimits::default(),
+            )?
+        } else {
+            super::pipeline::V3DemandCoordinator::new(
+                self.client.clone(),
+                self.budget.clone(),
+                super::pipeline::V3PipelineLimits::default(),
+            )?
+        };
         runtime.coordinator = Some(coordinator.clone());
         Ok(coordinator)
     }

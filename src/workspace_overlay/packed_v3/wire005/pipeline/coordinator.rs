@@ -74,6 +74,16 @@ impl<B: ObjectBackend + Clone + 'static> V3DemandCoordinator<B> {
         Self::new_configured(client, budget, limits, VerifyMemo::enabled_from_env()?)
     }
 
+    /// Retained payload must come from this response's authenticated bytes,
+    /// never from a prior response's identity-only verification evidence.
+    pub(crate) fn new_authenticated(
+        client: ObjectClient<B>,
+        budget: Arc<V3MountBudget>,
+        limits: V3PipelineLimits,
+    ) -> PackedResult<Arc<Self>> {
+        Self::new_configured(client, budget, limits, false)
+    }
+
     fn new_configured(
         client: ObjectClient<B>,
         budget: Arc<V3MountBudget>,

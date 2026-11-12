@@ -9,13 +9,14 @@ use crate::workspace_overlay::packed_v3::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[derive(Clone)]
 struct CountingBackend {
     inner: LocalFsBackend,
     gets: Arc<AtomicUsize>,
+    corrupt_payload: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -37,7 +38,13 @@ impl ObjectBackend for CountingBackend {
         bytes: &mut [u8],
     ) -> anyhow::Result<usize> {
         self.gets.fetch_add(1, Ordering::SeqCst);
-        self.inner.get_object_range(key, offset, bytes).await
+        let read = self.inner.get_object_range(key, offset, bytes).await?;
+        // This fixture's external frame is one raw 256 KiB payload. Metadata
+        // responses remain intact, so rejection must come from payload hashing.
+        if read == 256 << 10 && self.corrupt_payload.load(Ordering::SeqCst) {
+            bytes[0] ^= 1;
+        }
+        Ok(read)
     }
     async fn get_object_size_bounded(&self, key: &str) -> anyhow::Result<Option<u64>> {
         self.inner.get_object_size_bounded(key).await
@@ -64,9 +71,11 @@ async fn assert_repeated_authenticated_inode_read(retention_bytes: u64, repeat_g
     let objects = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let gets = Arc::new(AtomicUsize::new(0));
+    let corrupt_payload = Arc::new(AtomicBool::new(false));
     let client = ObjectClient::new(CountingBackend {
         inner: LocalFsBackend::new(objects.path()),
         gets: gets.clone(),
+        corrupt_payload: corrupt_payload.clone(),
     });
     let policy = V3BuildPolicy {
         frames: V3FramePolicy::Static256Kib,
@@ -162,6 +171,28 @@ async fn assert_repeated_authenticated_inode_read(retention_bytes: u64, repeat_g
         3,
         "lease fence retires both metadata caches"
     );
+    if retention_bytes > 0 {
+        // An evicted frame is fetched again under the same immutable identity.
+        // A verification memo must not admit a corrupt replacement to retention.
+        corrupt_payload.store(true, Ordering::SeqCst);
+        reader.budget().invalidate_read_caches();
+        assert!(
+            snapshot
+                .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
+                .await
+                .is_err(),
+            "retained frames must authenticate every newly fetched response"
+        );
+        corrupt_payload.store(false, Ordering::SeqCst);
+        snapshot
+            .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            output, [0x5a; 4096],
+            "a failed refill must not populate the cache"
+        );
+    }
 }
 
 async fn sequential_smallfile_cache_fixture() -> (
@@ -175,6 +206,7 @@ async fn sequential_smallfile_cache_fixture() -> (
     let client = ObjectClient::new(CountingBackend {
         inner: LocalFsBackend::new(objects.path()),
         gets: gets.clone(),
+        corrupt_payload: Arc::new(AtomicBool::new(false)),
     });
     let options = V3ProducerOptions {
         snapshot_id: [1; 32],
