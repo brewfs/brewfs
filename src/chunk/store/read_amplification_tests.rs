@@ -196,12 +196,18 @@ async fn prefetch_settle_waits_for_backend_completion_and_cache_publication() ->
 {
     let objects = tempfile::tempdir()?;
     let cache = tempfile::tempdir()?;
+    // The object must exceed one page, otherwise the demand range promotes
+    // the complete page to a block and correctly schedules no background GET.
     let (store, raw, backend) =
-        store_with_slices(objects.path(), cache.path(), 1, 64 << 10, 0, 64 << 10).await?;
+        store_with_slices(objects.path(), cache.path(), 1, 4 << 20, 0, 4 << 20).await?;
     let gate = backend.full_get_gate.acquire().await?;
     let mut page = vec![0; 4096];
     store.read_range((1, 0), 4096, &mut page).await?;
     assert_eq!(page, raw[4096..8192]);
+    assert_eq!(
+        store.object_metrics.snapshot().read_background_prefetches,
+        1
+    );
 
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -216,10 +222,6 @@ async fn prefetch_settle_waits_for_backend_completion_and_cache_publication() ->
     })
     .await
     .expect("the real prefetch must enter the gated full GET");
-    assert_eq!(
-        store.object_metrics.snapshot().read_background_prefetches,
-        1
-    );
     assert_eq!(store.range_prefetch_limit.available_permits(), 7);
     assert_eq!(backend.full_gets_completed.load(Ordering::Acquire), 0);
 
