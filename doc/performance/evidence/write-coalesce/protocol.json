@@ -16,7 +16,7 @@
     "profile": "release",
     "default_features": true,
     "features": [
-      "workspace-overlay",
+      "workspace",
       "observability"
     ]
   },
@@ -93,7 +93,7 @@
   "corpus_source": "/home/hxy/perf-full-state-20261101/source/large (reused immutable seeded bytes, not measurements)",
   "round_reset": "after confirming no task FUSE mount remains, stop task RustFS, remove only its disposable objects bind directory, recreate with original ownership, restart, clear task Redis DB 0 and recreate task bucket; fresh mount and 512 MiB/file incompressible prefill with fsync and strict drain before every arm",
   "artifact_cleanup": "delete task-owned object payloads after completed unmount; preserve all measurement artifacts",
-  "supported_volume_scope": "flat-v1 with Redis and upload_before_commit; no native-v2 or packed-v3 performance claim",
+  "supported_volume_scope": "flat with Redis and upload_before_commit; no native-v2 or packed performance claim",
   "baseline_deadline_utc": "2026-11-01T22:18:18Z",
   "candidate_control": {
     "off_bytes": 0,

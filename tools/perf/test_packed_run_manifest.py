@@ -99,7 +99,7 @@ class PackedRunManifestTests(unittest.TestCase):
                         "wire_version=5",
                         "scanner_seed=20261001",
                         "fixture_prefix=local-validation",
-                        "manifest_schema=packed-v3-run-manifest-v1",
+                        "manifest_schema=packed-run-manifest-v1",
                         "order=shuffle",
                         "files=100",
                         "file_bytes=102400",
@@ -146,7 +146,7 @@ class PackedRunManifestTests(unittest.TestCase):
             )
             finalize_manifest(artifact, status=0)
             manifest = json.loads((artifact / "run-manifest.json").read_text())
-            self.assertEqual(manifest["schema"], "packed-v3-run-manifest-v1")
+            self.assertEqual(manifest["schema"], "packed-run-manifest-v1")
             self.assertEqual(manifest["packed_version"], "v3")
             self.assertEqual(manifest["status"], "passed")
             self.assertEqual(manifest["controls"]["scanner_seed"], 20261001)
@@ -169,7 +169,7 @@ class PackedRunManifestTests(unittest.TestCase):
             self._write_toolchain(artifact)
             (artifact / "profile.env").write_text(
                 "packed_version=v3\nwire_version=5\nscanner_seed=2\n"
-                "fixture_prefix=local-validation\nmanifest_schema=packed-v3-run-manifest-v1\n"
+                "fixture_prefix=local-validation\nmanifest_schema=packed-run-manifest-v1\n"
                 "order=shuffle\nmode=stat\n"
             )
             (artifact / "cache-proof.env").write_text("page_cache=dropped\n")
@@ -221,7 +221,7 @@ class PackedRunManifestTests(unittest.TestCase):
             )
             (artifact / "profile.env").write_text(
                 "packed_version=v3\nwire_version=5\nscanner_seed=1\n"
-                "fixture_prefix=local-validation\nmanifest_schema=packed-v3-run-manifest-v1\n"
+                "fixture_prefix=local-validation\nmanifest_schema=packed-run-manifest-v1\n"
                 "order=shuffle\nmode=stat\n"
             )
             (artifact / "cache-proof.env").write_text("page_cache=dropped\n")

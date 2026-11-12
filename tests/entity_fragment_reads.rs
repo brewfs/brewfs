@@ -1,4 +1,4 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,18 +6,18 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use brewfs::ObjectBackend;
-use brewfs::workspace_overlay::entity::data::EntityData;
-use brewfs::workspace_overlay::entity::keys::EntityKeys;
-use brewfs::workspace_overlay::entity::lifecycle::Lifecycle;
-use brewfs::workspace_overlay::entity::memory::MemoryEntityBackend;
-use brewfs::workspace_overlay::entity::model::{
+use brewfs::workspace::entity::data::EntityData;
+use brewfs::workspace::entity::keys::EntityKeys;
+use brewfs::workspace::entity::lifecycle::Lifecycle;
+use brewfs::workspace::entity::memory::MemoryEntityBackend;
+use brewfs::workspace::entity::model::{
     ChunkMap, EntityDentry, EntityInode, EntityKind, LowerBinding,
 };
-use brewfs::workspace_overlay::entity::namespace::{
+use brewfs::workspace::entity::namespace::{
     CreateRequest, Credentials, EntityHandle, EntityNamespace,
 };
-use brewfs::workspace_overlay::entity::resolver::{ImmutableLower, ImmutableLowerData};
-use brewfs::workspace_overlay::entity::{EntityError, Result};
+use brewfs::workspace::entity::resolver::{ImmutableLower, ImmutableLowerData};
+use brewfs::workspace::entity::{EntityError, Result};
 use bytes::Bytes;
 use uuid::Uuid;
 

@@ -82,7 +82,7 @@ The focused Rust regression can be run with:
 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
   CARGO_PROFILE_TEST_DEBUG=0 CARGO_TARGET_DIR=/home/hxy/fix335/target \
   timeout -k 10 2700 nice -n 10 cargo test -p brewfs --lib \
-  --features workspace-overlay adjacent_4097_shrinks_remain_readable_after_reopen \
+  --features workspace adjacent_4097_shrinks_remain_readable_after_reopen \
   -- --nocapture
 ```
 
@@ -99,7 +99,7 @@ requires an uncached read to return exactly 4095 zero bytes.
 
 The first full overlay library run reported 2521 passed, five failed, and 451
 ignored. Exactly those five tests were then run with identical
-`--features workspace-overlay --lib` flags and `--test-threads=1 --nocapture`
+`--features workspace --lib` flags and `--test-threads=1 --nocapture`
 on a completely clean `f26af31c` checkout and the branch. After updating the
 two assertions affected by the intended storage layout, the comparison was:
 
@@ -113,7 +113,7 @@ These three failures occur on both checkouts and are pre-existing, tracked by
 behavior are outside this fix:
 
 - `g13a_kv_released_lease_is_not_an_expired_recovery_root`
-- `kv_v3_open_topology_rejects_binding_change_between_routing_and_final_read`
+- `kv_snapshot_open_topology_rejects_binding_change_between_routing_and_final_read`
 - `migration_marker_fences_entity_and_hot_native_packets_without_writes`
 
 `group_commit_handoff_preserves_batch_limit_and_order_with_cancelled_waiters`

@@ -352,7 +352,7 @@ t95 = 4.302652729911275
 expected_sha = 'e2a308519ad1e0f5d2295e10cf3fb9eb64ce57009eb64b01c87489b51128f34f'
 ttls = dict(A=0, B=1000, C=10000, D=1000)
 contract = dict(
-    BREWFS_VOLUME_FORMAT='packed-metadata-v3',
+    BREWFS_VOLUME_FORMAT='packed-snapshot',
     BREWFS_PACKED_MANIFEST_KEY=(root / 'manifest-key.txt').read_text().strip(),
     BREWFS_PACKED_METADATA_CACHE_BYTES='268435456',
     BREWFS_READ_MEMORY_BYTES='0', BREWFS_READ_SSD_BYTES='0',

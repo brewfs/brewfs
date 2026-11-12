@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-验证 packed-metadata-v3 在只读、无本地缓存、100–1000 KiB 随机小文件场景下的：
+验证 packed-snapshot 在只读、无本地缓存、100–1000 KiB 随机小文件场景下的：
 
 1. fixture 发布是否真正流式，内存不随总逻辑数据量增长；
 2. group/container 分块是否满足设计上限并减少元数据请求；
@@ -44,11 +44,11 @@ bash -n docker/compose-xfstests/aliyun/run_aliyun_packed_native.sh
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins
 ```
 
-release binary 使用 `--features workspace-overlay` 构建；上传前可去掉 ELF 调试段，但不得改变源码或运行参数。
+release binary 使用 `--features workspace` 构建；上传前可去掉 ELF 调试段，但不得改变源码或运行参数。
 
 ### B. 流式 fixture 发布
 
-使用 packed v3 publisher（当前为 `packed_v3_snapshot_fixture` 原型）：
+使用 packed v3 publisher（当前为 `packed_snapshot_fixture` 原型）：
 
 1. 遍历目录并按 `RandomSmallFile` profile 生成 group；
 2. GroupMeta 单组硬上限 256 KiB；group target/hard limit 为 16/32 MiB；
@@ -100,7 +100,7 @@ release binary 使用 `--features workspace-overlay` 构建；上传前可去掉
 | 缓存 | read memory/SSD budget、cache hit/miss、drop_caches 结果、cache root 大小 |
 | 资源 | ECS 内存峰值、系统盘使用率、CPU、测试时长、实例释放时间 |
 
-所有原始日志保存在 `docker/compose-xfstests/artifacts/aliyun-packed-v3-100k-*`，结果表中区分 fixture 发布时间和冷读时间。
+所有原始日志保存在 `docker/compose-xfstests/artifacts/aliyun-packed-100k-*`，结果表中区分 fixture 发布时间和冷读时间。
 
 ## 5. 验收规则
 
@@ -127,7 +127,7 @@ pwsh -NoProfile -File docker/compose-xfstests/aliyun/run_aliyun_packed_million.p
   -SmallFileCount 100000 -SmallFileSizeBytes 102400 `
   -SmallFileMinSizeBytes 102400 -SmallFileMaxSizeBytes 1048576 `
   -DirLevels 2 -DirsPerLevel 10 -FilesPerLeaf 1000 `
-  -VolumeFormat packed-metadata-v3 `
+  -VolumeFormat packed-snapshot `
   -PerfTools "packed-tree packed-smallfiles" -ReadMode full `
   -ToolTimeoutSeconds 7200 -AutoReleaseMinutes 180 `
   -S3Bucket <bucket> -S3Endpoint https://oss-cn-hangzhou-internal.aliyuncs.com `
@@ -145,7 +145,7 @@ pwsh -NoProfile -File docker/compose-xfstests/aliyun/run_aliyun_packed_million.p
 
 两边的准备和读取路径保持以下边界：
 
-- packed 使用 `packed_v3_snapshot_fixture` SDK 将 group/container/index/manifest 发布到
+- packed 使用 `packed_snapshot_fixture` SDK 将 group/container/index/manifest 发布到
   `packed/` 前缀；观测到 3,319 个 `.brfgc` container 对象。读取只使用 packed FUSE。
 - JuiceFS 使用同一个 fixture SDK 将 100,000 个原始文件上传到 `juicefs/raw/`，随后用
   `juicefs sync --threads 32 --list-threads 4 --check-new` 在不挂载 FUSE 的准备阶段导入
@@ -172,9 +172,9 @@ metadata 不构成网络瓶颈，且其读取路径的块/请求合并更有效�
 
 证据：
 
-- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/packed-run.log`
-- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/packed/remote-output.log`
-- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/juicefs/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/packed-run.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/packed/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/juicefs/remote-output.log`
 
 测试结束后的独立核验：ECS `i-bp10wczp9w20g7yjqizf` 不存在（`TotalCount=0`），
 OSS 前缀 `brewfs-v3-jfs-20260928-100k-r3/` 对象数为 0。

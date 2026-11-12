@@ -67,8 +67,8 @@ def setup():
         source = source.replace("http://127.0.0.1:29000", "http://127.0.0.1:29300")
         source = source.replace("brewfs-perf-full-20261101", "brewfs-perf-packed-verify-20261101")
         # The frozen worker uses this label solely to prohibit metadata writes.
-        source = source.replace("if mode=='packed-v3': argv.append('--readonly')",
-                                "if mode!='flat-v1': argv.append('--readonly')")
+        source = source.replace("if mode=='packed': argv.append('--readonly')",
+                                "if mode!='flat': argv.append('--readonly')")
         (ROOT / "harness" / name).write_text(source)
     save(ROOT / "environment/original-harness-sha256.json", originals)
     compose = yaml.safe_load((BASE / "harness/compose.yml").read_text())
@@ -213,7 +213,7 @@ def measure(workloads):
                     raise RuntimeError("candidate binary changed between arms")
                 run.ENV["BREWFS_PACKED_VERIFY_MEMO"] = str(enabled)
                 label = f"{workload}-pair{pair}-{arm}"
-                with run.mounted("packed-v3", label, manifest, binary=binary) as (mount, pid, _):
+                with run.mounted("packed", label, manifest, binary=binary) as (mount, pid, _):
                     run.verify_packed(mount, label, small_files=workload in ("smallfiles", "metadata"))
                     for warmup in (1, 2):
                         run.run_round(arm, workload, mount, pid, f"warmup-pair{pair}", warmup)
@@ -271,7 +271,7 @@ def verify_content():
                 if closed["daemon_returncode"] == 0 and closed["unmount_status"] == 0 and not closed["mounted"]:
                     run.log(f"Retain completed whole-corpus verification: {label}")
                     continue
-            with run.mounted("packed-v3", label, manifest, binary=binary) as (mount, _, _):
+            with run.mounted("packed", label, manifest, binary=binary) as (mount, _, _):
                 for repeat in (1, 2):
                     verified = {}
                     with mmap.mmap(-1, 4 << 20) as buffer:

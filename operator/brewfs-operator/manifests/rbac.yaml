@@ -76,7 +76,7 @@ metadata:
 rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    resourceNames: ["brewfs-packed-v3-gc"]
+    resourceNames: ["brewfs-packed-gc"]
     verbs: ["get", "update"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

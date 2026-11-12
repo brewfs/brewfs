@@ -4,15 +4,15 @@ use super::*;
 // Ask the existing validator for its smallest supported Roots capacity. Other
 // pools keep their existing defaults; Control remains the existing 32768.
 // No copy of the validator's internal formula or new admission constant.
-fn minimum_supported_roots_budget() -> Arc<V3MountBudget> {
-    let mut limits = V3BudgetLimits::default();
-    limits.bytes[V3BudgetPool::Control as usize] = 32 << 10;
+fn minimum_supported_roots_budget() -> Arc<SnapshotMountBudget> {
+    let mut limits = SnapshotBudgetLimits::default();
+    limits.bytes[SnapshotBudgetPool::Control as usize] = 32 << 10;
     let mut lower = 1u64;
-    let mut upper = limits.bytes[V3BudgetPool::Roots as usize];
+    let mut upper = limits.bytes[SnapshotBudgetPool::Roots as usize];
     while lower < upper {
         let middle = lower + (upper - lower) / 2;
-        limits.bytes[V3BudgetPool::Roots as usize] = middle;
-        if V3MountBudget::new(limits.clone())
+        limits.bytes[SnapshotBudgetPool::Roots as usize] = middle;
+        if SnapshotMountBudget::new(limits.clone())
             .unwrap()
             .validate_frame_capability(8 << 20)
             .is_ok()
@@ -22,12 +22,12 @@ fn minimum_supported_roots_budget() -> Arc<V3MountBudget> {
             lower = middle + 1;
         }
     }
-    limits.bytes[V3BudgetPool::Roots as usize] = lower;
-    let budget = V3MountBudget::new(limits.clone()).unwrap();
+    limits.bytes[SnapshotBudgetPool::Roots as usize] = lower;
+    let budget = SnapshotMountBudget::new(limits.clone()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
-    limits.bytes[V3BudgetPool::Roots as usize] = lower - 1;
+    limits.bytes[SnapshotBudgetPool::Roots as usize] = lower - 1;
     assert!(
-        V3MountBudget::new(limits)
+        SnapshotMountBudget::new(limits)
             .unwrap()
             .validate_frame_capability(8 << 20)
             .is_err(),
@@ -56,7 +56,7 @@ async fn packed_minimum_roots_inline_hooks_deny_at_full_then_refund_and_recover(
             .unwrap()
             .unwrap();
         let mut expected = baseline;
-        expected[V3BudgetPool::Roots as usize] += bytes;
+        expected[SnapshotBudgetPool::Roots as usize] += bytes;
         assert_eq!(f.budget.state().used, expected);
         assert_eq!(
             Arc::strong_count(&f.budget),
@@ -79,8 +79,12 @@ async fn packed_minimum_roots_inline_hooks_deny_at_full_then_refund_and_recover(
         drop(prepare_permit);
         assert_eq!(f.budget.state().used, baseline);
     }
-    let remaining = f.budget.capacity(V3BudgetPool::Roots) - baseline[V3BudgetPool::Roots as usize];
-    let held = f.budget.admit(&[(V3BudgetPool::Roots, remaining)]).unwrap();
+    let remaining =
+        f.budget.capacity(SnapshotBudgetPool::Roots) - baseline[SnapshotBudgetPool::Roots as usize];
+    let held = f
+        .budget
+        .admit(&[(SnapshotBudgetPool::Roots, remaining)])
+        .unwrap();
     let full = f.budget.state().used;
     let backend_before = f.gate.payload_ranges.lock().unwrap().len();
     assert_eq!(
@@ -120,11 +124,14 @@ async fn packed_minimum_roots_first_valid_adapter_read_and_real_release_fit_orig
         .await
         .unwrap();
     assert_eq!(f.fs.open_file_handle_count(), 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     assert!(
-        f.budget.state().peak[V3BudgetPool::Roots as usize]
-            <= f.budget.capacity(V3BudgetPool::Roots)
+        f.budget.state().peak[SnapshotBudgetPool::Roots as usize]
+            <= f.budget.capacity(SnapshotBudgetPool::Roots)
     );
     Filesystem::prepare_unmount(&f.fs).await.unwrap();
 }

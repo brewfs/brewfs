@@ -52,7 +52,7 @@ for format in packed-metadata-v1 packed-metadata-v2 unknown-format; do
 done
 
 status=0
-run_runner packed-metadata-v3 "$tmpdir/v3" "$tmpdir/v3.log" || status=$?
+run_runner packed-snapshot "$tmpdir/v3" "$tmpdir/v3.log" || status=$?
 if [[ "$status" != 73 ]]; then
     cat "$tmpdir/v3.log" >&2
     echo "v3 must reach the fixture sentinel and stop before mount, status=$status" >&2

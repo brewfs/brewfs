@@ -11,7 +11,7 @@ Ubuntu 24.04 / WSL2 kernel 6.18.33.2, 16 logical CPUs, approximately 24 GiB RAM.
 Owned loopback Redis (AOF disabled) and pinned RustFS containers use the same WSL
 ext4 device as staging. There is no injected network latency. Builds and temporary
 build swap do not overlap performance runs. Both BrewFS binaries are release
-builds with `--no-default-features --features fuse-tokio-runtime,workspace-overlay`;
+builds with `--no-default-features --features fuse-tokio-runtime,workspace`;
 CLI Tokio worker count remains its default of one.
 
 Baseline and candidate, both lowers and both upload modes, plus stock JuiceFS

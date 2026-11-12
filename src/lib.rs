@@ -15,7 +15,7 @@ pub mod fuse;
 pub mod gateway;
 #[cfg(feature = "hdfs-sdk")]
 pub mod hdfs;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) mod manager;
 // Expose meta for E2E testing - tests should rely on design contracts, not impl details
 pub mod meta;
@@ -30,8 +30,8 @@ pub(crate) mod test_support;
 // Expose vfs for E2E testing - tests should rely on design contracts, not impl details
 pub mod vfs;
 
-#[cfg(feature = "workspace-overlay")]
-pub mod workspace_overlay;
+#[cfg(feature = "workspace")]
+pub mod workspace;
 
 pub(crate) mod tikv_transaction;
 pub(crate) mod utils;

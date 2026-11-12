@@ -1,6 +1,6 @@
 # Workspace truncate timestamps (#262)
 
-The reported generic/313 failure used workspace-v1 with SQLite metadata.
+The reported generic/313 failure used workspace with SQLite metadata.
 The workspace atomic SETATTR updated size, ctime and data version but left
 mtime unchanged when FUSE supplied only a size. Both truncate(2) and
 ftruncate(2) reach this path.
@@ -21,12 +21,12 @@ all four tests passed in each of three runs:
 
 ```sh
 CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-  CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace-overlay \
+  CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace \
   --test workspace_truncate_timestamps -- --test-threads=1 --nocapture
 ```
 
 Mounted verification used the compose xfstests container's generic/313 runner,
-fresh SQLite workspace-v1 metadata and local object storage for every run.
+fresh SQLite workspace metadata and local object storage for every run.
 The baseline reported:
 
 ```text

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Write the deterministic small-file corpus through a mounted filesystem.
 
-The tree, names, sizes and bytes match packed_v3_snapshot_fixture and the
+The tree, names, sizes and bytes match packed_snapshot_fixture and the
 expectations of smallfiles_scan.py, so a native (flat) volume can be read with
-exactly the same trace as a packed-v3 lower.
+exactly the same trace as a packed lower.
 """
 from __future__ import annotations
 

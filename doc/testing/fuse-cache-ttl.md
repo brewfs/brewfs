@@ -93,7 +93,7 @@ lower from the original comparison. No Cargo/rustc process was active at any
 run's start; host swappiness was restored to zero before measurement.
 
 The identical release executable used no default features, enabled
-`fuse-io-uring-runtime,workspace-overlay`, disabled debug info, and set
+`fuse-io-uring-runtime,workspace`, disabled debug info, and set
 BrewFS release codegen units to 256. Its source is the code committed in
 `db8c548`; its embedded version says `2791752-dirty` because compilation began
 before that commit. The measurements do not include the later asyncfuse
@@ -153,7 +153,7 @@ The three focused default-feature tests passed, covering absent and explicit
 zero, CLI-over-YAML precedence, numeric bounds, and the unchanged legacy
 backend policy. The CLI regression was first observed failing on the old
 parser. The dedicated `fuse_cache_ttl` integration target also passed with
-`--no-default-features --features fuse-io-uring-runtime,workspace-overlay` in
+`--no-default-features --features fuse-io-uring-runtime,workspace` in
 release mode. It exercises actual writable-ACL LOOKUP, GETATTR and SETATTR
 replies for absent/0/7/1000 ms, shared VFS clones, real/virtual `.stats`, and
 the creation/truncation zero-TTL exceptions.

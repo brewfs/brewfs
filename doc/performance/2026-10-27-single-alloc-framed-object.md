@@ -86,11 +86,11 @@ and framed upload had different backing allocations. The baseline copied
 object. The single-fragment control copied 4,194,304 payload bytes.
 
 The candidate `chunk::` run passed 188 tests, with 0 failures and 3 ignored.
-This filter also matches several `workspace_overlay::...::large_chunk::` tests.
+This filter also matches several `workspace::...::large_chunk::` tests.
 The previously failing sharing test now passes, including charge replacement,
 eviction, removal, and ownership release. Empty fragments, zero-length writes,
 and magic-like user bytes also pass.
-The complete `workspace_overlay::` run passed 1,138 tests, with 0 failures and
+The complete `workspace::` run passed 1,138 tests, with 0 failures and
 161 ignored; ignored external-backend tests are not counted as passes.
 
 The first full workspace test attempt used the inherited shell proxy variables
@@ -114,7 +114,7 @@ perf-report shell tests passed; their individual exit codes are recorded in
 feature matrix does not apply.
 
 Both strict clippy runs passed: `cargo clippy -j 2 --workspace --all-targets --
--D warnings` and the same command with `--features workspace-overlay` before
+-D warnings` and the same command with `--features workspace` before
 `--`. The complete Rust command/exit-code history is in `ci-results.json`,
 including the initial proxy-related test failure and the successful rerun.
 The final staged diff also passed `git diff --cached --check`.
@@ -147,7 +147,7 @@ In each checkout, choose a different absolute capture directory and run:
 pgrep -a rustc  # Wait for any existing compiler/build to finish.
 CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
 BREWFS_FRAMED_OBJECT_EVIDENCE_DIR=/absolute/path/to/before-or-after \
-  cargo test -j 2 --lib --features workspace-overlay \
+  cargo test -j 2 --lib --features workspace \
   chunk::store::framed_write_tests:: -- --nocapture
 ```
 

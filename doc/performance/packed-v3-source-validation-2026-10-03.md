@@ -12,13 +12,13 @@
   nlink 非零、kind 1–7、kind/mode 类型一致、拒绝未知 mode 高位；rdev 必须适合
   u32，非设备 rdev 为零。GM07 拒绝未知 flags 和非 regular data extents。
   GM05/GM06 的 legacy 004 校验没有被原地收紧。
-- `CapturedV3SourceFile` 通过 O_NOFOLLOW/O_NONBLOCK 和 fstat 只接受 regular 文件。
+- `CapturedSourceFile` 通过 O_NOFOLLOW/O_NONBLOCK 和 fstat 只接受 regular 文件。
   SEEK_DATA/SEEK_HOLE 捕获实际 data，保留逻辑 EOF；默认 logical ≤64MiB、
   data ≤16MiB、extent records ≤256。超限明确拒绝，没有自动 external-large fallback。
 - fd 查询 xattr 保留原始 name bytes 和 binary value，cold 属性总预算 256KiB。
   dev/ino/size/mode/uid/gid/nlink/mtime/ctime/blocks token 与 pathname 复查检测普通
   修改和替换；自己读取导致的 atime 变化不误报。该机制不是原子目录快照协议。
-- `packed_v3_snapshot_fixture --wire-version 5 --source-file PATH` 经现有 producer
+- `packed_snapshot_fixture --wire-version 5 --source-file PATH` 经现有 producer
   上传并认证回读，finish 前后复查源；最后输出 manifest key 和 `.source.json`。
   检测到变化时不写本次输出；先上传的不可达对象仍由调用方负责清理。
 - 单 dentry 导入的 visible nlink=1，源 nlink 保存在 provenance。根属性仍由 facade
@@ -31,7 +31,7 @@
 ## 失败证据与修复范围
 
 本轮主产物目录：
-`docker/compose-xfstests/artifacts/packed-v3-completion-20261003-source/`。
+`docker/compose-xfstests/artifacts/packed-completion-20261003-source/`。
 HEAD 为 `a429b0e1bc1c158af06ecf738e552062123d6e00`，所有新增修改仍在原分支工作树。
 `initial-source-hashes.json`、最终 source/binary hashes 和逐文件差异用于标识未提交源码；
 不能只用 HEAD 推断测试了哪些内容。继承修改及未跟踪 vendor 均保留。
@@ -62,7 +62,7 @@ fixture build/test、default/overlay clippy、diff check 均 exit0。
 | --- | --- |
 | workspace brewfs lib（默认 features） | 1,015 / 0 / 225 |
 | workspace brewfs bin（默认 features） | 1,099 / 0 / 225 |
-| 完整 brewfs lib，workspace-overlay | 1,299 / 0 / 227 |
+| 完整 brewfs lib，workspace | 1,299 / 0 / 227 |
 | packed feature focused suite | 116 / 0 / 0 |
 | overlay focused suite | 273 / 0 / 2 |
 | fixture bin | 1 / 0 / 0 |

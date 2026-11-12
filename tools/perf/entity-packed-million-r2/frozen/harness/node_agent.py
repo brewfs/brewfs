@@ -5,7 +5,7 @@ import argparse,json,os,re,signal,threading,time,urllib.request
 from common import ROOT,ART,Journal,atomic,read,stamp
 
 ALLOWED=('brewfs','juicefs','tikv-server','pd-server','rustfs','nginx',
-         'packed_v3_','entity_metadat','python3')
+         'packed_','entity_metadat','python3')
 FILES=['stat','meminfo','vmstat','diskstats','loadavg','net/dev','net/snmp','net/netstat',
        'pressure/cpu','pressure/io','pressure/memory','sys/fs/file-nr']
 

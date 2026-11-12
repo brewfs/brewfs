@@ -57,7 +57,7 @@
     "rustfs_commit": "ceddcdd878d21829eb6f9b08153632e4fce026b5",
     "rustfs_binary_sha256": "8f45a5ec97c65f9b9fe2caf97fbe218c63334e2dfb0a1a451542384f06a5af01",
     "rustfs_setup": "four task-owned directories, EC:2, compression off; object data cache/direct-I/O/reclaim overrides disabled for all arms",
-    "brewfs_mount_format": "workspace-v1; overlay initialized with init-packed-volume, timed files in writable upper",
+    "brewfs_mount_format": "workspace; overlay initialized with init-packed-volume, timed files in writable upper",
     "compression": "none",
     "block_bytes": 4194304,
     "brewfs_read_memory_bytes": 314572800,
@@ -70,7 +70,7 @@
   "baseline_build": {
     "source_commit": "b21654e13b1ae1716e7e6d842f414eb4fe09bacd",
     "binary_sha256": "ec55e3f4b8b88c2f013501a5a8bb9258e82a07c195ac2630b701f4b59fcebdcd",
-    "command": "cargo build --release -j 4 --features workspace-overlay --bin brewfs",
+    "command": "cargo build --release -j 4 --features workspace --bin brewfs",
     "CARGO_PROFILE_TEST_DEBUG": "0",
     "CARGO_PROFILE_DEV_DEBUG": "0",
     "successful_build_peak_RSS_KiB": 19807012,

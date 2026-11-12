@@ -4,7 +4,7 @@ set -euo pipefail
 
 bin="${BREWFS_BIN:-/usr/local/bin/brewfs}"
 state_dir="${BREWFS_WORKSPACE_STATE_DIR:-/var/lib/brewfs}"
-# This harness is part of the packed-v3 Redis/TiKV acceptance path. Keep the
+# This harness is part of the packed Redis/TiKV acceptance path. Keep the
 # historical sqlx/SQLite implementation in the product, but do not let an
 # unset environment silently route an experiment to it.
 catalog_url="${BREWFS_WORKSPACE_CATALOG_URL:-redis://redis:6379/0}"
@@ -63,7 +63,7 @@ run_cli() {
     (cd "$state_dir" && "$bin" workspace "${catalog_args[@]}" "$@")
 }
 
-log() { printf '[workspace-overlay] %s\n' "$*"; }
+log() { printf '[workspace] %s\n' "$*"; }
 
 is_mounted() {
     findmnt -rn --target "$1" --output FSTYPE 2>/dev/null | grep -Eq '^fuse(\.|$)'
@@ -121,7 +121,7 @@ start_mount() {
             BREWFS_FUSE_LOG_FILE="$fuse_log_file" \
             "$bin" mount \
             --privileged \
-            --volume-format workspace-v1 \
+            --volume-format workspace \
             --workspace "$workspace" \
             --data-backend local-fs \
             --data-dir "$data_dir" \

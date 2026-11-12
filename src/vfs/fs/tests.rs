@@ -14,7 +14,7 @@ use crate::vfs::fs::VFS;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[path = "tests/close_failure.rs"]
 mod close_failure;
 #[cfg(feature = "native-packed-base")]
@@ -58,7 +58,7 @@ fn test_file_attr(ino: i64) -> super::FileAttr {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod packed_request_tests {
     use super::*;
     use crate::chunk::read_plan::{
@@ -101,7 +101,7 @@ mod packed_request_tests {
             self.state.checks.fetch_add(1, Ordering::SeqCst);
             anyhow::ensure!(
                 self.state.owned.load(Ordering::SeqCst),
-                crate::workspace_overlay::error::WorkspaceError::Fenced
+                crate::workspace::error::WorkspaceError::Fenced
             );
             Ok(())
         }
@@ -140,7 +140,7 @@ mod packed_request_tests {
             self.0.begins.fetch_add(1, Ordering::SeqCst);
             anyhow::ensure!(
                 self.0.owned.load(Ordering::SeqCst),
-                crate::workspace_overlay::error::WorkspaceError::Fenced
+                crate::workspace::error::WorkspaceError::Fenced
             );
             if self.0.lose_on_begin.swap(false, Ordering::SeqCst) {
                 self.0.owned.store(false, Ordering::SeqCst);
@@ -3950,6 +3950,6 @@ mod truncate_flush_tests {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[path = "tests/handle_namespace_exhaustion_existing_api_tests.rs"]
 mod handle_namespace_exhaustion_existing_api_tests;

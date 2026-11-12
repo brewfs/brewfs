@@ -4,10 +4,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::Poll;
 
-fn close_fence_limits() -> V3BudgetLimits {
-    let mut limits = V3BudgetLimits::default();
-    limits.bytes[V3BudgetPool::Control as usize] = 32 << 10;
-    limits.bytes[V3BudgetPool::Metadata as usize] = 64 << 20;
+fn close_fence_limits() -> SnapshotBudgetLimits {
+    let mut limits = SnapshotBudgetLimits::default();
+    limits.bytes[SnapshotBudgetPool::Control as usize] = 32 << 10;
+    limits.bytes[SnapshotBudgetPool::Metadata as usize] = 64 << 20;
     limits
 }
 
@@ -22,10 +22,10 @@ async fn g07_existing_api_prepare_waits_for_file_dir_and_stats_release() {
     // Isolate each kind: a still-open stats client must not conceal a missing
     // file/directory lease. Each case keeps its own original prepare future.
     for kind in ["file", "dir", "stats"] {
-        let budget = V3MountBudget::new(close_fence_limits()).unwrap();
+        let budget = SnapshotMountBudget::new(close_fence_limits()).unwrap();
         budget.validate_frame_capability(8 << 20).unwrap();
         let f = fixture_with_budget(budget).await;
-        assert!(f.fs.meta_layer().install_v3_stats(f.fs.stats()));
+        assert!(f.fs.meta_layer().install_snapshot_stats(f.fs.stats()));
         let owner = Filesystem::reserve_request_memory(&f.fs, 8)
             .unwrap()
             .unwrap();
@@ -82,18 +82,21 @@ async fn g07_existing_api_prepare_waits_for_file_dir_and_stats_release() {
             .await
             .expect("preparation did not finish after the matching real RELEASE completed")
             .expect("client preparation returned failure");
-        assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-        assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
-        assert_eq!(f.budget.capacity(V3BudgetPool::Metadata), 64 << 20);
+        assert_eq!(
+            f.budget.state().used[SnapshotBudgetPool::Control as usize],
+            0
+        );
+        assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
+        assert_eq!(f.budget.capacity(SnapshotBudgetPool::Metadata), 64 << 20);
     }
 }
 
 #[tokio::test]
 async fn g07_existing_api_closing_rejects_new_file_dir_and_stats_open() {
-    let budget = V3MountBudget::new(close_fence_limits()).unwrap();
+    let budget = SnapshotMountBudget::new(close_fence_limits()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
-    assert!(f.fs.meta_layer().install_v3_stats(f.fs.stats()));
+    assert!(f.fs.meta_layer().install_snapshot_stats(f.fs.stats()));
     let owner = Filesystem::reserve_request_memory(&f.fs, 8)
         .unwrap()
         .unwrap();
@@ -158,8 +161,11 @@ async fn g07_existing_api_closing_rejects_new_file_dir_and_stats_open() {
             .expect("client preparation returned failure");
     }
     assert_eq!(f.fs.open_file_handle_count(), 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     // ENODEV refuses a new OPEN. The terminal READ errno is independently EIO;
     // this does not broaden the cancelled-reader gate's allowed errno set.
     assert_eq!(new_file.err(), Some(Errno::from(libc::ENODEV)));
@@ -169,7 +175,7 @@ async fn g07_existing_api_closing_rejects_new_file_dir_and_stats_open() {
 
 #[tokio::test]
 async fn g07_existing_api_flush_and_temporary_close_do_not_replace_client_release() {
-    let budget = V3MountBudget::new(close_fence_limits()).unwrap();
+    let budget = SnapshotMountBudget::new(close_fence_limits()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
     let owner = Filesystem::reserve_request_memory(&f.fs, 8)
@@ -228,9 +234,15 @@ async fn g07_existing_api_flush_and_temporary_close_do_not_replace_client_releas
             .expect("client preparation returned failure");
     }
     assert_eq!(f.fs.open_file_handle_count(), 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Output as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Output as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     assert!(
         !completed_after_temporary_close,
         "internal FileGuard close retired a real client"

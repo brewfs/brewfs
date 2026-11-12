@@ -13,20 +13,20 @@ RUN_XFSTESTS=true
 RUN_PJDFSTEST=true
 BUILD_IMAGES=true
 PARALLEL_SUITES=false
-# Packed-v3 workspace experiments are intentionally scoped to the distributed
+# Packed workspace experiments are intentionally scoped to the distributed
 # metadata catalogs. SQLite/sqlx remains available to historical code paths,
 # but must not be selected by this acceptance runner.
 META_BACKEND="${BREWFS_WORKSPACE_META_BACKEND:-redis}"
 WORKSPACE_COUNT=2
 
-log() { printf '[workspace-overlay] %s\n' "$*"; }
+log() { printf '[workspace] %s\n' "$*"; }
 die() { log "ERROR: $*" >&2; exit 2; }
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Build the feature-enabled BrewFS test images, build one immutable packed-v3
+Build the feature-enabled BrewFS test images, build one immutable packed
 lower from seed files, fork two workspaces from its exact revision, verify
 simultaneous FUSE isolation, and run each selected POSIX suite against both
 workspaces. There is no seal step.
@@ -96,7 +96,7 @@ command -v python3 >/dev/null || die "python3 is required"
 [[ -e /dev/fuse ]] || die "/dev/fuse is required"
 
 ts="$(date +%Y%m%d-%H%M%S)-$RANDOM"
-run_dir="$ARTIFACT_ROOT/workspace-overlay-$ts"
+run_dir="$ARTIFACT_ROOT/workspace-$ts"
 state_dir="$run_dir/state"
 mkdir -p "$state_dir" "$run_dir/dual-mount" "$run_dir/xfstests-a" \
     "$run_dir/xfstests-b" "$run_dir/pjdfstest-a" "$run_dir/pjdfstest-b"
@@ -107,7 +107,7 @@ catalog_namespace="workspace-$ts"
 catalog_url="${BREWFS_WORKSPACE_META_URL:-redis://redis:6379}"
 catalog_cli_backend="$META_BACKEND"
 catalog_tikv_endpoints="pd:2379"
-harness_script="$SCRIPT_DIR/run_workspace_overlay_dual_mount_in_container.sh"
+harness_script="$SCRIPT_DIR/run_workspace_dual_mount_in_container.sh"
 
 cleanup_dependencies() {
     local status=$?
@@ -181,18 +181,18 @@ if [[ "$BUILD_IMAGES" == true ]]; then
     (
         cd "$PROJECT_DIR"
         CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release -p brewfs --bin brewfs \
-            --bin packed_v3_snapshot_fixture --features workspace-overlay
+            --bin packed_snapshot_fixture --features workspace
         mkdir -p target/docker
         install -m 755 target/release/brewfs target/docker/brewfs
-        install -m 755 target/release/packed_v3_snapshot_fixture \
-            target/docker/packed_v3_snapshot_fixture
+        install -m 755 target/release/packed_snapshot_fixture \
+            target/docker/packed_snapshot_fixture
     )
     log "building xfstests image $XFSTESTS_IMAGE"
     if docker image inspect "$FALLBACK_BASE_IMAGE" >/dev/null 2>&1; then
         docker build --pull=false \
             --build-arg BASE_IMAGE="$FALLBACK_BASE_IMAGE" \
             -t "$XFSTESTS_IMAGE" \
-            -f "$SCRIPT_DIR/Dockerfile.workspace-overlay-xfstests" "$PROJECT_DIR"
+            -f "$SCRIPT_DIR/Dockerfile.workspace-xfstests" "$PROJECT_DIR"
     else
         docker build -t "$XFSTESTS_IMAGE" -f "$SCRIPT_DIR/Dockerfile" "$PROJECT_DIR"
     fi
@@ -202,7 +202,7 @@ if [[ "$BUILD_IMAGES" == true ]]; then
             docker build --pull=false \
                 --build-arg BASE_IMAGE="$FALLBACK_BASE_IMAGE" \
                 -t "$PJDFSTEST_IMAGE" \
-                -f "$SCRIPT_DIR/Dockerfile.workspace-overlay-pjdfstest" "$PROJECT_DIR"
+                -f "$SCRIPT_DIR/Dockerfile.workspace-pjdfstest" "$PROJECT_DIR"
         else
             docker build -t "$PJDFSTEST_IMAGE" -f "$SCRIPT_DIR/Dockerfile.pjdfstest" "$PROJECT_DIR"
         fi
@@ -253,7 +253,7 @@ build_seed_lower() {
     docker run --rm \
         --workdir /var/lib/brewfs \
         -v "$state_dir:/var/lib/brewfs" \
-        --entrypoint /usr/local/bin/packed_v3_snapshot_fixture \
+        --entrypoint /usr/local/bin/packed_snapshot_fixture \
         "$XFSTESTS_IMAGE" --wire-version 5 --source-directory /var/lib/brewfs/seed \
         --source-consistency best-effort-detected --source-hardlink-policy visible-links \
         --output-dir /var/lib/brewfs/data --prefix workspace-lower \
@@ -313,7 +313,7 @@ run_suite() {
         --workdir /var/lib/brewfs \
         -v "$state_dir:/var/lib/brewfs" \
         -v "$artifacts:/artifacts" \
-        -e BREWFS_VOLUME_FORMAT=workspace-v1 \
+        -e BREWFS_VOLUME_FORMAT=workspace \
         -e BREWFS_WORKSPACE_ID="$workspace" \
         -e BREWFS_MOUNT_POINT=/mnt/brewfs/workspace \
         -e BREWFS_META_BACKEND="$META_BACKEND" \

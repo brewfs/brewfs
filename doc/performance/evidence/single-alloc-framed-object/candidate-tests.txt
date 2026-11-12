@@ -13,7 +13,7 @@ FRAMED_OBJECT_EVIDENCE {"case":"zstd-compressed","fragments":32,"header_bytes_wr
 test chunk::store::framed_write_tests::persisted_object_copy_evidence ... ok
 test result: ok. 188 passed; 0 failed; 3 ignored; 0 measured; 2795 filtered out; finished in 3.07s
 
-workspace_overlay::
+workspace::
     Finished `test` profile [unoptimized] target(s) in 2.25s
 test result: ok. 1138 passed; 0 failed; 161 ignored; 0 measured; 1687 filtered out; finished in 45.19s
 

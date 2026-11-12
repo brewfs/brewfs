@@ -1,16 +1,16 @@
 Validation environment: CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=4
 Target: /data/asyncfuse/target-workspace; all Cargo jobs serialized, with pgrep -a rustc before each.
-Build: cargo build --workspace --features workspace-overlay -j 2 (passed).
-A separate default-only workspace test run was not performed; the complete workspace test run enabled workspace-overlay.
+Build: cargo build --workspace --features workspace -j 2 (passed).
+A separate default-only workspace test run was not performed; the complete workspace test run enabled workspace.
 Full local CI gate is incomplete: io-uring check interrupted, Clippy not run. Draft instrumentation PR; no optimization accepted.
 
-workspace-tests: cargo test --workspace --lib --bins --features workspace-overlay
+workspace-tests: cargo test --workspace --lib --bins --features workspace
 exit=101
-workspace-tests-retry: cargo test --workspace --lib --bins --features workspace-overlay -- --test-threads=4
+workspace-tests-retry: cargo test --workspace --lib --bins --features workspace -- --test-threads=4
 exit=0
-cache-ttl-tests: cargo test --features workspace-overlay --test fuse_cache_ttl -- --include-ignored --nocapture
+cache-ttl-tests: cargo test --features workspace --test fuse_cache_ttl -- --include-ignored --nocapture
 exit=-2
-cache-ttl-tests-workspace: cargo test --workspace --features workspace-overlay --test fuse_cache_ttl -- --include-ignored --nocapture
+cache-ttl-tests-workspace: cargo test --workspace --features workspace --test fuse_cache_ttl -- --include-ignored --nocapture
 exit=-2
 chunk-tests: /data/asyncfuse/target-workspace/debug/deps/brewfs-d5c845e45acd23e9 chunk::
 exit=0
@@ -31,7 +31,7 @@ Excerpt: build.log
 Excerpt: workspace-tests.log
     Finished `test` profile [unoptimized] target(s) in 15m 37s
 test vfs::io::writer::tests::test_auto_flush_defers_cached_partial_tail_after_full_block_dispatch ... FAILED
-test workspace_overlay::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::native_effective_export_tests::actual_native_effective_roundtrip_preserves_ids_hardlinks_holes_cold_and_native_hash ... FAILED
+test workspace::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::native_effective_export_tests::actual_native_effective_roundtrip_preserves_ids_hardlinks_holes_cold_and_native_hash ... FAILED
 test result: FAILED. 2534 passed; 2 failed; 451 ignored; 0 measured; 0 filtered out; finished in 75.44s
 
 Excerpt: workspace-tests-retry.log

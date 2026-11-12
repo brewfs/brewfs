@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.workspace-overlay.yml"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.workspace.yml"
 ARTIFACT_ROOT="${BREWFS_WORKSPACE_ARTIFACT_ROOT:-$SCRIPT_DIR/artifacts}"
 BACKEND="${BREWFS_WORKSPACE_META_BACKEND:-redis}"
 XFSTESTS_CASES_VALUE="${XFSTESTS_CASES:-}"
@@ -14,7 +14,7 @@ CONTROL_ONLY=false
 BUILD_IMAGES=true
 KEEP=false
 
-log() { printf '[workspace-overlay-compose] %s\n' "$*"; }
+log() { printf '[workspace-compose] %s\n' "$*"; }
 die() { log "ERROR: $*" >&2; exit 2; }
 
 usage() {
@@ -113,11 +113,11 @@ export BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS="${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:
 export XFSTESTS_CASES="$XFSTESTS_CASES_VALUE"
 
 ts="$(date +%Y%m%d-%H%M%S)-$RANDOM"
-project_name="brewfs-workspace-overlay-$ts"
-run_dir="$ARTIFACT_ROOT/workspace-overlay-$ts"
+project_name="brewfs-workspace-$ts"
+run_dir="$ARTIFACT_ROOT/workspace-$ts"
 mkdir -p "$run_dir"
 export BREWFS_WORKSPACE_ARTIFACT_DIR="$run_dir"
-export BREWFS_WORKSPACE_NAMESPACE="${BREWFS_WORKSPACE_NAMESPACE:-workspace-overlay-$ts}"
+export BREWFS_WORKSPACE_NAMESPACE="${BREWFS_WORKSPACE_NAMESPACE:-workspace-$ts}"
 compose_args=(-f "$COMPOSE_FILE" -p "$project_name")
 journal_helper="$PROJECT_DIR/tools/perf/workspace_control_resource_journal.py"
 journal_path="$run_dir/workspace-control-resource-journal.json"
@@ -235,9 +235,9 @@ build_release() {
     (
         cd "$PROJECT_DIR" || exit
         CARGO_PROFILE_RELEASE_DEBUG=0 cargo build --release -p brewfs \
-            --bin brewfs --bin packed_v3_snapshot_fixture --features workspace-overlay || exit
+            --bin brewfs --bin packed_snapshot_fixture --features workspace || exit
         mkdir -p target/docker || exit
-        install -m 755 target/release/brewfs target/release/packed_v3_snapshot_fixture target/docker/
+        install -m 755 target/release/brewfs target/release/packed_snapshot_fixture target/docker/
     )
 }
 
@@ -253,7 +253,7 @@ build_images() {
 }
 
 if [[ "$BUILD_IMAGES" == true ]]; then
-    log "building workspace-overlay release binary"
+    log "building workspace release binary"
     run_stage build-release build_release
     run_stage build-images build_images
 fi

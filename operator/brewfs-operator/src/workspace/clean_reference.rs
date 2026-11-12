@@ -1,7 +1,7 @@
 //! Kubernetes observations route a bounded proof check; status grants no proof.
 use super::*;
-use brewfs::workspace_overlay::catalog::HeadGuard;
-use brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference;
+use brewfs::workspace::catalog::HeadGuard;
+use brewfs::workspace::packed_admin::PackedReleasedMountReference;
 
 pub(super) async fn verified_clean_mount_reference(
     client: &Client,
@@ -68,6 +68,6 @@ pub(super) async fn verified_clean_mount_reference(
                 .await
         }
         1 => Ok(candidates.pop()),
-        _ => bail!("multiple original clean packed-v3 mount references matched"),
+        _ => bail!("multiple original clean packed mount references matched"),
     }
 }

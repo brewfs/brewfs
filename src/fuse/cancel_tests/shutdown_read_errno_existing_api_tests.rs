@@ -2,16 +2,16 @@
 //! LocalFS fixture; no Python retry, kernel reply, or live FUSE proof.
 use super::*;
 
-fn shutdown_errno_limits() -> V3BudgetLimits {
-    let mut limits = V3BudgetLimits::default();
-    limits.bytes[V3BudgetPool::Control as usize] = 32 << 10;
-    limits.bytes[V3BudgetPool::Metadata as usize] = 64 << 20;
+fn shutdown_errno_limits() -> SnapshotBudgetLimits {
+    let mut limits = SnapshotBudgetLimits::default();
+    limits.bytes[SnapshotBudgetPool::Control as usize] = 32 << 10;
+    limits.bytes[SnapshotBudgetPool::Metadata as usize] = 64 << 20;
     limits
 }
 
 #[tokio::test]
 async fn g07_existing_api_global_prepare_returns_terminal_eio_for_pending_read() {
-    let budget = V3MountBudget::new(shutdown_errno_limits()).unwrap();
+    let budget = SnapshotMountBudget::new(shutdown_errno_limits()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
     f.gate.mode.store(1, Ordering::SeqCst);
@@ -42,9 +42,15 @@ async fn g07_existing_api_global_prepare_returns_terminal_eio_for_pending_read()
     assert_eq!(f.gate.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(f.fs.open_file_handle_count(), 0);
     assert_cancelled_read(&f.observer);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Output as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Output as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     // Shutdown is terminal. EINTR invites Python's installed pread retry loop
     // to issue another read while the mount is already closing or unmounted.
     assert_eq!(cancelled.err(), Some(Errno::from(libc::EIO)));
@@ -52,7 +58,7 @@ async fn g07_existing_api_global_prepare_returns_terminal_eio_for_pending_read()
 
 #[tokio::test]
 async fn g07_existing_api_closed_read_admission_returns_terminal_eio() {
-    let budget = V3MountBudget::new(shutdown_errno_limits()).unwrap();
+    let budget = SnapshotMountBudget::new(shutdown_errno_limits()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
     tokio::time::timeout(Duration::from_secs(2), Filesystem::prepare_unmount(&f.fs))
@@ -67,8 +73,11 @@ async fn g07_existing_api_closed_read_admission_returns_terminal_eio() {
     assert_eq!(f.fs.open_file_handle_count(), 0);
     assert_eq!(f.gate.dropped.load(Ordering::SeqCst), 0);
     assert!(f.gate.payload_ranges.lock().unwrap().is_empty());
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     // This is the READ admission policy. Closing OPEN may still use ENODEV;
     // do not add ENODEV to the real cancelled-reader helper's accepted errno.
     assert_eq!(rejected.err(), Some(Errno::from(libc::EIO)));
@@ -76,7 +85,7 @@ async fn g07_existing_api_closed_read_admission_returns_terminal_eio() {
 
 #[tokio::test]
 async fn g07_existing_api_explicit_interrupt_keeps_eintr_and_next_read_recovers() {
-    let budget = V3MountBudget::new(shutdown_errno_limits()).unwrap();
+    let budget = SnapshotMountBudget::new(shutdown_errno_limits()).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
     f.gate.mode.store(1, Ordering::SeqCst);
@@ -120,9 +129,15 @@ async fn g07_existing_api_explicit_interrupt_keeps_eintr_and_next_read_recovers(
     drop(reply);
     drop(owner);
     assert_eq!(f.fs.open_file_handle_count(), 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Output as usize], 0);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Output as usize],
+        0
+    );
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     assert!(
         f.observer
             .snapshot()

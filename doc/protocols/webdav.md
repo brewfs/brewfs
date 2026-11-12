@@ -40,7 +40,7 @@ Windows 网络驱动器 / Finder / davfs2 / rclone
 - dav-server 负责 HTTP 方法解析、PROPFIND XML、lock 语义框架；我们实现
   `DavFileSystem`（路径级操作）与 `DavFile`（读写句柄）两个 trait；
 - 基于 VFS 的 parent-inode/path component 操作，拒绝中间 symlink 和内部 namespace 逃逸；条件写使用 ETag/ctime 重新检查。
-- flat-v1 cache 使用 volume namespace；metadata client 使用 backend-specific TTL。
+- flat cache 使用 volume namespace；metadata client 使用 backend-specific TTL。
 
 ## 3. 方法映射表
 

@@ -39,14 +39,14 @@ unoptimized BrewFS build, independently of attribute TTL. No improvement is
 claimed for that path.
 
 The packed lower supports bounded reads already. [src/cli.rs](../../src/cli.rs) attaches
-`PackedV3ReadonlyMeta` through `with_packed_v3_lower`.
-[readonly.rs](../../src/workspace_overlay/packed_v3/readonly.rs) wraps its runtime object client
-in `V3ReadonlyBackend`, whose `get_object` rejects whole-object GETs. The
+`PackedReadonlyMeta` through `with_packed_lower`.
+[readonly.rs](../../src/workspace/packed/readonly.rs) wraps its runtime object client
+in `SnapshotReadonlyBackend`, whose `get_object` rejects whole-object GETs. The
 prepared read path uses `prepare_inode_read_observed` with an explicit logical
 range; the block-store adapter uses `read_inode_range`. Range reads may include
 authenticated frame/metadata overhead; this is not a claim of exactly one
 128 KiB HTTP transfer per FUSE READ. The timing corpus is newly written upper
-data on the packed-v3-backed workspace, not an immutable packed-lower corpus.
+data on the packed-backed workspace, not an immutable packed-lower corpus.
 The lower-path answer is a source/test finding, not inferred from these rates.
 
 The next experiment should check data-version-validated cache retention on
@@ -85,7 +85,7 @@ takes 10.6019 s versus 6.0892 s with `-a 100 -f 100 -l 100 -c 16 -n 2 -s 5`.
 These are supplementary comparisons, not invented historical baselines or a
 substitute for the compose default's larger directory workload.
 
-The current-main binary was built once, with workspace-overlay, and copied
+The current-main binary was built once, with workspace, and copied
 before all formal measurements. SHA-256:
 `d3790f53f3ffe8e3915c87a702f7fc959077b92c8c2b435dcde6c9e8aeff2573`.
 Base commit: `1ad4c99`. Build: dev/unoptimized, `CARGO_INCREMENTAL=0`,

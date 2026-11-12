@@ -39,13 +39,13 @@ CPUQuota=700%、IOWeight=50，shim 注入 `CARGO_BUILD_JOBS=3`。启动前清理
 
 ```bash
 cargo +1.99.0 rustc --locked --release --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay,observability \
+  --features fuse-tokio-runtime,workspace,observability \
   --bin brewfs -- -C opt-level=1 -C debuginfo=0
-# main 与 #409 父提交的 packed_v3_snapshot_fixture 只需替换 --bin。
+# main 与 #409 父提交的 packed_snapshot_fixture 只需替换 --bin。
 ```
 
 实际需要三份 CLI，以及 main / #409 父提交的两份 packed fixture。
-#407 只运行 flat-v1 场景，不使用 packed fixture。
+#407 只运行 flat 场景，不使用 packed fixture。
 
 库保留 release opt-level=3，最终 bin opt-level=1；`RUSTFLAGS=-C debuginfo=0`、
 release debug=0、incremental=0。此口径沿用 #409 的匹配构建。
@@ -71,7 +71,7 @@ LLVM 共享库的构建前后 SHA-256，防止宿主工具链维护改变比较�
 
 ## #407：五场景
 
-flat-v1 + Redis + RustFS，zstd level 1，4 MiB block / 64 MiB chunk，
+flat + Redis + RustFS，zstd level 1，4 MiB block / 64 MiB chunk，
 coalesce 64 KiB / 0 ms，Tokio worker=1、FUSE workers=16，S3/upload 并发=8/10。
 read RAM/SSD=0/0，write RAM=512 MiB、write SSD=0，总预算=2 GiB，
 prefetch/keep-cache/writeback cache 关闭，upload-before-commit。
@@ -94,7 +94,7 @@ D 的主耗时包含 close 后严格排空，随后逐字节验证全部文件�
 
 ## #409：五场景
 
-8,192 × 4 KiB，wire005、size-only、sequential-small-file、inline on，
+8,192 × 4 KiB，snapshot、size-only、sequential-small-file、inline on，
 metadata/data codec 均 raw，metadata cache=256 MiB，payload cache=0，
 FUSE read direct I/O=1、keep-cache=0、TTL=0、payload prefetch=off。
 两臂分别用自身 fixture 生成快照，因为本 PR 改变了打包边界，需重新打包。
@@ -104,7 +104,7 @@ FUSE read direct I/O=1、keep-cache=0、TTL=0、payload prefetch=off。
 「Keep draft; do not merge with the current failures/gaps」。本轮指定的 D
 是顺序扫描后随机读 10%，并非 mixed fio 写尾测试；这五项复查即使通过也不能
 消除该历史风险。历史热态对照的 2.9738 → 0.5756 ms/file（约 -80.64%）与本轮
-固定 wire005、8,192 文件 fixture 的 A 不是同一测量口径；本轮 A 为 -51.34%，
+固定 snapshot、8,192 文件 fixture 的 A 不是同一测量口径；本轮 A 为 -51.34%，
 不能要求两者数值完全相等。历史正文原样保留于 `analysis/pr-409-historical.json`。
 
 | 场景和指标 | 父提交中位数 | main 中位数 | 配对变化 [95% CI] | 配对 t / p | 判定 |

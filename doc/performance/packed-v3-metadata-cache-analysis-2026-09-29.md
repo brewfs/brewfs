@@ -114,13 +114,13 @@ entry，再校验 name 和 inode 一致性。这样 metadata-warm/cold-data 的�
 不能把 metadata warm-up 或 data frame window 命中写成 data-cache hit，也不能
 把带有本地 payload cache 的 JuiceFS 结果与 strict-cold packed 结果直接比较。
 
-本轮局部验证：packed-v3 定向测试 52 个用例通过；新增的 zero-budget payload
+本轮局部验证：packed 定向测试 52 个用例通过；新增的 zero-budget payload
 测试和 pageable metadata warm-up 测试通过。Aliyun 端到端结果需在同一数据集、
 同一 OSS、相同并发和相同缓存预算下重新采集后才能更新性能表。
 
 本轮新增回归：同一 GroupContainer 的两个相邻 GroupMeta 在 warm-up 中只产生一个
 metadata range GET，且每个 GM06 block 的 digest/边界校验仍单独执行；完整
-`packed_v3::catalog` 测试 13/13 通过。该优化只降低 metadata warm-up 的请求 RTT，
+`packed::catalog` 测试 13/13 通过。该优化只降低 metadata warm-up 的请求 RTT，
 不等价于 payload/data cache 命中，也不改变 strict-cold 的按需 descriptor/data 读取。
 
 本轮另加目录深分页回归：跳过第一个 group 直接读取第二个 group 时，记录到的 range
@@ -168,7 +168,7 @@ FUSE 请求留下合并机会。对单文件冷读或低并发随机扫描，如
 
 ### 变更与边界
 
-变更仅在 `src/workspace_overlay/packed_v3/coordinator.rs`，不改变 range planner、
+变更仅在 `src/workspace/packed/coordinator.rs`，不改变 range planner、
 digest/CRC/长度/边界校验、共享 byte/range budget 或窗口 cache。新增单元回归固定该
 收集窗口小于 1 ms；没有 benchmark-only 分支，也没有改变 strict-cold 的对象布局。
 
@@ -180,7 +180,7 @@ metadata cache/prefetch 设置与匹配基线一致，并在 `sync; echo 3 >/pro
 后分别运行 packed 与 JuiceFS；报告 FUSE active bandwidth、request/GET 数、对象放大和
 `effective_active_plus_drain_bw_mib_s`。现有匹配参考证据为：
 
-* packed：`docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/`
+* packed：`docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/`
 * JuiceFS：同一目录下的 `juicefs/` strict-cold 结果
 
 
@@ -199,7 +199,7 @@ metadata cache/prefetch 设置与匹配基线一致，并在 `sync; echo 3 >/pro
    输出 snapshot，runner 改为 `RUST_LOG=info` 以保留这些字段。`.stats`/Prometheus sink、
    cold attributes、完整 overlay lower binding 和压缩/restart 新 wire 仍未宣称完成。
 
-本地验证通过：packed-v3 focused suite `64 passed`；workspace hard gate
+本地验证通过：packed focused suite `64 passed`；workspace hard gate
 `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --lib --bins`
 为 `1097 passed, 0 failed, 225 ignored`；workspace check/build/clippy、fmt、脚本门禁及
 fuse-tokio/io-uring feature checks 均通过。

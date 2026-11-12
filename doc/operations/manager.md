@@ -13,14 +13,14 @@ deletion. The supported combinations are:
 
 | Volume format | Metadata backends | Required build feature | Immutable lower |
 | --- | --- | --- | --- |
-| `workspace-v1` | SQLite, Redis, TiKV | `workspace-overlay` | Exact catalog revision |
-| `workspace-native-v2` | Redis, TiKV | `native-packed-base` | Native P1 catalog revision |
+| `workspace` | SQLite, Redis, TiKV | `workspace` | Exact catalog revision |
+| `native-workspace` | Redis, TiKV | `native-packed-base` | Native P1 catalog revision |
 
-The native profile uses the real CLI's workspace-v1 catalog carrier plus its
+The native profile uses the real CLI's workspace catalog carrier plus its
 separate native-v2 volume, namespace, head, and ownership-domain records. It does
 not change that catalog to schema 2. Native `PublishedRevision`, frozen metadata,
-packed catalog bindings, and `workspace-entity-v1` are unsupported. A native
-namespace cannot be registered as workspace-v1 to bypass native validation.
+packed catalog bindings, and `entity-workspace` are unsupported. A native
+namespace cannot be registered as workspace to bypass native validation.
 
 The HTTP service does not mount filesystems, run benchmarks, certify remote
 object readiness, checkpoint active workspaces, execute on nodes, manage
@@ -30,7 +30,7 @@ independent CLI and Operator retain their own supported behavior; an accepted
 Manager operation is not evidence that a workload has run successfully.
 
 Read `/api/v1/capabilities` for this build's format/backend combinations and
-limits. Without `workspace-overlay`, lifecycle requests return `unsupported`.
+limits. Without `workspace`, lifecycle requests return `unsupported`.
 Native requests require `native-packed-base`; SQLite is never a native backend.
 
 ## Start one instance
@@ -38,11 +38,11 @@ Native requests require `native-packed-base`; SQLite is never a native backend.
 Build the existing binary with lifecycle support:
 
 ```sh
-cargo build --no-default-features --features fuse-tokio-runtime,workspace-overlay
+cargo build --no-default-features --features fuse-tokio-runtime,workspace
 ```
 
 For the native P1 profile, use `fuse-tokio-runtime,native-packed-base` instead;
-that feature also enables workspace-overlay support.
+that feature also enables workspace support.
 
 Configure catalog references locally in `STATE_DIR/manager-catalogs.json`:
 
@@ -79,7 +79,7 @@ node. Sentinel discovery and Redis Cluster are unsupported for all Manager
 profiles: this is a direct-node client, and strict namespace initialization and
 native control checks can span Redis hash slots.
 
-TiKV workspace-v1 connections may include a local `tls` object with absolute
+TiKV workspace connections may include a local `tls` object with absolute
 `ca_path`, `cert_path`, and `key_path`. HTTPS endpoints require those files.
 Native TiKV TLS is explicitly unsupported; the Manager never falls back to an
 unencrypted native control connection when TLS was requested.
@@ -240,11 +240,11 @@ Initialize the configured empty target:
 curl --fail-with-body -sS -X POST "$API/api/v1/volumes" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: development-initialize-1' \
-  --data '{"mode":"initialize","catalog_ref":"development","owner":"alice","confirm_empty":true,"volume_format":"workspace-v1"}'
+  --data '{"mode":"initialize","catalog_ref":"development","owner":"alice","confirm_empty":true,"volume_format":"workspace"}'
 ```
 
 To initialize a configured Redis or TiKV native P1 namespace, use that remote
-`catalog_ref` and `"volume_format":"workspace-native-v2"`. The same format must be
+`catalog_ref` and `"volume_format":"native-workspace"`. The same format must be
 specified when registering an existing native volume. This is a metadata
 operation; it does not create an object bucket or a populated source corpus.
 
@@ -255,7 +255,7 @@ to its actual header UUID; this operation must not initialize it:
 curl --fail-with-body -sS -X POST "$API/api/v1/volumes" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: development-register-1' \
-  --data "{\"mode\":\"register\",\"catalog_ref\":\"development\",\"expected_volume_id\":\"$EXISTING_VOLUME_ID\",\"volume_format\":\"workspace-v1\"}"
+  --data "{\"mode\":\"register\",\"catalog_ref\":\"development\",\"expected_volume_id\":\"$EXISTING_VOLUME_ID\",\"volume_format\":\"workspace\"}"
 ```
 
 Set `OPERATION_ID` and `VOLUME_ID` from the response. Query completion and inspect

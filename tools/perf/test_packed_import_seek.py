@@ -24,9 +24,9 @@ PREFIX = {
     "placements": "SELECT p.first_key,p.last_key,p.value,i.value FROM records p JOIN records",
 }
 FILES = [
-    "src/workspace_overlay/packed_v3/wire005/source_namespace.rs",
-    "src/workspace_overlay/packed_v3/wire005/source_layout.rs",
-    "src/workspace_overlay/packed_v3/wire005/spool.rs",
+    "src/workspace/packed/snapshot/source_namespace.rs",
+    "src/workspace/packed/snapshot/source_layout.rs",
+    "src/workspace/packed/snapshot/spool.rs",
 ]
 OBSERVATIONS: list[dict] = []
 SOURCE_ROOT = Path(__file__).resolve().parents[2]

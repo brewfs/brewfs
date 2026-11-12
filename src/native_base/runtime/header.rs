@@ -5,7 +5,7 @@ use crate::native_base::wire::uvarint::{Reader, Writer};
 use crate::native_base::write::keys::Keys;
 use crate::native_base::write::store::{ControlStore, StoreError, Txn};
 
-pub const NATIVE_VOLUME_FORMAT: &str = "workspace-native-v2";
+pub const NATIVE_VOLUME_FORMAT: &str = "native-workspace";
 pub const NATIVE_SCHEMA_VERSION: u32 = 2;
 pub const NATIVE_CONTROL_VERSION: u32 = 2;
 pub const NATIVE_WIRE_MAJOR: u16 = 3;
@@ -387,7 +387,7 @@ mod tests {
         // A volume that is not this format at all is refused as a foreign
         // format -- never reinterpreted as a flat volume.
         let mut foreign = header.clone();
-        foreign.volume_format = "workspace-flat-v1".into();
+        foreign.volume_format = "workspace-flat".into();
         assert!(matches!(
             foreign.validate(all_capabilities()),
             Err(RuntimeAdmissionError::UnsupportedVolumeFormat(_))

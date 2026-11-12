@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _};
-use brewfs::workspace_overlay::error::WorkspaceError;
-use brewfs::workspace_overlay::ids::{LayerId, LeaseId, SnapshotId, WorkspaceId};
-use brewfs::workspace_overlay::model::{LeaseState, SnapshotLease};
+use brewfs::workspace::error::WorkspaceError;
+use brewfs::workspace::ids::{LayerId, LeaseId, SnapshotId, WorkspaceId};
+use brewfs::workspace::model::{LeaseState, SnapshotLease};
 use chrono::Utc;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::runtime::controller::Action;
@@ -149,7 +149,7 @@ pub async fn guard_cluster_workspace_lifecycle(
             .into_iter()
             .filter(|workspace| {
                 workspace.workspace_id != root_workspace_id
-                    && workspace.state != brewfs::workspace_overlay::model::WorkspaceState::Deleting
+                    && workspace.state != brewfs::workspace::model::WorkspaceState::Deleting
             })
             .count();
         if retained != 0 {
@@ -205,21 +205,21 @@ pub async fn reconcile_cluster_workspace(
         .await?;
     let capabilities = match volume.packed_binding.as_ref() {
         Some(binding) => super::crd::WorkspaceCapabilityStatus {
-            volume_format: "workspace-v1".into(),
-            packed_v3: super::crd::PackedV3Capability::Readonly,
+            volume_format: "workspace".into(),
+            packed: super::crd::PackedCapability::Readonly,
             packed_binding: super::crd::PackedBindingStatus::Present {
                 version: binding.binding.binding_version,
                 manifest_digest: hex::encode(binding.binding.manifest.digest),
             },
         },
-        None => bail!("packed-v3 root carrier binding is not initialized"),
+        None => bail!("packed root carrier binding is not initialized"),
     };
     let mut conditions = vec![
         condition(
             "WorkspaceCatalogReady",
             "True",
             "PackedCatalogReady",
-            "packed-v3 workspace catalog and carrier root snapshot are ready",
+            "packed workspace catalog and carrier root snapshot are ready",
             cluster.metadata.generation,
         ),
         capabilities.packed_lower_condition(cluster.metadata.generation),
@@ -233,7 +233,7 @@ pub async fn reconcile_cluster_workspace(
     }
     let workspace_status = super::crd::WorkspaceClusterStatus {
         volume_id: volume.volume_id.to_string(),
-        schema_version: brewfs::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
+        schema_version: brewfs::workspace::model::WORKSPACE_SCHEMA_VERSION,
         catalog_backend: spec.catalog_backend,
         catalog_namespace: catalog_namespace(&cluster.name_any(), kubernetes_namespace, spec),
         root_snapshot_id: volume.root_snapshot_id.to_string(),
@@ -302,7 +302,7 @@ pub async fn reconcile_workspace(
     let admin =
         connect_workspace_admin_for_cluster(&ctx.client, &cluster, &namespace, cluster_spec)
             .await?;
-    // Packed-v3 recovery is performed by its recorded bootstrap/snapshot operation.
+    // Packed recovery is performed by its recorded bootstrap/snapshot operation.
     // Bounded source checks below keep unrelated incomplete workspaces RecoveryRequired.
 
     let source = resolve_workspace_source(
@@ -346,7 +346,7 @@ pub async fn reconcile_workspace(
             .clone()
             .or_else(|| Some(format!("k8s-workspace/{namespace}/{name}"))),
     };
-    let view = if cluster_workspace.capabilities.packed_v3_ready() {
+    let view = if cluster_workspace.capabilities.packed_ready() {
         admin.ensure_packed_workspace(workspace_request).await?
     } else {
         admin.ensure_workspace(workspace_request).await?
@@ -366,8 +366,8 @@ pub async fn reconcile_workspace(
         .iter()
         .any(|lease| matches!(lease.state, LeaseState::Active | LeaseState::Releasing));
     let packed_binding = admin.packed_binding(workspace_id).await?;
-    if cluster_workspace.capabilities.packed_v3_ready() && packed_binding.is_none() {
-        return Err(anyhow!("packed-v3 workspace is missing its mandatory binding").into());
+    if cluster_workspace.capabilities.packed_ready() && packed_binding.is_none() {
+        return Err(anyhow!("packed workspace is missing its mandatory binding").into());
     }
     let clean_epoch = if packed_binding.is_some() && !active_lease {
         match admin.clean_published_view(workspace_id).await? {
@@ -377,7 +377,7 @@ pub async fn reconcile_workspace(
                     if report.released.guard.expected_head_layer_id != view.record.head_layer_id
                         || report.released.guard.expected_head_epoch != view.record.head_epoch
                     {
-                        return Err(anyhow!("recovered packed-v3 workspace view changed").into());
+                        return Err(anyhow!("recovered packed workspace view changed").into());
                     }
                     Some(report.released.guard.expected_head_epoch)
                 }
@@ -406,7 +406,7 @@ pub async fn reconcile_workspace(
         ),
         WorkspaceDesiredState::Suspended if packed_binding.is_some() && clean_epoch.is_none() => (
             "RecoveryRequired",
-            "packed-v3 clean source proof is unavailable",
+            "packed clean source proof is unavailable",
         ),
         WorkspaceDesiredState::Suspended => ("Suspended", "workspace clean source was verified"),
     };
@@ -419,8 +419,8 @@ pub async fn reconcile_workspace(
     );
     status.capabilities = match &packed_binding {
         Some(binding) => super::crd::WorkspaceCapabilityStatus {
-            volume_format: "workspace-v1".into(),
-            packed_v3: super::crd::PackedV3Capability::Readonly,
+            volume_format: "workspace".into(),
+            packed: super::crd::PackedCapability::Readonly,
             packed_binding: super::crd::PackedBindingStatus::Present {
                 version: binding.binding.binding_version,
                 manifest_digest: hex::encode(binding.binding.manifest.digest),
@@ -699,7 +699,7 @@ pub async fn reconcile_workspace_snapshot(
     let admin =
         connect_workspace_admin_for_cluster(&ctx.client, &cluster, &namespace, cluster_spec)
             .await?;
-    // Packed-v3 recovery is performed by its recorded bootstrap/snapshot operation.
+    // Packed recovery is performed by its recorded bootstrap/snapshot operation.
     // Bounded source checks below keep unrelated incomplete workspaces RecoveryRequired.
     let volume_id = Uuid::parse_str(&cluster_workspace.volume_id)
         .context("parse cluster workspace volume ID")?;
@@ -837,7 +837,7 @@ pub async fn reconcile_workspace_snapshot(
             &api,
             &snapshot,
             "Failed",
-            "snapshots require a packed-v3 workspace; native workspaces are never sealed",
+            "snapshots require a packed workspace; native workspaces are never sealed",
             None,
             None,
             Some((workspace_id.to_string(), source_head_epoch)),
@@ -906,7 +906,7 @@ async fn resolve_workspace_source(
     workspace: &BrewFSWorkspace,
     cluster: &BrewFSCluster,
     admin: &dyn WorkspaceAdmin,
-) -> anyhow::Result<brewfs::workspace_overlay::model::BaseRevision> {
+) -> anyhow::Result<brewfs::workspace::model::BaseRevision> {
     match workspace.spec.source.kind {
         WorkspaceSourceKind::ClusterRoot => {
             let revision = cluster
@@ -1546,7 +1546,7 @@ mod tests {
         SnapshotLease {
             lease_id: LeaseId::from_uuid(Uuid::from_u128(id)),
             workspace_id: WorkspaceId::from_uuid(Uuid::from_u128(10)),
-            base_revision: brewfs::workspace_overlay::model::BaseRevision {
+            base_revision: brewfs::workspace::model::BaseRevision {
                 layer_id: LayerId::from_uuid(Uuid::from_u128(11)),
                 sealed_version: 1,
                 root_hash: [0; 32],

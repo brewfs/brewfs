@@ -214,7 +214,7 @@ mod tests {
         d.raw_len = 17;
         assert!(d.verify_against_header(&header).is_err());
         let mut d = sample();
-        d.payload_format = PayloadFormat::NativeBlockV1;
+        d.payload_format = PayloadFormat::NativeBlock;
         assert!(d.verify_against_header(&header).is_err());
         let mut d = sample();
         d.codec = Codec::Zstd;

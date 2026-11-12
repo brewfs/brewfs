@@ -62,10 +62,10 @@ are not used as a substitute for the rebased validation below.
 
 | Gate | Result |
 | --- | --- |
-| `cargo test --lib --features workspace-overlay` | 2,594 passed, 0 failed, 453 existing ignored |
+| `cargo test --lib --features workspace` | 2,594 passed, 0 failed, 453 existing ignored |
 | `cargo test --workspace --lib --bins` | 1,277 passed, 0 failed, 262 existing ignored |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0; no workspace warnings |
-| Same strict Clippy with `--features workspace-overlay` | Exit 0; no workspace warnings |
+| Same strict Clippy with `--features workspace` | Exit 0; no workspace warnings |
 | Workspace check/build, tokio/uring feature checks | Passed |
 | fmt, four runner syntax checks, three report/runner script tests, diff check | Passed |
 

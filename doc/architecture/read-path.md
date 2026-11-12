@@ -2,7 +2,7 @@
 
 ## 实验性 entity packed 路径的数据缓存
 
-本节对应 `workspace-overlay` 的 `--experimental-entity-mount`，与下文普通 VFS
+本节对应 `workspace` 的 `--experimental-entity-mount`，与下文普通 VFS
 的 FileReader / BlockStore 是两条路径。entity packed 挂载默认启用每挂载 512 MiB
 的客户端数据缓存准入预算，按实际读取逐步填充。可用
 `--entity-read-cache-bytes BYTES` 调整容量，设为 `0` 则关闭。

@@ -2,7 +2,7 @@
   "binary_sha256": "e2a308519ad1e0f5d2295e10cf3fb9eb64ce57009eb64b01c87489b51128f34f",
   "source_revision": "f5706712302435206269a253bf861a1a648761d1",
   "contract": {
-    "BREWFS_VOLUME_FORMAT": "packed-metadata-v3",
+    "BREWFS_VOLUME_FORMAT": "packed-snapshot",
     "BREWFS_PACKED_MANIFEST_KEY": "smallfile-warm-20261104/objects/0/82febfb2aa140bcef802c1f0c95cb8e1fb8555fa3568915ff23fcdacb82ef3a9",
     "BREWFS_PACKED_METADATA_CACHE_BYTES": "268435456",
     "BREWFS_READ_MEMORY_BYTES": "0",

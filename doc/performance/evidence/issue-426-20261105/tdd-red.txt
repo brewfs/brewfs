@@ -2,23 +2,23 @@
 
 running 1 test
 
-thread 'workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents' (99551) panicked at src/workspace_overlay/packed_v3/wire005/metadata_cache_tests.rs:311:9:
+thread 'workspace::packed::snapshot::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents' (99551) panicked at src/workspace/packed/snapshot/metadata_cache_tests.rs:311:9:
 assertion `left == right` failed: pure readdir eagerly decoded inline file contents across 147 groups
   left: 147
  right: 0
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-test workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents ... FAILED
+test workspace::packed::snapshot::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents ... FAILED
 
 failures:
 
 failures:
-    workspace_overlay::packed_v3::wire005::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents
+    workspace::packed::snapshot::metadata_cache_tests::readdir_8192_inline_files_does_not_decode_file_contents
 
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3166 filtered out; finished in 47.51s
 
 error: test failed, to rerun pass `--lib`
 Command exited with non-zero status 101
-	Command being timed: "/home/hxy/.cargo/bin/cargo +1.99.0 test --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib readdir_8192_inline_files_does_not_decode_file_contents -- --nocapture"
+	Command being timed: "/home/hxy/.cargo/bin/cargo +1.99.0 test --no-default-features --features fuse-tokio-runtime,workspace --lib readdir_8192_inline_files_does_not_decode_file_contents -- --nocapture"
 	User time (seconds): 1936.27
 	System time (seconds): 168.03
 	Percent of CPU this job got: 134%

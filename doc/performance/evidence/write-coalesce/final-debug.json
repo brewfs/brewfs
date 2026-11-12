@@ -17,7 +17,7 @@
     "src/vfs/backend.rs": "d6cad2610f22e4a30292ff04400e2f43c9fa981e536a750d8832ca2a5ae093af",
     "src/vfs/io/writer.rs": "a42b77d9d0ccee4e67ced80b3d688cc02ad2d6dfe86f21565ec00b59ba2d5fee",
     "src/vfs/io/writer/coalesce_tests.rs": "f54ccde31e271d6c04f0899e28fe6634a10a8324ab12018534f80f19e6326377",
-    "src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs": "e4ccd44c5571038b67efbc4a8a2b7231978f913566aaa91ff9319c5fe8be063c",
+    "src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs": "e4ccd44c5571038b67efbc4a8a2b7231978f913566aaa91ff9319c5fe8be063c",
     "tests/scripts/test_write_coalesce_redis.py": "7885831fb4c4c1fd29d2c683c746fc3bc19ad62c449f47cb06fb90458123d5f3"
   },
   "use": "functional correctness only; not a release performance executable"

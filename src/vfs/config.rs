@@ -1,6 +1,6 @@
 use crate::chunk::ChunkLayout;
 use crate::vfs::cache::config::CacheConfig;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -265,9 +265,9 @@ pub struct VFSConfig {
     pub read: Arc<ReadConfig>,
     pub write: Arc<WriteConfig>,
     pub cache: Arc<CacheConfig>,
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub workspace_writeback_root: Option<PathBuf>,
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub workspace_writer_epoch: u64,
 }
 
@@ -321,20 +321,20 @@ impl VFSConfig {
             read,
             write,
             cache,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             workspace_writeback_root: None,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             workspace_writer_epoch: 0,
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub fn workspace_writeback_root(mut self, root: PathBuf) -> Self {
         self.workspace_writeback_root = Some(root);
         self
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub fn workspace_writer_epoch(mut self, epoch: u64) -> Self {
         self.workspace_writer_epoch = epoch;
         self

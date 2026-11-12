@@ -1,4 +1,4 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use async_trait::async_trait;
 use brewfs::cadapter::{
@@ -13,7 +13,7 @@ use brewfs::chunk::{
 use brewfs::native_base::{
     runtime::BackendObjectRepository, wire::refs::ObjectRef, write::receipts::ObjectSink,
 };
-use brewfs::workspace_overlay::packed_v3::{
+use brewfs::workspace::packed::{
     AccessProfile, GroupMeta, PackedFrameInput, PackedGroupContainer, PackedGroupInput,
     PackedObjectKind, RemotePackedObject, SizeClass,
 };

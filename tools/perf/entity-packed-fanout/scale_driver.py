@@ -31,7 +31,7 @@ def prepare(count,cap):
     out=c.WORK/f'scale-producer-{count}'
     art=c.ART/f'scale-onboarding-{count}';art.mkdir()
     manifest=art/'manifest.txt'
-    command=[str(c.ROOT/'bin/packed_v3_snapshot_fixture'),'--source-directory',str(source),
+    command=[str(c.ROOT/'bin/packed_snapshot_fixture'),'--source-directory',str(source),
         '--output-dir',str(out),'--source-consistency','best-effort-detected',
         '--source-hardlink-policy','visible-links','--bucket',c.CFG['bucket'],
         '--endpoint',c.CFG['endpoint'],'--region','us-east-1','--force-path-style','true',

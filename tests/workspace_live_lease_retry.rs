@@ -1,12 +1,12 @@
 //! Delayed live-file mutations must refresh authority, never poison writeback.
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
-use brewfs::workspace_overlay::catalog::*;
-use brewfs::workspace_overlay::error::WorkspaceError;
-use brewfs::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
-use brewfs::workspace_overlay::model::*;
-use brewfs::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use brewfs::workspace_overlay::stores::kv_store::KvWorkspaceStore;
+use brewfs::workspace::catalog::*;
+use brewfs::workspace::error::WorkspaceError;
+use brewfs::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use brewfs::workspace::model::*;
+use brewfs::workspace::packed::snapshot::SnapshotMountBudget;
+use brewfs::workspace::stores::kv_store::KvWorkspaceStore;
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 use uuid::Uuid;
@@ -15,7 +15,7 @@ mod lease_backend;
 use brewfs::chunk::{ChunkLayout, SliceDesc, store::InMemoryBlockStore};
 use brewfs::meta::MetaLayer;
 use brewfs::meta::store::{SetAttrFlags, SetAttrRequest};
-use brewfs::workspace_overlay::{gc::WorkspaceGc, meta_layer::WorkspaceMetaLayer};
+use brewfs::workspace::{gc::WorkspaceGc, meta_layer::WorkspaceMetaLayer};
 use lease_backend::MemoryBackend;
 
 struct Fixture {
@@ -33,13 +33,13 @@ async fn fixture() -> Fixture {
     backend.clock.store(1_000_000_000, Ordering::SeqCst);
     let store = Arc::new(
         KvWorkspaceStore::new(backend.clone())
-            .with_packed_reader_pin_budget(V3MountBudget::defaults()),
+            .with_packed_reader_pin_budget(SnapshotMountBudget::defaults()),
     );
     store.initialize_workspace_schema().await.unwrap();
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
             workspace_id: WorkspaceId::new(),

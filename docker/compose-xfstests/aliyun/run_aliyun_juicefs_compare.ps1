@@ -76,7 +76,7 @@ if ($JuiceFsBinaryPath) {
 }
 
 if (-not $RawFixtureBinaryPath) {
-    $RawFixtureBinaryPath = Join-Path $PSScriptRoot '..\..\..\target\release\packed_v3_snapshot_fixture'
+    $RawFixtureBinaryPath = Join-Path $PSScriptRoot '..\..\..\target\release\packed_snapshot_fixture'
 }
 if (-not (Test-Path -LiteralPath $RawFixtureBinaryPath)) {
     throw "找不到 raw SDK fixture binary: $RawFixtureBinaryPath"
@@ -152,7 +152,7 @@ $credentialText = @(
 
 try {
     Publish $JuiceFsBinaryPath "$prefix/bin/juicefs"
-    $rawFixtureName = 'packed_v3_snapshot_fixture'
+    $rawFixtureName = 'packed_snapshot_fixture'
     Publish $RawFixtureBinaryPath "$prefix/bin/$rawFixtureName"
     Publish $RunnerPath "$prefix/bin/run_aliyun_juicefs_native.sh"
     Publish $ScannerPath "$prefix/bin/smallfiles_scan.py"
@@ -181,11 +181,11 @@ if [[ __META_BACKEND__ == redis ]]; then
 fi
 modprobe fuse 2>/dev/null || true
 curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/juicefs" __JUICEFS_URL__
-curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/packed_v3_snapshot_fixture" __RAW_FIXTURE_URL__
+curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/packed_snapshot_fixture" __RAW_FIXTURE_URL__
 curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/run_juicefs.sh" __RUNNER_URL__
 curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/smallfiles_scan.py" __SCANNER_URL__
 curl --fail --location --retry 5 --connect-timeout 20 --output "$WORK/s3-credentials.env" __CREDENTIAL_URL__
-chmod 0755 "$WORK/juicefs" "$WORK/packed_v3_snapshot_fixture" "$WORK/run_juicefs.sh" "$WORK/smallfiles_scan.py"
+chmod 0755 "$WORK/juicefs" "$WORK/packed_snapshot_fixture" "$WORK/run_juicefs.sh" "$WORK/smallfiles_scan.py"
 chmod 0600 "$WORK/s3-credentials.env"
 source "$WORK/s3-credentials.env"
 rm -f "$WORK/s3-credentials.env"
@@ -196,7 +196,7 @@ export JFS_NATIVE_ARTIFACT_DIR="$ARTIFACT_DIR"
 export JFS_S3_BUCKET=__S3_BUCKET__
 export JFS_S3_REGION=__S3_REGION__
 export JFS_S3_ENDPOINT=__S3_ENDPOINT__
-export JFS_RAW_FIXTURE_BIN="$WORK/packed_v3_snapshot_fixture"
+export JFS_RAW_FIXTURE_BIN="$WORK/packed_snapshot_fixture"
 export JFS_SMALLFILES_SCANNER="$WORK/smallfiles_scan.py"
 export JFS_RAW_OBJECT_PREFIX=__RAW_OBJECT_PREFIX__
 export JFS_SKIP_RAW_UPLOAD=__SKIP_RAW_UPLOAD__

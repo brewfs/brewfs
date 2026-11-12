@@ -1,4 +1,4 @@
-$ cargo test --config profile.test.package.brewfs.codegen-units=512 --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib -- --ignored real_tikv
+$ cargo test --config profile.test.package.brewfs.codegen-units=512 --no-default-features --features fuse-tokio-runtime,workspace --lib -- --ignored real_tikv
 Owned gate service: cargo-1793880015709404902-66188.service; MemoryMax=28G
 warning: associated functions `new` and `with_decoding_limit` are never used
    --> vendor/tikv-client/src/pd/cluster.rs:124:12

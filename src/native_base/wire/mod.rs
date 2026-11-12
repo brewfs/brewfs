@@ -10,7 +10,7 @@
 //!   `required_features` bits, CRC32C.
 //! - [`refs`]: PageAddress (56B), ObjectRef, RootRef, ChildRef with key
 //!   validation and level-descent checks.
-//! - [`frame`]: 80-byte FrameHeader, PlainBytes/NativeBlockV1 payload
+//! - [`frame`]: 80-byte FrameHeader, PlainBytes/NativeBlock payload
 //!   formats, None/Zstd outer codecs with exact-length enforcement.
 //! - [`datapack`]: `.brfdp` scrub parser and deterministic builder; the
 //!   four fixture goldens round-trip byte-for-byte.

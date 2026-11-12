@@ -1,4 +1,4 @@
-# packed-v3 object roles
+# packed object roles
 
 Configure `spec.workspace.objectRuntimeSecretRef.name` and
 `spec.workspace.objectAdminSecretRef.name` on BrewFSCluster. Both Secrets are
@@ -9,7 +9,7 @@ replacement credentials. Mount sidecars receive only the runtime Secret; the
 operator's authenticated object clients receive only the admin values.
 
 Provision two actual, distinct server users through the storage administrator.
-Render `packed-v3-runtime-object-policy.json` for the cluster's bucket and attach
+Render `packed-runtime-object-policy.json` for the cluster's bucket and attach
 it to the runtime user using the deployed S3/RustFS server's supported IAM
 administration mechanism. Give the separate admin user `s3:ListBucket` on the
 exact bucket and `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` and
@@ -25,7 +25,7 @@ ARN; object GET and required PUT/multipart permissions use the object ARN.
 Create-only publication still uses the existing conditional-PUT implementation;
 this identity policy does not claim to deny arbitrary unconditional overwrites.
 
-Use `tools/testing/packed_v3_object_permission_probe.py --bucket <bucket>
+Use `tools/testing/packed_object_permission_probe.py --bucket <bucket>
 --render-policy <new-json-path>` to produce the deployable policy without any
 network calls. For a real probe, provide `BREWFS_TEST_RUNTIME_ACCESS_KEY`,
 `BREWFS_TEST_RUNTIME_SECRET_KEY`, `BREWFS_TEST_ADMIN_ACCESS_KEY` and

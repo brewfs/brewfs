@@ -23,7 +23,7 @@ A/B/C 直接调用原 scanner；只用 `docker compose run -e BREWFS_CACHE_TTL_M
 改变挂载环境。该变量在本 packed 路径同时控制 attr/entry TTL；每轮都从实际
 mount 进程环境和 `.stats` 的 `brewfs_fuse_{attr,entry}_valid_ns` 核实生效。
 
-固定项为 8,192 × 4 KiB、一个目录、字典序单读者、wire005、147 个完整 inline
+固定项为 8,192 × 4 KiB、一个目录、字典序单读者、snapshot、147 个完整 inline
 group、raw codec、metadata cache 256 MiB、payload RAM/SSD=0、prefetch=off、
 FUSE read direct=1、keep-cache=0、main Tokio transport、request trace sample=307。
 客户端运行于 Linux `6.8.0-139-generic`。每次新容器、新 mount，先执行原

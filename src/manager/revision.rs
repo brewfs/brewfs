@@ -4,7 +4,7 @@
 //! A native P1 revision also binds the separate native volume/namespace identity;
 //! it is deliberately not a native PublishedRevision or a frozen-metadata snapshot.
 
-use crate::workspace_overlay::{ids::LayerId, model::BaseRevision};
+use crate::workspace::{ids::LayerId, model::BaseRevision};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

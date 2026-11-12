@@ -7,15 +7,13 @@ use tokio::task::JoinHandle;
 use super::{FuseConcurrencyConfig, MountConfig, S3Backend, S3Config, shutdown_signal};
 use crate::fuse::entity::{EntityFuse, mount_privileged, mount_unprivileged};
 use crate::vfs::cache::config::WriteBackMode;
-use crate::workspace_overlay::entity::experiment::{
+use crate::workspace::entity::experiment::{
     EntityExperiment, FreshMountOptions, RedisEntityExperiment,
 };
-use crate::workspace_overlay::entity::writeback::WritebackConfig;
-use crate::workspace_overlay::entity::{backend::EntityBackend, tikv::TiKvEntityBackend};
-use crate::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use crate::workspace_overlay::stores::{
-    kv_backend::WorkspaceKvBackend, kv_store::KvWorkspaceStore,
-};
+use crate::workspace::entity::writeback::WritebackConfig;
+use crate::workspace::entity::{backend::EntityBackend, tikv::TiKvEntityBackend};
+use crate::workspace::packed::snapshot::SnapshotMountBudget;
+use crate::workspace::stores::{kv_backend::WorkspaceKvBackend, kv_store::KvWorkspaceStore};
 
 const LEASE_TTL_NS: i64 = 60_000_000_000;
 
@@ -35,8 +33,7 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
             anyhow::bail!("mount point must be a directory");
         }
     }
-    if args.chunk_size == 0
-        || args.chunk_size > crate::workspace_overlay::entity::data::MAX_IO_BYTES as u64
+    if args.chunk_size == 0 || args.chunk_size > crate::workspace::entity::data::MAX_IO_BYTES as u64
     {
         anyhow::bail!("experimental entity chunk size exceeds the bounded data I/O geometry");
     }
@@ -73,7 +70,7 @@ pub(super) async fn mount(args: MountConfig) -> anyhow::Result<()> {
             run(args, factory).await
         }
         crate::config::MetaBackendKind::TiKv => {
-            let budget = V3MountBudget::defaults();
+            let budget = SnapshotMountBudget::defaults();
             let catalog = super::connect_workspace_tikv(
                 args.meta_tikv_pd_endpoints.clone(),
                 &args.workspace_namespace,

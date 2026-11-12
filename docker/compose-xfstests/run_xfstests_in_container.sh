@@ -8,12 +8,12 @@ ok()   { log "OK    $*"; }
 err()  { log "ERROR $*" >&2; }
 
 validate_workspace_config() {
-    if [[ "$volume_format" == "workspace-v1" && -z "$workspace_id" ]]; then
-        err "BREWFS_WORKSPACE_ID is required for BREWFS_VOLUME_FORMAT=workspace-v1"
+    if [[ "$volume_format" == "workspace" && -z "$workspace_id" ]]; then
+        err "BREWFS_WORKSPACE_ID is required for BREWFS_VOLUME_FORMAT=workspace"
         exit 2
     fi
-    if [[ -n "$workspace_id" && "$volume_format" != "workspace-v1" ]]; then
-        err "BREWFS_WORKSPACE_ID requires BREWFS_VOLUME_FORMAT=workspace-v1"
+    if [[ -n "$workspace_id" && "$volume_format" != "workspace" ]]; then
+        err "BREWFS_WORKSPACE_ID requires BREWFS_VOLUME_FORMAT=workspace"
         exit 2
     fi
 }

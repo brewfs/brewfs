@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Local workspace-v1 native/packed lower write comparison for issue #371.
+"""Local workspace native/packed lower write comparison for issue #371.
 
-Requires a local Redis server, /dev/fuse, fio, a workspace-overlay release
-binary and packed_v3_snapshot_fixture. This is diagnosis, not compose/EC
+Requires a local Redis server, /dev/fuse, fio, a workspace release
+binary and packed_snapshot_fixture. This is diagnosis, not compose/EC
 performance acceptance. Both arms overwrite files created in their upper.
 Each cell has a new catalog namespace, object directory, cache and mount.
 """
@@ -169,7 +169,7 @@ def run_cell(args, arm, rep):
     workspace = json.loads(init_text[init_text.index("{\n"):])["workspace_id"]
     config = directory / "mount.yaml"
     config.write_text(
-        f"mount_point: {mount}\nvolume_format: workspace-v1\nworkspace: {workspace}\n"
+        f"mount_point: {mount}\nvolume_format: workspace\nworkspace: {workspace}\n"
         f"workspace_namespace: {namespace}\n" + data +
         f"meta:\n  backend: redis\n  redis:\n    url: {args.redis}\n"
         "layout: {chunk_size: 67108864, block_size: 4194304}\n"

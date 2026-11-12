@@ -552,7 +552,7 @@ where
         FileHandleWriteGuard { _guard: guard }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) async fn lock_read(&self) -> FileHandleReadGuard {
         FileHandleReadGuard {
             guard: self.gate.read_lock().await,
@@ -561,7 +561,7 @@ where
 
     /// The caller holds the inode mutation lock before this handle gate, and
     /// owns the complete request fence and logical delivery accounting.
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) async fn read_into_unaccounted_locked(
         &self,
         guard: &FileHandleReadGuard,
@@ -586,7 +586,7 @@ where
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) struct FileHandleReadGuard {
     guard: HandleReadGuard,
 }

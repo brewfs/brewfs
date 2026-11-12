@@ -246,7 +246,7 @@ impl SealBuilder {
                     let native = spans.iter().any(|s| {
                         self.frames
                             .get(&s.frame_slot)
-                            .is_some_and(|d| d.payload_format == PayloadFormat::NativeBlockV1)
+                            .is_some_and(|d| d.payload_format == PayloadFormat::NativeBlock)
                     });
                     if native {
                         super::placement::validate_native_single_span(spans, binding.decoded_len)

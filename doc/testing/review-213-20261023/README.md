@@ -37,7 +37,7 @@ All four runs used:
 
 ```bash
 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace-overlay \
+CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace \
   --test entity_fragment_reads -- --test-threads=1 --nocapture
 ```
 
@@ -50,8 +50,8 @@ blank line. Before: exit 101; each after-run: exit 0.
 Passed on this candidate:
 
 - `cargo fmt --all --check`.
-- `cargo check --workspace --features workspace-overlay`.
-- `cargo clippy --workspace --all-targets --features workspace-overlay -- -D warnings`.
+- `cargo check --workspace --features workspace`.
+- `cargo clippy --workspace --all-targets --features workspace -- -D warnings`.
 - Four perf-runner shell syntax checks and three report/matrix shell tests.
 - `git diff --check`.
 

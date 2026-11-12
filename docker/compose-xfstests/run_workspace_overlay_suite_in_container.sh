@@ -35,11 +35,11 @@ for workspace_label in a b; do
     artifact_dir="$artifact_root/workspace-${workspace_label}/${suite}"
     mkdir -p "$artifact_dir"
 
-    printf '[workspace-overlay] running %s on workspace %s (%s)\n' \
+    printf '[workspace] running %s on workspace %s (%s)\n' \
         "$suite" "$workspace_label" "$workspace_id"
     set +e
     env \
-        BREWFS_VOLUME_FORMAT=workspace-v1 \
+        BREWFS_VOLUME_FORMAT=workspace \
         BREWFS_WORKSPACE_ID="$workspace_id" \
         BREWFS_ARTIFACT_DIR="$artifact_dir" \
         BREWFS_ARTIFACT_ROOT="$artifact_root" \
@@ -48,7 +48,7 @@ for workspace_label in a b; do
     suite_status=$?
     set -e
     if (( suite_status != 0 )); then
-        printf '[workspace-overlay] %s failed on workspace %s (exit=%s)\n' \
+        printf '[workspace] %s failed on workspace %s (exit=%s)\n' \
             "$suite" "$workspace_label" "$suite_status" >&2
         status=1
     fi

@@ -1,11 +1,11 @@
 //! Independent admission-order case. Existing ten fh tests stay unchanged.
 use super::*;
-use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
+use crate::workspace::packed::snapshot::SnapshotBudgetPool;
 
 #[tokio::test]
 async fn packed_dir_namespace_exhaustion_precedes_full_metadata_admission() {
     let fixture = packed_fixture().await;
-    let pool = V3BudgetPool::Metadata;
+    let pool = SnapshotBudgetPool::Metadata;
     let idle = fixture.budget.state();
     let capacity = fixture.budget.capacity(pool);
     let available = capacity

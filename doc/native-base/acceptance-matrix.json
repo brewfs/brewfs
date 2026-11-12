@@ -360,7 +360,7 @@
     "invariants": "INV-07",
     "priority": "P0",
     "implementation_status": "PASS",
-    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_volume_rejects_commit_before_upload_even_for_s3 —— 即使 data.backend=s3，workspace-native-v2 卷在 cache.writeback_mode=commit_before_upload 时于挂载配置校验即被拒（requires cache.writeback_mode=upload_before_commit），与 native_base.durability.write_mode 必须为 upload-before-commit 构成双门；没有任何绕过开关。log: doc/native-base/logs/pr07d-admission-gates.log"
+    "evidence": "WSL: bash doc/native-base/logs/pr07d-admission-gates.sh (exit 0; config::tests::native 7 passed/0 failed, bounded_drain_rejects_forgery_and_noop_write_barrier_then_recovers 1 passed/0 failed, retired_retention_options_fail_closed_without_claiming_runtime_wiring 1 passed/0 failed): native_volume_rejects_commit_before_upload_even_for_s3 —— 即使 data.backend=s3，native-workspace 卷在 cache.writeback_mode=commit_before_upload 时于挂载配置校验即被拒（requires cache.writeback_mode=upload_before_commit），与 native_base.durability.write_mode 必须为 upload-before-commit 构成双门；没有任何绕过开关。log: doc/native-base/logs/pr07d-admission-gates.log"
   },
   {
     "test_id": "KV-001",
@@ -844,7 +844,7 @@
     "invariants": "INV-12",
     "priority": "P0",
     "implementation_status": "PASS",
-    "evidence": "WSL: bash doc/native-base/logs/pr07x-compat-known-gaps.sh (exit 0; focused 1 passed/0 failed) —— 新增 src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback：① 旧二进制（NativeRuntimeCapabilities { native_packed_base: false }）读取 header 行后仍被准入拒绝（RuntimeAdmissionError::FeatureNotCompiled(\"native-packed-base\")），不会退化成按 flat 卷读；② 新卷的 schema_version 前进一格以 UnsupportedSchemaVersion(_) 按名拒绝，wire_major 前进一格以 UnsupportedWireVersion { .. } 按名拒绝；③ volume_format 被改成 \"workspace-flat-v1\"（非本格式）以 UnsupportedVolumeFormat(_) 拒绝——三处都在任何字节被读出之前，不存在“隐式 flat 解释”的回退路径；④ 同一份记录在 all_capabilities() 下 validate() 通过，说明拒绝来自读者/版本而不是损坏的 header。该测试在 native 开启（--features native-packed-base）与关闭（--no-default-features --features fuse-tokio-runtime，header 模块 5 passed）两种配置下都通过。log: doc/native-base/logs/pr07x-compat-known-gaps.log, doc/native-base/logs/pr07x-ci-gate.log"
+    "evidence": "WSL: bash doc/native-base/logs/pr07x-compat-known-gaps.sh (exit 0; focused 1 passed/0 failed) —— 新增 src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback：① 旧二进制（NativeRuntimeCapabilities { native_packed_base: false }）读取 header 行后仍被准入拒绝（RuntimeAdmissionError::FeatureNotCompiled(\"native-packed-base\")），不会退化成按 flat 卷读；② 新卷的 schema_version 前进一格以 UnsupportedSchemaVersion(_) 按名拒绝，wire_major 前进一格以 UnsupportedWireVersion { .. } 按名拒绝；③ volume_format 被改成 \"workspace-flat\"（非本格式）以 UnsupportedVolumeFormat(_) 拒绝——三处都在任何字节被读出之前，不存在“隐式 flat 解释”的回退路径；④ 同一份记录在 all_capabilities() 下 validate() 通过，说明拒绝来自读者/版本而不是损坏的 header。该测试在 native 开启（--features native-packed-base）与关闭（--no-default-features --features fuse-tokio-runtime，header 模块 5 passed）两种配置下都通过。log: doc/native-base/logs/pr07x-compat-known-gaps.log, doc/native-base/logs/pr07x-ci-gate.log"
   },
   {
     "test_id": "REGRESS-003",

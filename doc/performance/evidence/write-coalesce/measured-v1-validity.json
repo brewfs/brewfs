@@ -15,11 +15,11 @@
     "src/vfs/backend.rs": "d6cad2610f22e4a30292ff04400e2f43c9fa981e536a750d8832ca2a5ae093af",
     "src/vfs/io/writer.rs": "4c6e82159d008cd038e5f44456df68b3d15a38d5a09d024849ff08e21beb4b65",
     "src/vfs/io/writer/coalesce_tests.rs": "f54ccde31e271d6c04f0899e28fe6634a10a8324ab12018534f80f19e6326377",
-    "src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs": "e4ccd44c5571038b67efbc4a8a2b7231978f913566aaa91ff9319c5fe8be063c",
+    "src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs": "e4ccd44c5571038b67efbc4a8a2b7231978f913566aaa91ff9319c5fe8be063c",
     "tests/scripts/test_write_coalesce_redis.py": "7885831fb4c4c1fd29d2c683c746fc3bc19ad62c449f47cb06fb90458123d5f3"
   },
   "first_workspace_command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test --workspace --lib --bins",
-  "first_workspace_failure": "failures:\n\n---- vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset stdout ----\n[packed-v3-native-kernel-read-diag] stage=reader inode=4 offset=0 len=414 error=coalesced slice has only one block\n\nthread 'vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset' (1097300) panicked at src/vfs/fs/tests.rs:1501:53:\nread: Anyhow(coalesced slice has only one block)\n\n\nfailures:\n    vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset\n\ntest result: FAILED. 1314 passed; 1 failed; 264 ignored; 0 measured; 0 filtered out; finished in 185.75s\n\nerror: test failed, to rerun pass `-p brewfs --lib`\n",
+  "first_workspace_failure": "failures:\n\n---- vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset stdout ----\n[packed-native-kernel-read-diag] stage=reader inode=4 offset=0 len=414 error=coalesced slice has only one block\n\nthread 'vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset' (1097300) panicked at src/vfs/fs/tests.rs:1501:53:\nread: Anyhow(coalesced slice has only one block)\n\n\nfailures:\n    vfs::fs::tests::io_tests::test_fs_regression_fs_ops_pwrite_slice_relative_upload_offset\n\ntest result: FAILED. 1314 passed; 1 failed; 264 ignored; 0 measured; 0 filtered out; finished in 185.75s\n\nerror: test failed, to rerun pass `-p brewfs --lib`\n",
   "final_fix": "final-block-layout-fix.patch",
   "performance_acceptance_passed": false,
   "reason": "Measured v1 failed the workspace correctness gate; final source adds a VFS single-block eligibility guard and has no matched release measurements yet."

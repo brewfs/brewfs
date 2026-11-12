@@ -35,7 +35,7 @@ permuted pass. This only proves request-graph behavior for that test corpus.
 
 For mounted-FUSE tests the baseline was built from `git archive abcdda0`, not
 selected by an unverified binary timestamp. Baseline and candidate used the same
-unoptimized Cargo configuration (`workspace-overlay`, incremental/debug info
+unoptimized Cargo configuration (`workspace`, incremental/debug info
 disabled), the same fixture publisher and shared scanner. Consequently these
 are local diagnostics, not optimized release/cloud throughput measurements.
 

@@ -8,8 +8,8 @@
       "2",
       "--lib",
       "--features",
-      "workspace-overlay",
-      "workspace_overlay::"
+      "workspace",
+      "workspace::"
     ],
     "exit_code": 0,
     "seconds": 47.6
@@ -140,7 +140,7 @@
       "--workspace",
       "--all-targets",
       "--features",
-      "workspace-overlay",
+      "workspace",
       "--",
       "-D",
       "warnings"

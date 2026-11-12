@@ -9,16 +9,16 @@ Every Cargo command used `CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_D
 | 223-after-3.log | `cargo test -p brewfs --lib chunk::bandwidth::tests::one_mib_ -- --test-threads=1 --nocapture` | 0 | test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1421 filtered out; finished in 6.07s |
 | 223-before.log | `cargo test -p brewfs --lib chunk::bandwidth::tests::one_mib_ -- --test-threads=1 --nocapture` | 101 | test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1421 filtered out; finished in 0.00s |
 | 223-build-workspace.log | `cargo build --workspace` | 0 | Command completed |
-| 223-check-overlay.log | `cargo check --workspace --features workspace-overlay` | 0 | Command completed |
+| 223-check-overlay.log | `cargo check --workspace --features workspace` | 0 | Command completed |
 | 223-check-tokio.log | `cargo check -p brewfs --no-default-features --features fuse-tokio-runtime` | 0 | Command completed |
 | 223-check-uring.log | `cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime` | 0 | Command completed |
 | 223-check-workspace.log | `cargo check --workspace` | 0 | Command completed |
 | 223-clippy-default.log | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | Command completed |
-| 223-clippy-overlay.log | `cargo clippy --workspace --all-targets --features workspace-overlay -- -D warnings` | 0 | Command completed |
+| 223-clippy-overlay.log | `cargo clippy --workspace --all-targets --features workspace -- -D warnings` | 0 | Command completed |
 | 223-diff-check.log | `git diff --check` | 0 | Command completed |
 | 223-fmt.log | `cargo fmt --all --check` | 0 | Command completed |
 | 223-focused.log | `cargo test -p brewfs --lib chunk::bandwidth:: -- --test-threads=1` | 0 | test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1417 filtered out; finished in 6.07s |
-| 223-overlay-resolver.log | `cargo test -p brewfs --features workspace-overlay --test workspace_overlay_resolver -- --test-threads=1` | 0 | test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s |
+| 223-overlay-resolver.log | `cargo test -p brewfs --features workspace --test workspace_resolver -- --test-threads=1` | 0 | test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s |
 | 223-syntax-run_juicefs_perf.log | `bash -n docker/compose-xfstests/run_juicefs_perf.sh` | 0 | Command completed |
 | 223-syntax-run_juicefs_perf_in_container.log | `bash -n docker/compose-xfstests/run_juicefs_perf_in_container.sh` | 0 | Command completed |
 | 223-syntax-run_perf_in_container.log | `bash -n docker/compose-xfstests/run_perf_in_container.sh` | 0 | Command completed |

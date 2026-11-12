@@ -62,6 +62,10 @@ pub struct CacheConfig {
     // Read cache budgets
     pub read_memory_bytes: u64,
     pub read_ssd_bytes: u64,
+    /// Workspace Packed lower: stream immutable objects into the local disk cache.
+    pub packed_cache_enabled: bool,
+    /// Separate per-mount disk limit; identical across cache on/off comparisons.
+    pub packed_cache_bytes: u64,
 
     // Write cache budgets
     pub write_memory_bytes: u64,
@@ -122,6 +126,8 @@ impl Default for CacheConfig {
             // larger budgets cannot contaminate comparison artifacts.
             read_memory_bytes: 8 * 1024 * 1024 * 1024,
             read_ssd_bytes: 64 * 1024 * 1024 * 1024,
+            packed_cache_enabled: true,
+            packed_cache_bytes: 256 << 20,
             write_memory_bytes: 768 * 1024 * 1024,
             write_ssd_bytes: 64 * 1024 * 1024 * 1024,
             dirty_slice_target_size: 32 * 1024 * 1024,

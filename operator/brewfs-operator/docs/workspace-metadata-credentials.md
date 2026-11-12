@@ -1,4 +1,4 @@
-# Packed-v3 metadata credentials
+# Packed metadata credentials
 
 An enabled workspace requires namespace-local `metadataRuntimeSecretRef.name`
 and `metadataAdminSecretRef.name`. Their names must differ. A runtime Secret must

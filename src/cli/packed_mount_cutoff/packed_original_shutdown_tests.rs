@@ -21,33 +21,31 @@ use crate::fuse::mount::{FuseConcurrencyConfig, mount_vfs_privileged, mount_vfs_
 use crate::meta::layer::MetaLayer;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::fs::VFS;
-use crate::workspace_overlay::catalog::{ReleaseLease, WorkspaceStore};
-use crate::workspace_overlay::error::WorkspaceError;
-use crate::workspace_overlay::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
-use crate::workspace_overlay::meta_layer::{
-    PinnedCatalogPackedBindingAuthority, WorkspaceMetaLayer,
-};
-use crate::workspace_overlay::model::{
+use crate::workspace::catalog::{ReleaseLease, WorkspaceStore};
+use crate::workspace::error::WorkspaceError;
+use crate::workspace::ids::{JournalId, LayerId, LeaseId, SnapshotId, WorkspaceId};
+use crate::workspace::meta_layer::{PinnedCatalogPackedBindingAuthority, WorkspaceMetaLayer};
+use crate::workspace::model::{
     LayerRecord, LeaseState, SnapshotLease, ViewContext, VolumeHeader, WorkspaceRecord,
 };
-use crate::workspace_overlay::packed_reader_lifecycle::PackedReaderLeaseOptions;
-use crate::workspace_overlay::packed_shutdown::VerifiedCleanPackedShutdown;
-use crate::workspace_overlay::packed_v3::PackedV3ReadonlyMeta;
-use crate::workspace_overlay::packed_v3::wire005::{
-    AuthenticatedV3Snapshot, V3BudgetPool, V3IndexReader,
+use crate::workspace::packed::PackedReadonlyMeta;
+use crate::workspace::packed::snapshot::{
+    AuthenticatedSnapshot, SnapshotBudgetPool, SnapshotIndexReader,
 };
-use crate::workspace_overlay::publish::binding::VerifiedPackedLower;
-use crate::workspace_overlay::stores::binding_tests::{packed, request};
-use crate::workspace_overlay::stores::kv_backend::{
+use crate::workspace::packed_reader_lifecycle::PackedReaderLeaseOptions;
+use crate::workspace::packed_shutdown::VerifiedCleanPackedShutdown;
+use crate::workspace::publish::binding::VerifiedPackedLower;
+use crate::workspace::stores::binding_tests::{packed, request};
+use crate::workspace::stores::kv_backend::{
     KvCheck, KvEntry, KvReadLimits, KvWrite, WorkspaceKvBackend,
 };
-use crate::workspace_overlay::stores::kv_store::packed_admin::{
+use crate::workspace::stores::kv_store::packed_admin::{
     PackedCleanAdmission, PackedMountGrantRequest, PackedReleasedMountReference,
 };
-use crate::workspace_overlay::stores::kv_store::packed_reader_pins::PackedReaderPinState;
-use crate::workspace_overlay::stores::kv_store::{KvWorkspaceStore, V3OpenState};
-use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
-use crate::workspace_overlay::stores::tikv::TiKvWorkspaceBackend;
+use crate::workspace::stores::kv_store::packed_reader_pins::PackedReaderPinState;
+use crate::workspace::stores::kv_store::{KvWorkspaceStore, SnapshotOpenState};
+use crate::workspace::stores::redis::RedisWorkspaceBackend;
+use crate::workspace::stores::tikv::TiKvWorkspaceBackend;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -56,12 +54,12 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify, Semaphore};
 use uuid::Uuid;
 
-const RECEIPT_PREFIX: &[u8] = b"packed-v3/clean-release/";
-const ROOT_GENERATION: &[u8] = b"packed/v3/root-generation";
+const RECEIPT_PREFIX: &[u8] = b"packed/clean-release/";
+const ROOT_GENERATION: &[u8] = b"packed/root-generation";
 type Connection<B> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<B, WorkspaceError>> + Send>>;
 const WAIT: Duration = Duration::from_secs(30);
-const PAYLOAD: &[u8] = b"actual original mounted packed-v3 LocalFS durable payload";
+const PAYLOAD: &[u8] = b"actual original mounted packed LocalFS durable payload";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Case {
@@ -87,7 +85,7 @@ struct ReleasePacket {
 
 struct DeliveryBackend<B> {
     inner: Arc<B>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     mode: AtomicU8,
     attempts: AtomicUsize,
     commits: AtomicUsize,
@@ -102,7 +100,7 @@ struct DeliveryBackend<B> {
 }
 
 impl<B: WorkspaceKvBackend> DeliveryBackend<B> {
-    fn new(inner: Arc<B>, budget: Arc<V3MountBudget>) -> Self {
+    fn new(inner: Arc<B>, budget: Arc<SnapshotMountBudget>) -> Self {
         Self {
             inner,
             budget,
@@ -258,15 +256,12 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for DeliveryBackend<B> {
         &self,
         checks: &[KvCheck],
         expires_at_ns: i64,
-        limits: crate::workspace_overlay::stores::kv_backend::KvReadLimits,
+        limits: crate::workspace::stores::kv_backend::KvReadLimits,
     ) -> Result<bool, WorkspaceError> {
-        crate::workspace_overlay::stores::kv_backend::validate_bounded_authentication_checks(
+        crate::workspace::stores::kv_backend::validate_bounded_authentication_checks(
             checks, limits,
         )?;
-        crate::workspace_overlay::stores::kv_backend::validate_cas_time_window(
-            None,
-            Some(expires_at_ns),
-        )?;
+        crate::workspace::stores::kv_backend::validate_cas_time_window(None, Some(expires_at_ns))?;
         if self.commits.load(Ordering::SeqCst) == 1
             && checks
                 .iter()
@@ -297,7 +292,7 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for DeliveryBackend<B> {
         writes: &[KvWrite],
     ) -> Result<bool, WorkspaceError> {
         if self.mode.load(Ordering::SeqCst) == 5 && writes.iter().any(|write|
-            matches!(write, KvWrite::Delete { key } if key.starts_with(b"packed/v3/reader-active/"))) {
+            matches!(write, KvWrite::Delete { key } if key.starts_with(b"packed/reader-active/"))) {
             return Err(WorkspaceError::Backend("actual reader release failed before submission".into()));
         }
         self.inner.compare_and_swap(checks, writes).await
@@ -369,7 +364,7 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for DeliveryBackend<B> {
         assert!(
             checks
                 .iter()
-                .any(|check| check.key == b"packed/v3/topology-generation")
+                .any(|check| check.key == b"packed/topology-generation")
         );
         for write in writes {
             let key = match write {
@@ -719,7 +714,7 @@ fn lease_index_key(id: LeaseId) -> Vec<u8> {
 }
 fn receipt_key(reference: &PackedReleasedMountReference) -> Vec<u8> {
     format!(
-        "packed-v3/clean-release/{}/{}",
+        "packed/clean-release/{}/{}",
         reference.guard.workspace_id, reference.guard.lease_id
     )
     .into_bytes()
@@ -736,7 +731,7 @@ fn point_limits(cap: usize) -> KvReadLimits {
     }
 }
 
-async fn wait_closed(budget: &Arc<V3MountBudget>) {
+async fn wait_closed(budget: &Arc<SnapshotMountBudget>) {
     tokio::time::timeout(WAIT, async {
         while !budget.state().closed {
             tokio::task::yield_now().await;
@@ -750,7 +745,7 @@ async fn assert_pin_state<B: WorkspaceKvBackend>(
     backend: Arc<B>,
     reference: &PackedReleasedMountReference,
     expected: PackedReaderPinState,
-    budget: &Arc<V3MountBudget>,
+    budget: &Arc<SnapshotMountBudget>,
 ) {
     // Observation after terminal closure is a fresh admin read ledger; it does
     // not reopen the original mounted source's cleanup budget.
@@ -848,23 +843,23 @@ async fn inspect_release<B: WorkspaceKvBackend>(
 async fn actual_original_chain<B, F>(connect: Arc<F>, case: Case)
 where
     B: WorkspaceKvBackend,
-    F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
+    F: Fn(Arc<SnapshotMountBudget>) -> Connection<B> + Send + Sync + 'static,
 {
-    let mount_budget = V3MountBudget::defaults();
+    let mount_budget = SnapshotMountBudget::defaults();
     let original_backend = Arc::new(connect(mount_budget.clone()).await.unwrap());
-    let observation_budget = V3MountBudget::defaults();
+    let observation_budget = SnapshotMountBudget::defaults();
     let bare = Arc::new(connect(observation_budget.clone()).await.unwrap());
     let (_objects, _fixture_client, fixture_snapshot, _fixture_proof, lower_payload) =
         packed().await;
     let objects = Arc::new(ObjectProbe::default());
     let actual_client = selected_objects(&_objects.path().join("objects"), objects.clone()).await;
     let snapshot =
-        AuthenticatedV3Snapshot::open(&actual_client, fixture_snapshot.manifest_reference())
+        AuthenticatedSnapshot::open(&actual_client, fixture_snapshot.manifest_reference())
             .await
             .unwrap();
     let lower_proof = VerifiedPackedLower::from_authenticated_snapshot(
         &snapshot,
-        &V3IndexReader::new(actual_client.clone(), 0),
+        &SnapshotIndexReader::new(actual_client.clone(), 0),
     )
     .await
     .unwrap();
@@ -955,7 +950,7 @@ where
         .unwrap(),
     );
     let lower = Arc::new(
-        PackedV3ReadonlyMeta::from_v3_budget(
+        PackedReadonlyMeta::from_snapshot_budget(
             actual_client.clone(),
             snapshot,
             4096,
@@ -976,7 +971,7 @@ where
             },
             4096,
         )
-        .with_packed_v3_lower(
+        .with_packed_lower(
             binding.binding.clone(),
             lower,
             Arc::new(PinnedCatalogPackedBindingAuthority {
@@ -1248,7 +1243,7 @@ where
             assert!(!budget.state().closed);
             assert!(!delivery.terminal.load(Ordering::SeqCst));
             assert!(
-                budget.state().used[V3BudgetPool::Metadata as usize] >= 16 << 20,
+                budget.state().used[SnapshotBudgetPool::Metadata as usize] >= 16 << 20,
                 "owned writer lost native hold admission before actual transport"
             );
             inspect_release(bare.as_ref(), &reference, &original_lease, false, None).await;
@@ -1355,7 +1350,7 @@ where
                 assert!(
                     old_checks
                         .iter()
-                        .any(|check| check.key == b"packed/v3/topology-generation")
+                        .any(|check| check.key == b"packed/topology-generation")
                 );
                 assert!(
                     old_checks
@@ -1405,9 +1400,9 @@ where
                     );
                     let retained_keys = vec![
                         lease_key(new.workspace_id, new.lease_id),
-                        format!("packed/v3/native-hold/lease/{}", new.lease_id).into_bytes(),
-                        format!("packed-v3/writer/{}", guard.workspace_id).into_bytes(),
-                        format!("open/v3/{}", guard.workspace_id).into_bytes(),
+                        format!("packed/native-hold/lease/{}", new.lease_id).into_bytes(),
+                        format!("packed/writer/{}", guard.workspace_id).into_bytes(),
+                        format!("open/{}", guard.workspace_id).into_bytes(),
                         lease_key(guard.workspace_id, guard.lease_id),
                         lease_key(install.guard.workspace_id, install.guard.lease_id),
                         lease_index_key(new.lease_id),
@@ -1534,14 +1529,14 @@ where
                 }
                 if case == Case::LaterActualOpenGrant {
                     let token = admin
-                        .open_workspace_v3(
+                        .open_workspace_snapshot(
                             guard.workspace_id,
                             format!("actual-next-open-{}", Uuid::new_v4()),
                             Duration::from_secs(300),
                         )
                         .await
                         .unwrap();
-                    assert_eq!(token.state, V3OpenState::Ready);
+                    assert_eq!(token.state, SnapshotOpenState::Ready);
                     assert_eq!(
                         admin
                             .load_layer(guard.expected_head_layer_id)
@@ -1559,7 +1554,7 @@ where
                         !bare.compare_and_swap(&old_checks, &[]).await.unwrap(),
                         "old source ticket survived actual open owner grant"
                     );
-                    admin.close_workspace_v3(&token).await.unwrap();
+                    admin.close_workspace_snapshot(&token).await.unwrap();
                     assert!(
                         admin
                             .admit_clean_packed_source(reference.clone(), admin_budget.clone())
@@ -1643,12 +1638,12 @@ where
 async fn isolated<B, F>(connect: F, case: Case)
 where
     B: WorkspaceKvBackend,
-    F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
+    F: Fn(Arc<SnapshotMountBudget>) -> Connection<B> + Send + Sync + 'static,
 {
     let connect = Arc::new(connect);
     let owned = connect.clone();
     let outcome = tokio::spawn(async move { actual_original_chain(owned, case).await }).await;
-    let cleanup_budget = V3MountBudget::defaults();
+    let cleanup_budget = SnapshotMountBudget::defaults();
     let backend = connect(cleanup_budget.clone()).await.unwrap();
     loop {
         let rows = backend

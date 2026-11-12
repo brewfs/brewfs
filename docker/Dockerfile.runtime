@@ -6,7 +6,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN cargo build --release -p brewfs --features workspace-overlay \
+RUN cargo build --release -p brewfs --features workspace \
     && strip target/release/brewfs
 
 FROM debian:trixie-slim

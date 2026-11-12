@@ -25,23 +25,23 @@ pub const MAX_ENCODED_FRAME_PAYLOAD: u32 = 65 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadFormat {
     PlainBytes,
-    NativeBlockV1,
+    NativeBlock,
 }
 
 impl PayloadFormat {
     pub fn as_u8(self) -> u8 {
         match self {
             PayloadFormat::PlainBytes => 0,
-            PayloadFormat::NativeBlockV1 => 1,
+            PayloadFormat::NativeBlock => 1,
         }
     }
 
     pub fn from_u8(v: u8) -> WireResult<PayloadFormat> {
         match v {
             0 => Ok(PayloadFormat::PlainBytes),
-            1 => Ok(PayloadFormat::NativeBlockV1),
+            1 => Ok(PayloadFormat::NativeBlock),
             other => Err(WireError::UnsupportedFormat(format!(
-                "frame payload_format {other} (expected 0=PlainBytes or 1=NativeBlockV1)"
+                "frame payload_format {other} (expected 0=PlainBytes or 1=NativeBlock)"
             ))),
         }
     }
@@ -49,7 +49,7 @@ impl PayloadFormat {
     pub fn max_raw_payload(self) -> u32 {
         match self {
             PayloadFormat::PlainBytes => MAX_PLAIN_PAYLOAD,
-            PayloadFormat::NativeBlockV1 => MAX_NATIVE_OUTER_PAYLOAD,
+            PayloadFormat::NativeBlock => MAX_NATIVE_OUTER_PAYLOAD,
         }
     }
 
@@ -57,7 +57,7 @@ impl PayloadFormat {
     pub fn feature_bit(self) -> u64 {
         match self {
             PayloadFormat::PlainBytes => features::PLAIN_BYTES_FRAMES,
-            PayloadFormat::NativeBlockV1 => features::NATIVE_BLOCK_V1_INNER,
+            PayloadFormat::NativeBlock => features::NATIVE_BLOCK_INNER,
         }
     }
 }
@@ -150,11 +150,11 @@ impl FrameHeader {
                 payload_format.max_raw_payload()
             )));
         }
-        // NativeBlockV1 never carries an outer codec (spec 03 §4.2).
-        if payload_format == PayloadFormat::NativeBlockV1 && codec != Codec::None {
+        // NativeBlock never carries an outer codec (spec 03 §4.2).
+        if payload_format == PayloadFormat::NativeBlock && codec != Codec::None {
             return Err(WireError::invalid(
                 what,
-                "NativeBlockV1 frames must use outer codec None",
+                "NativeBlock frames must use outer codec None",
             ));
         }
         // PlainBytes with codec None has stored_len == raw_len (spec 03 §4.1).
@@ -357,9 +357,9 @@ mod tests {
     #[test]
     fn native_block_v1_requires_outer_codec_none() {
         let mut h = sample();
-        h.payload_format = PayloadFormat::NativeBlockV1;
+        h.payload_format = PayloadFormat::NativeBlock;
         // With codec None the combination is legal; the violation is carrying
-        // an outer codec on a NativeBlockV1 frame (spec 03 §4.2).
+        // an outer codec on a NativeBlock frame (spec 03 §4.2).
         h.codec = Codec::Zstd;
         assert!(FrameHeader::parse(&h.encode()).is_err());
     }

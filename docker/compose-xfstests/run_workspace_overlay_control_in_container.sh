@@ -8,12 +8,12 @@ bin="${BREWFS_BIN:-/usr/local/bin/brewfs}"
 catalog_backend="${BREWFS_WORKSPACE_META_BACKEND:-redis}"
 catalog_url="${BREWFS_WORKSPACE_META_URL:-redis://redis:6379/0}"
 catalog_tikv_endpoints="${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:-pd:2379}"
-catalog_namespace="${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace-overlay}"
-fixture="${BREWFS_PACKED_FIXTURE_BIN:-/usr/local/bin/packed_v3_snapshot_fixture}"
+catalog_namespace="${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace}"
+fixture="${BREWFS_PACKED_FIXTURE_BIN:-/usr/local/bin/packed_snapshot_fixture}"
 data_dir="${BREWFS_DATA_DIR:-$state_dir/data}"
 
 die() {
-    printf '[workspace-overlay] ERROR: %s\n' "$*" >&2
+    printf '[workspace] ERROR: %s\n' "$*" >&2
     exit 1
 }
 
@@ -107,7 +107,7 @@ case "$mode" in
         workspace_id_from_json "$state_dir/workspace-init.json" \
             | head -n 1 >"$state_dir/root-workspace.id"
         revision_of "$state_dir/workspace-init.json" >"$state_dir/base-revision.txt"
-        printf '[workspace-overlay] initialized root workspace %s over packed lower %s\n' \
+        printf '[workspace] initialized root workspace %s over packed lower %s\n' \
             "$(tr -d '[:space:]' <"$state_dir/root-workspace.id")" \
             "$(tr -d '[:space:]' <"$state_dir/base-revision.txt")"
         ;;
@@ -121,7 +121,7 @@ case "$mode" in
         [[ "${#fork_ids[@]}" -eq 2 ]] || die "expected two forked workspaces"
         printf '%s\n' "${fork_ids[0]}" >"$state_dir/workspace-a.id"
         printf '%s\n' "${fork_ids[1]}" >"$state_dir/workspace-b.id"
-        printf '[workspace-overlay] forked workspaces %s and %s\n' \
+        printf '[workspace] forked workspaces %s and %s\n' \
             "${fork_ids[0]}" "${fork_ids[1]}"
         ;;
     verify|concurrent-fork)
@@ -133,6 +133,6 @@ case "$mode" in
         export BREWFS_WORKSPACE_A="$workspace_a"
         export BREWFS_WORKSPACE_B="$workspace_b"
         export BREWFS_WORKSPACE_CATALOG_URL="$catalog_url"
-        exec /usr/local/bin/run_workspace_overlay_dual_mount_in_container.sh
+        exec /usr/local/bin/run_workspace_dual_mount_in_container.sh
         ;;
 esac

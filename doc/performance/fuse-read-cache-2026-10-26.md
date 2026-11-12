@@ -34,7 +34,7 @@ not by itself prove which FUSE flags the original mounts negotiated.
 
 ### 1. OPEN and CREATE flags
 
-The requested native and overlay `workspace-v1` mounts use the ordinary VFS
+The requested native and overlay `workspace` mounts use the ordinary VFS
 FUSE adapter. With no overrides, regular files return flags `0x0`: neither
 `FOPEN_DIRECT_IO` (`0x1`) nor `FOPEN_KEEP_CACHE` (`0x2`). This permits kernel
 buffered reads within an open, but reopening discards previously cached pages.
@@ -52,12 +52,12 @@ The relevant baseline locations are:
 | `vendor/asyncfuse/src/raw/session/handlers.rs:817,2236` | Worker OPEN/CREATE apply that mount-level override |
 | `vendor/asyncfuse/src/raw/session/mod.rs:3464,4728` | Single-dispatch OPEN/CREATE apply the same override |
 
-There is a separate experimental `workspace-entity-v1` path. Its CREATE and
+There is a separate experimental `entity-workspace` path. Its CREATE and
 OPEN explicitly return DIRECT_IO at `src/fuse/entity.rs:458,634`; its mount
 also forces direct I/O at line 990 and sets readahead to zero at line 995.
-`src/cli.rs:379-381` selects it only for `WorkspaceEntityV1` with
+`src/cli.rs:379-381` selects it only for `EntityWorkspace` with
 `experimental_entity_mount`; these settings do not describe the requested
-`workspace-v1` benchmark mounts.
+`workspace` benchmark mounts.
 
 ### 2. Mount policy
 
@@ -146,10 +146,10 @@ strict freshness for external changes. Permission checks still run on open.
 
 Cached reads also bypass the userspace read operation's backend/lease fence:
 the packed read path enters that fence in `src/vfs/fs/mod.rs:5106-5119` and
-`src/workspace_overlay/meta_layer/packed_lower.rs:723-733` in the baseline.
+`src/workspace/meta_layer/packed_lower.rs:723-733` in the baseline.
 A read-only reopen is not itself a replacement for the data-read fence:
 frozen packed single-step metadata reads omit a per-operation remote fence
-(`src/workspace_overlay/meta_layer/mod.rs:580-587,644-646`), and read-only
+(`src/workspace/meta_layer/mod.rs:580-587,644-646`), and read-only
 `record_open` omits an authenticated mutation CAS (lines 2324-2333).
 Consequently a successful cached read does not prove backend availability or
 a currently valid lease; immediate read failure on lease loss is not promised.
@@ -168,7 +168,7 @@ export CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0
 
 Baseline source: `b21654e13b1ae1716e7e6d842f414eb4fe09bacd`.
 The release binary was built on this 32-CPU host with
-`cargo build --release -j 4 --features workspace-overlay --bin brewfs`.
+`cargo build --release -j 4 --features workspace --bin brewfs`.
 Its SHA-256 is
 `ec55e3f4b8b88c2f013501a5a8bb9258e82a07c195ac2630b701f4b59fcebdcd`.
 The successful build's `/usr/bin/time -v` peak RSS was 19,807,012 KiB; the
@@ -182,8 +182,8 @@ with a detected compiler. Build logs are `baseline-build.log`,
 `baseline-build-resume.log` and `baseline-fixture-build.log` under the artifact
 root. Candidate serialized CI/build results remain pending.
 
-Requested benchmark setup: native `workspace-v1` and overlay
-`init-packed-volume` + `workspace-v1`, Redis metadata and RustFS S3, matching
+Requested benchmark setup: native `workspace` and overlay
+`init-packed-volume` + `workspace`, Redis metadata and RustFS S3, matching
 `/home/hxy/spot/STANDARD.md`. Assert `mountpoint -q` before **every** run. Run
 `/home/hxy/bench2.py` three times per arm plus fio sequential `direct=0` and
 `direct=1`. Preserve raw runs, exact commands, mount options, OPEN/CREATE
@@ -198,7 +198,7 @@ configuration. The supplemental runner is
 
 The supplemental setup uses isolated Redis 7.2 at `127.0.0.1:16389` and upstream
 RustFS release `ceddcdd878d21829eb6f9b08153632e4fce026b5` at
-`127.0.0.1:19090`. Native and overlay use separate `workspace-v1` catalogs and
+`127.0.0.1:19090`. Native and overlay use separate `workspace` catalogs and
 buckets. Overlay was initialized with `init-packed-volume` and a one-file
 immutable lower; measured files were newly written in its writable upper.
 Both BrewFS arms use no compression, 4 MiB blocks, 64 MiB chunks, 300 MiB

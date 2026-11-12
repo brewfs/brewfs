@@ -12,18 +12,18 @@ The historical audit is not rerun to establish the regression. PR #409 is
 builder close sequential inline groups at 224 KiB: 56 rather than 256 files
 per group for this 4 KiB corpus, producing 147 rather than 32 groups.
 
-The packed-v3 subtree, fixture producer, object adapter subtree, VFS readdir
+The packed subtree, fixture producer, object adapter subtree, VFS readdir
 implementation/handles and packed-enumeration adapter have identical Git
 objects at #409 and audited main `d1160dc`. The intervening commits concern
 workspace extent compaction, TTL configuration/docs and test repairs. The TTL
-change keeps the same zero setting for this packed-metadata-v3 harness. Thus
+change keeps the same zero setting for this packed-snapshot harness. Thus
 there is no intervening packed enumeration/producer change to explain the
 group-count and group-read deltas. Object identities and the intervening log
 are retained in `attribution-source.json` beside the archived counter extraction.
 
 The enumeration path is `PackedDirectoryPageSource::read_page` →
-`AuthenticatedV3Snapshot::readdir_page_with_metadata` → `V3DirectoryMetadata`
-→ `V3GroupRef::read_metadata` → `GroupMeta::decode_restart`. Workspace mounts
+`AuthenticatedSnapshot::readdir_page_with_metadata` → `SnapshotDirectoryMetadata`
+→ `SnapshotGroupRef::read_metadata` → `GroupMeta::decode_restart`. Workspace mounts
 reach the same lower through `WorkspaceDirectory`, either directly for an
 empty upper or in 32-entry merge pages. `packed_list_xattr_bytes_owned` is a
 separate xattr operation and is not called by readdir.
@@ -88,7 +88,7 @@ inode index without decoding the parent's file contents.
 ## Acceptance record
 
 Initial green: the four metadata-cache tests passed (45.23 s), including the
-8,192-file regression and demand-read checks. The packed-v3 module passed
+8,192-file regression and demand-read checks. The packed module passed
 381 tests with four existing ignored tests (95.80 s). The final complete
 overlay module gate passed **1,265 tests, zero failures, 181 existing ignored
 tests** in 184.10 s, including authentication, close/fence, non-root opendir,
@@ -141,7 +141,7 @@ All local gates passed before the candidate source commit:
 - `cargo check --workspace` and `cargo build --workspace`.
 - `cargo check -p brewfs --no-default-features --features fuse-tokio-runtime`
   and the corresponding `fuse-io-uring-runtime` check.
-- `cargo test --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib workspace_overlay:: -- --test-threads=4`.
+- `cargo test --no-default-features --features fuse-tokio-runtime,workspace --lib workspace:: -- --test-threads=4`.
 - `cargo test --workspace --lib --bins`.
 - `cargo clippy --workspace --all-targets -- -D warnings`.
 - `cargo clippy --all-targets --all-features -- -D warnings`.
@@ -161,7 +161,7 @@ clean detached worktree with Rust 1.99.0 and the archived command:
 
 ```bash
 cargo +1.99.0 rustc --locked --release --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay,observability \
+  --features fuse-tokio-runtime,workspace,observability \
   --bin brewfs -- -C opt-level=1 -C debuginfo=0
 ```
 

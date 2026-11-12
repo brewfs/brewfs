@@ -22,7 +22,7 @@
 起点使用相同 manifest。`--version` 中的 dirty=true 来自既有未跟踪文件
 `tools/perf/measure_observability.py`，该文件未改动且不是编译输入。
 
-构建命令为 `cargo build --locked --release --bin brewfs --features workspace-overlay,observability`，
+构建命令为 `cargo build --locked --release --bin brewfs --features workspace,observability`，
 默认 features 开启，incremental=0、debug=0、codegen-units=256、
 `RUSTFLAGS=-C debuginfo=0`，与 v1 的优化配置一致。tmux 后台构建未加 timeout，
 主机 3072 MiB watchdog 保持运行。library 用 1 job 完成后，刚开始的 main.rs
@@ -32,13 +32,13 @@
 
 ### Overlay 与同轮 CI
 
-两次未筛选的 `cargo test -p brewfs --lib --features workspace-overlay` 均为
+两次未筛选的 `cargo test -p brewfs --lib --features workspace` 均为
 **2729 passed / 0 failed / 474 既有 ignored**，第二次于 03:36:06 UTC 完成，
 距本轮开始 47m58s，满足 90 分钟定位时限。内存配置为 1 个编译 job、
 `RUST_TEST_THREADS=2`；没有修改测试选择、断言或 ignore。
 
 已知偶发用例为
-`workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`。
+`workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`。
 五次单测重跑结果依次是 **pass / fail / pass / pass / pass（4/5）**。
 失败在 `meta_layer/tests.rs:1477:57` 的
 `observer.open(ino, OpenFlags::RDONLY).await.unwrap()`，错误为
@@ -64,7 +64,7 @@ rfuse3 不在 workspace，条件检查不适用；既有依赖 warning 保留，
 1 MiB、1 job、iodepth=8、512 MiB。fio buffered libaio、seed=20261101；
 混合读写 70% read / 30% write。direct guard 单独用 direct=1，不混入主 CI。
 
-隔离 compose Redis/RustFS、flat-v1、upload-before-commit、zstd、同一不可压缩
+隔离 compose Redis/RustFS、flat、upload-before-commit、zstd、同一不可压缩
 语料；读内存/SSD cache=0、写内存=512 MiB、写 SSD=0、总预算=2 GiB。
 每 arm 清空自己的后端，重新挂载、完整预填充并严格 drain 后测量；没有全局
 drop_caches。严格 drain 要求所有写回 debt gauge 为 0 且 PUT 次数/字节连续
@@ -221,8 +221,8 @@ off/on 分别在 direct 与 buffered FUSE 下运行 fsync、close 后立即 SIGK
 完整 broad 的首次无效观测、原始读下降和追加复测均保留，未删除不利样本。
 
 本结果支持保留默认 `BREWFS_WRITE_COALESCE_BYTES=65536`，不是多窗口寻优结论。
-范围仍是 flat-v1 + Redis/SQL + UploadBeforeCommit；真实 S3/FUSE 性能使用
-Redis/RustFS，SQL 覆盖来自 SQLite 正确性测试。native-v2、packed-v3、etcd/TiKV
+范围仍是 flat + Redis/SQL + UploadBeforeCommit；真实 S3/FUSE 性能使用
+Redis/RustFS，SQL 覆盖来自 SQLite 正确性测试。native-v2、packed、etcd/TiKV
 和 CommitBeforeUpload 不适用。0 关闭新聚合但保留 reader；**旧二进制不能读取
 新共享对象，写入新格式后不能直接降级旧二进制**。
 
@@ -488,7 +488,7 @@ overlay 和严格 clippy 的最终结果见下方本地门禁表。
 每个成员保存原有 framed 编码，索引和成员均有 SHA-256；旧 chunks/chunks-v2
 对象保留读取回退。新对象位于 chunks-coalesced-v1。
 
-初版范围为 flat-v1 + Redis/SQL + UploadBeforeCommit；native-v2、packed-v3、
+初版范围为 flat + Redis/SQL + UploadBeforeCommit；native-v2、packed、
 etcd/TiKV 和 CommitBeforeUpload 的独立发布/回收协议目前未覆盖，不能把结果推广
 到它们。SQL 的专项验证使用 SQLite，真实性能与 SIGKILL 验证使用 Redis/RustFS。
 候选默认值为 65536 个未压缩字节：16 个 4 KiB 写可组成
@@ -566,7 +566,7 @@ v1 提前执行的严格 overlay clippy 已通过（项目零 warning）；工�
 | tokio / io-uring 配置检查 | 通过 |
 | rfuse3 三配置 | 不适用；该包不在 workspace，按条件门禁跳过 |
 | workspace `--lib --bins` | 1315 + 2 passed，0 failed，264 既有 ignored |
-| `--lib --features workspace-overlay` | 编译被 watchdog SIGTERM；正在 1 job 重试，尚无测试结果 |
+| `--lib --features workspace` | 编译被 watchdog SIGTERM；正在 1 job 重试，尚无测试结果 |
 | 最终 workspace / overlay clippy `-D warnings` | 待 overlay 重跑后串行执行；v1 的提前 clippy 结果不冒充最终结果 |
 | 四个 runner 的 bash 语法 | 通过 |
 | perf-report-delta / JuiceFS direct matrix / JuiceFS report | 三项通过 |

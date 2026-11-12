@@ -119,7 +119,7 @@ are retained; the interrupted sixth cell's missing starting offset stays null.
   internal metadata caching identical; this is not both products' default setup.
 - BrewFS creates four fresh mounts per cell. JuiceFS uses one shared mount with
   four directory clones. Workspaces run sequentially, not concurrently across
-  clients. Experimental `workspace-entity-v1` admission is explicit; default
+  clients. Experimental `entity-workspace` admission is explicit; default
   and legacy paths are unchanged.
 - Correctness exhaustively checks base names each cell and all four JuiceFS
   clone namespaces, samples base content, verifies every selected read/COW,

@@ -3,21 +3,25 @@ use super::*;
 
 #[tokio::test]
 async fn g07_existing_api_roots_exhaustion_precedes_client_open_and_recovers() {
-    let mut limits = V3BudgetLimits::default();
-    limits.bytes[V3BudgetPool::Control as usize] = 32 << 10;
-    limits.bytes[V3BudgetPool::Metadata as usize] = 64 << 20;
-    let budget = V3MountBudget::new(limits).unwrap();
+    let mut limits = SnapshotBudgetLimits::default();
+    limits.bytes[SnapshotBudgetPool::Control as usize] = 32 << 10;
+    limits.bytes[SnapshotBudgetPool::Metadata as usize] = 64 << 20;
+    let budget = SnapshotMountBudget::new(limits).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let f = fixture_with_budget(budget).await;
-    assert!(f.fs.meta_layer().install_v3_stats(f.fs.stats()));
+    assert!(f.fs.meta_layer().install_snapshot_stats(f.fs.stats()));
     let idle = f.budget.state().used;
-    let remaining = f.budget.capacity(V3BudgetPool::Roots) - idle[V3BudgetPool::Roots as usize];
+    let remaining =
+        f.budget.capacity(SnapshotBudgetPool::Roots) - idle[SnapshotBudgetPool::Roots as usize];
     assert!(remaining > 0);
-    let held = f.budget.admit(&[(V3BudgetPool::Roots, remaining)]).unwrap();
+    let held = f
+        .budget
+        .admit(&[(SnapshotBudgetPool::Roots, remaining)])
+        .unwrap();
     let full = f.budget.state().used;
     assert_eq!(
-        full[V3BudgetPool::Roots as usize],
-        f.budget.capacity(V3BudgetPool::Roots)
+        full[SnapshotBudgetPool::Roots as usize],
+        f.budget.capacity(SnapshotBudgetPool::Roots)
     );
     for (ino, directory, unique) in [
         (f.ino, false, 1901),
@@ -62,8 +66,8 @@ async fn g07_existing_api_roots_exhaustion_precedes_client_open_and_recovers() {
         drop(request_owner);
         assert_ne!(opened.fh, 0);
         assert!(
-            f.budget.state().used[V3BudgetPool::Roots as usize]
-                > idle[V3BudgetPool::Roots as usize]
+            f.budget.state().used[SnapshotBudgetPool::Roots as usize]
+                > idle[SnapshotBudgetPool::Roots as usize]
         );
         let release_owner = Filesystem::reserve_request_memory(&f.fs, 24)
             .unwrap()
@@ -81,14 +85,14 @@ async fn g07_existing_api_roots_exhaustion_precedes_client_open_and_recovers() {
         assert_eq!(f.fs.open_file_handle_count(), 0);
         assert!(f.fs.virtual_stats_snapshot(opened.fh).is_none());
         assert_eq!(
-            f.budget.state().used[V3BudgetPool::Roots as usize],
-            idle[V3BudgetPool::Roots as usize]
+            f.budget.state().used[SnapshotBudgetPool::Roots as usize],
+            idle[SnapshotBudgetPool::Roots as usize]
         );
         assert_eq!(
-            f.budget.state().used[V3BudgetPool::Control as usize],
-            idle[V3BudgetPool::Control as usize]
+            f.budget.state().used[SnapshotBudgetPool::Control as usize],
+            idle[SnapshotBudgetPool::Control as usize]
         );
     }
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     Filesystem::prepare_unmount(&f.fs).await.unwrap();
 }

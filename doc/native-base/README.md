@@ -1,4 +1,4 @@
-# Native Base 实现跟踪（workspace-native-v2）
+# Native Base 实现跟踪（native-workspace）
 
 历史证据说明：下文以代码标记列出的 `logs/` 路径在当前 checkout 中不可用；
 保留路径用于追溯，不把这些未随仓库提供的日志当作当前可复核证据。可用文件仍保留链接。
@@ -89,7 +89,7 @@ lossless repack 的逻辑身份保持已由 PR07Z 收口（OPT-007/INV-10）：�
 
 逻辑迁移 roundtrip 已由 PR07Y 收口（REGRESS-003）：新增 `runtime::copy_volume_logically`——离线拷贝模式把源卷的全部控制行在**一个**条件事务里原样重发到目标 volume id 下，并安装目标的 locator header（`Keys::volume_prefix` 成为卷前缀的唯一来源）。验收用真实写入（write+fsync、pending_count 归零）建立含 inode 属性行、extent、head、registry、binding 的源卷，再逐字节断言：源卷在拷贝前后每一行（含 locator header）的 payload 都不变，即 source 保留；源卷每一行在目标前缀下都有一份 payload 完全相同的孪生行，即属性与布局两侧一致；一个**从未 initialize** 过的目标 reader（没有自己的 domain/head）读回相同的 size 与相同的字节，而那些对象就是源卷上传的 content-addressed 对象——copy 函数根本不持有 `ObjectSink`，因此“不上传、不重读、不重校验任何数据字节”是结构性质而不是承诺。反向路径同样按名拒绝：复用源 volume id 会以 `VolumeIdReuse` 先拒（否则目标行会与正在读取的行重叠）、把不搬行的 `NewNamespace` 模式交给拷贝以 `CopyRequiresOfflineCopy` 拒、目标 namespace 已有 locator header 以 `NamespaceExists` 拒、目标 volume id 下已有同形状控制行由事务 `check_absent` 以 `TargetVolumeNotEmpty` 拒且目标前缀行数不变、store 返回越出被扫描前缀的行以 `ScanOutsideVolumePrefix` 失败关闭且不安装目标 header——失败路径不会留下半个目标卷。
 
-feature 关闭时的旧路径回归与版本准入拒绝已由 PR07X 收口（REGRESS-001/REGRESS-002）：把 brewfs 的整个 lib 套件放在 `--no-default-features --features fuse-tokio-runtime`（不含 native 代码的“旧二进制”配置）下运行，同一提交上仍是 934 passed/0 failed/225 ignored，说明 native 特性是纯增量、旧 flat/chunk 路径无回归，且 native 开/关两种配置的 `cargo check` 在同一 CI gate 内各自 exit 0。版本准入侧新增 `src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback`：未编译 native 支持的读者拿到 header 行后仍被 `FeatureNotCompiled("native-packed-base")` 拒绝；`schema_version` 与 `wire_major` 各前进一格分别以 `UnsupportedSchemaVersion` / `UnsupportedWireVersion` 按名拒绝；`volume_format` 不是本格式（`workspace-flat-v1`）以 `UnsupportedVolumeFormat` 拒绝——三者都发生在任何字节被读出之前，且没有任何“按 flat 卷解释”的回退；同一记录在能力匹配的二进制下 `validate` 通过，说明拒绝来自读者与版本而不是损坏的 header，并且该测试在 native 开启与关闭两种配置下都通过。buffered/direct/mmap 三种 FUSE 访问形态未在本环境验证（无真实挂载 + xfstests/LTP harness），因此按 REGRESS-005 的要求只在 `doc/native-base/known-gaps.md` 逐形态记录为 KnownGap（表现、为什么不是 PASS、记录位置、关闭条件），矩阵中没有任何一行把它们标成 PASS，REGRESS-005 保持 `NOT_RUN`。
+feature 关闭时的旧路径回归与版本准入拒绝已由 PR07X 收口（REGRESS-001/REGRESS-002）：把 brewfs 的整个 lib 套件放在 `--no-default-features --features fuse-tokio-runtime`（不含 native 代码的“旧二进制”配置）下运行，同一提交上仍是 934 passed/0 failed/225 ignored，说明 native 特性是纯增量、旧 flat/chunk 路径无回归，且 native 开/关两种配置的 `cargo check` 在同一 CI gate 内各自 exit 0。版本准入侧新增 `src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback`：未编译 native 支持的读者拿到 header 行后仍被 `FeatureNotCompiled("native-packed-base")` 拒绝；`schema_version` 与 `wire_major` 各前进一格分别以 `UnsupportedSchemaVersion` / `UnsupportedWireVersion` 按名拒绝；`volume_format` 不是本格式（`workspace-flat`）以 `UnsupportedVolumeFormat` 拒绝——三者都发生在任何字节被读出之前，且没有任何“按 flat 卷解释”的回退；同一记录在能力匹配的二进制下 `validate` 通过，说明拒绝来自读者与版本而不是损坏的 header，并且该测试在 native 开启与关闭两种配置下都通过。buffered/direct/mmap 三种 FUSE 访问形态未在本环境验证（无真实挂载 + xfstests/LTP harness），因此按 REGRESS-005 的要求只在 `doc/native-base/known-gaps.md` 逐形态记录为 KnownGap（表现、为什么不是 PASS、记录位置、关闭条件），矩阵中没有任何一行把它们标成 PASS，REGRESS-005 保持 `NOT_RUN`。
 
 写路径的 copy-up 边界与持久化已由 PR07W 收口（WRITE-001/WRITE-002/WRITE-004/WRITE-005）：1 GiB 稀疏基线（不可变快照）上的首次 4096B 覆盖只从基线读取它替换的那一个块、只上传一个数据对象与其 receipts 容器并只发布一条 extent，文件长度与尾部基线都不动，因此没有前置 copy-up；跨 block 边界的 10B 局部写只读/只写被覆盖的两个 block（fresh slice 各自成 mutation），其余基线既不被读也不被重写；write 返回后 pending_count=1 且本地读立即返回 dirty 字节，fsync 后 pending_count=0 且读回同一字节，两轮交接后前一轮字节仍在，说明 dirty→committed 的交接点就是提交确认点；fsync 后清 cache 并用同一 store/sink/baseline 重建 runtime（重挂类比）时补丁、size 与 truncate 结果逐字节一致，且重挂过程中没有任何新上传。
 
@@ -110,7 +110,7 @@ Frozen 索引三缝已由 PR07Q 收口（IDX-003/IDX-004/IDX-005）：内联 att
   避开 /mnt/d 的 9p 慢 IO 与 D 盘空间限制）。
 - **docker 门**：WSL 内 docker daemon 可用（29.1.3），镜像已缓存
   redis:7-alpine、redis:7.2-alpine、pingcap/tikv:v8.5.0 + pd、rustfs/rustfs:latest
-  （S3）、postgres:16、xfstests/pjdfstest/ltp/workspace-overlay 系列。
+  （S3）、postgres:16、xfstests/pjdfstest/ltp/workspace 系列。
   docker compose 脚本门（redis/tikv/sqlite/etcd）真实可跑；CRLF 问题用
   /tmp LF 归一化副本解决（Linux CI 等价）。
 - **FUSE**：`/dev/fuse` 存在，fusermount3 3.14.0，真实挂载测试可执行。

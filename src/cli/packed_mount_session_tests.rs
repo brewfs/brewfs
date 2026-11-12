@@ -6,15 +6,15 @@ use super::packed_mount_cutoff::packed_original_shutdown_tests::{
     ActualObjects, ObjectProbe, selected_cli_objects,
 };
 use super::*;
-use crate::workspace_overlay::catalog::{
+use crate::workspace::catalog::{
     HeadGuard, PermissionSnapshotQuery, ReleaseLease, VersionedMutation,
 };
-use crate::workspace_overlay::ids::LeaseId;
-use crate::workspace_overlay::model::{LeaseState, SnapshotLease, WorkspaceRecord};
-use crate::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use crate::workspace_overlay::stores::binding_tests::{packed_for_process_restart, request};
-use crate::workspace_overlay::stores::kv_backend::{KvReadLimits, WorkspaceKvBackend};
-use crate::workspace_overlay::stores::kv_store::packed_admin::{
+use crate::workspace::ids::LeaseId;
+use crate::workspace::model::{LeaseState, SnapshotLease, WorkspaceRecord};
+use crate::workspace::packed::snapshot::SnapshotMountBudget;
+use crate::workspace::stores::binding_tests::{packed_for_process_restart, request};
+use crate::workspace::stores::kv_backend::{KvReadLimits, WorkspaceKvBackend};
+use crate::workspace::stores::kv_store::packed_admin::{
     PackedCleanAdmission, PackedReleasedMountReference,
 };
 use std::fs::OpenOptions;
@@ -28,9 +28,9 @@ use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 use uuid::Uuid;
 
 const WAIT: Duration = Duration::from_secs(90);
-const PAYLOAD: &[u8] = b"packed-v3 actual CLI upper payload survives release and process recovery";
+const PAYLOAD: &[u8] = b"packed actual CLI upper payload survives release and process recovery";
 type Connection<B> =
-    Pin<Box<dyn Future<Output = Result<B, workspace_overlay::error::WorkspaceError>> + Send>>;
+    Pin<Box<dyn Future<Output = Result<B, workspace::error::WorkspaceError>> + Send>>;
 
 fn report_smallfile_hashes(stage: &str, hashes: &std::collections::BTreeMap<String, String>) {
     use sha2::{Digest, Sha256};
@@ -399,7 +399,7 @@ fn write_mount_config(
         }})
     };
     let value = serde_json::json!({
-        "mount_point": root.join("mount"), "volume_format": "workspace-v1",
+        "mount_point": root.join("mount"), "volume_format": "workspace",
         "workspace": workspace, "workspace_namespace": namespace,
         "workspace_operator_managed": operator_managed,
         "data": cli_data_config(objects),
@@ -518,8 +518,8 @@ impl OwnedCliChild {
             .arg("mount")
             .arg("--config")
             .arg(&config)
-            .env("BREWFS_PACKED_V3_MOUNT_UID", mount_uid.to_string())
-            .env("BREWFS_PACKED_V3_POD_UID", pod_uid.to_string())
+            .env("BREWFS_PACKED_MOUNT_UID", mount_uid.to_string())
+            .env("BREWFS_PACKED_POD_UID", pod_uid.to_string())
             // Periodic stats would evict early heartbeat failures from the
             // bounded tail; retain all warning/error events in this module.
             .env("RUST_LOG", "brewfs=info,brewfs::vfs::fs=warn")
@@ -781,7 +781,7 @@ async fn mounted_lease<B: WorkspaceKvBackend>(
     backend: &B,
     workspace: WorkspaceId,
 ) -> (SnapshotLease, serde_json::Value) {
-    let key = format!("packed-v3/writer/{workspace}").into_bytes();
+    let key = format!("packed/writer/{workspace}").into_bytes();
     let (values, _) = read_rows(backend, &[key]).await;
     let raw = values[0].as_deref().unwrap();
     assert!(raw.starts_with(b"PWA3\x01"));
@@ -791,7 +791,7 @@ async fn mounted_lease<B: WorkspaceKvBackend>(
     let generation = owner["holder_generation"].as_u64().unwrap();
     let keys = [
         format!("lease/{workspace}/{lease_id}").into_bytes(),
-        format!("open/v3/{workspace}").into_bytes(),
+        format!("open/{workspace}").into_bytes(),
         format!("ws/{workspace}").into_bytes(),
         format!("lease-id/{lease_id}").into_bytes(),
     ];
@@ -820,7 +820,7 @@ async fn assert_idle<B: WorkspaceKvBackend>(
     leases: &[LeaseId],
 ) {
     let mut keys = vec![
-        format!("packed-v3/writer/{workspace}").into_bytes(),
+        format!("packed/writer/{workspace}").into_bytes(),
         format!("ws/{workspace}").into_bytes(),
     ];
     for lease in leases {
@@ -856,18 +856,18 @@ async fn publish_recovered_cli_source<B, F>(
     root: &Path,
     client: ObjectClient<ActualObjects>,
     released: PackedReleasedMountReference,
-) -> crate::workspace_overlay::stores::kv_store::packed_admin::PackedSnapshotResult
+) -> crate::workspace::stores::kv_store::packed_admin::PackedSnapshotResult
 where
     B: WorkspaceKvBackend,
-    F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
+    F: Fn(Arc<SnapshotMountBudget>) -> Connection<B> + Send + Sync + 'static,
 {
-    use crate::workspace_overlay::ids::{JournalId, LayerId, SnapshotId};
-    use crate::workspace_overlay::packed_v3::wire005::V3IndexAuditLimits;
-    use crate::workspace_overlay::stores::kv_store::packed_admin::{
+    use crate::workspace::ids::{JournalId, LayerId, SnapshotId};
+    use crate::workspace::packed::snapshot::SnapshotIndexAuditLimits;
+    use crate::workspace::stores::kv_store::packed_admin::{
         PackedHeadlessSnapshotDescription, PackedHeadlessSnapshotRequest,
     };
 
-    let budget = V3MountBudget::defaults();
+    let budget = SnapshotMountBudget::defaults();
     let backend = Arc::new(connect(budget.clone()).await.unwrap());
     let scratch = Arc::new(tempfile::tempdir_in(root).unwrap());
     let snapshot_id = SnapshotId::new();
@@ -879,7 +879,7 @@ where
         );
         let client = client.with_read_observer(
             budget.read_observer(None).unwrap(),
-            crate::cadapter::read_observer::Engine::PackedV3,
+            crate::cadapter::read_observer::Engine::Packed,
             crate::cadapter::read_observer::Phase::Startup,
             crate::cadapter::read_observer::Origin::Demand,
         );
@@ -921,7 +921,7 @@ where
         request.max_logical_bytes = 8 << 20;
         request.max_data_bytes = 8 << 20;
         request.scratch_disk_bytes = 8 << 20;
-        request.graph_limits = V3IndexAuditLimits {
+        request.graph_limits = SnapshotIndexAuditLimits {
             max_objects: 4096,
             max_authenticated_bytes: 16 << 20,
             max_requested_bytes: 16 << 20,
@@ -992,7 +992,7 @@ async fn actual_cli_chain<B, F>(
     smallfile_count: usize,
 ) where
     B: WorkspaceKvBackend,
-    F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
+    F: Fn(Arc<SnapshotMountBudget>) -> Connection<B> + Send + Sync + 'static,
 {
     assert!(
         Path::new("/dev/fuse").exists(),
@@ -1008,7 +1008,7 @@ async fn actual_cli_chain<B, F>(
     assert!(smallfile_count == 0 || (killed && !pending));
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join("mount")).unwrap();
-    let observation_budget = V3MountBudget::defaults();
+    let observation_budget = SnapshotMountBudget::defaults();
     let backend = Arc::new(connect(observation_budget.clone()).await.unwrap());
     let store = Arc::new(
         KvWorkspaceStore::from_arc(backend.clone())
@@ -1023,16 +1023,19 @@ async fn actual_cli_chain<B, F>(
         case,
     )
     .await;
-    let snapshot = crate::workspace_overlay::packed_v3::wire005::AuthenticatedV3Snapshot::open(
+    let snapshot = crate::workspace::packed::snapshot::AuthenticatedSnapshot::open(
         &actual_client,
         fixture_snapshot.manifest_reference(),
     )
     .await
     .unwrap();
-    let proof = crate::workspace_overlay::publish::binding::VerifiedPackedLower::from_authenticated_snapshot(
-        &snapshot,
-        &crate::workspace_overlay::packed_v3::wire005::V3IndexReader::new(actual_client.clone(), 0),
-    ).await.unwrap();
+    let proof =
+        crate::workspace::publish::binding::VerifiedPackedLower::from_authenticated_snapshot(
+            &snapshot,
+            &crate::workspace::packed::snapshot::SnapshotIndexReader::new(actual_client.clone(), 0),
+        )
+        .await
+        .unwrap();
     if std::env::var("BREWFS_TEST_ORIGINAL_OBJECT_BACKEND").as_deref() == Ok("rustfs") {
         assert_eq!(std::env::var("BREWFS_TEST_CLI_RUSTFS_CASE").unwrap(), case);
         eprintln!("actual-cli object_backend=rustfs case={case}");
@@ -1111,7 +1114,7 @@ async fn actual_cli_chain<B, F>(
                     holder_generation: lease.holder_generation
                 })
                 .await,
-            Err(workspace_overlay::error::WorkspaceError::Fenced)
+            Err(workspace::error::WorkspaceError::Fenced)
         ),
         "plain release must not retire a CLI packed mount"
     );
@@ -1166,7 +1169,7 @@ async fn actual_cli_chain<B, F>(
             Ok(())
         },
     ));
-    let writeback_root = workspace_overlay::cache_scope::writeback_root(
+    let writeback_root = workspace::cache_scope::writeback_root(
         &root.path().join("pvc-cache"),
         header.volume_id,
         binding.workspace_id,
@@ -1192,13 +1195,13 @@ async fn actual_cli_chain<B, F>(
                                 | crate::vfs::cache::keys::DirtySliceState::Uploading));
                         let (ino, chunk_index) = crate::vfs::extract_ino_and_chunk_index(record.chunk_id);
                         assert_eq!(ino, record.ino);
-                        let rows = store.get_extent_deltas(workspace_overlay::catalog::ExtentQuery {
+                        let rows = store.get_extent_deltas(workspace::catalog::ExtentQuery {
                             layer_ids: vec![binding.head_layer_id], ino: record.ino,
                             chunk_index, range_start: record.chunk_offset,
                             range_end: record.chunk_offset + record.length,
                         }).await.unwrap();
                         assert!(!rows.iter().any(|row| matches!(&row.kind,
-                            workspace_overlay::model::ExtentKind::Data { .. })),
+                            workspace::model::ExtentKind::Data { .. })),
                             "upload-before-commit must not expose an extent while real PUT is denied");
                         assert_eq!(std::fs::read(&record.path).unwrap(), expected_payload);
                         break 'found record;
@@ -1368,7 +1371,7 @@ async fn actual_cli_chain<B, F>(
         );
         assert!(output.stdout.len() <= 64 << 10);
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["format"], "packed-v3");
+        assert_eq!(report["format"], "packed");
         assert_eq!(report["recovery_completed"], true);
         let result = store
             .inspect_recovered_packed_mount(binding.workspace_id)
@@ -1393,7 +1396,7 @@ async fn actual_cli_chain<B, F>(
             PackedCleanAdmission::RequiresRecovery
         ));
         let pmr_key = format!(
-            "packed-v3/mount-recovery/{}/{}",
+            "packed/mount-recovery/{}/{}",
             binding.workspace_id, reference.guard.lease_id
         )
         .into_bytes();
@@ -1412,7 +1415,7 @@ async fn actual_cli_chain<B, F>(
                 "PMR completion left the actual dirty PVC inventory pending"
             );
             let rows = store
-                .get_extent_deltas(workspace_overlay::catalog::ExtentQuery {
+                .get_extent_deltas(workspace::catalog::ExtentQuery {
                     layer_ids: vec![binding.head_layer_id],
                     ino,
                     chunk_index: 0,
@@ -1422,7 +1425,7 @@ async fn actual_cli_chain<B, F>(
                 .await
                 .unwrap();
             let latest = rows.iter().max_by_key(|row| row.sequence).unwrap();
-            let workspace_overlay::model::ExtentKind::Data {
+            let workspace::model::ExtentKind::Data {
                 slice_id,
                 slice_offset,
             } = &latest.kind
@@ -1491,12 +1494,12 @@ async fn actual_cli_chain<B, F>(
 
             let keys = [
                 format!(
-                    "packed-v3/mount-recovery/{}/{}",
+                    "packed/mount-recovery/{}/{}",
                     binding.workspace_id, reference.guard.lease_id
                 )
                 .into_bytes(),
                 format!(
-                    "packed-v3/recovered-source/{}/{}",
+                    "packed/recovered-source/{}/{}",
                     binding.workspace_id, result.released.guard.lease_id
                 )
                 .into_bytes(),
@@ -1519,7 +1522,7 @@ async fn actual_cli_chain<B, F>(
                 claimed["first_admin_claim"]["open_owner"]["owner_id"]
                     .as_str()
                     .unwrap()
-                    .starts_with("packed-v3-recovered/")
+                    .starts_with("packed-recovered/")
             );
             assert!(
                 store
@@ -1617,10 +1620,10 @@ async fn actual_cli_chain<B, F>(
 }
 
 async fn redis_with_smallfiles(killed: bool, pending: bool, smallfile_count: usize) {
-    let namespace = format!("packed-v3-cli-route-{}", Uuid::new_v4());
+    let namespace = format!("packed-cli-route-{}", Uuid::new_v4());
     let url = std::env::var("BREWFS_TEST_REDIS_URL").unwrap();
     let connect_namespace = namespace.clone();
-    let connect = Arc::new(move |_budget: Arc<V3MountBudget>| {
+    let connect = Arc::new(move |_budget: Arc<SnapshotMountBudget>| {
         let url = url.clone();
         let namespace = connect_namespace.clone();
         Box::pin(async move { RedisWorkspaceBackend::connect(&url, &namespace).await })
@@ -1640,13 +1643,13 @@ async fn redis(killed: bool, pending: bool) {
     redis_with_smallfiles(killed, pending, 0).await;
 }
 async fn tikv(killed: bool, pending: bool) {
-    let namespace = format!("packed-v3-cli-route-{}", Uuid::new_v4());
+    let namespace = format!("packed-cli-route-{}", Uuid::new_v4());
     let Some(endpoints) = crate::test_support::tikv_endpoints() else {
         eprintln!("skip: BREWFS_TEST_TIKV_PD_ENDPOINTS is unset or empty");
         return;
     };
     let connect_namespace = namespace.clone();
-    let connect = Arc::new(move |budget: Arc<V3MountBudget>| {
+    let connect = Arc::new(move |budget: Arc<SnapshotMountBudget>| {
         let endpoints = endpoints.clone();
         let namespace = connect_namespace.clone();
         Box::pin(async move {

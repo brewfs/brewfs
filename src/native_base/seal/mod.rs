@@ -27,7 +27,7 @@
 //!   errors; nothing is ever zero-filled or synthesized.
 //! - Packed spans must exactly cover `[0, decoded_len)` — no gap, no
 //!   overlap, no fill.
-//! - NativeBlockV1 frames carry exactly one span `(0, decoded_len, slot, 0)`;
+//! - NativeBlock frames carry exactly one span `(0, decoded_len, slot, 0)`;
 //!   span lengths live in the decoded domain and never borrow `raw_len`.
 
 pub mod binding;

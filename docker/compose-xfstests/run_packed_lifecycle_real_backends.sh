@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the ignored packed-v3/005 real-backend lifecycle tests on this host
+# Run the ignored packed/005 real-backend lifecycle tests on this host
 # against owned loopback Redis, PD/TiKV and RustFS services.
 #
 # Each invocation owns one Compose project, one artifact directory, unique
@@ -191,7 +191,7 @@ for image in ["docker.io/library/redis:7.2-alpine", "pingcap/pd:v8.5.0", "pingca
     out = subprocess.run(["sudo", "-n", "docker", "image", "inspect", "--format", "{{json .RepoDigests}}", image],
                          capture_output=True, text=True, check=True).stdout
     digest[image] = json.loads(out)
-manifest = {"schema": "brewfs-experiment-manifest-v1", "run_id": run_id, "scope": "packed-v3-005-real-backend-lifecycle",
+manifest = {"schema": "brewfs-experiment-manifest-v1", "run_id": run_id, "scope": "packed-005-real-backend-lifecycle",
             "compose_project": project, "objects": objects, "metadata_backends": ["redis", "tikv"],
             "sqlite_sqlx": "excluded", "image_repo_digests": digest, "status": "running", "finalized": False}
 (run / "run-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

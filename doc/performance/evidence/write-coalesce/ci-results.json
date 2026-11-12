@@ -259,7 +259,7 @@
     {
       "name": "test-overlay",
       "status": "running",
-      "command": "env CARGO_BUILD_JOBS=1 cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test --lib --features workspace-overlay",
+      "command": "env CARGO_BUILD_JOBS=1 cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test --lib --features workspace",
       "started": "2026-11-02T01:35:06Z",
       "test_results": [],
       "warning_lines": [

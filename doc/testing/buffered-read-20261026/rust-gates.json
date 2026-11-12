@@ -8,7 +8,7 @@
       "--lib",
       "--bins",
       "--features",
-      "workspace-overlay"
+      "workspace"
     ],
     "returncode": 101,
     "seconds": 1013.0443814679747
@@ -22,7 +22,7 @@
       "--lib",
       "--bins",
       "--features",
-      "workspace-overlay",
+      "workspace",
       "--",
       "--test-threads=4"
     ],
@@ -35,7 +35,7 @@
       "cargo",
       "test",
       "--features",
-      "workspace-overlay",
+      "workspace",
       "--test",
       "fuse_cache_ttl",
       "--",
@@ -52,7 +52,7 @@
       "test",
       "--workspace",
       "--features",
-      "workspace-overlay",
+      "workspace",
       "--test",
       "fuse_cache_ttl",
       "--",
@@ -81,7 +81,7 @@
       "--nocapture",
       "--test-threads=4"
     ],
-    "build_command": "cargo test --workspace --lib --bins --test fuse_cache_ttl --features workspace-overlay --no-run",
+    "build_command": "cargo test --workspace --lib --bins --test fuse_cache_ttl --features workspace --no-run",
     "returncode": 0,
     "seconds": 5.578381252998952
   },
