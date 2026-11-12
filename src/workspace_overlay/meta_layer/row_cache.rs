@@ -15,10 +15,42 @@ use std::time::Duration;
 
 use moka::sync::Cache;
 
+use crate::workspace_overlay::catalog::HeadGuard;
 use crate::workspace_overlay::catalog::PermissionSnapshot;
+use crate::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
+use crate::workspace_overlay::model::LayerRecord;
 use crate::workspace_overlay::model::{DentryDelta, InodeDelta, XattrDelta};
 
 const CAPACITY: u64 = 65_536;
+
+/// Mount identity plus both layer versions. Local mutations also invalidate
+/// negative entries through RowTicket, including mutations in the same epoch.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct ReadViewKey {
+    workspace: WorkspaceId,
+    epoch: u64,
+    lease: LeaseId,
+    holder: u64,
+    layers: [(LayerId, u64, Option<u64>); 2],
+}
+
+impl ReadViewKey {
+    pub(super) fn new(guard: &HeadGuard, layers: &[LayerRecord; 2]) -> Self {
+        Self {
+            workspace: guard.workspace_id,
+            epoch: guard.expected_head_epoch,
+            lease: guard.lease_id,
+            holder: guard.holder_generation,
+            layers: std::array::from_fn(|i| {
+                (
+                    layers[i].layer_id,
+                    layers[i].next_sequence,
+                    layers[i].sealed_version,
+                )
+            }),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum RowKey {
@@ -28,6 +60,8 @@ pub(super) enum RowKey {
     Permission(i64),
     Paths(i64),
     Aliases(i64),
+    EmptyExtent(ReadViewKey, i64, u64, u64, u64),
+    EmptyDirectory(ReadViewKey, i64),
 }
 
 #[derive(Clone)]
@@ -43,6 +77,9 @@ pub(super) enum RowValue {
     /// namespace cache: only commits that write dentries or delete an inode
     /// can change it, so data-only commits keep it.
     Aliases(Arc<Vec<(i64, Vec<u8>)>>),
+    /// Only a proved empty query; never represents data or a whiteout.
+    /// Invalidated by *any* mutation, not just the ordinary per-inode keys.
+    EmptyUpper(RowTicket),
 }
 
 /// Re-checks a lease-proven read fence: the exclusive lease is still proven
@@ -81,16 +118,27 @@ pub(super) struct UpperRowCache {
 pub(super) struct RowCacheCounters {
     pub hits: AtomicU64,
     pub misses: AtomicU64,
+    pub extent_queries: AtomicU64,
+    pub extent_empty_hits: AtomicU64,
+    pub directory_queries: AtomicU64,
+    pub directory_empty_hits: AtomicU64,
 }
 
 #[derive(Debug)]
 pub(super) struct RowCacheStatsExtension {
     pub counters: Arc<RowCacheCounters>,
+    pub packed: Option<Arc<dyn crate::vfs::stats::FsStatsExtension>>,
 }
 
 impl crate::vfs::stats::FsStatsExtension for RowCacheStatsExtension {
     fn render_max_bytes(&self) -> usize {
-        256
+        1024 + self.packed.as_ref().map_or(0, |p| p.render_max_bytes())
+    }
+
+    fn begin_stats_observation(&self) -> Option<crate::cadapter::read_observer::TerminalGuard> {
+        self.packed
+            .as_ref()
+            .and_then(|p| p.begin_stats_observation())
     }
 
     fn render_into(&self, output: &mut dyn std::fmt::Write) {
@@ -105,6 +153,21 @@ impl crate::vfs::stats::FsStatsExtension for RowCacheStatsExtension {
         let _ = writeln!(output, "brewfs_workspace_row_cache_hits_total {hits}");
         let _ = writeln!(output, "brewfs_workspace_row_cache_misses_total {misses}");
         let _ = writeln!(output, "brewfs_workspace_row_cache_hit_ratio {ratio:.6}");
+        for (name, counter) in [
+            ("extent_queries", &self.counters.extent_queries),
+            ("extent_empty_cache_hits", &self.counters.extent_empty_hits),
+            ("directory_queries", &self.counters.directory_queries),
+            (
+                "directory_empty_cache_hits",
+                &self.counters.directory_empty_hits,
+            ),
+        ] {
+            let value = counter.load(Ordering::Relaxed);
+            let _ = writeln!(output, "brewfs_workspace_upper_{name}_total {value}");
+        }
+        if let Some(packed) = &self.packed {
+            packed.render_into(output);
+        }
     }
 }
 
@@ -148,7 +211,7 @@ impl Drop for CacheCommitGuard<'_> {
 
 /// Captured before a backend read; the insert is dropped if any
 /// invalidation happened in between.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct RowTicket(u64);
 
 impl UpperRowCache {
@@ -178,6 +241,15 @@ impl UpperRowCache {
             return None;
         }
         let value = self.rows.get(key);
+        let value = match value {
+            Some(RowValue::EmptyUpper(ticket))
+                if ticket.0 != self.generation.load(Ordering::SeqCst) =>
+            {
+                self.rows.invalidate(key);
+                None
+            }
+            other => other,
+        };
         if self.disabled.load(Ordering::Acquire) {
             self.counters.misses.fetch_add(1, Ordering::Relaxed);
             None

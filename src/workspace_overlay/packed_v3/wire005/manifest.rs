@@ -32,6 +32,7 @@ pub struct V3ReadRange {
 struct PlanPreparationOwner {
     limit: usize,
     permit: super::V3OwnedPermit,
+    payload_epoch: u64,
 }
 
 struct CachedFrameDirectory {
@@ -1075,6 +1076,7 @@ impl AuthenticatedV3Snapshot {
         allocation_limit: usize,
         delivery: Option<std::sync::Arc<crate::cadapter::read_observer::OperationDelivery>>,
     ) -> PackedResult<crate::chunk::read_plan::PreparedUnifiedRead> {
+        let payload_epoch = reader.budget().read_cache_epoch();
         let V3ReadRange { offset, length } = range;
         // Keep bounded preparation room for independent readers and the
         // mount coordinator. Reserving the entire Plans pool for each read
@@ -1132,6 +1134,7 @@ impl AuthenticatedV3Snapshot {
             PlanPreparationOwner {
                 limit: plan_limit,
                 permit: plan_permit,
+                payload_epoch,
             },
         )
         .await
@@ -1146,6 +1149,7 @@ impl AuthenticatedV3Snapshot {
         delivery: Option<std::sync::Arc<crate::cadapter::read_observer::OperationDelivery>>,
         input: V3ReadPlacementInput,
     ) -> PackedResult<crate::chunk::read_plan::PreparedUnifiedRead> {
+        let payload_epoch = reader.budget().read_cache_epoch();
         let V3ReadRange { length, .. } = range;
         if length > allocation_limit {
             return Err(PackedWireError::LimitExceeded(
@@ -1165,6 +1169,7 @@ impl AuthenticatedV3Snapshot {
             PlanPreparationOwner {
                 limit: plan_limit,
                 permit: plan_permit,
+                payload_epoch,
             },
         )
         .await
@@ -1184,10 +1189,19 @@ impl AuthenticatedV3Snapshot {
             LogicalSegment, ReadSource, UnifiedReadPlan, UnifiedReadSourceFetcher,
         };
         use std::collections::HashMap;
+
+        fn retained_read_error(error: PackedWireError) -> anyhow::Error {
+            match error {
+                PackedWireError::ReadViewChanged => crate::chunk::read_plan::ReadViewChanged.into(),
+                error => error.into(),
+            }
+        }
+
         let V3ReadRange { offset, length } = range;
         let PlanPreparationOwner {
             limit: plan_limit,
             permit: mut plan_permit,
+            payload_epoch,
         } = preparation;
         let V3ReadPlacementInput {
             group_id,
@@ -1467,6 +1481,10 @@ impl AuthenticatedV3Snapshot {
             frame_policy: super::V3FramePolicy,
             budget: std::sync::Arc<super::V3MountBudget>,
             active: tokio::sync::Mutex<ActiveFrame>,
+            retained_payload: Option<(
+                std::sync::Arc<super::payload_retention::PayloadRetention>,
+                u64,
+            )>,
             delivery: Option<std::sync::Arc<crate::cadapter::read_observer::OperationDelivery>>,
             inline_coverage: tokio::sync::Mutex<Option<crate::cadapter::read_observer::RawLease>>,
             _inline_permit: Option<super::V3OwnedPermit>,
@@ -1535,6 +1553,35 @@ impl AuthenticatedV3Snapshot {
                                     class,
                                 },
                             );
+                            let retention = self.retained_payload.as_ref().map(|(cache, epoch)| {
+                                let identity = super::payload_retention::frame_key(
+                                    self.generation,
+                                    container,
+                                    descriptor,
+                                );
+                                (cache, *epoch, identity)
+                            });
+                            if let Some((cache, epoch, identity)) = &retention
+                                && cache
+                                    .copy_range(*epoch, identity, *raw_offset as usize, output)
+                                    .map_err(retained_read_error)?
+                            {
+                                if let Some(observer) = self.client.read_observer() {
+                                    observer.event(
+                                        context,
+                                        crate::cadapter::read_observer::ReadEvent::CacheHit,
+                                    );
+                                }
+                                return Ok(());
+                            }
+                            if retention.is_some()
+                                && let Some(observer) = self.client.read_observer()
+                            {
+                                observer.event(
+                                    context,
+                                    crate::cadapter::read_observer::ReadEvent::CacheLookupMiss,
+                                );
+                            }
                             let waiter = self
                                 ._pipeline
                                 .as_ref()
@@ -1557,6 +1604,13 @@ impl AuthenticatedV3Snapshot {
                                 .await
                                 .map_err(|error| anyhow::Error::new((*error).clone()))?;
                             drop(waiter);
+                            if let Some((cache, epoch, identity)) = retention
+                                && frame.authenticated_this_fetch
+                            {
+                                cache
+                                    .remember(epoch, identity, &frame.raw)
+                                    .map_err(retained_read_error)?;
+                            }
                             *active = Some((key, frame));
                         }
                         let frame = &active.as_ref().unwrap().1;
@@ -1619,7 +1673,12 @@ impl AuthenticatedV3Snapshot {
                 Ok(())
             }
             async fn ensure_generation(&self, generation: ReadGeneration) -> anyhow::Result<()> {
-                if generation != self.generation {
+                if generation != self.generation
+                    || self
+                        .retained_payload
+                        .as_ref()
+                        .is_some_and(|(_, epoch)| *epoch != self.budget.read_cache_epoch())
+                {
                     return Err(crate::chunk::read_plan::ReadViewChanged.into());
                 }
                 Ok(())
@@ -1700,6 +1759,9 @@ impl AuthenticatedV3Snapshot {
                 frame_policy: self.manifest.build.policy.frames,
                 budget: reader.budget().clone(),
                 active: tokio::sync::Mutex::new(None),
+                retained_payload: reader
+                    .payload_retention()
+                    .map(|cache| (cache, payload_epoch)),
                 delivery,
                 inline_coverage: tokio::sync::Mutex::new(inline_coverage),
                 _inline_permit: inline_permit,

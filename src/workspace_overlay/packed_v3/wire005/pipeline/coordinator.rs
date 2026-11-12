@@ -12,6 +12,7 @@ mod tests;
 #[derive(Debug)]
 pub(crate) struct V3SharedFrame {
     pub raw: Vec<u8>,
+    pub authenticated_this_fetch: bool,
     pub coverage: Option<Arc<SharedRawCoverage>>,
     _control: V3OwnedPermit,
 }
@@ -605,6 +606,7 @@ async fn fetch_batch<B: ObjectBackend + Clone, const MEMO: bool>(
                         V3Owned::new(
                             V3SharedFrame {
                                 raw,
+                                authenticated_this_fetch: needs_verification,
                                 coverage,
                                 _control: control,
                             },

@@ -275,6 +275,7 @@ impl crate::vfs::stats::FsStatsExtension for V3StatsExtension {
     fn render_max_bytes(&self) -> usize {
         super::wire005::V3MountBudget::STATS_EXTENSION_RENDER_MAX_BYTES
             .saturating_add(self.observer.render_max_bytes())
+            .saturating_add(1024) // Retained payload counters.
     }
     fn begin_stats_observation(&self) -> Option<crate::cadapter::read_observer::TerminalGuard> {
         Some(self.observer.start(
@@ -312,6 +313,7 @@ impl crate::vfs::stats::FsStatsExtension for V3StatsExtension {
         }
         self.budget.render_into(output);
         self.index.render_into(output);
+        self.index.render_payload_retention(output);
         self.observer.render_into(output);
     }
 }
@@ -699,6 +701,24 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
         metadata_bytes: u64,
         budget: Arc<super::wire005::V3MountBudget>,
     ) -> Result<Self, PackedWireError> {
+        Self::from_v3_budget_with_payload_retention(
+            client,
+            snapshot,
+            chunk_size,
+            metadata_bytes,
+            budget,
+            0,
+        )
+    }
+
+    pub(crate) fn from_v3_budget_with_payload_retention(
+        client: crate::cadapter::client::ObjectClient<B>,
+        snapshot: super::wire005::AuthenticatedV3Snapshot,
+        chunk_size: u64,
+        metadata_bytes: u64,
+        budget: Arc<super::wire005::V3MountBudget>,
+        payload_retention: u64,
+    ) -> Result<Self, PackedWireError> {
         let source = snapshot.manifest();
         budget.validate_frame_capability(
             source
@@ -722,7 +742,8 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
                 metadata_bytes,
                 budget.clone(),
                 source.profile,
-            ),
+            )
+            .with_payload_retention(payload_retention)?,
             client,
             snapshot,
             metrics,
@@ -740,7 +761,11 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
     }
 
     pub fn install_v3_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
-        stats.set_extension(Arc::new(V3StatsExtension {
+        stats.set_extension(self.v3_stats_extension())
+    }
+
+    pub(crate) fn v3_stats_extension(&self) -> Arc<dyn crate::vfs::stats::FsStatsExtension> {
+        Arc::new(V3StatsExtension {
             metrics: Arc::clone(&self.context.metrics),
             budget: Arc::clone(&self.context.budget),
             index: self.context.reader.cache_stats(),
@@ -749,7 +774,7 @@ impl<B: ObjectBackend + Clone + 'static> PackedV3ReadonlyMeta<B> {
                 .client
                 .read_observer()
                 .expect("v3 context carries its observer"),
-        }))
+        })
     }
 
     pub fn block_store(&self, block_size: u32) -> Result<PackedV3BlockStore<B>, MetaError> {

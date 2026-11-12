@@ -2057,6 +2057,13 @@ where
         meta_layer = meta_layer
             .with_upper_row_cache(row_cache_ttl)
             .with_lease_bound_row_cache(lease_validity);
+        let empty_query_cache = match std::env::var("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE") {
+            Ok(value) if value == "0" => false,
+            Ok(value) if value == "1" => true,
+            Err(std::env::VarError::NotPresent) => true,
+            _ => anyhow::bail!("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE must be 0 or 1"),
+        };
+        meta_layer = meta_layer.with_empty_query_cache(empty_query_cache);
         let meta_layer = Arc::new(meta_layer);
         let packed = meta_layer.packed_reader_session().is_some();
         if packed {
@@ -2083,7 +2090,6 @@ where
         fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
         meta_layer.install_row_cache_stats(fs.stats());
         if packed {
-            meta_layer.install_packed_lower_stats(fs.stats());
             packed_vfs = Some(fs.clone());
         }
         let concurrency = FuseConcurrencyConfig {
@@ -2350,12 +2356,28 @@ where
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(256 << 20);
-        let lower = Arc::new(PackedV3ReadonlyMeta::from_v3_budget(
+        // Retention is shared by both arms of a hot-lower comparison. Only
+        // fully authenticated payload frames may enter this bounded cache.
+        let retained_payload = match std::env::var("BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES") {
+            Ok(value) => value.parse::<u64>()?,
+            Err(std::env::VarError::NotPresent) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        if retained_payload > 0
+            && !matches!(
+                std::env::var("BREWFS_PACKED_VERIFY_MEMO").as_deref(),
+                Ok("0")
+            )
+        {
+            anyhow::bail!("retained Packed payload requires BREWFS_PACKED_VERIFY_MEMO=0");
+        }
+        let lower = Arc::new(PackedV3ReadonlyMeta::from_v3_budget_with_payload_retention(
             client,
             snapshot,
             layout.chunk_size,
             metadata_bytes,
             budget,
+            retained_payload,
         )?);
         workspace_overlay::meta_layer::WorkspacePackedBindingAuthority::validate(
             authority.as_ref(),

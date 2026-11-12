@@ -52,6 +52,15 @@ impl ObjectBackend for CountingBackend {
 
 #[tokio::test]
 async fn repeated_authenticated_inode_read_fetches_only_payload() {
+    assert_repeated_authenticated_inode_read(0, 1).await;
+}
+
+#[tokio::test]
+async fn retained_authenticated_inode_frame_needs_no_second_backend_get() {
+    assert_repeated_authenticated_inode_read(1 << 20, 0).await;
+}
+
+async fn assert_repeated_authenticated_inode_read(retention_bytes: u64, repeat_gets: usize) {
     let objects = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let gets = Arc::new(AtomicUsize::new(0));
@@ -114,13 +123,17 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
     let snapshot = AuthenticatedV3Snapshot::open(&client, &reference)
         .await
         .unwrap();
-    let reader = V3IndexReader::new(client.clone(), 8 << 20);
+    let reader = V3IndexReader::new(client.clone(), 8 << 20)
+        .with_payload_retention(retention_bytes)
+        .unwrap();
+    let before = gets.load(Ordering::SeqCst);
     let mut output = [0; 4096];
     snapshot
         .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
         .await
         .unwrap();
     assert_eq!(output, [0x5a; 4096]);
+    assert!(gets.load(Ordering::SeqCst) > before);
     let before = gets.load(Ordering::SeqCst);
     snapshot
         .read_inode_range(&client, &reader, 2, 4096, &mut output, 32 << 20)
@@ -129,9 +142,14 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
     assert_eq!(output, [0x5a; 4096]);
     assert_eq!(
         gets.load(Ordering::SeqCst) - before,
-        1,
-        "only the payload is fetched again"
+        repeat_gets,
+        "repeat fetches only the payload when retention is disabled"
     );
+    if retention_bytes > 0 {
+        let mut stats = String::new();
+        reader.cache_stats().render_payload_retention(&mut stats);
+        assert!(stats.contains("brewfs_packed_v3_payload_retention_hits_total 1\n"));
+    }
     let before = gets.load(Ordering::SeqCst);
     reader.budget().invalidate_read_caches();
     snapshot

@@ -509,6 +509,7 @@ pub struct V3IndexReader<B: ObjectBackend + Clone> {
     group_directories:
         super::read_cache::RetainedMetadata<V3Owned<super::super::meta::directory::GroupDirectory>>,
     frame_directories: super::read_cache::RetainedMetadata<V3Owned<super::V3FrameDirectoryPage>>,
+    payload_retention: Option<Arc<super::payload_retention::PayloadRetention>>,
 }
 
 struct V3ReaderRuntime<B: ObjectBackend + Clone> {
@@ -520,7 +521,21 @@ pub(crate) struct V3IndexCacheStats {
     pages: Cache<([u8; 32], V3ObjectKind, u64), Arc<V3RetainedIndexPage>>,
     cache_ownership: Arc<V3IndexCacheOwnership>,
     configured_bytes: u64,
+    payload_retention: Option<Arc<super::payload_retention::PayloadRetention>>,
 }
+impl V3IndexCacheStats {
+    pub(crate) fn render_payload_retention(&self, output: &mut dyn std::fmt::Write) {
+        if let Some(cache) = &self.payload_retention {
+            cache.render_into(output);
+        } else {
+            let _ = writeln!(
+                output,
+                "brewfs_packed_v3_payload_retention_capacity_bytes 0"
+            );
+        }
+    }
+}
+
 impl std::fmt::Debug for V3IndexCacheStats {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         output
@@ -679,11 +694,27 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
                 budget.clone(),
             ),
             budget,
+            payload_retention: None,
             demand_pipeline: tokio::sync::Mutex::new(V3ReaderRuntime {
                 closed: false,
                 coordinator: None,
             }),
         }
+    }
+
+    pub(crate) fn with_payload_retention(mut self, capacity: u64) -> PackedResult<Self> {
+        if capacity > 0 {
+            self.payload_retention = Some(Arc::new(
+                super::payload_retention::PayloadRetention::new(capacity, self.budget.clone())?,
+            ));
+        }
+        Ok(self)
+    }
+
+    pub(super) fn payload_retention(
+        &self,
+    ) -> Option<Arc<super::payload_retention::PayloadRetention>> {
+        self.payload_retention.clone()
     }
 
     pub fn budget(&self) -> &Arc<V3MountBudget> {
@@ -832,6 +863,7 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
             pages: self.pages.clone(),
             cache_ownership: self.cache_ownership.clone(),
             configured_bytes: self.configured_bytes,
+            payload_retention: self.payload_retention(),
         }
     }
 
@@ -1462,6 +1494,9 @@ impl<B: ObjectBackend + Clone + 'static> V3IndexReader<B> {
     pub(crate) async fn close(&self) {
         let mut runtime = self.demand_pipeline.lock().await;
         runtime.closed = true;
+        if let Some(cache) = &self.payload_retention {
+            cache.close();
+        }
         if let Some(pipeline) = &runtime.coordinator {
             pipeline.shutdown().await;
         }

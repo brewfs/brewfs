@@ -100,6 +100,7 @@ pub struct WorkspaceMetaLayer<W> {
     write_queue: std::sync::Mutex<WriteQueue>,
     metrics: Arc<WorkspaceMetrics>,
     row_cache_counters: Arc<RowCacheCounters>,
+    empty_query_cache_enabled: bool,
     lower: WorkspaceLower,
 }
 
@@ -274,6 +275,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             write_queue: std::sync::Mutex::new(WriteQueue::default()),
             metrics: global_workspace_metrics(),
             row_cache_counters: Arc::new(RowCacheCounters::default()),
+            empty_query_cache_enabled: true,
             lower: WorkspaceLower::Native,
         }
     }
@@ -307,7 +309,22 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     pub fn install_row_cache_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
         stats.set_extension(Arc::new(RowCacheStatsExtension {
             counters: self.row_cache_counters.clone(),
+            packed: self.packed_lower().map(|p| p.metadata.stats_extension()),
         }))
+    }
+
+    /// Diagnostic switch: disabling this optimization restores backend queries,
+    /// while retaining ordinary row caches and every consistency check.
+    pub fn with_empty_query_cache(mut self, enabled: bool) -> Self {
+        self.empty_query_cache_enabled = enabled;
+        self
+    }
+
+    fn empty_query_cache(&self) -> Option<&row_cache::UpperRowCache> {
+        if !self.empty_query_cache_enabled || self.lease_validity.is_none() {
+            return None;
+        }
+        self.upper_row_cache()
     }
 
     /// Discard upper-row and namespace caches without changing directory
@@ -564,7 +581,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// read-observer counters in the mount's `.stats` file.
     pub fn install_packed_lower_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
         self.packed_lower()
-            .is_some_and(|lower| lower.metadata.install_stats(stats))
+            .is_some_and(|lower| stats.set_extension(lower.metadata.stats_extension()))
     }
 
     pub(crate) fn packed_lower(&self) -> Option<&Arc<WorkspacePackedLower>> {

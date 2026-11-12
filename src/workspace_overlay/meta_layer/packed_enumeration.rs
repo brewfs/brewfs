@@ -407,14 +407,31 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         } else {
             None
         };
+        let cache = self.empty_query_cache();
+        let key =
+            row_cache::RowKey::EmptyDirectory(row_cache::ReadViewKey::new(&guard, &layers), ino);
+        let cached_empty = matches!(
+            cache.and_then(|c| c.get(&key)),
+            Some(row_cache::RowValue::EmptyUpper(_))
+        );
+        let ticket = cache.map(row_cache::UpperRowCache::ticket);
         let mut native_empty = true;
-        for layer in &layers {
-            let page = self
-                .store
-                .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
-                .await
-                .map_err(workspace_to_meta)?;
-            native_empty &= page.rows.is_empty();
+        if cached_empty {
+            self.row_cache_counters
+                .directory_empty_hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            for layer in &layers {
+                self.row_cache_counters
+                    .directory_queries
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let page = self
+                    .store
+                    .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
+                    .await
+                    .map_err(workspace_to_meta)?;
+                native_empty &= page.rows.is_empty();
+            }
         }
         let view = EnumerationView {
             store: self.store.clone(),
@@ -424,6 +441,12 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             local_namespace,
         };
         view.validate().await?;
+        if !cached_empty
+            && native_empty
+            && let (Some(cache), Some(ticket)) = (cache, ticket)
+        {
+            cache.insert(ticket, key, row_cache::RowValue::EmptyUpper(ticket));
+        }
         let source = WorkspaceDirectory {
             view,
             lower_dir,
