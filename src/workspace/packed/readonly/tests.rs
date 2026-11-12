@@ -120,8 +120,11 @@ async fn source_allocation_blocks_survive_packed_getattr_and_lookup() {
     assert_eq!(handle.blocks, expected_blocks);
 }
 
-#[derive(Clone)]
-struct InterruptedBackend;
+#[derive(Clone, Default)]
+struct InterruptedBackend {
+    fail_head: bool,
+    fail_open: bool,
+}
 #[async_trait]
 impl ObjectBackend for InterruptedBackend {
     async fn put_object(&self, _key: &str, _data: &[u8]) -> anyhow::Result<()> {
@@ -129,6 +132,17 @@ impl ObjectBackend for InterruptedBackend {
     }
     async fn get_object(&self, _key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         anyhow::bail!("unexpected whole GET")
+    }
+    async fn get_object_size(&self, _key: &str) -> anyhow::Result<Option<u64>> {
+        anyhow::ensure!(!self.fail_head, "injected HEAD failure");
+        Ok(Some(4))
+    }
+    async fn get_object_stream(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<crate::cadapter::client::ObjectByteStream>> {
+        anyhow::ensure!(!self.fail_open, "injected GET opening failure");
+        Ok(Some(self.get_object_range_stream(key, 0, 4).await?))
     }
     async fn get_object_range(
         &self,
@@ -144,12 +158,14 @@ impl ObjectBackend for InterruptedBackend {
         _offset: u64,
         _length: u64,
     ) -> anyhow::Result<crate::cadapter::client::ObjectByteStream> {
+        anyhow::ensure!(!self.fail_open, "injected GET opening failure");
         Ok(Box::pin(futures_util::stream::iter(vec![
             Ok(bytes::Bytes::from_static(b"ab")),
             Err(anyhow::anyhow!("injected stream interruption")),
         ])))
     }
     async fn get_etag(&self, _key: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(!self.fail_head, "injected HEAD failure");
         Ok(String::new())
     }
     async fn delete_object(&self, _key: &str) -> anyhow::Result<()> {
@@ -161,7 +177,7 @@ impl ObjectBackend for InterruptedBackend {
 async fn snapshot_observer_counts_actual_received_bytes_on_failed_streams() {
     let metrics = Arc::new(SnapshotReadonlyMetrics::default());
     let client = ObjectClient::new(SnapshotReadonlyBackend {
-        client: ObjectClient::new(InterruptedBackend),
+        client: ObjectClient::new(InterruptedBackend::default()),
         metrics: Arc::clone(&metrics),
         budget: super::super::snapshot::SnapshotMountBudget::defaults(),
     });
@@ -170,12 +186,206 @@ async fn snapshot_observer_counts_actual_received_bytes_on_failed_streams() {
             .await
             .is_err()
     );
-    assert_eq!(metrics.range_gets.load(Ordering::Relaxed), 1);
-    assert_eq!(metrics.requested_bytes.load(Ordering::Relaxed), 4);
-    assert_eq!(metrics.received_bytes.load(Ordering::Relaxed), 2);
-    assert_eq!(metrics.failures.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.io.range_gets.load(Ordering::Relaxed), 1);
+    assert_eq!(metrics.io.requested_bytes.load(Ordering::Relaxed), 4);
+    assert_eq!(metrics.io.received_bytes.load(Ordering::Relaxed), 2);
+    assert_eq!(metrics.io.failures.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.logical_bytes.load(Ordering::Relaxed), 0);
     assert!(client.get_object("object").await.is_err());
+}
+
+#[tokio::test]
+async fn snapshot_cache_counts_backend_bytes_without_charging_local_hits() {
+    use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadClass, ReadContext};
+    use futures_util::StreamExt;
+
+    let temp = tempdir().unwrap();
+    let inner = LocalFsBackend::new(temp.path().join("objects"));
+    let body: Vec<_> = (0..128u8).collect();
+    for key in ["buffer", "stream", "observed"] {
+        inner.put_object(key, &body).await.unwrap();
+    }
+    let metrics = Arc::new(SnapshotReadonlyMetrics::default());
+    let budget = super::super::snapshot::SnapshotMountBudget::defaults();
+    let cache = super::pack_cache::PackCache::new(
+        384,
+        budget.clone(),
+        metrics.transport.clone(),
+        metrics.io.clone(),
+    );
+    metrics.pack_cache.set(cache.clone()).unwrap();
+    let backend = SnapshotReadonlyBackend {
+        client: ObjectClient::new(inner),
+        metrics: metrics.clone(),
+        budget: budget.clone(),
+    };
+    let mut output = vec![0; 128];
+    assert_eq!(
+        backend
+            .get_object_range("buffer", 0, &mut output)
+            .await
+            .unwrap(),
+        128
+    );
+    assert_eq!(output, body);
+    assert_eq!(
+        metrics.io.received_bytes.load(Ordering::Relaxed),
+        128,
+        "whole-object fills must reach the native backend byte counter"
+    );
+    for observed in [false, true] {
+        let key = if observed { "observed" } else { "stream" };
+        let mut stream = if observed {
+            backend
+                .get_object_range_stream_observed(
+                    key,
+                    0,
+                    128,
+                    ReadContext {
+                        engine: Engine::Packed,
+                        phase: Phase::Runtime,
+                        class: ReadClass::PackedPayload,
+                        origin: Origin::Demand,
+                    },
+                    budget.read_observer(None).unwrap(),
+                )
+                .await
+                .unwrap()
+        } else {
+            backend.get_object_range_stream(key, 0, 128).await.unwrap()
+        };
+        let mut received = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            received.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(received, body);
+    }
+    assert_eq!(metrics.io.received_bytes.load(Ordering::Relaxed), 384);
+    for key in ["buffer", "stream", "observed"] {
+        assert_eq!(
+            backend.get_object_range(key, 0, &mut output).await.unwrap(),
+            128
+        );
+    }
+    assert_eq!(metrics.io.received_bytes.load(Ordering::Relaxed), 384);
+    assert_eq!(metrics.io.requested_bytes.load(Ordering::Relaxed), 384);
+    assert_eq!(metrics.io.full_gets.load(Ordering::Relaxed), 3);
+    assert_eq!(metrics.io.heads.load(Ordering::Relaxed), 3);
+    assert_eq!(metrics.io.range_gets.load(Ordering::Relaxed), 0);
+    assert_eq!(metrics.io.failures.load(Ordering::Relaxed), 0);
+    cache.drain().await.unwrap();
+}
+
+#[tokio::test]
+async fn snapshot_cache_counts_failed_heads_full_gets_and_fallback_ranges_once() {
+    use futures_util::StreamExt;
+
+    // Opening failures have no body bytes; an interrupted body retains its
+    // actually consumed prefix. The oversized case uses a real range fallback.
+    for (fail_head, fail_open, capacity) in [
+        (true, false, 4),
+        (false, true, 4),
+        (false, false, 4),
+        (false, true, 1),
+        (false, false, 1),
+    ] {
+        let metrics = Arc::new(SnapshotReadonlyMetrics::default());
+        let budget = super::super::snapshot::SnapshotMountBudget::defaults();
+        let cache = super::pack_cache::PackCache::new(
+            capacity,
+            budget.clone(),
+            metrics.transport.clone(),
+            metrics.io.clone(),
+        );
+        metrics.pack_cache.set(cache.clone()).unwrap();
+        let backend = SnapshotReadonlyBackend {
+            client: ObjectClient::new(InterruptedBackend {
+                fail_head,
+                fail_open,
+            }),
+            metrics: metrics.clone(),
+            budget,
+        };
+        let failed = match backend.get_object_range_stream("object", 0, 4).await {
+            Err(_) => true,
+            Ok(mut stream) => {
+                let mut failed = false;
+                while let Some(chunk) = stream.next().await {
+                    if chunk.is_err() {
+                        failed = true;
+                        break;
+                    }
+                }
+                failed
+            }
+        };
+        assert!(failed);
+        cache.drain().await.unwrap();
+        assert_eq!(metrics.io.heads.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            metrics.io.full_gets.load(Ordering::Relaxed),
+            u64::from(!fail_head && capacity == 4)
+        );
+        assert_eq!(
+            metrics.io.range_gets.load(Ordering::Relaxed),
+            u64::from(capacity == 1)
+        );
+        assert_eq!(
+            metrics.io.received_bytes.load(Ordering::Relaxed),
+            if fail_head || fail_open { 0 } else { 2 }
+        );
+        assert_eq!(metrics.io.failures.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[tokio::test]
+async fn snapshot_admission_rejection_does_not_invent_backend_attempts() {
+    for reject_budget in [false, true] {
+        for cache_enabled in [false, true] {
+            let metrics = Arc::new(SnapshotReadonlyMetrics::default());
+            let budget = super::super::snapshot::SnapshotMountBudget::defaults();
+            if cache_enabled {
+                metrics
+                    .pack_cache
+                    .set(super::pack_cache::PackCache::new(
+                        4,
+                        budget.clone(),
+                        metrics.transport.clone(),
+                        metrics.io.clone(),
+                    ))
+                    .unwrap();
+            }
+            if reject_budget {
+                budget.close();
+            } else {
+                metrics.transport.stop_admission();
+            }
+            let backend = SnapshotReadonlyBackend {
+                client: ObjectClient::new(InterruptedBackend::default()),
+                metrics: metrics.clone(),
+                budget,
+            };
+            assert!(
+                backend
+                    .get_object_range("object", 0, &mut [0; 4])
+                    .await
+                    .is_err()
+            );
+            assert!(
+                backend
+                    .get_object_range_stream("object", 0, 4)
+                    .await
+                    .is_err()
+            );
+            assert!(backend.get_etag("object").await.is_err());
+            assert_eq!(metrics.io.heads.load(Ordering::Relaxed), 0);
+            assert_eq!(metrics.io.full_gets.load(Ordering::Relaxed), 0);
+            assert_eq!(metrics.io.range_gets.load(Ordering::Relaxed), 0);
+            assert_eq!(metrics.io.requested_bytes.load(Ordering::Relaxed), 0);
+            assert_eq!(metrics.io.received_bytes.load(Ordering::Relaxed), 0);
+            assert_eq!(metrics.io.failures.load(Ordering::Relaxed), 0);
+        }
+    }
 }
 
 #[tokio::test]

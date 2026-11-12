@@ -29,7 +29,7 @@ use super::index::PackedInodeIndexEntry;
 use super::meta::GroupMetaEntry;
 use super::wire::PackedWireError;
 
-const READ_ONLY_ERROR: &str = "packed metadata v3 snapshot is read-only";
+const READ_ONLY_ERROR: &str = "Packed snapshot is read-only";
 // The legacy Vec-returning MetaLayer API is a compatibility surface. Keep it
 // bounded so a large immutable directory cannot turn a caller metadata
 // request into an unbounded allocation. Callers that need larger directories
@@ -37,16 +37,14 @@ const READ_ONLY_ERROR: &str = "packed metadata v3 snapshot is read-only";
 const MAX_LEGACY_READDIR_ENTRIES: usize = 4096;
 const MAX_LEGACY_READDIR_BYTES: usize = 256 << 10;
 
+mod backend_io;
 mod pack_cache;
 mod transport;
 
 #[derive(Debug, Default)]
 pub(crate) struct SnapshotReadonlyMetrics {
     pack_cache: std::sync::OnceLock<Arc<pack_cache::PackCache>>,
-    range_gets: std::sync::atomic::AtomicU64,
-    requested_bytes: std::sync::atomic::AtomicU64,
-    received_bytes: std::sync::atomic::AtomicU64,
-    failures: std::sync::atomic::AtomicU64,
+    io: Arc<backend_io::BackendIoCounters>,
     logical_bytes: std::sync::atomic::AtomicU64,
     pub(crate) transport: Arc<transport::ReadonlyTransport>,
 }
@@ -73,7 +71,7 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
         anyhow::bail!(READ_ONLY_ERROR)
     }
     async fn get_object(&self, _key: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        anyhow::bail!("wire 005 readonly path forbids whole-object GET")
+        anyhow::bail!("Packed snapshot reader requires range-addressed reads")
     }
     async fn get_object_range(
         &self,
@@ -86,10 +84,6 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
             bytes[..output.len()].copy_from_slice(&output);
             return Ok(output.len());
         }
-        self.metrics.range_gets.fetch_add(1, Ordering::Relaxed);
-        self.metrics
-            .requested_bytes
-            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         let length = bytes.len();
         let result = self
             .metrics
@@ -97,29 +91,27 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
             .run(&self.budget, key.len(), length as u64, || {
                 let client = self.client.clone();
                 let key = key.to_owned();
+                let io = self.metrics.io.clone();
                 async move {
-                    let mut output = vec![0; length];
-                    let actual = client.get_object_range(&key, offset, &mut output).await?;
-                    anyhow::ensure!(actual <= output.len(), "readonly backend range overflow");
-                    output.truncate(actual);
-                    Ok(output)
+                    io.range_started(length as u64);
+                    let result = async {
+                        let mut output = vec![0; length];
+                        let actual = client.get_object_range(&key, offset, &mut output).await?;
+                        anyhow::ensure!(actual <= output.len(), "readonly backend range overflow");
+                        io.received_bytes
+                            .fetch_add(actual as u64, Ordering::Relaxed);
+                        output.truncate(actual);
+                        Ok(output)
+                    }
+                    .await;
+                    io.finish_open(result)
                 }
             })
             .await;
-        match result {
-            Ok(output) => {
-                let length = output.value.len();
-                bytes[..length].copy_from_slice(&output.value);
-                self.metrics
-                    .received_bytes
-                    .fetch_add(length as u64, Ordering::Relaxed);
-                Ok(length)
-            }
-            Err(error) => {
-                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
-                Err(error)
-            }
-        }
+        let output = result?;
+        let length = output.value.len();
+        bytes[..length].copy_from_slice(&output.value);
+        Ok(length)
     }
     async fn get_object_range_stream(
         &self,
@@ -127,46 +119,23 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
         offset: u64,
         length: u64,
     ) -> anyhow::Result<crate::cadapter::client::ObjectByteStream> {
-        use futures_util::StreamExt;
         if let Some(cache) = self.metrics.pack_cache.get() {
             return cache
                 .stream(self.client.clone(), key.to_owned(), offset, length, None)
                 .await;
         }
-        self.metrics.range_gets.fetch_add(1, Ordering::Relaxed);
         self.metrics
-            .requested_bytes
-            .fetch_add(length, Ordering::Relaxed);
-        let stream = match self
-            .metrics
             .transport
             .open_body(&self.budget, key.len(), || {
                 let client = self.client.clone();
                 let key = key.to_owned();
-                async move { client.get_object_range_stream(&key, offset, length).await }
+                let io = self.metrics.io.clone();
+                async move {
+                    io.range_started(length);
+                    io.observe_stream(client.get_object_range_stream(&key, offset, length).await)
+                }
             })
             .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
-                return Err(error);
-            }
-        };
-        let metrics = Arc::clone(&self.metrics);
-        Ok(Box::pin(stream.map(move |result| {
-            match &result {
-                Ok(bytes) => {
-                    metrics
-                        .received_bytes
-                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                }
-                Err(_) => {
-                    metrics.failures.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            result
-        })))
     }
     async fn get_object_range_stream_observed(
         &self,
@@ -176,7 +145,6 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
         context: crate::cadapter::read_observer::ReadContext,
         observer: Arc<crate::cadapter::read_observer::ReadObserver>,
     ) -> anyhow::Result<crate::cadapter::client::ObjectByteStream> {
-        use futures_util::StreamExt;
         if let Some(cache) = self.metrics.pack_cache.get() {
             return cache
                 .stream(
@@ -188,44 +156,21 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
                 )
                 .await;
         }
-        self.metrics.range_gets.fetch_add(1, Ordering::Relaxed);
         self.metrics
-            .requested_bytes
-            .fetch_add(length, Ordering::Relaxed);
-        let stream = match self
-            .metrics
             .transport
             .open_body(&self.budget, key.len(), || {
                 let client = self.client.clone();
                 let key = key.to_owned();
+                let io = self.metrics.io.clone();
                 async move {
-                    client
+                    io.range_started(length);
+                    let result = client
                         .backend_range_stream_observed(&key, offset, length, context, observer)
-                        .await
+                        .await;
+                    io.observe_stream(result)
                 }
             })
             .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
-                return Err(error);
-            }
-        };
-        let metrics = Arc::clone(&self.metrics);
-        Ok(Box::pin(stream.map(move |result| {
-            match &result {
-                Ok(bytes) => {
-                    metrics
-                        .received_bytes
-                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                }
-                Err(_) => {
-                    metrics.failures.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            result
-        })))
     }
     async fn get_etag(&self, key: &str) -> anyhow::Result<String> {
         let result = self
@@ -234,7 +179,11 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
             .run(&self.budget, key.len(), 0, || {
                 let client = self.client.clone();
                 let key = key.to_owned();
-                async move { client.get_etag(&key).await }
+                let io = self.metrics.io.clone();
+                async move {
+                    io.head_started();
+                    io.finish_open(client.get_etag(&key).await)
+                }
             })
             .await?;
         Ok(result.value.clone())
@@ -252,7 +201,11 @@ impl<B: ObjectBackend + Clone + 'static> ObjectBackend for SnapshotReadonlyBacke
             .run(&self.budget, key.len(), 0, || {
                 let client = self.client.clone();
                 let key = key.to_owned();
-                async move { client.backend_etag_observed(&key, context, observer).await }
+                let io = self.metrics.io.clone();
+                async move {
+                    io.head_started();
+                    io.finish_open(client.backend_etag_observed(&key, context, observer).await)
+                }
             })
             .await?;
         Ok(result.value.clone())
@@ -298,6 +251,7 @@ impl crate::vfs::stats::FsStatsExtension for SnapshotStatsExtension {
     fn render_max_bytes(&self) -> usize {
         super::snapshot::SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES
             .saturating_add(self.observer.render_max_bytes())
+            .saturating_add(256)
     }
     fn begin_stats_observation(&self) -> Option<crate::cadapter::read_observer::TerminalGuard> {
         Some(self.observer.start(
@@ -315,16 +269,24 @@ impl crate::vfs::stats::FsStatsExtension for SnapshotStatsExtension {
         // Runtime backend calls/response-body bytes, including metadata and
         // payload. Initial manifest/probe and SDK-internal retries are excluded.
         for (name, counter) in [
-            ("runtime_backend_range_gets_total", &self.metrics.range_gets),
+            (
+                "runtime_backend_full_gets_total",
+                &self.metrics.io.full_gets,
+            ),
+            ("runtime_backend_heads_total", &self.metrics.io.heads),
+            (
+                "runtime_backend_range_gets_total",
+                &self.metrics.io.range_gets,
+            ),
             (
                 "runtime_backend_requested_bytes_total",
-                &self.metrics.requested_bytes,
+                &self.metrics.io.requested_bytes,
             ),
             (
                 "runtime_backend_received_bytes_total",
-                &self.metrics.received_bytes,
+                &self.metrics.io.received_bytes,
             ),
-            ("runtime_backend_failures_total", &self.metrics.failures),
+            ("runtime_backend_failures_total", &self.metrics.io.failures),
             ("logical_bytes_total", &self.metrics.logical_bytes),
         ] {
             let _ = writeln!(
@@ -772,6 +734,7 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
                 disk_bytes,
                 self.context.budget.clone(),
                 self.context.metrics.transport.clone(),
+                self.context.metrics.io.clone(),
                 directory,
             )?;
             self.context
@@ -811,7 +774,7 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
     /// Runtime backend range GETs issued by this reader (metadata and data).
     #[cfg(test)]
     pub(crate) fn runtime_range_gets(&self) -> u64 {
-        self.context.metrics.range_gets.load(Ordering::Relaxed)
+        self.context.metrics.io.range_gets.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn frozen_cold_attributes_owned(

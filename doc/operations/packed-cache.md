@@ -22,9 +22,27 @@ objects download concurrently. Completed, unpinned entries can be evicted; activ
 read streams pin their entries until EOF/drop. A concurrent mount that cannot lock
 the persistent directory uses a temporary cache with the same disk budget.
 
+After a download fails, readers holding that entry still receive its original
+error. New reads use the range path while an old reader or worker pins the failed
+entry, so its partial file remains charged to the disk budget. Once the final pin
+is released, the next read removes the partial file and releases its reservation
+before starting another fill.
+
 Unmount joins active downloads before releasing the read transport. Drain logs
 report hits, ready/inflight hits, misses, local bytes and downloaded bytes. These
 are cache-boundary counters, not an application-level metadata hit rate.
+
+The `.stats` runtime backend counters record admitted Full GET, HEAD and Range GET
+calls when their backend factory runs, and response body bytes when consumed,
+before any local file write. Opening errors, the first body error, or a malformed
+full-object length count one failed operation; admission rejection and local file
+errors do not. Local cache hits add no remote requests or bytes. These counters
+exclude mount-time manifest/probe I/O and SDK-internal retries; the external S3
+meter remains the wire-level reference. AX's strict warm-read gate requires the
+Full GET, HEAD, Range GET and received-byte counters to exist: cold reads must
+issue a Full GET or Range GET and receive bytes, while the warm interval must add
+zero Full GETs, HEADs, Range GETs and received bytes. Existing logical-read and
+failure checks still apply.
 
 ## Names and existing data
 
