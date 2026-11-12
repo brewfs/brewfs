@@ -1,6 +1,6 @@
-# Packed completion: correctness and measurement checkpoint (2026-10-02)
+# Packed-v3 completion: correctness and measurement checkpoint (2026-10-02)
 
-Latest follow-up: [cold attributes / hardlinks and direct VFS validation](packed-cold-hardlink-validation-2026-10-03.md).
+Latest follow-up: [cold attributes / hardlinks and direct VFS validation](packed-v3-cold-hardlink-validation-2026-10-03.md).
 The stage-specific counts below describe their own code tips, not later changes.
 
 ## Scope and status
@@ -112,11 +112,11 @@ TTL and inline-byte caveats. README comparison tables are unchanged.
 
 ## Wire-005 authentication primitives (not full publication)
 
-`packed/snapshot.rs` and `snapshot/frame_directory.rs` now implement:
+`packed_v3/wire005.rs` and `wire005/frame_directory.rs` now implement:
 
 - independent 005 object magics, fixed 4 KiB zero-padded header with CRC, bounded
   raw body and 64 B footer (magic/length + 32 B body digest + 16 B header digest);
-- `SnapshotObjectRef` pins kind/key/length/full SHA-256 and rejects a substituted object
+- `V3ObjectRef` pins kind/key/length/full SHA-256 and rejects a substituted object
   even if its own internal hashes have been recomputed;
 - bounded remote metadata-page reads, invalid key rejection before transport,
   exact page count/record budget, contiguous descriptor ordinals and disjoint
@@ -127,7 +127,7 @@ TTL and inline-byte caveats. README comparison tables are unchanged.
   the mount-wide retained-byte/permit lifecycle required by the full spec.
 
 Envelope tests first fail (3 failures) and then pass. The initial envelope/page/
-directory/frame chain has 7 focused passing tests in `snapshot-frame-tests-final.log`.
+directory/frame chain has 7 focused passing tests in `wire005-frame-tests-final.log`.
 The authenticated manifest ref supplied to these APIs **must originate from a
 trusted control record/operator**, not be reconstructed from untrusted response
 bytes. PM07 and its authenticated index chain are now implemented below. Actual
@@ -137,7 +137,7 @@ security boundary.
 
 ## PM07 / GC05 / streaming producer stage
 
-Implemented in `packed/snapshot/{manifest,index,index_builder,container,inode,spool,producer}.rs`:
+Implemented in `packed_v3/wire005/{manifest,index,index_builder,container,inode,spool,producer}.rs`:
 
 - PM07 is a bounded 64 KiB manifest body with seven independently authenticated
   pageable roots. It does not embed every container/page ref. Read generation
@@ -168,12 +168,12 @@ Implemented in `packed/snapshot/{manifest,index,index_builder,container,inode,sp
   it. The spool owns and removes only its generated database/sidecars. Fault tests
   cover corrupted upload, failed CAS upload and cancellation.
 
-Evidence: `docker/compose-xfstests/artifacts/packed-completion-20261002-manifest/`.
+Evidence: `docker/compose-xfstests/artifacts/packed-v3-completion-20261002-manifest/`.
 PM07 TDD: 1 passed/2 failed before implementation, then 3 passed. Index TDD:
 2 failed then 2 passed. Streaming builder TDD: 2 failed then 2 passed. The first
 GC05 test attempt had a packer-argument compilation error; it is not behavioral
 red evidence. After correcting the arguments, its raw/zstd round-trip passes.
-The snapshot focused suite has **22 passing tests** (`cancellation-final-tests.log`),
+The wire005 focused suite has **22 passing tests** (`cancellation-final-tests.log`),
 including published inline/partial/sparse-boundary/10 MiB cross-frame reads and
 failure isolation. The sparse corpus constructs placements explicitly: **real
 SEEK_DATA/SEEK_HOLE inventory is not implemented yet**.
@@ -194,7 +194,7 @@ still defaults to 004; 005 generation requires the explicit wire-version option.
 - Added authenticated index scan cursors and bounded directory pagination; the
   scan regression fails before implementation and passes after it. The directory
   adapter uses paged raw entries, not a namespace-sized Vec.
-- Existing `PackedReadonlyMeta`/`PackedBlockStore` now dispatch a pinned 005
+- Existing `PackedV3ReadonlyMeta`/`PackedV3BlockStore` now dispatch a pinned 005
   context without changing 004 decoding. **The existing slice facade remains
   transitional:** library data execution uses the unified executor, but removing
   synthetic slices from the VFS provider boundary is still a separate pending item.
@@ -251,40 +251,40 @@ The writer now records raw codec for a frame when compression does not shrink it
 the failed regression then passes. Existing published 004 interpretation is unchanged.
 The 10k mount above predates this last boundary fix, which affects the random-data
 8 MiB case rather than this compressible 100 KiB corpus. Its full gate completed
-under `packed-completion-20261002-mounted-gate/`: packed 99, overlay 256,
+under `packed-v3-completion-20261002-mounted-gate/`: packed 99, overlay 256,
 workspace lib 1,015/bin 1,099 passed; all minimum and extra runtime checks passed.
 The direct-provider and cold/hardlink follow-ups have independent newer gates.
 
 ## Current-iteration gate and next steps
 
 The initial stage's full AGENTS gate completed in
-`docker/compose-xfstests/artifacts/packed-completion-20261002-gate/`:
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261002-gate/`:
 fmt, required script/report tests, check/build, both runtime checks with/without
-workspace, workspace lib/bins tests, packed tests and both clippy checks
+workspace-overlay, workspace lib/bins tests, packed tests and both clippy checks
 all passed. Workspace lib: 1,014 passed/225 ignored; brewfs bin: 1,098 passed/225
-ignored; packed suite: 74 passed; workspace suite: 231 passed/2 ignored.
+ignored; packed suite: 74 passed; workspace-overlay suite: 231 passed/2 ignored.
 Clippy retains pre-existing warnings; this is not a GitHub all-feature/operator/
 `-D warnings` claim.
 
 The initial 005-envelope gate also completed in
-`docker/compose-xfstests/artifacts/packed-completion-20261002-snapshot-gate/`:
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261002-wire005-gate/`:
 all minimum and extra overlay checks passed. Workspace lib: 1,015 passed/225
 ignored; brewfs bin: 1,099 passed/225 ignored; packed: 81 passed; overlay:
 238 passed/2 ignored. This gate predates PM07/GC05/producer additions.
 
 The PM07/GC05/producer gate completed under
-`docker/compose-xfstests/artifacts/packed-completion-20261002-producer-gate/`:
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261002-producer-gate/`:
 all required and extra overlay steps passed. Workspace lib: 1,015 passed/225
 ignored; brewfs bin: 1,099 passed/225 ignored; packed: 95 passed; overlay:
 252 passed/2 ignored. This gate predates the final private-directory cancellation
 cleanup regression.
 
 The final same-iteration gate completed successfully under
-`docker/compose-xfstests/artifacts/packed-completion-20261002-final-gate/`:
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261002-final-gate/`:
 
 - fmt, required syntax/report tests, TTL/scanner/local-runner tests: passed;
 - workspace check/build: passed;
-- tokio/io-uring runtime checks with/without workspace: passed;
+- tokio/io-uring runtime checks with/without workspace-overlay: passed;
 - workspace lib: 1,015 passed/225 ignored; brewfs bin: 1,099 passed/225 ignored;
 - packed feature suite: 96 passed/0 failed; overlay: 253 passed/2 ignored;
 - default and overlay clippy: exit 0 with existing warnings; diff check passed.

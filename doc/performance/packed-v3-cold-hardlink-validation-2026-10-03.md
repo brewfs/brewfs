@@ -4,7 +4,7 @@
 
 This is correctness work, not a new accepted performance result or full spec
 completion. It follows the PM07/GC05, direct VFS provider and mounted-read work in
-`packed-completion-correctness-2026-10-02.md`. HEAD remains `a429b0e`; the current
+`packed-v3-completion-correctness-2026-10-02.md`. HEAD remains `a429b0e`; the current
 completion code is uncommitted. Default fixtures remain legacy 004. No cloud
 resources, new JuiceFS campaign or README comparison row were created.
 
@@ -24,7 +24,7 @@ Real FUSE evidence:
 failures=0; 11,357 runtime range calls and 5,451,000 actual consumed bytes.
 Cleanup exit 0. These are compressible zstd/debug-local diagnostics, not paired
 performance acceptance. The complete gate before cold/hardlink additions is
-`packed-completion-20261002-unified-gate/`: workspace lib 1,015 passed/225
+`packed-v3-completion-20261002-unified-gate/`: workspace lib 1,015 passed/225
 ignored; brewfs bin 1,099 passed/225 ignored; packed 99 passed; reader 12 passed;
 overlay 256 passed/2 ignored. Required fmt/scripts/check/build/runtime/clippy steps
 passed. It cannot validate later code by inheritance.
@@ -49,7 +49,7 @@ passed. It cannot validate later code by inheritance.
   remain explicitly unsupported by the existing FUSE policy. Full POSIX ACL
   application/inventory remains an independent incomplete spec item.
 
-CA05 TDD logs: `packed-completion-20261002-cold/red.log` (one behavioral
+CA05 TDD logs: `packed-v3-completion-20261002-cold/red.log` (one behavioral
 failure) and `green.log` (2 pass). Published adapter regression verifies raw
 readlink, binary xattr, listxattr, ACL retrieval, wrong inode rejection and EROFS.
 
@@ -68,7 +68,7 @@ serial xattr framing and the shared encoder were changed. Data is sent once;
 size probes succeed; short buffers produce header-only **negative** ERANGE.
 Binary/empty payload, size probe and short-buffer tests reproduce three failures
 then pass. See `vendor/asyncfuse/PATCHES.md` and
-`packed-completion-20261002-cold/transport-{red-framing,green}.log`.
+`packed-v3-completion-20261002-cold/transport-{red-framing,green}.log`.
 
 Readonly mutation errors now propagate EROFS. The diagnostic cold file uses
 0666 to ensure the request reaches readonly handling instead of failing DAC
@@ -105,7 +105,7 @@ cleanup exit 0. Prior failed framing/DAC artifacts remain preserved.
   inline/frame test accidentally used overlapping group name fences and was
   correctly rejected; its fixed disjoint corpus passes without relaxing routing.
 
-Hardlink TDD: `packed-completion-20261003-hardlinks/red.log` fails the old
+Hardlink TDD: `packed-v3-completion-20261003-hardlinks/red.log` fails the old
 duplicate-inode handling; `green.log` and `reverse-tests.log` pass. The complete
 producer regression `producer-all-fixed.log` reports 6 passing tests.
 
@@ -119,7 +119,7 @@ These hidden diagnostics are intentionally separate from the performance corpus.
 ## Latest validity gate and remaining task
 
 Latest full gate logs/status:
-`docker/compose-xfstests/artifacts/packed-completion-20261003-cold-hardlink-gate/`.
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261003-cold-hardlink-gate/`.
 The gate completed successfully. fmt, required scripts/reports, scanner/TTL/
 local-runner tests, workspace check/build, both FUSE runtime checks with/without
 overlay, default and overlay clippy, and diff check pass. Workspace lib:

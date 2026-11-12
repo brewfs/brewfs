@@ -1,4 +1,4 @@
-# Aliyun packed-snapshot 冷读边界（2026-09-28）
+# Aliyun packed-metadata-v3 冷读边界（2026-09-28）
 
 ## 本轮有效结果
 
@@ -146,7 +146,7 @@ OSS 内网端点、同一 100,000 文件树（2 层、10x10 叶目录、每叶 1
 range background prefetch 关闭，JuiceFS 的 `cache-size=0`、`prefetch=0`、
 `attr/entry/dir-entry/open-cache=0`。
 
-上传路径也分开记录：packed 由 `packed_snapshot_fixture` SDK 发布 3,319 个
+上传路径也分开记录：packed 由 `packed_v3_snapshot_fixture` SDK 发布 3,319 个
 `.brfgc` container 及索引/manifest；JuiceFS 由同一 fixture SDK 上传 100,000 个
 原始文件到 `juicefs/raw/`，再在准备阶段用 `juicefs sync` 导入卷，正式性能阶段
 两边都只经 FUSE 读取。上传和导入时间不计入读取吞吐。
@@ -164,9 +164,9 @@ block/page cache hits 均为 0，但有 200,332 次 FUSE read、平均约 104.8 
 
 证据：
 
-- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/packed-run.log`
-- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/packed/remote-output.log`
-- `docker/compose-xfstests/artifacts/aliyun-packed-vs-juicefs-100k-20260928-r3/juicefs/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/packed-run.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/packed/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-v3-vs-juicefs-100k-20260928-r3/juicefs/remote-output.log`
 
 清理核验：ECS `i-bp10wczp9w20g7yjqizf` `TotalCount=0`，OSS 测试前缀对象数为 0。
 
@@ -256,8 +256,8 @@ FUSE read 往返和 OSS payload 请求成本。该轮的 read-ahead 仍在本次
 
 证据：
 
-- `docker/compose-xfstests/artifacts/aliyun-packed-descriptor-cache-1000-20260929/packed/remote-output.log`
-- `docker/compose-xfstests/artifacts/aliyun-packed-descriptor-cache-1000-20260929/juicefs/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-v3-descriptor-cache-1000-20260929/packed/remote-output.log`
+- `docker/compose-xfstests/artifacts/aliyun-packed-v3-descriptor-cache-1000-20260929/juicefs/remote-output.log`
 
 ECS `i-bp16u86uk6a59pcrnb0g` 已删除，测试 OSS 前缀对象数为 0。
 

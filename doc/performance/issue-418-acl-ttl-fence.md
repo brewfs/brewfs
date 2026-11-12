@@ -19,14 +19,14 @@ supersedes the audit's earlier proposal to change the workspace default to zero.
 There are three distinct policies in the audited revision:
 
 * `permission_cache_ttl()` and an unconfigured VFS use zero for writable ACLs.
-* `MountConfig::from_sources()` already defaults **Workspace to 1000 ms**
+* `MountConfig::from_sources()` already defaults **WorkspaceV1 to 1000 ms**
   (introduced by `e2288fb4`). The CLI installs it in the VFS; LOOKUP/GETATTR
   consequently return positive TTLs. Other volume formats retain a zero
   configuration default.
 * Non-writable-ACL implementations use the legacy one-second environment
   policy independently of the per-mount writable-ACL setting. Before this fix,
   `BREWFS_CACHE_TTL_MS=0` affected that policy only and could not override the
-  Workspace configuration default.
+  WorkspaceV1 configuration default.
 
 **Contract:** attr/entry caching has bounded-staleness semantics (cache lifetime
 ≤ TTL); it does not promise immediate cross-client visibility. For strict
@@ -44,7 +44,7 @@ Precedence, from highest to lowest:
 | Explicit CLI `--fuse-cache-ttl-ms N` | `N`, including zero |
 | Explicit YAML `fuse.cache_ttl_ms` | Existing explicit-configuration precedence is preserved |
 | `BREWFS_CACHE_TTL_MS` | Parsed unsigned milliseconds, including zero |
-| Volume-format default | Workspace: **1000 ms**; all others: **0**, unchanged |
+| Volume-format default | WorkspaceV1: **1000 ms**; all others: **0**, unchanged |
 
 Thus with no explicit YAML, CLI > environment > volume default. An explicit
 YAML value still wins over the environment; use CLI zero to override it.
@@ -53,7 +53,7 @@ back to the format default, matching the legacy parser's unsigned-integer
 behavior. Legacy reply TTLs and all mutation/READDIRPLUS policies are unchanged.
 
 The Compose perf runner also writes explicit `fuse.cache_ttl_ms: 1000` for
-workspace when generating its worker configuration
+workspace-v1 when generating its worker configuration
 (`docker/compose-xfstests/run_perf_in_container.sh:456`). That is an explicit
 benchmark configuration, not evidence of the product default. The benchmark
 and scanner are not modified. No new performance claim is made by this fix.

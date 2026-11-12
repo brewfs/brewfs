@@ -7,7 +7,7 @@ S/X 未通过，本文不宣称完整 POSIX、原子源快照、packed workspace
 
 ## 实现范围
 
-Linux `SnapshotSourceNamespaceInventory` 使用私有 SQLite spool 保存源 identity、raw paths、
+Linux `V3SourceNamespaceInventory` 使用私有 SQLite spool 保存源 identity、raw paths、
 hot/cold 属性、stat tokens 和目录 queue。一次读一个目录/节点，磁盘排序后按 parent/
 raw-name 分页构建；source fences 每次至多128个路径，payload build 每次取一个节点，
 不会把 namespace 或全部 cold attributes 同时放入 Vec。
@@ -36,7 +36,7 @@ source/group/frame/inline totals 和 peak group raw payload。规范化实际目
 
 ## 发现的缺陷和失败证据
 
-artifact：`docker/compose-xfstests/artifacts/packed-completion-20261004-namespace/`。
+artifact：`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-namespace/`。
 
 - `namespace-cli-red.log`：原二进制缺少目录导入入口。
 - `namespace-unit-red.log`：5项回归中3项失败，暴露共享 frame raw_len 失配、未填
@@ -102,5 +102,5 @@ G03 external-large 仍待 producer/reader，logical64 MiB/data16 MiB/256extents 
 fence/publication/recovery/GC、v2/operator独立出口及实验/交付仍全部必需。
 
 后续raw xattr/.stats/removexattr子项已独立修复与签收，见
-[名称边界报告](packed-namespace-posix-validation-2026-10-04.md)。本报告保留该批次
+[名称边界报告](packed-v3-namespace-posix-validation-2026-10-04.md)。本报告保留该批次
 的源码/测试/失败范围；后续结果不改写上述原始checkpoint证据。

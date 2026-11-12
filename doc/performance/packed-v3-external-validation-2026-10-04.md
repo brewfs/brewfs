@@ -1,4 +1,4 @@
-# Packed PM09 external placement 验证（2026-10-04）
+# Packed-v3 PM09 external placement 验证（2026-10-04）
 
 状态：PM09 external placement 与 G03 源 sparse/allocated-blocks 契约已通过最终验收。
 S/X仍未通过，不声明性能收益；全部 SPEC 持续目标保持 active。
@@ -7,7 +7,7 @@ S/X仍未通过，不声明性能收益；全部 SPEC 持续目标保持 active�
 
 上一批已接受的 fixture 对72 MiB all-hole、20 MiB dense、300段 sparse 数据均拒绝，
 没有生成 manifest-output。独立原始行为 red 与绑定旧 binary 的哈希保存在
-`docker/compose-xfstests/artifacts/packed-completion-20261004-external/source-cli-red.json`。
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-external/source-cli-red.json`。
 补全不能依靠增大 GM07/整文件 Vec 限额，也不能把缺失 placement 当成 sparse hole。
 
 新增 PM09/EX09 required selector、PS09、LE09 和 LD05。PM07/PM08/004 的字节与解释
@@ -36,7 +36,7 @@ head publication。孤立上传对象的系统 reachability GC 继续属于 G13�
 
 ## 开发与失败证据
 
-- `contracts-green.log`、`layout-chunk-green.log` 保存早期51/54项 snapshot 局部测试。
+- `contracts-green.log`、`layout-chunk-green.log` 保存早期51/54项 wire005 局部测试。
 - `production-first-check.log` 保存函数参数和GroupInput字段接线的编译错误；修正后
   `production-check-repaired.log` 54项通过。编译错误不充当行为 red。
 - `external-namespace-first.log` 保存测试 helper 的 chunk_id import 错误；修正后的
@@ -59,7 +59,7 @@ head publication。孤立上传对象的系统 reachability GC 继续属于 G13�
 ## 最终验收与剩余范围
 
 最终机器可读结果为
-`docker/compose-xfstests/artifacts/packed-completion-20261004-external/verification.json`。
+`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-external/verification.json`。
 
 - `final-gate/` 的40项检查全部通过：fmt/scripts/report/scanner/vendor、default check/
   build、runtime features、default workspace lib/bin tests、overlay full lib、fixture
@@ -83,7 +83,7 @@ head publication。孤立上传对象的系统 reachability GC 继续属于 G13�
   最后kernel mountinfo、brewfs daemons及D-state列表均为空。
 
 后续G04 named-user ACL grant实挂载red已独立保存在
-`packed-completion-20261004-acl/grant-red02/`；没有因此修改本批Rust代码或把ACL签收。
+`packed-v3-completion-20261004-acl/grant-red02/`；没有因此修改本批Rust代码或把ACL签收。
 其初次启动配置错误留在`grant-red/`，不充当ACL行为red。
 
 ACL/其他raw mutation、frozen-view/PATH_MAX、深cookie、完整metrics、共享预算、native/

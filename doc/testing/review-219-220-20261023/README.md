@@ -44,7 +44,7 @@ All four commands used:
 
 ```bash
 CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace \
+CARGO_PROFILE_TEST_DEBUG=0 cargo test -p brewfs --features workspace-overlay \
   --test compactor_test -- --test-threads=1 --nocapture
 ```
 

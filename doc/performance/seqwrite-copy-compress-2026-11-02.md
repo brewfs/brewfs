@@ -62,7 +62,7 @@ memmove self 24.74%、原口径压缩 inclusive 22.19%。
 
 ## 固定实验条件
 
-flat、Redis、独立 RustFS S3 bucket；zstd level 1；块 4 MiB、chunk 64 MiB；
+flat-v1、Redis、独立 RustFS S3 bucket；zstd level 1；块 4 MiB、chunk 64 MiB；
 coalesce 64 KiB/0 ms；Tokio workers 1；指标开启、1 Hz 采样，request trace 关闭；
 read RAM/SSD 0/0、write RAM 512 MiB、总内存预算 2 GiB、prefetch 关闭；
 upload-before-commit、upload concurrency 10、S3 concurrency 8、multipart 16 MiB。
@@ -229,7 +229,7 @@ overlay 全套和其余 CI 仍需分别通过，不能把部分门禁通过当�
 源文件 manifest 完全一致。候选二进制 SHA-256 为
 `24bb3d0c46a416c2e697f219fe64905677845c83e16edc5b3a5e03bc41b902cc`；
 独立 main 为 `bb99101bbc7edc3b60f3a24db672e7618a23a118996da275ce057a05c21e3ef3`。
-两者使用同样 release flags 与 workspace/observability features。
+两者使用同样 release flags 与 workspace-overlay/observability features。
 
 候选采用同样预热和 `-F 499 -g --call-graph dwarf,8192 -e cpu-clock`：
 fio active 30.004 秒、wall 33.117578 秒，perf 窗口 33.950722 秒；9026 个样本，
@@ -333,8 +333,8 @@ numjobs=1、random numjobs=4，所有 fio errors=0。该修复只在实验副本
 
 首轮未过滤的 overlay/observability 全套于 13:15 UTC 前结束，**2751 passed、
 1 failed、475 ignored**，exit 101，失败为
-`workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`
-在 `src/workspace/meta_layer/tests.rs:1477` 的 `EBUSY`。主分支 #404 的
+`workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes`
+在 `src/workspace_overlay/meta_layer/tests.rs:1477` 的 `EBUSY`。主分支 #404 的
 报告与实施日志记录了同一未修改测试的并发失败；这不豁免本轮全套零失败门禁。
 
 重跑驱动写入同名日志前没有先归档，导致首轮完整 `overlay-full.log` 被覆盖。
@@ -387,7 +387,7 @@ check、workspace clippy 和最终 diff-check 均通过，恢复脚本于 13:40:
 
 在干净的 `/home/hxy/brewfs-seqwrite-baseline` 工作树固定
 `1bd4d75f8c7c77188f52e025dcd315520353cd65`，使用相同默认 features 加
-`workspace,observability`、dev/test debug=0、codegen-units=256、
+`workspace-overlay,observability`、dev/test debug=0、codegen-units=256、
 `RUSTFLAGS=-C debuginfo=0`，单 job 构建原始 main 的 library 测试可执行文件。
 构建前后全部源码清单一致，工作树无修改；构建 exit 0。
 保持 `RUST_TEST_THREADS=2`，同一测试于 15:28:38–15:28:45 UTC 运行五次：
@@ -599,7 +599,7 @@ SIGKILL，不插入 drain、等待或验证读取。重启使用新挂载和新�
 | check-workspace | 0 | `cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml check --workspace` |
 | ci | 0 | `完整 CI 流水线` |
 | clippy-all-targets | 0 | `cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml clippy --workspace --all-targets -- -D warnings` |
-| clippy-overlay | 0 | `cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml clippy --workspace --all-targets --features workspace\,observability -- -D warnings` |
+| clippy-overlay | 0 | `cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml clippy --workspace --all-targets --features workspace-overlay\,observability -- -D warnings` |
 | clippy-workspace | 0 | `cargo --config /home/hxy/perf-seqwrite-20261102/harness/cargo-ci.toml clippy --workspace` |
 | diff-check | 0 | `bash -c git\ diff\ --check\ \&\&\ git\ diff\ --cached\ --check` |
 | fmt | 0 | `cargo fmt --all --check` |

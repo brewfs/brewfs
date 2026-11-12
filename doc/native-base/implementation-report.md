@@ -457,7 +457,7 @@ registration、连续 RetentionReceipt 和认证索引根；未知 attempt 会�
 
 旧删除入口增加 native-v2 隔离：`ObjectBlockStore::delete_range`、
 `WorkspaceGc`、`BlockStoreGC` 与 mark-sweep 配置均拒绝
-`native-workspace`，后续 runtime 构造器必须显式绑定新 cleaner。
+`workspace-native-v2`，后续 runtime 构造器必须显式绑定新 cleaner。
 
 | 测试项 | 原样命令 | 退出码 | 结果 | raw 证据 |
 |---|---|---:|---|---|
@@ -516,14 +516,14 @@ Redis/TiKV durability、真实 S3 per-object delete 响应分类、native-v2 run
 - `src/native_base/write/commit.rs` / `overlay.rs`：commit planner 携带
   immutable baseline 尺寸，首次 mutation 不把未修改 baseline 物化成 Hole。
 - `src/native_base/runtime/workspace.rs`：`WorkspaceBaseDataSource` 桥接
-  workspace meta layer 与 native baseline reads（feature-gated）。
+  workspace-v1 meta layer 与 native baseline reads（feature-gated）。
 - `src/native_base/runtime/migration.rs`：迁移模式与模式 0（拒绝）。
 - `src/native_base/runtime/object.rs`：`BackendObjectRepository` 对象后端。
 - `src/vfs/fs/mod.rs`：`attach_native_runtime` 与 13 处 VFS 操作派发点。
 
 校验点：
-- volume_format / schema_version 失败关闭（不隐式升级旧 workspace）。
-- `workspace` catalog 必须先存在；native header create-only。
+- volume_format / schema_version 失败关闭（不隐式升级旧 workspace-v1）。
+- `workspace-v1` catalog 必须先存在；native header create-only。
 - `volume_id` 与 `storage_namespace_id` 双校验，不匹配即拒绝挂载。
 - Redis / TiKV control + catalog 双后端矩阵：2 类控制面 × 2 类元数据面。
 - 新卷 `workspace init-native` 命令：仅创建 native header，不改动 catalog。
@@ -1154,7 +1154,7 @@ REGRESS-001 断言的是“native 特性关闭时旧路径不变”，REGRESS-00
 - REGRESS-002：新增 `src/native_base/runtime/header.rs::tests::an_older_binary_or_a_newer_volume_is_refused_without_a_flat_fallback`
   （`NativeVolumeHeader::p1` + `MemoryControlStore`）：① 旧二进制（`native_packed_base: false`）读到 header 行后仍被
   `FeatureNotCompiled("native-packed-base")` 拒绝；② `schema_version += 1` 与 `wire_major += 1` 分别以
-  `UnsupportedSchemaVersion(_)` / `UnsupportedWireVersion { .. }` 拒绝；③ `volume_format = "workspace-flat"` 以
+  `UnsupportedSchemaVersion(_)` / `UnsupportedWireVersion { .. }` 拒绝；③ `volume_format = "workspace-flat-v1"` 以
   `UnsupportedVolumeFormat(_)` 拒绝，而不是被当作 flat 卷解释；④ 同一记录在 `all_capabilities()` 下 `validate` 通过，
   证明上述拒绝来自读者与版本而不是损坏的 header。该测试在 native 开启与关闭两种配置下都通过。
 - REGRESS-005：新增 `doc/native-base/known-gaps.md`，逐形态（buffered page cache / direct O_DIRECT / mmap）给出表现、
@@ -1553,7 +1553,7 @@ trait 做按需页加载，配合 `sha2` 做 digest 验证。
 **回滚与运维**：
 
 - 回滚：native header 是 create-only 的 KV 记录；回滚到
-  `workspace` 只需不加载 native feature，旧路径完全不受影响。
+  `workspace-v1` 只需不加载 native feature，旧路径完全不受影响。
 - 数据安全：所有 native 对象写入前计算 full_hash，读取时校验；
   控制面事务原子（Redis Lua / TiKV txn）。
 - 容量：native 对象仅追加，不删除已发布基线；私有域在 close 后清理。

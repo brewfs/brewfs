@@ -33,8 +33,8 @@ continuation查询，dentry用(parent,name) tuple seek，其余按现有单key�
 
 ## 已执行证据
 
-G02 artifact：`docker/compose-xfstests/artifacts/packed-completion-20261004-frozen-source/`。
-SQL artifact：`docker/compose-xfstests/artifacts/packed-completion-20261004-import-seek/`。
+G02 artifact：`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-frozen-source/`。
+SQL artifact：`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-import-seek/`。
 
 - `namespace-red.log`：37 passed、2 failed，明确深路径与祖先symlink行为缺陷。
   `cli-red.log`：原CLI拒绝真实snapshot provider选项。

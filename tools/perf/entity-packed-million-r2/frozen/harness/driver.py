@@ -15,7 +15,7 @@ def prepare(count):
     with stage('source-generation',files=count) as generation:
         descriptor=sw.create_source(source,count);os.sync()
     manifest=art/'manifest.txt'
-    command=[str(ROOT/'bin/packed_snapshot_fixture'),'--source-directory',str(source),
+    command=[str(ROOT/'bin/packed_v3_snapshot_fixture'),'--source-directory',str(source),
         '--output-dir',str(c.WORK/'producer'),'--source-consistency','best-effort-detected',
         '--source-hardlink-policy','visible-links','--bucket',c.CFG['bucket'],
         '--endpoint',c.CFG['endpoint'],'--region','us-east-1','--force-path-style','true',

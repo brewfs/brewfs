@@ -28,7 +28,7 @@
     }
   },
   "mount_point": "/data/metacache/artifacts/on/mnt",
-  "volume_format": "workspace",
+  "volume_format": "workspace-v1",
   "workspace": "01a178e8-a01e-7f61-84bd-61440c63a5a3",
   "workspace_namespace": "metacache-perf"
 }

@@ -79,7 +79,7 @@ cache:
                 self.probe=Probe(self.volume,self.namespace,self.art)
                 command=[str(ROOT/'bin/brewfs'),'--metrics','--metrics-addr','127.0.0.1:8910',
                     'mount',str(self.mount),'--config',str(self.art/'mount.yaml'),
-                    '--volume-format','entity-workspace','--experimental-entity-mount',
+                    '--volume-format','workspace-entity-v1','--experimental-entity-mount',
                     '--entity-volume-id',self.volume,'--workspace',self.namespace,
                     '--workspace-namespace','perf-'+self.namespace,'--packed-manifest-key',CFG['manifest']]
             atomic(self.art/'command.json',command)
@@ -168,7 +168,7 @@ cache:
         if self.client=='juicefs':return None
         descriptors=[json.loads(bytes.fromhex(v)) for v in self.probe.query('objects').values()]
         def verify(d):
-            key=f'entity-workspace/{self.volume}/{d["namespace_id"]}/{d["slice_id"]}'
+            key=f'workspace-entity-v1/{self.volume}/{d["namespace_id"]}/{d["slice_id"]}'
             reply=S3.get_object(Bucket=CFG['bucket'],Key=key)
             data=reply['Body'].read();reply['Body'].close()
             assert len(data)==d['size'] and list(hashlib.sha256(data).digest())==d['sha256']

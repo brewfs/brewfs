@@ -32,7 +32,7 @@ All runs used the same shape and scanner:
 
 The scanner itself is covered by unit tests for tree/stat/full modes, payload
 corruption, and size mismatch, plus a smoke using the real
-`packed_snapshot_fixture --raw-only` output.
+`packed_v3_snapshot_fixture --raw-only` output.
 
 ## Repeated A/B
 
@@ -68,9 +68,9 @@ post-dedup coordinator approximation.
 
 Artifacts:
 
-- `docker/compose-xfstests/artifacts/local-packed-decoded-ab-20261001-014011/`
+- `docker/compose-xfstests/artifacts/local-packed-v3-decoded-ab-20261001-014011/`
 - preliminary candidate:
-  `docker/compose-xfstests/artifacts/local-packed-decoded32m-10k-20261001-013704/`
+  `docker/compose-xfstests/artifacts/local-packed-v3-decoded32m-10k-20261001-013704/`
 
 ## Rejected candidates
 
@@ -82,7 +82,7 @@ physical bytes from about 1.51 GiB to 3.00 GiB. Throughput fell from 918.32 to
 it is rejected as the default for this random 100 KiB workload.
 
 Artifact:
-`docker/compose-xfstests/artifacts/local-packed-window64m-10k-20260930-235851/`.
+`docker/compose-xfstests/artifacts/local-packed-v3-window64m-10k-20260930-235851/`.
 
 ### 1 ms coordinator delay
 
@@ -92,7 +92,7 @@ throughput sample but worsened the request graph: data ranges rose from 3,032 to
 The source was restored to 250 µs.
 
 Artifact:
-`docker/compose-xfstests/artifacts/local-packed-coalesce1ms-10k-20261001-002037/`.
+`docker/compose-xfstests/artifacts/local-packed-v3-coalesce1ms-10k-20261001-002037/`.
 
 ### Eager versus adaptive metadata warm-up
 

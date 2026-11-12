@@ -2,7 +2,7 @@
   "comparison": "#409 merge to audited main",
   "paths": [
     {
-      "path": "src/workspace/packed",
+      "path": "src/workspace_overlay/packed_v3",
       "objects": {
         "7afce5c": "9b25b5ec3baf3efccb619bc72aecfae516cc9fcf",
         "d1160dc": "9b25b5ec3baf3efccb619bc72aecfae516cc9fcf"
@@ -10,7 +10,7 @@
       "identical": true
     },
     {
-      "path": "src/bin/packed_snapshot_fixture.rs",
+      "path": "src/bin/packed_v3_snapshot_fixture.rs",
       "objects": {
         "7afce5c": "8cdeec3bf3502dccf4b28d01e64a31a07a76dc2e",
         "d1160dc": "8cdeec3bf3502dccf4b28d01e64a31a07a76dc2e"
@@ -42,7 +42,7 @@
       "identical": true
     },
     {
-      "path": "src/workspace/meta_layer/packed_enumeration.rs",
+      "path": "src/workspace_overlay/meta_layer/packed_enumeration.rs",
       "objects": {
         "7afce5c": "3b1d5509acd18451872327ecffa1f6525bdc872f",
         "d1160dc": "3b1d5509acd18451872327ecffa1f6525bdc872f"

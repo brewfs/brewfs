@@ -187,9 +187,9 @@ test chunk::writer::tests::test_data_uploader_roundtrip ... ok
 test chunk::writer::tests::test_data_uploader_vectored_roundtrip ... ok
 test chunk::writer::tests::test_data_uploader_honors_local_upload_limit ... ok
 test chunk::writer::tests::test_writeback_priority_waits_for_writeback_permits_only ... ok
-test workspace::packed::snapshot::large_chunk::tests::ld05_raw_zstd_chunks_roundtrip_and_reject_replaced_payload ... ok
+test workspace_overlay::packed_v3::wire005::large_chunk::tests::ld05_raw_zstd_chunks_roundtrip_and_reject_replaced_payload ... ok
 test chunk::store::tests::zstd_blocks_above_64_mib_roundtrip_from_object_backend ... ok
 test chunk::store::framed_write_tests::persisted_object_copy_evidence ... ok
-test workspace::packed::snapshot::large_chunk::tests::ld05_incompressible_sequential_frame_keeps_strict_range_bound ... ok
+test workspace_overlay::packed_v3::wire005::large_chunk::tests::ld05_incompressible_sequential_frame_keeps_strict_range_bound ... ok
 
 test result: ok. 188 passed; 0 failed; 3 ignored; 0 measured; 2796 filtered out; finished in 5.61s

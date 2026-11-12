@@ -1,13 +1,13 @@
 # Packed v3 source names / xattr validation — 2026-10-04
 
-本批接续[目录inventory checkpoint](packed-namespace-validation-2026-10-04.md)，
+本批接续[目录inventory checkpoint](packed-v3-namespace-validation-2026-10-04.md)，
 修复实际源名称与FUSE接口的四项错误。实挂载、定向测试、完整门禁和身份核验已通过；
 当前不是整套POSIX、全部SPEC、S/X或性能接受。完整目标仍见
 [五份SPEC清单](../superpowers/plans/2026-10-04-brewfs-all-spec-completion.md)。
 
 ## 四项真实行为 red
 
-artifact：`docker/compose-xfstests/artifacts/packed-completion-20261004-namespace-posix/`。
+artifact：`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-namespace-posix/`。
 `initial-source-hashes.json` 绑定上一批签收的356个源码文件。`red/` 在上一批实际
 mount binary上对四项检查逐一收集失败，并正常卸载；不以第一个失败代替其他问题。
 

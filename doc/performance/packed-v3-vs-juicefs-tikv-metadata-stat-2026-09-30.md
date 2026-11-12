@@ -34,7 +34,7 @@ containers and volumes.
 ## Packed local integration baseline
 
 A real BrewFS FUSE mount over `LocalFsBackend` was built from
-`packed_snapshot_fixture` using the matched 10 × 1,000 shape. This is a local
+`packed_v3_snapshot_fixture` using the matched 10 × 1,000 shape. This is a local
 integration baseline, not a TiKV comparison and not an OSS result:
 
 ```text

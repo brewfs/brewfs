@@ -1,4 +1,4 @@
-# Packed PM10/IP06、错误传播与唯一入口（2026-10-04）
+# Packed-v3 PM10/IP06、错误传播与唯一入口（2026-10-04）
 
 状态：冻结候选的45项完整门禁和8次bounded真实FUSE回归通过；36k导入超时，
 目录规模出口未签收。机器核对记录为该批次`checkpoint.json`。
@@ -8,7 +8,7 @@
 
 旧readdir从Groups索引首部取引用，即使只请求一项，也会预取大量前置索引页。
 RecordingBackend的行为red实际记录了这类range GET，保存于
-`packed-completion-20261004-deep-cookie/behavior-red.log`。首次草稿误把u64传给旧
+`packed-v3-completion-20261004-deep-cookie/behavior-red.log`。首次草稿误把u64传给旧
 usize接口的编译失败保留为`red.log`，不当成行为red。
 
 当前唯一manifest payload改为PM10，全部索引改为IP06。索引child携带mandatory
@@ -45,7 +45,7 @@ native/flat工作区基线与共享input类型继续服务三创新，旧内部r
   45项全部通过；default lib/bin分别1,023/1,107、overlay lib1,344、fixture4、
   vendor两runtime各13项通过，ignored单列。完整源码与8次挂载binary身份均已核对。
 
-artifact根分别为`packed-completion-20261004-{deep-cookie,typed-stat,v3-only}`。
+artifact根分别为`packed-v3-completion-20261004-{deep-cookie,typed-stat,v3-only}`。
 最终ACL/namespace/external及hot故障回归raw/zstd共8次通过，零残留mount/daemon/
 D-state。36k首次`runs/fuse-36k-final`在fixture导入600秒超时，进程已停止，尚未挂载；
 失败工作目录、SQLite spools、thread/fd诊断与超时记录保留。源条目36,003，producer

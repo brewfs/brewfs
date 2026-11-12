@@ -1,7 +1,7 @@
 {
   "git_head": "1ad4c99b2e59adc262649da238b6545bcf1f88cb",
   "kernel": "6.8.0-36-generic",
-  "build": "CARGO_TARGET_DIR=/data/asyncfuse/target-workspace CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo build --workspace --features workspace -j 2",
+  "build": "CARGO_TARGET_DIR=/data/asyncfuse/target-workspace CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo build --workspace --features workspace-overlay -j 2",
   "compression": "none",
   "memory_cache_bytes": 314572800,
   "ssd_cache_bytes": 1073741824,

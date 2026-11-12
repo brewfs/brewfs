@@ -82,11 +82,11 @@ Build the measured BrewFS binary from source commit
 
 ```sh
 cargo build --locked --release --no-default-features \
-  --features fuse-tokio-runtime,workspace,rustfs-ec-block-size-hint,observability \
+  --features fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint,observability \
   --bin brewfs
 cargo build --locked --release --no-default-features \
-  --features fuse-tokio-runtime,workspace,rustfs-ec-block-size-hint,observability \
-  --bin packed_snapshot_fixture --example entity_metadata_probe
+  --features fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint,observability \
+  --bin packed_v3_snapshot_fixture --example entity_metadata_probe
 ```
 
 Use JuiceFS source `e0032b2ae5e9603403ca955eed7d05426f6f2f8c` and the pinned

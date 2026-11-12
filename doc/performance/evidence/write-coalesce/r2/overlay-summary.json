@@ -1,7 +1,7 @@
 {
   "classification": "pre-existing intermittent EBUSY; unchanged test and direct implementation; no production/test edits",
-  "failure_test": "workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes",
-  "failure_location": "src/workspace/meta_layer/tests.rs:1477:57",
+  "failure_test": "workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes",
+  "failure_location": "src/workspace_overlay/meta_layer/tests.rs:1477:57",
   "failure": "observer.open(ino, OpenFlags::RDONLY).await.unwrap(): Io(Os { code: 16, kind: ResourceBusy, message: Device or resource busy })",
   "focused_passed": 4,
   "focused_failed": 1,
@@ -9,15 +9,15 @@
   "cleared_by": "two complete unscreened overlay suites with zero failed; not a claim of 5/5 focused passes",
   "test_binary_sha256": "b92358598a9594d26019708f39d014cb70a86931113a2e36a0a680ddf972dc10",
   "source_provenance": {
-    "src/workspace/meta_layer/tests.rs": {
+    "src/workspace_overlay/meta_layer/tests.rs": {
       "unchanged_from_base": true,
       "sha256": "2defe6a72a43dd338551acbab7a9100033e5636e5d2f4cbe16e561caf3b2e209"
     },
-    "src/workspace/meta_layer/mod.rs": {
+    "src/workspace_overlay/meta_layer/mod.rs": {
       "unchanged_from_base": true,
       "sha256": "8c02dc5e6f4f2b9dd564c08f22721d6cf3420421c6df0ef0b1c7009e4ba62921"
     },
-    "src/workspace/stores/database.rs": {
+    "src/workspace_overlay/stores/database.rs": {
       "unchanged_from_base": true,
       "sha256": "ff40da8ba42ad90f3634163e0189973e3ffd0d677a2e93b8a4e916c2e01caf26"
     }
@@ -28,7 +28,7 @@
       "status": 0,
       "started": "2026-11-02T02:49:32Z",
       "finished": "2026-11-02T03:27:59Z",
-      "command": "CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace",
+      "command": "CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=2 cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay",
       "result": [
         "test result: ok. 2729 passed; 0 failed; 474 ignored; 0 measured; 0 filtered out; finished in 453.09s"
       ],
@@ -39,7 +39,7 @@
       "status": 0,
       "started": "2026-11-02T03:28:08Z",
       "finished": "2026-11-02T03:28:14Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
       "result": [
         "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.48s"
       ],
@@ -50,7 +50,7 @@
       "status": 101,
       "started": "2026-11-02T03:28:14Z",
       "finished": "2026-11-02T03:28:16Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
       "result": [
         "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 0.78s"
       ],
@@ -61,7 +61,7 @@
       "status": 0,
       "started": "2026-11-02T03:28:16Z",
       "finished": "2026-11-02T03:28:20Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
       "result": [
         "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.72s"
       ],
@@ -72,7 +72,7 @@
       "status": 0,
       "started": "2026-11-02T03:28:20Z",
       "finished": "2026-11-02T03:28:24Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
       "result": [
         "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.76s"
       ],
@@ -83,7 +83,7 @@
       "status": 0,
       "started": "2026-11-02T03:28:24Z",
       "finished": "2026-11-02T03:28:27Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace workspace::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay workspace_overlay::meta_layer::tests::writable_acl_independent_sqlite_instances_keep_mode_acl_during_atime_writes -- --exact",
       "result": [
         "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3202 filtered out; finished in 2.61s"
       ],
@@ -94,7 +94,7 @@
       "status": 0,
       "started": "2026-11-02T03:28:27Z",
       "finished": "2026-11-02T03:36:06Z",
-      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace",
+      "command": "cargo --config /home/hxy/perf-write-coalesce-20261102/validation/cargo-ci.toml test -p brewfs --lib --features workspace-overlay",
       "result": [
         "test result: ok. 2729 passed; 0 failed; 474 ignored; 0 measured; 0 filtered out; finished in 457.67s"
       ],

@@ -25,7 +25,7 @@ hardlink策略不变，SQLite保持既有FULL/DELETE同步与日志配置。
 
 ## 已执行证据
 
-artifact：`docker/compose-xfstests/artifacts/packed-completion-20261004-source-batch/`。
+artifact：`docker/compose-xfstests/artifacts/packed-v3-completion-20261004-source-batch/`。
 
 - 现有API red两项实测失败：257文件+root产生260次真实SQLite commits；bad links
   在第91条发生后，留下91个已编号条目。见`active-red.log`。

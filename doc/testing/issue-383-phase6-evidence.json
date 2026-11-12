@@ -11,12 +11,12 @@
   ],
   "binaries": {
     "/work/issue383-phase6/fixture": "701ab27602139425f12a56d2b324f3f74aba928dbd96443e80f441850040b458",
-    "/work/bin/packed_snapshot_fixture-phase4-512": "906bda2f1bc102d35e1299978009455196b562bb87796d8d9ae7d7d730b038c3",
+    "/work/bin/packed_v3_snapshot_fixture-phase4-512": "906bda2f1bc102d35e1299978009455196b562bb87796d8d9ae7d7d730b038c3",
     "/work/issue383-phase6/brewfs": "6ce7893887254339edda07323ff5f34fa836f4c97b2b7cba7818f680451a4b5e"
   },
   "compatibility": {
     "legacy4m": {
-      "manifest_key": "packed-snapshot-fixture/objects/0/40ad9bfdc5454531e6da48b8d9badac6423bfcdb3112d7509ccdd8cb29a10439",
+      "manifest_key": "packed-wire005-fixture/objects/0/40ad9bfdc5454531e6da48b8d9badac6423bfcdb3112d7509ccdd8cb29a10439",
       "size_classes": [
         262144,
         4194304,
@@ -46,7 +46,7 @@
         }
       ],
       "pack_command": [
-        "/work/bin/packed_snapshot_fixture-phase4-512",
+        "/work/bin/packed_v3_snapshot_fixture-phase4-512",
         "--source-directory",
         "/work/issue383-phase6/compat/source",
         "--source-consistency",
@@ -78,7 +78,7 @@
       }
     },
     "default": {
-      "manifest_key": "packed-snapshot-fixture/objects/0/6875fb71e1293603fb4fa78a4f100f376750a037b69ee3e0e5b7dcf3eb8a90c2",
+      "manifest_key": "packed-wire005-fixture/objects/0/6875fb71e1293603fb4fa78a4f100f376750a037b69ee3e0e5b7dcf3eb8a90c2",
       "size_classes": [
         262144,
         262144,
@@ -138,7 +138,7 @@
       }
     },
     "explicit64k": {
-      "manifest_key": "packed-snapshot-fixture/objects/0/b206884268752e7be410035b5d250e905e39b6ce3152c028bbeeb781e4406f6b",
+      "manifest_key": "packed-wire005-fixture/objects/0/b206884268752e7be410035b5d250e905e39b6ce3152c028bbeeb781e4406f6b",
       "size_classes": [
         65536,
         65536,
@@ -234,8 +234,8 @@
     ],
     "completed_at": "2026-10-31T05:48:15+08:00",
     "commands": [
-      "run overlay cargo test -p brewfs --lib --features workspace",
-      "run fixture cargo test -p brewfs --bin packed_snapshot_fixture --features workspace",
+      "run overlay cargo test -p brewfs --lib --features workspace-overlay",
+      "run fixture cargo test -p brewfs --bin packed_v3_snapshot_fixture --features workspace-overlay",
       "run fmt cargo fmt --all --check",
       "run report bash docker/compose-xfstests/test_perf_report_delta.sh",
       "run direct bash docker/compose-xfstests/test_juicefs_direct_matrix.sh",
@@ -246,7 +246,7 @@
       "run uring cargo check -p brewfs --no-default-features --features fuse-io-uring-runtime",
       "run workspace cargo test --workspace --lib --bins",
       "run clippy cargo clippy --workspace",
-      "run clippy-overlay cargo clippy -p brewfs --lib --bin packed_snapshot_fixture --features workspace -- -D warnings"
+      "run clippy-overlay cargo clippy -p brewfs --lib --bin packed_v3_snapshot_fixture --features workspace-overlay -- -D warnings"
     ]
   },
   "historical": {

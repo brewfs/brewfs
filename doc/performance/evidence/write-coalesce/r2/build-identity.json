@@ -12,7 +12,7 @@
   "finished": "2026-11-02T05:10:44Z",
   "total_elapsed_seconds": 6162.0,
   "features": [
-    "workspace",
+    "workspace-overlay",
     "observability"
   ],
   "default_features": true,

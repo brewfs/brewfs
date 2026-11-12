@@ -18,9 +18,9 @@
   "base_commit": "9832ddd1ae11a3861e38c14fa659e8160e151743",
   "binaries_sha256": {
     "brewfs": "41b86c60636b1dcdd3a7ba4b83f107712ce36c52bf2598cc504fe4fe172aba5b",
-    "packed_snapshot_fixture": "0a1224feee686b0859ca2b29ccf052adadb64e1ebe23706f885724da95af1f0b"
+    "packed_v3_snapshot_fixture": "0a1224feee686b0859ca2b29ccf052adadb64e1ebe23706f885724da95af1f0b"
   },
-  "build_flags": "--locked --release --no-default-features --features fuse-tokio-runtime,workspace,rustfs-ec-block-size-hint; brewfs built separately with --bin brewfs, no examples or development dependency activation",
+  "build_flags": "--locked --release --no-default-features --features fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint; brewfs built separately with --bin brewfs, no examples or development dependency activation",
   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
   "environment": {
     "provider": "Aliyun spot ECS",

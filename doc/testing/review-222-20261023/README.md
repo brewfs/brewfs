@@ -51,7 +51,7 @@ information disabled, and a shared host build lock. The scope peaked at
 CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_CODEGEN_UNITS=16 \
 CARGO_PROFILE_TEST_CODEGEN_UNITS=16 CARGO_INCREMENTAL=0 \
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
-cargo test -p brewfs --features workspace \
+cargo test -p brewfs --features workspace-overlay \
   --test workspace_session_drop -- --test-threads=1 --nocapture
 ```
 

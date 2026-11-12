@@ -20,7 +20,7 @@ reservation is made when disabled. The first off profile is checked for
 `verify_memo` symbols in both self samples and call chains before B runs;
 all later off profiles receive the same check. Sampling alone cannot establish
 instruction-for-instruction equivalence to a separately linked old binary.
-The mount's snapshot demand coordinator retains at most 8,192 successfully
+The mount's wire005 demand coordinator retains at most 8,192 successfully
 verified frame identities in an LRU. An entry contains only a BLAKE3 identity
 of the container digest and physical object key, frame ordinal, expected frame digest, stored offset/length and a last
 access timestamp. No stored or decoded payload is retained by this memo.
@@ -300,7 +300,7 @@ use that exact executable. Local CI uses a package-only 256 codegen
 unit override for BrewFS to bound individual LLVM modules; features, test
 selection and optimization levels are unchanged. Release flags remain exactly
 those recorded by the measurement protocol. The full feature test code passes
-`cargo check --tests --features workspace,observability`.
+`cargo check --tests --features workspace-overlay,observability`.
 
 Optional decoded-frame cache B has not been implemented. Its default remains
 zero; no 64 MiB/256 MiB cache performance claim is made.

@@ -1,9 +1,9 @@
-# Packed metadata closeout development validation
+# Packed-v3 metadata closeout development validation
 
-Scope is packed, with snapshot as the encoding module. Redis/TiKV remain
+Scope is packed-v3, with wire005 as the encoding module. Redis/TiKV remain
 the distributed metadata backends. The temporary local authentication ledger
 does not replace them. Public names and the private hardlink comparison domain
-use packed; snapshot is only an internal encoding identifier.
+use packed-v3; wire005 is only an internal encoding identifier.
 
 ## 2026-10-08 results and remaining gates
 
@@ -159,7 +159,7 @@ a cursor, using the SDK's generic bounded key/region error. Neither failed
 parent is counted as accepted. Their logs and failed process files are preserved.
 No all-SPEC acceptance is claimed.
 
-Latest development batch uses packed throughout; no separate public version
+Latest development batch uses packed-v3 throughout; no separate public version
 was introduced. Targeted diagnostic RED completed five actual tests, one passed
 and four failed, with unchanged source and verified owned-service cleanup.
 Redis expired-lease Prepare passed. Original-lease Prepare reached its genuine
@@ -240,7 +240,7 @@ Attempt10 corrects the two selector paths in a new run; original logs remain.
 Quiesced-without-claim is still conservatively rejected because an original
 PPJ may exist without that claim. Safe support requires bounded actual PPJ
 absence and same-CAS epoch proof; this separate candidate remains external.
-Public mount/fixture messages and codec help now use packed; the internal
+Public mount/fixture messages and codec help now use packed-v3; the internal
 encoding flag is hidden from help. The existing eight fixture controls passed
 with unchanged source, log
 `50ac01549ca667334428c9cc30bf44b8b52888e1d2fd7e7c6d3a12f970484442`.
@@ -382,17 +382,17 @@ It proves bounded reads reject the held prewrite and recover after an actual
 rollback. It does not prove automatic lock resolution. Attempt06-sdk was
 subsequently retired using exact owned service and process identities.
 
-The user-facing fixture errors now name the current packed encoding and
+The user-facing fixture errors now name the current packed-v3 encoding and
 its output explicitly includes `packed_version=v3`. `wire_version=5` identifies
-encoding 005 within packed. The private producer hardlink signature domain
-now uses `BrewFS-packed-inode-identity`. Its digest is only compared in the
+encoding 005 within packed-v3. The private producer hardlink signature domain
+now uses `BrewFS-packed-v3-inode-identity`. Its digest is only compared in the
 disposable build inventory and is not serialized into packed objects. No
 old-format aliases or readers were added.
 `v3-hardlink-naming01` executed both existing producer hardlink contracts:
 two passed, exit 0, unchanged source/Git. They retain the original inode IDs,
 reject divergent aliases and prove inline-admission independence. Log SHA256:
 `3715de3537ef7f6fe1ac13e455dd5c483c54cd8b2080a0454b9e279279d9862e`.
-The workspace implementation consistently uses packed names. The operator's
+The workspace implementation consistently uses packed-v3 names. The operator's
 unrelated UUID dependency feature is not a packed metadata version.
 The real 64 KiB xattr regression xattr-64k-red01 executed zero passed/one failed
 on the old 48 KiB bounded-read schema cap, with unchanged source/Git/config.

@@ -1,4 +1,4 @@
-# Aliyun packed vs JuiceFS Redis/TiKV million-file validation (2026-10-01)
+# Aliyun packed-v3 vs JuiceFS Redis/TiKV million-file validation (2026-10-01)
 
 ## Status
 
@@ -46,7 +46,7 @@ valid warm/Redis/TiKV rows are under
 
 The comparison rows are:
 
-1. packed-snapshot, metadata prefetch `auto`, decoded-frame cache 0
+1. packed-metadata-v3, metadata prefetch `auto`, decoded-frame cache 0
    (`strict-cold`);
 2. JuiceFS 1.3.1 + Redis strict caches;
 3. JuiceFS 1.3.1 + TiKV v6.5.3 strict caches.

@@ -8,9 +8,9 @@
     "src/vfs/cache/write_back.rs": "39405a56df205badc482b87ca682b8e342045407984c2b80421cc4387ff553b7",
     "src/vfs/cache/write_back/packed_recovery.rs": "fe998ffec473ff99a86824b8d85900ce540bda4ce55170b036b95046a272b88a",
     "src/vfs/cache/write_back/packed_recovery/tests.rs": "8abaf92adcb46595684553abbe84c1a61c860bbc650c119fbcd3cdf0c7fc1a66",
-    "src/workspace/packed/remote.rs": "07e0730fdb9f6bb0ce2600b7f12301c6d57a6d9c5de42031f6e633c416d477ea",
-    "src/workspace/packed/snapshot/source_layout.rs": "9d5c60aaf818e5dc1b2a8fbd07460b56c751901a8dcbcd86a8812210d2fdbb86",
-    "src/workspace/stores/kv_store/packed_journal/registry/borrowed_alias.rs": "c02b5d9a3cef5f933740708d2e5484988a10a09a301c465e90b76e30608daf79"
+    "src/workspace_overlay/packed_v3/remote.rs": "07e0730fdb9f6bb0ce2600b7f12301c6d57a6d9c5de42031f6e633c416d477ea",
+    "src/workspace_overlay/packed_v3/wire005/source_layout.rs": "9d5c60aaf818e5dc1b2a8fbd07460b56c751901a8dcbcd86a8812210d2fdbb86",
+    "src/workspace_overlay/stores/kv_store/packed_journal/registry/borrowed_alias.rs": "c02b5d9a3cef5f933740708d2e5484988a10a09a301c465e90b76e30608daf79"
   },
   "tests": [
     {
@@ -75,7 +75,7 @@
     },
     {
       "stage": "ci-review",
-      "label": "check-fuse-tokio-runtime-workspace",
+      "label": "check-fuse-tokio-runtime-workspace-overlay",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
@@ -89,7 +89,7 @@
     },
     {
       "stage": "ci-review",
-      "label": "check-fuse-io-uring-runtime-workspace",
+      "label": "check-fuse-io-uring-runtime-workspace-overlay",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
@@ -268,35 +268,35 @@
     },
     {
       "stage": "ci-review-followup",
-      "label": "syntax-run_workspace_dual_mount_in_container.sh",
+      "label": "syntax-run_workspace_overlay_dual_mount_in_container.sh",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
     },
     {
       "stage": "ci-review-followup",
-      "label": "syntax-run_workspace_control_in_container.sh",
+      "label": "syntax-run_workspace_overlay_control_in_container.sh",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
     },
     {
       "stage": "ci-review-followup",
-      "label": "syntax-run_workspace_suite_in_container.sh",
+      "label": "syntax-run_workspace_overlay_suite_in_container.sh",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
     },
     {
       "stage": "ci-review-followup",
-      "label": "syntax-run_workspace_compose.sh",
+      "label": "syntax-run_workspace_overlay_compose.sh",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
     },
     {
       "stage": "ci-review-followup",
-      "label": "syntax-run_workspace_suites.sh",
+      "label": "syntax-run_workspace_overlay_suites.sh",
       "exit_code": 0,
       "valid_baseline_evidence": true,
       "test_summaries": []
@@ -393,38 +393,38 @@
   "baseline_reproduction": {
     "selected": 14,
     "same_assertions": [
-      "workspace::meta_layer::tests::packed_open_preparation_tests::packed_mount_renewal_busy_exhausts_exactly_64",
-      "workspace::meta_layer::tests::packed_open_preparation_tests::packed_stat_binding_authentication_busy_exhausts_exactly_64",
-      "workspace::packed::snapshot::source_file::tests::source_mutation_replacement_symlink_and_limits_fail_closed",
-      "workspace::packed::snapshot::source_file::tests::source_root_pins_real_attributes_and_detects_namespace_changes_and_replacement",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::quiesced_seed_takeover_tests::quiesced_seed_initial_prepare_claim_is_atomic_and_lost_reply_is_confirmed_without_replay",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_dispatch_root_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_reserve_root_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_phaseseed_root_read_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_seedstaged_root_read_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_phaseseed_root_read_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_seedstaged_root_read_conflict_rebuilds_and_publishes",
-      "workspace::stores::kv_store::tests::g13_gc_candidates::g13a_kv_released_lease_is_not_an_expired_recovery_root",
-      "workspace::stores::kv_store::tests::kv_snapshot_open_topology_rejects_binding_change_between_routing_and_final_read",
-      "workspace::stores::kv_store::tests::migration_marker_fences_entity_and_hot_native_packets_without_writes"
+      "workspace_overlay::meta_layer::tests::packed_open_preparation_tests::packed_mount_renewal_busy_exhausts_exactly_64",
+      "workspace_overlay::meta_layer::tests::packed_open_preparation_tests::packed_stat_binding_authentication_busy_exhausts_exactly_64",
+      "workspace_overlay::packed_v3::wire005::source_file::tests::source_mutation_replacement_symlink_and_limits_fail_closed",
+      "workspace_overlay::packed_v3::wire005::source_file::tests::source_root_pins_real_attributes_and_detects_namespace_changes_and_replacement",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::quiesced_seed_takeover_tests::quiesced_seed_initial_prepare_claim_is_atomic_and_lost_reply_is_confirmed_without_replay",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_dispatch_root_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_reserve_root_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_phaseseed_root_read_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_seedstaged_root_read_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_phaseseed_root_read_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_seedstaged_root_read_conflict_rebuilds_and_publishes",
+      "workspace_overlay::stores::kv_store::tests::g13_gc_candidates::g13a_kv_released_lease_is_not_an_expired_recovery_root",
+      "workspace_overlay::stores::kv_store::tests::kv_v3_open_topology_rejects_binding_change_between_routing_and_final_read",
+      "workspace_overlay::stores::kv_store::tests::migration_marker_fences_entity_and_hot_native_packets_without_writes"
     ],
     "unreproduced": []
   },
   "assertions": {
-    "workspace::meta_layer::tests::packed_open_preparation_tests::packed_mount_renewal_busy_exhausts_exactly_64": "panicked at src/workspace/meta_layer/tests/packed_open_preparation_tests.rs:732:9:\nassertion `left == right` failed\n  left: 256\n right: 64",
-    "workspace::meta_layer::tests::packed_open_preparation_tests::packed_stat_binding_authentication_busy_exhausts_exactly_64": "panicked at src/workspace/meta_layer/tests/packed_open_preparation_tests.rs:962:5:\nassertion `left == right` failed\n  left: 256\n right: 64",
-    "workspace::packed::snapshot::source_file::tests::source_mutation_replacement_symlink_and_limits_fail_closed": "panicked at src/workspace/packed/snapshot/source_file.rs:655:9:\nassertion failed: source.validate_unchanged().is_err()",
-    "workspace::packed::snapshot::source_file::tests::source_root_pins_real_attributes_and_detects_namespace_changes_and_replacement": "panicked at src/workspace/packed/snapshot/source_file.rs:587:9:\nassertion failed: captured.validate_unchanged().is_err()",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::quiesced_seed_takeover_tests::quiesced_seed_initial_prepare_claim_is_atomic_and_lost_reply_is_confirmed_without_replay": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/quiesced_seed_takeover_tests.rs:1058:9:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_dispatch_root_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_reserve_root_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_phaseseed_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_seedstaged_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_phaseseed_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_seedstaged_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
-    "workspace::stores::kv_store::tests::g13_gc_candidates::g13a_kv_released_lease_is_not_an_expired_recovery_root": "panicked at src/workspace/stores/g13_kv_gc_tests.rs:119:5:\nassertion failed: !peer.gc_snapshot(now,\n                        200).await.unwrap().root_layers.contains(&lease.base_revision.layer_id)",
-    "workspace::stores::kv_store::tests::kv_snapshot_open_topology_rejects_binding_change_between_routing_and_final_read": "panicked at src/workspace/stores/kv_store.rs:7141:9:\nassertion failed: matches!(store.open_workspace_snapshot(workspace.workspace_id, \"owner\",\n    Duration::from_secs(30)).await, Err(WorkspaceError::Busy))",
-    "workspace::stores::kv_store::tests::migration_marker_fences_entity_and_hot_native_packets_without_writes": "panicked at src/workspace/stores/kv_store.rs:8951:9:\nassertion failed: txn.read_workspace(workspace.workspace_id).await.is_err()"
+    "workspace_overlay::meta_layer::tests::packed_open_preparation_tests::packed_mount_renewal_busy_exhausts_exactly_64": "panicked at src/workspace_overlay/meta_layer/tests/packed_open_preparation_tests.rs:732:9:\nassertion `left == right` failed\n  left: 256\n right: 64",
+    "workspace_overlay::meta_layer::tests::packed_open_preparation_tests::packed_stat_binding_authentication_busy_exhausts_exactly_64": "panicked at src/workspace_overlay/meta_layer/tests/packed_open_preparation_tests.rs:962:5:\nassertion `left == right` failed\n  left: 256\n right: 64",
+    "workspace_overlay::packed_v3::wire005::source_file::tests::source_mutation_replacement_symlink_and_limits_fail_closed": "panicked at src/workspace_overlay/packed_v3/wire005/source_file.rs:655:9:\nassertion failed: source.validate_unchanged().is_err()",
+    "workspace_overlay::packed_v3::wire005::source_file::tests::source_root_pins_real_attributes_and_detects_namespace_changes_and_replacement": "panicked at src/workspace_overlay/packed_v3/wire005/source_file.rs:587:9:\nassertion failed: captured.validate_unchanged().is_err()",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::quiesced_seed_takeover_tests::quiesced_seed_initial_prepare_claim_is_atomic_and_lost_reply_is_confirmed_without_replay": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/quiesced_seed_takeover_tests.rs:1058:9:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_dispatch_root_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_conflict_tests::actual_memory_native_producer_reserve_root_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_phaseseed_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_dispatch_seedstaged_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_phaseseed_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::packed_journal::native_publication::complete_driver::tests::root_read_conflict_tests::actual_memory_native_reserve_seedstaged_root_read_conflict_rebuilds_and_publishes": "panicked at src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:158:5:\nassertion failed: checks.iter().any(|check|\n        { check.key.as_slice() == CONTROL_KEY && check.expected.is_some() })",
+    "workspace_overlay::stores::kv_store::tests::g13_gc_candidates::g13a_kv_released_lease_is_not_an_expired_recovery_root": "panicked at src/workspace_overlay/stores/g13_kv_gc_tests.rs:119:5:\nassertion failed: !peer.gc_snapshot(now,\n                        200).await.unwrap().root_layers.contains(&lease.base_revision.layer_id)",
+    "workspace_overlay::stores::kv_store::tests::kv_v3_open_topology_rejects_binding_change_between_routing_and_final_read": "panicked at src/workspace_overlay/stores/kv_store.rs:7141:9:\nassertion failed: matches!(store.open_workspace_v3(workspace.workspace_id, \"owner\",\n    Duration::from_secs(30)).await, Err(WorkspaceError::Busy))",
+    "workspace_overlay::stores::kv_store::tests::migration_marker_fences_entity_and_hot_native_packets_without_writes": "panicked at src/workspace_overlay/stores/kv_store.rs:8951:9:\nassertion failed: txn.read_workspace(workspace.workspace_id).await.is_err()"
   },
   "operator_unchanged_inputs": {
     "files": [

@@ -1,4 +1,4 @@
-$ cargo test --config profile.test.package.brewfs.codegen-units=512 --no-default-features --features fuse-tokio-runtime,workspace --lib test_support::tests::tikv_endpoints_skip_without_configuration_and_parse_configured_endpoints -- --exact --nocapture
+$ cargo test --config profile.test.package.brewfs.codegen-units=512 --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib test_support::tests::tikv_endpoints_skip_without_configuration_and_parse_configured_endpoints -- --exact --nocapture
 Owned gate service: cargo-1793887586746904203-68400.service; MemoryMax=28G
 warning: constant `DEFAULT_POOL_CAPACITY` is never used
   --> vendor/asyncfuse/src/raw/buffer_pool.rs:27:7
