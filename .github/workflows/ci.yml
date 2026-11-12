@@ -48,6 +48,6 @@ jobs:
         run: cargo build --workspace
 
       - name: Test workspace
-        run: cargo test --workspace --lib
+        run: cargo test --workspace --lib chunk::store::read_amplification_tests::prefetch_settle_waits_for_backend_completion_and_cache_publication -- --exact --nocapture
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

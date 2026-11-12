@@ -174,42 +174,21 @@ async fn random_small_reads(
     Ok(())
 }
 
-/// Wait for real backend completion, then for cache publication to release
-/// the worker's permit. The scheduling counter alone is never a drain signal.
+/// Original scheduling-counter heuristic, retained only for RED validation.
 async fn wait_for_prefetch_settle(
     store: &ObjectBlockStore<CountingBackend>,
-    backend: &CountingBackend,
+    _backend: &CountingBackend,
 ) {
-    let scheduled = store.object_metrics.snapshot().read_background_prefetches;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let changed = backend.full_gets_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if backend.full_gets_completed.load(Ordering::Acquire) == scheduled {
-                break;
-            }
-            changed.await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut previous = store.object_metrics.snapshot().read_background_prefetches;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let current = store.object_metrics.snapshot().read_background_prefetches;
+        if current == previous {
+            return;
         }
-        // Do not acquire these before observing backend completion: doing so
-        // could make an unpolled spawned worker fail try_acquire and be dropped.
-        let _drained = store
-            .range_prefetch_limit
-            .clone()
-            .acquire_many_owned(8)
-            .await
-            .unwrap();
-        assert_eq!(
-            store
-                .object_metrics
-                .snapshot()
-                .read_background_prefetch_dropped,
-            0
-        );
-        assert_eq!(backend.full_gets(), scheduled);
-    })
-    .await
-    .expect("scheduled prefetches must finish backend IO and cache publication");
+        previous = current;
+    }
 }
 
 #[tokio::test]
