@@ -26,6 +26,7 @@ use crate::utils::{NumCastExt, UsageGuard};
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::WriteBackMode;
+use crate::vfs::cache::keys::DirtySliceKey;
 use crate::vfs::cache::page::CacheSlice;
 use crate::vfs::cache::page::WriteAction as PageWriteAction;
 use crate::vfs::cache::write_back::WriteBackCache;
@@ -400,6 +401,9 @@ pub(crate) struct SliceState {
     /// Commit-before-upload may publish metadata only after staged data covers
     /// the whole sealed slice and this recoverable dirty record is sealed.
     writeback_record_sealed: bool,
+    /// Metadata completed the existing best-effort stage retirement before
+    /// publishing Committed. A late uploader must not repeat that promotion.
+    writeback_cleaned_before_commit: bool,
     data: CacheSlice,
     usage: UsageGuard,
     memory_usage: Option<MemoryUsageGuard>,
@@ -463,6 +467,7 @@ impl SliceState {
             writeback_persisted_bytes: 0,
             writeback_record_sealing: false,
             writeback_record_sealed: false,
+            writeback_cleaned_before_commit: false,
             data: CacheSlice::new(config),
             usage: UsageGuard::new(usage),
             memory_usage: memory_budget
@@ -1684,6 +1689,8 @@ struct Shared<B, M> {
     reader: Arc<DataReader<B, M>>,
     /// Local SSD write-back cache for persisting frozen slices before upload.
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+    #[cfg(test)]
+    writeback_cleanup_probe: OnceLock<Arc<commit_cleanup_tests::CleanupProbe>>,
     /// Mount/session generation embedded in durable dirty keys. Flat mounts use zero.
     writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
@@ -2290,6 +2297,8 @@ where
             reader,
             write_back,
             writeback_epoch,
+            #[cfg(test)]
+            writeback_cleanup_probe: OnceLock::new(),
             memory_budget,
             write_order: AtomicU64::new(0),
             write_gen: AtomicU64::new(0),
@@ -4671,7 +4680,10 @@ where
     ) {
         let key = {
             let state = slice.lock();
-            if !matches!(state.state, SliceStatus::Committed) || !state.upload_complete() {
+            if !matches!(state.state, SliceStatus::Committed)
+                || !state.upload_complete()
+                || state.writeback_cleaned_before_commit
+            {
                 return;
             }
             let Some(slice_id) = state.slice_id else {
@@ -4685,15 +4697,23 @@ where
             )
         };
 
+        Self::remove_uploaded_writeback_record(shared, &key).await;
+    }
+
+    async fn remove_uploaded_writeback_record(shared: &Arc<Shared<B, M>>, key: &DirtySliceKey) {
+        #[cfg(test)]
+        if let Some(probe) = shared.writeback_cleanup_probe.get() {
+            probe.enter().await;
+        }
         if let Some(wb) = &shared.write_back {
-            if let Err(err) = wb.promote_to_read_cache(&key, key.local_seq).await {
+            if let Err(err) = wb.promote_to_read_cache(key, key.local_seq).await {
                 warn!(
                     slice_id = key.local_seq,
                     error = ?err,
                     "failed to promote writeback stage into persistent read cache"
                 );
             }
-            let _ = wb.remove(&key).await;
+            let _ = wb.remove(key).await;
         }
     }
 
@@ -4999,7 +5019,36 @@ where
                     .reader
                     .invalidate(ino as u64, file_offset, desc.length.as_usize())
                     .await;
-                handle.mark_committed();
+                // Hand off stage retirement under the same lock that publishes
+                // Committed. Otherwise upload can finish and skip cleanup in
+                // the gap between the completion check and publication.
+                let retire_before_commit = {
+                    let mut state = slice.lock();
+                    if state.upload_complete() {
+                        true
+                    } else {
+                        state.state = SliceStatus::Committed;
+                        state.notify.notify_waiters();
+                        false
+                    }
+                };
+                if retire_before_commit {
+                    // Keep Uploaded visible until the retirement attempt ends,
+                    // so successful cleanup precedes flush and writer eviction.
+                    // The upload-side helper sees non-Committed and skips us.
+                    let key = dirty_slice_key(
+                        shared.inode.ino(),
+                        desc.chunk_id,
+                        desc.slice_id,
+                        shared.writeback_epoch,
+                    );
+                    Self::remove_uploaded_writeback_record(shared, &key).await;
+                    let mut state = slice.lock();
+                    state.writeback_cleaned_before_commit = true;
+                    state.state = SliceStatus::Committed;
+                    state.notify.notify_waiters();
+                }
+                shared.flush_notify.notify_waiters();
                 true
             }
             Err(err) => {
@@ -6704,6 +6753,10 @@ where
 #[cfg(test)]
 #[path = "writer/coalesce_tests.rs"]
 mod coalesce_tests;
+
+#[cfg(test)]
+#[path = "writer/commit_cleanup_tests.rs"]
+mod commit_cleanup_tests;
 
 #[cfg(test)]
 mod tests {
