@@ -625,6 +625,11 @@ pub trait MetaLayer: Send + Sync {
     }
 
     // ---------- Session lifecycle ----------
+    /// Flush locally acknowledged metadata; data upload is drained by VFS first.
+    async fn flush_metadata(&self) -> Result<(), MetaError> {
+        Ok(())
+    }
+
     async fn start_session(&self, session_info: SessionInfo) -> Result<(), MetaError>;
 
     async fn shutdown_session(&self) -> Result<(), MetaError>;

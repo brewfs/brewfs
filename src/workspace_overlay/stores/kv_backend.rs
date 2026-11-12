@@ -341,6 +341,22 @@ pub(crate) mod scan_page_contract {
 
 #[async_trait]
 pub trait WorkspaceKvBackend: Send + Sync + 'static {
+    /// Drain locally acknowledged application metadata to the remote catalog.
+    async fn flush_metadata(&self) -> Result<(), WorkspaceError> {
+        Ok(())
+    }
+
+    /// Only ordinary, lease-guarded Packed application mutations may coalesce.
+    /// Allocation, ownership, upload completion and lifecycle CAS stay barriers.
+    async fn compare_and_swap_metadata_before(
+        &self,
+        checks: &[KvCheck],
+        writes: &[KvWrite],
+        expires_at_ns: i64,
+    ) -> Result<bool, WorkspaceError> {
+        self.compare_and_swap_before(checks, writes, expires_at_ns)
+            .await
+    }
     /// Authenticate a distinct operator connection created by the trusted
     /// administrator Secret factory. This application boundary is inside the
     /// SPEC sidecar/operator TCB; it does not promise native per-RPC/transition

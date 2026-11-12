@@ -1841,8 +1841,21 @@ where
     S: BlockStore + Send + Sync + 'static,
 {
     let packed_budget = workspace_overlay::packed_v3::wire005::V3MountBudget::from_env()?;
+    use workspace_overlay::stores::local_metadata::{LocalMetadataBackend, LocalMetadataConfig};
+    let metadata_sync = LocalMetadataConfig::from_env(&args.mount_point)?;
+    let metadata_scope = format!(
+        "{:?}|{}|{:?}|{}|{:?}",
+        args.meta_backend,
+        args.workspace_namespace,
+        args.workspace,
+        args.meta_url,
+        args.meta_tikv_pd_endpoints
+    );
     match args.meta_backend {
         MetaBackendKind::Sqlx => {
+            if metadata_sync.is_some() {
+                anyhow::bail!("local metadata sync requires a Redis or TiKV Packed workspace")
+            }
             if !args.meta_url.starts_with("sqlite:") {
                 anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
             }
@@ -1852,6 +1865,9 @@ where
         MetaBackendKind::Redis => {
             let backend =
                 RedisWorkspaceBackend::connect(&args.meta_url, &args.workspace_namespace).await?;
+            let backend =
+                LocalMetadataBackend::new(backend, metadata_sync, metadata_scope.as_bytes())
+                    .await?;
             let catalog = KvWorkspaceStore::new(backend)
                 .with_packed_reader_pin_budget(packed_budget.clone())
                 .with_inode_id_blocks();
@@ -1870,6 +1886,9 @@ where
                 args.meta_tikv_tls.as_ref(),
             )
             .await?;
+            let backend =
+                LocalMetadataBackend::new(backend, metadata_sync, metadata_scope.as_bytes())
+                    .await?;
             let catalog = KvWorkspaceStore::new(backend)
                 .with_packed_reader_pin_budget(packed_budget.clone())
                 .with_inode_id_blocks();

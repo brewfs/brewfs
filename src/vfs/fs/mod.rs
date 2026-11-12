@@ -6773,6 +6773,10 @@ where
                 VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
             })?;
             self.update_mtime_ctime(handle.ino).await?;
+            self.meta_layer()
+                .flush_metadata()
+                .await
+                .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
             return Ok(handle.ino);
         }
 
@@ -6801,6 +6805,10 @@ where
             }
             return Err(err);
         }
+        self.meta_layer()
+            .flush_metadata()
+            .await
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
         Ok(handle.ino)
     }
 
@@ -6858,6 +6866,10 @@ where
             if !report.committed.is_empty() {
                 self.update_mtime_ctime(ino as i64).await?;
             }
+            self.meta_layer()
+                .flush_metadata()
+                .await
+                .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
             return Ok(());
         }
 
@@ -6879,6 +6891,10 @@ where
             }
             return Err(error);
         }
+        self.meta_layer()
+            .flush_metadata()
+            .await
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
         Ok(())
     }
 
@@ -6927,6 +6943,10 @@ where
                     VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
                 })?;
             self.update_mtime_ctime(handle.ino).await?;
+            self.meta_layer()
+                .flush_metadata()
+                .await
+                .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
             return Ok(());
         }
 
@@ -6974,6 +6994,10 @@ where
             return Err(err);
         }
 
+        self.meta_layer()
+            .flush_metadata()
+            .await
+            .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
         tracing::trace!(fh, ino = handle.ino, "vfs.fsync_snapshot_done");
         Ok(())
     }

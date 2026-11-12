@@ -600,6 +600,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     // This is the real original lower transport/reader drain. Only the clean proof
     // owner defers budget closure until the clean release CAS becomes terminal.
     pub(crate) async fn shutdown_packed_runtime_for_clean_release(&self) -> Result<(), MetaError> {
+        self.store
+            .flush_metadata()
+            .await
+            .map_err(workspace_to_meta)?;
         let lower = self.packed_lower().ok_or_else(|| {
             MetaError::NotSupported("packed original shutdown requires its attached lower".into())
         })?;
@@ -3509,11 +3513,19 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
     }
 
     async fn shutdown_session(&self) -> Result<(), MetaError> {
+        self.store
+            .flush_metadata()
+            .await
+            .map_err(workspace_to_meta)?;
         if let Some(lower) = self.packed_lower() {
             self.shutdown_packed_runtime_for_clean_release().await?;
             lower.budget.close();
         }
         Ok(())
+    }
+
+    async fn flush_metadata(&self) -> Result<(), MetaError> {
+        self.store.flush_metadata().await.map_err(workspace_to_meta)
     }
 
     async fn get_plock(
