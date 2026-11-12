@@ -288,15 +288,30 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// while this mount holds the exclusive workspace lease and is the sole
     /// writer; every local commit invalidates it. Native overlays additionally
     /// require an explicit local lease proof before serving cached rows.
-    pub fn with_upper_row_cache(mut self, ttl: std::time::Duration) -> Self {
-        if !ttl.is_zero() {
-            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::new_with_counters(
+    pub fn with_upper_row_cache(self, ttl: std::time::Duration) -> Self {
+        self.with_upper_row_cache_bytes(ttl, row_cache::DEFAULT_ROW_CACHE_BYTES)
+    }
+
+    /// A shared byte limit for upper and namespace rows, including pinned
+    /// values retained by in-flight readers. Zero disables both caches.
+    pub fn with_upper_row_cache_bytes(mut self, ttl: std::time::Duration, bytes: u64) -> Self {
+        self.upper_rows = None;
+        self.namespace_rows = None;
+        self.row_cache_counters.capacity_bytes.store(
+            if ttl.is_zero() { 0 } else { bytes },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if !ttl.is_zero() && bytes != 0 {
+            let budget = row_cache::RowBudget::new(bytes, &self.row_cache_counters);
+            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::with_budget(
                 ttl,
                 self.row_cache_counters.clone(),
+                budget.clone(),
             )));
-            self.namespace_rows = Some(row_cache::UpperRowCache::new_with_counters(
+            self.namespace_rows = Some(row_cache::UpperRowCache::with_budget(
                 ttl,
                 self.row_cache_counters.clone(),
+                budget,
             ));
         }
         self
@@ -388,10 +403,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// commit invalidates the keys it writes (before and after), so the
     /// cached rows of `ino` are exactly the store's rows. Returns the cached
     /// head/base pair and those rows, or None to use the remote fence.
-    pub(super) async fn lease_proven_inode_rows(
+    async fn lease_proven_inode_rows(
         &self,
         ino: i64,
-    ) -> Result<Option<([LayerRecord; 2], Arc<Vec<InodeDelta>>)>, MetaError> {
+    ) -> Result<Option<([LayerRecord; 2], row_cache::Retained<Vec<InodeDelta>>)>, MetaError> {
         if self.lease_validity.is_none() {
             return Ok(None);
         }
@@ -406,7 +421,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             Some(row_cache::RowValue::Inode(rows)) => rows,
             _ => {
                 let ticket = cache.ticket();
-                let rows = Arc::new(
+                let rows = row_cache::Retained::new(
                     self.store
                         .get_inode_deltas(InodeQuery {
                             layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
@@ -761,7 +776,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             Some(row_cache::RowValue::Inode(rows)) => rows,
             _ => {
                 let ticket = cache.map(row_cache::UpperRowCache::ticket);
-                let rows = std::sync::Arc::new(
+                let rows = row_cache::Retained::new(
                     self.store
                         .get_inode_deltas(InodeQuery {
                             layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
@@ -957,7 +972,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         };
         let ticket = cache.ticket();
         let parent_paths = if parent == self.root_ino() {
-            Arc::new(vec![b"/".to_vec()])
+            row_cache::Retained::new(vec![b"/".to_vec()])
         } else {
             match cache.get(&row_cache::RowKey::Paths(parent)) {
                 Some(row_cache::RowValue::Paths(paths)) => paths,
@@ -967,21 +982,11 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         if parent_paths.is_empty() {
             return;
         }
-        let paths = parent_paths
-            .iter()
-            .map(|path| {
-                let mut child = path.clone();
-                if child.last() != Some(&b'/') {
-                    child.push(b'/');
-                }
-                child.extend_from_slice(name.as_bytes());
-                child
-            })
-            .collect::<Vec<_>>();
-        cache.insert(
+        cache.insert_child_paths(
             ticket,
             row_cache::RowKey::Paths(ino),
-            row_cache::RowValue::Paths(Arc::new(paths)),
+            &parent_paths,
+            name.as_bytes(),
         );
     }
 
@@ -1005,7 +1010,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             cache.insert(
                 ticket,
                 key,
-                row_cache::RowValue::Permission(Arc::new(snapshot.clone())),
+                row_cache::RowValue::Permission(row_cache::Retained::new(snapshot.clone())),
             );
         }
         Ok(snapshot)
@@ -1024,7 +1029,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             Some(row_cache::RowValue::Dentry(rows)) => rows,
             _ => {
                 let ticket = cache.map(row_cache::UpperRowCache::ticket);
-                let rows = std::sync::Arc::new(
+                let rows = row_cache::Retained::new(
                     self.store
                         .get_dentry_deltas(DentryQuery {
                             layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),
@@ -1294,7 +1299,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         &self,
         expected: &[LayerRecord; 2],
         ino: i64,
-    ) -> Option<Arc<PermissionSnapshot>> {
+    ) -> Option<row_cache::Retained<PermissionSnapshot>> {
         if self.lease_validity.is_some()
             && let Some(cache) = self.upper_row_cache()
             && let Some(row_cache::RowValue::Permission(snapshot)) =
@@ -1369,7 +1374,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         if self.lease_validity.is_some()
             && let (Some(cache), Some(ticket)) = (self.upper_row_cache(), ticket)
         {
-            let snapshot = Arc::new(snapshot);
+            let snapshot = row_cache::Retained::new(snapshot);
             cache.insert(
                 ticket,
                 row_cache::RowKey::Permission(ino),
@@ -2238,7 +2243,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                     cache.insert(
                         ticket,
                         key,
-                        row_cache::RowValue::Permission(std::sync::Arc::new(snapshot.clone())),
+                        row_cache::RowValue::Permission(row_cache::Retained::new(snapshot.clone())),
                     );
                 }
                 snapshot
@@ -3764,7 +3769,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
             Some(row_cache::RowValue::Xattr(rows)) => rows,
             _ => {
                 let ticket = cache.map(row_cache::UpperRowCache::ticket);
-                let rows = std::sync::Arc::new(
+                let rows = row_cache::Retained::new(
                     self.store
                         .get_xattr_deltas(XattrQuery {
                             layer_ids: chain.iter().map(|layer| layer.layer_id).collect(),

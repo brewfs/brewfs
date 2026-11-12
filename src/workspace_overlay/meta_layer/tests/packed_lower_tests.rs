@@ -1010,6 +1010,80 @@ async fn upper_row_cache_is_frozen_only_and_commits_invalidate_it() {
 }
 
 #[tokio::test]
+async fn cached_paths_retain_output_and_fail_admission_before_copying() {
+    use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
+    let mut f = fixture().await;
+    f.meta = f
+        .meta
+        .with_upper_row_cache_bytes(std::time::Duration::from_secs(60), 1 << 20);
+    // This adapter-only SQLite fixture has no native reverse authority. The
+    // root path still exercises cold and cached Output ownership without it.
+    let target = f.meta.root_ino();
+    let budget = f.meta.packed_lower().unwrap().budget.clone();
+    let pool = V3BudgetPool::Output as usize;
+    let before = budget.state().used[pool];
+    let first = f.meta.packed_paths_bytes_owned(target).await.unwrap();
+    assert!(first.guard.is_some());
+    let expected = first.paths.clone();
+    drop(first);
+    assert_eq!(budget.state().used[pool], before);
+    assert!(
+        f.meta
+            .row_cache_counters
+            .retained_bytes
+            .load(Ordering::Acquire)
+            > 0
+    );
+
+    let hit = f.meta.packed_paths_bytes_owned(target).await.unwrap();
+    assert_eq!(hit.paths, expected);
+    assert!(hit.guard.is_some());
+    assert!(budget.state().used[pool] > before);
+    f.meta.invalidate_upper_rows();
+    assert_eq!(
+        f.meta
+            .row_cache_counters
+            .retained_bytes
+            .load(Ordering::Acquire),
+        0
+    );
+    assert!(
+        budget.state().used[pool] > before,
+        "cache invalidation cannot release a returned output"
+    );
+    drop(hit);
+    assert_eq!(budget.state().used[pool], before);
+
+    drop(f.meta.packed_paths_bytes_owned(target).await.unwrap());
+    let mut pinned = Vec::new();
+    while let Ok(permit) = budget.admit(&[(V3BudgetPool::Output, 1 << 20)]) {
+        pinned.push(permit);
+    }
+    assert!(
+        f.meta.packed_paths_bytes_owned(target).await.is_err(),
+        "a hit must not bypass Output admission"
+    );
+    drop(pinned);
+    assert_eq!(
+        f.meta.packed_paths_bytes_owned(target).await.unwrap().paths,
+        expected
+    );
+    // A seeded cache hint may be larger than a normal bounded reverse walk.
+    // Its hit must charge actual storage, not just the minimum 1 MiB reserve.
+    let namespace = f.meta.namespace_row_cache().unwrap();
+    namespace.insert_paths(
+        namespace.ticket(),
+        super::super::row_cache::RowKey::Paths(target),
+        &[vec![b'a'; 768 << 10]],
+    );
+    let large = f.meta.packed_paths_bytes_owned(target).await.unwrap();
+    assert_eq!(large.paths[0].len(), 768 << 10);
+    assert!(budget.state().used[pool] - before >= 1536 << 10);
+    drop(large);
+    assert_eq!(budget.state().used[pool], before);
+}
+
+#[tokio::test]
 async fn request_view_skips_chunk_fences_but_final_fence_rejects_same_epoch_write() {
     use crate::workspace_overlay::meta_layer::packed_lower::with_request_view;
     let f = fixture().await;
@@ -1065,7 +1139,10 @@ async fn namespace_cache_survives_data_commits_and_clears_on_namespace_commits()
         cache.insert(
             cache.ticket(),
             RowKey::Aliases(400),
-            RowValue::Aliases(std::sync::Arc::new(vec![(1, b"nonzero".to_vec())])),
+            RowValue::Aliases(super::super::row_cache::Retained::new(vec![(
+                1,
+                b"nonzero".to_vec(),
+            )])),
         );
     };
     seed(namespace);
@@ -1150,12 +1227,17 @@ async fn create_keeps_existing_paths_cached_but_other_namespace_commits_clear_th
         cache.insert(
             cache.ticket(),
             RowKey::Paths(400),
-            RowValue::Paths(std::sync::Arc::new(vec![b"/file".to_vec()])),
+            RowValue::Paths(super::super::row_cache::Retained::new(vec![
+                b"/file".to_vec(),
+            ])),
         );
         cache.insert(
             cache.ticket(),
             RowKey::Aliases(400),
-            RowValue::Aliases(std::sync::Arc::new(vec![(1, b"file".to_vec())])),
+            RowValue::Aliases(super::super::row_cache::Retained::new(vec![(
+                1,
+                b"file".to_vec(),
+            )])),
         );
     };
     let fresh_inode = |ino: i64, parent: i64| InodeDelta {
@@ -1243,12 +1325,12 @@ async fn commit_invalidates_only_the_row_cache_keys_it_writes() {
     f.meta.inode_permissions(400).await.unwrap().unwrap();
     assert!(cache.get(&RowKey::Inode(400)).is_some());
     assert!(cache.get(&RowKey::Permission(400)).is_some());
-    let unrelated = || RowValue::Inode(std::sync::Arc::new(Vec::new()));
+    let unrelated = || RowValue::Inode(super::super::row_cache::Retained::new(Vec::new()));
     cache.insert(cache.ticket(), RowKey::Inode(1), unrelated());
     cache.insert(
         cache.ticket(),
         RowKey::Dentry(1, b"other".to_vec()),
-        RowValue::Dentry(std::sync::Arc::new(Vec::new())),
+        RowValue::Dentry(super::super::row_cache::Retained::new(Vec::new())),
     );
     // A real mount commit writing inode 400.
     let mut request = f.mutation().await;
@@ -1313,8 +1395,12 @@ async fn unsupported_packed_commit_permanently_disables_cached_authority() {
         .meta
         .namespace_row_cache()
         .expect("frozen namespace cache");
-    let inode = || RowValue::Inode(Arc::new(Vec::new()));
-    let paths = || RowValue::Paths(Arc::new(vec![b"/file".to_vec()]));
+    let inode = || RowValue::Inode(super::super::row_cache::Retained::new(Vec::new()));
+    let paths = || {
+        RowValue::Paths(super::super::row_cache::Retained::new(vec![
+            b"/file".to_vec(),
+        ]))
+    };
     upper.insert(upper.ticket(), RowKey::Inode(1), inode());
     namespace.insert(namespace.ticket(), RowKey::Paths(400), paths());
     assert!(upper.get(&RowKey::Inode(1)).is_some());
