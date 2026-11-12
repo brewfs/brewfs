@@ -27,6 +27,7 @@ use crate::meta::store::{
     SetAttrRequest, StatFsSnapshot,
 };
 use crate::vfs::handles::DirHandle;
+use crate::vfs::stats::FsStatsExtension;
 
 use super::cache::{ReadPlanCacheKey, WorkspaceResolverCache, clip_read_plan};
 use super::catalog::{
@@ -59,6 +60,37 @@ pub use packed_lower::{
 use packed_lower::{WorkspaceLower, WorkspacePackedLower};
 use packed_permissions::MutationVersion;
 use row_cache::{RowCacheCounters, RowCacheStatsExtension};
+
+/// Shared workspace mounts have one stats slot for both upper and lower data.
+/// Row counters have no observer; the Packed observer spans the complete render.
+#[derive(Debug)]
+struct WorkspaceStatsExtension {
+    rows: RowCacheStatsExtension,
+    packed: Option<Arc<dyn crate::vfs::stats::FsStatsExtension>>,
+}
+
+impl FsStatsExtension for WorkspaceStatsExtension {
+    fn begin_stats_observation(&self) -> Option<crate::cadapter::read_observer::TerminalGuard> {
+        self.packed
+            .as_ref()
+            .and_then(|packed| packed.begin_stats_observation())
+    }
+
+    fn render_max_bytes(&self) -> usize {
+        self.rows.render_max_bytes().saturating_add(
+            self.packed
+                .as_ref()
+                .map_or(0, |packed| packed.render_max_bytes()),
+        )
+    }
+
+    fn render_into(&self, output: &mut dyn std::fmt::Write) {
+        self.rows.render_into(output);
+        if let Some(packed) = &self.packed {
+            packed.render_into(output);
+        }
+    }
+}
 
 type PermissionInode = (
     InodeDelta,
@@ -307,6 +339,19 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     pub fn install_row_cache_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
         stats.set_extension(Arc::new(RowCacheStatsExtension {
             counters: self.row_cache_counters.clone(),
+        }))
+    }
+
+    /// Install upper rows and the optional Packed lower together: FsStats accepts
+    /// only one extension, so separate registrations would silently lose one.
+    pub fn install_workspace_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
+        stats.set_extension(Arc::new(WorkspaceStatsExtension {
+            rows: RowCacheStatsExtension {
+                counters: self.row_cache_counters.clone(),
+            },
+            packed: self
+                .packed_lower()
+                .map(|lower| lower.metadata.stats_extension()),
         }))
     }
 

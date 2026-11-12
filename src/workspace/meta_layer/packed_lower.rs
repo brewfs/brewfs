@@ -160,6 +160,7 @@ impl<W: WorkspaceStore + 'static> WorkspacePackedBindingAuthority
 pub(crate) trait PackedLowerOperations: MetaLayer + WorkspaceReadPlanProvider {
     /// Expose the lower's packed index/budget/observer metrics in `.stats`.
     fn install_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool;
+    fn stats_extension(&self) -> Arc<dyn crate::vfs::stats::FsStatsExtension>;
     async fn drain_packed_transport(&self) -> Result<(), MetaError>;
     async fn frozen_reverse_names_page_owned(
         &self,
@@ -188,6 +189,9 @@ impl<B: ObjectBackend + Clone + Send + Sync + 'static> PackedLowerOperations
 {
     fn install_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
         self.install_snapshot_stats(stats)
+    }
+    fn stats_extension(&self) -> Arc<dyn crate::vfs::stats::FsStatsExtension> {
+        self.snapshot_stats_extension()
     }
     async fn frozen_reverse_names_page_owned(
         &self,

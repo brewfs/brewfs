@@ -251,7 +251,7 @@ impl crate::vfs::stats::FsStatsExtension for SnapshotStatsExtension {
     fn render_max_bytes(&self) -> usize {
         super::snapshot::SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES
             .saturating_add(self.observer.render_max_bytes())
-            .saturating_add(256)
+            .saturating_add(crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES)
     }
     fn begin_stats_observation(&self) -> Option<crate::cadapter::read_observer::TerminalGuard> {
         Some(self.observer.start(
@@ -747,7 +747,11 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
     }
 
     pub fn install_snapshot_stats(&self, stats: &crate::vfs::stats::FsStats) -> bool {
-        stats.set_extension(Arc::new(SnapshotStatsExtension {
+        stats.set_extension(self.snapshot_stats_extension())
+    }
+
+    pub(crate) fn snapshot_stats_extension(&self) -> Arc<dyn crate::vfs::stats::FsStatsExtension> {
+        Arc::new(SnapshotStatsExtension {
             metrics: Arc::clone(&self.context.metrics),
             budget: Arc::clone(&self.context.budget),
             index: self.context.reader.cache_stats(),
@@ -755,8 +759,8 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
                 .context
                 .client
                 .read_observer()
-                .expect("v3 context carries its observer"),
-        }))
+                .expect("Packed snapshot context carries its observer"),
+        })
     }
 
     pub fn block_store(&self, block_size: u32) -> Result<PackedBlockStore<B>, MetaError> {

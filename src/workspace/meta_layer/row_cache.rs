@@ -90,7 +90,7 @@ pub(super) struct RowCacheStatsExtension {
 
 impl crate::vfs::stats::FsStatsExtension for RowCacheStatsExtension {
     fn render_max_bytes(&self) -> usize {
-        256
+        crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES
     }
 
     fn render_into(&self, output: &mut dyn std::fmt::Write) {

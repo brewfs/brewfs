@@ -384,6 +384,150 @@ async fn fixture() -> Fixture {
 }
 
 #[tokio::test]
+async fn shared_workspace_stats_include_rows_and_packed_with_one_observer() {
+    use crate::cadapter::read_observer::{Engine, Ledger, Origin, Phase, ReadClass, ReadContext};
+    use crate::vfs::stats::{FsStats, FsStatsExtension};
+
+    let mut f = fixture().await;
+    f.meta = f
+        .meta
+        .with_upper_row_cache(std::time::Duration::from_secs(60));
+    let stats = FsStats::new();
+    let base_bound = stats.render_allocation_limit();
+    // This is the single installation method called by mount_workspace_with_catalog.
+    assert!(f.meta.install_workspace_stats(&stats));
+    assert!(!f.meta.install_workspace_stats(&stats));
+    for _ in 0..2 {
+        assert_eq!(
+            f.meta.get_xattr_bytes(400, b"user.masked").await.unwrap(),
+            Some(b"nonzero lower xattr".to_vec())
+        );
+    }
+    let row_bound = super::super::RowCacheStatsExtension {
+        counters: f.meta.row_cache_counters.clone(),
+    }
+    .render_max_bytes();
+    let packed_bound = f.lower.snapshot_stats_extension().render_max_bytes();
+    let limit = stats.render_allocation_limit();
+    assert_eq!(limit, base_bound + row_bound + packed_bound);
+
+    let observer = f.lower.mount_budget().read_observer(None).unwrap();
+    let key = (
+        Ledger::LogicalOperation,
+        ReadContext {
+            engine: Engine::Packed,
+            phase: Phase::Runtime,
+            class: ReadClass::StatsSnapshot,
+            origin: Origin::StatsObserver,
+        },
+    );
+    let before = observer
+        .snapshot()
+        .rows
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+    let rendered = stats.render_bounded(limit).unwrap();
+    assert!(rendered.len() <= limit);
+    let metric = |name: &str| {
+        let prefix = format!("{name} ");
+        let values: Vec<_> = rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix(&prefix))
+            .collect();
+        assert_eq!(values.len(), 1, "exactly one {name} counter is required");
+        values[0].parse::<u64>().unwrap()
+    };
+    assert!(metric("brewfs_workspace_row_cache_hits_total") > 0);
+    assert!(metric("brewfs_workspace_row_cache_misses_total") > 0);
+    assert!(metric("brewfs_packed_runtime_backend_range_gets_total") > 0);
+    assert!(metric("brewfs_packed_runtime_backend_received_bytes_total") > 0);
+    for name in [
+        "brewfs_packed_runtime_backend_full_gets_total",
+        "brewfs_packed_runtime_backend_heads_total",
+        "brewfs_packed_runtime_backend_failures_total",
+        "brewfs_packed_logical_bytes_total",
+    ] {
+        metric(name);
+    }
+    assert!(rendered.contains("brewfs_workspace_row_cache_hit_ratio "));
+    let after = observer.snapshot().rows.get(&key).cloned().unwrap();
+    assert_eq!(after.started, before.started + 1);
+    assert_eq!(after.success, before.success + 1);
+    assert_eq!(after.cancelled, before.cancelled);
+    assert_eq!(after.inflight, before.inflight);
+    assert!(after.conserved());
+}
+
+#[tokio::test]
+async fn shared_workspace_stats_without_packed_keep_row_metrics() {
+    let meta = super::test_meta().await;
+    let stats = crate::vfs::stats::FsStats::new();
+    assert!(meta.install_workspace_stats(&stats));
+    let rendered = stats
+        .render_bounded(stats.render_allocation_limit())
+        .unwrap();
+    assert!(rendered.contains("brewfs_workspace_row_cache_hits_total 0\n"));
+    assert!(rendered.contains("brewfs_workspace_row_cache_misses_total 0\n"));
+    assert!(!rendered.contains("brewfs_packed_runtime_backend_"));
+}
+
+#[tokio::test]
+async fn shared_workspace_stats_fit_exact_minimum_output_with_live_read_replies() {
+    use crate::cadapter::read_observer::ReadObserver;
+    use crate::vfs::stats::FsStats;
+    use crate::workspace::packed::snapshot::{
+        SnapshotBudgetLimits, SnapshotBudgetPool, SnapshotMountBudget,
+    };
+
+    let f = fixture().await;
+    let stats = FsStats::new();
+    assert!(f.meta.install_workspace_stats(&stats));
+    let observer = f.lower.mount_budget().read_observer(None).unwrap();
+    // Start from the actual CLI-installed extension, then normalize only its
+    // dynamic observer component to the complete finite-state bound promised
+    // at mount admission. Do not reconstruct the extension's fixed formula.
+    let full_stats_bytes = stats.render_allocation_limit() as u64
+        - observer.render_max_bytes() as u64
+        + ReadObserver::MAX_RENDER_BYTES as u64;
+    let read_bytes = SnapshotBudgetLimits::default().max_read_bytes as u64;
+    let reply_bytes = SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES;
+    let required = full_stats_bytes + read_bytes + 2 * reply_bytes;
+
+    for below_minimum in [true, false] {
+        let mut limits = SnapshotBudgetLimits::default();
+        limits.bytes[SnapshotBudgetPool::Output as usize] = required - u64::from(below_minimum);
+        let budget = SnapshotMountBudget::new(limits).unwrap();
+        if below_minimum {
+            assert!(matches!(
+                budget.validate_frame_capability(8 << 20),
+                Err(crate::workspace::packed::PackedWireError::LimitExceeded(message))
+                    if message.contains("output budget")
+            ));
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
+            continue;
+        }
+        budget.validate_frame_capability(8 << 20).unwrap();
+        let read = budget.output(budget.max_read_bytes()).unwrap();
+        let read_reply = budget
+            .admit(&[(SnapshotBudgetPool::Output, reply_bytes)])
+            .unwrap();
+        let stats_reply = budget
+            .admit(&[(SnapshotBudgetPool::Output, full_stats_bytes + reply_bytes)])
+            .unwrap();
+        assert_eq!(
+            budget.state().used[SnapshotBudgetPool::Output as usize],
+            required
+        );
+        assert!(budget.output(1).is_err());
+        drop(stats_reply);
+        drop(read_reply);
+        drop(read);
+        assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
+    }
+}
+
+#[tokio::test]
 async fn kernel_cache_refill_discards_external_upper_rows_and_checks_binding() {
     let mut f = fixture().await;
     f.meta = f

@@ -245,6 +245,12 @@ impl SnapshotMountBudget {
             as u64)
             .checked_add(crate::vfs::stats::FsStats::BASE_RENDER_MAX_BYTES as u64)
             .and_then(|n| n.checked_add(Self::STATS_EXTENSION_RENDER_MAX_BYTES as u64))
+            .and_then(|n| {
+                n.checked_add(crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES as u64)
+            })
+            .and_then(|n| {
+                n.checked_add(crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES as u64)
+            })
             .and_then(|n| n.checked_add(self.max_read_bytes() as u64))
             .and_then(|n| n.checked_add(2 * Self::REPLY_ALLOCATION_ALLOWANCE_BYTES))
             .ok_or_else(|| {
@@ -690,7 +696,9 @@ mod tests {
         let mut limits = SnapshotBudgetLimits::default();
         let stats_bytes = crate::cadapter::read_observer::ReadObserver::MAX_RENDER_BYTES as u64
             + crate::vfs::stats::FsStats::BASE_RENDER_MAX_BYTES as u64
-            + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES as u64;
+            + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES as u64
+            + crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES as u64
+            + crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES as u64;
         limits.bytes[SnapshotBudgetPool::Output as usize] = stats_bytes
             + limits.max_read_bytes as u64
             + 2 * SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES
@@ -707,7 +715,9 @@ mod tests {
         let mut limits = SnapshotBudgetLimits::default();
         let stats_bytes = crate::cadapter::read_observer::ReadObserver::MAX_RENDER_BYTES as u64
             + crate::vfs::stats::FsStats::BASE_RENDER_MAX_BYTES as u64
-            + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES as u64;
+            + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES as u64
+            + crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES as u64
+            + crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES as u64;
         let required = stats_bytes
             + limits.max_read_bytes as u64
             + 2 * SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES;

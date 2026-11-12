@@ -898,7 +898,9 @@ fn maximum_enum_snapshot_fits_default_output_with_a_normal_read_reply() {
     let mut limits = SnapshotBudgetLimits::default();
     let stats_bytes = ReadObserver::MAX_RENDER_BYTES
         + crate::vfs::stats::FsStats::BASE_RENDER_MAX_BYTES
-        + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES;
+        + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES
+        + crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES
+        + crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES;
     let required = stats_bytes as u64
         + limits.max_read_bytes as u64
         + 2 * SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES;
@@ -992,6 +994,8 @@ fn maximum_enum_snapshot_fits_default_output_with_a_normal_read_reply() {
     let limit = stats
         .render_allocation_limit()
         .checked_add(SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES)
+        .and_then(|n| n.checked_add(crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES))
+        .and_then(|n| n.checked_add(crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES))
         .unwrap();
     assert_eq!(limit, stats_bytes);
     let normal = budget.output(budget.max_read_bytes()).unwrap();
