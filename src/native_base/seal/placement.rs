@@ -26,7 +26,7 @@ pub struct Span {
     /// Seal-scoped frame slot (not the pack-internal ordinal).
     pub frame_slot: u64,
     /// Offset into the frame's raw (outer-codec-undone) payload. For
-    /// NativeBlockV1 frames this must be 0 and is not a byte offset into
+    /// NativeBlock frames this must be 0 and is not a byte offset into
     /// the encoded inner block.
     pub frame_raw_offset: u32,
 }
@@ -191,7 +191,7 @@ pub fn validate_spans(spans: &[Span], decoded_len: u32) -> WireResult<()> {
     Ok(())
 }
 
-/// NativeBlockV1 frames allow exactly one span: `block_offset=0`,
+/// NativeBlock frames allow exactly one span: `block_offset=0`,
 /// `length=decoded_len`, `frame_raw_offset=0` (spec 04 §4). The span's
 /// `length` lives in the decoded domain; it must not be compared against the
 /// frame's `raw_len`, which describes the encoded inner block.
@@ -200,7 +200,7 @@ pub fn validate_native_single_span(spans: &[Span], decoded_len: u32) -> WireResu
         return Err(WireError::invalid(
             "placement spans",
             format!(
-                "NativeBlockV1 placement must have exactly one span, has {}",
+                "NativeBlock placement must have exactly one span, has {}",
                 spans.len()
             ),
         ));
@@ -210,7 +210,7 @@ pub fn validate_native_single_span(spans: &[Span], decoded_len: u32) -> WireResu
         return Err(WireError::invalid(
             "placement spans",
             format!(
-                "NativeBlockV1 span must be (0, {decoded_len}, slot, 0), got \
+                "NativeBlock span must be (0, {decoded_len}, slot, 0), got \
                  (block_offset {}, length {}, frame_raw_offset {})",
                 span.block_offset, span.length, span.frame_raw_offset
             ),

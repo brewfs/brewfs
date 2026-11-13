@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record and validate owned resources for a packed-v3 runner invocation.
+"""Record and validate owned resources for a packed runner invocation.
 
 The journal is deliberately a small, append-only event log.  It proves the
 runner's resource domain and cleanup decisions without trusting a shell exit
@@ -17,7 +17,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA = "packed-v3-resource-journal-v1"
+SCHEMA = "packed-resource-journal-v1"
 _EVENTS = {
     "init",
     "compose_started",

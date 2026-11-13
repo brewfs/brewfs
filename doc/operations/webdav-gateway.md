@@ -205,11 +205,11 @@ WebDAV 的 volume 参数与 `brewfs mount` 共用同一组定义，常用参数�
 - `--config FILE` 以及 `mount` 支持的其他公共 volume 参数。
 
 使用 `--config` 时，配置文件提供公共 volume/backend 设置；WebDAV 用户、密码、TLS
-证书等网关专属设置仍应使用对应 flag 或环境变量。WebDAV MVP 只支持 `flat-v1` volume，
-不支持 `workspace-v1`。
+证书等网关专属设置仍应使用对应 flag 或环境变量。WebDAV MVP 只支持 `flat` volume，
+不支持 `workspace`。
 
 启动多个前端访问同一 volume 时，必须使用完全一致的 backend identity。WebDAV 当前会
-使用与 mount/S3 相同的 flat-v1 cache namespace，并按 metadata backend 使用对应的
+使用与 mount/S3 相同的 flat cache namespace，并按 metadata backend 使用对应的
 MetaClient TTL。
 
 ## 5. 客户端连接示例
@@ -405,7 +405,7 @@ curl --fail -u testuser:testpass -X OPTIONS \
 | 缺少凭据错误 | 带认证启动时同时提供 `--user` 和 `--password`；匿名场景显式加 `--allow-anonymous` |
 | TLS certificate/key 不完整 | `--tls-cert` 和 `--tls-key` 必须成对提供 |
 | 非 loopback HTTP 被拒绝 | Basic Auth 的非 loopback listener 必须启用 TLS |
-| `workspace-v1` 被拒绝 | 当前 WebDAV MVP 只支持 `flat-v1` |
+| `workspace` 被拒绝 | 当前 WebDAV MVP 只支持 `flat` |
 | `address already in use` | 检查端口占用：`ss -ltnp | grep 9001`，或更换 `--listen` |
 | TLS 握手失败 | 检查证书 SAN、私钥权限、证书链和客户端 CA 信任；用 `openssl s_client` 诊断 |
 
@@ -432,7 +432,7 @@ curl --fail -u testuser:testpass -X OPTIONS \
 
 ## 8. 生产限制和兼容性声明
 
-- 只有 `flat-v1` volume；不支持 workspace overlay。
+- 只有 `flat` volume；不支持 workspace overlay。
 - Basic Auth 是单用户模型；没有 Bearer、ACL、多用户授权或 mTLS 身份映射。
 - dead properties 依赖 metadata backend 的 xattr capability。
 - 递归 directory COPY 无法从 dav-server callback 得到源 collection 路径，因此源目录 dead properties 不保证复制。

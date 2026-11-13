@@ -17,8 +17,8 @@ import sys
 metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
 package = next(pkg for pkg in metadata["packages"] if pkg["name"] == "brewfs")
 targets = {target["name"]: target for target in package["targets"] if "bin" in target["kind"]}
-assert set(targets) == {"brewfs", "packed_v3_snapshot_fixture"}, sorted(targets)
-assert "workspace-overlay" in targets["packed_v3_snapshot_fixture"]["required-features"]
+assert set(targets) == {"brewfs", "packed_snapshot_fixture"}, sorted(targets)
+assert "workspace" in targets["packed_snapshot_fixture"]["required-features"]
 assert pathlib.Path(targets["brewfs"]["src_path"]).name == "main.rs"
 print("Only BrewFS and the v3 packed fixture are exposed as package binaries")
 PY

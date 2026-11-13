@@ -454,7 +454,7 @@ enum ObjectLayout {
 /// BlockStore backed by cadapter::client.
 ///
 /// Ordinary new blocks use `chunks-v2/{slice_id}/{block_index}` and a framed
-/// payload. Eligible flat-v1 small slices may share an indexed object in
+/// payload. Eligible flat small slices may share an indexed object in
 /// `chunks-coalesced-v1`. Existing `chunks/{slice_id}/{block_index}` objects
 /// remain readable through an explicit legacy fallback.
 pub struct ObjectBlockStore<B: ObjectBackend> {
@@ -854,7 +854,7 @@ impl<B: ObjectBackend + 'static> ObjectBlockStore<B> {
     /// block-range deletion; its domain cleaner is the only deletion owner.
     #[allow(dead_code)]
     pub fn with_volume_format(mut self, volume_format: impl AsRef<str>) -> Self {
-        self.legacy_delete_allowed = volume_format.as_ref() != "workspace-native-v2";
+        self.legacy_delete_allowed = volume_format.as_ref() != "native-workspace";
         self
     }
 
@@ -2154,7 +2154,7 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
     async fn delete_range(&self, key: BlockKey, block_count: u64) -> anyhow::Result<()> {
         if !self.legacy_delete_allowed {
             anyhow::bail!(
-                "legacy block deletion is disabled for workspace-native-v2; use private-domain cleanup"
+                "legacy block deletion is disabled for native-workspace; use private-domain cleanup"
             );
         }
         if let Some((group, _)) = coalesce::decode_id(key.0) {
@@ -4949,7 +4949,7 @@ mod tests {
         let cache_dir = tempfile::tempdir().unwrap();
         let store = local_object_store(object_dir.path(), cache_dir.path(), 4096)
             .await
-            .with_volume_format("workspace-native-v2");
+            .with_volume_format("native-workspace");
         let error = store.delete_range((1, 0), 1).await.unwrap_err();
         assert!(
             error

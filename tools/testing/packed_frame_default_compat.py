@@ -116,7 +116,7 @@ def run_arm(args, source, label, cap):
     result = inventory(objects, manifest, cap,
                        [path.stat().st_size for path in source.iterdir()])
     write_json(arm / "inventory.json", result)
-    config = dict(volume_format="packed-metadata-v3",
+    config = dict(volume_format="packed-snapshot",
                   packed_manifest_key=manifest.read_text().strip(),
                   data=dict(backend="local-fs", localfs=dict(data_dir=str(objects))),
                   layout=dict(chunk_size=67108864, block_size=4194304),

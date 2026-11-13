@@ -229,12 +229,12 @@ impl PackedGcAdmin for FakeAdmin {
         &self,
         request: PackedGcTickRequest,
     ) -> Result<
-        brewfs::workspace_overlay::packed_admin::PackedGcTickReport,
-        brewfs::workspace_overlay::error::WorkspaceError,
+        brewfs::workspace::packed_admin::PackedGcTickReport,
+        brewfs::workspace::error::WorkspaceError,
     > {
         self.dispatched.fetch_add(1, Ordering::SeqCst);
         Ok(
-            brewfs::workspace_overlay::packed_admin::PackedGcTickReport {
+            brewfs::workspace::packed_admin::PackedGcTickReport {
                 next_cursor: request.cursor,
                 scanned: 0,
                 attempted: 0,
@@ -244,7 +244,7 @@ impl PackedGcAdmin for FakeAdmin {
             },
         )
     }
-    async fn shutdown(&self) -> Result<(), brewfs::workspace_overlay::error::WorkspaceError> {
+    async fn shutdown(&self) -> Result<(), brewfs::workspace::error::WorkspaceError> {
         self.shutdowns.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -383,7 +383,7 @@ fn persisted_cursor_survives_more_catalogs_than_an_in_memory_page() {
             let uid = Uuid::from_u128(id as u128).to_string();
             let mut map = cursor_map(&uid, &format!("catalog-{id}"));
             // A deep valid History route must survive a complete discovery pass.
-            let after = format!("packed/v3/registry/history-root/{id:08}").into_bytes();
+            let after = format!("packed/registry/history-root/{id:08}").into_bytes();
             let encoded = serde_json::json!({ "tier": "History", "after": after }).to_string();
             PackedGcCursor::decode(encoded.as_bytes()).unwrap();
             map.data

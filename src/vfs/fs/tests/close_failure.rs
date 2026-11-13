@@ -1,11 +1,11 @@
 use super::*;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::VfsError;
-use crate::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
-use crate::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
-use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-use crate::workspace_overlay::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
-use crate::workspace_overlay::stores::database::{SqliteWorkspaceStore, StoreFailpoint};
+use crate::workspace::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
+use crate::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use crate::workspace::meta_layer::WorkspaceMetaLayer;
+use crate::workspace::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
+use crate::workspace::stores::database::{SqliteWorkspaceStore, StoreFailpoint};
 use uuid::Uuid;
 
 async fn fixture() -> (
@@ -22,7 +22,7 @@ async fn fixture() -> (
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
             workspace_id,

@@ -1,6 +1,6 @@
 use super::*;
-use crate::workspace_overlay::catalog::{AcquireLease, WorkspaceStore};
-use crate::workspace_overlay::ids::LeaseId;
+use crate::workspace::catalog::{AcquireLease, WorkspaceStore};
+use crate::workspace::ids::LeaseId;
 
 async fn fixture() -> (tempfile::TempDir, Manager) {
     let dir = tempfile::tempdir().unwrap();
@@ -19,7 +19,7 @@ fn initialize() -> VolumeRequest {
         owner: Some("alice".into()),
         expected_volume_id: None,
         confirm_empty: true,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     }
 }
 
@@ -175,7 +175,7 @@ async fn lease_blocks_delete_and_success_only_marks_metadata() {
     );
     assert!(!op.items[0].physical_reclaimed);
     store
-        .release_lease(crate::workspace_overlay::catalog::ReleaseLease {
+        .release_lease(crate::workspace::catalog::ReleaseLease {
             lease_id: lease.lease_id,
             holder_generation: 1,
         })
@@ -236,7 +236,7 @@ async fn register_validates_existing_catalog_identity_without_initializing() {
     store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: volume,
             workspace_id: WorkspaceId::new(),
@@ -253,7 +253,7 @@ async fn register_validates_existing_catalog_identity_without_initializing() {
         owner: None,
         expected_volume_id: Some(volume),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     };
     let op = completed(
         &manager,
@@ -275,7 +275,7 @@ async fn initialize_rejects_an_already_initialized_catalog() {
     store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: id,
             workspace_id: WorkspaceId::new(),
@@ -303,7 +303,7 @@ async fn initialize_rejects_an_already_initialized_catalog() {
         owner: None,
         expected_volume_id: Some(id),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     };
     let registered = completed(
         &manager,
@@ -408,7 +408,7 @@ async fn registering_missing_file_does_not_create_a_catalog() {
         owner: None,
         expected_volume_id: Some(Uuid::new_v4()),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     };
     let op = completed(
         &manager,
@@ -514,7 +514,7 @@ async fn reopen_recovers_volume_commit_before_registration_or_success_checkpoint
     store
         .create_volume_root_in_empty_namespace(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: record.operation.volume_id,
             workspace_id: root,
@@ -729,7 +729,7 @@ async fn registration_rejects_a_header_without_a_complete_catalog() {
         .connect_with(SqliteConnectOptions::new().filename(dir.path().join("catalog.sqlite")))
         .await
         .unwrap();
-    sqlx::query("INSERT INTO ws_v1_volume_header VALUES(1,'workspace-v1',1,?,0)")
+    sqlx::query("INSERT INTO ws_v1_volume_header VALUES(1,'workspace',1,?,0)")
         .bind(volume.as_bytes().as_slice())
         .execute(&pool)
         .await
@@ -744,7 +744,7 @@ async fn registration_rejects_a_header_without_a_complete_catalog() {
         owner: None,
         expected_volume_id: Some(volume),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     };
     let op = completed(
         &manager,
@@ -812,7 +812,7 @@ async fn accepted_retry_survives_restart_before_worker_starts() {
         OperationState::Failed
     );
     store
-        .release_lease(crate::workspace_overlay::catalog::ReleaseLease {
+        .release_lease(crate::workspace::catalog::ReleaseLease {
             lease_id: lease.lease_id,
             holder_generation: 1,
         })
@@ -860,13 +860,13 @@ async fn registration_rejects_orphan_packed_history_without_native_fallback() {
         .connect_with(SqliteConnectOptions::new().filename(dir.path().join("catalog.sqlite")))
         .await
         .unwrap();
-    sqlx::query("INSERT INTO ws_v1_volume_header VALUES(1,'workspace-v1',1,?,0)")
+    sqlx::query("INSERT INTO ws_v1_volume_header VALUES(1,'workspace',1,?,0)")
         .bind(volume.as_bytes().as_slice())
         .execute(&pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO ws_v3_packed_bindings(workspace_id,binding_version,record) VALUES(?,2,?)",
+        "INSERT INTO ws_snapshot_packed_bindings(workspace_id,binding_version,record) VALUES(?,2,?)",
     )
     .bind(WorkspaceId::new().as_bytes().as_slice())
     .bind(vec![1u8])
@@ -879,7 +879,7 @@ async fn registration_rejects_orphan_packed_history_without_native_fallback() {
         owner: None,
         expected_volume_id: Some(volume),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     };
     let op = completed(
         &manager,

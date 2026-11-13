@@ -36,7 +36,7 @@ param(
     [ValidateScript({
         $tools = @($_ -split '\s+' | Where-Object { $_ })
         if ($tools.Count -eq 0 -or @($tools | Where-Object { $_ -notin @('packed-tree', 'packed-stat', 'packed-smallfiles', 'packed-gpu-smallfiles') }).Count -ne 0) {
-            throw 'Unsupported packed-v3 tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
+            throw 'Unsupported packed tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
         }
         $true
     })]
@@ -147,7 +147,7 @@ $packedPrefix = "$rootPrefix/packed"
 $rawPrefix = "$rootPrefix/juicefs/raw"
 $selectedBackends = if ($MetadataBackend) { @($MetadataBackend) } else { @($MetadataBackends) }
 if (-not $selectedBackends -or $selectedBackends.Count -eq 0) { throw 'At least one JuiceFS metadata backend is required.' }
-$artifactRoot = if ($ArtifactDirectory) { $ArtifactDirectory } else { Join-Path $scriptDir '..\artifacts\aliyun-packed-v3-vs-juicefs' }
+$artifactRoot = if ($ArtifactDirectory) { $ArtifactDirectory } else { Join-Path $scriptDir '..\artifacts\aliyun-packed-vs-juicefs' }
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
 $createLog = Join-Path $artifactRoot 'create.log'
 $packedLog = Join-Path $artifactRoot 'packed-run.log'
@@ -214,7 +214,7 @@ try {
         PackedDecodedFrameCacheBytes = $PackedDecodedFrameCacheBytes
         PackedMetadataCacheBytes = $PackedMetadataCacheBytes
         PackedMetadataPrefetch = $PackedMetadataPrefetch
-        VolumeFormat = 'packed-metadata-v3'
+        VolumeFormat = 'packed-snapshot'
         ToolTimeoutSeconds = $ToolTimeoutSeconds
         RepoRoot = $RepoRoot
         WslDistribution = $WslDistribution

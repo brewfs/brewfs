@@ -11,8 +11,8 @@ metadata="${ENTITY_SMOKE_META:-redis}"
 if [[ "${ENTITY_SMOKE_TEST_ONLY:-0}" == 1 ]]; then
     : "${ENTITY_SMOKE_TEST_BINARY:?test-only mode requires a library test executable}"
 else
-    : "${ENTITY_SMOKE_BINARY:?set the workspace-overlay brewfs binary}"
-    : "${ENTITY_SMOKE_FIXTURE:?set the packed_v3_snapshot_fixture binary}"
+    : "${ENTITY_SMOKE_BINARY:?set the workspace brewfs binary}"
+    : "${ENTITY_SMOKE_FIXTURE:?set the packed_snapshot_fixture binary}"
     [[ -x "$ENTITY_SMOKE_BINARY" && -x "$ENTITY_SMOKE_FIXTURE" && -c /dev/fuse ]]
     if [[ "$metadata" == tikv ]]; then
         : "${ENTITY_SMOKE_PROBE:?TiKV smoke requires the entity_metadata_probe example}"
@@ -96,7 +96,7 @@ if [[ -n "${ENTITY_SMOKE_TEST_BINARY:-}" ]]; then
     [[ -x "$ENTITY_SMOKE_TEST_BINARY" ]]
     export BREWFS_TEST_REDIS_URL="redis://127.0.0.1:$redis_port/0"
     export BREWFS_PACKED_GRAPH_TEST_S3_ENDPOINT="$endpoint"
-    for filter in packed_entity_lower workspace_overlay::entity; do
+    for filter in packed_entity_lower workspace::entity; do
         export BREWFS_PACKED_GRAPH_TEST_S3_BUCKET="brewfs-graph-test-$(python3 -c 'import uuid; print(uuid.uuid4())')"
         test_args=("$filter" --include-ignored --test-threads=1)
         if [[ "$metadata" != tikv ]]; then test_args+=(--skip tikv_entity); fi
@@ -169,7 +169,7 @@ cache:
   write_ssd_bytes: 67108864
 EOF
         "$ENTITY_SMOKE_BINARY" mount "$mount_path" --config "$art/$cell/mount.yaml" \
-            --volume-format workspace-entity-v1 --experimental-entity-mount \
+            --volume-format entity-workspace --experimental-entity-mount \
             --entity-volume-id "$volume" --workspace "$namespace" \
             --workspace-namespace "entity-smoke-$namespace" "${extra[@]}" >"$art/$cell/mount.log" 2>&1 &
         mount_pid=$!
@@ -202,14 +202,14 @@ PY
             "${DOCKER[@]}" unpause "$paused_container" >/dev/null
             paused_container=""
             "$ENTITY_SMOKE_BINARY" mount "$mount_path" --config "$art/$cell/mount.yaml" \
-                --volume-format workspace-entity-v1 --experimental-entity-mount \
+                --volume-format entity-workspace --experimental-entity-mount \
                 --entity-volume-id "$volume" --workspace "$namespace" \
                 --workspace-namespace "entity-smoke-$namespace" --entity-recover-uploads >"$art/$cell/recovery.log" 2>&1
             snapshot_metadata "$art/$cell/metadata-after.json"
             for sid in 1 2; do
                 "${DOCKER[@]}" run --rm --network host -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_EC2_METADATA_DISABLED \
                     -v "$work:/out" "${ENTITY_SMOKE_AWS_IMAGE:-amazon/aws-cli:latest}" --region us-east-1 --endpoint-url "$endpoint" \
-                    s3api get-object --bucket "$bucket" --key "workspace-entity-v1/$volume/$namespace/$sid" \
+                    s3api get-object --bucket "$bucket" --key "entity-workspace/$volume/$namespace/$sid" \
                     "/out/recovered-$sid" >"$art/$cell/object-$sid.log" 2>&1
             done
             python3 - "$work" "$art/$cell" <<'PY'

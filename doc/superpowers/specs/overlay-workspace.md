@@ -11,14 +11,14 @@ The [current entity workspace contract](#current-entity-workspace-contract)
 below is the live target. It defines immutable packed lower plus current-entity
 upper metadata, explicit format dispatch, and the actual fresh-only experiment
 boundary. The [operator lifecycle reference](#operator-lifecycle-reference)
-preserves the existing `workspace-v1` control-plane design and its dated
+preserves the existing `workspace` control-plane design and its dated
 limitations. Head/layer/CAS examples in that reference describe the older
-format; they are not requirements for `WorkspaceEntityV1` and do not reopen
+format; they are not requirements for `EntityWorkspace` and do not reopen
 deferred admission, conversion, cutover or crash-takeover work.
 
 The [packed-meta specification](packed-meta.md) owns immutable packed object
 formats, authentication and read contracts. The
-[workspace architecture](../../architecture/workspace-overlay.md) and dated
+[workspace architecture](../../architecture/workspace.md) and dated
 implementation checkpoints remain the implementation/evidence index.
 
 ## Current entity workspace contract
@@ -85,9 +85,9 @@ established a result. This is not a measured negative performance result.
 Baseline diagnostic artifacts are retained in the
 [WRITE investigation](../plans/2026-10-19-overlay-write-r32.md).
 
-The maintained [architecture](../../architecture/workspace-overlay.md) describes
+The maintained [architecture](../../architecture/workspace.md) describes
 the same target model. The
-[packed-v3 specification](packed-meta.md)
+[packed specification](packed-meta.md)
 continues to define immutable packed objects, checksums, authenticated manifests
 and bounded reads. Removing a mutable overlay digest does not weaken those
 integrity contracts.
@@ -112,7 +112,7 @@ creating a new immutable lower remains an explicit packed publication operation.
 Ordinary fsync/close does not pack a workspace.
 
 This is a staged implementation contract. The experiment defines
-`workspace-entity-v1` and a bounded reference schema; it does not establish a
+`entity-workspace` and a bounded reference schema; it does not establish a
 production wire-format promise, mounted-write admission or a throughput gain.
 
 ### 2. Required semantics and removable machinery
@@ -148,13 +148,13 @@ old scalar-row layout also did not preserve a complete operation history.
 
 ### 3. Compatibility and format boundary
 
-`workspace-overlay` stays off by default. Ordinary flat volumes retain their
+`workspace` stays off by default. Ordinary flat volumes retain their
 existing `MetaStore -> MetaClient -> VFS` path, schema, caches, object keys and
 background jobs. Workspace volumes use the workspace adapter and explicitly
 selected workspace backend. An overlay error must not fall back to flat
 semantics, and a binary lacking the required feature/format must fail closed.
 
-The existing `workspace-v1`, catalog format 2, `BaseRevision` and bincode bytes
+The existing `workspace`, catalog format 2, `BaseRevision` and bincode bytes
 remain definitions of the shipped format. Do not silently reinterpret those
 bytes, change a hash field's meaning, or make an old binary read the new layout.
 The target requires an explicit layout/capability marker and a separate upper
@@ -163,7 +163,7 @@ the schema change, not an undocumented reuse of an old marker.
 
 Existing `SliceDesc` and `chunks/{slice_id}/{block_index}` object addressing need
 not change. Upper records may refer to those immutable objects through a neutral
-read-plan interface. The packed-v3 wire format remains authoritative for lower
+read-plan interface. The packed wire format remains authoritative for lower
 object references; an old layer root hash must not be treated as a manifest
 object digest.
 
@@ -678,7 +678,7 @@ admits operations. Partial mount failure releases only resources it owns.
 The minimal mounted experiment is narrower than that production contract.
 `entity/experiment.rs` exposes crate-private `RedisEntityExperiment` and
 `ExperimentalEntityMount` wiring for an unused packed catalog and fresh entity
-namespace. The CLI selects `--volume-format workspace-entity-v1` with
+namespace. The CLI selects `--volume-format entity-workspace` with
 `--experimental-entity-mount`, a packed manifest key, a non-nil
 `--entity-volume-id` and a non-nil workspace UUID. Manifest/workspace inputs
 may use their existing configuration sources. `--workspace-namespace` is
@@ -717,7 +717,7 @@ object ownership solely because the originating workspace was deleted.
 
 An explicit export/publication must quiesce the source, drain writes and walk a
 stable effective namespace/map view. Ordinary Redis `SCAN` alone is not a
-snapshot. Build/upload/validate packed objects using packed-v3 integrity rules,
+snapshot. Build/upload/validate packed objects using packed integrity rules,
 establish the new immutable owner, then publish its descriptor/binding through
 the administrative recovery protocol. No mutable-layer digest or runtime total
 order is required. A checksum over the exported immutable objects remains valid
@@ -932,7 +932,7 @@ Do not interpret overlapping concurrent hold timers as exclusive occupancy.
 Those broader acceptance requirements are deferred for the current experiment.
 Its scope is one minimal smoke per available arm, then WRITE/READBACK at
 1/16/32 workers in opposite arm orders using Redis and RustFS. The requested
-arms are native, entity over frozen native, and entity over packed-v3; a missing
+arms are native, entity over frozen native, and entity over packed; a missing
 arm is explicitly skipped with no substitute.
 
 The [mount checkpoint](../plans/2026-10-20-overlay-entity-mount.md) records all
@@ -1025,7 +1025,7 @@ total-order-replay contract and removes live mutable-layer digest identity.
 Upper-only diff candidates remain available. These are explicit tradeoffs;
 they do not assert that the shipped layout was a complete replay log.
 
-The stage 2 experiment adds separately dispatched `workspace-entity-v1`
+The stage 2 experiment adds separately dispatched `entity-workspace`
 namespace and file APIs. Packed ownership joins the existing collector census;
 entity writes use current maps and strict durable uploads, and truncate has a
 replayable inode-local intent. The direct `EntityFuse` namespace/data path owns
@@ -1039,7 +1039,7 @@ These correctness gates are not performance acceptance.
 
 ## Operator lifecycle reference
 
-**Historical `workspace-v1` operator contract, last revised 2026-10-17.** The
+**Historical `workspace` operator contract, last revised 2026-10-17.** The
 CRDs, reconciliation/status rules, finalizers and operational examples below
 are retained because existing old-format workspaces and their operator code
 remain separate from the entity experiment. They do not claim entity-format
@@ -1056,7 +1056,7 @@ finalizer/recovery/GC和真实后端验收仍必需；旧flat/CR/存储格式兼
 - 日期：2026-09-03
 - 目标版本：`storage.brewfs.io/v1alpha1`
 - 适用后端：Redis、TiKV
-- 依赖能力：`workspace-overlay` / `workspace-v1`
+- 依赖能力：`workspace` / `workspace`
 
 ### 2026-10-17 模型更新
 
@@ -1066,7 +1066,7 @@ workspace 模型为 **不可变 lower + 不轮转的可写 overlay**：
   已删除；
 - `BrewFSWorkspaceSnapshot` 只对 packed workspace 生效（pin clean packed snapshot、发布或
   恢复 packed publication）；native workspace 的 snapshot 请求进入 `Failed`，消息为
-  “snapshots require a packed-v3 workspace; native workspaces are never sealed”；
+  “snapshots require a packed workspace; native workspaces are never sealed”；
 - mount 期间 head 不轮转；改变 head 的 packed publication 必须持有该 workspace 唯一的
   active writable lease（见 workspace overlay 实现规范 §15.3）；
 - mount 启动不再执行 seal recovery（`recover_incomplete_seals` 已删除）。
@@ -1092,7 +1092,7 @@ workspace 模型为 **不可变 lower + 不轮转的可写 overlay**：
 
 #### 2.1 本期范围
 
-- 扩展 `BrewFSCluster`，使其能够初始化并声明一个 `workspace-v1` volume；
+- 扩展 `BrewFSCluster`，使其能够初始化并声明一个 `workspace` volume；
 - 新增 `BrewFSWorkspace`；
 - 新增 `BrewFSWorkspaceMount`；
 - 新增 `BrewFSWorkspaceSnapshot`；
@@ -1117,8 +1117,8 @@ workspace 模型为 **不可变 lower + 不轮转的可写 overlay**：
 
 #### 2.3 Packed lower 的后续能力边界（2026-10-03 review）
 
-本文baseline仍是 `workspace-v1` 与精确sealed `BaseRevision`；新增
-[packed-v3 SPEC](packed-meta.md)
+本文baseline仍是 `workspace` 与精确sealed `BaseRevision`；新增
+[packed SPEC](packed-meta.md)
 的readonly mount不代表operator已有packed lower support。当前binding/head-CAS/
 recovery/GC尚未接通，不能只把manifest key塞进现有revision字段就置Ready。
 
@@ -1220,7 +1220,7 @@ brewfs = { path = "../..", default-features = false, optional = true }
 
 [features]
 default = []
-workspace-operator = ["dep:brewfs", "brewfs/workspace-overlay"]
+workspace-operator = ["dep:brewfs", "brewfs/workspace"]
 ```
 
 建议代码布局：
@@ -1247,8 +1247,8 @@ operator/brewfs-operator/src/
 
 - 未启用 `workspace-operator` 时，不编译上述模块和三个新 controller；
 - 现有 `BrewFSCluster` 和 `BrewFSMount` 的序列化结果不得变化；
-- 普通 BrewFS binary 的 `workspace-overlay` feature 仍默认关闭；
-- workspace runtime 镜像必须显式包含 `workspace-overlay`。
+- 普通 BrewFS binary 的 `workspace` feature 仍默认关闭；
+- workspace runtime 镜像必须显式包含 `workspace`。
 
 ### 6. `BrewFSCluster` 扩展
 
@@ -1500,7 +1500,7 @@ workspace mount 默认采用同 Pod sidecar 模型，不使用节点级 hostPath
 
 生成的 sidecar 必须显式传入：
 
-- `volume_format=workspace-v1`；
+- `volume_format=workspace`；
 - `--workspace <status.workspaceId>`；
 - `--workspace-namespace <cluster workspace namespace>`；
 - Redis 或 TiKV backend 参数；
@@ -1557,7 +1557,7 @@ struct WorkspaceMountRecord {
 - `mark_mount_fenced(...)`；
 - `load_mount_session(mount_id)`。
 
-operator 从该记录判断 durable drain，不从 Pod phase 或日志推断。新增 side record 不改变 `workspace-v1` 已有 record 编码；Redis/TiKV 需使用独立 versioned key/table，并提供向前兼容初始化。
+operator 从该记录判断 durable drain，不从 Pod phase 或日志推断。新增 side record 不改变 `workspace` 已有 record 编码；Redis/TiKV 需使用独立 versioned key/table，并提供向前兼容初始化。
 
 #### 8.5 Status
 
@@ -2225,5 +2225,5 @@ uncertain lifecycle state fails closed
 
 | Former source | Consolidated section |
 | --- | --- |
-| [2026-08-23-brewfs-workspace-overlay-implementation-spec.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-08-23-brewfs-workspace-overlay-implementation-spec.md) | Current entity workspace contract |
+| [2026-08-23-brewfs-workspace-implementation-spec.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-08-23-brewfs-workspace-implementation-spec.md) | Current entity workspace contract |
 | [2026-09-03-brewfs-workspace-operator-lifecycle-spec.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-09-03-brewfs-workspace-operator-lifecycle-spec.md) | Operator lifecycle reference |

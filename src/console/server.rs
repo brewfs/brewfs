@@ -335,11 +335,11 @@ mod tests {
         let body = raw.split("\r\n\r\n").nth(1).unwrap();
         let value: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(value["service"], "brewfs-console");
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         assert!(dir.path().join("state/manager.sqlite").is_file());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_initialized_router_retains_single_instance_guard() {
         let dir = tempdir().unwrap();
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(value["multi_replica"], false);
         assert_eq!(value["mount"], false);
         assert_eq!(value["remote_ready"], false);
-        assert_eq!(value["enabled"], cfg!(feature = "workspace-overlay"));
+        assert_eq!(value["enabled"], cfg!(feature = "workspace"));
         assert_eq!(value["max_fork_count"], 100);
         assert_eq!(value["max_pending_operations"], 128);
         assert_eq!(value["pending_limit_applies_to"], "new_operations");
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(value["redis_sentinel_discovery"], false);
         assert_eq!(value["benchmark"], false);
         assert_eq!(value["migration"], false);
-        let enabled = cfg!(feature = "workspace-overlay");
+        let enabled = cfg!(feature = "workspace");
         let native = cfg!(feature = "native-packed-base");
         assert_eq!(value["native_p1_catalog"], native);
         assert_eq!(
@@ -428,12 +428,9 @@ mod tests {
             })
         );
         let formats = value["formats"].as_array().unwrap();
+        assert_eq!(formats.contains(&serde_json::json!("workspace")), enabled);
         assert_eq!(
-            formats.contains(&serde_json::json!("workspace-v1")),
-            enabled
-        );
-        assert_eq!(
-            formats.contains(&serde_json::json!("workspace-native-v2")),
+            formats.contains(&serde_json::json!("native-workspace")),
             native
         );
         let profiles = value["profiles"].as_array().unwrap();
@@ -441,7 +438,7 @@ mod tests {
         if native {
             let profile = profiles
                 .iter()
-                .find(|profile| profile["volume_format"] == "workspace-native-v2")
+                .find(|profile| profile["volume_format"] == "native-workspace")
                 .unwrap();
             assert_eq!(
                 profile["metadata_backends"],
@@ -506,7 +503,7 @@ mod tests {
         assert!(!dir.path().join("state").exists());
     }
 
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     #[tokio::test]
     async fn manager_disabled_mutations_explicitly_report_unsupported() {
         let dir = tempdir().unwrap();
@@ -528,7 +525,7 @@ mod tests {
         assert_eq!(value["error"]["code"], "unsupported");
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_rejects_invalid_ids_keys_and_schema_without_opening_storage() {
         let dir = tempdir().unwrap();
@@ -582,7 +579,7 @@ mod tests {
         assert!(!dir.path().join("state").exists());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_rejects_invalid_pagination_before_opening_storage() {
         let dir = tempdir().unwrap();
@@ -597,7 +594,7 @@ mod tests {
         assert!(!dir.path().join("state").exists());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_rejects_native_revision_downgrades_and_connection_fields_before_storage() {
         let dir = tempdir().unwrap();
@@ -678,7 +675,7 @@ mod tests {
         assert!(!dir.path().join("state").exists());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn manager_json(
         app: &Router,
         method: &str,
@@ -717,7 +714,7 @@ mod tests {
         (status, value)
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn manager_finished(app: &Router, id: &serde_json::Value) -> serde_json::Value {
         let uri = format!("/api/v1/operations/{}", id.as_str().unwrap());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -737,7 +734,7 @@ mod tests {
         .expect("Manager operation timed out")
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_operation_lookup_starts_without_resolving_missing_remote_credentials() {
         let dir = tempdir().unwrap();
@@ -768,7 +765,7 @@ mod tests {
         assert!(state_dir.join("manager.sqlite").is_file());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_http_rejects_native_sqlite_before_creating_catalog_metadata() {
         let dir = tempdir().unwrap();
@@ -785,7 +782,7 @@ mod tests {
         .unwrap();
         let app = build_router(test_config(dir.path(), AuthConfig::Disabled));
         let (status, response) = manager_json(&app, "POST", "/api/v1/volumes", Some("unsupported-native-sqlite"), Some(&serde_json::json!({
-            "mode":"initialize", "catalog_ref":"local", "confirm_empty":true, "volume_format":"workspace-native-v2"
+            "mode":"initialize", "catalog_ref":"local", "confirm_empty":true, "volume_format":"native-workspace"
         }))).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{response}");
         assert_eq!(response["error"]["code"], "unsupported");
@@ -795,7 +792,7 @@ mod tests {
         assert_eq!(response["volumes"], serde_json::json!([]));
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn manager_http_uses_real_catalog_and_scopes_forks_and_deletion() {
         let dir = tempdir().unwrap();
@@ -856,7 +853,7 @@ mod tests {
         assert!(inspected.get("native").is_none());
         assert_eq!(inspected["mount_identity"]["catalog_ref"], "local");
         assert_eq!(inspected["mount_identity"]["metadata_backend"], "sqlite");
-        assert_eq!(inspected["mount_identity"]["volume_format"], "workspace-v1");
+        assert_eq!(inspected["mount_identity"]["volume_format"], "workspace");
         assert_eq!(inspected["mount_identity"]["volume_id"], volume);
         assert_eq!(inspected["mount_identity"]["workspace_id"], root);
         assert!(inspected["mount_identity"]["upper_bucket"].is_null());

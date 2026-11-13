@@ -8,8 +8,8 @@ repository is `upstream`.
 ## Current user scope (2026-10-07)
 
 Complete the required SPEC implementation and small correctness gates before
-planning performance experiments. Packed metadata supports packed-v3 only;
-wire005 is its encoding identifier. Public modules, APIs, metrics and budget
+planning performance experiments. Packed metadata supports packed only;
+snapshot is its encoding identifier. Public modules, APIs, metrics and budget
 configuration use V3/v3, and old 004/v1/v2 compatibility is not required.
 Prioritize Redis/TiKV metadata publication, recovery, reader retention and GC.
 The local SQLite scratch inventory is disposable graph-validation storage.

@@ -1,9 +1,9 @@
 //! Kernel evidence for CLI cleanup, independent of vendor Session completion.
 //! A retained-error marker keeps outer SDK shutdown from destroying live work.
 
-use crate::workspace_overlay::packed_v3::wire005::V3MountBudget;
+use crate::workspace::packed::snapshot::SnapshotMountBudget;
 #[cfg(target_os = "linux")]
-use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3OwnedPermit};
+use crate::workspace::packed::snapshot::{SnapshotBudgetPool, SnapshotOwnedPermit};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ pub(super) fn requires_retention(result: &anyhow::Result<()>) -> bool {
 #[cfg(target_os = "linux")]
 struct OwnedMountInfo {
     bytes: Vec<u8>,
-    _permit: V3OwnedPermit,
+    _permit: SnapshotOwnedPermit,
 }
 #[cfg(target_os = "linux")]
 impl std::ops::Deref for OwnedMountInfo {
@@ -48,11 +48,11 @@ impl std::ops::Deref for OwnedMountInfo {
 }
 
 #[cfg(target_os = "linux")]
-fn read_mountinfo(budget: &Arc<V3MountBudget>) -> std::io::Result<OwnedMountInfo> {
+fn read_mountinfo(budget: &Arc<SnapshotMountBudget>) -> std::io::Result<OwnedMountInfo> {
     use std::io::Read;
     const MAX_BYTES: usize = 2 << 20;
     let permit = budget
-        .admit(&[(V3BudgetPool::Metadata, 2 * (MAX_BYTES as u64 + 1))])
+        .admit(&[(SnapshotBudgetPool::Metadata, 2 * (MAX_BYTES as u64 + 1))])
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut bytes = Vec::with_capacity(MAX_BYTES + 1);
     std::fs::File::open("/proc/self/mountinfo")?
@@ -136,7 +136,7 @@ fn id_at_path(bytes: &[u8], expected: &[u8]) -> std::io::Result<Option<u64>> {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn prepare(path: &Path, budget: &Arc<V3MountBudget>) -> std::io::Result<PathBuf> {
+pub(super) fn prepare(path: &Path, budget: &Arc<SnapshotMountBudget>) -> std::io::Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let path = path.canonicalize()?;
     if id_at_path(&read_mountinfo(budget)?, path.as_os_str().as_bytes())?.is_some() {
@@ -146,14 +146,14 @@ pub(super) fn prepare(path: &Path, budget: &Arc<V3MountBudget>) -> std::io::Resu
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn mounted_id(path: &Path, budget: &Arc<V3MountBudget>) -> std::io::Result<u64> {
+pub(super) fn mounted_id(path: &Path, budget: &Arc<SnapshotMountBudget>) -> std::io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     id_at_path(&read_mountinfo(budget)?, path.as_os_str().as_bytes())?
         .ok_or_else(|| invalid("successful mount has no visible kernel mount ID"))
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn is_absent(id: u64, budget: &Arc<V3MountBudget>) -> std::io::Result<bool> {
+pub(super) fn is_absent(id: u64, budget: &Arc<SnapshotMountBudget>) -> std::io::Result<bool> {
     let info = read_mountinfo(budget)?;
     for line in info
         .split(|byte| *byte == b'\n')
@@ -172,21 +172,24 @@ pub(super) fn is_absent(id: u64, budget: &Arc<V3MountBudget>) -> std::io::Result
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(super) fn prepare(_path: &Path, _budget: &Arc<V3MountBudget>) -> std::io::Result<PathBuf> {
+pub(super) fn prepare(
+    _path: &Path,
+    _budget: &Arc<SnapshotMountBudget>,
+) -> std::io::Result<PathBuf> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "packed FUSE cutoff requires Linux",
     ))
 }
 #[cfg(not(target_os = "linux"))]
-pub(super) fn mounted_id(_path: &Path, _budget: &Arc<V3MountBudget>) -> std::io::Result<u64> {
+pub(super) fn mounted_id(_path: &Path, _budget: &Arc<SnapshotMountBudget>) -> std::io::Result<u64> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "packed FUSE cutoff requires Linux",
     ))
 }
 #[cfg(not(target_os = "linux"))]
-pub(super) fn is_absent(_id: u64, _budget: &Arc<V3MountBudget>) -> std::io::Result<bool> {
+pub(super) fn is_absent(_id: u64, _budget: &Arc<SnapshotMountBudget>) -> std::io::Result<bool> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "packed FUSE cutoff requires Linux",
@@ -228,13 +231,13 @@ mod tests {
 // The owning CLI must capture this after its actual mount call, from that same VFS.
 
 pub(super) fn operator_mount_reference(
-    view: &crate::workspace_overlay::model::ViewContext,
+    view: &crate::workspace::model::ViewContext,
 ) -> Result<
-    crate::workspace_overlay::stores::kv_store::packed_admin::PackedReleasedMountReference,
-    crate::workspace_overlay::error::WorkspaceError,
+    crate::workspace::stores::kv_store::packed_admin::PackedReleasedMountReference,
+    crate::workspace::error::WorkspaceError,
 > {
-    use crate::workspace_overlay::catalog::HeadGuard;
-    use crate::workspace_overlay::error::WorkspaceError;
+    use crate::workspace::catalog::HeadGuard;
+    use crate::workspace::error::WorkspaceError;
     let uid = |key: &str| {
         std::env::var(key)
             .ok()
@@ -243,7 +246,7 @@ pub(super) fn operator_mount_reference(
             .ok_or(WorkspaceError::Fenced)
     };
     Ok(
-        crate::workspace_overlay::stores::kv_store::packed_admin::PackedReleasedMountReference {
+        crate::workspace::stores::kv_store::packed_admin::PackedReleasedMountReference {
             guard: HeadGuard {
                 workspace_id: view.workspace_id,
                 expected_head_layer_id: view.head_layer_id,
@@ -251,8 +254,8 @@ pub(super) fn operator_mount_reference(
                 lease_id: view.lease_id,
                 holder_generation: view.holder_generation,
             },
-            mount_uid: uid("BREWFS_PACKED_V3_MOUNT_UID")?,
-            pod_uid: uid("BREWFS_PACKED_V3_POD_UID")?,
+            mount_uid: uid("BREWFS_PACKED_MOUNT_UID")?,
+            pod_uid: uid("BREWFS_PACKED_POD_UID")?,
         },
     )
 }
@@ -265,7 +268,7 @@ where
     vfs: crate::vfs::fs::VFS<S, M>,
     mount_id: u64,
     mount_namespace: (u64, u64),
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
 }
 
 pub(crate) struct VerifiedPackedKernelCutoff<S, M>
@@ -299,7 +302,7 @@ where
     pub(super) fn capture(
         path: &Path,
         vfs: crate::vfs::fs::VFS<S, M>,
-        budget: Arc<V3MountBudget>,
+        budget: Arc<SnapshotMountBudget>,
     ) -> std::io::Result<Self> {
         let namespace = current_mount_namespace()?;
         let mount_id = mounted_id(path, &budget)?;
@@ -349,7 +352,7 @@ where
         drain.is_same_vfs(&self.identity.vfs)
     }
 
-    pub(crate) fn uses_budget(&self, budget: &Arc<V3MountBudget>) -> bool {
+    pub(crate) fn uses_budget(&self, budget: &Arc<SnapshotMountBudget>) -> bool {
         Arc::ptr_eq(&self.identity.budget, budget)
     }
 }

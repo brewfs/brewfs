@@ -5,9 +5,9 @@ use clap::Parser;
 
 use crate::cadapter::s3::S3Backend;
 use crate::config::{Cli, Command, DataBackendKind, MountConfig};
-use crate::workspace_overlay::catalog::{CreateWorkspace, WorkspaceStore};
-use crate::workspace_overlay::ids::WorkspaceId;
-use crate::workspace_overlay::model::{BaseRevision, WorkspaceRecord};
+use crate::workspace::catalog::{CreateWorkspace, WorkspaceStore};
+use crate::workspace::ids::WorkspaceId;
+use crate::workspace::model::{BaseRevision, WorkspaceRecord};
 
 pub fn config(path: &Path) -> anyhow::Result<MountConfig> {
     let cli = Cli::try_parse_from([
@@ -68,7 +68,7 @@ pub async fn fork<W: WorkspaceStore + 'static>(
             store
                 .create_workspace(CreateWorkspace {
                     workspace_id,
-                    head_layer_id: crate::workspace_overlay::ids::LayerId::new(),
+                    head_layer_id: crate::workspace::ids::LayerId::new(),
                     base_revision: revision.clone(),
                     owner_id: owner.clone(),
                     upper_bucket,
@@ -89,7 +89,7 @@ pub async fn drop_bucket<W: WorkspaceStore + 'static>(
         anyhow::bail!("dropping an upper bucket requires --force");
     }
     let record = store.load_workspace(workspace).await?;
-    if record.state != crate::workspace_overlay::model::WorkspaceState::Deleting {
+    if record.state != crate::workspace::model::WorkspaceState::Deleting {
         anyhow::bail!("discard workspace {workspace} before deleting its upper bucket");
     }
     let Some(bucket) = record.upper_bucket else {
@@ -148,7 +148,7 @@ fn render(template: &str, base: &str, workspace_id: WorkspaceId) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::workspace_overlay::ids::WorkspaceId;
+    use crate::workspace::ids::WorkspaceId;
 
     #[test]
     fn renders_default_workspace_bucket_name() {

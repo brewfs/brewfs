@@ -2,10 +2,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail, Context as _};
-use brewfs::workspace_overlay::catalog::HeadGuard;
-use brewfs::workspace_overlay::ids::{LeaseId, WorkspaceId};
-use brewfs::workspace_overlay::model::LeaseState;
-use brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference;
+use brewfs::workspace::catalog::HeadGuard;
+use brewfs::workspace::ids::{LeaseId, WorkspaceId};
+use brewfs::workspace::model::LeaseState;
+use brewfs::workspace::packed_admin::PackedReleasedMountReference;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
@@ -238,7 +238,7 @@ fn recovery_job_name(
         "bfpr-{}",
         deterministic_uuid(
             original.mount_uid,
-            &format!("packed-v3-recovery-job-{generation}")
+            &format!("packed-recovery-job-{generation}")
         )
         .simple()
     ))
@@ -255,9 +255,9 @@ fn recovery_lease_id(
         .ok_or_else(|| anyhow!("recovery generation overflow"))?;
     let scope = *original.guard.lease_id.as_uuid();
     let intent = if generation == first {
-        "packed-v3-mounted-recovery".to_string()
+        "packed-mounted-recovery".to_string()
     } else if generation > first {
-        format!("packed-v3-mounted-recovery-{generation}")
+        format!("packed-mounted-recovery-{generation}")
     } else {
         bail!("recovery successor generation is not strictly newer");
     };
@@ -321,11 +321,11 @@ fn unstarted_retry_route(job_uid: &str) -> anyhow::Result<(LeaseId, String)> {
     Ok((
         LeaseId::from_uuid(deterministic_uuid(
             scope,
-            "packed-v3-unstarted-recovery-lease",
+            "packed-unstarted-recovery-lease",
         )),
         format!(
             "bfpr-{}",
-            deterministic_uuid(scope, "packed-v3-unstarted-recovery-job").simple()
+            deterministic_uuid(scope, "packed-unstarted-recovery-job").simple()
         ),
     ))
 }
@@ -597,7 +597,7 @@ async fn retire_terminal_recovery_pod(
         "bfpre-{}",
         deterministic_uuid(
             Uuid::parse_str(&pod_uid)?,
-            "packed-v3-failed-recovery-evidence"
+            "packed-failed-recovery-evidence"
         )
         .simple()
     );
@@ -1126,13 +1126,13 @@ pub async fn finish_mount_workload(
         vec!["/bin/sh".into(), "-ec".into(), format!(
             "sleep {delay}; exec /usr/local/bin/brewfs \"$@\" --meta-url \"redis://${{REDIS_USERNAME}}:${{REDIS_PASSWORD}}@{}-workspace-redis:{}/\"",
             cluster.name_any(), cluster.spec.redis.port,
-        ), "packed-v3-recovery".into()]
+        ), "packed-recovery".into()]
     } else {
         vec![
             "/bin/sh".into(),
             "-ec".into(),
             format!("sleep {delay}; exec /usr/local/bin/brewfs \"$@\""),
-            "packed-v3-recovery".into(),
+            "packed-recovery".into(),
         ]
     };
     let owner = mount
@@ -1212,14 +1212,14 @@ pub async fn finish_mount_workload(
     };
     jobs.create(&PostParams::default(), &job)
         .await
-        .context("create genuine packed-v3 recovery CLI Job")?;
+        .context("create genuine packed recovery CLI Job")?;
     bail!("waiting for original same-PVC packed recovery and authenticated PMR");
 }
 
 #[cfg(test)]
 mod unstarted_retry_tests {
     use super::*;
-    use brewfs::workspace_overlay::ids::LayerId;
+    use brewfs::workspace::ids::LayerId;
 
     fn fixture() -> (BrewFSWorkspaceMount, PackedReleasedMountReference) {
         let mut mount = BrewFSWorkspaceMount::new(

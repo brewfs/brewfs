@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate a frozen packed-v3 p90 frame-selection policy."""
+"""Build and validate a frozen packed p90 frame-selection policy."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import re
 from collections import Counter
 from typing import Any
 
-SCHEMA = "packed-v3-p90-policy-v1"
+SCHEMA = "packed-p90-policy-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_REQUEST_BYTES = 1 << 63
 

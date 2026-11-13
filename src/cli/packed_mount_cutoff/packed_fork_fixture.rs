@@ -5,17 +5,17 @@ use super::*;
 use crate::chunk::BlockStore;
 use crate::fuse::mount::{FuseConcurrencyConfig, mount_vfs_privileged, mount_vfs_unprivileged};
 use crate::vfs::fs::VFS;
-use crate::workspace_overlay::catalog::WorkspaceStore;
-use crate::workspace_overlay::lifecycle::WorkspaceMountSession;
-use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-use crate::workspace_overlay::packed_shutdown::VerifiedCleanPackedShutdown;
-use crate::workspace_overlay::stores::kv_store::packed_admin::PackedReleasedMountReference;
+use crate::workspace::catalog::WorkspaceStore;
+use crate::workspace::lifecycle::WorkspaceMountSession;
+use crate::workspace::meta_layer::WorkspaceMetaLayer;
+use crate::workspace::packed_shutdown::VerifiedCleanPackedShutdown;
+use crate::workspace::stores::kv_store::packed_admin::PackedReleasedMountReference;
 
 pub(crate) async fn write_and_release<S, W>(
     vfs: VFS<S, WorkspaceMetaLayer<W>>,
     store: Arc<W>,
     mut session: WorkspaceMountSession<W>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
 ) -> PackedReleasedMountReference
 where
     S: BlockStore + Send + Sync + 'static,

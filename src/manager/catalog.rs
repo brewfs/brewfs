@@ -4,10 +4,10 @@
 //! Scope fingerprints exclude rotatable credentials and service addresses.
 
 use super::{ManagerError, Result, catalog_error, digest, invalid, storage, validate_catalog_file};
-use crate::workspace_overlay::{
+use crate::workspace::{
     catalog::{CreateVolumeRoot, WorkspaceStore},
     model::WorkspaceRecord,
-    packed_v3::wire005::V3MountBudget,
+    packed::snapshot::SnapshotMountBudget,
     stores::{
         database::SqliteWorkspaceStore,
         kv_backend::{KvReadLimits, WorkspaceKvBackend},
@@ -308,7 +308,7 @@ impl CatalogConfig {
                 "native-packed-base is not compiled into this Manager",
             ));
         }
-        let budget = V3MountBudget::defaults();
+        let budget = SnapshotMountBudget::defaults();
         match self {
             Self::Sqlite { path } => {
                 if native {
@@ -396,13 +396,12 @@ impl CatalogConfig {
                 let backend = Arc::new(
                     match tls {
                         Some(tls) => {
-                            let tls =
-                                crate::workspace_overlay::stores::tikv::TiKvTlsConfig::from_paths(
-                                    &tls.ca_path,
-                                    &tls.cert_path,
-                                    &tls.key_path,
-                                )
-                                .map_err(catalog_error)?;
+                            let tls = crate::workspace::stores::tikv::TiKvTlsConfig::from_paths(
+                                &tls.ca_path,
+                                &tls.cert_path,
+                                &tls.key_path,
+                            )
+                            .map_err(catalog_error)?;
                             TiKvWorkspaceBackend::connect_with_tls_and_budget(
                                 pd_endpoints.clone(),
                                 namespace,
@@ -502,7 +501,7 @@ pub(super) struct CatalogConnection {
     raw: Option<RawBackend>,
     guard: Option<Arc<ManagerGuard>>,
     namespace: Option<String>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
 }
 
 impl CatalogConnection {
@@ -548,7 +547,7 @@ impl CatalogConnection {
             ManagerGuard::acquire(raw.as_backend(), journal, session, ttl_ns, require_empty).await
         }
         .map_err(|error| match error {
-            crate::workspace_overlay::error::WorkspaceError::Busy => ManagerError::new(
+            crate::workspace::error::WorkspaceError::Busy => ManagerError::new(
                 "session_busy",
                 "previous Manager session still holds the catalog; retry the original operation after lease expiry",
             ),
@@ -628,7 +627,7 @@ impl CatalogConnection {
                 .map_err(catalog_error);
         }
         if let Some(RawBackend::Redis(raw)) = &self.raw {
-            for prefix in [b"packed/v3/history/".as_slice(), b"packed/v3/current/"] {
+            for prefix in [b"packed/history/".as_slice(), b"packed/current/"] {
                 if raw.has_raw_prefix(prefix).await.map_err(catalog_error)? {
                     return Ok(true);
                 }
@@ -646,7 +645,7 @@ impl CatalogConnection {
             max_response_bytes: 64 << 10,
             max_data_requests: 1,
         };
-        for prefix in [b"packed/v3/history/".as_slice(), b"packed/v3/current/"] {
+        for prefix in [b"packed/history/".as_slice(), b"packed/current/"] {
             if !backend
                 .scan_prefix_page_with_byte_limits(prefix, None, limits)
                 .await
@@ -986,7 +985,7 @@ mod tests {
     #[tokio::test]
     async fn native_mutation_waits_for_a_committed_renewal_reply() {
         use crate::native_base::write::store::{ControlStore, Expect, StoreError, Txn};
-        use crate::workspace_overlay::stores::{
+        use crate::workspace::stores::{
             kv_backend::{KvCheck, KvWrite},
             manager_guard::{
                 MANAGER_CONTROLLER_KEY,

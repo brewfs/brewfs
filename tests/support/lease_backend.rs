@@ -1,7 +1,7 @@
 //! Transactional test backend with a controlled clock and a paused mutation.
 use async_trait::async_trait;
-use brewfs::workspace_overlay::error::WorkspaceError;
-use brewfs::workspace_overlay::stores::kv_backend::{
+use brewfs::workspace::error::WorkspaceError;
+use brewfs::workspace::stores::kv_backend::{
     KvCheck, KvEntry, KvReadLimits, KvWrite, WorkspaceKvBackend,
 };
 use std::collections::BTreeMap;

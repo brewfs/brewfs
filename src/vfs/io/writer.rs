@@ -229,9 +229,9 @@ where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     let _ = (shared, desc);
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     if let Some(provider) = shared.backend.workspace_read_plan()
         && let Err(error) = provider
             .record_orphan_slice(desc.slice_id, desc.length)
@@ -622,7 +622,7 @@ impl SliceState {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     fn packed_pending_overlay(&self) -> anyhow::Result<bool> {
         if matches!(self.state, SliceStatus::Committed) {
             return Ok(false);
@@ -632,7 +632,7 @@ impl SliceState {
         // uploads can also carry this flag after a successful publication.
         // Neither state can establish an uncommitted local EOF safely.
         if self.meta_write_started {
-            return Err(crate::workspace_overlay::error::WorkspaceError::Busy.into());
+            return Err(crate::workspace::error::WorkspaceError::Busy.into());
         }
         Ok(true)
     }
@@ -1364,12 +1364,12 @@ pub(crate) struct DirtyOverlayPatch {
     pub(crate) data: Vec<u8>,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 const MAX_PACKED_DIRTY_SNAPSHOT_ROWS: usize = 1024;
 
 /// One canonical local view, independent of slice fragmentation. Scratch bytes
 /// and coverage are charged before allocation and retained through delivery.
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) struct CanonicalDirtyOverlay {
     data: Vec<u8>,
     coverage: Vec<u8>,
@@ -1377,7 +1377,7 @@ pub(crate) struct CanonicalDirtyOverlay {
     _guards: [Option<Box<dyn Send + Sync>>; 2],
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 impl CanonicalDirtyOverlay {
     fn empty(local_eof: Option<u64>) -> Self {
         Self {
@@ -3434,13 +3434,13 @@ where
         Ok(patches)
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn canonical_dirty_snapshot(
         &self,
         offset: u64,
         len: usize,
     ) -> anyhow::Result<CanonicalDirtyOverlay> {
-        use crate::workspace_overlay::packed_v3::PackedWireError;
+        use crate::workspace::packed::PackedWireError;
 
         let end = offset
             .checked_add(len as u64)
@@ -5977,7 +5977,7 @@ where
         self
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn with_writeback_epoch(mut self, epoch: u64) -> Self {
         self.writeback_epoch = epoch;
         self
@@ -6535,7 +6535,7 @@ where
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) async fn canonical_dirty_snapshot_if_exists(
         &self,
         ino: u64,
@@ -6820,12 +6820,12 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     mod packed_snapshot_tests {
         use super::*;
         use crate::chunk::read_plan::{ResolvedReadPlan, WorkspaceReadPlanProvider};
-        use crate::workspace_overlay::packed_v3::wire005::{
-            V3BudgetLimits, V3BudgetPool, V3MountBudget,
+        use crate::workspace::packed::snapshot::{
+            SnapshotBudgetLimits, SnapshotBudgetPool, SnapshotMountBudget,
         };
 
         struct SnapshotStore(Arc<AtomicU64>);
@@ -6849,7 +6849,7 @@ mod tests {
             }
         }
 
-        struct SnapshotBudgetProvider(Arc<V3MountBudget>);
+        struct SnapshotBudgetProvider(Arc<SnapshotMountBudget>);
 
         #[async_trait]
         impl WorkspaceReadPlanProvider for SnapshotBudgetProvider {
@@ -6877,10 +6877,10 @@ mod tests {
         }
 
         async fn fixture(
-            limits: V3BudgetLimits,
+            limits: SnapshotBudgetLimits,
         ) -> (
             Arc<FileWriter<SnapshotStore, impl MetaLayer>>,
-            Arc<V3MountBudget>,
+            Arc<SnapshotMountBudget>,
             Arc<AtomicU64>,
         ) {
             let layout = ChunkLayout {
@@ -6892,7 +6892,7 @@ mod tests {
                 .unwrap()
                 .layer();
             let reads = Arc::new(AtomicU64::new(0));
-            let budget = V3MountBudget::new(limits).unwrap();
+            let budget = SnapshotMountBudget::new(limits).unwrap();
             let backend = Arc::new(Backend::new_workspace(
                 Arc::new(SnapshotStore(reads.clone())),
                 meta,
@@ -6926,7 +6926,7 @@ mod tests {
 
         #[tokio::test]
         async fn packed_canonical_committed_bytes_cannot_extend_fresh_eof() {
-            let (writer, budget, reads) = fixture(V3BudgetLimits::default()).await;
+            let (writer, budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
             let cid = chunk_id_for(123, 0).unwrap();
             let mut chunk = ChunkState::new(cid);
             chunk
@@ -6944,7 +6944,7 @@ mod tests {
                 "committed residue must not resurrect truncated bytes"
             );
             assert!(!snapshot.fully_covered(8));
-            assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
             assert_eq!(reads.load(Ordering::SeqCst), 0);
         }
 
@@ -6955,7 +6955,7 @@ mod tests {
                 SliceStatus::Readonly,
                 SliceStatus::Uploaded,
             ] {
-                let (writer, budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut chunk = ChunkState::new(cid);
                 chunk.slices.push_back(Arc::new(ParkingMutex::new(slice(
@@ -6969,7 +6969,7 @@ mod tests {
                     writer.canonical_dirty_snapshot(0, 16).await.is_err(),
                     "ambiguous/published state must not act as uncommitted local EOF"
                 );
-                assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
+                assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
                 assert_eq!(reads.load(Ordering::SeqCst), 0);
             }
         }
@@ -6980,7 +6980,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut chunk = ChunkState::new(cid);
                 for _ in 0..count {
@@ -7014,7 +7014,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut fragmented = SliceState::new(
                     cid,
@@ -7054,7 +7054,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let mut inner = writer.shared.inner.lock().await;
                 for index in 0..count {
                     let cid = chunk_id_for(123, index as u64).unwrap();
@@ -7075,11 +7075,11 @@ mod tests {
 
         #[tokio::test]
         async fn packed_canonical_bitmap_admission_failure_releases_data_before_fetch() {
-            let mut limits = V3BudgetLimits {
+            let mut limits = SnapshotBudgetLimits {
                 max_read_bytes: 16,
-                ..V3BudgetLimits::default()
+                ..SnapshotBudgetLimits::default()
             };
-            limits.bytes[V3BudgetPool::Output as usize] = 16;
+            limits.bytes[SnapshotBudgetPool::Output as usize] = 16;
             let (writer, budget, reads) = fixture(limits).await;
             let cid = chunk_id_for(123, 0).unwrap();
             let mut chunk = ChunkState::new(cid);
@@ -7092,9 +7092,9 @@ mod tests {
             writer.shared.inner.lock().await.chunks.insert(cid, chunk);
             let error = writer.canonical_dirty_snapshot(0, 16).await.err().unwrap();
             assert!(crate::vfs::error::is_read_admission_error(&error));
-            assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
-            assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
-            assert_eq!(budget.state().peak[V3BudgetPool::Output as usize], 16);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Control as usize], 0);
+            assert_eq!(budget.state().peak[SnapshotBudgetPool::Output as usize], 16);
             assert_eq!(reads.load(Ordering::SeqCst), 0);
         }
     }

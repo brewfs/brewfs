@@ -13,12 +13,12 @@ use axum::{
 };
 use std::path::PathBuf;
 
-#[cfg(any(test, not(feature = "workspace-overlay")))]
+#[cfg(any(test, not(feature = "workspace")))]
 pub(super) fn router(state_dir: PathBuf) -> Router<ConsoleState> {
     let router = Router::new().route("/capabilities", get(capabilities));
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     let router = enabled::routes(router, state_dir);
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     let router = {
         let _ = state_dir;
         router
@@ -46,14 +46,14 @@ pub(super) fn router(state_dir: PathBuf) -> Router<ConsoleState> {
 /// recovery runs in the background; callers must poll operation state. Retain
 /// the same initialized handle for the server's lifetime.
 pub(super) async fn initialized_router(state_dir: PathBuf) -> anyhow::Result<Router<ConsoleState>> {
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     {
         let router = Router::new().route("/capabilities", get(capabilities));
         Ok(unsupported_routes(
             enabled::initialized_routes(router, state_dir).await?,
         ))
     }
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     {
         Ok(router(state_dir))
     }
@@ -77,22 +77,22 @@ fn unsupported_routes(router: Router<ConsoleState>) -> Router<ConsoleState> {
 }
 
 async fn capabilities() -> Json<serde_json::Value> {
-    let enabled = cfg!(feature = "workspace-overlay");
+    let enabled = cfg!(feature = "workspace");
     let native = cfg!(feature = "native-packed-base");
     let mut formats = Vec::new();
     let mut profiles = Vec::new();
     if enabled {
-        formats.push("workspace-v1");
+        formats.push("workspace");
         profiles.push(serde_json::json!({
-            "volume_format": "workspace-v1",
+            "volume_format": "workspace",
             "metadata_backends": ["sqlite", "redis", "tikv"],
             "revision_kind": "catalog_revision"
         }));
     }
     if native {
-        formats.push("workspace-native-v2");
+        formats.push("native-workspace");
         profiles.push(serde_json::json!({
-            "volume_format": "workspace-native-v2",
+            "volume_format": "native-workspace",
             "metadata_backends": ["redis", "tikv"],
             "revision_kind": "native_p1_catalog",
             "upper_bucket": null,
@@ -148,11 +148,11 @@ async fn unsupported() -> Response {
     .into_response()
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod enabled {
     use super::*;
     use crate::manager::{ForkRequest, Manager, ManagerError, VolumeRequest};
-    use crate::workspace_overlay::ids::{LayerId, WorkspaceId};
+    use crate::workspace::ids::{LayerId, WorkspaceId};
     use axum::{
         Extension,
         body::Bytes,

@@ -4,7 +4,7 @@
 # real git repositories onto it.
 #
 # This is the only harness path that exercises the S3 data backend with a
-# Redis metadata store under a real git workload. The workspace-overlay smoke
+# Redis metadata store under a real git workload. The workspace smoke
 # in CI uses the local-fs backend, so object-store write, cache-eviction
 # recovery, and commit-back paths are not covered there.
 #

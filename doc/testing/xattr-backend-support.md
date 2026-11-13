@@ -32,7 +32,7 @@ S3 gateway 的 `—` 只表示它没有向 S3 客户端暴露 POSIX `listxattr(2
 
 | 存储层 | 写入（Put/CAS） | 读取（bounded get） | 列举（prefix scan） | 删除（Delete/CAS） | 证据 |
 | --- | --- | --- | --- | --- | --- |
-| TiKV overlay KV（`TiKvWorkspaceBackend`） | ✅ | ✅ | ✅ | ✅ | `src/workspace_overlay/stores/tikv.rs:1712-1890` 的 `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners` 使用真实 TiKV 写入 `xattr/user.large`、读取 64 KiB 值、扫描 `xattr/` 前缀、检查边界错误并删除记录。 |
+| TiKV overlay KV（`TiKvWorkspaceBackend`） | ✅ | ✅ | ✅ | ✅ | `src/workspace/stores/tikv.rs:1712-1890` 的 `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners` 使用真实 TiKV 写入 `xattr/user.large`、读取 64 KiB 值、扫描 `xattr/` 前缀、检查边界错误并删除记录。 |
 
 这个表中的 TiKV 是 overlay 的 KV 存储，不是上一张表的
 `TiKvMetaStore`。两者使用不同的接口、键空间和测试。
@@ -53,7 +53,7 @@ BREWFS_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
 CARGO_TARGET_DIR=/home/hxy/xattr-target \
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
 cargo test --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay \
+  --features fuse-tokio-runtime,workspace \
   --lib -- redis_xattr
 ```
 
@@ -71,7 +71,7 @@ BREWFS_TEST_TIKV_PD_ENDPOINTS=172.24.86.193:2379 \
 CARGO_TARGET_DIR=/home/hxy/xattr-target \
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
 cargo test --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay \
+  --features fuse-tokio-runtime,workspace \
   --lib -- --ignored xattr
 ```
 
@@ -81,7 +81,7 @@ TiKV 相关测试都是 ignored 集成测试，并使用随机 namespace/前缀�
 应使用上面的单一 `xattr` 过滤词，或分别传入两个完整测试名。
 
 SQLite 的 xattr 单元测试不需要外部服务；可以用同一组 feature 和 target
-运行 `cargo test --no-default-features --features fuse-tokio-runtime,workspace-overlay --lib xattr`，但这会同时选择本地 xattr 单元测试和 ignored 测试筛选结果。
+运行 `cargo test --no-default-features --features fuse-tokio-runtime,workspace --lib xattr`，但这会同时选择本地 xattr 单元测试和 ignored 测试筛选结果。
 
 ## 挂载点上的错误码和限制
 

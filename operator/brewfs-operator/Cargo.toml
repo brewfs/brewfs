@@ -15,7 +15,7 @@ workspace-operator = ["dep:async-trait", "dep:brewfs", "dep:hex", "dep:uuid", "d
 [dependencies]
 anyhow = "1.0"
 async-trait = { version = "0.1", optional = true }
-brewfs = { path = "../..", default-features = false, features = ["workspace-overlay", "fuse-tokio-runtime"], optional = true }
+brewfs = { path = "../..", default-features = false, features = ["workspace", "fuse-tokio-runtime"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 futures = "0.3"

@@ -1,6 +1,6 @@
 use super::*;
 use crate::cadapter::localfs::LocalFsBackend;
-use crate::workspace_overlay::entity::{
+use crate::workspace::entity::{
     keys::EntityKeys,
     lifecycle::Lifecycle,
     memory::MemoryEntityBackend,

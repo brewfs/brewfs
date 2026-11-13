@@ -113,9 +113,9 @@ impl<B: ObjectBackend + Clone> MarkBasedGarbageCollector<B> {
     async fn run_gc_cycle(
         &self,
     ) -> Result<(usize, usize, usize), Box<dyn std::error::Error + Send + Sync>> {
-        if self.config.volume_format.as_deref() == Some("workspace-native-v2") {
+        if self.config.volume_format.as_deref() == Some("native-workspace") {
             return Err(anyhow::anyhow!(
-                "legacy mark-and-sweep GC is disabled for workspace-native-v2; use private-domain cleanup"
+                "legacy mark-and-sweep GC is disabled for native-workspace; use private-domain cleanup"
             )
             .into());
         }

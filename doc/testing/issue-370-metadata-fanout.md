@@ -3,7 +3,7 @@
 Status: investigation and candidate validation in progress; this is not an
 accepted performance result. Baseline: `975deac`, on the task's single 8-vCPU,
 30-GiB machine. Redis is local (`127.0.0.1:6380`), data uses LocalFS, volume
-format is workspace-v1. No remote benchmark machine was used.
+format is workspace. No remote benchmark machine was used.
 
 ## Local reproduction
 
@@ -97,7 +97,7 @@ Those measurements and all required CI gates must be reported separately.
 
 Validation so far: default `cargo test -p brewfs --lib -j 4` passed with
 1,275 passed / 0 failed / 262 pre-existing ignored tests. Both default and
-workspace-overlay `cargo clippy --all-targets -- -D warnings` exited 0;
+workspace `cargo clippy --all-targets -- -D warnings` exited 0;
 existing vendored dependency warnings remain visible. `cargo fmt --all
 --check` passed. No ignores or assertions were removed or added to suppress
 failures. Full workspace and feature-enabled tests are still pending.

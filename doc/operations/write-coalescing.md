@@ -1,6 +1,6 @@
 # Flat-v1 small-write object coalescing
 
-This is an experimental format extension for flat-v1 volumes using Redis or
+This is an experimental format extension for flat volumes using Redis or
 SQL metadata and upload-before-commit. Its final release performance and broad
 regression acceptance remain incomplete; see the
 [experiment report](../performance/write-coalesce-2026-11-02.md).
@@ -24,7 +24,7 @@ configured block. Large sequential slices keep the ordinary uploader.
 ## Upgrade and rollback
 
 New readers understand old `chunks` and `chunks-v2` objects. Old binaries do
-not understand `chunks-coalesced-v1`. The volume still identifies as flat-v1;
+not understand `chunks-coalesced-v1`. The volume still identifies as flat;
 there is no new format-version negotiation that fences an old mount out.
 
 Before a rolling upgrade, explicitly set `BREWFS_WRITE_COALESCE_BYTES=0` in

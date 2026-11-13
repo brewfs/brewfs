@@ -78,7 +78,7 @@ random-I/O advantage is established.
 - Both arms use synchronous upload, raw/no compression, 4 MiB chunk/block
   configuration, upload concurrency 8 and zero clean payload-cache budget.
   Packed geometry remains the default 256 KiB maximum random-frame size.
-- BrewFS uses `workspace-entity-v1` with explicit experimental mount admission.
+- BrewFS uses `entity-workspace` with explicit experimental mount admission.
   No default, production admission policy, legacy path or runtime code changes.
 - Internal metadata caching is different: BrewFS retains its default immutable
   metadata caches; JuiceFS attr/entry/dir-entry/open caches are explicitly zero

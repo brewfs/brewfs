@@ -48,7 +48,7 @@ METADATA_CACHE_TTL_MS="${BREWFS_METADATA_CACHE_TTL_MS:-1000}"
 TOOL_TIMEOUT_SECONDS="${PERF_TOOL_TIMEOUT_SECONDS:-900}"
 
 case "$PACKED_VOLUME_FORMAT" in
-    packed-metadata-v3)
+    packed-snapshot)
         MOUNT_CHUNK_SIZE=67108864
         MOUNT_BLOCK_SIZE=4194304
         ;;
@@ -58,11 +58,11 @@ case "$PACKED_VOLUME_FORMAT" in
 esac
 
 read -r -a selected_tools <<<"$TOOLS"
-[[ "${#selected_tools[@]}" -gt 0 ]] || die "packed-v3 PERF_TOOLS cannot be empty"
+[[ "${#selected_tools[@]}" -gt 0 ]] || die "packed PERF_TOOLS cannot be empty"
 for tool in "${selected_tools[@]}"; do
     case "$tool" in
         packed-tree|packed-stat|packed-smallfiles|packed-gpu-smallfiles) ;;
-        *) die "unsupported packed-v3 tool: $tool; fio/POSIX fixture layout remains OPEN" ;;
+        *) die "unsupported packed tool: $tool; fio/POSIX fixture layout remains OPEN" ;;
     esac
 done
 

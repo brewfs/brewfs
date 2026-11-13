@@ -28,14 +28,14 @@ impl fmt::Display for PathHint {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) fn is_read_admission_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(cause.downcast_ref::<std::io::Error>(), Some(error)
             if error.kind() == ErrorKind::OutOfMemory)
             || matches!(
-                cause.downcast_ref::<crate::workspace_overlay::packed_v3::PackedWireError>(),
-                Some(crate::workspace_overlay::packed_v3::PackedWireError::LimitExceeded(_))
+                cause.downcast_ref::<crate::workspace::packed::PackedWireError>(),
+                Some(crate::workspace::packed::PackedWireError::LimitExceeded(_))
             )
             || matches!(
                 cause.downcast_ref::<crate::cadapter::read_observer::ReadBoundaryError>(),

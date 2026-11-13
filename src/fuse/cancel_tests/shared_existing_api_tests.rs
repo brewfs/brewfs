@@ -1,7 +1,7 @@
 //! Actual adapter reads, using only the existing green03 fixture and public API.
 use super::*;
 use crate::cadapter::read_observer::ReadEvent;
-use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
+use crate::workspace::packed::snapshot::SnapshotBudgetPool;
 
 #[tokio::test]
 async fn g09_existing_api_concurrent_same_frame_reads_share_one_real_body() {
@@ -90,11 +90,11 @@ async fn assert_shared_real_body(f: Fixture) {
             .all(|row| row.conserved())
     );
     assert!(
-        f.budget.state().peak[V3BudgetPool::Plans as usize]
-            <= f.budget.capacity(V3BudgetPool::Plans)
+        f.budget.state().peak[SnapshotBudgetPool::Plans as usize]
+            <= f.budget.capacity(SnapshotBudgetPool::Plans)
     );
     assert_eq!(f.budget.state().rejections, 0);
-    assert_eq!(f.budget.state().used[V3BudgetPool::Raw as usize], 0);
+    assert_eq!(f.budget.state().used[SnapshotBudgetPool::Raw as usize], 0);
     f.fs.close(fh).await.unwrap();
 }
 

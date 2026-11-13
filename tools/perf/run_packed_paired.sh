@@ -3,7 +3,7 @@
 #
 # Both arms use the same release binary, fixture generator, file trace
 # (scanner seed + layout), RustFS data path, FUSE/cache budgets and cleanup.
-# Only metadata placement differs: "packed" reads packed-v3 objects, while
+# Only metadata placement differs: "packed" reads packed objects, while
 # "native-tikv" serves the same authenticated manifest from an owned TiKV
 # namespace (import is a separate unmeasured step). Arms alternate inside each
 # repetition so host drift affects both. A pair is valid only when both arms

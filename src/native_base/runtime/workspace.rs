@@ -8,7 +8,7 @@ use crate::meta::MetaLayer;
 
 use super::{BaseDataSource, NativeIoError};
 
-/// Reads the immutable workspace-v1 view that a native volume was created
+/// Reads the immutable workspace view that a native volume was created
 /// from. Native writes never mutate this source; they are resolved by the
 /// runtime after the baseline has been filled.
 pub struct WorkspaceBaseDataSource<S, M> {

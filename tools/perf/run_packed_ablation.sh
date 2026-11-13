@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Same-trace packed-v3/005 ablation. Every row uses one release binary, one
+# Same-trace packed/005 ablation. Every row uses one release binary, one
 # fixture generator, one scanner seed/layout (identical file trace), identical
 # FUSE/cache budgets and the paired native-vs-packed driver, varying exactly
 # one factor against the baseline row. Each row is its own paired group with

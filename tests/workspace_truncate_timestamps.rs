@@ -1,14 +1,14 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use std::sync::Arc;
 
 use brewfs::meta::MetaLayer;
 use brewfs::meta::store::{SetAttrFlags, SetAttrRequest};
-use brewfs::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
-use brewfs::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
-use brewfs::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-use brewfs::workspace_overlay::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
-use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use brewfs::workspace::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
+use brewfs::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use brewfs::workspace::meta_layer::WorkspaceMetaLayer;
+use brewfs::workspace::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
+use brewfs::workspace::stores::database::SqliteWorkspaceStore;
 use uuid::Uuid;
 
 async fn fixture() -> (WorkspaceMetaLayer<SqliteWorkspaceStore>, i64) {
@@ -22,7 +22,7 @@ async fn fixture() -> (WorkspaceMetaLayer<SqliteWorkspaceStore>, i64) {
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
             workspace_id,

@@ -119,7 +119,7 @@ impl HttpClient for ScriptConnector {
 }
 fn context(origin: super::super::Origin) -> ReadContext {
     ReadContext {
-        engine: super::super::Engine::PackedV3,
+        engine: super::super::Engine::Packed,
         phase: super::super::Phase::Runtime,
         class: super::super::ReadClass::PackedPayload,
         origin,

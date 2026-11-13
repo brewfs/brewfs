@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use brewfs::workspace_overlay::entity::{
+use brewfs::workspace::entity::{
     backend::EntityBackend, codec, keys::EntityKeys, redis::RedisEntityBackend,
     tikv::TiKvEntityBackend,
 };

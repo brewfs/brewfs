@@ -22,7 +22,7 @@ pub mod compact;
 pub mod compress;
 pub mod layout;
 pub mod page_cache;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub mod read_plan;
 pub mod reader;
 pub mod runtime_store;

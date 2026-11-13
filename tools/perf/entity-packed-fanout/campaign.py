@@ -127,7 +127,7 @@ cache:
 '''
             (self.art/'mount.yaml').write_text(yaml)
             command=[str(ROOT/f'bin/brewfs-{revision}'),'mount',str(self.mount),'--config',str(self.art/'mount.yaml'),
-                     '--volume-format','workspace-entity-v1','--experimental-entity-mount','--entity-volume-id',self.volume,
+                     '--volume-format','entity-workspace','--experimental-entity-mount','--entity-volume-id',self.volume,
                      '--workspace',self.namespace,'--workspace-namespace','perf-'+self.namespace]
             command+=['--packed-manifest-key',CFG['manifest']] if lower=='packed' else ['--entity-native-source',str(WORK/'source')]
             self.probe=Probe(backend,self.volume,self.namespace,self.art)
@@ -201,7 +201,7 @@ cache:
         rows=self.probe.query('objects')
         descriptors=[json.loads(bytes.fromhex(v)) for v in rows.values()]
         def verify(d):
-            key=f'workspace-entity-v1/{self.volume}/{d["namespace_id"]}/{d["slice_id"]}'
+            key=f'entity-workspace/{self.volume}/{d["namespace_id"]}/{d["slice_id"]}'
             reply=S3.get_object(Bucket=CFG['bucket'],Key=key)
             data=reply['Body'].read();reply['Body'].close()
             assert len(data)==d['size'] and list(hashlib.sha256(data).digest())==d['sha256']

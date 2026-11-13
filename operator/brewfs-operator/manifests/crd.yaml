@@ -232,7 +232,7 @@ spec:
                       packedBinding:
                         state: unavailable
                       packedV3: unsupported
-                      volumeFormat: workspace-v1
+                      volumeFormat: workspace
                     description: Explicit capability/binding state for lower metadata. The operator currently bootstraps the native catalog only; a missing capability is represented in status instead of being inferred from rootRevision.
                     properties:
                       packedBinding:
@@ -268,7 +268,7 @@ spec:
                         - readonly
                         type: string
                       volumeFormat:
-                        default: workspace-v1
+                        default: workspace
                         type: string
                     type: object
                   catalogBackend:
@@ -1712,7 +1712,7 @@ spec:
                   packedBinding:
                     state: unavailable
                   packedV3: unsupported
-                  volumeFormat: workspace-v1
+                  volumeFormat: workspace
                 description: Explicit capability/binding state for lower metadata. The operator currently bootstraps the native catalog only; a missing capability is represented in status instead of being inferred from rootRevision.
                 properties:
                   packedBinding:
@@ -1748,7 +1748,7 @@ spec:
                     - readonly
                     type: string
                   volumeFormat:
-                    default: workspace-v1
+                    default: workspace
                     type: string
                 type: object
               conditions:

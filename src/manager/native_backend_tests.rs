@@ -17,7 +17,7 @@ use crate::native_base::write::{
     receipts::MemorySink,
     store::{ControlStore, Txn},
 };
-use crate::workspace_overlay::{
+use crate::workspace::{
     catalog::{CreateSnapshot, CreateWorkspace, MarkDeleting, ReleaseLease},
     ids::SnapshotId,
     stores::{
@@ -30,7 +30,7 @@ use futures::FutureExt;
 
 async fn rejected_registration(manager: &Manager, volume: Uuid, key: &str, code: &str) {
     match manager
-        .create_volume(key, register(volume, "workspace-native-v2"))
+        .create_volume(key, register(volume, "native-workspace"))
         .await
     {
         Err(error) => assert_eq!(error.code, code, "registration case {key}: {error:?}"),
@@ -149,7 +149,7 @@ async fn assert_contract<B: WorkspaceKvBackend>(
     raw.shutdown_metadata_backend().await.unwrap();
 
     let registered = manager
-        .create_volume("register-nonempty", register(volume, "workspace-native-v2"))
+        .create_volume("register-nonempty", register(volume, "native-workspace"))
         .await
         .unwrap();
     assert_eq!(

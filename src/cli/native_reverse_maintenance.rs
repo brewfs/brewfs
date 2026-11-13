@@ -1,10 +1,10 @@
 //! Explicit, bounded reverse-index maintenance through authenticated catalogs.
 
 use super::*;
-use crate::workspace_overlay::error::WorkspaceError;
-use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3MountBudget};
-use crate::workspace_overlay::stores::kv_backend::WorkspaceKvBackend;
-use crate::workspace_overlay::stores::tikv::TiKvTlsConfig;
+use crate::workspace::error::WorkspaceError;
+use crate::workspace::packed::snapshot::{SnapshotBudgetPool, SnapshotMountBudget};
+use crate::workspace::stores::kv_backend::WorkspaceKvBackend;
+use crate::workspace::stores::tikv::TiKvTlsConfig;
 use serde::Deserialize;
 use std::io::Read;
 use std::path::Path;
@@ -92,9 +92,9 @@ pub(super) async fn run(
         (1..=256).contains(&arguments.max_pages),
         "native reverse maintenance page limit must be between 1 and 256"
     );
-    let budget = V3MountBudget::from_env()?;
+    let budget = SnapshotMountBudget::from_env()?;
     let _credentials_owner = budget
-        .admit(&[(V3BudgetPool::Metadata, 64 << 10)])
+        .admit(&[(SnapshotBudgetPool::Metadata, 64 << 10)])
         .map_err(|_| anyhow::anyhow!("administrator credential budget exhausted"))?;
     match (backend, credentials(&arguments.admin_credentials)?) {
         (
@@ -167,7 +167,7 @@ pub(super) async fn run(
 async fn maintain<B: WorkspaceKvBackend>(
     backend: B,
     arguments: NativeReverseIndexArgs,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
 ) -> anyhow::Result<()> {
     let backend = Arc::new(backend);
     let store =
@@ -185,7 +185,7 @@ async fn maintain<B: WorkspaceKvBackend>(
                 anyhow::anyhow!("native reverse maintenance requires an initialized volume")
             })?;
         anyhow::ensure!(
-            header.volume_format == "workspace-v1"
+            header.volume_format == "workspace"
                 && header.schema_version == WORKSPACE_SCHEMA_VERSION
                 && !header.volume_id.is_nil(),
             "native reverse maintenance volume format is invalid"
@@ -196,7 +196,7 @@ async fn maintain<B: WorkspaceKvBackend>(
                 .await
                 .map_err(catalog_error)?;
             return Ok(serde_json::json!({
-                "format": "packed-v3", "layer": arguments.layer,
+                "format": "packed", "layer": arguments.layer,
                 "gc_incarnation_initialized": true, "ready": false,
                 "pages_completed": 0
             }));
@@ -220,7 +220,7 @@ async fn maintain<B: WorkspaceKvBackend>(
             }
         }
         Ok(
-            serde_json::json!({"format": "packed-v3", "layer": arguments.layer,
+            serde_json::json!({"format": "packed", "layer": arguments.layer,
             "ready": ready, "pages_completed": pages}),
         )
     }

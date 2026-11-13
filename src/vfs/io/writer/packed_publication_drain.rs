@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(test, feature = "workspace-overlay"))]
+#[cfg(all(test, feature = "workspace"))]
 mod tests;
 
 pub(super) struct PackedWriterTasks {
@@ -48,7 +48,7 @@ impl PackedWriterTasks {
         })
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn wait_idle(&self, deadline: Duration) -> anyhow::Result<()> {
         let wait = async {
             loop {
@@ -101,20 +101,20 @@ where
     });
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) struct PackedWriterDrain {
     inodes: Vec<i64>,
     _cleanup: tokio::sync::OwnedMutexGuard<()>,
     _snapshot_owner: Option<crate::meta::layer::MetadataMemoryGuard>,
 }
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 impl PackedWriterDrain {
     pub(crate) fn inodes(&self) -> &[i64] {
         &self.inodes
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 impl<B, M> FileWriter<B, M>
 where
     B: BlockStore + Send + Sync + 'static,
@@ -151,7 +151,7 @@ where
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 impl<B, M> DataWriter<B, M>
 where
     B: BlockStore + Send + Sync + 'static,
