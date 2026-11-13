@@ -678,7 +678,7 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotIndexReader<B> {
                 group_bytes.min(budget.capacity(SnapshotBudgetPool::Metadata) / 4),
                 budget.clone(),
             ),
-            group_directories: super::read_cache::RetainedMetadata::with_parallel_fills(
+            group_directories: super::read_cache::RetainedMetadata::new(
                 (cache_bytes / 64)
                     .min(4 << 20)
                     .min(budget.capacity(SnapshotBudgetPool::Metadata) / 16),

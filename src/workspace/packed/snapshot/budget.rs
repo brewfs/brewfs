@@ -221,9 +221,22 @@ impl SnapshotMountBudget {
     /// old in-flight fills can never publish into the new epoch.
     pub(crate) fn invalidate_read_caches(&self) {
         self.read_cache_epoch.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_waiters();
     }
     pub(crate) fn read_cache_epoch(&self) -> u64 {
         self.read_cache_epoch.load(Ordering::SeqCst)
+    }
+    /// Wake queued metadata fills and cancel stale fetch futures at a view fence.
+    pub(super) async fn wait_read_cache_epoch_changed(&self, epoch: u64) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.read_cache_epoch() != epoch {
+                return;
+            }
+            changed.await;
+        }
     }
     /// Observe shutdown without retaining a memory permit while waiting.
     /// Register before inspecting state so a concurrent close cannot be lost.

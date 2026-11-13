@@ -27,6 +27,8 @@ mod workspace_bucket;
 #[cfg(feature = "workspace")]
 use crate::workspace;
 
+#[cfg(feature = "workspace")]
+use anyhow::Context as _;
 use bytes::Bytes;
 use clap::Parser;
 #[cfg(not(feature = "profiling"))]
@@ -2021,7 +2023,11 @@ where
             .expect("mount session acquired")
             .lease_validity();
         meta_layer = meta_layer
-            .with_upper_row_cache(row_cache_ttl)
+            .with_upper_row_cache_bytes(row_cache_ttl, match std::env::var("BREWFS_WORKSPACE_ROW_CACHE_BYTES") {
+                Ok(value) => value.parse::<u64>().context("BREWFS_WORKSPACE_ROW_CACHE_BYTES must be an unsigned byte count")?,
+                Err(std::env::VarError::NotPresent) => 64 << 20,
+                Err(error) => return Err(error.into()),
+            })
             .with_lease_bound_row_cache(lease_validity);
         let meta_layer = Arc::new(meta_layer);
         let packed = meta_layer.packed_reader_session().is_some();

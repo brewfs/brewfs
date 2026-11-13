@@ -4,7 +4,7 @@ fn warm(cache: &UpperRowCache, ino: i64) {
     cache.insert(
         cache.ticket(),
         RowKey::Inode(ino),
-        RowValue::Inode(Arc::new(Vec::new())),
+        RowValue::Inode(Retained::new(Vec::new())),
     );
     assert!(cache.get(&RowKey::Inode(ino)).is_some());
 }
@@ -25,7 +25,7 @@ fn unresolved_commit_disables_both_caches_and_later_refills() {
             cache.insert(
                 ticket,
                 RowKey::Inode(1),
-                RowValue::Inode(Arc::new(Vec::new())),
+                RowValue::Inode(Retained::new(Vec::new())),
             );
             assert!(cache.get(&RowKey::Inode(1)).is_none());
         }
@@ -75,7 +75,7 @@ async fn canceling_the_await_disables_authority_even_with_a_live_lease() {
     cache.insert(
         cache.ticket(),
         RowKey::Inode(1),
-        RowValue::Inode(Arc::new(Vec::new())),
+        RowValue::Inode(Retained::new(Vec::new())),
     );
     assert!(
         !fence.unchanged(1, &[]),

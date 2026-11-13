@@ -90,7 +90,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             cache.insert(
                 ticket,
                 super::row_cache::RowKey::Aliases(inode),
-                super::row_cache::RowValue::Aliases(Arc::new(effective.clone())),
+                super::row_cache::RowValue::Aliases(super::row_cache::Retained::new(
+                    effective.clone(),
+                )),
             );
         }
         Ok(effective)
@@ -191,9 +193,12 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         if let Some(super::row_cache::RowValue::Paths(paths)) =
             cache.and_then(|cache| cache.get(&super::row_cache::RowKey::Paths(target)))
         {
+            // Cache storage has its own row budget. This output is a new copy:
+            // obtain its Output and reader ownership before cloning any bytes.
+            let guard = self.packed_paths_output_guard(&paths)?;
             return Ok(OwnedPaths {
                 paths: (*paths).clone(),
-                guard: None,
+                guard: Some(guard),
             });
         }
         let ticket = cache.map(super::row_cache::UpperRowCache::ticket);
@@ -202,10 +207,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             match self.packed_paths_bytes_owned_attempt(target).await {
                 Ok(owned) => {
                     if let (Some(cache), Some(ticket)) = (cache, ticket) {
-                        cache.insert(
+                        cache.insert_paths(
                             ticket,
                             super::row_cache::RowKey::Paths(target),
-                            super::row_cache::RowValue::Paths(Arc::new(owned.paths.clone())),
+                            &owned.paths,
                         );
                     }
                     return Ok(owned);
@@ -219,6 +224,33 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             }
         }
         unreachable!("bounded path walk retry always returns")
+    }
+
+    fn packed_paths_output_guard(
+        &self,
+        paths: &Vec<Vec<u8>>,
+    ) -> Result<MetadataMemoryGuard, MetaError> {
+        let lower = self
+            .packed_lower()
+            .ok_or_else(|| MetaError::Internal("missing packed path lower".into()))?;
+        let storage = paths.iter().fold(
+            (paths.capacity() * size_of::<Vec<u8>>()) as u64,
+            |total, path| total.saturating_add(path.capacity() as u64),
+        );
+        let bytes = PATHS_OUTPUT_BYTES
+            .max(storage.saturating_add(PATHS_OUTPUT_BYTES - MAX_OUTPUT_BYTES as u64));
+        let permit = lower
+            .budget
+            .admit(&[(SnapshotBudgetPool::Output, bytes)])
+            .map_err(packed_lower::budget_to_meta)?;
+        let reader = lower
+            .authority
+            .retain_reader_request()
+            .map_err(workspace_to_meta)?;
+        Ok(Arc::new(PathsOutputOwner {
+            _permit: permit,
+            _reader: reader,
+        }))
     }
 
     async fn packed_paths_bytes_owned_attempt(&self, target: i64) -> Result<OwnedPaths, MetaError> {

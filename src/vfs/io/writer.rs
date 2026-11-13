@@ -9,7 +9,11 @@
 // - FileWriter::flush() freezes all slices and waits until commit threads drain the chunks.
 //   While flushing, new writes are blocked via flush_waiting/write_waiting gates.
 
+mod cached_write_watermarks;
+#[cfg(all(test, target_os = "linux"))]
+mod cached_write_watermarks_bench;
 mod packed_publication_drain;
+use cached_write_watermarks::CachedWriteWatermarks;
 use packed_publication_drain::{PackedWriterTasks, spawn_writer_owned};
 
 use super::reader::DataReader;
@@ -22,6 +26,7 @@ use crate::utils::{NumCastExt, UsageGuard};
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::WriteBackMode;
+use crate::vfs::cache::keys::DirtySliceKey;
 use crate::vfs::cache::page::CacheSlice;
 use crate::vfs::cache::page::WriteAction as PageWriteAction;
 use crate::vfs::cache::write_back::WriteBackCache;
@@ -396,6 +401,9 @@ pub(crate) struct SliceState {
     /// Commit-before-upload may publish metadata only after staged data covers
     /// the whole sealed slice and this recoverable dirty record is sealed.
     writeback_record_sealed: bool,
+    /// Metadata completed the existing best-effort stage retirement before
+    /// publishing Committed. A late uploader must not repeat that promotion.
+    writeback_cleaned_before_commit: bool,
     data: CacheSlice,
     usage: UsageGuard,
     memory_usage: Option<MemoryUsageGuard>,
@@ -459,6 +467,7 @@ impl SliceState {
             writeback_persisted_bytes: 0,
             writeback_record_sealing: false,
             writeback_record_sealed: false,
+            writeback_cleaned_before_commit: false,
             data: CacheSlice::new(config),
             usage: UsageGuard::new(usage),
             memory_usage: memory_budget
@@ -1680,6 +1689,8 @@ struct Shared<B, M> {
     reader: Arc<DataReader<B, M>>,
     /// Local SSD write-back cache for persisting frozen slices before upload.
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+    #[cfg(test)]
+    writeback_cleanup_probe: OnceLock<Arc<commit_cleanup_tests::CleanupProbe>>,
     /// Mount/session generation embedded in durable dirty keys. Flat mounts use zero.
     writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
@@ -2276,6 +2287,8 @@ where
                 write_waiting: 0,
                 chunks: BTreeMap::default(),
                 cached_write_watermarks: BTreeMap::default(),
+                #[cfg(all(test, target_os = "linux"))]
+                legacy_cached_write_watermarks: None,
                 sparse_fallocate_ranges: BTreeMap::default(),
             }),
             write_notify: Notify::new(),
@@ -2284,6 +2297,8 @@ where
             reader,
             write_back,
             writeback_epoch,
+            #[cfg(test)]
+            writeback_cleanup_probe: OnceLock::new(),
             memory_budget,
             write_order: AtomicU64::new(0),
             write_gen: AtomicU64::new(0),
@@ -2343,7 +2358,10 @@ struct Inner {
     flush_waiting: u16,
     write_waiting: u16,
     chunks: BTreeMap<u64, ChunkState>,
-    cached_write_watermarks: BTreeMap<u64, Vec<CachedWriteRange>>,
+    cached_write_watermarks: BTreeMap<u64, CachedWriteWatermarks>,
+    #[cfg(all(test, target_os = "linux"))]
+    legacy_cached_write_watermarks:
+        Option<BTreeMap<u64, Vec<cached_write_watermarks_bench::LegacyRange>>>,
     sparse_fallocate_ranges: BTreeMap<u64, Vec<(u64, u64)>>,
 }
 
@@ -2445,21 +2463,22 @@ impl Inner {
         }
 
         let end = offset + len as u64;
-        let ranges = self.cached_write_watermarks.entry(chunk_id).or_default();
-        let mut allowed = crate::utils::Intervals::new(offset, end);
-        for range in ranges.iter() {
-            if range.max_unique > creation_unique {
-                allowed.cut(range.start.max(offset), range.end.min(end));
-            }
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(legacy) = &mut self.legacy_cached_write_watermarks {
+            return cached_write_watermarks_bench::legacy_allow_and_record(
+                legacy.entry(chunk_id).or_default(),
+                offset,
+                end,
+                creation_unique,
+            );
         }
-        let allowed = allowed
-            .collect()
+        self.cached_write_watermarks
+            .entry(chunk_id)
+            .or_default()
+            .record_and_allow(offset, end, creation_unique)
             .into_iter()
             .map(|(start, end)| (start, (end - start).as_usize()))
-            .collect();
-
-        record_cached_write_watermark(ranges, offset, end, creation_unique);
-        allowed
+            .collect()
     }
 
     fn record_sparse_fallocate_range(&mut self, chunk_id: u64, start: u64, end: u64) {
@@ -2510,13 +2529,6 @@ impl Inner {
     fn has_chunks(&self) -> bool {
         !self.chunks.is_empty()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CachedWriteRange {
-    start: u64,
-    end: u64,
-    max_unique: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2580,86 +2592,6 @@ fn push_sparse_cached_segment_if_materialized(
             len: buf.len(),
         });
     }
-}
-
-fn record_cached_write_watermark(
-    ranges: &mut Vec<CachedWriteRange>,
-    start: u64,
-    end: u64,
-    unique: u64,
-) {
-    if unique == 0 || start >= end {
-        return;
-    }
-
-    let mut boundaries = vec![start, end];
-    for range in ranges.iter() {
-        if range.end <= start || range.start >= end {
-            continue;
-        }
-        boundaries.push(range.start.max(start));
-        boundaries.push(range.end.min(end));
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
-    let mut next = Vec::with_capacity(ranges.len() + boundaries.len());
-    for range in ranges.iter().copied() {
-        if range.end <= start || range.start >= end {
-            next.push(range);
-            continue;
-        }
-        if range.start < start {
-            next.push(CachedWriteRange {
-                start: range.start,
-                end: start,
-                max_unique: range.max_unique,
-            });
-        }
-        if range.end > end {
-            next.push(CachedWriteRange {
-                start: end,
-                end: range.end,
-                max_unique: range.max_unique,
-            });
-        }
-    }
-
-    for window in boundaries.windows(2) {
-        let seg_start = window[0];
-        let seg_end = window[1];
-        if seg_start >= seg_end {
-            continue;
-        }
-        let mut max_unique = unique;
-        for range in ranges.iter() {
-            if range.start < seg_end && seg_start < range.end {
-                max_unique = max_unique.max(range.max_unique);
-            }
-        }
-        next.push(CachedWriteRange {
-            start: seg_start,
-            end: seg_end,
-            max_unique,
-        });
-    }
-
-    next.sort_by_key(|range| (range.start, range.end));
-    let mut merged: Vec<CachedWriteRange> = Vec::with_capacity(next.len());
-    for range in next {
-        if range.start >= range.end {
-            continue;
-        }
-        if let Some(last) = merged.last_mut()
-            && last.end == range.start
-            && last.max_unique == range.max_unique
-        {
-            last.end = range.end;
-            continue;
-        }
-        merged.push(range);
-    }
-    *ranges = merged;
 }
 
 pub(crate) struct FileWriter<B, M> {
@@ -4229,6 +4161,10 @@ where
         let mut guard = self.shared.inner.lock().await;
         guard.chunks.clear();
         guard.cached_write_watermarks.clear();
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(legacy) = &mut guard.legacy_cached_write_watermarks {
+            legacy.clear();
+        }
         guard.sparse_fallocate_ranges.clear();
 
         if guard.flush_waiting > 0 {
@@ -4744,7 +4680,10 @@ where
     ) {
         let key = {
             let state = slice.lock();
-            if !matches!(state.state, SliceStatus::Committed) || !state.upload_complete() {
+            if !matches!(state.state, SliceStatus::Committed)
+                || !state.upload_complete()
+                || state.writeback_cleaned_before_commit
+            {
                 return;
             }
             let Some(slice_id) = state.slice_id else {
@@ -4758,15 +4697,23 @@ where
             )
         };
 
+        Self::remove_uploaded_writeback_record(shared, &key).await;
+    }
+
+    async fn remove_uploaded_writeback_record(shared: &Arc<Shared<B, M>>, key: &DirtySliceKey) {
+        #[cfg(test)]
+        if let Some(probe) = shared.writeback_cleanup_probe.get() {
+            probe.enter().await;
+        }
         if let Some(wb) = &shared.write_back {
-            if let Err(err) = wb.promote_to_read_cache(&key, key.local_seq).await {
+            if let Err(err) = wb.promote_to_read_cache(key, key.local_seq).await {
                 warn!(
                     slice_id = key.local_seq,
                     error = ?err,
                     "failed to promote writeback stage into persistent read cache"
                 );
             }
-            let _ = wb.remove(&key).await;
+            let _ = wb.remove(key).await;
         }
     }
 
@@ -5072,7 +5019,36 @@ where
                     .reader
                     .invalidate(ino as u64, file_offset, desc.length.as_usize())
                     .await;
-                handle.mark_committed();
+                // Hand off stage retirement under the same lock that publishes
+                // Committed. Otherwise upload can finish and skip cleanup in
+                // the gap between the completion check and publication.
+                let retire_before_commit = {
+                    let mut state = slice.lock();
+                    if state.upload_complete() {
+                        true
+                    } else {
+                        state.state = SliceStatus::Committed;
+                        state.notify.notify_waiters();
+                        false
+                    }
+                };
+                if retire_before_commit {
+                    // Keep Uploaded visible until the retirement attempt ends,
+                    // so successful cleanup precedes flush and writer eviction.
+                    // The upload-side helper sees non-Committed and skips us.
+                    let key = dirty_slice_key(
+                        shared.inode.ino(),
+                        desc.chunk_id,
+                        desc.slice_id,
+                        shared.writeback_epoch,
+                    );
+                    Self::remove_uploaded_writeback_record(shared, &key).await;
+                    let mut state = slice.lock();
+                    state.writeback_cleaned_before_commit = true;
+                    state.state = SliceStatus::Committed;
+                    state.notify.notify_waiters();
+                }
+                shared.flush_notify.notify_waiters();
                 true
             }
             Err(err) => {
@@ -6777,6 +6753,10 @@ where
 #[cfg(test)]
 #[path = "writer/coalesce_tests.rs"]
 mod coalesce_tests;
+
+#[cfg(test)]
+#[path = "writer/commit_cleanup_tests.rs"]
+mod commit_cleanup_tests;
 
 #[cfg(test)]
 mod tests {
@@ -9543,6 +9523,64 @@ mod tests {
         let file_reader = reader.open_for_handle(inode, 42);
         let out = file_reader.read(0, page).await.unwrap();
         assert_eq!(out, newer);
+    }
+
+    #[tokio::test]
+    async fn test_cached_watermark_append_work_stays_local_across_flush() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_watermark_growth".into())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = DataWriter::new(
+            test_config_without_auto_flush(layout),
+            backend,
+            reader.clone(),
+            None,
+        );
+        let file = writer.ensure_file(inode.clone());
+        inode.set_size(8192);
+        let mut expected = Vec::new();
+        let mut previous_visits = 0;
+        for batch in 0..2u64 {
+            for i in batch * 64..(batch + 1) * 64 {
+                let bytes = [i as u8; 64];
+                file.write_at_cached(i * 64, &bytes, i + 1).await.unwrap();
+                expected.extend_from_slice(&bytes);
+            }
+            file.flush().await.unwrap();
+            let inner = file.shared.inner.lock().await;
+            let visits: usize = inner
+                .cached_write_watermarks
+                .values()
+                .map(CachedWriteWatermarks::examined_ranges)
+                .sum();
+            assert!(visits - previous_visits <= 3 * 64);
+            previous_visits = visits;
+        }
+        // Flush must retain the ordering history protecting the committed page.
+        file.write_at_cached(4096, &[0xff; 4096], 1).await.unwrap();
+        file.flush().await.unwrap();
+        assert_eq!(
+            reader
+                .open_for_handle(inode, 42)
+                .read(0, 8192)
+                .await
+                .unwrap(),
+            expected
+        );
     }
 
     #[tokio::test]
