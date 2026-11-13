@@ -977,13 +977,23 @@ async fn mount_authenticated_packed_readonly_with_client<
         )
         .await;
     }
-    let meta_layer = Arc::new(PackedReadonlyMeta::from_snapshot_budget(
-        client,
-        snapshot,
-        layout.chunk_size,
-        metadata_bytes,
-        budget,
-    )?);
+    // Use the same authenticated frame-retention implementation as a Workspace
+    // lower. Keep standalone retention disabled unless explicitly configured.
+    let retained_payload = match std::env::var("BREWFS_PACKED_RETAINED_PAYLOAD_BYTES") {
+        Ok(value) => packed_readonly_payload_cache_bytes(Some(&value))?,
+        Err(std::env::VarError::NotPresent) => packed_readonly_payload_cache_bytes(None)?,
+        Err(error) => return Err(error.into()),
+    };
+    let meta_layer = Arc::new(
+        PackedReadonlyMeta::from_snapshot_budget_with_payload_retention(
+            client,
+            snapshot,
+            layout.chunk_size,
+            metadata_bytes,
+            budget,
+            retained_payload,
+        )?,
+    );
     let store = Arc::new(meta_layer.block_store(layout.block_size)?);
     meta_layer.initialize().await?;
     let config = crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone());
@@ -2279,6 +2289,11 @@ where
 }
 
 #[cfg(feature = "workspace")]
+fn packed_readonly_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u64> {
+    workspace_packed_payload_cache_bytes(value.or(Some("0")))
+}
+
+#[cfg(feature = "workspace")]
 fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u64> {
     let bytes = value.map(str::parse::<u64>).transpose()?.unwrap_or(8 << 20);
     anyhow::ensure!(
@@ -3146,6 +3161,21 @@ fn database_type_from_url(url: &str) -> DatabaseType {
 #[cfg(test)]
 mod volume_format_tests {
     use super::*;
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn packed_readonly_payload_retention_is_opt_in_and_matches_workspace_limits() {
+        assert_eq!(packed_readonly_payload_cache_bytes(None).unwrap(), 0);
+        for value in ["0", "513", "8388608", "67108864"] {
+            assert_eq!(
+                packed_readonly_payload_cache_bytes(Some(value)).unwrap(),
+                workspace_packed_payload_cache_bytes(Some(value)).unwrap()
+            );
+        }
+        for value in ["", "-1", "512", "67108865", "8MiB"] {
+            assert!(packed_readonly_payload_cache_bytes(Some(value)).is_err());
+        }
+    }
 
     #[cfg(feature = "workspace")]
     #[test]

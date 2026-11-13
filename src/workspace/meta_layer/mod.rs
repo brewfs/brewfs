@@ -724,21 +724,15 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             .map_err(workspace_to_meta)?;
         let guard = self.guard().await;
         let chain = self.chain().await?;
-        let layers = [
-            self.store
-                .load_layer(guard.expected_head_layer_id)
-                .await
-                .map_err(workspace_to_meta)?,
-            chain[1].clone(),
-        ];
+        let layers = self
+            .store
+            .read_fenced_layers(guard.clone(), chain[1].clone())
+            .await
+            .map_err(workspace_to_meta)?;
         if layers[1].layer_id != lower.binding.base_layer_id {
             return Err(workspace_to_meta(WorkspaceError::Fenced));
         }
         validate_fixed_layer_pair(&layers).map_err(workspace_to_meta)?;
-        self.store
-            .validate_read_fence(guard.clone(), layers.clone())
-            .await
-            .map_err(workspace_to_meta)?;
         Ok(Some((guard, layers, reader_owner)))
     }
 
@@ -1060,22 +1054,25 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// upper writer and every commit drops the `Permission` key of each inode
     /// it writes (before and after). A mutation built on it still CASes the
     /// head version it read, so a stale entry can only fail that CAS.
-    async fn cached_permission_snapshot(&self, ino: i64) -> Result<PermissionSnapshot, MetaError> {
+    async fn cached_permission_snapshot(
+        &self,
+        ino: i64,
+    ) -> Result<row_cache::Retained<PermissionSnapshot>, MetaError> {
         let lease_bound = self.lease_validity.is_some() && self.row_caches_authoritative();
         let cache = self.upper_row_cache().filter(|_| lease_bound);
         let key = row_cache::RowKey::Permission(ino);
         if let Some(row_cache::RowValue::Permission(snapshot)) =
             cache.and_then(|cache| cache.get(&key))
         {
-            return Ok((*snapshot).clone());
+            return Ok(snapshot);
         }
         let ticket = cache.map(row_cache::UpperRowCache::ticket);
-        let snapshot = self.permission_snapshot(vec![ino], None).await?;
+        let snapshot = row_cache::Retained::new(self.permission_snapshot(vec![ino], None).await?);
         if let (Some(cache), Some(ticket)) = (cache, ticket) {
             cache.insert(
                 ticket,
                 key,
-                row_cache::RowValue::Permission(row_cache::Retained::new(snapshot.clone())),
+                row_cache::RowValue::Permission(snapshot.clone()),
             );
         }
         Ok(snapshot)
@@ -2300,15 +2297,16 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         let cache = self.upper_row_cache();
         let key = row_cache::RowKey::Permission(ino);
         let snapshot = match cache.and_then(|cache| cache.get(&key)) {
-            Some(row_cache::RowValue::Permission(snapshot)) => (*snapshot).clone(),
+            Some(row_cache::RowValue::Permission(snapshot)) => snapshot,
             _ => {
                 let ticket = cache.map(row_cache::UpperRowCache::ticket);
-                let snapshot = self.permission_snapshot(vec![ino], None).await?;
+                let snapshot =
+                    row_cache::Retained::new(self.permission_snapshot(vec![ino], None).await?);
                 if let (Some(cache), Some(ticket)) = (cache, ticket) {
                     cache.insert(
                         ticket,
                         key,
-                        row_cache::RowValue::Permission(row_cache::Retained::new(snapshot.clone())),
+                        row_cache::RowValue::Permission(snapshot.clone()),
                     );
                 }
                 snapshot
@@ -2464,7 +2462,9 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                 };
                 let snapshot = match &version {
                     // A commit follows: it CASes this exact head version.
-                    Some(_) => self.permission_snapshot(vec![ino], None).await?,
+                    Some(_) => {
+                        row_cache::Retained::new(self.permission_snapshot(vec![ino], None).await?)
+                    }
                     // Decision only (no commit): the lease-bound cache.
                     None => self.cached_permission_snapshot(ino).await?,
                 };

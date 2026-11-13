@@ -974,6 +974,108 @@ async fn frozen_base_read_path_does_no_per_operation_lower_validation() {
 }
 
 #[tokio::test]
+async fn packed_heartbeat_keeps_file_cache_and_empty_directory_proofs() {
+    let mut f = fixture_with_cache(64 << 20).await;
+    f.meta = f
+        .meta
+        .with_upper_row_cache(Duration::from_secs(60))
+        .with_lease_bound_row_cache(Arc::new(crate::workspace::lifecycle::LeaseValidity::new(
+            std::time::Instant::now(),
+            Duration::from_secs(30),
+        )));
+    let permission = f.meta.cached_permission_snapshot(400).await.unwrap();
+    let first = f.meta.opendir(1).await.unwrap();
+    let names = first.get_entries_page_raw_owned(0, 256).await.unwrap();
+    assert!(!names.entries.is_empty());
+    drop(names);
+    let before_queries = f
+        .meta
+        .row_cache_counters
+        .directory_queries
+        .load(Ordering::SeqCst);
+    let before_head = f
+        .meta
+        .store()
+        .load_layer(f.meta.view_context().await.head_layer_id)
+        .await
+        .unwrap();
+    f.authority.clone().renew(60_000_000_000).await.unwrap();
+    let after_head = f
+        .meta
+        .store()
+        .load_layer(before_head.layer_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        before_head, after_head,
+        "renewal must not advance file metadata versions"
+    );
+    let after_permission = f.meta.cached_permission_snapshot(400).await.unwrap();
+    assert_eq!(permission.inodes.as_ptr(), after_permission.inodes.as_ptr());
+    let second = f.meta.opendir(1).await.unwrap();
+    assert_eq!(
+        f.meta
+            .row_cache_counters
+            .directory_queries
+            .load(Ordering::SeqCst),
+        before_queries,
+        "renewal must not discard a proved empty upper directory"
+    );
+    assert!(
+        f.meta
+            .row_cache_counters
+            .directory_empty_hits
+            .load(Ordering::SeqCst)
+            > 0
+    );
+    drop((first, second, permission, after_permission));
+    shutdown(&f).await;
+}
+
+#[tokio::test]
+async fn cached_permission_read_shares_snapshot_and_invalidates_after_chmod() {
+    let mut f = fixture_with_cache(64 << 20).await;
+    f.meta = f
+        .meta
+        .with_upper_row_cache(Duration::from_secs(60))
+        .with_lease_bound_row_cache(Arc::new(crate::workspace::lifecycle::LeaseValidity::new(
+            std::time::Instant::now(),
+            Duration::from_secs(30),
+        )));
+    let first = f.meta.cached_permission_snapshot(400).await.unwrap();
+    let second = f.meta.cached_permission_snapshot(400).await.unwrap();
+    assert!(!first.inodes.is_empty());
+    assert_eq!(
+        first.inodes.as_ptr(),
+        second.inodes.as_ptr(),
+        "warm permissions must retain one bounded payload"
+    );
+    let old_mode = f.meta.stat(400).await.unwrap().unwrap().mode;
+    let mode = if old_mode & 0o777 == 0o600 {
+        0o640
+    } else {
+        0o600
+    };
+    f.meta
+        .set_attr(
+            400,
+            &crate::meta::store::SetAttrRequest {
+                mode: Some(mode),
+                ..Default::default()
+            },
+            crate::meta::store::SetAttrFlags::empty(),
+        )
+        .await
+        .unwrap();
+    let changed = f.meta.cached_permission_snapshot(400).await.unwrap();
+    assert_ne!(first.inodes.as_ptr(), changed.inodes.as_ptr());
+    assert_eq!(f.meta.stat(400).await.unwrap().unwrap().mode & 0o777, mode);
+    // Retained old readers cannot mutate or replace the cache's new generation.
+    assert_eq!(first.inodes, second.inodes);
+    shutdown(&f).await;
+}
+
+#[tokio::test]
 async fn frozen_lower_permission_and_lookup_inputs_are_fetched_once_per_binding() {
     use crate::meta::layer::MetaLayer;
     let f = fixture_with_cache(64 << 20).await;

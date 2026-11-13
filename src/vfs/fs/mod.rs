@@ -6428,19 +6428,22 @@ where
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
-            return driver
-                .run(async move {
-                    vfs.packed_owned_open_with_attr_refresh(
-                        ino,
-                        attr,
-                        read,
-                        write,
-                        append,
-                        refresh_attr,
-                    )
-                    .await
-                })
-                .await?;
+            let operation = async move {
+                vfs.packed_owned_open_with_attr_refresh(
+                    ino,
+                    attr,
+                    read,
+                    write,
+                    append,
+                    refresh_attr,
+                )
+                .await
+            };
+            return if write || append {
+                driver.run(operation).await?
+            } else {
+                driver.run_ready(operation).await?
+            };
         }
         self.packed_owned_open_with_attr_refresh(ino, attr, read, write, append, refresh_attr)
             .await
@@ -6538,10 +6541,18 @@ where
         #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
+            // This only selects scheduling. packed_owned_close still locks
+            // and revalidates the handle and performs every metadata close.
+            let read_only = self
+                .file_handle(fh)
+                .is_some_and(|handle| !handle.flags.write && !handle.flags.append);
             let vfs = self.clone();
-            return driver
-                .run(async move { vfs.packed_owned_close(fh).await })
-                .await?;
+            let operation = async move { vfs.packed_owned_close(fh).await };
+            return if read_only {
+                driver.run_ready(operation).await?
+            } else {
+                driver.run(operation).await?
+            };
         }
         self.packed_owned_close(fh).await
     }
