@@ -13,7 +13,7 @@ use crate::native_base::write::{
     receipts::MemorySink,
     store::ControlStore,
 };
-use crate::workspace_overlay::{
+use crate::workspace::{
     admin::verify_revision,
     catalog::{AcquireLease, CreateVolumeRoot, ReleaseLease, WorkspaceStore},
     ids::{LayerId, LeaseId, WorkspaceId},
@@ -44,7 +44,7 @@ pub(crate) async fn seed_catalog_lower<W: WorkspaceStore + 'static>(
     catalog.initialize_workspace_schema().await.unwrap();
     let root = catalog
         .create_volume_root(CreateVolumeRoot {
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: 1,
             volume_id,
             workspace_id: WorkspaceId::new(),
@@ -108,7 +108,7 @@ pub(crate) async fn seed_catalog_lower<W: WorkspaceStore + 'static>(
         .await
         .unwrap();
     let revision =
-        crate::workspace_overlay::test_base_fixture::install_test_base(&catalog, root.workspace_id)
+        crate::workspace::test_base_fixture::install_test_base(&catalog, root.workspace_id)
             .await
             .revision;
     verify_revision(catalog.as_ref(), &revision).await.unwrap();

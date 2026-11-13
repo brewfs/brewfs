@@ -6,12 +6,12 @@ the reported 400-ms p99 and 19x throughput ratio do **not** reproduce here.
 
 | Arm | MiB/s, min / median / max (3 runs) | p99 ms, min / median / max (3 runs) |
 | --- | --- | --- |
-| flat-v1 | 85.238 / 86.334 / 87.403 | 30.802 / 31.326 / 31.588 |
-| workspace-v1, native lower, before | 12.111 / 12.209 / 12.314 | 63.177 / 64.225 / 64.750 |
-| workspace-v1, native lower, rejected candidate A | 77.825 / 78.000 / 79.357 | 31.850 / 31.850 / 32.375 |
+| flat | 85.238 / 86.334 / 87.403 | 30.802 / 31.326 / 31.588 |
+| workspace, native lower, before | 12.111 / 12.209 / 12.314 | 63.177 / 64.225 / 64.750 |
+| workspace, native lower, rejected candidate A | 77.825 / 78.000 / 79.357 | 31.850 / 31.850 / 32.375 |
 
-The baseline native overlay median is 14.14% of flat-v1 throughput; its p99
-is 2.05x flat-v1. These are FUSE measurements using the unchanged compose perf runner,
+The baseline native overlay median is 14.14% of flat throughput; its p99
+is 2.05x flat. These are FUSE measurements using the unchanged compose perf runner,
 Redis 7.2, and a local RustFS S3 service. They are not in-memory microbenchmarks.
 
 fio: 4-KiB random reads, `direct=1`, `io_uring`, four jobs at depth 32,
@@ -31,7 +31,7 @@ does not reproduce the issue's four-disk EC 2+2 layout.
 
 The actual native-overlay read path is
 `FileReader::read_chunk_span_into_observed -> WorkspaceMetaLayer::read_plan`.
-It is distinct from `NativeDataRuntime` / `workspace-native-v2`; that earlier
+It is distinct from `NativeDataRuntime` / `native-workspace`; that earlier
 investigation was abandoned without a behavior change or accepted measurement.
 `read_plan` keys its bounded resolver cache by the exact request range.
 Each range miss calls `read_extent_deltas_consistent`, which brackets paged
@@ -211,7 +211,7 @@ The C source delta was reverted after rejection; no C behavior is accepted.
 
 The C `-j 1` correctness gates pass with 1,275 default-feature library tests,
 the complete workspace library/binary suite, and 2,503 tests in the
-workspace-overlay configuration. The new regressions pass; no ignore
+workspace configuration. The new regressions pass; no ignore
 attributes were added. Formatting, the perf script self-tests, both FUSE
 runtime checks, workspace check/build, and strict default/workspace Clippy
 also pass. Native-packed library tests pass with `--test-threads=1`:
@@ -224,7 +224,7 @@ An additional strict native-packed Clippy check fails on the existing
 eight-argument `src/cli.rs::mount_native_with_catalog`. The complete CLI
 file has the identical Git blob (`a476cdd0ec18631869ae05599e771b1e2e20bebf`)
 as baseline `975deac`; no suppression or unrelated refactor was added.
-Strict workspace-overlay Clippy also passes for candidate C. Its full gate
+Strict workspace Clippy also passes for candidate C. Its full gate
 logs are under `/work/issue372/gates-scoped/`; candidate A's logs are archived
 in `gates-rejected-all-reads/`. The original hardware, packed lower, and
 JuiceFS comparison have not been validated here.

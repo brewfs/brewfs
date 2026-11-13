@@ -46,7 +46,7 @@ mkdir "$run_dir"
 project="brewfs-entity-$run_uuid"
 env_file="$run_dir/.compose.env"
 test_pid=""
-filters=(packed_entity_lower workspace_overlay::entity)
+filters=(packed_entity_lower workspace::entity)
 with_tikv="${ENTITY_DATA_TIKV:-false}"
 [[ "$with_tikv" == true || "$with_tikv" == false ]] || { echo "ENTITY_DATA_TIKV must be true or false" >&2; exit 2; }
 printf 'filter\tbucket\texit\tpassed\n' >"$run_dir/cases.tsv"
@@ -188,7 +188,7 @@ for filter in "${filters[@]}"; do
     # brewfs omits brewfs-stats -> crossterm -> mio default/log features and
     # produces a second full library test executable. Other targets have no
     # matching cases; the parser below permits their empty suite summaries.
-    command=(cargo test --workspace --features workspace-overlay --lib --bins "$filter" -- --include-ignored --test-threads=1)
+    command=(cargo test --workspace --features workspace --lib --bins "$filter" -- --include-ignored --test-threads=1)
     if [[ "$with_tikv" != true ]]; then command+=(--skip tikv_entity); fi
     printf '%q ' "${command[@]}" >>"$run_dir/commands.log"
     printf '\n' >>"$run_dir/commands.log"

@@ -2,7 +2,7 @@
 
 Baseline: upstream `f0676c5df134f004bbc9f222a520c951a855d64a`, Docker
 29.1.3, Linux 6.18.54.1-microsoft-standard-WSL2, real `/dev/fuse`, Redis
-workspace catalog and the workspace-overlay release binary. The packed fixture
+workspace catalog and the workspace release binary. The packed fixture
 must be allowed through `.dockerignore` for the workspace image to build.
 
 The failure is a race in the xfstests mount helper. Kernel unmount can return
@@ -75,10 +75,10 @@ holding the inherited descriptor for `/run/brewfs/config.yaml.mount.lock`.
 Local artifacts, including the diagnostic image sources and minimal repro,
 are preserved under `/home/luxian/xf097/evidence` and its parent directory:
 
-- Failing full case: `teardown-before/workspace-overlay-20261025-141427-11246/xfstests-a/run-1792908870-5504/`, including `results/generic/097.out.bad` and `brewfs.log`.
+- Failing full case: `teardown-before/workspace-20261025-141427-11246/xfstests-a/run-1792908870-5504/`, including `results/generic/097.out.bad` and `brewfs.log`.
 - Plain CLI reproduction: `minimal-latency-50.log` and `minimal-20261025-140606/logs/`.
-- Passing final normal suite: `final/workspace-overlay-20261025-142300-15724/xfstests-a/run-1792909382-11896/`.
-- Passing final delayed suite: `teardown-final/workspace-overlay-20261025-142147-3712/xfstests-a/run-1792909311-15613/`.
+- Passing final normal suite: `final/workspace-20261025-142300-15724/xfstests-a/run-1792909382-11896/`.
+- Passing final delayed suite: `teardown-final/workspace-20261025-142147-3712/xfstests-a/run-1792909311-15613/`.
 - Shell regression: `regression-before.log` and `regression-after.log`.
 
 The default workspace test gate passed (1,250 passed, 0 failed, 262 ignored),
@@ -86,7 +86,7 @@ as did workspace check/build, all four FUSE runtime feature checks, both Clippy
 configurations, the patched FUSE transport tests/checks, formatting and the
 script gates. The all-features command failed on unchanged baseline Rust code:
 `EtcdEntryInfo: rkyv::Archive` is not implemented at
-`src/meta/stores/etcd/mod.rs:1958`. An additional workspace-overlay unit-test
+`src/meta/stores/etcd/mod.rs:1958`. An additional workspace unit-test
 build exceeded this host's memory and was killed by the kernel OOM handler.
 Those two results are preserved; neither is represented as a passing gate.
 CSI checks/tests/Clippy and operator checks/tests/Clippy/CRD comparison passed.

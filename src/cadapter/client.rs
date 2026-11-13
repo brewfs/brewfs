@@ -244,7 +244,7 @@ mod bounded_size_tests {
         let observer = Arc::new(ReadObserver::default());
         let client = ObjectClient::new(backend).with_read_observer(
             Arc::clone(&observer),
-            Engine::PackedV3,
+            Engine::Packed,
             Phase::Startup,
             Origin::Demand,
         );
@@ -369,7 +369,7 @@ impl<B: ObjectBackend> ObjectClient<B> {
                 ..
             }) => 2,
             Some(ReadContext {
-                engine: Engine::PackedV3,
+                engine: Engine::Packed,
                 ..
             }) => 1,
             _ => 0,
@@ -389,7 +389,7 @@ impl<B: ObjectBackend> ObjectClient<B> {
     pub fn forbids_mutation_replay(&self) -> bool {
         self.backend.forbids_mutation_replay()
     }
-    #[cfg(all(target_os = "linux", feature = "workspace-overlay"))]
+    #[cfg(all(target_os = "linux", feature = "workspace"))]
     pub(crate) fn map_backend<C: ObjectBackend>(self, map: impl FnOnce(B) -> C) -> ObjectClient<C> {
         ObjectClient {
             backend: map(self.backend),

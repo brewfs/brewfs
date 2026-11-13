@@ -7,9 +7,9 @@ use crate::native_base::runtime::{
 };
 use crate::native_base::write::keys::Keys;
 use crate::native_base::write::store::{ControlStore, Txn};
-use crate::workspace_overlay::error::WorkspaceError;
-use crate::workspace_overlay::ids::WorkspaceId;
-use crate::workspace_overlay::model::VolumeHeader;
+use crate::workspace::error::WorkspaceError;
+use crate::workspace::ids::WorkspaceId;
+use crate::workspace::model::VolumeHeader;
 use uuid::Uuid;
 
 use super::catalog::CatalogConnection;
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn native_creation_identity_conflicts_preserve_an_uncertain_outcome() {
         let error = creation_error(WorkspaceError::Conflict(
-            crate::workspace_overlay::error::ConflictDetail {
+            crate::workspace::error::ConflictDetail {
                 path: b"private-native-key".to_vec(),
                 reason: "private progressed head identity".into(),
             },

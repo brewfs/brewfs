@@ -1,4 +1,4 @@
-# Owned loopback backends for the ignored packed-v3/005 real-backend lifecycle
+# Owned loopback backends for the ignored packed/005 real-backend lifecycle
 # tests. Every service uses host networking bound to 127.0.0.1 so the test
 # process on the ECS host reaches Redis, PD/TiKV and RustFS through the same
 # addresses that TiKV advertises to PD. Ports come from the runner and must be

@@ -77,7 +77,7 @@ where
     }
 
     pub async fn run_gc_cycle(&self, config: &BlockGcConfig) -> Result<(), GCError> {
-        if config.volume_format.as_deref() == Some("workspace-native-v2") {
+        if config.volume_format.as_deref() == Some("native-workspace") {
             return Err(GCError::UnsupportedVolumeFormat);
         }
         let pending_deletions = self
@@ -240,6 +240,6 @@ pub enum GCError {
     MetaError(#[from] MetaError),
     #[error("BlockStore error: {0}")]
     BlockStoreError(String),
-    #[error("legacy block GC is disabled for workspace-native-v2")]
+    #[error("legacy block GC is disabled for native-workspace")]
     UnsupportedVolumeFormat,
 }

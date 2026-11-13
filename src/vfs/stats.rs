@@ -1053,6 +1053,13 @@ impl RequestObservation {
     }
 }
 
+/// Additional Full GET and HEAD lines beyond the original Packed stats bound.
+#[cfg(feature = "workspace")]
+pub(crate) const PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES: usize = 256;
+/// Shared by row rendering and Packed startup admission for a combined snapshot.
+#[cfg(feature = "workspace")]
+pub(crate) const WORKSPACE_ROW_STATS_RENDER_MAX_BYTES: usize = 256;
+
 /// Optional mount-scoped backend statistics. Rendering must be synchronous and
 /// must not issue backend requests or retain an additional cache of data.
 pub trait FsStatsExtension: std::fmt::Debug + Send + Sync {

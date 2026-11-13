@@ -1,4 +1,4 @@
-//! Central packed-v3 GC. Kubernetes election only schedules backend-authenticated GC.
+//! Central packed GC. Kubernetes election only schedules backend-authenticated GC.
 //!
 //! A Lease response does not grant backend deletion authority. Every catalog
 //! scope must authenticate through WorkspaceAdmin::packed_gc_admin, and every
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _};
 use async_trait::async_trait;
-use brewfs::workspace_overlay::packed_admin::{
+use brewfs::workspace::packed_admin::{
     PackedGcAdmin, PackedGcCursor, PackedGcPolicy, PackedGcTickRequest,
 };
 use chrono::Utc;
@@ -29,14 +29,14 @@ use crate::crd::BrewFSCluster;
 
 use super::admin::{catalog_namespace, connect_workspace_admin_for_cluster};
 
-const LEASE_NAME: &str = "brewfs-packed-v3-gc";
+const LEASE_NAME: &str = "brewfs-packed-gc";
 const LEASE_SECONDS: i32 = 30;
 const SAFETY_MARGIN: Duration = Duration::from_secs(5);
 const API_TIMEOUT: Duration = Duration::from_secs(5);
 const RENEW_EVERY: Duration = Duration::from_secs(5);
 const TICK_EVERY: Duration = Duration::from_secs(2);
 const CLUSTER_PAGE_SIZE: u32 = 16;
-const CURSOR_KEY: &str = "packed-v3-gc-cursor";
+const CURSOR_KEY: &str = "packed-gc-cursor";
 const CATALOG_KEY: &str = "catalog-namespace";
 const CLUSTER_UID_KEY: &str = "cluster-uid";
 const MAX_CURSOR_BYTES: usize = 1024;
@@ -343,7 +343,7 @@ impl OwnedWork for CatalogWork {
                         .is_some_and(|spec| spec.enabled)
                 {
                     if let Err(error) = self.tick_cluster(&cluster, &cancel).await {
-                        warn!(cluster = %cluster.name_any(), %error, "packed-v3 GC catalog deferred");
+                        warn!(cluster = %cluster.name_any(), %error, "packed GC catalog deferred");
                     }
                 }
             }
@@ -407,7 +407,7 @@ impl CatalogWork {
             Ok(Some(_)) => {}
             Ok(None) => {}
             Err(error) => {
-                warn!(cluster = %cluster.name_any(), namespace, %error, "packed-v3 GC tick deferred")
+                warn!(cluster = %cluster.name_any(), namespace, %error, "packed GC tick deferred")
             }
         }
         Ok(())
@@ -542,7 +542,7 @@ async fn run_tick(
         deferred = report.deferred,
         deleted_objects = report.deleted_objects,
         native_deleted_layers = report.native_deleted_layers,
-        "packed-v3 central GC tick complete"
+        "packed central GC tick complete"
     );
     Ok(Some(report.next_cursor))
 }
@@ -571,7 +571,7 @@ pub async fn run(client: Client, stop: CancellationToken) -> anyhow::Result<()> 
     info!(
         namespace,
         lease = LEASE_NAME,
-        "starting leader-elected packed-v3 GC worker"
+        "starting leader-elected packed GC worker"
     );
     while !stop.is_cancelled() {
         let acquire = tokio::select! {
@@ -582,11 +582,11 @@ pub async fn run(client: Client, stop: CancellationToken) -> anyhow::Result<()> 
         match acquire {
             Ok(Some(claim)) => {
                 if let Err(error) = leader_session(&election, claim, &work, &stop).await {
-                    warn!(%error, "packed-v3 GC leader stopped and owned work drained");
+                    warn!(%error, "packed GC leader stopped and owned work drained");
                 }
             }
             Ok(None) => {}
-            Err(error) => warn!(%error, "packed-v3 GC election refused; no work admitted"),
+            Err(error) => warn!(%error, "packed GC election refused; no work admitted"),
         }
         tokio::select! {
             biased;

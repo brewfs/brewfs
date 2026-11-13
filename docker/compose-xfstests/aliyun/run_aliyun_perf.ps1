@@ -25,12 +25,12 @@ param(
     [string]$Backend = 'none',
     [ValidateSet('s3')]
     [string]$DataBackend = 's3',
-    [ValidateSet('packed-metadata-v3')]
-    [string]$VolumeFormat = 'packed-metadata-v3',
+    [ValidateSet('packed-snapshot')]
+    [string]$VolumeFormat = 'packed-snapshot',
     [ValidateScript({
         $tools = @($_ -split '\s+' | Where-Object { $_ })
         if ($tools.Count -eq 0 -or @($tools | Where-Object { $_ -notin @('packed-tree', 'packed-stat', 'packed-smallfiles', 'packed-gpu-smallfiles') }).Count -ne 0) {
-            throw 'Unsupported packed-v3 tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
+            throw 'Unsupported packed tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
         }
         $true
     })]
@@ -235,7 +235,7 @@ function Get-ConfiguredCredentials {
 function Build-LocalBinaries {
     $root = Get-LocalRepoRoot
     if (-not $BinaryPath) { $script:BinaryPath = Join-Path $root 'target\release\brewfs' }
-    $fixtureName = 'packed_v3_snapshot_fixture'
+    $fixtureName = 'packed_snapshot_fixture'
     if (-not $FixtureBinaryPath) { $script:FixtureBinaryPath = Join-Path $root "target\release\$fixtureName" }
     if ($SkipBuild) {
         if (-not (Test-Path -LiteralPath $BinaryPath) -or -not (Test-Path -LiteralPath $FixtureBinaryPath)) {
@@ -353,7 +353,7 @@ function New-EcsInstance {
 }
 
 function Get-RemoteCommand([string]$BinaryUrl, [string]$FixtureUrl, [string]$RunnerUrl, [string]$ScannerUrl, [string]$CredentialUrl) {
-    $fixtureName = 'packed_v3_snapshot_fixture'
+    $fixtureName = 'packed_snapshot_fixture'
     $remote = @'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -619,8 +619,8 @@ try {
     }
     if ($Action -eq 'create') { New-EcsInstance; return }
 
-    if ($VolumeFormat -ne 'packed-metadata-v3' -or $DataBackend -ne 's3') {
-        throw '原生 ECS runner 只接受 packed-metadata-v3 + Aliyun S3/OSS。'
+    if ($VolumeFormat -ne 'packed-snapshot' -or $DataBackend -ne 's3') {
+        throw '原生 ECS runner 只接受 packed-snapshot + Aliyun S3/OSS。'
     }
     if (-not $S3Bucket) { throw 'run 必须指定 -S3Bucket（Aliyun OSS bucket）。' }
     $expected = [int64]1
@@ -652,7 +652,7 @@ try {
     }
     $ScannerPath = (Resolve-Path -LiteralPath $ScannerPath).ProviderPath
     Publish-OssObject $BinaryPath "$ObjectPrefix/bin/brewfs"
-    $fixtureName = 'packed_v3_snapshot_fixture'
+    $fixtureName = 'packed_snapshot_fixture'
     Publish-OssObject $FixtureBinaryPath "$ObjectPrefix/bin/$fixtureName"
     $nativeScriptPath = Join-Path $PSScriptRoot 'run_aliyun_packed_native.sh'
     Publish-OssObject $nativeScriptPath "$ObjectPrefix/bin/run_aliyun_packed_native.sh"

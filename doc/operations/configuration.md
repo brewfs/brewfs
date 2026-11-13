@@ -429,7 +429,7 @@ show a changed mtime, but it is not a strict freshness guarantee for external
 mutations. The existing `BREWFS_FUSE_KEEP_CACHE` environment variable remains
 available for compatibility. Precedence is CLI > YAML > environment > `false`;
 an explicit CLI or YAML `false` overrides an enabled environment variable.
-The experimental `workspace-entity-v1` adapter does not support this opt-in.
+The experimental `entity-workspace` adapter does not support this opt-in.
 
 A kernel cache hit also avoids the userspace read path's backend and lease
 checks. A successful cached read is therefore not proof of current backend

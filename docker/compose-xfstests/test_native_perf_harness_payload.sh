@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Contract guard for the packed-v3-only Aliyun payload.
+# Contract guard for the packed-only Aliyun payload.
 #
 # The cloud runner intentionally does not use the historical generic FIO/metadata
-# fallback harness.  It ships only the packed-v3 fixture, runner, scanner, and
+# fallback harness.  It ships only the packed fixture, runner, scanner, and
 # release binary, and it places artifacts on the disposable data disk.
 set -Eeuo pipefail
 
@@ -16,7 +16,7 @@ ps1="$ALIYUN/run_aliyun_perf.ps1"
 [[ -f "$ps1" ]] || fail "missing Aliyun launcher: $ps1"
 
 grep -qF 'packed-tree|packed-stat|packed-smallfiles|packed-gpu-smallfiles' "$runner" \
-  || fail 'packed runner does not enforce the packed-v3 tool allowlist'
+  || fail 'packed runner does not enforce the packed tool allowlist'
 grep -qF 'PACKED_VOLUME_FORMAT' "$runner" \
   || fail 'packed runner does not require PACKED_VOLUME_FORMAT'
 grep -qF 'perf-summary.tsv' "$runner" \
@@ -42,4 +42,4 @@ fi
 
 bash -n "$runner"
 
-echo 'PASS: packed-v3-only Aliyun payload ships fixture, scanner, and data-disk artifacts'
+echo 'PASS: packed-only Aliyun payload ships fixture, scanner, and data-disk artifacts'

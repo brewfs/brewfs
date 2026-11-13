@@ -66,7 +66,7 @@ The historical [auto comparison](rustfs-auto-object-hint.md) found a roughly 10%
 
 ## CLI, YAML and validation
 
-Compile `rustfs-ec-block-size-hint` and use `--s3-rustfs-ec-block-size-hint tiered` for mount or object-put-bench. The independent `packed_v3_snapshot_fixture` uploader accepts the same argument when targeting S3. Its default is unset, so C2 producers must pass the value explicitly. Pack is only for the read-only ML small-file cohort.
+Compile `rustfs-ec-block-size-hint` and use `--s3-rustfs-ec-block-size-hint tiered` for mount or object-put-bench. The independent `packed_snapshot_fixture` uploader accepts the same argument when targeting S3. Its default is unset, so C2 producers must pass the value explicitly. Pack is only for the read-only ML small-file cohort.
 
 ```yaml
 data:

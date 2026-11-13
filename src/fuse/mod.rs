@@ -13,11 +13,11 @@
 //! The module also includes platform-specific tests for mounting and basic operations,
 //! and provides utilities for mapping VFS metadata to FUSE attributes.
 pub(crate) mod adapter;
-#[cfg(all(test, feature = "workspace-overlay", target_os = "linux"))]
+#[cfg(all(test, feature = "workspace", target_os = "linux"))]
 mod cancel_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod clone_ioctl;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub mod entity;
 pub mod mount;
 use crate::chunk::store::BlockStore;
@@ -71,7 +71,7 @@ impl AsRef<[u8]> for MetadataReplyOwner {
 /// kernel metadata caching use --fuse-cache-ttl-ms 0 on writable ACL mounts, or
 /// BREWFS_CACHE_TTL_MS=0 without a higher-priority explicit configuration.
 /// Writable ACL mounts use the per-mount policy: CLI > YAML > environment >
-/// volume default (WorkspaceV1: 1000 ms); an unconfigured VFS uses zero.
+/// volume default (Workspace: 1000 ms); an unconfigured VFS uses zero.
 /// Zero TTL does not implement cross-client revocation of upstream caches.
 fn fuse_cache_ttl() -> Duration {
     static TTL: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
@@ -366,7 +366,7 @@ where
                 Err(error) => {
                     #[cfg(test)]
                     eprintln!(
-                        "[packed-v3-native-kernel-read-diag] stage=fuse-read inode={ino} offset={offset} size={size} error={error}"
+                        "[packed-native-kernel-read-diag] stage=fuse-read inode={ino} offset={offset} size={size} error={error}"
                     );
                     return Err(error.into());
                 }
@@ -667,7 +667,7 @@ where
                 #[cfg(test)]
                 if bytes >= u64::from(BREWFS_FUSE_MAX_WRITE) {
                     eprintln!(
-                        "[packed-v3-input-diag] bytes={bytes} errno={}",
+                        "[packed-input-diag] bytes={bytes} errno={}",
                         -i32::from(errno)
                     );
                 }
@@ -785,7 +785,7 @@ where
                 debug!(ino, error = ?_error, "fuse.open register failed");
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-open-register unique={} inode={ino} flags={flags} error={_error}",
+                    "[packed-native-kernel-read-diag] stage=fuse-open-register unique={} inode={ino} flags={flags} error={_error}",
                     req.unique,
                 );
             })?;
@@ -798,7 +798,7 @@ where
             .inspect_err(|_error| {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-open-final unique={} inode={ino} flags={flags} error={_error}",
+                    "[packed-native-kernel-read-diag] stage=fuse-open-final unique={} inode={ino} flags={flags} error={_error}",
                     req.unique,
                 );
             })
@@ -841,7 +841,7 @@ where
             let (registered, abort) = self.register_fuse_read(req.unique).inspect_err(|_error| {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-read-register unique={} inode={ino} fh={fh} offset={offset} size={size} error={_error}",
+                    "[packed-native-kernel-read-diag] stage=fuse-read-register unique={} inode={ino} fh={fh} offset={offset} size={size} error={_error}",
                     req.unique,
                 );
             })?;
@@ -892,7 +892,7 @@ where
         result.inspect_err(|_error| {
             #[cfg(test)]
             eprintln!(
-                "[packed-v3-native-kernel-read-diag] stage=fuse-read-final unique={} inode={ino} fh={fh} offset={offset} size={size} cancelled={cancelled} error={_error}",
+                "[packed-native-kernel-read-diag] stage=fuse-read-final unique={} inode={ino} fh={fh} offset={offset} size={size} cancelled={cancelled} error={_error}",
                 req.unique,
             );
         })
@@ -940,7 +940,7 @@ where
             }
             let errno = error.map_or(0, |error| -i32::from(error));
             eprintln!(
-                "[packed-v3-write-diag] stage={stage} unique={} ino={ino} fh={fh} offset={offset} len={} write_flags={write_flags} flags={_flags} errno={errno}",
+                "[packed-write-diag] stage={stage} unique={} ino={ino} fh={fh} offset={offset} len={} write_flags={write_flags} flags={_flags} errno={errno}",
                 req.unique,
                 data.len(),
             );
@@ -2037,7 +2037,7 @@ where
         mode: u32,
     ) -> FuseResult<()> {
         debug!(inode, fh, offset, length, mode, "fuse.fallocate");
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let workspace_hole_mode = {
             let keep_size = libc::FALLOC_FL_KEEP_SIZE as u32;
             let punch_hole = libc::FALLOC_FL_PUNCH_HOLE as u32;
@@ -2046,7 +2046,7 @@ where
                 || mode == zero_range
                 || mode == (keep_size | zero_range)
         };
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let workspace_hole_mode = false;
         if mode != 0 && !workspace_hole_mode {
             return Err(libc::EOPNOTSUPP.into());
@@ -2063,7 +2063,7 @@ where
             self.wait_for_prior_fuse_writes(inode as i64, req.unique)
                 .await;
         }
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if workspace_hole_mode {
             let keep_size = mode & libc::FALLOC_FL_KEEP_SIZE as u32 != 0;
             return self
@@ -2667,7 +2667,7 @@ where
         .inspect_err(|_error| {
             #[cfg(test)]
             eprintln!(
-                "[packed-v3-native-kernel-read-diag] stage=fuse-open uid={} gid={} inode={ino} flags={flags} error={_error}",
+                "[packed-native-kernel-read-diag] stage=fuse-open uid={} gid={} inode={ino} flags={flags} error={_error}",
                 req.uid, req.gid,
             );
         })
@@ -3807,7 +3807,7 @@ where
             .inspect_err(|_error| {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-access unique={} parent={parent} error={_error}",
+                    "[packed-native-kernel-read-diag] stage=fuse-lookup-access unique={} parent={parent} error={_error}",
                     req.unique,
                 );
             })?;
@@ -3818,7 +3818,7 @@ where
             .inspect_err(|_error| {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-lookup-child unique={} parent={parent} error={_error}",
+                    "[packed-native-kernel-read-diag] stage=fuse-lookup-child unique={} parent={parent} error={_error}",
                     req.unique,
                 );
             })?
@@ -3885,7 +3885,7 @@ where
             .inspect_err(|_error| {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=fuse-getattr unique={} inode={ino} fh={fh:?} error={_error:?}",
+                    "[packed-native-kernel-read-diag] stage=fuse-getattr unique={} inode={ino} fh={fh:?} error={_error:?}",
                     req.unique,
                 );
             })
@@ -5123,41 +5123,38 @@ mod fuse_init_tests {
         }
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     async fn packed_source_test_vfs(
         source: &std::path::Path,
     ) -> (
         tempfile::TempDir,
         VFS<
-            crate::workspace_overlay::packed_v3::PackedV3BlockStore<
-                crate::cadapter::localfs::LocalFsBackend,
-            >,
-            crate::workspace_overlay::packed_v3::PackedV3ReadonlyMeta<
-                crate::cadapter::localfs::LocalFsBackend,
-            >,
+            crate::workspace::packed::PackedBlockStore<crate::cadapter::localfs::LocalFsBackend>,
+            crate::workspace::packed::PackedReadonlyMeta<crate::cadapter::localfs::LocalFsBackend>,
         >,
     ) {
         use crate::cadapter::{client::ObjectClient, localfs::LocalFsBackend};
         use crate::vfs::config::VFSConfig;
-        use crate::workspace_overlay::packed_v3::wire005::{
-            AuthenticatedV3Snapshot, V3ProducerOptions, V3SourceConsistency, V3SourceFileLimits,
-            V3SourceHardlinkPolicy, V3SourceNamespaceInventory, V3SourceNamespaceOptions,
+        use crate::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotProducerOptions, SnapshotSourceConsistency,
+            SnapshotSourceFileLimits, SnapshotSourceHardlinkPolicy,
+            SnapshotSourceNamespaceInventory, SnapshotSourceNamespaceOptions,
         };
-        use crate::workspace_overlay::packed_v3::{
-            AccessProfile, PackedCodec, PackedV3ReadonlyMeta, SizeClassTable,
+        use crate::workspace::packed::{
+            AccessProfile, PackedCodec, PackedReadonlyMeta, SizeClassTable,
         };
         use std::sync::Arc;
         let spool = tempfile::tempdir().unwrap();
         let objects = tempfile::tempdir().unwrap();
         let client = ObjectClient::new(LocalFsBackend::new(objects.path()));
-        let inventory = V3SourceNamespaceInventory::capture(
+        let inventory = SnapshotSourceNamespaceInventory::capture(
             source,
             spool.path(),
-            V3SourceNamespaceOptions {
+            SnapshotSourceNamespaceOptions {
                 root_inode: 1,
-                consistency: V3SourceConsistency::BestEffortDetected,
-                hardlink_policy: V3SourceHardlinkPolicy::VisibleLinks,
-                file_limits: V3SourceFileLimits::default(),
+                consistency: SnapshotSourceConsistency::BestEffortDetected,
+                hardlink_policy: SnapshotSourceHardlinkPolicy::VisibleLinks,
+                file_limits: SnapshotSourceFileLimits::default(),
             },
         )
         .await
@@ -5166,7 +5163,7 @@ mod fuse_init_tests {
             .build_snapshot(
                 client.clone(),
                 "source-posix".into(),
-                V3ProducerOptions {
+                SnapshotProducerOptions {
                     snapshot_id: [1; 32],
                     root_dir_key: [2; 32],
                     root_inode: 1,
@@ -5179,11 +5176,11 @@ mod fuse_init_tests {
             )
             .await
             .unwrap();
-        let snapshot = AuthenticatedV3Snapshot::open(&client, &built.reference)
+        let snapshot = AuthenticatedSnapshot::open(&client, &built.reference)
             .await
             .unwrap();
         let layout = ChunkLayout::default();
-        let meta = Arc::new(PackedV3ReadonlyMeta::from_v3(
+        let meta = Arc::new(PackedReadonlyMeta::from_snapshot(
             client,
             snapshot,
             layout.chunk_size,
@@ -5194,7 +5191,7 @@ mod fuse_init_tests {
         (objects, fs)
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     fn packed_fixture_object_path(
         objects: &std::path::Path,
         magic: &[u8; 8],
@@ -5219,7 +5216,7 @@ mod fuse_init_tests {
         matches.pop().unwrap()
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_hot_inode_failures_preserve_io_errno_in_acl_xattrs_and_access() {
         use crate::meta::posix_acl::{ACCESS_XATTR, DEFAULT_XATTR};
@@ -5441,7 +5438,7 @@ mod fuse_init_tests {
         fs.close(opened.fh).await.unwrap();
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_permission_ancestor_lookup_preserves_io_errno() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -5485,7 +5482,7 @@ mod fuse_init_tests {
         }
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_posix_acl_grants_denies_and_rejects_missing_or_corrupt_cold_objects() {
         use crate::meta::posix_acl::{ACCESS_XATTR, DEFAULT_XATTR};
@@ -5687,7 +5684,7 @@ mod fuse_init_tests {
         );
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_source_stats_name_preserves_file_directory_and_virtual_fallback() {
         for directory in [false, true] {
@@ -5738,7 +5735,7 @@ mod fuse_init_tests {
         assert_eq!(found.attr.ino, STATS_INODE);
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_source_raw_xattrs_preserve_distinct_names_sizes_and_readonly_errno() {
         use std::os::unix::ffi::OsStrExt;
@@ -5907,17 +5904,18 @@ mod fuse_init_tests {
         );
     }
 
-    #[cfg(all(feature = "workspace-overlay", target_os = "linux"))]
+    #[cfg(all(feature = "workspace", target_os = "linux"))]
     #[tokio::test]
     async fn packed_readonly_rename_returns_erofs_without_changing_namespace() {
         use crate::cadapter::{client::ObjectClient, localfs::LocalFsBackend};
         use crate::vfs::config::VFSConfig;
-        use crate::workspace_overlay::packed_v3::wire005::{
-            AuthenticatedV3Snapshot, V3ProducerOptions, V3SourceConsistency, V3SourceFileLimits,
-            V3SourceHardlinkPolicy, V3SourceNamespaceInventory, V3SourceNamespaceOptions,
+        use crate::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotProducerOptions, SnapshotSourceConsistency,
+            SnapshotSourceFileLimits, SnapshotSourceHardlinkPolicy,
+            SnapshotSourceNamespaceInventory, SnapshotSourceNamespaceOptions,
         };
-        use crate::workspace_overlay::packed_v3::{
-            AccessProfile, PackedCodec, PackedV3ReadonlyMeta, SizeClassTable,
+        use crate::workspace::packed::{
+            AccessProfile, PackedCodec, PackedReadonlyMeta, SizeClassTable,
         };
         use std::sync::Arc;
 
@@ -5926,14 +5924,14 @@ mod fuse_init_tests {
         let spool = tempfile::tempdir().unwrap();
         let objects = tempfile::tempdir().unwrap();
         let client = ObjectClient::new(LocalFsBackend::new(objects.path()));
-        let inventory = V3SourceNamespaceInventory::capture(
+        let inventory = SnapshotSourceNamespaceInventory::capture(
             source.path(),
             spool.path(),
-            V3SourceNamespaceOptions {
+            SnapshotSourceNamespaceOptions {
                 root_inode: 1,
-                consistency: V3SourceConsistency::BestEffortDetected,
-                hardlink_policy: V3SourceHardlinkPolicy::VisibleLinks,
-                file_limits: V3SourceFileLimits::default(),
+                consistency: SnapshotSourceConsistency::BestEffortDetected,
+                hardlink_policy: SnapshotSourceHardlinkPolicy::VisibleLinks,
+                file_limits: SnapshotSourceFileLimits::default(),
             },
         )
         .await
@@ -5942,7 +5940,7 @@ mod fuse_init_tests {
             .build_snapshot(
                 client.clone(),
                 "readonly-rename".into(),
-                V3ProducerOptions {
+                SnapshotProducerOptions {
                     snapshot_id: [1; 32],
                     root_dir_key: [2; 32],
                     root_inode: 1,
@@ -5955,11 +5953,11 @@ mod fuse_init_tests {
             )
             .await
             .unwrap();
-        let snapshot = AuthenticatedV3Snapshot::open(&client, &built.reference)
+        let snapshot = AuthenticatedSnapshot::open(&client, &built.reference)
             .await
             .unwrap();
         let layout = ChunkLayout::default();
-        let meta = Arc::new(PackedV3ReadonlyMeta::from_v3(
+        let meta = Arc::new(PackedReadonlyMeta::from_snapshot(
             client,
             snapshot,
             layout.chunk_size,
@@ -6035,17 +6033,17 @@ mod fuse_init_tests {
         );
     }
 
-    #[cfg(all(feature = "workspace-overlay", unix))]
+    #[cfg(all(feature = "workspace", unix))]
     #[tokio::test]
     async fn packed_raw_names_open_preserves_ancestor_search_permissions() {
         use crate::cadapter::{client::ObjectClient, localfs::LocalFsBackend};
         use crate::vfs::config::VFSConfig;
-        use crate::workspace_overlay::packed_v3::wire005::{
-            AuthenticatedV3Snapshot, V3ProducerOptions, V3SnapshotProducer,
+        use crate::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotProducer, SnapshotProducerOptions,
         };
-        use crate::workspace_overlay::packed_v3::{
+        use crate::workspace::packed::{
             AccessProfile, GroupMeta, GroupMetaEntry, PackedCodec, PackedGroupInput,
-            PackedV3ReadonlyMeta, SizeClassTable,
+            PackedReadonlyMeta, SizeClassTable,
         };
         use std::os::unix::ffi::OsStrExt;
         use std::sync::Arc;
@@ -6056,11 +6054,11 @@ mod fuse_init_tests {
         let snapshot_id = [1; 32];
         let root_key = [2; 32];
         let profile = AccessProfile::RandomSmallFile;
-        let mut producer = V3SnapshotProducer::new(
+        let mut producer = SnapshotProducer::new(
             client.clone(),
             spool.path(),
             "raw-permissions".into(),
-            V3ProducerOptions {
+            SnapshotProducerOptions {
                 snapshot_id,
                 root_dir_key: root_key,
                 root_inode: 1,
@@ -6094,7 +6092,7 @@ mod fuse_init_tests {
             (1, root_key, entry(2, b"dir-\xff", 2, 0o40700, 2)),
             (
                 2,
-                crate::workspace_overlay::packed_v3::directory_key(snapshot_id, 2),
+                crate::workspace::packed::directory_key(snapshot_id, 2),
                 entry(3, b"file-\xfe", 1, 0o100644, 1),
             ),
         ]
@@ -6114,11 +6112,11 @@ mod fuse_init_tests {
             .await
             .unwrap();
         let reference = producer.finish().await.unwrap();
-        let snapshot = AuthenticatedV3Snapshot::open(&client, &reference)
+        let snapshot = AuthenticatedSnapshot::open(&client, &reference)
             .await
             .unwrap();
         let layout = ChunkLayout::default();
-        let meta = Arc::new(PackedV3ReadonlyMeta::from_v3(
+        let meta = Arc::new(PackedReadonlyMeta::from_snapshot(
             client,
             snapshot,
             layout.chunk_size,

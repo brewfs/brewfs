@@ -24,14 +24,14 @@ use bytes::Bytes;
 use futures_util::stream::{self, BoxStream};
 
 use crate::cadapter::client::ObjectBackend;
-use crate::workspace_overlay::entity::backend::EntityBackend;
-use crate::workspace_overlay::entity::data::EntityData;
-use crate::workspace_overlay::entity::model::{EntityInode, EntityKind};
-use crate::workspace_overlay::entity::namespace::{
+use crate::workspace::entity::backend::EntityBackend;
+use crate::workspace::entity::data::EntityData;
+use crate::workspace::entity::model::{EntityInode, EntityKind};
+use crate::workspace::entity::namespace::{
     CreateRequest, Credentials, EntityHandle, EntityNamespace,
 };
-use crate::workspace_overlay::entity::resolver::ImmutableLowerData;
-use crate::workspace_overlay::entity::{EntityError, Result};
+use crate::workspace::entity::resolver::ImmutableLowerData;
+use crate::workspace::entity::{EntityError, Result};
 
 #[cfg(test)]
 #[path = "entity_tests.rs"]

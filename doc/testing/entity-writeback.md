@@ -1,13 +1,13 @@
 # Entity overlay native and packed writeback
 
-Both paths use `workspace-entity-v1` with `--experimental-entity-mount` and the
+Both paths use `entity-workspace` with `--experimental-entity-mount` and the
 same `EntityData` upper. Production admission remains experimental. The default
-is `cache.writeback_mode: upload_before_commit`. The legacy `workspace-v1`,
-`workspace-native-v2`, and packed v1/v2 formats are unchanged.
+is `cache.writeback_mode: upload_before_commit`. The legacy `workspace`,
+`native-workspace`, and packed v1/v2 formats are unchanged.
 
 Select exactly one lower:
 
-* `--packed-manifest-key KEY` uses the existing authenticated packed-v3 graph.
+* `--packed-manifest-key KEY` uses the existing authenticated packed graph.
 * `--entity-native-source DIR` captures a private, quiescent tree before mount.
   Its frozen metadata consists of individually authenticated metadata rows; its
   data consists of immutable raw S3 objects. It preserves hardlinks, symlinks,
@@ -99,7 +99,7 @@ workspace UUID, selected metadata/S3 configuration and cache root:
 
 ```bash
 brewfs mount /unused --config entity.yaml \
-  --volume-format workspace-entity-v1 --experimental-entity-mount \
+  --volume-format entity-workspace --experimental-entity-mount \
   --entity-volume-id VOLUME_UUID --workspace NAMESPACE_UUID \
   --entity-recover-uploads
 ```
@@ -129,7 +129,7 @@ blocks RustFS and kills each asynchronous mount to test upload-only recovery:
 
 ```bash
 ENTITY_SMOKE_BINARY=/absolute/path/to/brewfs \
-ENTITY_SMOKE_FIXTURE=/absolute/path/to/packed_v3_snapshot_fixture \
+ENTITY_SMOKE_FIXTURE=/absolute/path/to/packed_snapshot_fixture \
 ENTITY_SMOKE_ARTIFACTS=/absolute/path/to/artifacts \
 bash tools/testing/run_entity_writeback_smoke.sh
 ```
@@ -147,7 +147,7 @@ integration tests without building the mount or fixture executables.
 
 For TiKV, also set `ENTITY_SMOKE_META=tikv` and
 `ENTITY_SMOKE_PROBE=/absolute/path/to/entity_metadata_probe`; build that observer
-with `cargo build --features workspace-overlay --example entity_metadata_probe`.
+with `cargo build --features workspace --example entity_metadata_probe`.
 The runner adds its own isolated PD/TiKV services and includes them in cleanup.
 It exports `BREWFS_TEST_TIKV_STATUS_ENDPOINT` for the lock-prefix regression,
 which observes the server's lock-wait queue while a mutation waits on a later

@@ -59,7 +59,7 @@ where
         fs.prepared_max_read_bytes()
             .unwrap_or(BREWFS_FUSE_MAX_WRITE as usize),
     );
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     if fs.requires_packed_mutation_drain() {
         options.write_back(false);
     }

@@ -1,6 +1,6 @@
 //! Administration of the native P1 runtime's immutable catalog lower.
 //!
-//! This profile uses the same workspace-v1 namespace and data source as the
+//! This profile uses the same workspace namespace and data source as the
 //! native CLI. It does not accept PublishedRevision or frozen metadata and
 //! never manufactures publication, drain, or physical cleanup evidence.
 
@@ -15,10 +15,10 @@ use crate::native_base::write::domain::decode_domain;
 use crate::native_base::write::keys::Keys;
 use crate::native_base::write::records::HeadState;
 use crate::native_base::write::store::{ControlStore, StoreError, Txn};
-use crate::workspace_overlay::admin::validate_volume_header;
-use crate::workspace_overlay::error::{ConflictDetail, WorkspaceError};
-use crate::workspace_overlay::ids::WorkspaceId;
-use crate::workspace_overlay::model::{BaseRevision, VolumeHeader};
+use crate::workspace::admin::validate_volume_header;
+use crate::workspace::error::{ConflictDetail, WorkspaceError};
+use crate::workspace::ids::WorkspaceId;
+use crate::workspace::model::{BaseRevision, VolumeHeader};
 
 use super::{NativeRuntimeCapabilities, NativeVolumeHeader};
 
@@ -88,7 +88,7 @@ pub fn p1_storage_namespace_id(namespace: &str, volume_id: &Uuid) -> [u8; 16] {
 }
 
 /// Validate both headers without treating the native format as a catalog
-/// schema upgrade. P1 deliberately retains the workspace-v1 schema-1 catalog.
+/// schema upgrade. P1 deliberately retains the workspace schema-1 catalog.
 pub fn validate_p1_volume(
     header: &NativeVolumeHeader,
     namespace: &str,

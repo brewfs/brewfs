@@ -33,7 +33,7 @@ compiler and resolved dependency/features (489 package/feature entries):
 
 ```sh
 cargo build --locked --release --no-default-features \
-  --features fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint \
+  --features fuse-tokio-runtime,workspace,rustfs-ec-block-size-hint \
   --bin brewfs
 ```
 
@@ -190,7 +190,7 @@ To run the live contracts in a local isolated environment:
 
 ```sh
 ENTITY_DATA_TIKV=true bash tools/testing/run_entity_data_tests.sh
-cargo build --features workspace-overlay --example entity_metadata_probe
+cargo build --features workspace --example entity_metadata_probe
 ENTITY_SMOKE_META=tikv \
   ENTITY_SMOKE_PROBE="$PWD/target/debug/examples/entity_metadata_probe" \
   bash tools/testing/run_entity_writeback_smoke.sh

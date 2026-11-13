@@ -63,7 +63,7 @@ and inherit unimplemented xattr and restore methods. This patch covers the
 backends with control-plane trash metadata: Redis and SQL. Adding a trash API
 to the other backends is separate functionality, not a non-atomic fallback.
 
-`workspace_overlay/entity/{data_tests,backend_tests}.rs` exercise a different
+`workspace/entity/{data_tests,backend_tests}.rs` exercise a different
 entity backend API. The shared conformance tests here exercise `MetaStore` and
 the actual control-plane handler, with backend-specific fault injection.
 

@@ -8,11 +8,11 @@ use crate::native_base::write::memory::MemoryControlStore;
 use crate::native_base::write::overlay::{OverlayParams, WriteOverlay};
 use crate::native_base::write::receipts::MemorySink;
 use crate::vfs::config::VFSConfig;
-use crate::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
-use crate::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
-use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-use crate::workspace_overlay::model::ViewContext;
-use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use crate::workspace::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
+use crate::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use crate::workspace::meta_layer::WorkspaceMetaLayer;
+use crate::workspace::model::ViewContext;
+use crate::workspace::stores::database::SqliteWorkspaceStore;
 use asyncfuse::SetAttr;
 use asyncfuse::raw::{Filesystem, Request};
 use uuid::Uuid;
@@ -55,8 +55,8 @@ async fn workspace_vfs() -> VFS<InMemoryBlockStore, WorkspaceMetaLayer<SqliteWor
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
-            schema_version: crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION,
+            volume_format: "workspace".into(),
+            schema_version: crate::workspace::model::WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(101),
             workspace_id,
             root_layer_id: LayerId::from_uuid(Uuid::from_u128(102)),

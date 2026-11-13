@@ -2,7 +2,7 @@
 //! Faults change owned backend rows with exact real CAS, never returned values.
 
 use super::*;
-use crate::workspace_overlay::packed_v3::wire005::V3OwnedPermit;
+use crate::workspace::packed::snapshot::SnapshotOwnedPermit;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,12 +19,12 @@ struct Mutation {
 
 struct RouteBackend<B> {
     inner: Arc<B>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     workspace: WorkspaceId,
     mutation: Mutex<Option<Mutation>>,
     route_observed: AtomicBool,
     exhaust_after_route: AtomicBool,
-    held_budget: Mutex<Option<V3OwnedPermit>>,
+    held_budget: Mutex<Option<SnapshotOwnedPermit>>,
     bounded_reads: AtomicUsize,
     unbounded_reads: AtomicUsize,
     mutation_attempts: AtomicUsize,
@@ -36,7 +36,7 @@ struct RouteBackend<B> {
 impl<B: WorkspaceKvBackend> RouteBackend<B> {
     fn new(
         inner: Arc<B>,
-        budget: Arc<V3MountBudget>,
+        budget: Arc<SnapshotMountBudget>,
         workspace: WorkspaceId,
         mutation: Option<Mutation>,
     ) -> Self {
@@ -96,10 +96,10 @@ impl<B: WorkspaceKvBackend> RouteBackend<B> {
         // authentication boundary exercised by these faults.
         if !checks
             .iter()
-            .any(|check| check.key.starts_with(b"packed-v3/clean-release/"))
+            .any(|check| check.key.starts_with(b"packed/clean-release/"))
             || !checks
                 .iter()
-                .any(|check| check.key == format!("packed-v3/writer/{}", self.workspace).as_bytes())
+                .any(|check| check.key == format!("packed/writer/{}", self.workspace).as_bytes())
             || !checks
                 .iter()
                 .any(|check| check.key == workspace_key(self.workspace))
@@ -184,17 +184,17 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for RouteBackend<B> {
             .get_many_consistent_with_time_bounded(keys, limits)
             .await?;
         let routed = keys.contains(&workspace_key(self.workspace))
-            && keys.contains(&format!("packed-v3/writer/{}", self.workspace).into_bytes());
+            && keys.contains(&format!("packed/writer/{}", self.workspace).into_bytes());
         if routed && !self.route_observed.swap(true, Ordering::SeqCst) {
             // Preserve the exact genuine response; only the persisted successor
             // changes before the caller can use that routing observation.
             self.inject(Moment::AfterRoute).await?;
             if self.exhaust_after_route.swap(false, Ordering::SeqCst) {
-                let used = self.budget.state().used[V3BudgetPool::Metadata as usize];
-                let remaining = self.budget.capacity(V3BudgetPool::Metadata) - used;
+                let used = self.budget.state().used[SnapshotBudgetPool::Metadata as usize];
+                let remaining = self.budget.capacity(SnapshotBudgetPool::Metadata) - used;
                 let owner = self
                     .budget
-                    .admit(&[(V3BudgetPool::Metadata, remaining)])
+                    .admit(&[(SnapshotBudgetPool::Metadata, remaining)])
                     .unwrap();
                 *self.held_budget.lock().await = Some(owner);
             }
@@ -255,7 +255,7 @@ struct OpenObservation {
     owner_id: String,
     generation: u64,
     expires_at_ns: i64,
-    state: V3OpenState,
+    state: SnapshotOpenState,
     recovery_required: bool,
 }
 
@@ -336,7 +336,7 @@ fn assert_fenced(result: Result<Option<PackedReleasedMountReference>, WorkspaceE
 
 pub(super) async fn contract<B: WorkspaceKvBackend>(
     bare: Arc<B>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     released: PackedReleasedMountReference,
 ) {
     let workspace = released.guard.workspace_id;
@@ -344,12 +344,12 @@ pub(super) async fn contract<B: WorkspaceKvBackend>(
         b"control".to_vec(),
         workspace_key(workspace),
         format!("layer/{}", released.guard.expected_head_layer_id).into_bytes(),
-        format!("packed-v3/writer/{workspace}").into_bytes(),
-        format!("open/v3/{workspace}").into_bytes(),
+        format!("packed/writer/{workspace}").into_bytes(),
+        format!("open/{workspace}").into_bytes(),
         receipt_key(&released),
         lease_key(workspace, released.guard.lease_id),
-        format!("packed/v3/current/{workspace}").into_bytes(),
-        b"packed/v3/topology-generation".to_vec(),
+        format!("packed/current/{workspace}").into_bytes(),
+        b"packed/topology-generation".to_vec(),
     ];
     let (baseline, _) = bare
         .get_many_consistent_with_time_bounded(&keys, point_limits(keys.len()))
@@ -627,10 +627,10 @@ pub(super) async fn contract<B: WorkspaceKvBackend>(
     }
 
     let owned_before = budget.state().used;
-    let remaining =
-        budget.capacity(V3BudgetPool::Metadata) - owned_before[V3BudgetPool::Metadata as usize];
+    let remaining = budget.capacity(SnapshotBudgetPool::Metadata)
+        - owned_before[SnapshotBudgetPool::Metadata as usize];
     let blocker = budget
-        .admit(&[(V3BudgetPool::Metadata, remaining)])
+        .admit(&[(SnapshotBudgetPool::Metadata, remaining)])
         .unwrap();
     let observed = Arc::new(RouteBackend::new(
         bare.clone(),

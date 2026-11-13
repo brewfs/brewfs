@@ -7,7 +7,7 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$ROOT/docker/compose-xfstests/docker-compose.packed-lifecycle-backends.yml"
 DIAGNOSTIC_HELPER="$ROOT/tools/perf/entity_redis_diagnostics.py"
-PRESERVED_FIXTURE=/mnt/brewfs-data/artifacts/overlay-packed-lifecycle-e980d59-20261012T153232Z/build/r31/packed_v3_snapshot_fixture
+PRESERVED_FIXTURE=/mnt/brewfs-data/artifacts/overlay-packed-lifecycle-e980d59-20261012T153232Z/build/r31/packed_snapshot_fixture
 
 usage() {
     cat <<'EOF'
@@ -427,14 +427,14 @@ mount_arm() { # arm tag native-db
     case "$arm" in
         overlay-packed|overlay-native)
             writeback="$entity_writeback"
-            extra=(--volume-format workspace-entity-v1 --experimental-entity-mount \
+            extra=(--volume-format entity-workspace --experimental-entity-mount \
                 --entity-volume-id "$(uuid)" --workspace "$(uuid)" \
                 --workspace-namespace "$ns")
             if [[ "$arm" == overlay-packed ]]; then extra+=(--packed-manifest-key "$manifest");
             else extra+=(--entity-native-source "$work/source"); fi
             ;;
         native)
-            binary="$NATIVE"; bucket="entity-native-$tag"; db="$native_db"; extra=(--volume-format flat-v1)
+            binary="$NATIVE"; bucket="entity-native-$tag"; db="$native_db"; extra=(--volume-format flat)
             python3 - "$endpoint" "$bucket" <<'PY'
 import boto3, botocore.config, sys
 client = boto3.client('s3', endpoint_url=sys.argv[1], region_name='us-east-1',

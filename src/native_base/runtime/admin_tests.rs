@@ -16,16 +16,14 @@ use crate::native_base::write::overlay::{OverlayParams, WriteOverlay};
 use crate::native_base::write::receipts::MemorySink;
 use crate::native_base::write::records::HeadState;
 use crate::native_base::write::store::{ControlStore, StoreError, Txn};
-use crate::workspace_overlay::admin::{
+use crate::workspace::admin::{
     ensure_workspace, inspect_workspace, mark_workspace_deleting, verify_revision,
 };
-use crate::workspace_overlay::catalog::{
-    CreateSnapshot, CreateWorkspace, ReleaseLease, WorkspaceStore,
-};
-use crate::workspace_overlay::error::WorkspaceError;
-use crate::workspace_overlay::ids::{LayerId, SnapshotId, WorkspaceId};
-use crate::workspace_overlay::model::VolumeHeader;
-use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use crate::workspace::catalog::{CreateSnapshot, CreateWorkspace, ReleaseLease, WorkspaceStore};
+use crate::workspace::error::WorkspaceError;
+use crate::workspace::ids::{LayerId, SnapshotId, WorkspaceId};
+use crate::workspace::model::VolumeHeader;
+use crate::workspace::stores::database::SqliteWorkspaceStore;
 
 // The durable marker is an admission fence, not a claim that uploads drained.
 fn deletion_key(volume_id: &[u8; 16], workspace_id: &[u8; 16]) -> Vec<u8> {
@@ -187,7 +185,7 @@ async fn exact_native_p1_identity_replays_but_owner_domain_and_progress_do_not()
 async fn native_p1_rejects_header_aliases_frozen_and_published_lowers() {
     let (control, header) = control_fixture().await;
     let catalog = VolumeHeader {
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
         schema_version: 1,
         volume_id: Uuid::from_bytes(header.volume_id),
         created_at_ns: 0,
@@ -195,7 +193,7 @@ async fn native_p1_rejects_header_aliases_frozen_and_published_lowers() {
     validate_p1_volume(&header, NAMESPACE, &catalog).unwrap();
     assert!(validate_p1_volume(&header, "other-namespace", &catalog).is_err());
     let mut wrong_catalog = catalog.clone();
-    wrong_catalog.volume_format = "workspace-entity-v1".into();
+    wrong_catalog.volume_format = "entity-workspace".into();
     assert!(validate_p1_volume(&header, NAMESPACE, &wrong_catalog).is_err());
     let mut frozen = header.clone();
     frozen.required_features = super::FROZEN_METADATA_FEATURE;

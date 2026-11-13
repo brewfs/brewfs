@@ -69,7 +69,7 @@ impl ObjectBackend for ScriptedBackend {
 
 fn tag(phase: Phase) -> ReadContext {
     ReadContext {
-        engine: Engine::PackedV3,
+        engine: Engine::Packed,
         phase,
         class: ReadClass::GroupMetadata,
         origin: Origin::Demand,
@@ -613,11 +613,12 @@ impl ObjectBackend for PageBackend {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[tokio::test]
 async fn actual_ip06_reader_exports_typed_page_buckets_and_schema_failures() {
-    use crate::workspace_overlay::packed_v3::wire005::{
-        V3IndexPage, V3IndexReader, V3ObjectKind, V3ObjectRef, encode_v3_object,
+    use crate::workspace::packed::snapshot::{
+        SnapshotIndexPage, SnapshotIndexReader, SnapshotObjectKind, SnapshotObjectRef,
+        encode_snapshot_object,
     };
     let context = ReadContext {
         class: ReadClass::GroupIndex,
@@ -625,26 +626,26 @@ async fn actual_ip06_reader_exports_typed_page_buckets_and_schema_failures() {
     };
     for valid in [true, false] {
         let bytes = if valid {
-            V3IndexPage {
-                kind: V3ObjectKind::GroupIndex,
+            SnapshotIndexPage {
+                kind: SnapshotObjectKind::GroupIndex,
                 height: 0,
                 records: Vec::new(),
             }
             .encode()
             .unwrap()
         } else {
-            encode_v3_object(V3ObjectKind::GroupIndex, b"IP05", 256 * 1024).unwrap()
+            encode_snapshot_object(SnapshotObjectKind::GroupIndex, b"IP05", 256 * 1024).unwrap()
         };
-        let reference = V3ObjectRef::from_bytes(
+        let reference = SnapshotObjectRef::from_bytes(
             "misleading-data/frame".into(),
-            V3ObjectKind::GroupIndex,
+            SnapshotObjectKind::GroupIndex,
             &bytes,
         )
         .unwrap();
         let observer = Arc::new(ReadObserver::default());
         let client = ObjectClient::new(PageBackend(Bytes::from(bytes))).with_read_observer(
             Arc::clone(&observer),
-            Engine::PackedV3,
+            Engine::Packed,
             Phase::Runtime,
             Origin::Demand,
         );
@@ -655,7 +656,7 @@ async fn actual_ip06_reader_exports_typed_page_buckets_and_schema_failures() {
                 .await
                 .is_err()
         );
-        let reader = V3IndexReader::new(client, 0);
+        let reader = SnapshotIndexReader::new(client, 0);
         let result = reader.lookup(&reference, b"one").await;
         assert_eq!(result.is_ok(), valid);
         assert_eq!(
@@ -777,10 +778,10 @@ fn real_raw_leases_commit_only_after_the_complete_operation() {
     assert_eq!(observer.snapshot().raw[&tag].delivered_union, 4);
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(Clone)]
 struct MapBackend(Arc<std::collections::HashMap<String, Vec<u8>>>);
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[async_trait]
 impl ObjectBackend for MapBackend {
     async fn put_object(&self, _: &str, _: &[u8]) -> Result<()> {
@@ -812,31 +813,34 @@ impl ObjectBackend for MapBackend {
         panic!("readonly")
     }
 }
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[tokio::test]
 async fn selected_child_fences_fail_fetch_validation_and_cached_resolution_separately() {
-    use crate::workspace_overlay::packed_v3::wire005::{
-        V3IndexPage, V3IndexReader, V3IndexRecord, V3IndexValue, V3ObjectKind, V3ObjectRef,
+    use crate::workspace::packed::snapshot::{
+        SnapshotIndexPage, SnapshotIndexReader, SnapshotIndexRecord, SnapshotIndexValue,
+        SnapshotObjectKind, SnapshotObjectRef,
     };
-    let leaf = V3IndexPage {
-        kind: V3ObjectKind::InodeIndex,
+    let leaf = SnapshotIndexPage {
+        kind: SnapshotObjectKind::InodeIndex,
         height: 0,
-        records: vec![V3IndexRecord {
+        records: vec![SnapshotIndexRecord {
             first_key: vec![b'a'],
             last_key: vec![b'b'],
-            value: V3IndexValue::Leaf(vec![1]),
+            value: SnapshotIndexValue::Leaf(vec![1]),
         }],
     }
     .encode()
     .unwrap();
-    let leaf_ref = V3ObjectRef::from_bytes("leaf".into(), V3ObjectKind::InodeIndex, &leaf).unwrap();
-    let parent = V3IndexPage {
-        kind: V3ObjectKind::InodeIndex,
+    let leaf_ref =
+        SnapshotObjectRef::from_bytes("leaf".into(), SnapshotObjectKind::InodeIndex, &leaf)
+            .unwrap();
+    let parent = SnapshotIndexPage {
+        kind: SnapshotObjectKind::InodeIndex,
         height: 1,
-        records: vec![V3IndexRecord {
+        records: vec![SnapshotIndexRecord {
             first_key: vec![b'a'],
             last_key: vec![b'c'],
-            value: V3IndexValue::Child {
+            value: SnapshotIndexValue::Child {
                 reference: leaf_ref.clone(),
                 subtree_weight: 1,
             },
@@ -845,7 +849,8 @@ async fn selected_child_fences_fail_fetch_validation_and_cached_resolution_separ
     .encode()
     .unwrap();
     let parent_ref =
-        V3ObjectRef::from_bytes("parent".into(), V3ObjectKind::InodeIndex, &parent).unwrap();
+        SnapshotObjectRef::from_bytes("parent".into(), SnapshotObjectKind::InodeIndex, &parent)
+            .unwrap();
     let backend = MapBackend(Arc::new(
         [("leaf".into(), leaf), ("parent".into(), parent)]
             .into_iter()
@@ -862,7 +867,7 @@ async fn selected_child_fences_fail_fetch_validation_and_cached_resolution_separ
         tag.phase,
         tag.origin,
     );
-    let reader = V3IndexReader::new(client, 1024 * 1024);
+    let reader = SnapshotIndexReader::new(client, 1024 * 1024);
     assert!(reader.lookup(&parent_ref, b"b").await.is_err());
     let fetch = row(&observer, Ledger::ValidatedFetch, tag);
     assert_eq!((fetch.started, fetch.success, fetch.failed), (2, 1, 1));
@@ -876,7 +881,7 @@ async fn selected_child_fences_fail_fetch_validation_and_cached_resolution_separ
         tag.phase,
         tag.origin,
     );
-    let reader = V3IndexReader::new(client, 1024 * 1024);
+    let reader = SnapshotIndexReader::new(client, 1024 * 1024);
     assert!(reader.lookup(&leaf_ref, b"b").await.unwrap().is_some()); // independently valid cached object
     assert!(reader.lookup(&parent_ref, b"b").await.is_err());
     assert_eq!(row(&observer, Ledger::ValidatedFetch, tag).failed, 0);
@@ -884,27 +889,29 @@ async fn selected_child_fences_fail_fetch_validation_and_cached_resolution_separ
     assert_eq!(observer.snapshot().events[&(tag, ReadEvent::CacheHit)], 1);
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[test]
 fn maximum_enum_snapshot_fits_default_output_with_a_normal_read_reply() {
-    use crate::workspace_overlay::packed_v3::wire005::{
-        V3BudgetLimits, V3BudgetPool, V3MountBudget,
+    use crate::workspace::packed::snapshot::{
+        SnapshotBudgetLimits, SnapshotBudgetPool, SnapshotMountBudget,
     };
-    let mut limits = V3BudgetLimits::default();
+    let mut limits = SnapshotBudgetLimits::default();
     let stats_bytes = ReadObserver::MAX_RENDER_BYTES
         + crate::vfs::stats::FsStats::BASE_RENDER_MAX_BYTES
-        + V3MountBudget::STATS_EXTENSION_RENDER_MAX_BYTES;
+        + SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES
+        + crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES
+        + crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES;
     let required = stats_bytes as u64
         + limits.max_read_bytes as u64
-        + 2 * V3MountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES;
-    assert!(required <= limits.bytes[V3BudgetPool::Output as usize]);
+        + 2 * SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES;
+    assert!(required <= limits.bytes[SnapshotBudgetPool::Output as usize]);
     // Exercise the exact minimum as well as proving that defaults admit it.
-    limits.bytes[V3BudgetPool::Output as usize] = required;
-    let budget = V3MountBudget::new(limits).unwrap();
+    limits.bytes[SnapshotBudgetPool::Output as usize] = required;
+    let budget = SnapshotMountBudget::new(limits).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     let owner = budget
         .admit(&[(
-            crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Roots,
+            crate::workspace::packed::snapshot::SnapshotBudgetPool::Roots,
             ReadObserver::MEMORY_BOUND_BYTES,
         )])
         .unwrap();
@@ -986,23 +993,28 @@ fn maximum_enum_snapshot_fits_default_output_with_a_normal_read_reply() {
     stats.set_extension(Arc::new(ReadStatsExtension(observer.clone())));
     let limit = stats
         .render_allocation_limit()
-        .checked_add(V3MountBudget::STATS_EXTENSION_RENDER_MAX_BYTES)
+        .checked_add(SnapshotMountBudget::STATS_EXTENSION_RENDER_MAX_BYTES)
+        .and_then(|n| n.checked_add(crate::vfs::stats::PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES))
+        .and_then(|n| n.checked_add(crate::vfs::stats::WORKSPACE_ROW_STATS_RENDER_MAX_BYTES))
         .unwrap();
     assert_eq!(limit, stats_bytes);
     let normal = budget.output(budget.max_read_bytes()).unwrap();
     let normal_reply = budget
         .admit(&[(
-            crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Output,
-            V3MountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES,
+            crate::workspace::packed::snapshot::SnapshotBudgetPool::Output,
+            SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES,
         )])
         .unwrap();
     let snapshot = budget
         .admit(&[(
-            crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Output,
-            limit as u64 + V3MountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES,
+            crate::workspace::packed::snapshot::SnapshotBudgetPool::Output,
+            limit as u64 + SnapshotMountBudget::REPLY_ALLOCATION_ALLOWANCE_BYTES,
         )])
         .unwrap();
-    assert_eq!(budget.state().used[V3BudgetPool::Output as usize], required);
+    assert_eq!(
+        budget.state().used[SnapshotBudgetPool::Output as usize],
+        required
+    );
     let text = stats.render_bounded(limit).unwrap();
     assert!(text.len() <= limit);
     assert!(text.capacity() <= limit);
@@ -1026,8 +1038,8 @@ fn maximum_enum_snapshot_fits_default_output_with_a_normal_read_reply() {
         text.capacity(),
         limit,
         budget.state().used
-            [crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Output as usize],
-        budget.capacity(crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Output)
+            [crate::workspace::packed::snapshot::SnapshotBudgetPool::Output as usize],
+        budget.capacity(crate::workspace::packed::snapshot::SnapshotBudgetPool::Output)
     );
     drop(text);
     drop(snapshot);

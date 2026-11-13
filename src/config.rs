@@ -93,7 +93,7 @@ pub enum Command {
     Mount(Box<MountArgs>),
 
     /// Manage isolated BrewFS workspaces.
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     Workspace(WorkspaceArgs),
 
     /// Talk to a mounted BrewFS instance and run orphan gc.
@@ -209,62 +209,74 @@ pub struct MountArgs {
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
 
-    /// On-disk metadata format. Existing configurations default to flat-v1.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, value_enum))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    /// On-disk metadata format. Existing configurations default to flat.
+    #[cfg_attr(feature = "workspace", arg(long, value_enum))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub volume_format: Option<VolumeFormat>,
 
-    /// Workspace mounted by a workspace-v1 volume.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "WORKSPACE_ID"))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    /// Workspace mounted by a workspace volume.
+    #[cfg_attr(feature = "workspace", arg(long, value_name = "WORKSPACE_ID"))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub workspace: Option<uuid::Uuid>,
 
     /// Opt into the fresh-only experimental entity FUSE path. Production
     /// admission and reopening an existing entity namespace remain disabled.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, default_value_t = false))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, default_value_t = false))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub experimental_entity_mount: bool,
 
     /// Fresh entity volume identity, required by --experimental-entity-mount.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "UUID"))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, value_name = "UUID"))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub entity_volume_id: Option<uuid::Uuid>,
 
     /// Capture a private quiescent directory as a frozen native entity lower.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, conflicts_with_all = ["packed_manifest_key", "entity_native_manifest_key"]))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, conflicts_with_all = ["packed_manifest_key", "entity_native_manifest_key"]))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub entity_native_source: Option<PathBuf>,
     /// Reuse a frozen native entity lower (individual Redis rows and raw S3 objects).
     #[cfg_attr(
-        feature = "workspace-overlay",
+        feature = "workspace",
         arg(long, conflicts_with = "packed_manifest_key")
     )]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub entity_native_manifest_key: Option<String>,
     /// Upload pending original entity objects from the local spool, then exit without mounting.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, default_value_t = false))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, default_value_t = false))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub entity_recover_uploads: bool,
 
     /// Retained authenticated payload budget for the experimental packed entity mount.
     /// Defaults to 512 MiB for that mount only; zero disables it.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "BYTES"))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, value_name = "BYTES"))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub entity_read_cache_bytes: Option<u64>,
 
     /// Object-store key of the immutable packed-metadata manifest.
     #[arg(long, value_name = "KEY")]
     pub packed_manifest_key: Option<String>,
 
+    /// Workspace Packed lower object cache (default: on).
+    #[cfg_attr(
+        feature = "workspace",
+        arg(long, value_enum, env = "BREWFS_PACKED_CACHE")
+    )]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
+    pub packed_cache: Option<PackedCacheMode>,
+    /// Workspace Packed disk cache capacity in bytes (default: 268435456).
+    #[cfg_attr(feature = "workspace", arg(long, env = "BREWFS_PACKED_CACHE_BYTES"))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
+    pub packed_cache_bytes: Option<u64>,
+
     /// Key namespace for the workspace overlay catalog.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, value_name = "NAMESPACE"))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, value_name = "NAMESPACE"))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub workspace_namespace: Option<String>,
 
     /// Disable mount-local workspace recovery and garbage collection. The
     /// Kubernetes operator owns those control-plane duties in this mode.
-    #[cfg_attr(feature = "workspace-overlay", arg(long, default_value_t = false))]
-    #[cfg_attr(not(feature = "workspace-overlay"), arg(skip))]
+    #[cfg_attr(feature = "workspace", arg(long, default_value_t = false))]
+    #[cfg_attr(not(feature = "workspace"), arg(skip))]
     pub workspace_operator_managed: bool,
 
     /// Directory to mount the filesystem.
@@ -375,7 +387,7 @@ pub struct MountArgs {
 
     /// Kernel attr/entry cache TTL for writable POSIX ACL mounts.
     /// CLI and YAML override BREWFS_CACHE_TTL_MS, then the volume default applies:
-    /// workspace-v1 uses 1000 ms; other formats use 0. Positive TTL permits bounded
+    /// workspace uses 1000 ms; other formats use 0. Positive TTL permits bounded
     /// staleness (<= TTL), without immediate cross-client visibility. Use 0 for
     /// strict kernel metadata caching. Other backends retain their legacy TTL policy.
     #[arg(long, value_name = "MILLIS")]
@@ -392,31 +404,34 @@ pub struct MountArgs {
     pub privileged: bool,
 }
 
+#[derive(ValueEnum, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackedCacheMode {
+    On,
+    Off,
+}
+
 #[derive(ValueEnum, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum VolumeFormat {
     #[default]
-    FlatV1,
-    WorkspaceV1,
+    Flat,
+    Workspace,
     /// Experimental entity namespace; production mount admission is not enabled.
-    WorkspaceEntityV1,
-    WorkspaceNativeV2,
-    #[cfg(feature = "native-packed-base")]
-    PackedMetadataV1,
-    #[cfg(feature = "workspace-overlay")]
-    PackedMetadataV2,
-    #[cfg(feature = "workspace-overlay")]
-    PackedMetadataV3,
+    EntityWorkspace,
+    NativeWorkspace,
+    #[cfg(feature = "workspace")]
+    PackedSnapshot,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(Args, Debug, Clone)]
 pub struct WorkspaceArgs {
     /// Workspace catalog backend (sqlx, redis or tikv).
     #[arg(long, global = true, value_enum, default_value = "sqlx")]
     pub meta_backend: WorkspaceMetaBackendKind,
 
-    /// SQLite or Redis URL containing the workspace-v1 catalog.
+    /// SQLite or Redis URL containing the workspace catalog.
     #[arg(long, global = true, default_value = DEFAULT_META_URL)]
     pub meta_url: String,
 
@@ -442,20 +457,20 @@ pub struct WorkspaceArgs {
     pub command: WorkspaceCommand,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(Args, Debug, Clone)]
 pub struct PackedMountRecoveryArgs {
     /// The original mount configuration, using its same persistent cache PVC.
     #[arg(long)]
     pub config: PathBuf,
     #[arg(long)]
-    pub workspace: crate::workspace_overlay::ids::WorkspaceId,
+    pub workspace: crate::workspace::ids::WorkspaceId,
     #[arg(long)]
-    pub head_layer: crate::workspace_overlay::ids::LayerId,
+    pub head_layer: crate::workspace::ids::LayerId,
     #[arg(long)]
     pub head_epoch: u64,
     #[arg(long)]
-    pub original_lease: crate::workspace_overlay::ids::LeaseId,
+    pub original_lease: crate::workspace::ids::LeaseId,
     #[arg(long)]
     pub original_generation: u64,
     #[arg(long)]
@@ -463,7 +478,7 @@ pub struct PackedMountRecoveryArgs {
     #[arg(long)]
     pub original_pod_uid: uuid::Uuid,
     #[arg(long)]
-    pub recovery_lease: crate::workspace_overlay::ids::LeaseId,
+    pub recovery_lease: crate::workspace::ids::LeaseId,
     #[arg(long)]
     pub recovery_generation: u64,
     #[arg(long)]
@@ -472,14 +487,14 @@ pub struct PackedMountRecoveryArgs {
     pub ttl_seconds: u64,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(Args, Debug, Clone)]
 pub struct NativeReverseIndexArgs {
     /// Private JSON file containing independent administrator/runtime identities.
     #[arg(long)]
     pub admin_credentials: PathBuf,
     #[arg(long)]
-    pub layer: crate::workspace_overlay::ids::LayerId,
+    pub layer: crate::workspace::ids::LayerId,
     /// Start a new build, replacing any earlier build's progress.
     #[arg(long, conflicts_with = "initialize_gc_incarnation")]
     pub start: bool,
@@ -491,15 +506,15 @@ pub struct NativeReverseIndexArgs {
     pub max_pages: u16,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(Subcommand, Debug, Clone)]
 pub enum WorkspaceCommand {
-    /// Build or resume the bounded native reverse index for a packed-v3 layer.
+    /// Build or resume the bounded native reverse index for a packed layer.
     IndexNativeReverse(Box<NativeReverseIndexArgs>),
     /// Recover an expired packed mount from its original persistent cache.
     /// Metadata and PVC checks authorize replay; arguments only route it.
     RecoverPackedMount(Box<PackedMountRecoveryArgs>),
-    /// Initialize a new workspace-v1 volume and its default workspace.
+    /// Initialize a new workspace volume and its default workspace.
     InitVolume {
         #[arg(long)]
         owner: Option<String>,
@@ -507,10 +522,10 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         data_config: PathBuf,
     },
-    /// Initialize a new workspace-v1 volume whose default workspace overlays
-    /// an existing authenticated packed-v3 manifest as its read-only lower.
+    /// Initialize a new workspace volume whose default workspace overlays
+    /// an existing authenticated packed manifest as its read-only lower.
     InitPackedVolume {
-        /// Content-addressed packed-v3 manifest object key (wire 005).
+        /// Content-addressed packed manifest object key (wire 005).
         #[arg(long)]
         manifest_key: String,
         /// Mount configuration whose `data` section selects the object store
@@ -520,7 +535,7 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         owner: Option<String>,
     },
-    /// Add the explicit native-v2 control header for an existing workspace-v1
+    /// Add the explicit native workspace control header for an existing workspace
     /// catalog. This never rewrites the catalog header or migrates data.
     #[cfg(feature = "native-packed-base")]
     InitNative,
@@ -531,7 +546,7 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         data_config: PathBuf,
         #[arg(long = "from", value_name = "REVISION")]
-        revision: Option<crate::workspace_overlay::model::BaseRevision>,
+        revision: Option<crate::workspace::model::BaseRevision>,
         #[arg(long)]
         owner: Option<String>,
     },
@@ -541,7 +556,7 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         data_config: PathBuf,
         #[arg(value_name = "REVISION")]
-        source: crate::workspace_overlay::model::BaseRevision,
+        source: crate::workspace::model::BaseRevision,
         #[arg(long, default_value_t = 1)]
         count: usize,
         #[arg(long)]
@@ -551,25 +566,25 @@ pub enum WorkspaceCommand {
     List,
     /// Inspect one workspace and its active lease state.
     Inspect {
-        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        workspace: crate::workspace::ids::WorkspaceId,
     },
     /// Show path-level changes against the fork base or an exact revision.
     Diff {
-        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        workspace: crate::workspace::ids::WorkspaceId,
         #[arg(long, value_name = "REVISION")]
-        against: Option<crate::workspace_overlay::model::BaseRevision>,
+        against: Option<crate::workspace::model::BaseRevision>,
         #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
         chunk_size: u64,
     },
     /// Mark a workspace for lease-aware garbage collection.
     Discard {
-        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        workspace: crate::workspace::ids::WorkspaceId,
         #[arg(long)]
         force: bool,
     },
     /// Permanently empty and delete a discarded workspace's upper bucket.
     DropUpperBucket {
-        workspace: crate::workspace_overlay::ids::WorkspaceId,
+        workspace: crate::workspace::ids::WorkspaceId,
         #[arg(long)]
         data_config: PathBuf,
         #[arg(long, required = true)]
@@ -714,7 +729,7 @@ pub enum MetaBackendKind {
     TiKv,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[derive(ValueEnum, Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceMetaBackendKind {
     Sqlx,
@@ -897,12 +912,12 @@ impl NativeBaseFileConfig {
                 self.namespace_mode
             )
         }
-        if self.packing.payload_format != "native-block-v1"
+        if self.packing.payload_format != "native-block"
             || self.packing.codec != "none"
             || self.packing.retention_grouping != "required"
         {
             anyhow::bail!(
-                "PR07 supports only native-block-v1/none packing with required retention grouping"
+                "PR07 supports only native-block/none packing with required retention grouping"
             )
         }
         if self.packing.pack_target_bytes == 0
@@ -1094,6 +1109,8 @@ pub struct CacheFileConfig {
     pub cache_root: Option<PathBuf>,
     pub read_memory_bytes: Option<u64>,
     pub read_ssd_bytes: Option<u64>,
+    pub packed_cache: Option<PackedCacheMode>,
+    pub packed_cache_bytes: Option<u64>,
     pub write_memory_bytes: Option<u64>,
     pub write_ssd_bytes: Option<u64>,
     pub dirty_slice_target_size: Option<u64>,
@@ -1241,21 +1258,21 @@ impl MountConfig {
             .or(file_volume_format)
             .unwrap_or_else(|| {
                 if workspace.is_some() {
-                    VolumeFormat::WorkspaceV1
+                    VolumeFormat::Workspace
                 } else {
-                    VolumeFormat::FlatV1
+                    VolumeFormat::Flat
                 }
             });
-        if workspace.is_some() && volume_format == VolumeFormat::FlatV1 {
-            anyhow::bail!("workspace id cannot be used with volume_format=flat-v1");
+        if workspace.is_some() && volume_format == VolumeFormat::Flat {
+            anyhow::bail!("workspace id cannot be used with volume_format=flat");
         }
-        if workspace.is_none() && volume_format == VolumeFormat::WorkspaceNativeV2 {
-            anyhow::bail!("workspace id is required with volume_format=workspace-native-v2");
+        if workspace.is_none() && volume_format == VolumeFormat::NativeWorkspace {
+            anyhow::bail!("workspace id is required with volume_format=native-workspace");
         }
-        if workspace.is_none() && volume_format == VolumeFormat::WorkspaceEntityV1 {
-            anyhow::bail!("workspace id is required with volume_format=workspace-entity-v1");
+        if workspace.is_none() && volume_format == VolumeFormat::EntityWorkspace {
+            anyhow::bail!("workspace id is required with volume_format=entity-workspace");
         }
-        if volume_format == VolumeFormat::WorkspaceEntityV1
+        if volume_format == VolumeFormat::EntityWorkspace
             && args.fuse_keep_cache.or(fuse_cfg.keep_cache) == Some(true)
         {
             anyhow::bail!("fuse.keep_cache is unsupported by the direct-I/O entity adapter");
@@ -1276,9 +1293,9 @@ impl MountConfig {
             || args.entity_native_manifest_key.is_some()
             || args.entity_recover_uploads
             || entity_read_cache_bytes != 0)
-            && volume_format != VolumeFormat::WorkspaceEntityV1
+            && volume_format != VolumeFormat::EntityWorkspace
         {
-            anyhow::bail!("experimental entity options require volume_format=workspace-entity-v1");
+            anyhow::bail!("experimental entity options require volume_format=entity-workspace");
         }
         if entity_read_cache_bytes != 0
             && (!args.experimental_entity_mount
@@ -1305,58 +1322,61 @@ impl MountConfig {
                 "experimental entity mount requires non-nil --entity-volume-id, --workspace and exactly one of --packed-manifest-key, --entity-native-source, --entity-native-manifest-key"
             );
         }
-        #[cfg(feature = "native-packed-base")]
-        if volume_format == VolumeFormat::PackedMetadataV1 {
-            anyhow::bail!("packed-metadata-v1 is unsupported; use packed-metadata-v3");
-        }
-        #[cfg(feature = "workspace-overlay")]
-        if volume_format == VolumeFormat::PackedMetadataV2 {
-            anyhow::bail!("packed-metadata-v2 is unsupported; use packed-metadata-v3");
-        }
-        #[cfg(feature = "workspace-overlay")]
-        if volume_format == VolumeFormat::PackedMetadataV3 {
+        #[cfg(feature = "workspace")]
+        if volume_format == VolumeFormat::PackedSnapshot {
             if workspace.is_some() {
-                anyhow::bail!("packed-metadata-v3 is a standalone read-only volume");
+                anyhow::bail!("packed-snapshot is a standalone read-only volume");
             }
             if packed_manifest_key.is_none() {
                 anyhow::bail!(
-                    "packed-metadata-v3 requires --packed-manifest-key or packed_manifest_key"
+                    "packed-snapshot requires --packed-manifest-key or packed_manifest_key"
                 );
             }
             if native_base.is_some()
                 || volume_cfg.schema_version.is_some()
                 || volume_cfg.native_control_version.is_some()
             {
-                anyhow::bail!("native workspace controls cannot be used with packed-metadata-v3");
+                anyhow::bail!("native workspace controls cannot be used with packed-snapshot");
             }
         }
-        if volume_format == VolumeFormat::WorkspaceNativeV2 {
-            if volume_cfg.format != Some(VolumeFormat::WorkspaceNativeV2) {
-                anyhow::bail!("workspace-native-v2 requires an explicit volume.format declaration");
+        if volume_format == VolumeFormat::NativeWorkspace {
+            if volume_cfg.format != Some(VolumeFormat::NativeWorkspace) {
+                anyhow::bail!("native-workspace requires an explicit volume.format declaration");
             }
             if volume_cfg.schema_version != Some(2) {
-                anyhow::bail!("workspace-native-v2 requires volume.schema_version=2");
+                anyhow::bail!("native-workspace requires volume.schema_version=2");
             }
             if volume_cfg.native_control_version != Some(2) {
-                anyhow::bail!("workspace-native-v2 requires volume.native_control_version=2");
+                anyhow::bail!("native-workspace requires volume.native_control_version=2");
             }
             if volume_cfg.chunk_size.is_none() || volume_cfg.block_size.is_none() {
-                anyhow::bail!(
-                    "workspace-native-v2 requires volume.chunk_size and volume.block_size"
-                );
+                anyhow::bail!("native-workspace requires volume.chunk_size and volume.block_size");
             }
             native_base
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("workspace-native-v2 requires native_base config"))?
+                .ok_or_else(|| anyhow::anyhow!("native-workspace requires native_base config"))?
                 .validate_p1()?;
         } else if native_base.is_some()
             || volume_cfg.schema_version.is_some()
             || volume_cfg.native_control_version.is_some()
         {
-            anyhow::bail!("native volume controls require volume.format=workspace-native-v2");
+            anyhow::bail!("native volume controls require volume.format=native-workspace");
         }
         let explicit_read_fetch_policy = args.read_fetch_policy.or(cache_cfg.read_fetch_policy);
         let mut cache = cache_cfg.into_cache_config()?;
+        if (args.packed_cache.is_some() || args.packed_cache_bytes.is_some())
+            && volume_format != VolumeFormat::Workspace
+        {
+            anyhow::bail!(
+                "--packed-cache and --packed-cache-bytes require --volume-format workspace"
+            );
+        }
+        if let Some(mode) = args.packed_cache {
+            cache.packed_cache_enabled = mode == PackedCacheMode::On;
+        }
+        if let Some(bytes) = args.packed_cache_bytes {
+            cache.packed_cache_bytes = bytes;
+        }
         if let Some(policy) = args.read_fetch_policy {
             cache.read_fetch_policy = policy;
         }
@@ -1394,11 +1414,11 @@ impl MountConfig {
         {
             anyhow::bail!("cache.writeback_mode=commit_before_upload requires data.backend=s3");
         }
-        if volume_format == VolumeFormat::WorkspaceNativeV2
+        if volume_format == VolumeFormat::NativeWorkspace
             && matches!(cache.writeback_mode, WriteBackMode::CommitBeforeUpload)
         {
             anyhow::bail!(
-                "volume_format=workspace-native-v2 requires cache.writeback_mode=upload_before_commit"
+                "volume_format=native-workspace requires cache.writeback_mode=upload_before_commit"
             );
         }
 
@@ -1438,10 +1458,10 @@ impl MountConfig {
             anyhow::bail!("native entity lower and recovery require --experimental-entity-mount");
         }
 
-        if volume_format == VolumeFormat::WorkspaceNativeV2
+        if volume_format == VolumeFormat::NativeWorkspace
             && !matches!(meta_backend, MetaBackendKind::Redis | MetaBackendKind::TiKv)
         {
-            anyhow::bail!("volume_format=workspace-native-v2 requires meta.backend=redis or tikv");
+            anyhow::bail!("volume_format=native-workspace requires meta.backend=redis or tikv");
         }
 
         let meta_url_from_file = match meta_backend {
@@ -1474,19 +1494,19 @@ impl MountConfig {
         if let Some(tls) = tikv_cfg.tls.as_ref() {
             tls.validate()?;
             if !matches!(meta_backend, MetaBackendKind::TiKv)
-                || volume_format != VolumeFormat::WorkspaceV1
+                || volume_format != VolumeFormat::Workspace
             {
                 anyhow::bail!("meta.tikv.tls is supported only by the TiKV workspace catalog");
             }
         }
 
         // Explicit CLI/YAML settings win over the environment. Keep the existing
-        // format defaults: workspace-v1 permits bounded staleness for one second;
+        // format defaults: workspace permits bounded staleness for one second;
         // other formats use zero here and retain their existing reply policies.
         let default_fuse_cache_ttl_ms = std::env::var("BREWFS_CACHE_TTL_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(if volume_format == VolumeFormat::WorkspaceV1 {
+            .unwrap_or(if volume_format == VolumeFormat::Workspace {
                 1_000
             } else {
                 0
@@ -1584,7 +1604,7 @@ impl MountConfig {
     /// and slice namespace, while the data backend identifies the objects to
     /// which those slice IDs refer.
     pub(crate) fn flat_volume_cache_scope(&self) -> anyhow::Result<String> {
-        let mut parts = vec!["flat-v1".to_string()];
+        let mut parts = vec!["flat".to_string()];
 
         match self.meta_backend {
             MetaBackendKind::Sqlx => {
@@ -1734,6 +1754,12 @@ fn scrubbed_url_identity(raw: &str) -> String {
 impl CacheFileConfig {
     fn into_cache_config(self) -> anyhow::Result<VfsCacheConfig> {
         let mut cache = VfsCacheConfig::default();
+        if let Some(mode) = self.packed_cache {
+            cache.packed_cache_enabled = mode == PackedCacheMode::On;
+        }
+        if let Some(bytes) = self.packed_cache_bytes {
+            cache.packed_cache_bytes = bytes;
+        }
 
         if let Some(cache_root) = self.cache_root {
             cache.cache_root = cache_root;
@@ -1935,6 +1961,8 @@ mod tests {
             entity_recover_uploads: false,
             entity_read_cache_bytes: None,
             packed_manifest_key: None,
+            packed_cache: None,
+            packed_cache_bytes: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point,
@@ -1965,7 +1993,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_migrate_parses_catalog_configuration() {
         let cli = Cli::parse_from([
@@ -2598,7 +2626,7 @@ mod tests {
         assert_eq!(config.fuse_cache_ttl_ms, 0);
 
         let mut workspace_args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
-        workspace_args.volume_format = Some(VolumeFormat::WorkspaceV1);
+        workspace_args.volume_format = Some(VolumeFormat::Workspace);
         workspace_args.workspace = Some(uuid::Uuid::now_v7());
         let workspace_config = MountConfig::from_sources(workspace_args).unwrap();
         assert_eq!(workspace_config.fuse_cache_ttl_ms, 1_000);
@@ -2619,7 +2647,7 @@ mod tests {
 
         let mut explicit_workspace =
             empty_mount_args(None, Some(PathBuf::from("/mnt/workspace-explicit")));
-        explicit_workspace.volume_format = Some(VolumeFormat::WorkspaceV1);
+        explicit_workspace.volume_format = Some(VolumeFormat::Workspace);
         explicit_workspace.workspace = Some(uuid::Uuid::now_v7());
         explicit_workspace.fuse_cache_ttl_ms = Some(0);
         assert_eq!(
@@ -2700,7 +2728,7 @@ mod tests {
     #[test]
     fn entity_mount_rejects_kernel_data_cache_opt_in() {
         let mut args = empty_mount_args(None, Some(PathBuf::from("/mnt/entity")));
-        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.volume_format = Some(VolumeFormat::EntityWorkspace);
         args.workspace = Some(uuid::Uuid::from_u128(77));
         args.fuse_keep_cache = Some(true);
         let error = MountConfig::from_sources(args).unwrap_err().to_string();
@@ -2766,6 +2794,8 @@ mod tests {
             entity_recover_uploads: false,
             entity_read_cache_bytes: None,
             packed_manifest_key: None,
+            packed_cache: None,
+            packed_cache_bytes: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
@@ -2807,7 +2837,7 @@ mod tests {
         );
         assert_eq!(config.fuse_workers, expected_workers);
         assert_eq!(config.fuse_max_background, DEFAULT_FUSE_MAX_BACKGROUND);
-        assert_eq!(config.volume_format, VolumeFormat::FlatV1);
+        assert_eq!(config.volume_format, VolumeFormat::Flat);
         assert!(config.workspace.is_none());
     }
 
@@ -2815,13 +2845,13 @@ mod tests {
     fn default_cli_surface_does_not_expose_workspace_commands() {
         let help = Cli::command().render_long_help().to_string();
 
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         assert!(!help.contains("workspace"));
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         assert!(help.contains("workspace"));
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_mount_flags_are_feature_gated_and_parse() {
         let id = uuid::Uuid::from_u128(77);
@@ -2830,14 +2860,14 @@ mod tests {
             "mount",
             "/mnt/workspace",
             "--volume-format",
-            "workspace-v1",
+            "workspace",
             "--workspace",
             &id.to_string(),
         ]);
         let Command::Mount(args) = cli.cmd else {
             panic!("expected mount command");
         };
-        assert_eq!(args.volume_format, Some(VolumeFormat::WorkspaceV1));
+        assert_eq!(args.volume_format, Some(VolumeFormat::Workspace));
         assert_eq!(args.workspace, Some(id));
     }
 
@@ -2854,6 +2884,8 @@ mod tests {
             entity_recover_uploads: false,
             entity_read_cache_bytes: None,
             packed_manifest_key: None,
+            packed_cache: None,
+            packed_cache_bytes: None,
             workspace_namespace: None,
             workspace_operator_managed: false,
             mount_point: Some(PathBuf::from("/mnt/slayer")),
@@ -2897,13 +2929,13 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "mount_point: /mnt/workspace\nvolume_format: workspace-v1\nworkspace: 00000000-0000-0000-0000-000000000077\n",
+            "mount_point: /mnt/workspace\nvolume_format: workspace\nworkspace: 00000000-0000-0000-0000-000000000077\n",
         )
         .unwrap();
         let config = MountConfig::from_sources(empty_mount_args(Some(path.clone()), None)).unwrap();
         let _ = std::fs::remove_file(path);
 
-        assert_eq!(config.volume_format, VolumeFormat::WorkspaceV1);
+        assert_eq!(config.volume_format, VolumeFormat::Workspace);
         assert_eq!(config.workspace, Some(uuid::Uuid::from_u128(0x77)));
     }
 
@@ -2930,10 +2962,10 @@ mod tests {
         let mut args = empty_mount_args(None, Some(PathBuf::from("/mnt/workspace")));
         args.workspace = Some(workspace);
         let config = MountConfig::from_sources(args.clone()).unwrap();
-        assert_eq!(config.volume_format, VolumeFormat::WorkspaceV1);
+        assert_eq!(config.volume_format, VolumeFormat::Workspace);
         assert_eq!(config.workspace, Some(workspace));
 
-        args.volume_format = Some(VolumeFormat::FlatV1);
+        args.volume_format = Some(VolumeFormat::Flat);
         assert!(
             MountConfig::from_sources(args)
                 .unwrap_err()
@@ -2942,110 +2974,75 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "native-packed-base", feature = "workspace-overlay"))]
-    fn assert_legacy_packed_mount_rejected(format: &str, volume_format: VolumeFormat) {
-        let cli = Cli::parse_from([
-            "brewfs",
-            "mount",
-            "/mnt/legacy-packed",
-            "--volume-format",
-            format,
-            "--packed-manifest-key",
-            "snapshots/legacy-manifest",
-        ]);
-        let Command::Mount(args) = cli.cmd else {
-            panic!("expected mount command");
-        };
-        let error = MountConfig::from_sources(*args).unwrap_err().to_string();
-        assert!(
-            error.contains("unsupported") && error.contains("packed-metadata-v3"),
-            "{error}"
-        );
-
-        for selector in [
-            format!("volume_format: {format}\n"),
-            format!("volume:\n  format: {format}\n"),
-        ] {
-            let yaml = tempfile::NamedTempFile::new().unwrap();
-            std::fs::write(
-                yaml.path(),
-                format!(
-                    "mount_point: /mnt/legacy-packed\n{selector}packed_manifest_key: snapshots/legacy-manifest\n"
-                ),
-            )
-            .unwrap();
-            let error =
-                MountConfig::from_sources(empty_mount_args(Some(yaml.path().to_owned()), None))
-                    .unwrap_err()
-                    .to_string();
-            assert!(
-                error.contains("unsupported") && error.contains("packed-metadata-v3"),
-                "{error}"
-            );
-        }
-
-        // Rejection must not depend on an old manifest or object backend.
-        let mut args = empty_mount_args(None, Some(PathBuf::from("/mnt/legacy-packed")));
-        args.volume_format = Some(volume_format);
-        let error = MountConfig::from_sources(args).unwrap_err().to_string();
-        assert!(
-            error.contains("unsupported") && error.contains("packed-metadata-v3"),
-            "{error}"
-        );
-    }
-
-    #[cfg(feature = "native-packed-base")]
     #[test]
-    fn legacy_packed_v1_mount_is_rejected_from_cli_and_yaml() {
-        assert_legacy_packed_mount_rejected("packed-metadata-v1", VolumeFormat::PackedMetadataV1);
-    }
-
-    #[cfg(feature = "workspace-overlay")]
-    #[test]
-    fn legacy_packed_v2_mount_is_rejected_from_cli_and_yaml() {
-        assert_legacy_packed_mount_rejected("packed-metadata-v2", VolumeFormat::PackedMetadataV2);
-    }
-
-    #[cfg(feature = "workspace-overlay")]
-    #[test]
-    fn packed_metadata_v3_mount_remains_supported_from_cli_and_yaml() {
-        let cli = Cli::parse_from([
-            "brewfs",
-            "mount",
-            "/mnt/packed-v3",
-            "--volume-format",
+    fn retired_versioned_formats_are_rejected_before_backend_access() {
+        for format in [
+            "flat-v1",
+            "workspace-v1",
+            "packed-metadata-v1",
+            "packed-metadata-v2",
             "packed-metadata-v3",
+        ] {
+            assert!(
+                Cli::try_parse_from(["brewfs", "mount", "/mnt/old", "--volume-format", format])
+                    .is_err(),
+                "{format}"
+            );
+            for selector in [
+                format!("volume_format: {format}\n"),
+                format!("volume:\n  format: {format}\n"),
+            ] {
+                let yaml = tempfile::NamedTempFile::new().unwrap();
+                std::fs::write(yaml.path(), format!("mount_point: /mnt/old\n{selector}")).unwrap();
+                let error =
+                    MountConfig::from_sources(empty_mount_args(Some(yaml.path().to_owned()), None))
+                        .unwrap_err();
+                let error = format!("{error:#}");
+                assert!(error.contains(format), "{error}");
+            }
+        }
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn packed_metadata_snapshot_mount_remains_supported_from_cli_and_yaml() {
+        let cli = Cli::parse_from([
+            "brewfs",
+            "mount",
+            "/mnt/packed",
+            "--volume-format",
+            "packed-snapshot",
             "--packed-manifest-key",
-            "snapshots/v3-manifest",
+            "snapshots/manifest",
         ]);
         let Command::Mount(args) = cli.cmd else {
             panic!("expected mount command");
         };
         let config = MountConfig::from_sources(*args).unwrap();
-        assert_eq!(config.volume_format, VolumeFormat::PackedMetadataV3);
+        assert_eq!(config.volume_format, VolumeFormat::PackedSnapshot);
         assert_eq!(
             config.packed_manifest_key.as_deref(),
-            Some("snapshots/v3-manifest")
+            Some("snapshots/manifest")
         );
         assert!(config.workspace.is_none());
 
         let yaml = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             yaml.path(),
-            "mount_point: /mnt/packed-v3\nvolume:\n  format: packed-metadata-v3\npacked_manifest_key: snapshots/v3-manifest\n",
+            "mount_point: /mnt/packed\nvolume:\n  format: packed-snapshot\npacked_manifest_key: snapshots/manifest\n",
         )
         .unwrap();
         let config =
             MountConfig::from_sources(empty_mount_args(Some(yaml.path().to_owned()), None))
                 .unwrap();
-        assert_eq!(config.volume_format, VolumeFormat::PackedMetadataV3);
+        assert_eq!(config.volume_format, VolumeFormat::PackedSnapshot);
         assert_eq!(
             config.packed_manifest_key.as_deref(),
-            Some("snapshots/v3-manifest")
+            Some("snapshots/manifest")
         );
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn experimental_entity_mount_requires_explicit_fresh_inputs() {
         let mut args = empty_mount_args(None, Some("/unused-entity".into()));
@@ -3061,7 +3058,7 @@ mod tests {
                 .to_string()
                 .contains("volume_format")
         );
-        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.volume_format = Some(VolumeFormat::EntityWorkspace);
         args.workspace = Some(uuid::Uuid::new_v4());
         assert!(
             MountConfig::from_sources(args.clone())
@@ -3087,12 +3084,12 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn entity_tikv_is_explicit_and_keeps_synchronous_upload_default() {
         let mut args = empty_mount_args(None, Some("/unused-entity-tikv".into()));
         args.experimental_entity_mount = true;
-        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.volume_format = Some(VolumeFormat::EntityWorkspace);
         args.workspace = Some(uuid::Uuid::new_v4());
         args.entity_volume_id = Some(uuid::Uuid::new_v4());
         args.meta_backend = Some(MetaBackendKind::TiKv);
@@ -3128,7 +3125,7 @@ mod tests {
         );
         args.entity_read_cache_bytes = Some(512 << 20);
         assert!(MountConfig::from_sources(args.clone()).is_err());
-        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.volume_format = Some(VolumeFormat::EntityWorkspace);
         args.workspace = Some(uuid::Uuid::new_v4());
         args.entity_volume_id = Some(uuid::Uuid::new_v4());
         args.meta_backend = Some(MetaBackendKind::TiKv);
@@ -3176,12 +3173,12 @@ mod tests {
         assert!(MountConfig::from_sources(args).is_err());
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn entity_lower_selection_and_durable_writeback_are_explicit() {
         let mut args = empty_mount_args(None, Some("/unused-entity".into()));
         args.experimental_entity_mount = true;
-        args.volume_format = Some(VolumeFormat::WorkspaceEntityV1);
+        args.volume_format = Some(VolumeFormat::EntityWorkspace);
         args.workspace = Some(uuid::Uuid::new_v4());
         args.entity_volume_id = Some(uuid::Uuid::new_v4());
         args.meta_backend = Some(MetaBackendKind::Redis);
@@ -3686,7 +3683,7 @@ cache:
 
     const NATIVE_P1_CONFIG: &str = r#"
 volume:
-  format: workspace-native-v2
+  format: native-workspace
   schema_version: 2
   native_control_version: 2
   chunk_size: 67108864
@@ -3696,7 +3693,7 @@ native_base:
   format_version: 3
   namespace_mode: kv
   packing:
-    payload_format: native-block-v1
+    payload_format: native-block
     pack_target_bytes: 134217728
     codec: none
     multipart_part_target_bytes: 16777216
@@ -3808,7 +3805,7 @@ native_base:
             "mount_point: /mnt/native\nworkspace: 00000000-0000-0000-0000-000000000077\nmeta:\n  backend: redis",
         )
         .unwrap();
-        assert_eq!(config.volume_format, VolumeFormat::WorkspaceNativeV2);
+        assert_eq!(config.volume_format, VolumeFormat::NativeWorkspace);
         assert!(matches!(config.meta_backend, MetaBackendKind::Redis));
     }
 

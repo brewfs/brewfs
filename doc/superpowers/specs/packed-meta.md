@@ -6,8 +6,8 @@ not a new format, implementation milestone, or acceptance result.
 
 ## Current scope and precedence
 
-**Packed-v3 is the live immutable metadata contract.** Its public name is
-packed-v3; wire 005 and the PM11/IP06 layout are internal encoding identities.
+**Packed is the live immutable metadata contract.** Its public name is
+packed; wire 005 and the PM11/IP06 layout are internal encoding identities.
 The v3 contract below retains authenticated manifests and range references,
 bounded metadata pages and caches, raw-name/POSIX semantics, and immutable
 object publication. Earlier v1/v2/004 designs do not impose compatibility
@@ -18,7 +18,7 @@ workspace design and its actual implementation status. Its current entity
 namespace contract takes precedence over the older head/sequence/seal and
 operator-integration sketches in the v3 text. A readonly packed mount does not
 establish writable-workspace or operator qualification. The
-[workspace architecture](../../architecture/workspace-overlay.md) and
+[workspace architecture](../../architecture/workspace.md) and
 [mount checkpoint](../plans/2026-10-20-overlay-entity-mount.md) record the current
 experiment boundary.
 
@@ -212,7 +212,7 @@ chunk 或 FUSE 接口。它是构建时的确定性选择，不是运行时把�
 
 #### 3.2 非目标
 
-* packed-v3 immutable对象不支持在线写入、rename 或 unlink；这些操作由
+* packed immutable对象不支持在线写入、rename 或 unlink；这些操作由
   overlay-workspace 的 upper layer 负责，commit 时离线生成新的 immutable snapshot。
 * v3 不试图在一个对象中保存整个目录或整个快照；任何单次 range 都有明确的 byte、
   record 和 allocation 上限。
@@ -277,11 +277,11 @@ barrier，不触发全量重打包。只有显式 seal/compact/publish 才生成
 
 #### 4.1 格式分流与完整对象种类
 
-当前入口只接受 packed-v3 当前编码。004 与未知 kind/version/required feature
+当前入口只接受 packed 当前编码。004 与未知 kind/version/required feature
 必须 `UnsupportedFormat`；拒绝时不得猜成 v2 或回退 KV。native-base 的
 `BRFSM003/BRFCL003/BRFDP003/BRFDS003` 和 v2 的对象不在此命名空间。
 
-| 用途 | 历史 004（拒绝） | packed-v3 编码 / payload | 历史实现状态 |
+| 用途 | 历史 004（拒绝） | packed 编码 / payload | 历史实现状态 |
 | --- | --- | --- | --- |
 | manifest | BRFPM004 / PM06 | BRFPM005 / PM07、PM08 | PM07及PM08 source-stat契约已验证；完整inventory/publish仍开放 |
 | group container | BRFGC004 / GC04 | BRFGC005 / GC05 | 已实现 |
@@ -355,7 +355,7 @@ chunk digest/length及frame精确offset/length/digest，仍由manifest Container
 集合key必须同时包含container和frame ordinal。
 
 上述wire/source/reader已接通；最终门禁与真实FUSE证据见
-[external验证记录](../../performance/packed-v3-external-validation-2026-10-04.md)。
+[external验证记录](../../performance/packed-external-validation-2026-10-04.md)。
 source仍为明确的best-effort/stat检测，跨请求共享预算和workspace发布/GC各有独立出口。
 
 #### 4.2 Envelope 与 GC05 布局
@@ -909,7 +909,7 @@ OOM/limit、I/O/transient、corrupt、unsupported和stale generation的分类/�
 inventory、root/blocks/cold/visible-nlink。root-FD与真实Btrfs readonly snapshot provider
 已接候选并通过小规模provider检查，完整gate与36k验收仍运行；best-effort保留检测
 边界，不能签收原子view。workspace binding/head-CAS/journal/GC集成仍开放。当前证据见
-[冻结源与seek候选](../../performance/packed-v3-frozen-source-seek-validation-2026-10-04.md)。
+[冻结源与seek候选](../../performance/packed-frozen-source-seek-validation-2026-10-04.md)。
 `finish()`成功、read-only mount成功、source snapshot一致、durable publication成功是
 不同证据，不可把前两项写成完整崩溃恢复发布已完成。
 
@@ -930,7 +930,7 @@ pinned old snapshot继续可读。GC mark必须包括head、snapshot、leases、
 以及所有可达container/index/descriptor/cold/large refs，不按origin owner删除共享对象。
 这些控制面条件是P5目标，目前对象producer没有履行该完整协议。
 
-当前 packed-v3 入口只接受当前编码的 PM11/IP06，004/v1/v2及旧PM payload明确拒绝；不要求历史兼容。
+当前 packed 入口只接受当前编码的 PM11/IP06，004/v1/v2及旧PM payload明确拒绝；不要求历史兼容。
 未来005字段/required features/large placement扩展必须
 新payload/version或明确feature negotiation，禁止旧decoder把未知DataRef当零填。
 
@@ -940,7 +940,7 @@ pinned old snapshot继续可读。GC mark必须包括head、snapshot、leases、
 
 004 `.stats`/卸载log输出cache、range、logical、coalescing等已有计数；其中
 `*_requested_bytes_total`是声明range长度，不是失败body实际received bytes。
-005当前出口为 `brewfs_packed_v3_runtime_backend_{range_gets,requested_bytes,
+005当前出口为 `brewfs_packed_runtime_backend_{range_gets,requested_bytes,
 received_bytes,failures}_total` 与 `logical_bytes_total`，包含metadata和payload但
 尚未分类；初始manifest/probe、SDK内部retry不含在runtime totals内。
 缺失维度不能打印0再称“完整计数”。legacy错误body/self-consistency也不等于005认证。
@@ -951,7 +951,7 @@ received_bytes,failures}_total` 与 `logical_bytes_total`，包含metadata和pay
 （含inline）、FD页和payload ranges分别记录backend calls/SDK HTTP attempts、requested/
 received body bytes、successful/failed/cancelled、cache/singleflight与prefetch来源。一个
 API调用可含SDK重试，一次source cache miss可无backend GET，不能用miss或多层hits相加
-代表文件数/物理HTTP请求。当前支持的 packed-v3（wire005）统一使用 v3 指标前缀；004 入口明确拒绝。
+代表文件数/物理HTTP请求。当前支持的 packed（snapshot）统一使用 v3 指标前缀；004 入口明确拒绝。
 
 发布与上传恢复的完整 immutable 对象回读单列 `publication_verify`，因为一个
 container 的验证流量可同时包含 metadata 和 payload，不将整对象误算成 GroupMeta
@@ -1066,7 +1066,7 @@ Acceptance 先以请求图和正确性为硬门槛，再比较吞吐。候选实
 
 ### 13. 实施顺序与当前收口项
 
-复用 `packed_v3`/`wire005`、`chunk/read_plan`、readonly/provider与workspace既有接口，
+复用 `packed`/`snapshot`、`chunk/read_plan`、readonly/provider与workspace既有接口，
 不再要求新建已经存在的平行group/catalog/executor模块。以下是剩余工作依赖，不是
 把P0–P6都写成未完成或已完成；状态以顶部检查表及对应代码/fixture/gate证据为准。
 
@@ -1103,7 +1103,7 @@ coalesce 250µs候选仍需matched paired验证，不能混入新codec布局后�
 
 #### P5：packed lower与可恢复publication
 
-独立版本化binding保持workspace-v1 bincode/revision兼容；上层Absent/Hole分流、
+独立版本化binding保持workspace bincode/revision兼容；上层Absent/Hole分流、
 namespace/hot/cold fallback、upper数据/dirty overlay、可见mutation fence与整体retry。
 显式seal捕获一致effective view -> verified dependencies/indexes/BRFPM005 -> atomic
 head+binding CAS；journal/lease/recovery/reachability GC覆盖全部shared对象。普通durable
@@ -1169,26 +1169,26 @@ v2 独立产品、v1/v2/004 和旧 PM payload 兼容不再属于完成条件；�
 
 ### 当前元数据收尾状态（2026-10-07）
 
-产品、公开 API、指标与实验统一称 packed-v3；005 仅为内部编码编号。
+产品、公开 API、指标与实验统一称 packed；005 仅为内部编码编号。
 当前布局使用 PM11/IP06。Redis/TiKV 是发布、恢复、reader pin 与 GC 的元数据后端。
 实际注册 PUT、原生 Quiesced fence、有界冻结视图导出/比较、DataDrained/Hashed CAS
 与保守对象收集已接入开发树，当前完整回归正在执行。最终 native/packed 原子发布、
 新进程取得新 lease 的恢复、history/snapshot/fork 的准确保留与 retirement、完整
 FUSE 生命周期及最终门禁仍未签收。临时本地认证/排序存储不替代 Redis/TiKV。
 当前结果与失败日志见
-[元数据收尾开发验证](../../performance/packed-v3-metadata-closeout-validation-2026-10-07.md)。
+[元数据收尾开发验证](../../performance/packed-metadata-closeout-validation-2026-10-07.md)。
 以下 checkpoint 仅证明各自历史冻结输入，不代表当前树或全部 SPEC 已完成。
 
 ### 历史候选 checkpoint（2026-10-04 PM10/IP06）
 
 活跃候选只接受005 envelope的PM10 manifest与IP06索引，旧PM07/08/09/IP05明确拒绝；
-fixture默认且仅生成packed-v3。CLI/YAML中的packed独立v1/v2以及v3入口的004/未知magic
+fixture默认且仅生成packed。CLI/YAML中的packed独立v1/v2以及v3入口的004/未知magic
 均拒绝。该冻结批次45项完整门禁及8次bounded实挂载通过；36k首次导入600秒超时。
 新root-FD/Btrfs冻结源及索引seek批次独立46项检查、8次FUSE、3项真实Btrfs库测试通过，
-366源码/固定binary/cleanup核对见[冻结源checkpoint](../../performance/packed-v3-frozen-source-seek-validation-2026-10-04.md)。
+366源码/固定binary/cleanup核对见[冻结源checkpoint](../../performance/packed-frozen-source-seek-validation-2026-10-04.md)。
 该阶段36k重验仍600秒超时、未挂载；后续有界source库存事务批次已通过47项gate02、
 14次固定binary实挂载证据核对与3项新库真实Btrfs测试，详见
-[源库存checkpoint](../../performance/packed-v3-source-batch-validation-2026-10-04.md)。
+[源库存checkpoint](../../performance/packed-source-batch-validation-2026-10-04.md)。
 相同36k期限内raw/zstd导入/分页cookie/active fd/fresh restart/20秒卸载通过，typed GET图、
 真实eviction与完整大规模内存出口仍开放。磁盘恢复后旧失败/tmp work已缺失，持久日志/
 诊断保留且新checkpoint记录retention限制。尚未发布，S/X与全SPEC仍未签收。
@@ -1204,7 +1204,7 @@ Linux只读ACL应用及default bytes保留已实现，cold/context认证和hot/b
 EIO传播已通过真实故障挂载验证；可写继承/chmod/原子mode+xattr仍开放。
 现有getattr仅在真实缺失时使用已删除handle属性，认证/backend失败不再误报成功。
 该批候选与证据边界见
-[PM10/errno验证](../../performance/packed-v3-pagination-errno-validation-2026-10-04.md)。
+[PM10/errno验证](../../performance/packed-pagination-errno-validation-2026-10-04.md)。
 
 ### 版本契约与完成门禁（2026-10-03 SPEC review）
 
@@ -1223,15 +1223,15 @@ EIO传播已通过真实故障挂载验证；可写继承/chmod/原子mode+xattr
 生命周期实验见[更新实验方案](../plans/2026-10-03-brewfs-three-innovations-experiment-plan.md)。
 后续代码批次已补齐GM07/IL05负向语义校验，并增加有界Linux单文件真实捕获与raw-name
 权限路径修复；raw/zstd源文件及100/1,000文件实挂载回读通过。具体门禁与范围见
-[source correctness checkpoint](../../performance/packed-v3-source-validation-2026-10-03.md)。
+[source correctness checkpoint](../../performance/packed-source-validation-2026-10-03.md)。
 后续PM08/RA05/SI05认证root/allocated blocks与有界真实目录inventory已通过验收：
 raw/zstd各540 entries、完整/partial回读、special/rdev、树内hardlinks与九类EROFS；
-40项最终本地gate通过，证据见[namespace报告](../../performance/packed-v3-namespace-validation-2026-10-04.md)。
+40项最终本地gate通过，证据见[namespace报告](../../performance/packed-namespace-validation-2026-10-04.md)。
 raw xattr字节传递、源.stats优先和removexattr EROFS随后通过独立40项gate及四次FUSE，
-见[名称边界报告](../../performance/packed-v3-namespace-posix-validation-2026-10-04.md)。
+见[名称边界报告](../../performance/packed-namespace-posix-validation-2026-10-04.md)。
 PM09/EX09外部大文件已接通并通过40项最终gate、6项CLI和4次真实FUSE；raw/zstd分别
 验证68 MiB dense、72 MiB all-hole、300段sparse与跨目录hardlinks，见
-[external报告](../../performance/packed-v3-external-validation-2026-10-04.md)。
+[external报告](../../performance/packed-external-validation-2026-10-04.md)。
 一致性仍为显式best-effort-detected，不是原子snapshot；ACL/其他raw mutation/PATH_MAX
 及workspace生命周期仍开放，见[全部SPEC持续目标](../plans/2026-10-04-brewfs-all-spec-completion.md)。
 实验设计完成不表示这些实现目标完成。
@@ -1297,7 +1297,7 @@ ACL rules 的编码/查询不等于 Linux POSIX-ACL xattr 权限应用/继承已
 | 项目 | 代码入口 | 完成条件 | 当前状态 |
 | --- | --- | --- | --- |
 | EIO 前置门禁 | S3 adapter、readonly、catalog；Compose/scanner | 小复现和 10k budget-churn 无错误，错误分类与正常卸载证据 | 本地 proxy-associated 502 已隔离；无代理 10k stat/full 无错误，其他 EIO 仍需逐案诊断 |
-| 认证目录与 codec/restart | wire/group/meta/index/remote | packed-v3 round-trip、旧格式拒绝、descriptor+payload 联合篡改拒绝、bounded decode | PM07→IP05→descriptor→payload 及 GC05/GM07 producer 已实现；005 readonly FUSE 通过 10k 回读，其后直接统一 provider 经 1k 验证；workspace generation 接线待完成 |
+| 认证目录与 codec/restart | wire/group/meta/index/remote | packed round-trip、旧格式拒绝、descriptor+payload 联合篡改拒绝、bounded decode | PM07→IP05→descriptor→payload 及 GC05/GM07 producer 已实现；005 readonly FUSE 通过 10k 回读，其后直接统一 provider 经 1k 验证；workspace generation 接线待完成 |
 | 完整 inventory | production builder、fixture、cold/large/readonly | sparse、hardlink、raw names、冷属性、外部大文件实挂载回读 | PM08有界namespace与PM09 external已验证；root/blocks/raw names/specials/cold/alias策略保持；最新40项gate/overlay1,328、6项CLI与4次FUSE通过。原子frozen view、ACL/其他raw mutation/PATH_MAX仍待完成 |
 | 统一 executor | chunk/read_plan、VFS reader/backend | readonly/workspace 共用 executor；typed stale generation 整体有界重试 | 005 prepared UnifiedReadPlan/source fetcher 已直接接入 VFS 并验证；mutable workspace typed stale-generation 整体重试待完成 |
 | 预算与统计 | coordinator/remote/catalog/metrics、VFS stats | 排队至最后消费者释放均计量；完整实际请求图经 `.stats` 导出 | 004 counters、005 runtime backend 实际接收字节接入 `.stats`；manifest/SDK retry、metadata/payload/inline 分类、raw overscan 与全程共享预算待完成 |
@@ -1309,9 +1309,9 @@ ACL rules 的编码/查询不等于 Linux POSIX-ACL xattr 权限应用/继承已
 已有 JuiceFS 百万结果可复用但必须注明 TTL/inline 的历史限制，不能重复导入制造噪声。
 
 最新 cold/hardlink/直接 VFS 阶段见
-[`packed-v3-cold-hardlink-validation-2026-10-03.md`](../../performance/packed-v3-cold-hardlink-validation-2026-10-03.md)。
+[`packed-cold-hardlink-validation-2026-10-03.md`](../../performance/packed-cold-hardlink-validation-2026-10-03.md)。
 当前阶段证据及未完成边界见
-[`packed-v3-completion-correctness-2026-10-02.md`](../../performance/packed-v3-completion-correctness-2026-10-02.md)。
+[`packed-completion-correctness-2026-10-02.md`](../../performance/packed-completion-correctness-2026-10-02.md)。
 
 ### Legacy 004 implementation checkpoint（2026-10-02 前置复核）
 
@@ -1366,16 +1366,16 @@ Scope: mutable workspaces, immutable snapshots, and adaptive physical layout on 
 bounded remote frame descriptor 读取、group catalog lookup 和统一 `UnifiedReadPlan`。
 PM06 manifest 已固化 root identity，并为 group/inode index page 携带有序路由 fence；
 II05 inode index 和 GM06 GroupMeta 已包含 parent/POSIX 热属性。只读 FUSE mount 现在
-通过 `PackedV3ReadonlyMeta` 和 `PackedV3BlockStore` 接入：目录页只取有限 group，数据
+通过 `PackedReadonlyMeta` 和 `PackedBlockStore` 接入：目录页只取有限 group，数据
 读取由 inode/chunk 转为 packed frame plan，写入操作明确拒绝。性能对比仍需在真实挂载
 和同等冷读条件下进行，不能用 wire 层 probe 数字替代端到端结果。
 
 非根目录的稳定 `DirKey` 使用
-`SHA256("BrewFS-packed-v3-directory\\0" || snapshot_id || inode_le)` 派生；根目录 key
-仍由 manifest 显式保存。`packed_v3_snapshot_fixture` 会按目录生成独立 GroupContainer，
+`SHA256("BrewFS-packed-directory\\0" || snapshot_id || inode_le)` 派生；根目录 key
+仍由 manifest 显式保存。`packed_snapshot_fixture` 会按目录生成独立 GroupContainer，
 并发布 group/inode pageable indexes，可用于本地和 OSS 冷读测试。
 
-当前实现与验收只支持 packed-v3。v1/v2/004 对象在当前入口明确拒绝，不提供兼容
+当前实现与验收只支持 packed。v1/v2/004 对象在当前入口明确拒绝，不提供兼容
 读取或自动迁移。未知 manifest/object magic 返回 `UnsupportedFormat`，不能猜测
 其他格式或退回 Redis/TiKV。
 
@@ -1490,7 +1490,7 @@ base. These links are historical references, not parallel specifications.
 
 | Former source | Consolidated section |
 | --- | --- |
-| [2026-09-27-brewfs-packed-metadata-v3-readonly-smallfiles.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-09-27-brewfs-packed-metadata-v3-readonly-smallfiles.md) | V3 format/read contract and dated evidence ledger |
+| [2026-09-27-brewfs-packed-snapshot-readonly-smallfiles.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-09-27-brewfs-packed-snapshot-readonly-smallfiles.md) | V3 format/read contract and dated evidence ledger |
 | [2026-09-22-brewfs-packed-metadata-large-directory.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-09-22-brewfs-packed-metadata-large-directory.md) | Historical large-directory design |
 | [2026-08-24-brewfs-frozen-metadata-image-v1.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-08-24-brewfs-frozen-metadata-image-v1.md) | Historical streaming frozen image v1 |
 | [2026-08-24-brewfs-compact-layer-pack-format-v1.md](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/superpowers/specs/2026-08-24-brewfs-compact-layer-pack-format-v1.md) | Historical compact layer pack v1 |

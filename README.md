@@ -30,9 +30,9 @@ RustFS, MinIO, AWS S3, and Ceph RGW are supported S3-compatible backends, not
 parts of BrewFS itself.
 
 > [!IMPORTANT]
-> BrewFS is under active development. The regular `flat-v1` volume is the
-> default. Agent-oriented `workspace-v1` volumes are implemented behind the
-> optional `workspace-overlay` Cargo feature while their operational tooling
+> BrewFS is under active development. The regular `flat` volume is the
+> default. Agent-oriented `workspace` volumes are implemented behind the
+> optional `workspace` Cargo feature while their operational tooling
 > continues to mature.
 
 ## Why BrewFS
@@ -144,7 +144,7 @@ object capacity; sharing one writable mount weakens isolation.
 
 BrewFS Workspace Overlay provides a filesystem-native alternative:
 
-1. An **immutable lower** (a packed-v3 snapshot) holds the shared namespace and
+1. An **immutable lower** (a packed snapshot) holds the shared namespace and
    object blocks. It never changes while bound.
 2. Each agent gets one **private writable overlay**. Its head never rotates
    while the agent is mounted; there is no seal step.
@@ -168,7 +168,7 @@ flowchart LR
 The feature is opt-in and does not alter regular flat volumes:
 
 ```bash
-cargo build -p brewfs --release --features workspace-overlay
+cargo build -p brewfs --release --features workspace
 target/release/brewfs workspace --help
 ```
 
@@ -179,10 +179,10 @@ development. Every mounted workspace resolves exactly two layers: one private
 writable head and one immutable lower.
 
 Current boundaries are intentional: the feature is off by default,
-`workspace-v1` never falls back to flat-volume behavior, workspace
+`workspace` never falls back to flat-volume behavior, workspace
 `statfs` waits for atomic usage counters, and the WebDAV gateway currently
-accepts only `flat-v1`. Read the
-[Workspace Overlay architecture](doc/architecture/workspace-overlay.md) before
+accepts only `flat`. Read the
+[Workspace Overlay architecture](doc/architecture/workspace.md) before
 building an operator or multi-agent service around it.
 
 ## Architecture
@@ -280,7 +280,7 @@ performance claim. Reproduction details live in the
 [benchmark guide](doc/testing/bench.md).
 
 The **2026-11-02 local small-write comparison** uses release source `d5e53e1`,
-Redis/RustFS, flat-v1 and the same executable with coalescing off/on. Each
+Redis/RustFS, flat and the same executable with coalescing off/on. Each
 scene has two warmup pairs and three measured 20-second pairs; random I/O
 uses 4 KiB blocks, four jobs and 512 MiB/job, with buffered libaio. Sequential
 writes use 1 MiB blocks and one job. These are medians including full fio wall
@@ -360,7 +360,7 @@ These are current priorities, not release guarantees:
 
 - [Documentation index](doc/README.md)
 - [Architecture](doc/architecture/arch.md)
-- [Workspace Overlay](doc/architecture/workspace-overlay.md)
+- [Workspace Overlay](doc/architecture/workspace.md)
 - [Configuration](doc/operations/configuration.md)
 - [Binary deployment](doc/operations/binary-deployment.md)
 - [Observability](doc/operations/observability.md)

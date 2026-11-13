@@ -24,9 +24,9 @@ Run commands from the repository root.
 | FUSE correctness smoke | `bash docker/compose-xfstests/run_redis_xfstests.sh --cases "generic/001 generic/002 generic/100"` | 5-15 min |
 | Full Redis + RustFS xfstests | `bash docker/compose-xfstests/run_redis_xfstests.sh` | hours |
 | LTP filesystem coverage | `bash docker/compose-xfstests/run_redis_ltp.sh` | 30-90 min |
-| Workspace overlay control smoke (Redis/TiKV) | `bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend <redis\|tikv> --control-only` | build time plus a few min |
-| Workspace overlay xfstests + LTP (Redis) | `bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend redis` | workload-dependent |
-| Workspace overlay xfstests + LTP (TiKV) | `bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend tikv` | workload-dependent |
+| Workspace overlay control smoke (Redis/TiKV) | `bash docker/compose-xfstests/run_workspace_compose.sh --backend <redis\|tikv> --control-only` | build time plus a few min |
+| Workspace overlay xfstests + LTP (Redis) | `bash docker/compose-xfstests/run_workspace_compose.sh --backend redis` | workload-dependent |
+| Workspace overlay xfstests + LTP (TiKV) | `bash docker/compose-xfstests/run_workspace_compose.sh --backend tikv` | workload-dependent |
 | CI-safe stress | `bash docker/compose-xfstests/run_redis_stress_ng.sh --profile smoke` | a few min |
 | Complete performance run | `bash docker/compose-xfstests/run_redis_perf.sh --read-throughput-profile` | 10-30 min plus build |
 | Metadata performance smoke | `bash docker/compose-xfstests/run_redis_meta_perf.sh --quick` | 2-5 min plus build |
@@ -134,8 +134,8 @@ metadata and block visibility without adding an object-store dependency.
 Run the complete configured xfstests and LTP profiles with:
 
 ```bash
-bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend redis
-bash docker/compose-xfstests/run_workspace_overlay_compose.sh --backend tikv
+bash docker/compose-xfstests/run_workspace_compose.sh --backend redis
+bash docker/compose-xfstests/run_workspace_compose.sh --backend tikv
 ```
 
 The default run leaves `XFSTESTS_CASES` empty so the container driver discovers
@@ -152,7 +152,7 @@ For a quick Compose smoke run, limit xfstests while retaining both workspace
 forks and the LTP profile:
 
 ```bash
-bash docker/compose-xfstests/run_workspace_overlay_compose.sh \
+bash docker/compose-xfstests/run_workspace_compose.sh \
   --backend redis \
   --xfstests-cases "generic/001 generic/002 generic/100"
 ```

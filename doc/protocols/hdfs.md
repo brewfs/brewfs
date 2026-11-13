@@ -33,7 +33,7 @@ BrewFS 的 HDFS 方向采用 JuiceFS 的 Hadoop Java SDK 路线：Hadoop 应用�
 - `flush`、`fsync(data_only)`、`close` 经过 VFS 的真实 writeback/metadata 路径，错误向调用方返回；
 - capabilities 用 bitset 报告 xattr/statfs/append 能力。
 
-当前 native factory 使用 flat-v1 的 LocalFS + SQLite 组合。未提供 `metadata_url` 时，默认为 data dir 下的持久化 SQLite 文件（`sqlite://<data_dir>/metadata.db?mode=rwc`），而不是 in-memory 数据库：共享同一 data dir 的多个客户端（或重启后的进程）因此能看到同一份元数据。配置结构已经为 S3-compatible data backend 和 Redis metadata URL 保留扩展位；后端矩阵在独立的 endpoint E2E 完成前不宣称通过。
+当前 native factory 使用 flat 的 LocalFS + SQLite 组合。未提供 `metadata_url` 时，默认为 data dir 下的持久化 SQLite 文件（`sqlite://<data_dir>/metadata.db?mode=rwc`），而不是 in-memory 数据库：共享同一 data dir 的多个客户端（或重启后的进程）因此能看到同一份元数据。配置结构已经为 S3-compatible data backend 和 Redis metadata URL 保留扩展位；后端矩阵在独立的 endpoint E2E 完成前不宣称通过。
 
 ## 3. Java adapter
 

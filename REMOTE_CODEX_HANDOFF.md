@@ -1,4 +1,4 @@
-# BrewFS packed-v3 handoff — updated 2026-10-08
+# BrewFS packed handoff — updated 2026-10-08
 
 ## Current runtime continuation (supersedes historical pending notes)
 
@@ -124,7 +124,7 @@ their complete combination is not yet verified. See the continuation document fo
 exact scope. Large CONTROL/scoped native GC finalization and Kubernetes
 leader-loss/GC E2E remain open; all-SPEC completion is not claimed.
 
-Product/API/configuration/docs use packed-v3/V3/v3 only. The naming closeout
+Product/API/configuration/docs use packed/V3/v3 only. The naming closeout
 scanned 830 current text inputs without a product-version remnant, and the
 Aliyun runner's explicit old-format rejection control passed. Historical
 evidence and unrelated dependency/UUID versions are preserved.
@@ -156,7 +156,7 @@ directory repair and fixed-stage initial/native-clock diagnostics. Related
 CONTROL/hot historical lease hydration and postsubmission fault-contract
 repairs are being prepared before the next frozen build; not yet validated.
 Current evidence and precise boundaries are in
-[metadata continuation](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-v3-metadata-followup-validation-2026-10-08.md).
+[metadata continuation](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-metadata-followup-validation-2026-10-08.md).
 
 The actual TiKV Lock response probe executed 0 passed/1 failed with unchanged
 source and prebuilt library test binary. Its seven transparent response events
@@ -277,14 +277,14 @@ The repository gate, operator/FUSE exits and all-SPEC completion remain open.
 Only after those exits pass may the three-innovation experiment be frozen.
 
 Root owns a temporary 24 GiB build swap file at
-`/home/hxy/.cache/brewfs-packed-v3-closeout-20261008.swap`; the default WSL swap
+`/home/hxy/.cache/brewfs-packed-closeout-20261008.swap`; the default WSL swap
 and WSL configuration were preserved. Once root build/services stop, run the
 owned `temporary-build-swap-v3.py remove` helper under the external evidence
 root and verify its cleanup receipt. Do not delete retained evidence.
 
 ## 2026-10-08 continuation: actual metadata gates
 
-The user requires packed-v3 only; wire005 is an internal encoding identifier.
+The user requires packed only; snapshot is an internal encoding identifier.
 Redis/TiKV publication, recovery, reader pins and reachability
 remain the main work. The goal is active; all-SPEC and S/X are not accepted.
 
@@ -467,14 +467,14 @@ inputs, so it is not an accepted gate. Logs and verified cleanup are preserved;
 the read call's limit is corrected to the existing2MiB preparation cap; global
 budgets, production and assertions are unchanged. No full fork or bootstrap
 behavioral pass is claimed. Current evidence and remaining consumers:
-`doc/performance/packed-v3-carrier-fork-bootstrap-validation-2026-10-08.md`.
+`doc/performance/packed-carrier-fork-bootstrap-validation-2026-10-08.md`.
 The naming audit covered 906 text files with zero product-version remnants.
-Product/API/CLI/docs/experiments use packed-v3/V3/v3 only; the numbered wire
-module denotes an internal encoding within packed-v3, not a product release.
+Product/API/CLI/docs/experiments use packed/V3/v3 only; the numbered wire
+module denotes an internal encoding within packed, not a product release.
 Kernel-enforced physical scratch quotas have no established mandatory SPEC
 reference and must not be invented as an all-SPEC acceptance blocker. Existing
 write-before-fetch limits, cancellation, shared budget and cleanup remain required.
-The user requires packed-v3 naming and no legacy compatibility.
+The user requires packed naming and no legacy compatibility.
 The historical statuses below retain their original input/result scope.
 
 Current precise continuation: fork GREEN compile02 passed codec3. Actual fork
@@ -621,7 +621,7 @@ log `234be4e367cd681274c5a9e1fead1ff90ef5e09f0c3552984b4b4ffeb5fbc017`.
 Only the exact target current head gets the exception; other owners and
 corrupt ancestry retain their rejection. No G10 successor02 patch is restored.
 
-Public fixture output and mount messages now say packed-v3; the internal
+Public fixture output and mount messages now say packed; the internal
 encoding selector is hidden from fixture help. Historical 004/005 references
 do not establish compatibility requirements. The eight existing fixture CLI,
 codec, default-format rejection and source-preflight controls passed on these
@@ -696,10 +696,10 @@ successor02 or the older kv_store patch. Current disk space: about 646 GiB free.
 
 ## Current continuation: native publication and expired-lease recovery
 
-The user reaffirmed packed-v3 naming. Public source/tool/SPEC searches have
+The user reaffirmed packed naming. Public source/tool/SPEC searches have
 no alternative packed product name. The private producer inode signature is
 only an inventory comparison, not a frozen wire commitment; its domain now
-uses packed-v3. The two existing hardlink tests passed, source unchanged.
+uses packed. The two existing hardlink tests passed, source unchanged.
 
 The TiKV SDK opt-in waits for the result of the existing owned secondary
 commit task before acknowledging BrewFS CAS success. It neither reissues a
@@ -738,7 +738,7 @@ still external candidates. No current full gate, all-SPEC or S/X acceptance.
 
 ## Current development checkpoint: bounded Redis/TiKV and retained I/O
 
-Naming remains packed-v3; wire005 is only an encoding identifier. There is no
+Naming remains packed; snapshot is only an encoding identifier. There is no
 new product version or old-version compatibility route. Redis/TiKV metadata
 publication, recovery, reader retention and GC remain the priority.
 
@@ -777,7 +777,7 @@ development run then passed 1925 library and 8 fixture tests, zero failed,
 425744ee6039954fe01d672d253aad6a04ff48f7541b2f4d8fa9c5e64e414735).
 This run precedes CLI04 and the next transport change; it is not the final gate.
 The fixture now explicitly labels its product packed_version=v3 and its two
-ambiguous encoding errors use packed-v3 wording. Its internal encoding number
+ambiguous encoding errors use packed wording. Its internal encoding number
 remains 005; the frozen inode hash-domain bytes are unchanged.
 
 Root is proving the legal 64 KiB XattrDelta envelope regression against the
@@ -842,7 +842,7 @@ history/snapshot/fork retirement remain incomplete.
 Attempt06-sdk and attempt07-sdk both reached precise cleanup, confirming the
 owned proxy retired and all three exact container IDs absent. No service from
 either attempt remains active. The changed final tree still needs runtime and
-full gates. Product and private producer hardlink names use packed-v3; the
+full gates. Product and private producer hardlink names use packed; the
 private signature is a build-inventory comparison and is not emitted on wire.
 Native effective-view authority, atomic native/packed rotation,
 preexisting-root adoption and final physical GC remain unfinished. No complete
@@ -850,7 +850,7 @@ SPEC, FUSE or performance acceptance is claimed.
 
 ## Previous development checkpoint: complete content joins and real reader pins
 
-Scope is packed-v3/wire005 only. Product/API/metrics naming uses V3/v3;
+Scope is packed/snapshot only. Product/API/metrics naming uses V3/v3;
 historical wire hash-domain bytes remain unchanged. Redis/TiKV own distributed
 metadata. G10 successor02 remains correctly reversed; do not restore it.
 
@@ -894,7 +894,7 @@ Workspace integration and real Redis/TiKV corrupt-response tests remain
 pending. Keyset pagination, journal bounds, before-PUT registry and native
 rebind successors are still external candidates. All-SPEC/system/experiment goal is
 still active. See
-[current development evidence](doc/performance/packed-v3-metadata-closeout-validation-2026-10-07.md).
+[current development evidence](doc/performance/packed-metadata-closeout-validation-2026-10-07.md).
 The older checkpoint below is retained as historical evidence, not as the
 description of the current implementation or its current gate status.
 
@@ -970,7 +970,7 @@ Complete proof, durable candidate journal/reopen, atomic seal/head/binding rotat
 reader pins/history retirement and packed graph GC remain open. Formal three-
 innovation performance work and all SPEC/S/X completion remain pending.
 Scope is v3/005 only. See
-[physical dependency validation](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-v3-physical-dependency-validation-2026-10-07.md).
+[physical dependency validation](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-physical-dependency-validation-2026-10-07.md).
 
 ## Previous accepted source checkpoint: G12/G13 catalog safety and real Redis
 
@@ -1016,7 +1016,7 @@ publication contracts, deadline CAS, distributed catalog and key-index atomicity
 It does not cover G13 real races, transport response loss, object graph or journal.
 Cleanup confirms the owned container absent and owned process groups empty.
 Evidence is `g12-g13-validation-20261007/real-redis/`; see
-[catalog safety checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-v3-g12-g13-catalog-safety-validation-2026-10-07.md).
+[catalog safety checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-g12-g13-catalog-safety-validation-2026-10-07.md).
 All SPEC/S/X and the final performance campaign remain open. Scope is v3/005
 only; the active goal's historical compatibility sentence is superseded.
 
@@ -1159,7 +1159,7 @@ New complete gate10 plus serial supplement09 is now running in parent session133
 source554 canonical manifest
 `335b8d51333e6cfcf19cddda8c1c8ff487d29ccc2f8cb2b4eb532824e25c01ab`.
 Its terminal is not yet available. Details are in
-doc/performance/packed-v3-gc-grace-fork-validation-2026-10-06.md; packed graph GC,
+doc/performance/packed-gc-grace-fork-validation-2026-10-06.md; packed graph GC,
 remote durability, CONTROL boundedness and all SPEC/S/X remain OPEN.
 
 Scope remains v3/005 only. The whole FS/reply-failure race now occupies one
@@ -1340,7 +1340,7 @@ No new runtime has been built or accepted for this source batch. Old complete
 gates/frozen binaries certify only their old pinned source. Do not turn packet
 drop into success, relax the strict errno oracle, increase configured budgets,
 or use external/lazy unmount as a production pass. Full SPEC/S/X stays open.
-See [reply retirement checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-v3-reply-retirement-validation-2026-10-05.md).
+See [reply retirement checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-reply-retirement-validation-2026-10-05.md).
 
 ## Latest checkpoint: constrained Plans repair (2026-10-05)
 
@@ -1374,7 +1374,7 @@ all reply/ring joins before a fresh source batch. Cargo remains serial, jobs=1. 
 worktree changes, old failed evidence, credentials and .claude. The deletion
 confirmation was already handled; do not repeat it or remove the active image.
 Details and exact evidence are in
-[Plans admission checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-v3-plans-admission-validation-2026-10-05.md).
+[Plans admission checkpoint](https://github.com/Ivanbeethoven/brewfs/blob/cfa000af39414e14f0e0149181b92da497c1a8fb/doc/performance/packed-plans-admission-validation-2026-10-05.md).
 
 G10/G12–G14, remaining system S/experiment X and the final matched campaign stay
 open. G13/G14 external candidates are uncompiled/unrun; packed operator capability
@@ -1387,7 +1387,7 @@ Latest focused update: `integration-focused02` passed all seven steps on 376
 unchanged source inputs, manifest SHA256
 `b743bfa6bdc5e599cf913200396e5fdbd4b445394af235df6db83fe84d0ca5a1`.
 Actual counts: existing API lib 3/bin 4, G15 lib 6/fixture 1, adapter 10,
-registry 5, packed wire005 132 (3 ignored), writable ACL 23, vendor lifecycle 10.
+registry 5, packed snapshot 132 (3 ignored), writable ACL 23, vendor lifecycle 10.
 The complete cancellation/minimum-Control fixture file is unchanged from
 focused01. `verification.json` verifies every command, source and protected
 D log hash. Separate production vendor runs passed io-uring 49 (15 ignored)
@@ -1532,10 +1532,10 @@ The two dual-body destroy timeouts failed before destroy and are not destroy
 behavior evidence. No concurrent Cargo process should be started; root owns
 the shared target and all real validation.
 
-`packed-v3-completion-20261004-integrated-contracts/root-validation/integration-focused01/`
+`packed-completion-20261004-integrated-contracts/root-validation/integration-focused01/`
 is the latest completed seven-step checkpoint, not acceptance. Existing API
 tests (lib 3/bin 4), G15 (lib 6/fixture 1), registry (5), writable ACL (23) passed.
-Adapter tests passed 8/10; packed wire005 passed 116 with 9 failures/3 ignored;
+Adapter tests passed 8/10; packed snapshot passed 116 with 9 failures/3 ignored;
 vendor tests failed to compile two newly extended fixtures. Open fixes include
 the 32 KiB Control contract, independent pending-body scheduling, current-format
 test expectations, explicit reader shutdown/join in zero-owner assertions, and
@@ -1582,7 +1582,7 @@ dynamic-block, operator and large-directory lifecycle requirements remain in sco
 independent v2/old flat/CR/wire exits are removed. Historical evidence below retains
 its original version scope. Current scope is recorded in the all-spec completion plan.
 
-Current unaccepted observer/budget integration: `packed-v3-completion-20261004-observer-active/`.
+Current unaccepted observer/budget integration: `packed-completion-20261004-observer-active/`.
 The active tree now includes the41-file observer baseline, recovery final-v7 and the
 five-file ordinary-native read path. The three protected source namespace/layout/root
 hashes remain unchanged. Default build gate01 exposed a workspace-only OwnedReadReply
@@ -1611,7 +1611,7 @@ It stopped at a harness assertion equating retained stats snapshot bytes with
 fstat inode size. Exact WSL6.18.33.2 kernel source confirms fuse_getattr passes
 NULL file, so fstat uses fresh inode attributes instead of the open snapshot.
 The failed work/logs remain in `live-gate03-io-uring-normal-raw-01/`.
-Harness draft-wire005 records bounded inode sizes and checks complete same-FD bytes
+Harness draft-snapshot records bounded inode sizes and checks complete same-FD bytes
 twice to EOF with different partial-read sizes; no production source changed.
 Raw run02 passed serialized reads, actual eviction/refetch/retry/corrupt/short
 recovery and held-snapshot release, then failed concurrent reads with actual EIO.
@@ -1623,7 +1623,7 @@ Admission classification red were proved after successful compilation. Focused
 green03 passes6 adapter/3 registry/4 actual worker/control tests, fmt/diff checks;
 no full same-source gate or fresh FUSE acceptance yet. Worker shutdown, bounded
 refusal replies and minimum Control still need implementation and validation.
-See `doc/performance/packed-v3-observer-cancel-progress-2026-10-04.md` for precise
+See `doc/performance/packed-observer-cancel-progress-2026-10-04.md` for precise
 scope. Root alone schedules Cargo; one temporary exclusive slot is assigned to
 acl_review for a private combined G04/G08/G09/G15 typecheck, not active edits.
 
@@ -1656,7 +1656,7 @@ usage and Docker images. At recovery continuation C had48,839,327,744 free bytes
 the cleanup-time unchanged Docker inventory is not a claim about later state.
 Full SPEC goal remains active; S/X and G04/G06–G17 remain unsigned.
 
-Latest accepted source-inventory batch: `packed-v3-completion-20261004-source-batch/checkpoint02.json`
+Latest accepted source-inventory batch: `packed-completion-20261004-source-batch/checkpoint02.json`
 binds366 sources to47 passed gate02 checks,14 pinned FUSE mounts and3 rerun real Btrfs tests.
 Production source_namespace batches at128 operations; sparse test fixture now syncs before capture.
 Default lib/bin1,023/1,107, overlay1,364, fixture7, vendor13 each, native packed190 and3
@@ -1682,8 +1682,8 @@ production5-file f7551... are isolated/unaccepted. Per-tag sync quiescence kerne
 arbitrarily wedged-kernel finite release remains unproven. No S/X/campaign/commit/push.
 
 Previous checkpoint: bounded producer spool transactions and internal readonly v3-only,
-current PM10/IP06. `doc/performance/packed-v3-spool-readonly-validation-2026-10-04.md`
-and `packed-v3-completion-20261004-spool-batch/checkpoint.json` bind366 source files
+current PM10/IP06. `doc/performance/packed-spool-readonly-validation-2026-10-04.md`
+and `packed-completion-20261004-spool-batch/checkpoint.json` bind366 source files
 (only4 changed) to47 passed gate checks,8 pinned raw/zstd FUSE cases,3 pinned real
 Btrfs tests, source/binary identity and cleanup. Overlay1,354/default1,023+1,107/
 fixture7/vendor13/native180 and3 API compile-fail pass. Deep paths5,474bytes,
@@ -1697,8 +1697,8 @@ ACL/umask drafts remain isolated and unaccepted; all lifecycle exits open.
 No performance campaign/commit/push; S/X and all-SPEC completion are false.
 
 Previous accepted batch: PM09 external-large producer/reader and source routing (G03).
-`doc/performance/packed-v3-external-validation-2026-10-04.md` and
-`packed-v3-completion-20261004-external/verification.json` bind final40 checks to
+`doc/performance/packed-external-validation-2026-10-04.md` and
+`packed-completion-20261004-external/verification.json` bind final40 checks to
 360 source files (added4/changed10/removed0) and matching binaries. Overlay1,328,
 default lib/bin1,016/1,100, fixture3/vendor13 pass. Six CLI cases and four real
 raw/zstd mounts (525-entry external and 540-entry PM08 regression) pass.
@@ -1713,7 +1713,7 @@ Failed single-source GM07 input, unsynced-source st_blocks oracle and virtual
 .stats readdir oracle are preserved; final gate re-ran after all Rust fixes.
 
 Next: POSIX ACL/application/inheritance and other raw mutation boundaries.
-`packed-v3-completion-20261004-acl/grant-red02/` has an actual named-user grant
+`packed-completion-20261004-acl/grant-red02/` has an actual named-user grant
 red: source ACL allows uid1000 to read root-owned file; mounted read returns
 EACCES and system.posix_acl_access query returns EOPNOTSUPP. Normal unmount is
 verified and binaries match G03. Initial grant-red startup omitted explicit
@@ -1722,8 +1722,8 @@ behavior red. No ACL Rust repair has been accepted yet. Full SPEC goal active;
 S/X unsigned, no performance campaign/commit/push in this batch.
 
 Previous accepted batch: source raw xattr names / .stats / removexattr boundary.
-`doc/performance/packed-v3-namespace-posix-validation-2026-10-04.md` and
-`packed-v3-completion-20261004-namespace-posix/verification.json` record four
+`doc/performance/packed-namespace-posix-validation-2026-10-04.md` and
+`packed-completion-20261004-namespace-posix/verification.json` record four
 actual FUSE reds on the previous accepted binaries and repaired raw/zstd checks.
 The new byte-name MetaLayer/VFS/FUSE path preserves distinct names; string-backed
 stores reject unrepresentable names with EINVAL; readonly remove returns EROFS.
@@ -1735,13 +1735,13 @@ no owned mounts/daemons/D-state remain. Source set356, changed4, added/removed0.
 Original red/compile-helper missing-import failures remain preserved.
 At that checkpoint G04 ACL/other raw namespace mutations, G02 frozen-view/PATH_MAX
 and G03 external-large remained open. G03 is implemented and accepted above;
-its version contract is in `doc/superpowers/plans/2026-10-04-packed-v3-external-placement-plan.md`.
+its version contract is in `doc/superpowers/plans/2026-10-04-packed-external-placement-plan.md`.
 All required read/budget/lifecycle/v2/operator/experiment/delivery exits remain
 in scope. Full SPEC goal active; S/X unsigned, no campaign/commit/push.
 
 Previous accepted batch: bounded PM08 namespace inventory and readonly fixes.
-`doc/performance/packed-v3-namespace-validation-2026-10-04.md` and
-`packed-v3-completion-20261004-namespace/verification.json` record final40 checks,
+`doc/performance/packed-namespace-validation-2026-10-04.md` and
+`packed-completion-20261004-namespace/verification.json` record final40 checks,
 overlay lib1,313/default lib-bin1,015/1,099/fixture3/vendor13, raw/zstd each540 entries,
 full21,383,198 and partial2,699,586 bytes, nine EROFS operations and normal unmount.
 Rename/link EIO and fast/cached write-open bypass were reproduced and repaired;
@@ -1757,8 +1757,8 @@ RA05 root attributes and BRFSI005/IP05/SI05 non-root allocated-block index retai
 PM07/004 semantics; missing/orphan/misbound/conflicting records fail closed.
 Single-file fixture now captures parent root/cold attributes with fd/path
 revalidation. This remains a subset capture, not complete source inventory.
-Evidence: `doc/performance/packed-v3-source-stat-validation-2026-10-04.md` and
-`packed-v3-completion-20261004-source-stat/` in artifacts. Behavioral red found
+Evidence: `doc/performance/packed-source-stat-validation-2026-10-04.md` and
+`packed-completion-20261004-source-stat/` in artifacts. Behavioral red found
 8 actual sparse blocks vs 16,384 logical blocks; green packed 122, overlay lib
 1,305, workspace lib/bin 1,015/1,099, vendor 13. Forty final local checks and ten
 raw/zstd source FUSE cases pass; original private-module fixture build failure
@@ -1793,7 +1793,7 @@ At that review, source set/hashes and both binary hashes matched the October 3
 final gate; its 32 checks and real source/100/1,000-file evidence retain their
 original scope. Current owned mounts/daemons/containers/volumes and D-state
 tasks are absent. Readiness review did not change Rust code or rerun unchanged
-benchmarks. Evidence: `packed-v3-readiness-20261004/` in the artifacts directory.
+benchmarks. Evidence: `packed-readiness-20261004/` in the artifacts directory.
 
 The experiment design remains a candidate draft. Continue source/root/blocks/
 large, shared read budgets/observation, packed binding/fallback/fence and atomic
@@ -1805,7 +1805,7 @@ claim these missing implementations were completed. No commit/push/cloud action.
 
 The user's follow-up goal is code completion against the audited gaps, followed
 by bounded real validation. Current evidence and exact scope:
-`doc/performance/packed-v3-source-validation-2026-10-03.md`.
+`doc/performance/packed-source-validation-2026-10-03.md`.
 This section supersedes the immediate G01/source next steps in the audit below.
 
 - G01 implemented: 005-only GM07 encode/decode and IL05 hot-attribute validation,
@@ -1829,7 +1829,7 @@ This section supersedes the immediate G01/source next steps in the audit below.
   zero, successful page-cache drop, normal cleanup. Debug/zstd/compressible
   correctness only; metadata discovery/preflight is not metadata-cold evidence.
 
-Artifacts: `packed-v3-completion-20261003-source/` (inside the existing artifacts
+Artifacts: `packed-completion-20261003-source/` (inside the existing artifacts
 directory), final code gate in `final-gate/`, source evidence in `after-raw-fix/`;
 RustFS runs `packed-local-20261003T152607Z-2074323/` and
 `packed-local-20261003T152723Z-2075249/`. `final-evidence.py` matches current source
@@ -1837,7 +1837,7 @@ and binary hashes to runs and checks no remaining owned mounts/daemons/test
 containers/volumes or D-state tasks. No cloud resources or commit/push.
 
 HEAD still `a429b0e1bc1c158af06ecf738e552062123d6e00`; this batch changes 10 existing
-source files and adds `wire005/source_file.rs` relative to its initial hash checkpoint.
+source files and adds `snapshot/source_file.rs` relative to its initial hash checkpoint.
 Existing dependency/CI/vendor/runner edits are preserved. Do not reset or infer
 tested code from HEAD alone. Final gate result/counts are recorded in the source
 checkpoint; minimum gate does not claim all-feature/operator/`-D warnings` CI.
@@ -1853,7 +1853,7 @@ The initial user goal was to reconcile implementation with SPEC, then design
 experiments around packed metadata, dynamic blocks and overlay workspace.
 Deliverables:
 
-- `doc/superpowers/plans/2026-10-03-packed-v3-spec-gap-audit.md`: verified current
+- `doc/superpowers/plans/2026-10-03-packed-spec-gap-audit.md`: verified current
   checkpoint, 17 remaining gates G01–G17, code paths, dependencies and exits.
 - `doc/superpowers/plans/2026-10-03-brewfs-three-innovations-experiment-plan.md`:
   same-executor metadata × frame controls, inline/codec/cache nested controls,
@@ -1867,7 +1867,7 @@ captured in artifacts and removed from source with a targeted patch; initial
 hash comparison confirmed restoration. No reset, cleanup of user files,
 commit/push, cloud resource creation or new performance acceptance occurred.
 
-New diagnostic `packed-v3-takeover-20261003/gm07-red.log`: 3 passed/2 failed.
+New diagnostic `packed-takeover-20261003/gm07-red.log`: 3 passed/2 failed.
 GM07 encode accepted kind=0 and inode=0; other flags/identity/non-file-placement
 checks need their own red/green proof. Decoder rejection is not proven by the
 fail-fast run. Proposed regressions are retained as an artifact, not failing
@@ -1875,7 +1875,7 @@ tests left in the source tree. G01 was open at this checkpoint; fix with 005-onl
 preserving legacy 004 and rerun the full accepted-code gate.
 
 Current audit checks in
-`docker/compose-xfstests/artifacts/packed-v3-takeover-20261003/`: fmt, existing
+`docker/compose-xfstests/artifacts/packed-takeover-20261003/`: fmt, existing
 packed suite (105 passed), scanner, partial scanner, local runner, mocked cloud
 campaign unit checks and diff check passed. This is a focused audit check, not
 a new full workspace/CI gate. Latest inherited full gate remains the
@@ -1898,9 +1898,9 @@ remain in the worktree. Historical sections below describe the older 004
 baseline. Do not infer newer implementation status from their pending lists.
 Keep `.claude/`, generated artifacts and credentials out of staging.
 
-Latest evidence: `doc/performance/packed-v3-cold-hardlink-validation-2026-10-03.md`;
+Latest evidence: `doc/performance/packed-cold-hardlink-validation-2026-10-03.md`;
 wire/producer/mount history:
-`doc/performance/packed-v3-completion-correctness-2026-10-02.md`.
+`doc/performance/packed-completion-correctness-2026-10-02.md`.
 
 Implemented and exercised:
 
@@ -1921,7 +1921,7 @@ Implemented and exercised:
   and lockfiles are ignored locally, main Cargo.lock records the path dependency.
 
 Newest completed full gate:
-`docker/compose-xfstests/artifacts/packed-v3-completion-20261003-cold-hardlink-gate/`.
+`docker/compose-xfstests/artifacts/packed-completion-20261003-cold-hardlink-gate/`.
 Workspace lib 1,015 passed/225 ignored; brewfs bin 1,099 passed/225 ignored;
 packed 105, reader 12, overlay 262 passed/2 ignored. Vendor 13 tests and all
 three runtime checks pass. fmt/scripts/check/build/BrewFS runtimes/clippy/diff
@@ -1977,7 +1977,7 @@ Important commits already on the baseline:
 ## Existing performance observations
 
 The final historical cloud summary is
-`doc/performance/aliyun-packed-v3-vs-juicefs-triple-1m-2026-10-01.md`.
+`doc/performance/aliyun-packed-vs-juicefs-triple-1m-2026-10-01.md`.
 
 - Ordered 1M stat: packed 4,595.13 files/s, Redis 6,089.22, TiKV 2,186.64.
   Packed stat is about 2.10x TiKV, but tree is slower and full read is only
@@ -2017,7 +2017,7 @@ baseline and candidate. No successful paired throughput result exists.
 
 The production candidate and its temporary allocation tests were removed with a
 targeted patch. Original production budget allocation is restored. Full details:
-`doc/performance/packed-v3-index-budget-candidate-2026-10-02.md`.
+`doc/performance/packed-index-budget-candidate-2026-10-02.md`.
 
 Preserved local evidence:
 
@@ -2080,7 +2080,7 @@ minimum-gate completion is not a claim those independent jobs passed.
 - fmt/diff check, required shell syntax/report tests and shared scanner tests:
   passed. The TTL regression reproduces the old failure and passes the correction.
 - `cargo check --workspace` and `cargo build --workspace`: passed.
-- tokio/io-uring runtime checks, with and without `workspace-overlay`: passed.
+- tokio/io-uring runtime checks, with and without `workspace`: passed.
 - packed feature suite: 66 passed, 0 failed, including the mixed size/profile
   corpus. Full workspace lib/bins gate: 1097 passed, 225 ignored, 0 failed.
 - `cargo clippy --workspace`: exit 0 with pre-existing warnings. No assertion is
@@ -2125,7 +2125,7 @@ correctness/feature gates without a new performance-win claim.
 
 The active tree retains the G10 bounded-open v3 candidate and catalog-backed
 binding attach. The old existing-API successor was reversed; the current
-`src/workspace_overlay/stores/kv_store.rs` hash is
+`src/workspace/stores/kv_store.rs` hash is
 `1e551e6fb22294c60a752e1a8137470c29ada3afe4141c1beb87b9b1717afbbc` after
 the retained G13 PWB3 native-root GC protection. Do not restore the older
 `70f98eaa...` candidate, which predates that protection.
@@ -2139,7 +2139,7 @@ success, stale/pre-commit or CAS failure, and SQLite reopen; the publication
 filter is 13 passed/0 failed.
 
 Evidence:
-`doc/performance/packed-v3-g12-publication-validation-2026-10-06.md`.
+`doc/performance/packed-g12-publication-validation-2026-10-06.md`.
 
 This does not close full G12 seal/dependency/journal recovery, G13 packed
 object graph GC, G14 runtime operator lifecycle, or the S/X acceptance gates.
@@ -2150,7 +2150,7 @@ body dropped before EOF is recorded as HttpStatus failure with received bytes,
 while a dropped 2xx body remains cancellation. The focused test passed 1/1;
 full request-graph attribution, retry coverage, raw/decoded accounting and
 real FUSE evidence remain open. Evidence:
-doc/performance/packed-v3-g06-http-status-terminal-validation-2026-10-06.md.
+doc/performance/packed-g06-http-status-terminal-validation-2026-10-06.md.
 
 
 G09 now has a focused V3 coordinator shutdown/pipeline checkpoint: 15
@@ -2158,7 +2158,7 @@ coordinator tests passed, including same-frame one-fetch/profile coverage,
 waiter cancellation, slow-consumer backpressure, resumed shutdown join, and
 retained provider JoinError. This remains a sub-contract; complete production
 FUSE coverage and G08 native/packed convergence are open. Evidence:
-doc/performance/packed-v3-g09-pipeline-shutdown-validation-2026-10-06.md.
+doc/performance/packed-g09-pipeline-shutdown-validation-2026-10-06.md.
 
 
 G07 also has a narrow V3 budget shutdown checkpoint: the real
@@ -2166,7 +2166,7 @@ admit_when_available path wakes on close, returns without a partial Stored
 charge, and retains the pre-existing Raw owner until final drop. One focused
 case passed. Native/004 budgets, full queue/cache/decoder/output lifecycle,
 real FUSE shutdown and RSS evidence remain open. Evidence:
-doc/performance/packed-v3-g07-budget-shutdown-validation-2026-10-06.md.
+doc/performance/packed-g07-budget-shutdown-validation-2026-10-06.md.
 
 
 G08 same-snapshot validation also passed: native placement and packed metadata
@@ -2174,13 +2174,13 @@ produced/consumed the same unified plan with byte equality, and the real
 filesystem adapter path passed minimum-root admission/release. The four-way
 matrix, complete FUSE lifecycle, external backends and S/X acceptance remain
 open. Evidence:
-doc/performance/packed-v3-g08-unified-executor-validation-2026-10-06.md.
+doc/performance/packed-g08-unified-executor-validation-2026-10-06.md.
 
 ## 2026-10-07 continuation: V3 naming and real metadata backends
 
-The product remains packed-v3. Wire number 005 is an encoding identifier,
+The product remains packed. Wire number 005 is an encoding identifier,
 not a separate product version. The current module is
-`src/workspace_overlay/packed_v3/wire005.rs` and its `wire005/` directory;
+`src/workspace/packed/snapshot.rs` and its `snapshot/` directory;
 public Rust types/APIs, budget environment variables and metric prefixes use
 V3/v3. There is no compatibility alias for the former module/type names.
 The rename preserves wire magic, object layout and frozen inode hash-domain
@@ -2221,7 +2221,7 @@ or infer failure solely from a lost response.
 ## 2026-10-08 testing closeout continuation
 
 Continue in `/home/hxy/brewfs` on the existing branch and preserve the inherited
-dirty tree. Packed-v3 is the only packed product format; do not introduce a
+dirty tree. Packed is the only packed product format; do not introduce a
 new version or restore older packed compatibility. Redis/TiKV metadata and
 RustFS objects remain the test targets.
 
@@ -2232,7 +2232,7 @@ Clippy passed on the current source in `operator-closeout-style12`. The prior
 stores08 result was 361 passed / 8 failed; its fixture/proof repairs require a
 new run. Independent operator, full CI and actual backend/FUSE gates remain
 separate acceptance exits. Current evidence and limits are recorded in
-`doc/performance/packed-v3-metadata-followup-validation-2026-10-08.md`.
+`doc/performance/packed-metadata-followup-validation-2026-10-08.md`.
 
 Do not declare all SPEC complete: large CONTROL/scoped native finalization
 still needs implementation, and Kubernetes lifecycle/leader-loss/GC E2E has
@@ -2254,7 +2254,7 @@ records the refused 4,194,856-byte input allocation with ENOMEM and subsequent
 successful WRITE. Its 797 shared inputs match stores15; service/credential
 cleanup passed without forced FUSE abort. Diagnostic04 remains failed and its
 later exact sudo unmount/independent cleanup receipts are preserved separately.
-See `doc/performance/packed-v3-metadata-followup-validation-2026-10-08.md`.
+See `doc/performance/packed-metadata-followup-validation-2026-10-08.md`.
 
 The fresh full RustFS lifecycle run03 passed 22/0 as 18 + 2 + 2, with 22 actual
 RustFS markers, unchanged phase inputs and successful service/credential

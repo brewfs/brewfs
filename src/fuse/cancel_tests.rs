@@ -4,13 +4,13 @@ use crate::cadapter::client::{ObjectBackend, ObjectByteStream, ObjectClient};
 use crate::cadapter::localfs::LocalFsBackend;
 use crate::cadapter::read_observer::{Engine, Ledger, Origin, Phase, ReadClass, ReadObserver};
 use crate::vfs::config::VFSConfig;
-use crate::workspace_overlay::packed_v3::wire005::{
-    AuthenticatedV3Snapshot, V3BudgetLimits, V3BudgetPool, V3MountBudget, V3ProducerOptions,
-    V3SourceConsistency, V3SourceFileLimits, V3SourceHardlinkPolicy, V3SourceNamespaceInventory,
-    V3SourceNamespaceOptions,
+use crate::workspace::packed::snapshot::{
+    AuthenticatedSnapshot, SnapshotBudgetLimits, SnapshotBudgetPool, SnapshotMountBudget,
+    SnapshotProducerOptions, SnapshotSourceConsistency, SnapshotSourceFileLimits,
+    SnapshotSourceHardlinkPolicy, SnapshotSourceNamespaceInventory, SnapshotSourceNamespaceOptions,
 };
-use crate::workspace_overlay::packed_v3::{
-    AccessProfile, PackedCodec, PackedV3BlockStore, PackedV3ReadonlyMeta, SizeClassTable,
+use crate::workspace::packed::{
+    AccessProfile, PackedBlockStore, PackedCodec, PackedReadonlyMeta, SizeClassTable,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -136,13 +136,13 @@ impl ObjectBackend for PausedBackend {
         self.inner.delete_object(key).await
     }
 }
-type TestVfs = VFS<PackedV3BlockStore<PausedBackend>, PackedV3ReadonlyMeta<PausedBackend>>;
+type TestVfs = VFS<PackedBlockStore<PausedBackend>, PackedReadonlyMeta<PausedBackend>>;
 struct Fixture {
     fs: TestVfs,
     ino: u64,
     gate: Arc<Gate>,
     observer: Arc<ReadObserver>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     _source: tempfile::TempDir,
     _spool: tempfile::TempDir,
     _objects: tempfile::TempDir,
@@ -156,7 +156,7 @@ fn request(unique: u64) -> Request {
     }
 }
 async fn fixture() -> Fixture {
-    fixture_with_budget(V3MountBudget::defaults()).await
+    fixture_with_budget(SnapshotMountBudget::defaults()).await
 }
 
 #[tokio::test]
@@ -170,14 +170,14 @@ async fn readonly_preparation_concrete_future_fits_fixed_roots_reservation() {
     assert!(fs_future_bytes + 32 <= 512 - 304 - 32);
     prepare.await.expect("readonly preparation failed");
 }
-async fn fixture_with_budget(budget: Arc<V3MountBudget>) -> Fixture {
+async fn fixture_with_budget(budget: Arc<SnapshotMountBudget>) -> Fixture {
     fixture_with_source_files(budget, &[("payload", 512 * 1024, 0x75)]).await
 }
-fn constrained_plans_budget() -> Arc<V3MountBudget> {
+fn constrained_plans_budget() -> Arc<SnapshotMountBudget> {
     constrained_plans_budget_with_capacity(4 << 20)
 }
-fn constrained_plans_budget_with_capacity(plans_bytes: u64) -> Arc<V3MountBudget> {
-    let limits = V3BudgetLimits {
+fn constrained_plans_budget_with_capacity(plans_bytes: u64) -> Arc<SnapshotMountBudget> {
+    let limits = SnapshotBudgetLimits {
         bytes: [
             16 << 20,
             64 << 20,
@@ -188,14 +188,14 @@ fn constrained_plans_budget_with_capacity(plans_bytes: u64) -> Arc<V3MountBudget
             8 << 20,
             32 << 20,
         ],
-        ..V3BudgetLimits::default()
+        ..SnapshotBudgetLimits::default()
     };
-    let budget = V3MountBudget::new(limits).unwrap();
+    let budget = SnapshotMountBudget::new(limits).unwrap();
     budget.validate_frame_capability(8 << 20).unwrap();
     budget
 }
 async fn fixture_with_source_files(
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     files: &[(&str, usize, u8)],
 ) -> Fixture {
     let source = tempfile::tempdir().unwrap();
@@ -209,14 +209,14 @@ async fn fixture_with_source_files(
         inner: LocalFsBackend::new(objects.path()),
         gate: gate.clone(),
     });
-    let inventory = V3SourceNamespaceInventory::capture(
+    let inventory = SnapshotSourceNamespaceInventory::capture(
         source.path(),
         spool.path(),
-        V3SourceNamespaceOptions {
+        SnapshotSourceNamespaceOptions {
             root_inode: 1,
-            consistency: V3SourceConsistency::BestEffortDetected,
-            hardlink_policy: V3SourceHardlinkPolicy::VisibleLinks,
-            file_limits: V3SourceFileLimits::default(),
+            consistency: SnapshotSourceConsistency::BestEffortDetected,
+            hardlink_policy: SnapshotSourceHardlinkPolicy::VisibleLinks,
+            file_limits: SnapshotSourceFileLimits::default(),
         },
     )
     .await
@@ -225,7 +225,7 @@ async fn fixture_with_source_files(
         .build_snapshot(
             client.clone(),
             "cancel-read".into(),
-            V3ProducerOptions {
+            SnapshotProducerOptions {
                 snapshot_id: [1; 32],
                 root_dir_key: [2; 32],
                 root_inode: 1,
@@ -242,19 +242,19 @@ async fn fixture_with_source_files(
         )
         .await
         .unwrap();
-    let snapshot = AuthenticatedV3Snapshot::open(&client, &built.reference)
+    let snapshot = AuthenticatedSnapshot::open(&client, &built.reference)
         .await
         .unwrap();
     let layout = crate::chunk::ChunkLayout::default();
     let observer = Arc::new(ReadObserver::with_mount_budget(&budget).unwrap());
     let client = client.with_read_observer(
         observer.clone(),
-        Engine::PackedV3,
+        Engine::Packed,
         Phase::Runtime,
         Origin::Demand,
     );
     let meta = Arc::new(
-        PackedV3ReadonlyMeta::from_v3_budget(
+        PackedReadonlyMeta::from_snapshot_budget(
             client,
             snapshot,
             layout.chunk_size,
@@ -312,7 +312,7 @@ fn assert_cancelled_read(observer: &ReadObserver) {
 
 #[tokio::test]
 async fn packed_prepare_admission_returns_enomem_and_next_read_recovers() {
-    use crate::workspace_overlay::packed_v3::wire005::V3BudgetPool;
+    use crate::workspace::packed::snapshot::SnapshotBudgetPool;
     let f = fixture_with_budget(constrained_plans_budget()).await;
     let opened = Filesystem::open(&f.fs, request(81), f.ino, libc::O_RDONLY as u32)
         .await
@@ -320,7 +320,10 @@ async fn packed_prepare_admission_returns_enomem_and_next_read_recovers() {
     let baseline = f.budget.state().used;
     let held = f
         .budget
-        .admit(&[(V3BudgetPool::Plans, f.budget.capacity(V3BudgetPool::Plans))])
+        .admit(&[(
+            SnapshotBudgetPool::Plans,
+            f.budget.capacity(SnapshotBudgetPool::Plans),
+        )])
         .unwrap();
     let rejected = Filesystem::read(&f.fs, request(82), f.ino, opened.fh, 0, 8192).await;
     assert_eq!(rejected.err(), Some(Errno::from(libc::ENOMEM)));
@@ -500,7 +503,7 @@ async fn packed_outer_read_task_drop_removes_unique_and_schedules_temporary_clos
 #[tokio::test]
 async fn packed_destroy_waits_for_pending_unique_owners_and_temporary_handles() {
     let f = fixture_with_source_files(
-        V3MountBudget::defaults(),
+        SnapshotMountBudget::defaults(),
         &[
             ("payload", 512 * 1024, 0x75),
             ("payload-large", 2 * 1024 * 1024, 0x76),
@@ -518,7 +521,7 @@ async fn packed_destroy_waits_for_pending_unique_owners_and_temporary_handles() 
     assert_eq!(first.attr.size, 512 * 1024);
     assert_eq!(second.attr.size, 2 * 1024 * 1024);
     let layout = |size| {
-        crate::workspace_overlay::packed_v3::choose_frame_layout(
+        crate::workspace::packed::choose_frame_layout(
             size,
             None,
             AccessProfile::RandomSmallFile,
@@ -588,7 +591,10 @@ async fn packed_destroy_waits_for_pending_unique_owners_and_temporary_handles() 
             Some(Errno::from(libc::EIO))
         );
     }
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
     assert_cancelled_read(&f.observer);
 }
 
@@ -627,15 +633,18 @@ async fn g06_existing_api_destroy_retires_actual_pending_read_and_temporary_hand
             .err(),
         Some(Errno::from(libc::EIO))
     );
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
     assert_cancelled_read(&f.observer);
 }
 
 #[tokio::test]
 async fn packed_minimum_control_admits_handle_real_request_charge_and_read() {
-    let mut limits = V3BudgetLimits::default();
-    limits.bytes[V3BudgetPool::Control as usize] = 32768;
-    let f = fixture_with_budget(V3MountBudget::new(limits).unwrap()).await;
+    let mut limits = SnapshotBudgetLimits::default();
+    limits.bytes[SnapshotBudgetPool::Control as usize] = 32768;
+    let f = fixture_with_budget(SnapshotMountBudget::new(limits).unwrap()).await;
     let opened = Filesystem::open(&f.fs, request(91), f.ino, libc::O_RDONLY as u32)
         .await
         .unwrap();
@@ -646,11 +655,14 @@ async fn packed_minimum_control_admits_handle_real_request_charge_and_read() {
         .await
         .expect("minimum admitted profile cannot serve its first valid read");
     assert_eq!(reply.data.as_ref(), &[0x75; 8192]);
-    assert!(f.budget.state().peak[V3BudgetPool::Control as usize] <= 32768);
+    assert!(f.budget.state().peak[SnapshotBudgetPool::Control as usize] <= 32768);
     drop(reply);
     drop(request_owner);
     f.fs.close(opened.fh).await.unwrap();
-    assert_eq!(f.budget.state().used[V3BudgetPool::Control as usize], 0);
+    assert_eq!(
+        f.budget.state().used[SnapshotBudgetPool::Control as usize],
+        0
+    );
 }
 
 #[path = "cancel_tests/minimum_roots_inline_hooks_existing_api_tests.rs"]

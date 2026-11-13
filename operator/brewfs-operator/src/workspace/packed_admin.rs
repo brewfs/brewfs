@@ -1,4 +1,4 @@
-//! Actual Redis/TiKV packed-v3 consumer used by the operator.
+//! Actual Redis/TiKV packed consumer used by the operator.
 use super::super::crd::WorkspaceCatalogBackend;
 use super::*;
 use crate::crd::BrewFSCluster;
@@ -7,21 +7,21 @@ use brewfs::cadapter::s3::{S3Backend, S3Config};
 use brewfs::chunk::cache::ChunksCacheConfig;
 use brewfs::chunk::store::BlockStoreConfig;
 use brewfs::chunk::{ChunkLayout, Compression, ObjectBlockStore};
-use brewfs::workspace_overlay::ids::{JournalId, LeaseId};
-use brewfs::workspace_overlay::packed_admin::{
+use brewfs::workspace::ids::{JournalId, LeaseId};
+use brewfs::workspace::packed_admin::{
     PackedCleanAdmission, PackedHeadlessSnapshotDescription, PackedHeadlessSnapshotRequest,
     PackedPublishedViewReport, PackedRecoveredMountReport, PackedReleasedMountReference,
 };
-use brewfs::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use brewfs::workspace_overlay::publish::binding::PackedLowerBindingRecord;
-use brewfs::workspace_overlay::stores::kv_backend::WorkspaceKvBackend;
-use brewfs::workspace_overlay::stores::redis::RedisWorkspaceBackend;
-use brewfs::workspace_overlay::stores::tikv::TiKvWorkspaceBackend;
+use brewfs::workspace::packed::snapshot::SnapshotMountBudget;
+use brewfs::workspace::publish::binding::PackedLowerBindingRecord;
+use brewfs::workspace::stores::kv_backend::WorkspaceKvBackend;
+use brewfs::workspace::stores::redis::RedisWorkspaceBackend;
+use brewfs::workspace::stores::tikv::TiKvWorkspaceBackend;
 use kube::ResourceExt;
 
 type PackedStoreFactory<B> = Arc<
     dyn Fn(
-            Arc<V3MountBudget>,
+            Arc<SnapshotMountBudget>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = anyhow::Result<KvWorkspaceStore<B>>> + Send>,
         > + Send
@@ -30,7 +30,7 @@ type PackedStoreFactory<B> = Arc<
 
 struct PackedStoreWorkspaceAdmin<B: WorkspaceKvBackend> {
     native: StoreWorkspaceAdmin<KvWorkspaceStore<B>>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     publisher_store_factory: PackedStoreFactory<B>,
     object_config: S3Config,
     object_access_key: String,
@@ -41,7 +41,7 @@ struct PackedStoreWorkspaceAdmin<B: WorkspaceKvBackend> {
 impl<B: WorkspaceKvBackend> PackedStoreWorkspaceAdmin<B> {
     fn new(
         store: KvWorkspaceStore<B>,
-        budget: Arc<V3MountBudget>,
+        budget: Arc<SnapshotMountBudget>,
         cluster: &BrewFSCluster,
         namespace: &str,
         lease_ttl_seconds: u32,
@@ -76,15 +76,15 @@ impl<B: WorkspaceKvBackend> PackedStoreWorkspaceAdmin<B> {
     }
     async fn fresh_publication_scope(
         &self,
-    ) -> anyhow::Result<(Arc<KvWorkspaceStore<B>>, Arc<V3MountBudget>)> {
-        let budget = V3MountBudget::from_env()?;
+    ) -> anyhow::Result<(Arc<KvWorkspaceStore<B>>, Arc<SnapshotMountBudget>)> {
+        let budget = SnapshotMountBudget::from_env()?;
         let store = (self.publisher_store_factory)(budget.clone()).await?;
         Ok((Arc::new(store), budget))
     }
 
     async fn object_client(
         &self,
-        budget: &Arc<V3MountBudget>,
+        budget: &Arc<SnapshotMountBudget>,
     ) -> anyhow::Result<ObjectClient<S3Backend>> {
         let client = ObjectClient::new(
             S3Backend::with_static_credentials(
@@ -99,7 +99,7 @@ impl<B: WorkspaceKvBackend> PackedStoreWorkspaceAdmin<B> {
             .map_err(|error| anyhow!(error.to_string()))?;
         Ok(client.with_read_observer(
             observer,
-            brewfs::cadapter::read_observer::Engine::PackedV3,
+            brewfs::cadapter::read_observer::Engine::Packed,
             brewfs::cadapter::read_observer::Phase::Startup,
             brewfs::cadapter::read_observer::Origin::Demand,
         ))
@@ -153,7 +153,7 @@ impl<B: WorkspaceKvBackend> PackedStoreWorkspaceAdmin<B> {
         };
         let client = self.object_client(&budget).await?;
         let scratch =
-            Arc::new(tempfile::tempdir().context("create bounded packed-v3 operator scratch")?);
+            Arc::new(tempfile::tempdir().context("create bounded packed operator scratch")?);
         let upper = Arc::new(
             ObjectBlockStore::new_with_configs_async(
                 client.clone(),
@@ -224,7 +224,7 @@ impl<B: WorkspaceKvBackend> PackedStoreWorkspaceAdmin<B> {
                 snapshot_id: result.snapshot_id,
                 revision: result.packed_carrier_revision,
             }),
-            Err(failure) => Err(anyhow!("packed-v3 publication failed: {}", failure.error())),
+            Err(failure) => Err(anyhow!("packed publication failed: {}", failure.error())),
         }
     }
 }
@@ -252,7 +252,7 @@ pub async fn connect_workspace_admin_for_cluster(
         .await?,
     );
     let namespace = catalog_namespace(&cluster.name_any(), kubernetes_namespace, spec);
-    let budget = V3MountBudget::from_env()?;
+    let budget = SnapshotMountBudget::from_env()?;
     match spec.catalog_backend {
         WorkspaceCatalogBackend::Redis => {
             let port = u16::try_from(cluster.spec.redis.port)
@@ -275,7 +275,7 @@ pub async fn connect_workspace_admin_for_cluster(
                         let backend = credentials
                             .connect_redis(&host, port, &namespace)
                             .await
-                            .context("connect Redis packed-v3 publication scope")?;
+                            .context("connect Redis packed publication scope")?;
                         Ok(KvWorkspaceStore::new(backend).with_packed_reader_pin_budget(budget))
                     })
                 });
@@ -304,7 +304,7 @@ pub async fn connect_workspace_admin_for_cluster(
                         let backend = credentials
                             .connect_tikv(endpoints, &namespace, budget.clone())
                             .await
-                            .context("connect TiKV packed-v3 publication scope")?;
+                            .context("connect TiKV packed publication scope")?;
                         Ok(KvWorkspaceStore::new(backend).with_packed_reader_pin_budget(budget))
                     })
                 });
@@ -325,7 +325,7 @@ pub async fn connect_workspace_admin_for_cluster(
 impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
     async fn packed_gc_admin(
         self: Arc<Self>,
-    ) -> anyhow::Result<Arc<dyn brewfs::workspace_overlay::packed_admin::PackedGcAdmin>> {
+    ) -> anyhow::Result<Arc<dyn brewfs::workspace::packed_admin::PackedGcAdmin>> {
         // Consume the already authenticated facade scope. A second connection
         // would leave its original SDK workers outside the returned GC owner.
         let store = self.native.store.clone();
@@ -368,7 +368,7 @@ impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
         };
         let client = self.object_client(&budget).await?;
         let scratch =
-            Arc::new(tempfile::tempdir().context("create bounded packed-v3 root scratch")?);
+            Arc::new(tempfile::tempdir().context("create bounded packed root scratch")?);
         let upper = Arc::new(
             ObjectBlockStore::new_with_configs_async(
                 client.clone(),
@@ -405,7 +405,7 @@ impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
         let result = store
             .bootstrap_initial_packed_snapshot(volume, client, upper, self.layout, request)
             .await
-            .map_err(|failure| anyhow!("packed-v3 root bootstrap failed: {}", failure.error()))?;
+            .map_err(|failure| anyhow!("packed root bootstrap failed: {}", failure.error()))?;
         // The actual publisher has drained and closed its canonical scope.
         // This result is a report; future operations connect a fresh scope and
         // still acquire native/persisted-reader authority from Redis/TiKV.
@@ -614,7 +614,7 @@ impl<B: WorkspaceKvBackend> WorkspaceAdmin for PackedStoreWorkspaceAdmin<B> {
             .store
             .inspect_packed_workspace_view(id)
             .await?
-            .ok_or_else(|| anyhow!("packed-v3 workspace binding is missing"))?;
+            .ok_or_else(|| anyhow!("packed workspace binding is missing"))?;
         Ok(WorkspaceView {
             record: view.workspace,
             base_revision: view.base_revision,

@@ -515,12 +515,12 @@ where
                 #[cfg(test)]
                 {
                     eprintln!(
-                        "[packed-v3-native-kernel-read-diag] stage=paths-forward inode={ino} error={_error:?}"
+                        "[packed-native-kernel-read-diag] stage=paths-forward inode={ino} error={_error:?}"
                     );
                     let mut cause = std::error::Error::source(_error);
                     while let Some(error) = cause {
                         eprintln!(
-                            "[packed-v3-native-kernel-read-diag] stage=paths-forward-cause inode={ino} error={error}"
+                            "[packed-native-kernel-read-diag] stage=paths-forward-cause inode={ino} error={error}"
                         );
                         cause = error.source();
                     }

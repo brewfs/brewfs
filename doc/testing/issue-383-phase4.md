@@ -226,11 +226,11 @@ frame counts 7, 90 and 354, respectively. Both nonempty files have partial
 tail frames; the 64 KiB arm also exercises external extent placement.
 
 ```bash
-cargo build --release --features workspace-overlay \
-  --bin brewfs --bin packed_v3_snapshot_fixture
+cargo build --release --features workspace \
+  --bin brewfs --bin packed_snapshot_fixture
 python3 tools/testing/packed_frame_default_compat.py \
-  --fixture target/release/packed_v3_snapshot_fixture \
-  --legacy-fixture /path/to/pre-change/packed_v3_snapshot_fixture \
+  --fixture target/release/packed_snapshot_fixture \
+  --legacy-fixture /path/to/pre-change/packed_snapshot_fixture \
   --reader target/release/brewfs \
   --artifact /tmp/packed-default-compat-new-directory
 ```

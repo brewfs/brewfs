@@ -1,4 +1,4 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use asyncfuse::SetAttr;
 use asyncfuse::raw::{Filesystem, Request};
@@ -6,11 +6,11 @@ use brewfs::chunk::{ChunkLayout, store::InMemoryBlockStore};
 use brewfs::config::{Cli, Command, MountConfig};
 use brewfs::meta::MetaLayer;
 use brewfs::vfs::fs::VFS;
-use brewfs::workspace_overlay::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
-use brewfs::workspace_overlay::ids::{LayerId, LeaseId, WorkspaceId};
-use brewfs::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-use brewfs::workspace_overlay::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
-use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use brewfs::workspace::catalog::{AcquireLease, CreateVolumeRoot, WorkspaceStore};
+use brewfs::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use brewfs::workspace::meta_layer::WorkspaceMetaLayer;
+use brewfs::workspace::model::{ViewContext, WORKSPACE_SCHEMA_VERSION};
+use brewfs::workspace::stores::database::SqliteWorkspaceStore;
 use clap::Parser;
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -44,7 +44,7 @@ fn ttl_mount_config(volume_format: &str, extra_args: &[&str]) -> MountConfig {
         "--volume-format",
         volume_format,
     ];
-    if volume_format != "flat-v1" {
+    if volume_format != "flat" {
         args.extend(["--workspace", "00000000-0000-0000-0000-000000000100"]);
     }
     args.extend_from_slice(extra_args);
@@ -59,7 +59,7 @@ fn workspace_cache_ttl_environment_zero() {
     if !cache_ttl_test_process("workspace_cache_ttl_environment_zero", Some("0")) {
         return;
     }
-    assert_eq!(ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms, 0);
+    assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 0);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn workspace_cache_ttl_environment_positive() {
     if !cache_ttl_test_process("workspace_cache_ttl_environment_positive", Some("500")) {
         return;
     }
-    assert_eq!(ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms, 500);
+    assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 500);
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn workspace_cache_ttl_cli_overrides_environment() {
         return;
     }
     assert_eq!(
-        ttl_mount_config("workspace-v1", &["--fuse-cache-ttl-ms", "300"]).fuse_cache_ttl_ms,
+        ttl_mount_config("workspace", &["--fuse-cache-ttl-ms", "300"]).fuse_cache_ttl_ms,
         300
     );
 }
@@ -86,13 +86,10 @@ fn cache_ttl_unconfigured_defaults_are_unchanged() {
     if !cache_ttl_test_process("cache_ttl_unconfigured_defaults_are_unchanged", None) {
         return;
     }
+    assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 1_000);
+    assert_eq!(ttl_mount_config("flat", &[]).fuse_cache_ttl_ms, 0);
     assert_eq!(
-        ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms,
-        1_000
-    );
-    assert_eq!(ttl_mount_config("flat-v1", &[]).fuse_cache_ttl_ms, 0);
-    assert_eq!(
-        ttl_mount_config("workspace-entity-v1", &[]).fuse_cache_ttl_ms,
+        ttl_mount_config("entity-workspace", &[]).fuse_cache_ttl_ms,
         0
     );
 }
@@ -105,7 +102,7 @@ fn cache_ttl_explicit_yaml_overrides_environment() {
     let file = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(file.path(), "fuse:\n  cache_ttl_ms: 200\n").unwrap();
     let path = file.path().to_str().unwrap();
-    for format in ["workspace-v1", "flat-v1"] {
+    for format in ["workspace", "flat"] {
         assert_eq!(
             ttl_mount_config(format, &["--config", path]).fuse_cache_ttl_ms,
             200
@@ -126,11 +123,8 @@ fn cache_ttl_invalid_environment_preserves_defaults() {
     ) {
         return;
     }
-    assert_eq!(
-        ttl_mount_config("workspace-v1", &[]).fuse_cache_ttl_ms,
-        1_000
-    );
-    assert_eq!(ttl_mount_config("flat-v1", &[]).fuse_cache_ttl_ms, 0);
+    assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 1_000);
+    assert_eq!(ttl_mount_config("flat", &[]).fuse_cache_ttl_ms, 0);
 }
 
 #[tokio::test]
@@ -141,7 +135,7 @@ async fn strict_environment_zero_returns_zero_lookup_and_getattr_ttl() {
     ) {
         return;
     }
-    let config = ttl_mount_config("workspace-v1", &[]);
+    let config = ttl_mount_config("workspace", &[]);
     let meta = Arc::new(test_meta().await);
     let root = meta.root_ino() as u64;
     meta.create_file(root as i64, "strict".into())
@@ -171,7 +165,7 @@ async fn test_meta() -> WorkspaceMetaLayer<SqliteWorkspaceStore> {
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::from_u128(101),
             workspace_id,
@@ -210,7 +204,7 @@ fn new_ttl_test_vfs(
 
 #[tokio::test]
 async fn cache_fill_rejects_released_lease_but_default_reply_is_unchanged() {
-    use brewfs::workspace_overlay::catalog::ReleaseLease;
+    use brewfs::workspace::catalog::ReleaseLease;
     let meta = Arc::new(test_meta().await);
     let ino = meta
         .create_file(meta.root_ino(), "file".into())

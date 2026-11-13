@@ -54,7 +54,7 @@ class PackedLocalRunnerTests(unittest.TestCase):
         self.assertIn('packed_run_manifest.py" finalize', script)
         self.assertIn("--scanner-seed \"$SCANNER_SEED\"", script)
         self.assertIn("fixture_prefix=", script)
-        self.assertIn("manifest_schema=packed-v3-run-manifest-v1", script)
+        self.assertIn("manifest_schema=packed-run-manifest-v1", script)
         self.assertIn('"$ARTIFACT/toolchain.json"', script)
         self.assertIn('rustc", "-Vv"', script)
         self.assertIn('"git", "-C", str(root), "diff", "HEAD", "--binary"', script)

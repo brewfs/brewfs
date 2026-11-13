@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub(crate) struct Backend<B, M> {
     store: Arc<B>,
     meta: Arc<M>,
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     workspace_read_plan: Option<Arc<dyn crate::chunk::read_plan::WorkspaceReadPlanProvider>>,
 }
 
@@ -18,12 +18,12 @@ where
         Self {
             store,
             meta,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             workspace_read_plan: None,
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn new_workspace(
         store: Arc<B>,
         meta: Arc<M>,
@@ -52,7 +52,7 @@ where
         self.store.clone()
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn workspace_read_plan(
         &self,
     ) -> Option<&dyn crate::chunk::read_plan::WorkspaceReadPlanProvider> {

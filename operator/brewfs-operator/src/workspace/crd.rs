@@ -206,7 +206,7 @@ pub struct WorkspaceCapabilityStatus {
     #[serde(default = "default_workspace_volume_format")]
     pub volume_format: String,
     #[serde(default)]
-    pub packed_v3: PackedV3Capability,
+    pub packed: PackedCapability,
     #[serde(default)]
     pub packed_binding: PackedBindingStatus,
 }
@@ -215,25 +215,25 @@ impl WorkspaceCapabilityStatus {
     pub fn native_only() -> Self {
         Self {
             volume_format: default_workspace_volume_format(),
-            packed_v3: PackedV3Capability::Unsupported,
+            packed: PackedCapability::Unsupported,
             packed_binding: PackedBindingStatus::Unavailable,
         }
     }
 
-    pub fn packed_v3_ready(&self) -> bool {
-        self.packed_v3 == PackedV3Capability::Readonly
+    pub fn packed_ready(&self) -> bool {
+        self.packed == PackedCapability::Readonly
             && matches!(self.packed_binding, PackedBindingStatus::Present { .. })
     }
 
     /// Return the condition used by controllers before advertising a packed
     /// lower. Any unsupported, missing, or corrupt binding is fail-closed.
     pub fn packed_lower_condition(&self, observed_generation: Option<i64>) -> WorkspaceCondition {
-        if self.packed_v3_ready() {
+        if self.packed_ready() {
             WorkspaceCondition {
                 condition_type: "PackedLowerReady".into(),
                 status: "True".into(),
                 reason: "CapabilityAndBindingVerified".into(),
-                message: "readonly packed-v3 capability and PWB3 binding are available".into(),
+                message: "readonly packed capability and PWB3 binding are available".into(),
                 observed_generation,
                 last_transition_time: Utc::now(),
             }
@@ -241,19 +241,19 @@ impl WorkspaceCapabilityStatus {
             let (reason, message) = match &self.packed_binding {
                 PackedBindingStatus::Missing => (
                     "BindingMissing",
-                    "packed-v3 capability is not mountable because the PWB3 binding is missing",
+                    "packed capability is not mountable because the PWB3 binding is missing",
                 ),
                 PackedBindingStatus::Corrupt => (
                     "BindingCorrupt",
-                    "packed-v3 capability is not mountable because the PWB3 binding is corrupt",
+                    "packed capability is not mountable because the PWB3 binding is corrupt",
                 ),
                 PackedBindingStatus::Unavailable => (
                     "UnsupportedCapability",
-                    "packed-v3 workspace mounting is not supported by this catalog",
+                    "packed workspace mounting is not supported by this catalog",
                 ),
                 PackedBindingStatus::Present { .. } => (
                     "UnsupportedCapability",
-                    "PWB3 binding exists but the packed-v3 capability is not enabled",
+                    "PWB3 binding exists but the packed capability is not enabled",
                 ),
             };
             WorkspaceCondition {
@@ -276,7 +276,7 @@ impl Default for WorkspaceCapabilityStatus {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum PackedV3Capability {
+pub enum PackedCapability {
     #[default]
     Unsupported,
     Readonly,
@@ -738,7 +738,7 @@ fn validate_mount_path(path: &str) -> Result<(), String> {
 }
 
 fn default_workspace_volume_format() -> String {
-    "workspace-v1".into()
+    "workspace".into()
 }
 
 fn default_lease_ttl_seconds() -> u32 {
@@ -874,7 +874,7 @@ mod tests {
     fn packed_capability_status_is_fail_closed_without_binding() {
         let capability = WorkspaceCapabilityStatus::native_only();
         assert_eq!(WorkspaceCapabilityStatus::default(), capability);
-        assert!(!capability.packed_v3_ready());
+        assert!(!capability.packed_ready());
         let condition = capability.packed_lower_condition(Some(3));
         assert_eq!(condition.condition_type, "PackedLowerReady");
         assert_eq!(condition.status, "False");
@@ -882,25 +882,25 @@ mod tests {
         assert_eq!(condition.observed_generation, Some(3));
 
         let missing = WorkspaceCapabilityStatus {
-            packed_v3: PackedV3Capability::Readonly,
+            packed: PackedCapability::Readonly,
             packed_binding: PackedBindingStatus::Missing,
             ..capability.clone()
         };
-        assert!(!missing.packed_v3_ready());
+        assert!(!missing.packed_ready());
         assert_eq!(
             missing.packed_lower_condition(None).reason,
             "BindingMissing"
         );
 
         let present = WorkspaceCapabilityStatus {
-            packed_v3: PackedV3Capability::Readonly,
+            packed: PackedCapability::Readonly,
             packed_binding: PackedBindingStatus::Present {
                 version: 7,
                 manifest_digest: "00".repeat(32),
             },
             ..capability
         };
-        assert!(present.packed_v3_ready());
+        assert!(present.packed_ready());
         let condition = present.packed_lower_condition(Some(4));
         assert_eq!(condition.status, "True");
         assert_eq!(condition.reason, "CapabilityAndBindingVerified");

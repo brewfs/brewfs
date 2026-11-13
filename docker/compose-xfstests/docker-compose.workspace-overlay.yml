@@ -2,18 +2,18 @@ x-workspace-environment: &workspace-environment
   BREWFS_META_BACKEND: ${BREWFS_WORKSPACE_META_BACKEND:-redis}
   BREWFS_META_URL: ${BREWFS_WORKSPACE_META_URL:-redis://redis:6379/0}
   BREWFS_META_TIKV_PD_ENDPOINTS: ${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:-pd:2379}
-  BREWFS_META_TIKV_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace-overlay}
+  BREWFS_META_TIKV_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace}
   BREWFS_WORKSPACE_META_BACKEND: ${BREWFS_WORKSPACE_META_BACKEND:-redis}
   BREWFS_WORKSPACE_META_URL: ${BREWFS_WORKSPACE_META_URL:-redis://redis:6379/0}
   BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS: ${BREWFS_WORKSPACE_TIKV_PD_ENDPOINTS:-pd:2379}
-  BREWFS_WORKSPACE_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace-overlay}
+  BREWFS_WORKSPACE_NAMESPACE: ${BREWFS_WORKSPACE_NAMESPACE:-brewfs-workspace}
   BREWFS_WORKSPACE_CONCURRENCY: ${BREWFS_WORKSPACE_CONCURRENCY:-8}
   BREWFS_WORKSPACE_ALLOW_EXPECTED_CONTENTION: ${BREWFS_WORKSPACE_ALLOW_EXPECTED_CONTENTION:-0}
   # Retained pressure controls remain available for diagnostic writer profiles.
   BREWFS_WORKSPACE_WRITERS: ${BREWFS_WORKSPACE_WRITERS:-2}
   BREWFS_WORKSPACE_WRITER_INTERVAL: ${BREWFS_WORKSPACE_WRITER_INTERVAL:-0.02}
   BREWFS_WORKSPACE_STATE_DIR: /var/lib/brewfs
-  BREWFS_VOLUME_FORMAT: workspace-v1
+  BREWFS_VOLUME_FORMAT: workspace
   BREWFS_DATA_BACKEND: local-fs
   BREWFS_DATA_DIR: /var/lib/brewfs/data
   BREWFS_SQLITE_PATH: /var/lib/brewfs/workspace.db
@@ -36,16 +36,16 @@ x-fuse-test: &fuse-test
     - apparmor=unconfined
   volumes:
     - ${BREWFS_WORKSPACE_ARTIFACT_DIR:-./artifacts}:/artifacts
-    - workspace-overlay-state:/var/lib/brewfs
+    - workspace-state:/var/lib/brewfs
   networks:
-    - brewfs-workspace-overlay
+    - brewfs-workspace
   ulimits:
     nofile:
       soft: 65536
       hard: 65536
 
 services:
-  # Build-only base used by Dockerfile.workspace-overlay-xfstests.
+  # Build-only base used by Dockerfile.workspace-xfstests.
   xfstests-base:
     image: slayerfs-xfstests:local
     build:
@@ -63,7 +63,7 @@ services:
       timeout: 2s
       retries: 60
     networks:
-      - brewfs-workspace-overlay
+      - brewfs-workspace
 
   pd:
     profiles: ["tikv"]
@@ -78,9 +78,9 @@ services:
       - --initial-cluster=pd=http://pd:2380
       - --log-level=warn
     volumes:
-      - workspace-overlay-pd:/data/pd
+      - workspace-pd:/data/pd
     networks:
-      - brewfs-workspace-overlay
+      - brewfs-workspace
 
   tikv:
     profiles: ["tikv"]
@@ -96,9 +96,9 @@ services:
       - --data-dir=/data/tikv
       - --log-level=warn
     volumes:
-      - workspace-overlay-tikv:/data/tikv
+      - workspace-tikv:/data/tikv
     networks:
-      - brewfs-workspace-overlay
+      - brewfs-workspace
     ulimits:
       nofile:
         soft: 1048576
@@ -125,16 +125,16 @@ services:
         echo "TiKV did not register an Up store within 180 seconds" >&2
         exit 1
     networks:
-      - brewfs-workspace-overlay
+      - brewfs-workspace
 
   xfstests:
     image: brewfs-workspace-xfstests:local
     build:
       context: ../..
-      dockerfile: docker/compose-xfstests/Dockerfile.workspace-overlay-xfstests
+      dockerfile: docker/compose-xfstests/Dockerfile.workspace-xfstests
       args:
         BASE_IMAGE: slayerfs-xfstests:local
-    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_suite_in_container.sh"]
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_suite_in_container.sh"]
     environment:
       <<: *workspace-environment
       WORKSPACE_OVERLAY_SUITE: xfstests
@@ -145,7 +145,7 @@ services:
 
   workspace-control:
     image: brewfs-workspace-xfstests:local
-    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_control_in_container.sh"]
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_control_in_container.sh"]
     environment:
       <<: *workspace-environment
       BREWFS_BIN: /usr/local/bin/brewfs
@@ -156,7 +156,7 @@ services:
     build:
       context: ../..
       dockerfile: docker/compose-xfstests/Dockerfile.ltp
-    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_overlay_suite_in_container.sh"]
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/run_workspace_suite_in_container.sh"]
     environment:
       <<: *workspace-environment
       WORKSPACE_OVERLAY_SUITE: ltp
@@ -172,10 +172,10 @@ services:
     <<: *fuse-test
 
 networks:
-  brewfs-workspace-overlay:
+  brewfs-workspace:
     driver: bridge
 
 volumes:
-  workspace-overlay-state:
-  workspace-overlay-pd:
-  workspace-overlay-tikv:
+  workspace-state:
+  workspace-pd:
+  workspace-tikv:

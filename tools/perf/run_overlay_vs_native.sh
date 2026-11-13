@@ -3,8 +3,8 @@
 #
 #   native  : flat BrewFS volume, Redis metadata + RustFS objects. The corpus
 #             is written through the mount, drained, remounted cold and read.
-#   overlay : workspace-v1 workspace (Redis catalog) whose read-only lower is a
-#             packed-v3 snapshot of the same corpus on the same RustFS.
+#   overlay : workspace workspace (Redis catalog) whose read-only lower is a
+#             packed snapshot of the same corpus on the same RustFS.
 #
 # Both arms use the same release binary, file tree/sizes/bytes, scanner seed,
 # FUSE TTL0/direct-io, zero payload caches, worker count and cleanup. Arms
@@ -14,8 +14,8 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${OVN_ARTIFACT_ROOT:?set OVN_ARTIFACT_ROOT}"
-BINARY="${OVN_BINARY:?set OVN_BINARY (release brewfs with workspace-overlay)}"
-FIXTURE="${OVN_FIXTURE:?set OVN_FIXTURE (packed_v3_snapshot_fixture)}"
+BINARY="${OVN_BINARY:?set OVN_BINARY (release brewfs with workspace)}"
+FIXTURE="${OVN_FIXTURE:?set OVN_FIXTURE (packed_snapshot_fixture)}"
 FILES="${OVN_FILES:-2000}"
 FILE_BYTES="${OVN_FILE_BYTES:-102400}"
 WORKERS="${OVN_WORKERS:-16}"
@@ -207,7 +207,7 @@ run_arm() {  # arm mode rep
     if [[ "$arm" == native ]]; then
         { echo "mount_point: $dir/mnt"; data_yaml ovn-native; echo "meta:"; echo "  backend: redis"; echo "  redis:"; echo "    url: \"$redis_url/1\""; common_yaml "$dir/cache"; } >"$dir/mount.yaml"
     else
-        { echo "mount_point: $dir/mnt"; echo "volume_format: workspace-v1"; echo "workspace: $workspace"; echo "workspace_namespace: $ns";
+        { echo "mount_point: $dir/mnt"; echo "volume_format: workspace"; echo "workspace: $workspace"; echo "workspace_namespace: $ns";
           data_yaml ovn-packed; echo "meta:"; echo "  backend: redis"; echo "  redis:"; echo "    url: \"$redis_url/2\""; common_yaml "$dir/cache"; } >"$dir/mount.yaml"
     fi
     sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'

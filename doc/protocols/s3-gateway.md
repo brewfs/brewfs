@@ -201,7 +201,7 @@ brewfs gateway s3 \
 | Redis | RustFS（S3 data backend） | **尚未验证** | 仓库已有该组合的 FUSE/POSIX、xfstests 与性能测试，但这些结果不经过 `brewfs gateway s3`，不能视为 S3 网关验证 |
 | 其他 MetaStore | LocalFS/S3-compatible | 尚未形成网关矩阵 | 编译和通用 VFS 测试通过不等价于真实协议 E2E |
 
-CI 中名为 Redis/TiKV workspace-overlay、pjdfstest、xfstests 或 stress-ng 的 job 验证的是 FUSE/VFS
+CI 中名为 Redis/TiKV workspace、pjdfstest、xfstests 或 stress-ng 的 job 验证的是 FUSE/VFS
 数据路径，而不是 S3 网关端点。报告 S3 网关兼容性时必须单独标明 gateway endpoint、meta backend、
 data backend 和客户端，不能用底层后端测试代替。
 

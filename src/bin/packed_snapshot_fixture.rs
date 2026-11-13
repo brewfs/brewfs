@@ -1,509 +1,1522 @@
-//! Build and publish a deterministic packed-metadata read-only fixture.
+//! Build a local packed-metadata v3 snapshot for cold-read tests.
 //!
-//! Small files use independent immutable slices. Each file has deterministic,
-//! file-specific bytes so the benchmark cannot gain from duplicate-content or
-//! shared-offset cache reuse. Cross-file physical packing belongs to the v2
-//! extent/placement format; v1's extent offset is the file logical offset.
+//! The fixture shards large directories into bounded immutable groups and
+//! publishes pageable group/inode indexes, matching the read path used by
+//! large snapshots.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use sha2::{Digest, Sha256};
+use tokio::{sync::Semaphore, task::JoinSet};
 
-use brewfs::cadapter::client::ObjectClient;
-use brewfs::cadapter::s3::{S3Backend, S3Config};
-use brewfs::chunk::Compression;
-use brewfs::chunk::compress::encode_persisted_block;
-use brewfs::native_base::frozen::producer::{FrozenSnapshotInput, build_snapshot, upload_snapshot};
-use brewfs::native_base::frozen::{
-    FrozenInodeRecord, FrozenRow, dentry_key, encode_extent_slice_value, extent_key, inode_key,
+use brewfs::cadapter::client::{ObjectBackend, ObjectClient};
+use brewfs::cadapter::localfs::LocalFsBackend;
+use brewfs::cadapter::s3::{RustfsEcBlockSizeHint, S3Backend, S3Config};
+use brewfs::workspace::packed::{
+    AccessProfile, GroupMeta, PackedFileInput, PackedGroupInput, SizeClassTable, directory_key,
 };
-use brewfs::native_base::runtime::BackendObjectRepository;
-use brewfs::native_base::wire::container::features;
-use brewfs::native_base::wire::refs::ObjectId;
-use brewfs::vfs::chunk_id_for;
 
 #[derive(Debug, Parser)]
-#[command(about = "publish a packed-metadata benchmark fixture")]
+#[command(about = "build a local packed-metadata v3 fixture")]
 struct Args {
-    #[arg(long, default_value = "brewfs-data")]
-    bucket: String,
-    #[arg(long, default_value = "http://127.0.0.1:19000")]
-    endpoint: String,
-    #[arg(long, default_value = "us-east-1")]
-    region: String,
-    #[arg(long, default_value = "packed-fixture")]
-    prefix: String,
-    #[arg(long, default_value_t = 8)]
-    dirs: u64,
-    /// Number of directory levels below the root. Zero preserves the legacy
-    /// flat layout and uses `dirs` as the number of leaf directories.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value = "packed-objects")]
+    output_dir: PathBuf,
+    /// Capture one Linux regular-file dentry, preserving SEEK_DATA/SEEK_HOLE
+    /// placement and cold xattrs. Visible nlink is one; directory/root inventory
+    /// and atomic source-snapshot guarantees are separate production work.
+    #[arg(long, conflicts_with = "source_directory")]
+    source_file: Option<PathBuf>,
+    /// Inventory a complete Linux directory with disk-backed raw-name sorting.
+    #[arg(long, conflicts_with = "source_file")]
+    source_directory: Option<PathBuf>,
+    /// Select stat detection, or a verified existing readonly Btrfs snapshot.
+    #[arg(long, value_parser = ["best-effort-detected", "snapshot-backed"], requires = "source_directory")]
+    source_consistency: Option<String>,
+    /// Preserve snapshot-visible nlink, or refuse any alias outside this tree.
+    #[arg(long, value_parser = ["visible-links", "reject-external"], requires = "source_directory")]
+    source_hardlink_policy: Option<String>,
+    /// Current v3 contract: wire 005 with PM11/IP06 counted directory routing.
+    #[arg(long,hide=true,default_value_t=5,value_parser=clap::value_parser!(u8).range(5..=5))]
+    wire_version: u8,
+    /// Packed metadata codec; omitted preserves zstd.
+    #[arg(long,value_parser=["raw","zstd"])]
+    metadata_codec: Option<String>,
+    /// Packed data codec; omitted preserves zstd.
+    #[arg(long,value_parser=["raw","zstd"])]
+    data_codec: Option<String>,
+    /// Fixed targets or deterministic size-only selection, applied at build time.
+    #[arg(long, default_value = "size-only", value_parser = ["size-only", "static-256kib", "static-1mib", "static-4mib", "p90-training"])]
+    frame_policy: String,
+    /// Build-time random/mixed frame cap in bytes (power of two, at most 4 MiB).
+    /// The default is 256 KiB; an explicit cap down to 64 KiB also lowers
+    /// the build-time minimum so the 64 KiB experiment remains available.
+    #[arg(long, conflicts_with = "raw_only", value_parser = clap::value_parser!(u64).range(64 * 1024..=4 * 1024 * 1024))]
+    max_random_frame_raw_bytes: Option<u64>,
+    /// Authenticated offline p90 policy JSON. Required by p90-training.
+    #[arg(long, requires = "frame_policy")]
+    p90_policy: Option<PathBuf>,
+    /// Off keeps every nonempty payload out of metadata, including tiny files.
+    #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+    inline_data: String,
+    #[arg(long,default_value_t=false,action=clap::ArgAction::Set)]
+    cold_corpus: bool,
+    #[arg(long,default_value_t=false,action=clap::ArgAction::Set)]
+    hardlink_corpus: bool,
+
+    #[arg(long, default_value_t = 2)]
     dir_levels: u32,
-    /// Number of child directories at every level in hierarchical mode.
     #[arg(long, default_value_t = 10)]
     dirs_per_level: u64,
-    #[arg(long, default_value_t = 4500)]
+    #[arg(long, default_value_t = 1000)]
     files_per_dir: u64,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 102_400)]
     small_file_size: u64,
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
-    fio_file_size: u64,
+    /// Optional deterministic size range. When omitted, `small_file_size`
+    /// keeps the historical fixed-size fixture behavior.
+    #[arg(long)]
+    small_file_min_size: Option<u64>,
+    #[arg(long)]
+    small_file_max_size: Option<u64>,
     #[arg(long, default_value_t = 64 * 1024 * 1024)]
     chunk_size: u64,
     #[arg(long, default_value_t = 4 * 1024 * 1024)]
     block_size: u32,
-    /// Use path-style S3 requests. Alibaba OSS normally uses virtual-host
-    /// addressing, so this remains disabled unless an S3-compatible endpoint
-    /// explicitly requires it.
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
-    force_path_style: bool,
     #[arg(long, default_value = "packed-manifest-key.txt")]
     manifest_output: PathBuf,
+    #[arg(long)]
+    bucket: Option<String>,
+    /// Layout policy for new S3 Pack objects (off, auto, tiered, range-heavy or fixed bytes).
+    /// Requires the rustfs-ec-block-size-hint Cargo feature when enabled.
+    #[arg(long, requires = "bucket")]
+    s3_rustfs_ec_block_size_hint: Option<RustfsEcBlockSizeHint>,
+    #[arg(long)]
+    endpoint: Option<String>,
+    #[arg(long)]
+    region: Option<String>,
+    #[arg(long, default_value = "")]
+    prefix: String,
+    /// Packing profile for the immutable payload layout. Keep the default
+    /// random profile for compatibility; sequential scans should opt into
+    /// `sequential-small-file` so containers are grouped for read-ahead.
+    #[arg(long, default_value = "random-small-file")]
+    access_profile: String,
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    force_path_style: bool,
+    /// Upload the deterministic file tree as individual raw objects instead
+    /// of building packed metadata. This is the JuiceFS comparison source.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    raw_only: bool,
 }
 
-#[derive(Debug, Clone)]
-struct LeafDirectory {
+#[derive(Clone)]
+struct Directory {
     inode: u64,
-    components: Vec<String>,
-}
-
-fn attr(kind: u8, mode: u32, size: u64, parent_hint: Option<u64>, nlink: u64) -> Vec<u8> {
-    FrozenInodeRecord {
-        kind,
-        mode,
-        uid: 0,
-        gid: 0,
-        rdev: 0,
-        nlink,
-        size,
-        atime_ns: 0,
-        mtime_ns: 0,
-        ctime_ns: 0,
-        parent_hint,
-        symlink_target: None,
-    }
-    .encode()
-}
-
-fn object_id(seed: &[u8], label: &str) -> ObjectId {
-    let mut hasher = Sha256::new();
-    hasher.update(seed);
-    hasher.update(label.as_bytes());
-    hasher.finalize()[..16].try_into().expect("sha256 prefix")
-}
-
-fn revision_id(seed: &[u8], label: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(seed);
-    hasher.update(label.as_bytes());
-    hasher.finalize().into()
-}
-
-fn row(map: &mut BTreeMap<Vec<u8>, Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-    if map.insert(key, value).is_some() {
-        bail!("duplicate fixture row")
-    }
-    Ok(())
-}
-
-fn build_directory_tree(
-    namespace: &mut BTreeMap<Vec<u8>, Vec<u8>>,
-    next_inode: &mut u64,
     parent_inode: u64,
-    level: u32,
+    name: Vec<u8>,
+}
+
+fn fill_pattern(size: usize, file_index: u64) -> Vec<u8> {
+    let mut data = vec![0u8; size];
+    let seed = file_index.wrapping_add(1).to_le_bytes();
+    for (index, byte) in data.iter_mut().enumerate() {
+        *byte = seed[index % seed.len()] ^ (index as u64).rotate_left(7) as u8;
+    }
+    data
+}
+
+fn file_size_for_index(file_index: u64, min_size: u64, max_size: u64) -> usize {
+    let span = max_size.saturating_sub(min_size).saturating_add(1);
+    let mixed = file_index
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    min_size.saturating_add(if span == 0 { 0 } else { mixed % span }) as usize
+}
+
+fn file_size_range(args: &Args) -> Result<(u64, u64)> {
+    let min_size = args.small_file_min_size.unwrap_or(args.small_file_size);
+    let max_size = args.small_file_max_size.unwrap_or(args.small_file_size);
+    if min_size == 0 || min_size > max_size || max_size > 4 * 1024 * 1024 {
+        bail!("small file size range must satisfy 0 < min <= max <= 4 MiB");
+    }
+    Ok((min_size, max_size))
+}
+
+fn fixture_codec(value: Option<&str>) -> Result<brewfs::workspace::packed::PackedCodec> {
+    use brewfs::workspace::packed::PackedCodec;
+    match value.unwrap_or("zstd") {
+        "raw" => Ok(PackedCodec::Raw),
+        "zstd" => Ok(PackedCodec::Zstd),
+        _ => bail!("unsupported fixture codec"),
+    }
+}
+
+fn fixture_build_policy(
+    args: &Args,
+) -> Result<brewfs::workspace::packed::snapshot::SnapshotBuildPolicy> {
+    use brewfs::workspace::packed::snapshot::{SnapshotBuildPolicy, SnapshotFramePolicy};
+    let frames = match args.frame_policy.as_str() {
+        "size-only" => SnapshotFramePolicy::SizeOnly,
+        "static-256kib" => SnapshotFramePolicy::Static256Kib,
+        "static-1mib" => SnapshotFramePolicy::Static1Mib,
+        "static-4mib" => SnapshotFramePolicy::Static4Mib,
+        "p90-training" => SnapshotFramePolicy::P90Training,
+        _ => bail!("unsupported frame policy"),
+    };
+    let p90 = match frames {
+        SnapshotFramePolicy::P90Training => {
+            Some(read_p90_policy(args.p90_policy.as_deref().ok_or_else(
+                || anyhow::anyhow!("p90-training requires --p90-policy"),
+            )?)?)
+        }
+        _ => {
+            if args.p90_policy.is_some() {
+                bail!("--p90-policy requires --frame-policy p90-training");
+            }
+            None
+        }
+    };
+    Ok(SnapshotBuildPolicy {
+        frames,
+        inline_data: args.inline_data == "on",
+        p90,
+    })
+}
+
+fn fixture_size_classes(args: &Args) -> Result<SizeClassTable> {
+    let mut table = SizeClassTable::default();
+    if let Some(max_random) = args.max_random_frame_raw_bytes {
+        table.max_random_frame_raw_bytes = max_random;
+        if max_random < table.min_frame_raw_bytes {
+            table.min_frame_raw_bytes = max_random;
+        }
+    }
+    table.validate().context("invalid fixture frame size table")
+}
+
+fn read_p90_policy(
+    path: &std::path::Path,
+) -> Result<brewfs::workspace::packed::snapshot::SnapshotP90Policy> {
+    const MAX_P90_SAMPLES: u64 = 10_000_000;
+    const MAX_REQUESTED_RANGE: u64 = 1 << 63;
+    use brewfs::workspace::packed::snapshot::SnapshotP90Policy;
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(path).with_context(|| format!("read p90 policy {}", path.display()))?,
+    )?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("p90 policy must be a JSON object"))?;
+    if object.get("schema").and_then(serde_json::Value::as_str) != Some("packed-p90-policy-v1") {
+        bail!("unsupported p90 policy schema");
+    }
+    let hex_digest = |name: &str| -> Result<[u8; 32]> {
+        let text = object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("p90 policy missing {name}"))?;
+        let bytes = hex::decode(text).with_context(|| format!("decode p90 {name}"))?;
+        bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("p90 {name} must be a SHA-256 digest"))
+    };
+    let trace_digest = hex_digest("trace_sha256")?;
+    let policy_digest = hex_digest("policy_sha256")?;
+    let mut policy_payload = object.clone();
+    policy_payload.remove("policy_sha256");
+    let calculated_policy: [u8; 32] = Sha256::digest(serde_json::to_vec(&policy_payload)?).into();
+    if calculated_policy != policy_digest {
+        bail!("p90 policy digest does not match its contents");
+    }
+    for field in ["source", "captured_at_utc"] {
+        let text = object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.trim().is_empty() && !text.chars().any(char::is_whitespace))
+            .ok_or_else(|| anyhow::anyhow!("p90 policy {field} is malformed"))?;
+        let _ = text;
+    }
+    let sample_count = object
+        .get("sample_count")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|count| *count > 0 && *count <= MAX_P90_SAMPLES)
+        .ok_or_else(|| anyhow::anyhow!("p90 sample_count is invalid"))?;
+    let histogram = object
+        .get("histogram")
+        .and_then(serde_json::Value::as_array)
+        .filter(|entries| !entries.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("p90 histogram is empty"))?;
+    let mut total = 0u64;
+    let mut previous = 0u64;
+    let rank = sample_count
+        .checked_mul(90)
+        .and_then(|value| value.checked_add(99))
+        .map(|value| value / 100)
+        .ok_or_else(|| anyhow::anyhow!("p90 sample_count rank overflows"))?;
+    let mut p90_from_histogram = None;
+    for entry in histogram {
+        let item = entry
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram entry is malformed"))?;
+        let range = item
+            .get("range_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|range| *range > previous && *range <= MAX_REQUESTED_RANGE)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram is not strictly ordered"))?;
+        let count = item
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|count| *count > 0)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram count is invalid"))?;
+        total = total
+            .checked_add(count)
+            .ok_or_else(|| anyhow::anyhow!("p90 histogram count overflows"))?;
+        if total > MAX_P90_SAMPLES {
+            bail!("p90 histogram exceeds the bounded sample limit");
+        }
+        if p90_from_histogram.is_none() && total >= rank {
+            p90_from_histogram = Some(range);
+        }
+        previous = range;
+    }
+    if total != sample_count {
+        bail!("p90 histogram total disagrees with sample_count");
+    }
+    let requested_range = object
+        .get("p90_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| Some(*value) == p90_from_histogram)
+        .ok_or_else(|| anyhow::anyhow!("p90 value disagrees with histogram"))?;
+    // Bind the exact histogram bytes into BP12. serde_json's map is sorted by
+    // key in this build, matching the canonical JSON used by the Python
+    // policy builder.
+    let histogram_digest: [u8; 32] = Sha256::digest(serde_json::to_vec(histogram)?).into();
+    Ok(SnapshotP90Policy {
+        trace_digest,
+        policy_digest,
+        histogram_digest,
+        sample_count,
+        requested_range,
+    })
+}
+
+async fn authenticated_build<B: ObjectBackend + Clone>(
+    client: &ObjectClient<B>,
+    reference: &brewfs::workspace::packed::snapshot::SnapshotObjectRef,
+) -> Result<serde_json::Value> {
+    let snapshot =
+        brewfs::workspace::packed::snapshot::AuthenticatedSnapshot::open(client, reference).await?;
+    let manifest = snapshot.manifest();
+    let mut build = serde_json::to_value(&manifest.build)?;
+    // These values come from the authenticated PM11, not the CLI intent.
+    build["size_classes"] = serde_json::json!({
+        "min_frame_raw_bytes": manifest.size_classes.min_frame_raw_bytes,
+        "max_random_frame_raw_bytes": manifest.size_classes.max_random_frame_raw_bytes,
+        "max_sequential_frame_raw_bytes": manifest.size_classes.max_sequential_frame_raw_bytes,
+    });
+    Ok(build)
+}
+
+fn access_profile(value: &str) -> Result<AccessProfile> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "random" | "random-small-file" | "random_small_file" => Ok(AccessProfile::RandomSmallFile),
+        "sequential" | "sequential-small-file" | "sequential_small_file" => {
+            Ok(AccessProfile::SequentialSmallFile)
+        }
+        "mixed" => Ok(AccessProfile::Mixed),
+        other => bail!(
+            "unsupported access profile {other}; expected random-small-file, sequential-small-file, or mixed"
+        ),
+    }
+}
+
+fn leaf_path(leaf_index: u64, levels: u32, fanout: u64) -> String {
+    let mut components = Vec::with_capacity(levels as usize);
+    let mut value = leaf_index;
+    for _ in 0..levels {
+        components.push(format!("d{:03}", value % fanout));
+        value /= fanout;
+    }
+    components.reverse();
+    components.join("/")
+}
+
+fn build_tree(
     levels: u32,
     fanout: u64,
-    components: &mut Vec<String>,
-    leaves: &mut Vec<LeafDirectory>,
+    next_inode: &mut u64,
+    parent: Directory,
+    output: &mut Vec<Directory>,
+) {
+    output.push(parent.clone());
+    if levels == 0 {
+        return;
+    }
+    for index in 0..fanout {
+        let inode = *next_inode;
+        *next_inode += 1;
+        let name = format!("d{index:03}").into_bytes();
+        let child = Directory {
+            inode,
+            parent_inode: parent.inode,
+            name,
+        };
+        build_tree(levels - 1, fanout, next_inode, child, output);
+    }
+}
+
+fn object_key(prefix: &str, relative: &str) -> String {
+    if prefix.is_empty() {
+        relative.to_owned()
+    } else {
+        format!("{prefix}/{relative}")
+    }
+}
+
+/// Upload the same deterministic tree as one object per file. The bounded
+/// JoinSet keeps SDK upload memory independent of the total dataset size.
+async fn build_raw_fixture<B>(args: &Args, client: ObjectClient<B>, prefix: &str) -> Result<()>
+where
+    B: ObjectBackend + Clone + Send + Sync + 'static,
+{
+    let (min_file_size, max_file_size) = file_size_range(args)?;
+    let leaf_count = args
+        .dirs_per_level
+        .checked_pow(args.dir_levels)
+        .context("directory count overflows u64")?;
+    let file_count = leaf_count
+        .checked_mul(args.files_per_dir)
+        .context("file count overflows u64")?;
+    let semaphore = Arc::new(Semaphore::new(64));
+    let mut uploads = JoinSet::new();
+    let mut manifest = Vec::with_capacity(file_count as usize * 64);
+    let mut logical_bytes = 0u64;
+
+    for leaf_index in 0..leaf_count {
+        let directory = leaf_path(leaf_index, args.dir_levels, args.dirs_per_level);
+        for file_index in 0..args.files_per_dir {
+            let global_file_index = leaf_index
+                .checked_mul(args.files_per_dir)
+                .and_then(|value| value.checked_add(file_index))
+                .context("file index overflows u64")?;
+            let size = file_size_for_index(global_file_index, min_file_size, max_file_size);
+            let key = object_key(prefix, &format!("{directory}/f{file_index:06}"));
+            manifest.extend_from_slice(format!("{key}\t{global_file_index}\t{size}\n").as_bytes());
+            logical_bytes = logical_bytes.saturating_add(size as u64);
+            let permit = semaphore.clone().acquire_owned().await?;
+            let upload_client = client.clone();
+            uploads.spawn(async move {
+                let _permit = permit;
+                let data = fill_pattern(size, global_file_index);
+                upload_client.put_object(&key, &data).await
+            });
+            if uploads.len() >= 64 {
+                let _ = uploads
+                    .join_next()
+                    .await
+                    .context("raw SDK upload task disappeared")??;
+            }
+        }
+    }
+    while let Some(result) = uploads.join_next().await {
+        result??;
+    }
+
+    let manifest_key = object_key(prefix, "raw-manifest.tsv");
+    client.put_object(&manifest_key, &manifest).await?;
+    std::fs::write(&args.manifest_output, format!("{manifest_key}\n"))?;
+    println!(
+        "raw_manifest_key={manifest_key} files={file_count} min_file_size={min_file_size} max_file_size={max_file_size} logical_bytes={logical_bytes} manifest_bytes={} prefix={prefix}",
+        manifest.len()
+    );
+    Ok(())
+}
+
+fn apply_cold_targets(
+    group: &mut PackedGroupInput,
+    attributes: &[brewfs::workspace::packed::snapshot::SnapshotColdAttributes],
 ) -> Result<()> {
-    if level == levels {
-        leaves.push(LeafDirectory {
-            inode: parent_inode,
-            components: components.clone(),
-        });
+    if attributes.is_empty() {
         return Ok(());
     }
-
-    for child_index in 0..fanout {
-        let inode = *next_inode;
-        *next_inode = next_inode
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("fixture inode counter overflow"))?;
-        let name = format!("d{child_index:03}");
-        row(
-            namespace,
-            inode_key(inode),
-            attr(2, 0o040755, 0, Some(parent_inode), 2),
-        )?;
-        row(
-            namespace,
-            dentry_key(parent_inode, name.as_bytes()),
-            inode_key(inode),
-        )?;
-        components.push(name);
-        build_directory_tree(
-            namespace,
-            next_inode,
-            inode,
-            level + 1,
-            levels,
-            fanout,
-            components,
-            leaves,
-        )?;
-        components.pop();
+    let metadata = GroupMeta::decode(&group.metadata)?;
+    let mut entries = metadata.entries().to_vec();
+    for entry in &mut entries {
+        if let Some(target) = attributes
+            .iter()
+            .find(|attrs| attrs.inode == entry.inode)
+            .and_then(|attrs| attrs.symlink_target.as_ref())
+        {
+            entry.size = target.len() as u64;
+        }
     }
+    group.metadata = GroupMeta::new(entries)?.encode()?;
     Ok(())
 }
 
-async fn put_block<B: brewfs::ObjectBackend>(
-    client: &ObjectClient<B>,
-    slice_id: u64,
-    block_index: u32,
-    data: &[u8],
+async fn build_snapshot_fixture<B: ObjectBackend + Clone + Send + Sync + 'static>(
+    args: &Args,
+    client: ObjectClient<B>,
+    prefix: &str,
 ) -> Result<()> {
-    let key = format!("chunks-v2/{slice_id}/{block_index}");
-    let framed = encode_persisted_block(data, Compression::None);
-    client.put_object(&key, &framed).await?;
-    Ok(())
-}
-
-fn fill_small_file_pattern(block: &mut [u8], offset: usize, len: usize, file_index: u64) {
-    let pattern = file_index.wrapping_add(1).to_le_bytes();
-    for (index, byte) in block[offset..offset + len].iter_mut().enumerate() {
-        *byte = pattern[index % pattern.len()];
+    use brewfs::workspace::packed::snapshot::{
+        SnapshotBuildPolicy, SnapshotProducer, SnapshotProducerOptions,
+    };
+    let provenance_client = client.clone();
+    let build_policy = fixture_build_policy(args)?;
+    let size_classes = fixture_size_classes(args)?;
+    let (minimum, maximum) = file_size_range(args)?;
+    let profile = access_profile(&args.access_profile)?;
+    let snapshot_id: [u8; 32] = Sha256::digest(b"brewfs-packed-fixture").into();
+    let root_key = directory_key(snapshot_id, 1);
+    let options = SnapshotProducerOptions {
+        snapshot_id,
+        root_dir_key: root_key,
+        root_inode: 1,
+        profile,
+        size_classes,
+        build_policy,
+        metadata_codec: fixture_codec(args.metadata_codec.as_deref())?,
+        data_codec: fixture_codec(args.data_codec.as_deref())?,
+    };
+    let prefix = if prefix.is_empty() {
+        "packed-snapshot-fixture"
+    } else {
+        prefix
+    };
+    if let Some(source) = &args.source_directory {
+        #[cfg(target_os = "linux")]
+        {
+            use brewfs::workspace::packed::snapshot::{
+                SnapshotSourceConsistency, SnapshotSourceFileLimits, SnapshotSourceHardlinkPolicy,
+                SnapshotSourceNamespaceInventory, SnapshotSourceNamespaceOptions,
+            };
+            let policy = match args.source_hardlink_policy.as_deref() {
+                Some("visible-links") => SnapshotSourceHardlinkPolicy::VisibleLinks,
+                Some("reject-external") => SnapshotSourceHardlinkPolicy::RejectExternal,
+                _ => bail!("source-directory requires an explicit source-hardlink-policy"),
+            };
+            let consistency = match args.source_consistency.as_deref() {
+                Some("best-effort-detected") => SnapshotSourceConsistency::BestEffortDetected,
+                Some("snapshot-backed") => SnapshotSourceConsistency::SnapshotBacked,
+                _ => bail!("source-directory requires an explicit source-consistency"),
+            };
+            let inventory = SnapshotSourceNamespaceInventory::capture(
+                source,
+                &std::env::temp_dir(),
+                SnapshotSourceNamespaceOptions {
+                    root_inode: 1,
+                    consistency,
+                    hardlink_policy: policy,
+                    file_limits: SnapshotSourceFileLimits::default(),
+                },
+            )
+            .await?;
+            let snapshot = inventory
+                .build_snapshot(client, prefix.into(), options)
+                .await?;
+            let build = authenticated_build(&provenance_client, &snapshot.reference).await?;
+            let provenance = serde_json::json!({
+                "build_provenance": build,
+                "capture_scope": "complete-directory-inventory",
+                "source_consistency": snapshot.provenance.consistency,
+                "source_view": snapshot.provenance,
+                "source_hardlink_policy": policy.as_str(),
+                "manifest_payload": "PM11", "index_payload": "IP06",
+                "st_blocks_wire_preserved": true, "root_source_attributes_preserved": true,
+                "posix_acl_scope": "linux-access-readonly-default-preserved",
+                "source_report": snapshot.report,
+                "group_logical_limit": 64 * 1024 * 1024,
+                "group_data_limit": 16 * 1024 * 1024, "group_extent_limit": 256,
+                "external_logical_limit": i64::MAX as u64,
+                "manifest_key": snapshot.reference.key,
+                "manifest_digest": hex::encode(snapshot.reference.digest),
+            });
+            std::fs::write(
+                args.manifest_output.with_extension("source.json"),
+                serde_json::to_vec_pretty(&provenance)?,
+            )?;
+            std::fs::write(
+                &args.manifest_output,
+                format!("{}\n", snapshot.reference.key),
+            )?;
+            println!(
+                "packed_version=v3 source_entries={} unique_inodes={} groups={} frames={}",
+                snapshot.report.source_entries,
+                snapshot.report.unique_inodes,
+                snapshot.report.groups,
+                snapshot.report.frames
+            );
+            return Ok(());
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("source-directory capture requires Linux");
     }
+    let mut producer =
+        SnapshotProducer::new(client, &std::env::temp_dir(), prefix.into(), options).await?;
+    if let Some(path) = &args.source_file {
+        #[cfg(target_os = "linux")]
+        {
+            use brewfs::workspace::packed::snapshot::{
+                CapturedSource, CapturedSourceRoot, SnapshotSourceFileLimits,
+            };
+            // Capture disk I/O off the runtime. Its buffers are bounded and
+            // cancellation cannot publish a partial source group.
+            let path = path.clone();
+            let root_path_for_capture = path.clone();
+            let source_root = tokio::task::spawn_blocking(move || {
+                let path = root_path_for_capture;
+                let root_path = path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new("."));
+                CapturedSourceRoot::capture(root_path, 1)
+            })
+            .await??;
+            let mut captured = CapturedSource::capture_with_policy(
+                &path,
+                &std::env::temp_dir(),
+                2,
+                profile,
+                size_classes,
+                SnapshotSourceFileLimits::default(),
+                build_policy,
+            )
+            .await?;
+            producer.set_root_attributes(source_root.attributes().clone())?;
+            producer
+                .set_inode_blocks(2, captured.source_blocks())
+                .await?;
+            let group = captured.group(1, root_key, profile)?;
+            let external_chunks = match &mut captured {
+                CapturedSource::External(source) => {
+                    producer.add_external_source(source.as_mut()).await?
+                }
+                CapturedSource::Group(_) => 0,
+            };
+            let frames = match &captured {
+                CapturedSource::Group(source) => source.frames(),
+                CapturedSource::External(_) => &[],
+            };
+            producer.add_container(1, &[group], frames, &[1]).await?;
+            producer
+                .add_cold_attributes(captured.cold_attributes())
+                .await?;
+            producer
+                .add_cold_attributes(source_root.cold_attributes())
+                .await?;
+            captured.validate_unchanged()?;
+            source_root.validate_unchanged()?;
+            let reference = producer.finish().await?;
+            let build = authenticated_build(&provenance_client, &reference).await?;
+            // A late mutation never yields a published manifest-output file.
+            // Uploaded unreachable objects remain the caller's cleanup domain.
+            captured.validate_unchanged()?;
+            source_root.validate_unchanged()?;
+            let provenance = serde_json::json!({
+                "build_provenance": build,
+                "capture_scope": "single-regular-file-dentry",
+                "source_consistency": "stat-revalidated-not-atomic-directory-snapshot",
+                "visible_nlink": captured.entry().nlink,
+                "source_nlink": captured.source_nlink(),
+                "source_blocks": captured.source_blocks(),
+                "size": captured.entry().size,
+                "mode": captured.entry().mode,
+                "uid": captured.entry().uid, "gid": captured.entry().gid,
+                "mtime_ns": captured.entry().mtime_ns, "ctime_ns": captured.entry().ctime_ns,
+                "data_bytes": captured.data_bytes(),
+                "extent_count": captured.extent_count(),
+                "external_chunks": external_chunks,
+                "xattr_count": captured.cold_attributes().xattrs.len(),
+                "manifest_payload": "PM11", "index_payload": "IP06",
+                "root_capture_scope": "source-parent-attributes-only-not-full-inventory",
+                "st_blocks_wire_preserved": true,
+                "root_source_attributes_preserved": true,
+                "root_size": source_root.attributes().size,
+                "root_blocks": source_root.attributes().blocks,
+                "root_mode": source_root.attributes().mode,
+                "root_uid": source_root.attributes().uid, "root_gid": source_root.attributes().gid,
+                "root_nlink": source_root.attributes().nlink,
+                "manifest_key": reference.key, "manifest_digest": hex::encode(reference.digest),
+            });
+            let provenance_path = args.manifest_output.with_extension("source.json");
+            std::fs::write(provenance_path, serde_json::to_vec_pretty(&provenance)?)?;
+            std::fs::write(&args.manifest_output, format!("{}\n", reference.key))?;
+            println!(
+                "packed_version=v3 files=1 logical_bytes={} source_data_bytes={} extents={}",
+                captured.entry().size,
+                provenance["data_bytes"],
+                captured.extent_count()
+            );
+            return Ok(());
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("source-file capture requires Linux");
+    }
+    let mut next_inode = 2;
+    let mut directories = Vec::new();
+    build_tree(
+        args.dir_levels,
+        args.dirs_per_level,
+        &mut next_inode,
+        Directory {
+            inode: 1,
+            parent_inode: 0,
+            name: Vec::new(),
+        },
+        &mut directories,
+    );
+    let mut cold_attributes = Vec::new();
+    if args.cold_corpus {
+        use brewfs::workspace::packed::snapshot::{SnapshotColdAttributes, SnapshotXattr};
+        let inode = next_inode;
+        next_inode += 1;
+        cold_attributes.push(SnapshotColdAttributes {
+            inode,
+            symlink_target: Some(b"raw-\xff-target".to_vec()),
+            xattrs: Vec::new(),
+            acl: Vec::new(),
+        });
+        let inode = next_inode;
+        next_inode += 1;
+        cold_attributes.push(SnapshotColdAttributes {
+            inode,
+            symlink_target: None,
+            xattrs: vec![SnapshotXattr {
+                name: b"user.brewfs.test".to_vec(),
+                value: b"\0\xffcold".to_vec(),
+            }],
+            acl: vec![brewfs::meta::store::AclRule {
+                acl_type: 1,
+                qualifier: 0,
+                permissions: 7,
+            }],
+        });
+    }
+    let hardlink_inode = if args.hardlink_corpus {
+        let inode = next_inode;
+        next_inode += 1;
+        Some(inode)
+    } else {
+        None
+    };
+    let hardlink_parent = directories
+        .iter()
+        .find(|directory| directory.parent_inode == 1)
+        .map(|directory| directory.inode)
+        .unwrap_or(1);
+    let mut file_index = 0u64;
+    let mut group_count = 0u64;
+    let mut logical_bytes = 0u64;
+    for directory in &directories {
+        let key = if directory.inode == 1 {
+            root_key
+        } else {
+            directory_key(snapshot_id, directory.inode)
+        };
+        let mut files = Vec::new();
+        let mut pending_bytes = 0usize;
+        let mut shard = 0u64;
+        for child in directories
+            .iter()
+            .filter(|child| child.parent_inode == directory.inode)
+        {
+            files.push(PackedFileInput {
+                name: child.name.clone(),
+                inode: child.inode,
+                kind: 2,
+                mode: 0o040755,
+                uid: 0,
+                gid: 0,
+                rdev: 0,
+                nlink: 2,
+                atime_ns: 0,
+                mtime_ns: 0,
+                ctime_ns: 0,
+                flags: 0,
+                data: Vec::new(),
+            });
+        }
+        if directory.inode == 1 && args.cold_corpus {
+            for attributes in &cold_attributes {
+                let symlink = attributes.symlink_target.is_some();
+                files.push(PackedFileInput {
+                    name: if symlink {
+                        b".cold-link".to_vec()
+                    } else {
+                        b".cold-file".to_vec()
+                    },
+                    inode: attributes.inode,
+                    kind: if symlink { 3 } else { 1 },
+                    // Writable permission bits let the diagnostic reach the
+                    // readonly filesystem instead of stopping at DAC denial.
+                    mode: if symlink { 0o120777 } else { 0o100666 },
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    nlink: 1,
+                    atime_ns: 0,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    flags: 0,
+                    data: if symlink {
+                        Vec::new()
+                    } else {
+                        b"cold\n".to_vec()
+                    },
+                });
+            }
+        }
+        if let Some(inode) = hardlink_inode {
+            let mut names = Vec::new();
+            if directory.inode == 1 {
+                names.push(b".hardlink-a".to_vec());
+            }
+            if directory.inode == hardlink_parent {
+                names.push(b".hardlink-b".to_vec());
+            }
+            for name in names {
+                files.push(PackedFileInput {
+                    name,
+                    inode,
+                    kind: 1,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    nlink: 2,
+                    atime_ns: 0,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    flags: 0,
+                    data: b"hardlink\n".to_vec(),
+                });
+            }
+        }
+        if !directories
+            .iter()
+            .any(|child| child.parent_inode == directory.inode)
+        {
+            let mut pending_inline_bytes = files
+                .iter()
+                .filter(|file| {
+                    file.kind == 1
+                        && file.data.len() <= SnapshotBuildPolicy::INLINE_GROUP_PAYLOAD_BYTES
+                })
+                .map(|file| file.data.len())
+                .sum::<usize>();
+            for index in 0..args.files_per_dir {
+                let size = file_size_for_index(file_index, minimum, maximum);
+                if !files.is_empty()
+                    && (pending_bytes >= 8 * 1024 * 1024
+                        || files.len() >= 256
+                        || build_policy.inline_group_needs_flush(
+                            profile,
+                            pending_inline_bytes,
+                            size,
+                        ))
+                {
+                    let id = (directory.inode << 32) | shard;
+                    let (mut group, frames) =
+                        brewfs::workspace::packed::pack_group_files_with_policy(
+                            id,
+                            key,
+                            std::mem::take(&mut files),
+                            profile,
+                            size_classes,
+                            build_policy,
+                        )?;
+                    apply_cold_targets(&mut group, &cold_attributes)?;
+                    producer
+                        .add_container(id, &[group], &frames, &[directory.inode])
+                        .await?;
+                    pending_bytes = 0;
+                    pending_inline_bytes = 0;
+                    shard += 1;
+                    group_count += 1;
+                }
+                files.push(PackedFileInput {
+                    name: format!("f{index:06}").into_bytes(),
+                    inode: next_inode,
+                    kind: 1,
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    nlink: 1,
+                    atime_ns: 0,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    flags: 0,
+                    data: fill_pattern(size, file_index),
+                });
+                next_inode += 1;
+                file_index += 1;
+                logical_bytes += size as u64;
+                pending_bytes += size;
+                if size <= SnapshotBuildPolicy::INLINE_GROUP_PAYLOAD_BYTES {
+                    pending_inline_bytes += size;
+                }
+            }
+        }
+        if !files.is_empty() {
+            let id = (directory.inode << 32) | shard;
+            let (mut group, frames) = brewfs::workspace::packed::pack_group_files_with_policy(
+                id,
+                key,
+                files,
+                profile,
+                size_classes,
+                build_policy,
+            )?;
+            apply_cold_targets(&mut group, &cold_attributes)?;
+            producer
+                .add_container(id, &[group], &frames, &[directory.inode])
+                .await?;
+            group_count += 1;
+        }
+    }
+    for attrs in &cold_attributes {
+        producer.add_cold_attributes(attrs).await?;
+    }
+    let reference = producer.finish().await?;
+    let build = authenticated_build(&provenance_client, &reference).await?;
+    let provenance = serde_json::json!({
+        "capture_scope": "generated-deterministic-corpus",
+        "manifest_payload": "PM11", "index_payload": "IP06",
+        "manifest_key": reference.key, "manifest_digest": hex::encode(reference.digest),
+        "build_provenance": build, "logical_bytes": logical_bytes, "files": file_index,
+    });
+    std::fs::write(
+        args.manifest_output.with_extension("source.json"),
+        serde_json::to_vec_pretty(&provenance)?,
+    )?;
+    std::fs::write(&args.manifest_output, format!("{}\n", reference.key))?;
+    println!(
+        "packed_version=v3 manifest_key={} manifest_digest={} files={} groups={} logical_bytes={}",
+        reference.key,
+        hex::encode(reference.digest),
+        file_index,
+        group_count,
+        logical_bytes
+    );
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-    if args.chunk_size < u64::from(args.block_size)
-        || !args.fio_file_size.is_multiple_of(args.block_size as u64)
-        || !args.fio_file_size.is_multiple_of(args.chunk_size)
+    let mut args = Args::parse();
+    if args.raw_only && (args.frame_policy != "size-only" || args.inline_data != "on") {
+        bail!("packed frame/inline controls require a packed v3 corpus");
+    }
+    if (args.source_file.is_some() || args.source_directory.is_some())
+        && (args.wire_version != 5 || args.raw_only || args.cold_corpus || args.hardlink_corpus)
     {
-        bail!("fio-file-size must be a multiple of block-size and chunk-size must not be smaller");
-    }
-    if args.small_file_size == 0 || args.files_per_dir == 0 {
-        bail!("files-per-dir and small-file-size must be non-zero");
-    }
-    let (dir_levels, dirs_per_level) = if args.dir_levels == 0 {
-        if args.dirs == 0 {
-            bail!("dirs must be non-zero in flat directory mode");
-        }
-        (1, args.dirs)
-    } else {
-        if args.dirs_per_level == 0 {
-            bail!("dirs-per-level must be non-zero in hierarchical mode");
-        }
-        (args.dir_levels, args.dirs_per_level)
-    };
-    if dir_levels > 32 {
-        bail!("dir-levels must be at most 32");
-    }
-    if args.small_file_size > u64::from(args.block_size) || args.small_file_size > 4 * 1024 * 1024 {
-        bail!("small-file-size must fit in one block and be at most 4 MiB");
-    }
-
-    let volume_id = object_id(args.prefix.as_bytes(), "volume");
-    let storage_namespace_id = object_id(args.prefix.as_bytes(), "storage");
-    let slice_base = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before unix epoch")?
-        .as_secs()
-        .saturating_mul(100_000);
-    let mut namespace = BTreeMap::new();
-    row(&mut namespace, inode_key(1), attr(2, 0o040755, 0, None, 2))?;
-    let mut next_inode = 2_u64;
-    let mut leaf_dirs = Vec::new();
-    build_directory_tree(
-        &mut namespace,
-        &mut next_inode,
-        1,
-        0,
-        dir_levels,
-        dirs_per_level,
-        &mut Vec::new(),
-        &mut leaf_dirs,
-    )?;
-    if leaf_dirs.is_empty() {
-        bail!("directory tree produced no leaf directories");
-    }
-    let corpus_directory_count = next_inode - 2;
-    let bench_dir = next_inode;
-    next_inode += 1;
-    row(
-        &mut namespace,
-        inode_key(bench_dir),
-        attr(2, 0o040755, 0, Some(1), 2),
-    )?;
-    row(
-        &mut namespace,
-        dentry_key(1, b"bench"),
-        inode_key(bench_dir),
-    )?;
-
-    let verify_dir = next_inode;
-    next_inode += 1;
-    row(
-        &mut namespace,
-        inode_key(verify_dir),
-        attr(2, 0o040755, 0, Some(1), 2),
-    )?;
-    row(
-        &mut namespace,
-        dentry_key(1, b"verify"),
-        inode_key(verify_dir),
-    )?;
-
-    let mut data = BTreeMap::new();
-    let small_chunk = args.small_file_size.div_ceil(args.chunk_size);
-    if small_chunk != 1 {
-        bail!("small-file-size must fit in one chunk for this fixture")
-    }
-    let small_file_count = u64::try_from(leaf_dirs.len())
-        .ok()
-        .and_then(|count| count.checked_mul(args.files_per_dir))
-        .ok_or_else(|| anyhow::anyhow!("small-file count overflow"))?;
-    let small_slice_base = slice_base
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("small slice ID overflow"))?;
-    let bench_slice_base = small_slice_base
-        .checked_add(small_file_count)
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| anyhow::anyhow!("benchmark slice ID overflow"))?;
-    let mut file_count = 1_u64; // the fio file below
-    let mut total_logical_bytes = args.fio_file_size;
-    let first_small_inode = next_inode;
-    for (dir_index, leaf) in leaf_dirs.iter().enumerate() {
-        let dir_inode = leaf.inode;
-        for file_index in 0..args.files_per_dir {
-            let inode = next_inode;
-            next_inode += 1;
-            let name = format!("f{file_index:05}");
-            let nlink = if inode == first_small_inode { 2 } else { 1 };
-            row(
-                &mut namespace,
-                inode_key(inode),
-                attr(1, 0o100644, args.small_file_size, Some(dir_inode), nlink),
-            )?;
-            row(
-                &mut namespace,
-                dentry_key(dir_inode, name.as_bytes()),
-                inode_key(inode),
-            )?;
-            let global_file_index = (dir_index as u64)
-                .checked_mul(args.files_per_dir)
-                .and_then(|base| base.checked_add(file_index))
-                .ok_or_else(|| anyhow::anyhow!("small-file index overflow"))?;
-            let slice_id = small_slice_base
-                .checked_add(global_file_index)
-                .ok_or_else(|| anyhow::anyhow!("small slice ID overflow"))?;
-            let chunk_id = chunk_id_for(inode as i64, 0)?;
-            row(
-                &mut data,
-                extent_key(inode, 0, 0),
-                encode_extent_slice_value(args.small_file_size, slice_id, chunk_id, 0),
-            )?;
-            file_count += 1;
-            total_logical_bytes += args.small_file_size;
-        }
-        eprintln!(
-            "prepared leaf directory {} ({}/{})",
-            dir_index,
-            dir_index + 1,
-            leaf_dirs.len()
+        bail!(
+            "source capture requires the current packed encoding and cannot combine generated/raw corpora"
         );
     }
-
-    // Keep a compact set of POSIX shape checks outside the throughput scan.
-    // The hardlink points at the first small file; all other special inodes
-    // are metadata-only and therefore need no data extent.
-    row(
-        &mut namespace,
-        dentry_key(verify_dir, b"hardlink"),
-        inode_key(first_small_inode),
-    )?;
-    let symlink_inode = next_inode;
-    next_inode += 1;
-    let first_leaf = &leaf_dirs[0].components;
-    let symlink_target = format!("../{}/f00000", first_leaf.join("/")).into_bytes();
-    row(
-        &mut namespace,
-        inode_key(symlink_inode),
-        FrozenInodeRecord {
-            kind: 3,
-            mode: 0o120777,
-            uid: 0,
-            gid: 0,
-            rdev: 0,
-            nlink: 1,
-            size: symlink_target.len() as u64,
-            atime_ns: 0,
-            mtime_ns: 0,
-            ctime_ns: 0,
-            parent_hint: Some(verify_dir),
-            symlink_target: Some(symlink_target.clone()),
+    if let Some(source) = &args.source_directory {
+        if !matches!(
+            args.source_consistency.as_deref(),
+            Some("best-effort-detected" | "snapshot-backed")
+        ) || args.source_hardlink_policy.is_none()
+        {
+            bail!(
+                "source-directory requires explicit source-consistency and source-hardlink-policy"
+            );
         }
-        .encode(),
-    )?;
-    row(
-        &mut namespace,
-        dentry_key(verify_dir, b"symlink"),
-        inode_key(symlink_inode),
-    )?;
-
-    for (name, kind, mode, rdev) in [
-        (b"fifo".as_slice(), 4_u8, 0o010644_u32, 0_u64),
-        (b"socket".as_slice(), 5_u8, 0o140755_u32, 0_u64),
-        (b"char".as_slice(), 6_u8, 0o020600_u32, 0x1234_u64),
-        (b"block".as_slice(), 7_u8, 0o060600_u32, 0x5678_u64),
-    ] {
-        let inode = next_inode;
-        next_inode += 1;
-        row(
-            &mut namespace,
-            inode_key(inode),
-            FrozenInodeRecord {
-                kind,
-                mode,
-                uid: 0,
-                gid: 0,
-                rdev,
-                nlink: 1,
-                size: 0,
-                atime_ns: 0,
-                mtime_ns: 0,
-                ctime_ns: 0,
-                parent_hint: Some(verify_dir),
-                symlink_target: None,
+        let output = resolve_destination(&args.output_dir)?;
+        let prefix = args.prefix.trim_matches('/');
+        let objects = resolve_destination(&output.join(if prefix.is_empty() {
+            "packed-snapshot-fixture"
+        } else {
+            prefix
+        }))?;
+        let manifest = resolve_destination(&args.manifest_output)?;
+        let provenance = resolve_destination(&manifest.with_extension("source.json"))?;
+        #[cfg(target_os = "linux")]
+        {
+            let mut destinations = vec![manifest.clone(), provenance];
+            if args.bucket.is_none() {
+                destinations.extend([output.clone(), objects]);
             }
-            .encode(),
-        )?;
-        row(
-            &mut namespace,
-            dentry_key(verify_dir, name),
-            inode_key(inode),
-        )?;
-    }
-
-    let bench_inode = next_inode;
-    let bench_name = b"read.bin";
-    row(
-        &mut namespace,
-        inode_key(bench_inode),
-        attr(1, 0o100644, args.fio_file_size, Some(bench_dir), 1),
-    )?;
-    row(
-        &mut namespace,
-        dentry_key(bench_dir, bench_name),
-        inode_key(bench_inode),
-    )?;
-    let block_count = args.fio_file_size / u64::from(args.block_size);
-    for block_index in 0..block_count {
-        let offset = block_index * u64::from(args.block_size);
-        let chunk_index = offset / args.chunk_size;
-        let chunk_offset = offset % args.chunk_size;
-        let chunk_id = chunk_id_for(bench_inode as i64, chunk_index)?;
-        let slice_id = bench_slice_base
-            .checked_add(block_index)
-            .ok_or_else(|| anyhow::anyhow!("benchmark slice ID overflow"))?;
-        row(
-            &mut data,
-            extent_key(bench_inode, chunk_index, chunk_offset),
-            encode_extent_slice_value(u64::from(args.block_size), slice_id, chunk_id, chunk_offset),
-        )?;
-    }
-
-    let inventory = vec![FrozenRow {
-        key: b"fixture-version".to_vec(),
-        value: b"packed-metadata-v1".to_vec(),
-    }];
-    let namespace_rows = namespace
-        .into_iter()
-        .map(|(key, value)| FrozenRow { key, value })
-        .collect::<Vec<_>>();
-    let data_rows = data
-        .into_iter()
-        .map(|(key, value)| FrozenRow { key, value })
-        .collect::<Vec<_>>();
-    file_count += 5; // symlink + fifo/socket/char/block; the hardlink is not a new inode.
-    total_logical_bytes += symlink_target.len() as u64;
-    let input = FrozenSnapshotInput {
-        volume_id,
-        storage_namespace_id,
-        chunk_size: args.chunk_size,
-        block_size: args.block_size,
-        required_features: features::PACKED_DATA_UNCOMPRESSED_BLOCKS,
-        logical_revision: revision_id(args.prefix.as_bytes(), "revision"),
-        namespace_rows,
-        data_rows,
-        inventory_rows: inventory,
-        file_count,
-        directory_count: corpus_directory_count + 3,
-        total_logical_bytes,
-        created_at_ns: 0,
-        namespace_object_id: object_id(args.prefix.as_bytes(), "namespace"),
-        data_object_id: object_id(args.prefix.as_bytes(), "data"),
-        inventory_object_id: object_id(args.prefix.as_bytes(), "inventory"),
-        manifest_object_id: object_id(args.prefix.as_bytes(), "manifest"),
-    };
-    let snapshot = build_snapshot(input).map_err(|error| anyhow::anyhow!(error))?;
-
-    let config = S3Config {
-        bucket: args.bucket.clone(),
-        region: Some(args.region.clone()),
-        endpoint: Some(args.endpoint.clone()),
-        force_path_style: args.force_path_style,
-        part_size: 16 * 1024 * 1024,
-        max_concurrency: 16,
-        disable_payload_checksum: true,
-        ..Default::default()
-    };
-    let backend = S3Backend::with_config(config).await?;
-    let client = ObjectClient::new(backend.clone());
-    for global_file_index in 0..small_file_count {
-        let mut block = vec![0_u8; args.small_file_size as usize];
-        fill_small_file_pattern(
-            &mut block,
-            0,
-            args.small_file_size as usize,
-            global_file_index,
-        );
-        let slice_id = small_slice_base
-            .checked_add(global_file_index)
-            .ok_or_else(|| anyhow::anyhow!("small slice ID overflow"))?;
-        put_block(&client, slice_id, 0, &block).await?;
-    }
-    for block_index in 0..block_count {
-        let mut block = vec![0_u8; args.block_size as usize];
-        for (index, byte) in block.iter_mut().enumerate() {
-            *byte = (index as u64 + block_index) as u8;
+            brewfs::workspace::packed::snapshot::SnapshotSourceNamespaceInventory::validate_output_paths(source, &destinations)?;
         }
-        let slice_id = bench_slice_base
-            .checked_add(block_index)
-            .ok_or_else(|| anyhow::anyhow!("benchmark slice ID overflow"))?;
-        put_block(&client, slice_id, 0, &block).await?;
+        #[cfg(not(target_os = "linux"))]
+        bail!("source namespace import requires Linux");
+        // Use the resolved destination, so a missing component followed by ..
+        // cannot create a scratch directory inside the read-only source.
+        args.output_dir = output;
+        args.manifest_output = manifest;
     }
-    let repository = BackendObjectRepository::new(client);
-    let manifest = upload_snapshot(&repository, &snapshot).await?;
-    let manifest_key = String::from_utf8(manifest.key.clone()).context("manifest key is utf8")?;
-    std::fs::write(&args.manifest_output, format!("{manifest_key}\n"))?;
-    println!("manifest_key={manifest_key}");
-    println!(
-        "files={file_count} directories={} leaf_directories={} dir_levels={} dirs_per_level={} logical_bytes={total_logical_bytes}",
-        corpus_directory_count + 3,
-        leaf_dirs.len(),
-        dir_levels,
-        dirs_per_level
-    );
-    println!("first_leaf_path={}/", first_leaf.join("/"));
-    println!(
-        "small_data_objects={small_file_count} files_per_data_object=1 first_small_slice_id={small_slice_base} fio_blocks={block_count}"
-    );
-    Ok(())
+    if (args.cold_corpus || args.hardlink_corpus) && (args.wire_version != 5 || args.raw_only) {
+        bail!("cold-corpus requires the current packed encoding");
+    }
+    if args.dir_levels > 8 || args.dirs_per_level == 0 || args.files_per_dir == 0 {
+        bail!("dir-levels must be <= 8 and fanout/files-per-dir must be non-zero");
+    }
+    file_size_range(&args)?;
+    access_profile(&args.access_profile)?;
+    fixture_size_classes(&args)?;
+    if args.chunk_size < u64::from(args.block_size) || args.block_size == 0 {
+        bail!("chunk-size must be >= block-size and block-size must be non-zero");
+    }
+    let prefix = args.prefix.trim_matches('/');
+    if let Some(bucket) = args.bucket.as_deref() {
+        let backend = S3Backend::with_config(S3Config {
+            bucket: bucket.to_owned(),
+            endpoint: args.endpoint.clone(),
+            region: args.region.clone(),
+            force_path_style: args.force_path_style,
+            part_size: 16 * 1024 * 1024,
+            max_concurrency: 32,
+            disable_payload_checksum: true,
+            rustfs_ec_block_size_hint: args.s3_rustfs_ec_block_size_hint,
+            ..Default::default()
+        })
+        .await?;
+        let client = ObjectClient::new(backend);
+        if args.raw_only {
+            build_raw_fixture(&args, client, prefix).await
+        } else {
+            build_snapshot_fixture(&args, client, prefix).await
+        }
+    } else {
+        std::fs::create_dir_all(&args.output_dir)?;
+        let backend = LocalFsBackend::new(&args.output_dir);
+        let client = ObjectClient::new(backend);
+        if args.raw_only {
+            build_raw_fixture(&args, client, prefix).await
+        } else {
+            build_snapshot_fixture(&args, client, prefix).await
+        }
+    }
+}
+
+fn resolve_destination(path: &std::path::Path) -> Result<PathBuf> {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut result = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::RootDir => result.push("/"),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::Normal(part) => {
+                result.push(part);
+                match std::fs::symlink_metadata(&result) {
+                    Ok(_) => {
+                        result = std::fs::canonicalize(&result)
+                            .context("resolve destination component")?
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Component::Prefix(_) => bail!("unsupported destination prefix"),
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod codec_control_tests {
+    #[test]
+    fn pack_uploader_accepts_range_heavy_and_rejects_unknown_profile() {
+        use clap::Parser;
+        let args = super::Args::try_parse_from([
+            "fixture",
+            "--bucket",
+            "test",
+            "--s3-rustfs-ec-block-size-hint",
+            "range-heavy",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.s3_rustfs_ec_block_size_hint,
+            Some("range-heavy".parse().unwrap())
+        );
+        assert!(
+            super::Args::try_parse_from([
+                "fixture",
+                "--bucket",
+                "test",
+                "--s3-rustfs-ec-block-size-hint",
+                "range-light",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pack_uploader_accepts_tiered_policy_only_for_s3() {
+        use clap::Parser;
+        let args = super::Args::try_parse_from([
+            "fixture",
+            "--bucket",
+            "test",
+            "--s3-rustfs-ec-block-size-hint",
+            "tiered",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.s3_rustfs_ec_block_size_hint,
+            Some("tiered".parse().unwrap())
+        );
+        assert!(
+            super::Args::try_parse_from(["fixture", "--s3-rustfs-ec-block-size-hint", "tiered",])
+                .is_err()
+        );
+        assert!(
+            super::Args::try_parse_from([
+                "fixture",
+                "--bucket",
+                "test",
+                "--s3-rustfs-ec-block-size-hint",
+                "tiered:broken",
+            ])
+            .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn random_frame_cap_reaches_every_fixture_source_and_authenticated_provenance() {
+        use brewfs::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotObjectKind, SnapshotObjectRef,
+        };
+        for mode in ["directory", "file", "generated"] {
+            for cap in [Some(4 * 1024 * 1024), Some(512 * 1024), None] {
+                let temporary = tempfile::tempdir().unwrap();
+                let source = temporary.path().join("source");
+                let objects = temporary.path().join("objects");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::create_dir(&objects).unwrap();
+                let file = source.join("file");
+                std::fs::write(&file, vec![7; 1024 * 1024]).unwrap();
+                let mut arguments = vec![
+                    "fixture".to_owned(),
+                    "--dir-levels".to_owned(),
+                    "0".to_owned(),
+                    "--files-per-dir".to_owned(),
+                    "1".to_owned(),
+                    "--small-file-size".to_owned(),
+                    (1024 * 1024).to_string(),
+                    "--metadata-codec".to_owned(),
+                    "raw".to_owned(),
+                    "--data-codec".to_owned(),
+                    "raw".to_owned(),
+                ];
+                if let Some(cap) = cap {
+                    arguments.extend(["--max-random-frame-raw-bytes".to_owned(), cap.to_string()]);
+                }
+                let mut args = Args::try_parse_from(arguments).expect("random frame cap CLI");
+                args.manifest_output = temporary.path().join("manifest.txt");
+                match mode {
+                    "directory" => {
+                        args.source_directory = Some(source);
+                        args.source_consistency = Some("best-effort-detected".into());
+                        args.source_hardlink_policy = Some("visible-links".into());
+                    }
+                    "file" => args.source_file = Some(file),
+                    _ => {}
+                }
+                let client = ObjectClient::new(LocalFsBackend::new(&objects));
+                build_snapshot_fixture(&args, client.clone(), "cap-test")
+                    .await
+                    .unwrap();
+                let key = std::fs::read_to_string(&args.manifest_output).unwrap();
+                let bytes = std::fs::read(objects.join(key.trim())).unwrap();
+                let reference = SnapshotObjectRef::from_bytes(
+                    key.trim().into(),
+                    SnapshotObjectKind::Manifest,
+                    &bytes,
+                )
+                .unwrap();
+                let snapshot = AuthenticatedSnapshot::open(&client, &reference)
+                    .await
+                    .unwrap();
+                let manifest = snapshot.manifest();
+                let expected_max = cap.unwrap_or(256 * 1024);
+                let expected_min = expected_max.min(256 * 1024);
+                let expected_count = (1024 * 1024_u64).div_ceil(expected_max);
+                assert_eq!(manifest.size_classes.min_frame_raw_bytes, expected_min);
+                assert_eq!(
+                    manifest.size_classes.max_random_frame_raw_bytes,
+                    expected_max
+                );
+                assert_eq!(
+                    manifest.size_classes.max_sequential_frame_raw_bytes,
+                    8 * 1024 * 1024
+                );
+                assert_eq!(manifest.build.frame_count, expected_count);
+                assert_eq!(manifest.build.frame_raw_bytes, 1024 * 1024);
+                assert_eq!(manifest.build.frame_stored_bytes, 1024 * 1024);
+                assert!(manifest.build.p90.is_none());
+                let provenance: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(args.manifest_output.with_extension("source.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    provenance["build_provenance"]["size_classes"]["max_random_frame_raw_bytes"],
+                    manifest.size_classes.max_random_frame_raw_bytes
+                );
+                assert!(provenance["build_provenance"]["p90"].is_null());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn legacy_four_megabyte_manifest_reads_with_the_current_default_reader() {
+        use brewfs::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotIndexReader, SnapshotObjectKind, SnapshotObjectRef,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let objects = temporary.path().join("objects");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&objects).unwrap();
+        let file = source.join("file");
+        let expected = vec![0xa5; 5 * 1024 * 1024];
+        std::fs::write(&file, &expected).unwrap();
+        let mut args = Args::try_parse_from([
+            "fixture",
+            "--source-file",
+            file.to_str().unwrap(),
+            "--metadata-codec",
+            "raw",
+            "--data-codec",
+            "raw",
+            "--max-random-frame-raw-bytes",
+            "4194304",
+        ])
+        .unwrap();
+        args.manifest_output = temporary.path().join("legacy.manifest");
+        let client = ObjectClient::new(LocalFsBackend::new(&objects));
+        build_snapshot_fixture(&args, client.clone(), "legacy-four-megabyte")
+            .await
+            .unwrap();
+        let manifest_key = std::fs::read_to_string(&args.manifest_output).unwrap();
+        let manifest_key = manifest_key.trim();
+        let manifest_bytes = std::fs::read(objects.join(manifest_key)).unwrap();
+        let reference = SnapshotObjectRef::from_bytes(
+            manifest_key.to_owned(),
+            SnapshotObjectKind::Manifest,
+            &manifest_bytes,
+        )
+        .unwrap();
+        let snapshot = AuthenticatedSnapshot::open(&client, &reference)
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.manifest().size_classes.max_random_frame_raw_bytes,
+            4 * 1024 * 1024
+        );
+        assert_eq!(snapshot.manifest().build.frame_count, 2);
+
+        // The current default is deliberately constructed separately. The
+        // read below must use the authenticated legacy table and frame
+        // directory, rather than deriving lengths from this default.
+        let default_args = Args::try_parse_from(["fixture"]).unwrap();
+        assert_eq!(
+            fixture_size_classes(&default_args)
+                .unwrap()
+                .max_random_frame_raw_bytes,
+            256 * 1024
+        );
+        let reader = SnapshotIndexReader::new(client.clone(), 32 << 20);
+        let entry = snapshot
+            .lookup_dentry(
+                &client,
+                &reader,
+                snapshot.manifest().root_dir_key,
+                b"file",
+                32 << 20,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut actual = vec![0; expected.len()];
+        snapshot
+            .read_inode_range(&client, &reader, entry.inode, 0, &mut actual, 32 << 20)
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn explicit_64_kib_random_cap_remains_readable() {
+        use brewfs::workspace::packed::snapshot::{
+            AuthenticatedSnapshot, SnapshotIndexReader, SnapshotObjectKind, SnapshotObjectRef,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let objects = temporary.path().join("objects");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&objects).unwrap();
+        let file = source.join("file");
+        let expected = vec![0x5a; 1024 * 1024];
+        std::fs::write(&file, &expected).unwrap();
+        let mut args = Args::try_parse_from([
+            "fixture",
+            "--source-file",
+            file.to_str().unwrap(),
+            "--metadata-codec",
+            "raw",
+            "--data-codec",
+            "raw",
+            "--max-random-frame-raw-bytes",
+            "65536",
+        ])
+        .unwrap();
+        args.manifest_output = temporary.path().join("cap64.manifest");
+        let client = ObjectClient::new(LocalFsBackend::new(&objects));
+        build_snapshot_fixture(&args, client.clone(), "explicit-64kib")
+            .await
+            .unwrap();
+        let manifest_key = std::fs::read_to_string(&args.manifest_output).unwrap();
+        let manifest_key = manifest_key.trim();
+        let manifest_bytes = std::fs::read(objects.join(manifest_key)).unwrap();
+        let reference = SnapshotObjectRef::from_bytes(
+            manifest_key.to_owned(),
+            SnapshotObjectKind::Manifest,
+            &manifest_bytes,
+        )
+        .unwrap();
+        let snapshot = AuthenticatedSnapshot::open(&client, &reference)
+            .await
+            .unwrap();
+        assert_eq!(
+            snapshot.manifest().size_classes.min_frame_raw_bytes,
+            64 * 1024
+        );
+        assert_eq!(
+            snapshot.manifest().size_classes.max_random_frame_raw_bytes,
+            64 * 1024
+        );
+        assert_eq!(snapshot.manifest().build.frame_count, 16);
+        let reader = SnapshotIndexReader::new(client.clone(), 32 << 20);
+        let entry = snapshot
+            .lookup_dentry(
+                &client,
+                &reader,
+                snapshot.manifest().root_dir_key,
+                b"file",
+                32 << 20,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut actual = vec![0; expected.len()];
+        snapshot
+            .read_inode_range(&client, &reader, entry.inode, 0, &mut actual, 32 << 20)
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn random_frame_cap_rejects_invalid_tables_and_raw_corpora() {
+        for value in ["0", "32768", "4194305", "8388608"] {
+            assert!(
+                Args::try_parse_from(["fixture", "--max-random-frame-raw-bytes", value]).is_err()
+            );
+        }
+        let non_power_of_two =
+            Args::try_parse_from(["fixture", "--max-random-frame-raw-bytes", "393216"]).unwrap();
+        assert!(fixture_size_classes(&non_power_of_two).is_err());
+        let args =
+            Args::try_parse_from(["fixture", "--max-random-frame-raw-bytes", "65536"]).unwrap();
+        let table = fixture_size_classes(&args).unwrap();
+        assert_eq!(table.min_frame_raw_bytes, 64 * 1024);
+        assert_eq!(table.max_random_frame_raw_bytes, 64 * 1024);
+        assert!(
+            Args::try_parse_from([
+                "fixture",
+                "--raw-only",
+                "true",
+                "--max-random-frame-raw-bytes",
+                "524288"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn p90_policy_rejects_sample_count_above_bound_before_rank_calculation() {
+        let mut policy = serde_json::json!({
+            "schema": "packed-p90-policy-v1",
+            "trace_sha256": "00".repeat(32),
+            "source": "fixture-trace",
+            "captured_at_utc": "2026-10-10T00:00:00Z",
+            "sample_count": 10_000_001u64,
+            "histogram": [{"range_bytes": 1u64, "count": 1u64}],
+            "p90_bytes": 1u64,
+        });
+        let digest = Sha256::digest(serde_json::to_vec(&policy).unwrap());
+        policy["policy_sha256"] = serde_json::Value::String(hex::encode(digest));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("p90-policy.json");
+        std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+
+        let error =
+            read_p90_policy(&path).expect_err("oversized p90 sample count must fail closed");
+        assert!(error.to_string().contains("p90 sample_count is invalid"));
+    }
+
+    #[test]
+    fn g15_cli_accepts_actual_static_and_inline_off_controls() {
+        assert!(
+            Args::try_parse_from([
+                "fixture",
+                "--frame-policy",
+                "static-1mib",
+                "--inline-data",
+                "off",
+                "--metadata-codec",
+                "raw",
+                "--data-codec",
+                "zstd",
+            ])
+            .is_ok(),
+            "required actual layout controls are unavailable"
+        );
+    }
+
+    use super::*;
+    #[test]
+    fn namespace_cli_accepts_explicit_snapshot_provider_selection() {
+        let args = Args::try_parse_from([
+            "fixture",
+            "--source-directory",
+            "readonly-snapshot",
+            "--source-consistency",
+            "snapshot-backed",
+            "--source-hardlink-policy",
+            "visible-links",
+        ])
+        .unwrap();
+        assert_eq!(args.source_consistency.as_deref(), Some("snapshot-backed"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn destination_preflight_rejects_existing_final_source_file_symlink() {
+        use brewfs::workspace::packed::snapshot::SnapshotSourceNamespaceInventory;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let original = source.join("original");
+        std::fs::write(&original, b"source-must-not-change").unwrap();
+        let destination = root.path().join("outside-manifest");
+        std::os::unix::fs::symlink(&original, &destination).unwrap();
+        // This is the actual fixture preflight sequence: the final link is
+        // resolved first, then containment checks the resulting source path.
+        let resolved = resolve_destination(&destination).unwrap();
+        assert_eq!(resolved, original);
+        assert!(
+            SnapshotSourceNamespaceInventory::validate_output_paths(&source, &[resolved]).is_err()
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), b"source-must-not-change");
+        assert_eq!(std::fs::read_dir(&source).unwrap().count(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn destination_preflight_rejects_dangling_final_source_file_symlink() {
+        use brewfs::workspace::packed::snapshot::SnapshotSourceNamespaceInventory;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let absent = source.join("must-not-be-created");
+        let destination = root.path().join("outside-manifest");
+        std::os::unix::fs::symlink(&absent, &destination).unwrap();
+        let accepted = resolve_destination(&destination).and_then(|resolved| {
+            SnapshotSourceNamespaceInventory::validate_output_paths(&source, &[resolved])
+                .map_err(anyhow::Error::from)
+        });
+        assert!(accepted.is_err());
+        assert!(!absent.exists());
+        assert_eq!(std::fs::read_dir(&source).unwrap().count(), 0);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn destination_guard_resolves_aliases_and_missing_tail_without_creating_source_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        assert_eq!(
+            resolve_destination(&alias.join("objects")).unwrap(),
+            source.join("objects")
+        );
+        assert_eq!(
+            resolve_destination(&source.join("missing/../../objects")).unwrap(),
+            root.path().join("objects")
+        );
+        assert_eq!(std::fs::read_dir(&source).unwrap().count(), 0);
+        std::os::unix::fs::symlink(root.path().join("absent"), root.path().join("dangling"))
+            .unwrap();
+        assert!(resolve_destination(&root.path().join("dangling/objects")).is_err());
+    }
+
+    #[test]
+    fn namespace_cli_requires_directory_for_source_policies_and_rejects_mixed_sources() {
+        assert!(
+            Args::try_parse_from(["fixture", "--source-hardlink-policy", "visible-links"]).is_err()
+        );
+        assert!(
+            Args::try_parse_from(["fixture", "--source-consistency", "best-effort-detected"])
+                .is_err()
+        );
+        assert!(
+            Args::try_parse_from([
+                "fixture",
+                "--source-file",
+                "one",
+                "--source-directory",
+                "tree"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn snapshot_codec_controls_preserve_defaults_and_reject_unknown_codecs() {
+        use brewfs::workspace::packed::PackedCodec;
+        assert_eq!(fixture_codec(None).unwrap(), PackedCodec::Zstd);
+        assert_eq!(fixture_codec(Some("raw")).unwrap(), PackedCodec::Raw);
+        assert!(fixture_codec(Some("invalid")).is_err());
+        assert!(Args::try_parse_from(["fixture", "--data-codec", "invalid"]).is_err());
+        let args = Args::try_parse_from([
+            "fixture",
+            "--wire-version",
+            "5",
+            "--data-codec",
+            "raw",
+            "--metadata-codec",
+            "raw",
+        ])
+        .unwrap();
+        assert_eq!(args.data_codec.as_deref(), Some("raw"));
+        assert_eq!(args.metadata_codec.as_deref(), Some("raw"));
+    }
+
+    #[test]
+    fn fixture_defaults_to_current_snapshot_contract_and_rejects_legacy_writer() {
+        assert_eq!(Args::try_parse_from(["fixture"]).unwrap().wire_version, 5);
+        for version in ["4", "6"] {
+            assert!(Args::try_parse_from(["fixture", "--wire-version", version]).is_err());
+        }
+    }
 }

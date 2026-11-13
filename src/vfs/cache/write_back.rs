@@ -11,9 +11,9 @@ use crate::chunk::store::persistent_slice_cache_path;
 
 use super::keys::{DirtySliceKey, DirtySliceState};
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod packed_recovery;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) use packed_recovery::MAX_PACKED_RECOVERY_SLICE_BYTES;
 
 /// Record describing a dirty slice persisted to local SSD.
@@ -112,7 +112,7 @@ impl FsWriteBackCache {
         self.inventory_complete.store(true, Ordering::Release);
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn has_recoverable_for_inode(
         &self,
         ino: i64,
@@ -121,12 +121,10 @@ impl FsWriteBackCache {
         let mut found = false;
         for (index, key) in self.recoverable_keys.iter().enumerate() {
             if index >= max_rows {
-                return Err(
-                    crate::workspace_overlay::packed_v3::PackedWireError::LimitExceeded(
-                        "recovery overlay probe row cap".into(),
-                    )
-                    .into(),
-                );
+                return Err(crate::workspace::packed::PackedWireError::LimitExceeded(
+                    "recovery overlay probe row cap".into(),
+                )
+                .into());
             }
             found |= key.ino == ino;
         }
@@ -923,11 +921,10 @@ mod tests {
             local_seq: 13,
             epoch: 0,
         };
-        let first =
-            FsWriteBackCache::new_with_sync(temp.path().join("flat-v1/first/writeback"), true)
-                .with_volume_scope(Some("first".to_string()));
+        let first = FsWriteBackCache::new_with_sync(temp.path().join("flat/first/writeback"), true)
+            .with_volume_scope(Some("first".to_string()));
         let second =
-            FsWriteBackCache::new_with_sync(temp.path().join("flat-v1/second/writeback"), true)
+            FsWriteBackCache::new_with_sync(temp.path().join("flat/second/writeback"), true)
                 .with_volume_scope(Some("second".to_string()));
 
         first
