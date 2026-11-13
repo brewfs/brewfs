@@ -2283,7 +2283,7 @@ fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u
     let bytes = value.map(str::parse::<u64>).transpose()?.unwrap_or(8 << 20);
     anyhow::ensure!(
         bytes == 0 || (513..=64 << 20).contains(&bytes),
-        "BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES must be 0 or 513 bytes through 64 MiB"
+        "BREWFS_PACKED_RETAINED_PAYLOAD_BYTES must be 0 or 513 bytes through 64 MiB"
     );
     Ok(bytes)
 }
@@ -2360,7 +2360,7 @@ where
             .unwrap_or(256 << 20);
         // Retain a small working set by default. The retaining reader hashes
         // every fetched frame, independently of the verification memo switch.
-        let retained_payload = match std::env::var("BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES") {
+        let retained_payload = match std::env::var("BREWFS_PACKED_RETAINED_PAYLOAD_BYTES") {
             Ok(value) => workspace_packed_payload_cache_bytes(Some(&value))?,
             Err(std::env::VarError::NotPresent) => workspace_packed_payload_cache_bytes(None)?,
             Err(error) => return Err(error.into()),

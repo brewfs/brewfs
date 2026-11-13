@@ -5,7 +5,7 @@ Workspace mounts with a Packed lower enable these caches by default:
 | Cache | Default limit | Control |
 |---|---|---|
 | Upper metadata rows, including empty extent/directory results | 64 MiB shared by upper and namespace caches; at most 65,536 entries per cache; 60-second TTL | `BREWFS_WORKSPACE_ROW_CACHE_BYTES`, `BREWFS_WORKSPACE_ROW_CACHE_TTL_MS`; `BREWFS_WORKSPACE_EMPTY_QUERY_CACHE=0` disables only empty-result caching |
-| Authenticated lower payload frames | 8 MiB per mount, filled on demand | `BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES`; `0` disables retention; nonzero capacity must be 513 bytes–64 MiB |
+| Authenticated lower payload frames | 8 MiB per mount, filled on demand | `BREWFS_PACKED_RETAINED_PAYLOAD_BYTES`; `0` disables retention; nonzero capacity must be 513 bytes–64 MiB |
 
 The 8 MiB default matches the local hot-lower validation and limits additional
 memory per workspace. The charge includes decoded frame bytes and 512 bytes of
@@ -17,7 +17,7 @@ No environment variables are required to enable these defaults. To give lower
 frames 32 MiB on a larger workspace:
 
 ```bash
-export BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES=33554432
+export BREWFS_PACKED_RETAINED_PAYLOAD_BYTES=33554432
 ```
 
 Every newly fetched frame entering retention is authenticated, including after
