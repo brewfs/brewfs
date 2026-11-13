@@ -5,6 +5,7 @@ use tokio::sync::Semaphore;
 struct Memory {
     rows: Mutex<Values>,
     commits: AtomicUsize,
+    timed_reads: AtomicUsize,
     now: AtomicI64,
     fail: AtomicBool,
     lost_reply: AtomicBool,
@@ -17,6 +18,7 @@ impl Default for Memory {
         Self {
             rows: Mutex::new(Values::new()),
             commits: AtomicUsize::new(0),
+            timed_reads: AtomicUsize::new(0),
             now: AtomicI64::new(1),
             fail: AtomicBool::new(false),
             lost_reply: AtomicBool::new(false),
@@ -37,10 +39,24 @@ impl WorkspaceKvBackend for Arc<Memory> {
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
         Ok(self.rows.lock().await.get(key).cloned().flatten())
     }
+    async fn get_many(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        let rows = self.rows.lock().await;
+        Ok(keys
+            .iter()
+            .map(|k| rows.get(k).cloned().flatten())
+            .collect())
+    }
+    async fn get_many_consistent(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        self.get_many(keys).await
+    }
     async fn get_many_consistent_with_time(
         &self,
         keys: &[Vec<u8>],
     ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        self.timed_reads.fetch_add(1, Ordering::SeqCst);
         let rows = self.rows.lock().await;
         Ok((
             keys.iter()
@@ -165,12 +181,15 @@ fn backend(remote: Arc<Memory>, config: LocalMetadataConfig) -> LocalMetadataBac
         flush: Mutex::new(()),
         receipt_key: b"local-metadata/test".to_vec(),
         failed: AtomicBool::new(false),
+        checkpoint_needed: AtomicBool::new(false),
     });
     LocalMetadataBackend {
         remote,
         core: Some(core),
     }
 }
+
+mod concurrency;
 fn check(value: Option<u8>) -> Vec<KvCheck> {
     vec![KvCheck {
         key: b"inode/1".to_vec(),
@@ -585,7 +604,8 @@ async fn local_metadata_real_redis_pairs() {
                 .unwrap();
             println!(
                 "LOCAL_SYNC_RESULT {}",
-                serde_json::json!({"pair": pair, "mode": mode, "operations":100, "active_ns":active_ns,"total_with_drain_ns":total_ns,"operation_ns":samples,"redis_before":before,"redis_after":after,"final_value":99})
+                serde_json::json!({"pair": pair, "mode": mode, "operations":100, "active_ns":active_ns,"total_with_drain_ns":total_ns,"operation_ns":samples,"redis_before":before,"redis_after":after,"final_value":99,
+                    "stages": b.core.as_ref().map(|c| c.journal.profile.snapshot())})
             );
         }
     }

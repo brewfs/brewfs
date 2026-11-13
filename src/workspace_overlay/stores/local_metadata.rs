@@ -19,6 +19,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
+mod profile;
+use profile::{Profile, Stage};
 
 type Values = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 const MAX_JOURNAL: u64 = 32 << 20;
@@ -166,6 +168,7 @@ impl JournalState {
 
 struct Journal {
     directory: PathBuf,
+    profile: Profile,
     // The separate lock inode survives atomic replacement of state.bin.
     _lock: File,
     #[cfg(test)]
@@ -209,6 +212,7 @@ impl Journal {
         ));
         let journal = Self {
             directory: config.directory.clone(),
+            profile: Profile::default(),
             _lock: lock,
             #[cfg(test)]
             pause: std::sync::Mutex::new(None),
@@ -256,10 +260,14 @@ impl Journal {
                 resume.recv().map_err(codec)?;
             }
         }
+        let encode = self.profile.span(Stage::JournalEncode);
         let payload = bincode::serialize(state).map_err(codec)?;
         if payload.len() as u64 + 40 > MAX_JOURNAL {
             return Err(invalid("metadata journal capacity exceeded"));
         }
+        let digest = Sha256::digest(&payload);
+        drop(encode);
+        let write = self.profile.span(Stage::JournalWrite);
         let path = self.directory.join("state.tmp");
         let mut file = OpenOptions::new()
             .write(true)
@@ -267,9 +275,13 @@ impl Journal {
             .truncate(true)
             .open(&path)?;
         file.write_all(MAGIC)?;
-        file.write_all(&Sha256::digest(&payload))?;
+        file.write_all(&digest)?;
         file.write_all(&payload)?;
+        drop(write);
+        let sync = self.profile.span(Stage::JournalFileSync);
         file.sync_all()?;
+        drop(sync);
+        let _rename = self.profile.span(Stage::JournalRenameSync);
         std::fs::rename(path, self.directory.join("state.bin"))?;
         File::open(&self.directory)?.sync_all()?;
         Ok(())
@@ -285,6 +297,9 @@ struct Core {
     flush: Mutex<()>,
     receipt_key: Vec<u8>,
     failed: AtomicBool,
+    // Buffered state may advance before its snapshot reaches disk. Only the
+    // serialized flush driver clears this, including after an ACK write fails.
+    checkpoint_needed: AtomicBool,
 }
 
 async fn read_receipt(
@@ -325,10 +340,12 @@ impl Core {
             return Ok(());
         }
         let journal = self.journal.clone();
+        let queued = journal.profile.start();
         // The blocking job owns the state lock AND its installation. Cancelling
         // an awaiter cannot let a later edit race a still-running fsync/rename,
         // or leave a durable snapshot newer than the in-memory view.
         tokio::task::spawn_blocking(move || {
+            journal.profile.record(Stage::BlockingQueue, queued);
             journal.persist(&next)?;
             *state = next;
             Ok(())
@@ -337,32 +354,96 @@ impl Core {
         .map_err(|e| WorkspaceError::Backend(e.to_string()))?
     }
 
-    // Never holds state across remote commit. New edits go into pending while
-    // the immutable in-flight batch is being acknowledged.
-    async fn flush_to(&self, target: u64) -> Result<(), WorkspaceError> {
+    // Buffered updates do not promise per-operation durability. Publish their
+    // snapshot in memory, then persist it without blocking readers/new edits.
+    // The flush driver stays serialized across BOTH this I/O and remote CAS.
+    async fn checkpoint(
+        &self,
+        mut state: tokio::sync::OwnedMutexGuard<JournalState>,
+        next: JournalState,
+    ) -> Result<(), WorkspaceError> {
+        if self.config.sync_on_update {
+            return self.install(state, next, true).await;
+        }
+        self.checkpoint_needed.store(true, Ordering::Release);
+        *state = next;
+        let snapshot = state.clone();
+        drop(state);
+        let journal = self.journal.clone();
+        let queued = journal.profile.start();
+        tokio::task::spawn_blocking(move || {
+            journal.profile.record(Stage::BlockingQueue, queued);
+            journal.persist(&snapshot)
+        })
+        .await
+        .map_err(|e| WorkspaceError::Backend(e.to_string()))??;
+        self.checkpoint_needed.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn flush_to(self: &Arc<Self>, target: u64) -> Result<(), WorkspaceError> {
+        if self.config.sync_on_update {
+            return self.flush_inner(target).await;
+        }
+        // Cancellation of an fsync/flush awaiter must not release the driver
+        // while its blocking snapshot write is still running. The owned worker
+        // completes the checkpoint, and the next driver waits for it.
+        let core = self.clone();
+        tokio::spawn(async move {
+            let result = core.flush_inner(target).await;
+            core.failed.store(result.is_err(), Ordering::Release);
+            result
+        })
+        .await
+        .map_err(|e| WorkspaceError::Backend(e.to_string()))?
+    }
+
+    // Never holds state across remote commit. In buffered mode it also releases
+    // state across journal I/O; the immutable flight remains separate from edits.
+    async fn flush_inner(&self, target: u64) -> Result<(), WorkspaceError> {
+        let wait = self.journal.profile.span(Stage::FlushWait);
         let _driver = self.flush.lock().await;
+        drop(wait);
         loop {
             let (batch, confirmed) = {
+                let wait = self.journal.profile.span(Stage::FreezeStateWait);
                 let state = self.state.clone().lock_owned().await;
+                drop(wait);
                 if state.in_flight.is_none() {
                     if state.pending.operations == 0 {
+                        if self.checkpoint_needed.load(Ordering::Acquire) {
+                            let next = state.clone();
+                            let _install = self.journal.profile.span(Stage::AckInstall);
+                            self.checkpoint(state, next).await?;
+                        }
                         return Ok(());
                     }
                     let mut next = state.clone();
                     next.in_flight = Some(std::mem::take(&mut next.pending));
                     let batch = next.in_flight.clone().unwrap();
                     let confirmed = next.confirmed.clone();
-                    self.install(state, next, true).await?;
+                    let _install = self.journal.profile.span(Stage::FreezeInstall);
+                    self.checkpoint(state, next).await?;
                     (batch, confirmed)
                 } else {
-                    (state.in_flight.clone().unwrap(), state.confirmed.clone())
+                    let batch = state.in_flight.clone().unwrap();
+                    let confirmed = state.confirmed.clone();
+                    // A previous failed freeze must reach disk before sending.
+                    if self.checkpoint_needed.load(Ordering::Acquire) {
+                        let next = state.clone();
+                        let _install = self.journal.profile.span(Stage::FreezeInstall);
+                        self.checkpoint(state, next).await?;
+                    }
+                    (batch, confirmed)
                 }
             };
             let receipt = batch.receipt()?;
             // A lost commit reply or a crash after remote commit is resolved by
             // its receipt, written in the SAME CAS as the metadata and head.
-            if read_receipt(self.remote.as_ref(), &self.receipt_key).await? != Some(receipt.clone())
-            {
+            let receipt_timer = self.journal.profile.span(Stage::ReceiptRead);
+            let remote_receipt = read_receipt(self.remote.as_ref(), &self.receipt_key).await?;
+            drop(receipt_timer);
+            if remote_receipt != Some(receipt.clone()) {
                 let mut checks: Vec<_> = batch
                     .checks
                     .iter()
@@ -390,11 +471,13 @@ impl Core {
                     key: self.receipt_key.clone(),
                     value: receipt.clone(),
                 });
-                match self
+                let commit_timer = self.journal.profile.span(Stage::RemoteCommit);
+                let result = self
                     .remote
                     .compare_and_swap_before(&checks, &writes, batch.deadline)
-                    .await
-                {
+                    .await;
+                drop(commit_timer);
+                match result {
                     Ok(true) => {}
                     result => {
                         if read_receipt(self.remote.as_ref(), &self.receipt_key).await?
@@ -405,12 +488,16 @@ impl Core {
                     }
                 }
             }
+            let wait = self.journal.profile.span(Stage::AckStateWait);
             let state = self.state.clone().lock_owned().await;
+            drop(wait);
             let mut next = state.clone();
             // Only this batch is retired. Never clear pending or its new values.
             next.in_flight = None;
             next.confirmed = Some(receipt);
-            self.install(state, next, true).await?;
+            let install = self.journal.profile.span(Stage::AckInstall);
+            self.checkpoint(state, next).await?;
+            drop(install);
             tracing::debug!(
                 sequence = batch.sequence,
                 operations = batch.operations,
@@ -423,7 +510,7 @@ impl Core {
         }
     }
 
-    async fn flush(&self) -> Result<(), WorkspaceError> {
+    async fn flush(self: &Arc<Self>) -> Result<(), WorkspaceError> {
         let target = self.state.lock().await.sequence;
         let result = self.flush_to(target).await;
         self.failed.store(result.is_err(), Ordering::Release);
@@ -466,6 +553,7 @@ impl LocalMetadataBackend {
             flush: Mutex::new(()),
             receipt_key,
             failed: AtomicBool::new(false),
+            checkpoint_needed: AtomicBool::new(false),
         });
         // Recover before lease acquisition/lifecycle mutations. Expired or
         // changed authority fails closed, preserving the journal for recovery.
@@ -478,7 +566,8 @@ impl LocalMetadataBackend {
                 let Some(core) = weak.upgrade() else {
                     break;
                 };
-                let dirty = core.state.lock().await.dirty();
+                let dirty = core.state.lock().await.dirty()
+                    || core.checkpoint_needed.load(Ordering::Acquire);
                 if dirty && let Err(error) = core.flush().await {
                     tracing::warn!(%error, "metadata sync retained pending journal; remote barrier will report failure");
                     drop(core);
@@ -506,10 +595,19 @@ impl LocalMetadataBackend {
         keys: &[Vec<u8>],
         limits: Option<KvReadLimits>,
     ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+        let wait = self
+            .core
+            .as_ref()
+            .map(|c| c.journal.profile.span(Stage::ReadStateWait));
         let state = match &self.core {
             Some(core) => Some(core.state.lock().await),
             None => None,
         };
+        drop(wait);
+        let read = self
+            .core
+            .as_ref()
+            .map(|c| c.journal.profile.span(Stage::ReadRemote));
         let (mut values, now) = match limits {
             Some(limits) => {
                 self.remote
@@ -518,6 +616,7 @@ impl LocalMetadataBackend {
             }
             None => self.remote.get_many_consistent_with_time(keys).await?,
         };
+        drop(read);
         if values.len() != keys.len() {
             return Err(codec("metadata read cardinality mismatch"));
         }
@@ -541,6 +640,46 @@ impl LocalMetadataBackend {
             }
         }
         Ok((values, now))
+    }
+
+    // Preserve the caller's read contract. Plain/consistent reads do not ask
+    // for a lease clock: on Redis, adding one turns MGET into TIME + MGET inside
+    // MULTI/EXEC. Mutation validation and timed reads still use the timed path.
+    async fn overlay_untimed(
+        &self,
+        keys: &[Vec<u8>],
+        consistent: bool,
+    ) -> Result<Vec<Option<Vec<u8>>>, WorkspaceError> {
+        let wait = self
+            .core
+            .as_ref()
+            .map(|c| c.journal.profile.span(Stage::ReadStateWait));
+        let state = match &self.core {
+            Some(core) => Some(core.state.lock().await),
+            None => None,
+        };
+        drop(wait);
+        let read = self
+            .core
+            .as_ref()
+            .map(|c| c.journal.profile.span(Stage::ReadRemote));
+        let mut values = if consistent {
+            self.remote.get_many_consistent(keys).await?
+        } else {
+            self.remote.get_many(keys).await?
+        };
+        drop(read);
+        if values.len() != keys.len() {
+            return Err(codec("metadata read cardinality mismatch"));
+        }
+        if let Some(state) = state {
+            for (key, value) in keys.iter().zip(&mut values) {
+                if let Some(local) = state.overlay(key) {
+                    *value = local.clone();
+                }
+            }
+        }
+        Ok(values)
     }
 }
 
@@ -570,6 +709,9 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
     }
     async fn shutdown_metadata_backend(&self) -> Result<(), WorkspaceError> {
         let _guard = self.barrier().await?;
+        if let Some(core) = &self.core {
+            core.journal.profile.emit();
+        }
         self.remote.shutdown_metadata_backend().await
     }
 
@@ -585,7 +727,10 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
                 .compare_and_swap_before(checks, writes, deadline)
                 .await;
         };
+        let _update = core.journal.profile.span(Stage::Update);
+        let wait = core.journal.profile.span(Stage::AdmissionWait);
         let _admission = core.admission.lock().await;
+        drop(wait);
         if core.failed.load(Ordering::Acquire) {
             core.flush().await?;
         }
@@ -604,13 +749,17 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
                 .await;
         }
         loop {
+            let wait = core.journal.profile.span(Stage::UpdateStateWait);
             let state = core.state.clone().lock_owned().await;
+            drop(wait);
+            let merge = core.journal.profile.span(Stage::Merge);
             let sequence = state
                 .sequence
                 .checked_add(1)
                 .ok_or_else(|| invalid("metadata sequence exhausted"))?;
             let mut next = state.clone();
             next.pending.merge(sequence, checks, writes, deadline);
+            drop(merge);
             if next.pending.operations > core.config.max_operations
                 || next.pending.bytes() > core.config.max_bytes
                 || next.pending.checks.len() + next.pending.writes.len() > 8192
@@ -632,6 +781,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
                 continue;
             }
             let keys: Vec<_> = checks.iter().map(|c| c.key.clone()).collect();
+            let validate = core.journal.profile.span(Stage::ValidateRemote);
             let (values, now) = self
                 .remote
                 .get_many_consistent_with_time_bounded(
@@ -646,6 +796,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
                     },
                 )
                 .await?;
+            drop(validate);
             if now >= deadline {
                 return Err(WorkspaceError::Fenced);
             }
@@ -661,6 +812,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
             next.sequence = sequence;
             // Journal mode ACKs durable local state; buffered mode ACKs memory.
             // Both modes persist the immutable batch BEFORE remote dispatch.
+            let _install = core.journal.profile.span(Stage::UpdateInstall);
             core.install(state, next, core.config.sync_on_update)
                 .await?;
             return Ok(true);
@@ -669,10 +821,13 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
 
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
         if let Some(core) = &self.core {
+            let wait = core.journal.profile.span(Stage::ReadStateWait);
             let state = core.state.lock().await;
+            drop(wait);
             if let Some(value) = state.overlay(key) {
                 return Ok(value.clone());
             }
+            let _remote = core.journal.profile.span(Stage::ReadRemote);
             return self.remote.get(key).await;
         }
         self.remote.get(key).await
@@ -681,7 +836,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
         if self.core.is_none() {
             return self.remote.get_many(keys).await;
         }
-        Ok(self.overlay_values(keys, None).await?.0)
+        self.overlay_untimed(keys, false).await
     }
     async fn get_many_consistent(
         &self,
@@ -690,7 +845,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
         if self.core.is_none() {
             return self.remote.get_many_consistent(keys).await;
         }
-        Ok(self.overlay_values(keys, None).await?.0)
+        self.overlay_untimed(keys, true).await
     }
     async fn get_many_consistent_with_time(
         &self,
@@ -815,7 +970,9 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
         limits: KvReadLimits,
     ) -> Result<bool, WorkspaceError> {
         if let Some(core) = &self.core {
+            let wait = core.journal.profile.span(Stage::AuthStateWait);
             let state = core.state.lock().await;
+            drop(wait);
             let mut translated = checks.to_vec();
             let mut complete = true;
             for check in &mut translated {
@@ -842,6 +999,7 @@ impl WorkspaceKvBackend for LocalMetadataBackend {
             }
             if complete {
                 super::kv_backend::validate_bounded_authentication_checks(checks, limits)?;
+                let _remote = core.journal.profile.span(Stage::AuthRemote);
                 return self
                     .remote
                     .authenticate_checks_before_bounded(&translated, deadline, limits)

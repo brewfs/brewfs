@@ -28,6 +28,7 @@ export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
 features=fuse-io-uring-runtime,workspace-overlay,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability
 cargo test --locked --lib --no-default-features --features "$features" local_metadata -- --nocapture
 cargo test --locked --lib --no-default-features --features "$features" local_metadata_real_redis_pairs -- --ignored --nocapture --test-threads=1 | tee "$out/redis-pairs.log"
+cargo test --locked --lib --no-default-features --features "$features" local_metadata_untimed_redis_pairs -- --ignored --nocapture --test-threads=1 | tee "$out/untimed-pairs.log"
 python3 - "$out" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])
@@ -35,5 +36,9 @@ rows = [json.loads(line.split('LOCAL_SYNC_RESULT ', 1)[1])
         for line in (p / 'redis-pairs.log').read_text().splitlines() if 'LOCAL_SYNC_RESULT ' in line]
 assert len(rows) == 9
 (p / 'results.json').write_text(json.dumps(rows, indent=2) + '\n')
+untimed = [json.loads(line.split('UNTIMED_READ_RESULT ', 1)[1])
+           for line in (p / 'untimed-pairs.log').read_text().splitlines() if 'UNTIMED_READ_RESULT ' in line]
+assert len(untimed) == 6
+(p / 'untimed-results.json').write_text(json.dumps(untimed, indent=2) + '\n')
 PY
 printf '%s\n' passed > "$out/status.txt"
