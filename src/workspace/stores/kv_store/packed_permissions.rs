@@ -623,7 +623,7 @@ impl<B: WorkspaceKvBackend> KvWorkspaceStore<B> {
             // uncertainty is returned, never blindly replayed or rolled back.
             let committed = match self
                 .backend
-                .compare_and_swap_before(&checks, &writes, view.lease.expires_at_ns)
+                .compare_and_swap_metadata_before(&checks, &writes, view.lease.expires_at_ns)
                 .await
             {
                 Ok(committed) => committed,

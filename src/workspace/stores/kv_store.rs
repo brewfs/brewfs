@@ -2393,6 +2393,10 @@ where
         self.backend.shutdown_metadata_backend().await
     }
 
+    async fn flush_metadata(&self) -> Result<(), WorkspaceError> {
+        self.backend.flush_metadata().await
+    }
+
     async fn open_packed_reader_session(
         self: Arc<Self>,
         guard: HeadGuard,

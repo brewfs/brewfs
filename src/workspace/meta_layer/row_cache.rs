@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 use lru::LruCache;
 use parking_lot::RwLock;
 
-use crate::workspace::catalog::PermissionSnapshot;
+use crate::workspace::catalog::{HeadGuard, PermissionSnapshot};
+use crate::workspace::ids::{LayerId, LeaseId, WorkspaceId};
+use crate::workspace::model::LayerRecord;
 use crate::workspace::model::{DentryDelta, InodeDelta, XattrDelta};
 
 const CAPACITY: u64 = 65_536;
@@ -81,6 +83,8 @@ impl RowBudget {
         false
     }
 
+    // Keep compatibility with toolchains predating AtomicU64::try_update.
+    #[allow(deprecated)]
     fn admit(self: &Arc<Self>, bytes: u64) -> Option<Charge> {
         self.used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
@@ -144,6 +148,35 @@ impl<T> AsRef<T> for Retained<T> {
     }
 }
 
+/// Mount identity and layer versions; local mutations also invalidate negative
+/// entries through the generation ticket, including mutations in one epoch.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct ReadViewKey {
+    workspace: WorkspaceId,
+    epoch: u64,
+    lease: LeaseId,
+    holder: u64,
+    layers: [(LayerId, u64, Option<u64>); 2],
+}
+
+impl ReadViewKey {
+    pub(super) fn new(guard: &HeadGuard, layers: &[LayerRecord; 2]) -> Self {
+        Self {
+            workspace: guard.workspace_id,
+            epoch: guard.expected_head_epoch,
+            lease: guard.lease_id,
+            holder: guard.holder_generation,
+            layers: std::array::from_fn(|i| {
+                (
+                    layers[i].layer_id,
+                    layers[i].next_sequence,
+                    layers[i].sealed_version,
+                )
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) enum RowKey {
     Inode(i64),
@@ -152,6 +185,8 @@ pub(super) enum RowKey {
     Permission(i64),
     Paths(i64),
     Aliases(i64),
+    EmptyExtent(ReadViewKey, i64, u64, u64, u64),
+    EmptyDirectory(ReadViewKey, i64),
 }
 
 #[derive(Clone)]
@@ -167,6 +202,9 @@ pub(super) enum RowValue {
     /// namespace cache: only commits that write dentries or delete an inode
     /// can change it, so data-only commits keep it.
     Aliases(Retained<Vec<(i64, Vec<u8>)>>),
+    /// A proved empty query, invalidated by every mutation. Its inline payload
+    /// is included in Entry's charge, so it needs no separate heap charge.
+    EmptyUpper(RowTicket),
 }
 
 fn vector_bytes<T>(rows: &Vec<T>, extra: impl Fn(&T) -> usize) -> u64 {
@@ -209,6 +247,7 @@ impl RowValue {
             ),
             Self::Paths(v) => bytes(v, vector_bytes(v, Vec::capacity)),
             Self::Aliases(v) => bytes(v, vector_bytes(v, |(_, name)| name.capacity())),
+            Self::EmptyUpper(_) => 0,
         }
     }
     fn retain(&self, budget: &Arc<RowBudget>) -> bool {
@@ -220,6 +259,7 @@ impl RowValue {
             Self::Permission(v) => v.retain(budget, bytes),
             Self::Paths(v) => v.retain(budget, bytes),
             Self::Aliases(v) => v.retain(budget, bytes),
+            Self::EmptyUpper(_) => true,
         }
     }
 }
@@ -349,6 +389,10 @@ pub(super) struct RowCacheCounters {
     pub misses: AtomicU64,
     pub retained_bytes: Arc<AtomicU64>,
     pub capacity_bytes: AtomicU64,
+    pub extent_queries: AtomicU64,
+    pub extent_empty_hits: AtomicU64,
+    pub directory_queries: AtomicU64,
+    pub directory_empty_hits: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -373,6 +417,18 @@ impl crate::vfs::stats::FsStatsExtension for RowCacheStatsExtension {
         let _ = writeln!(output, "brewfs_workspace_row_cache_hits_total {hits}");
         let _ = writeln!(output, "brewfs_workspace_row_cache_misses_total {misses}");
         let _ = writeln!(output, "brewfs_workspace_row_cache_hit_ratio {ratio:.6}");
+        for (name, counter) in [
+            ("extent_queries", &self.counters.extent_queries),
+            ("extent_empty_cache_hits", &self.counters.extent_empty_hits),
+            ("directory_queries", &self.counters.directory_queries),
+            (
+                "directory_empty_cache_hits",
+                &self.counters.directory_empty_hits,
+            ),
+        ] {
+            let value = counter.load(Ordering::Relaxed);
+            let _ = writeln!(output, "brewfs_workspace_upper_{name}_total {value}");
+        }
         let _ = writeln!(
             output,
             "brewfs_workspace_row_cache_retained_bytes {}",
@@ -480,7 +536,7 @@ impl UpperRowCache {
         let (value, expired) = {
             let rows = self.rows.read();
             match rows.peek(key) {
-                Some(entry) if entry.inserted.elapsed() < self.ttl => {
+                Some(entry) if !self.entry_expired(entry) => {
                     // Repeated hits, including concurrent hits on the same
                     // key, do not acquire an exclusive lock or rewrite an
                     // already-set reference bit.
@@ -509,13 +565,19 @@ impl UpperRowCache {
         }
     }
 
+    fn entry_expired(&self, entry: &Entry) -> bool {
+        entry.inserted.elapsed() >= self.ttl
+            || matches!(&entry.value, RowValue::EmptyUpper(ticket)
+                if ticket.0 != self.generation.load(Ordering::SeqCst))
+    }
+
     fn remove_expired(&self, key: &RowKey) {
         let mut rows = self.rows.write();
         // A replacement may have won while the reader released its guard.
         // Re-check the current entry instead of deleting by the stale read.
         if rows
             .peek(key)
-            .is_some_and(|entry| entry.inserted.elapsed() >= self.ttl)
+            .is_some_and(|entry| self.entry_expired(entry))
         {
             rows.pop(key);
             rows.release_empty_index();
@@ -558,25 +620,25 @@ impl UpperRowCache {
                 }
                 continue;
             }
-            if let Some(key_charge) = self.budget.admit(key_bytes) {
-                if value.retain(&self.budget) {
-                    // Invalidators bump generation before taking this lock.
-                    // If the bump comes later, their removal follows our put.
-                    if !self.disabled.load(Ordering::Acquire)
-                        && self.generation.load(Ordering::SeqCst) == ticket.0
-                    {
-                        rows.put(
-                            key,
-                            Entry {
-                                value,
-                                inserted: Instant::now(),
-                                referenced: AtomicBool::new(false),
-                                _key_charge: key_charge,
-                            },
-                        );
-                    }
-                    return;
+            if let Some(key_charge) = self.budget.admit(key_bytes)
+                && value.retain(&self.budget)
+            {
+                // Invalidators bump generation before taking this lock.
+                // If the bump comes later, their removal follows our put.
+                if !self.disabled.load(Ordering::Acquire)
+                    && self.generation.load(Ordering::SeqCst) == ticket.0
+                {
+                    rows.put(
+                        key,
+                        Entry {
+                            value,
+                            inserted: Instant::now(),
+                            referenced: AtomicBool::new(false),
+                            _key_charge: key_charge,
+                        },
+                    );
                 }
+                return;
             }
             if !self.evict_for_admission(&mut rows) {
                 return;
@@ -590,7 +652,7 @@ impl UpperRowCache {
         let bytes = paths.iter().fold(
             (size_of::<RetainedInner<Vec<Vec<u8>>>>()
                 + 2 * size_of::<usize>()
-                + paths.len() * size_of::<Vec<u8>>()) as u64,
+                + std::mem::size_of_val(paths)) as u64,
             |total, path| total.saturating_add(path.len() as u64),
         );
         self.insert_paths_with(ticket, key, bytes, || paths.to_vec());
@@ -606,7 +668,7 @@ impl UpperRowCache {
         let bytes = parents.iter().fold(
             (size_of::<RetainedInner<Vec<Vec<u8>>>>()
                 + 2 * size_of::<usize>()
-                + parents.len() * size_of::<Vec<u8>>()) as u64,
+                + std::mem::size_of_val(parents)) as u64,
             |total, path| {
                 total
                     .saturating_add(path.len() as u64)

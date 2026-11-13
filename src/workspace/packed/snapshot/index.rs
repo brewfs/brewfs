@@ -522,6 +522,7 @@ pub struct SnapshotIndexReader<B: ObjectBackend + Clone> {
     >,
     frame_directories:
         super::read_cache::RetainedMetadata<SnapshotOwned<super::SnapshotFrameDirectoryPage>>,
+    payload_retention: Option<Arc<super::payload_retention::PayloadRetention>>,
 }
 
 struct SnapshotReaderRuntime<B: ObjectBackend + Clone> {
@@ -533,7 +534,21 @@ pub(crate) struct SnapshotIndexCacheStats {
     pages: Cache<([u8; 32], SnapshotObjectKind, u64), Arc<SnapshotRetainedIndexPage>>,
     cache_ownership: Arc<SnapshotIndexCacheOwnership>,
     configured_bytes: u64,
+    payload_retention: Option<Arc<super::payload_retention::PayloadRetention>>,
 }
+impl SnapshotIndexCacheStats {
+    pub(crate) fn render_payload_retention(&self, output: &mut dyn std::fmt::Write) {
+        if let Some(cache) = &self.payload_retention {
+            cache.render_into(output);
+        } else {
+            let _ = writeln!(
+                output,
+                "brewfs_packed_v3_payload_retention_capacity_bytes 0"
+            );
+        }
+    }
+}
+
 impl std::fmt::Debug for SnapshotIndexCacheStats {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         output
@@ -691,11 +706,32 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotIndexReader<B> {
                 budget.clone(),
             ),
             budget,
+            payload_retention: None,
             demand_pipeline: tokio::sync::Mutex::new(SnapshotReaderRuntime {
                 closed: false,
                 coordinator: None,
             }),
         }
+    }
+
+    pub(crate) fn with_payload_retention(mut self, capacity: u64) -> PackedResult<Self> {
+        if capacity > 0 {
+            self.payload_retention = Some(Arc::new(
+                super::payload_retention::PayloadRetention::new(capacity, self.budget.clone())?,
+            ));
+            tracing::info!(
+                capacity_bytes = capacity,
+                verify_every_fetched_frame = true,
+                "packed retained payload cache"
+            );
+        }
+        Ok(self)
+    }
+
+    pub(super) fn payload_retention(
+        &self,
+    ) -> Option<Arc<super::payload_retention::PayloadRetention>> {
+        self.payload_retention.clone()
     }
 
     pub fn budget(&self) -> &Arc<SnapshotMountBudget> {
@@ -833,11 +869,19 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotIndexReader<B> {
         if let Some(coordinator) = &runtime.coordinator {
             return Ok(coordinator.clone());
         }
-        let coordinator = super::pipeline::SnapshotDemandCoordinator::new(
-            self.client.clone(),
-            self.budget.clone(),
-            super::pipeline::SnapshotPipelineLimits::default(),
-        )?;
+        let coordinator = if self.payload_retention.is_some() {
+            super::pipeline::SnapshotDemandCoordinator::new_authenticated(
+                self.client.clone(),
+                self.budget.clone(),
+                super::pipeline::SnapshotPipelineLimits::default(),
+            )?
+        } else {
+            super::pipeline::SnapshotDemandCoordinator::new(
+                self.client.clone(),
+                self.budget.clone(),
+                super::pipeline::SnapshotPipelineLimits::default(),
+            )?
+        };
         runtime.coordinator = Some(coordinator.clone());
         Ok(coordinator)
     }
@@ -846,6 +890,7 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotIndexReader<B> {
             pages: self.pages.clone(),
             cache_ownership: self.cache_ownership.clone(),
             configured_bytes: self.configured_bytes,
+            payload_retention: self.payload_retention(),
         }
     }
 
@@ -1485,6 +1530,9 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotIndexReader<B> {
     pub(crate) async fn close(&self) {
         let mut runtime = self.demand_pipeline.lock().await;
         runtime.closed = true;
+        if let Some(cache) = &self.payload_retention {
+            cache.close();
+        }
         if let Some(pipeline) = &runtime.coordinator {
             pipeline.shutdown().await;
         }

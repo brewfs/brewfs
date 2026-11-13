@@ -2496,7 +2496,10 @@ where
         _fh: u64,
         _datasync: bool,
     ) -> FuseResult<()> {
-        Ok(())
+        self.meta_layer()
+            .flush_metadata()
+            .await
+            .map_err(|error| Errno::from(VfsError::from_meta(PathHint::none(), error)))
     }
 
     // Test for a POSIX file lock

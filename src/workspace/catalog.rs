@@ -479,6 +479,9 @@ pub struct MutationResult {
 
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
+    async fn flush_metadata(&self) -> Result<(), WorkspaceError> {
+        Ok(())
+    }
     fn name(&self) -> &'static str;
     fn capabilities(&self) -> WorkspaceStoreCapabilities;
     /// Called after reader/session/GC retirement by the catalog's mount owner.

@@ -1061,20 +1061,48 @@ pub(super) async fn prepare<W: WorkspaceStore + 'static>(
             crate::chunk::read_plan::ReadRequestBeyondView.into(),
         ));
     }
-    let rows = meta
-        .store
-        .get_extent_deltas_bounded(
-            ExtentQuery {
-                layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
-                ino,
-                chunk_index,
-                range_start: offset,
-                range_end: end,
-            },
-            MAX_UPPER_EXTENT_ROWS,
-        )
-        .await
-        .map_err(read_workspace_to_meta)?;
+    let cache = meta.empty_query_cache();
+    let key = super::row_cache::RowKey::EmptyExtent(
+        super::row_cache::ReadViewKey::new(&guard, &layers),
+        ino,
+        chunk_index,
+        offset,
+        end,
+    );
+    let rows = if matches!(
+        cache.and_then(|c| c.get(&key)),
+        Some(super::row_cache::RowValue::EmptyUpper(_))
+    ) {
+        meta.row_cache_counters
+            .extent_empty_hits
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Vec::new()
+    } else {
+        let ticket = cache.map(super::row_cache::UpperRowCache::ticket);
+        meta.row_cache_counters
+            .extent_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let rows = meta
+            .store
+            .get_extent_deltas_bounded(
+                ExtentQuery {
+                    layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
+                    ino,
+                    chunk_index,
+                    range_start: offset,
+                    range_end: end,
+                },
+                MAX_UPPER_EXTENT_ROWS,
+            )
+            .await
+            .map_err(read_workspace_to_meta)?;
+        if rows.is_empty()
+            && let (Some(cache), Some(ticket)) = (cache, ticket)
+        {
+            cache.insert(ticket, key, super::row_cache::RowValue::EmptyUpper(ticket));
+        }
+        rows
+    };
     let coverage = resolve_extent_coverage(&layers, &rows, ino, chunk_index, offset..end)
         .map_err(read_workspace_to_meta)?;
     // Backend rows are dropped here. Only resolved upper segments, their gaps

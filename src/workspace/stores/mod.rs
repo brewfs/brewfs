@@ -1,6 +1,7 @@
 pub mod database;
 pub mod kv_backend;
 pub mod kv_store;
+pub mod local_metadata;
 pub mod manager_guard;
 pub mod redis;
 pub mod tikv;

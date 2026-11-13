@@ -31,6 +31,7 @@ mod manifest;
 #[cfg(test)]
 mod metadata_cache_tests;
 mod native_placement;
+mod payload_retention;
 mod pipeline;
 #[cfg(test)]
 pub(crate) fn verify_memo_reservation_bytes() -> PackedResult<u64> {

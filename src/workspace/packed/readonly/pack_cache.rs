@@ -241,10 +241,10 @@ impl PackCache {
                     };
                     let removed = registry.entries.remove(&victim).unwrap();
                     registry.reserved -= removed.size;
-                    if let Some(path) = &removed.persisted {
-                        if path.exists() {
-                            std::fs::remove_file(path)?;
-                        }
+                    if let Some(path) = &removed.persisted
+                        && path.exists()
+                    {
+                        std::fs::remove_file(path)?;
                     }
                 }
                 let Ok(slot) = self.slots.clone().try_acquire_owned() else {

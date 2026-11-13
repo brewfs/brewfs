@@ -1258,6 +1258,10 @@ where
                 .meta()
                 .write_with_coalesced_reservation(ino, desc.chunk_id, desc, new_size, coalesced)
                 .await;
+            let result = match result {
+                Ok(()) => self.shared.backend.meta().flush_metadata().await,
+                Err(error) => Err(error),
+            };
             drop(metadata_commit);
             match result {
                 Ok(()) => {
@@ -5007,6 +5011,10 @@ where
             .meta()
             .write(ino, desc.chunk_id, desc, new_size)
             .await;
+        let result = match result {
+            Ok(()) => shared.backend.meta().flush_metadata().await,
+            Err(error) => Err(error),
+        };
         drop(metadata_commit);
 
         match result {
@@ -5381,6 +5389,12 @@ where
                                 new_size
                             ))
                             .await;
+                        // Remote metadata must own this slice before releasing
+                        // its local dirty record or reporting upload debt paid.
+                        let result = match result {
+                            Ok(()) => shared.backend.meta().flush_metadata().await,
+                            Err(error) => Err(error),
+                        };
                         drop(metadata_commit);
 
                         if let Err(err) = result {

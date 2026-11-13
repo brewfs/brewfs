@@ -297,6 +297,7 @@ impl crate::vfs::stats::FsStatsExtension for SnapshotStatsExtension {
         }
         self.budget.render_into(output);
         self.index.render_into(output);
+        self.index.render_payload_retention(output);
         self.observer.render_into(output);
     }
 }
@@ -684,6 +685,24 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
         metadata_bytes: u64,
         budget: Arc<super::snapshot::SnapshotMountBudget>,
     ) -> Result<Self, PackedWireError> {
+        Self::from_snapshot_budget_with_payload_retention(
+            client,
+            snapshot,
+            chunk_size,
+            metadata_bytes,
+            budget,
+            0,
+        )
+    }
+
+    pub(crate) fn from_snapshot_budget_with_payload_retention(
+        client: crate::cadapter::client::ObjectClient<B>,
+        snapshot: super::snapshot::AuthenticatedSnapshot,
+        chunk_size: u64,
+        metadata_bytes: u64,
+        budget: Arc<super::snapshot::SnapshotMountBudget>,
+        payload_retention: u64,
+    ) -> Result<Self, PackedWireError> {
         let source = snapshot.manifest();
         budget.validate_frame_capability(
             source
@@ -707,7 +726,8 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
                 metadata_bytes,
                 budget.clone(),
                 source.profile,
-            ),
+            )
+            .with_payload_retention(payload_retention)?,
             client,
             snapshot,
             metrics,

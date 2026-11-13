@@ -62,6 +62,7 @@ const AUTH_BACKEND_MESSAGE: &str = "binding authentication injected backend resp
 const BACKEND_MESSAGE: &str = "record_open preparation injected backend response";
 
 struct ValidationControl {
+    metadata_transactions: AtomicUsize,
     group_commit: group_commit_tests::Control,
     renewal_mutation: renewal_mutation_tests::Control,
     mode: AtomicU8,
@@ -81,6 +82,7 @@ struct ValidationControl {
 impl ValidationControl {
     fn new() -> Self {
         Self {
+            metadata_transactions: AtomicUsize::new(0),
             group_commit: group_commit_tests::Control::new(),
             renewal_mutation: renewal_mutation_tests::Control::default(),
             mode: AtomicU8::new(IDLE),
@@ -281,6 +283,14 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for ValidationBackend<B> {
         expires_at_ns: i64,
     ) -> Result<bool, WorkspaceError> {
         self.control.group_commit.before_commit(writes).await;
+        if writes
+            .iter()
+            .any(|w| matches!(w, KvWrite::Put { key, .. } if key.starts_with(b"delta/inode/")))
+        {
+            self.control
+                .metadata_transactions
+                .fetch_add(1, Ordering::SeqCst);
+        }
         let local_mutation = self.control.renewal_mutation.before_commit(writes).await;
         self.control.validations.fetch_add(1, Ordering::SeqCst);
         let mode = self.control.mode.load(Ordering::SeqCst);
@@ -408,7 +418,9 @@ impl BlockStore for UnusedUpper {
 struct Fixture<B: WorkspaceKvBackend> {
     _objects: tempfile::TempDir,
     lower: Arc<PackedReadonlyMeta<crate::cadapter::localfs::LocalFsBackend>>,
-    meta: WorkspaceMetaLayer<KvWorkspaceStore<ValidationBackend<B>>>,
+    meta: WorkspaceMetaLayer<
+        KvWorkspaceStore<crate::workspace::stores::local_metadata::LocalMetadataBackend>,
+    >,
     inner: Arc<B>,
     control: Arc<ValidationControl>,
     authority: Arc<dyn PackedMountAuthority>,
@@ -436,6 +448,14 @@ async fn fixture_with_backend<B: WorkspaceKvBackend>(
     metadata_bytes: u64,
     inner: Arc<B>,
 ) -> Fixture<B> {
+    fixture_with_sync(metadata_bytes, inner, None).await
+}
+
+async fn fixture_with_sync<B: WorkspaceKvBackend>(
+    metadata_bytes: u64,
+    inner: Arc<B>,
+    sync: Option<crate::workspace::stores::local_metadata::LocalMetadataConfig>,
+) -> Fixture<B> {
     let (objects, client, snapshot, proof, _payload) = packed().await;
     let lower = Arc::new(PackedReadonlyMeta::from_snapshot(
         client,
@@ -445,10 +465,18 @@ async fn fixture_with_backend<B: WorkspaceKvBackend>(
     ));
     let control = Arc::new(ValidationControl::new());
     let store = Arc::new(
-        KvWorkspaceStore::new(ValidationBackend {
-            inner: inner.clone(),
-            control: control.clone(),
-        })
+        KvWorkspaceStore::new(
+            crate::workspace::stores::local_metadata::LocalMetadataBackend::new(
+                ValidationBackend {
+                    inner: inner.clone(),
+                    control: control.clone(),
+                },
+                sync,
+                b"packed-meta-integration",
+            )
+            .await
+            .unwrap(),
+        )
         .with_packed_reader_pin_budget(lower.mount_budget()),
     );
     let install = request(store.as_ref(), proof).await;
@@ -502,6 +530,87 @@ async fn shutdown<B: WorkspaceKvBackend>(fixture: &Fixture<B>) {
     fixture.control.mode.store(IDLE, Ordering::SeqCst);
     fixture.authority.close_renewals_and_drain().await.unwrap();
     fixture.meta.shutdown_session().await.unwrap();
+}
+
+#[tokio::test]
+async fn local_metadata_packed_edits_read_latest_then_survive_remote_barrier() {
+    use crate::meta::store::{SetAttrFlags, SetAttrRequest};
+    use crate::workspace::stores::local_metadata::LocalMetadataConfig;
+    for sync_on_update in [true, false] {
+        let journal = tempfile::tempdir().unwrap();
+        let f = fixture_with_sync(
+            64 << 20,
+            Arc::new(packed_open_preparation_test_backend()),
+            Some(LocalMetadataConfig {
+                directory: journal.path().into(),
+                sync_on_update,
+                flush_interval: Duration::from_millis(1000),
+                max_operations: 1024,
+                max_bytes: 1 << 20,
+            }),
+        )
+        .await;
+        let ino = f.meta.create_file(1, "journal-file".into()).await.unwrap();
+        f.meta.flush_metadata().await.unwrap();
+        let before = f.control.metadata_transactions.load(Ordering::SeqCst);
+        for mode in [0o600, 0o640, 0o644] {
+            f.meta
+                .set_attr(
+                    ino,
+                    &SetAttrRequest {
+                        mode: Some(mode),
+                        ..Default::default()
+                    },
+                    SetAttrFlags::empty(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().mode & 0o777, mode);
+        }
+        f.meta.flush_metadata().await.unwrap();
+        assert_eq!(
+            f.control.metadata_transactions.load(Ordering::SeqCst) - before,
+            1,
+            "three actual Packed chmod operations must coalesce"
+        );
+        let chunk_id = crate::vfs::chunk_id_for(ino, 0).unwrap();
+        for index in 0..8 {
+            f.meta
+                .write(
+                    ino,
+                    chunk_id,
+                    crate::chunk::SliceDesc {
+                        slice_id: 80000 + index,
+                        chunk_id,
+                        offset: 0,
+                        length: 64,
+                    },
+                    64,
+                )
+                .await
+                .unwrap();
+            assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().size, 64);
+        }
+        f.meta.flush_metadata().await.unwrap();
+        f.meta.truncate(ino, 16, 4096).await.unwrap();
+        assert_eq!(f.meta.stat(ino).await.unwrap().unwrap().size, 16);
+        f.meta
+            .rename(1, "journal-file", 1, "renamed-journal-file".into())
+            .await
+            .unwrap();
+        assert_eq!(f.meta.lookup(1, "journal-file").await.unwrap(), None);
+        assert_eq!(
+            f.meta.lookup(1, "renamed-journal-file").await.unwrap(),
+            Some(ino)
+        );
+        f.meta.unlink(1, "renamed-journal-file").await.unwrap();
+        f.meta.flush_metadata().await.unwrap();
+        assert_eq!(
+            f.meta.lookup(1, "renamed-journal-file").await.unwrap(),
+            None
+        );
+        shutdown(&f).await;
+    }
 }
 
 fn observed_native_record<T: serde::de::DeserializeOwned>(raw: &Option<Vec<u8>>) -> T {

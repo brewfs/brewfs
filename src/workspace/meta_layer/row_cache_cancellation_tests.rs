@@ -47,6 +47,124 @@ fn confirmed_commit_does_not_disable_unrelated_cached_rows() {
     warm(&cache, 1);
 }
 
+#[test]
+fn negative_rows_cannot_survive_unrelated_mutation_or_cancelled_commit() {
+    let cache = UpperRowCache::new(Duration::from_secs(60));
+    // The value's generation is checked even when ordinary invalidation does
+    // not name its key; the same path protects both empty query variants.
+    let key = RowKey::Inode(99);
+    let old = cache.ticket();
+    cache.insert(old, key.clone(), RowValue::EmptyUpper(old));
+    assert!(cache.get(&key).is_some());
+    cache.invalidate_keys(&[RowKey::Inode(1)]);
+    assert!(cache.get(&key).is_none());
+    cache.insert(old, key.clone(), RowValue::EmptyUpper(old));
+    assert!(cache.get(&key).is_none());
+    let fresh = cache.ticket();
+    cache.insert(fresh, key.clone(), RowValue::EmptyUpper(fresh));
+    drop(CacheCommitGuard::new(Some(&cache), None));
+    assert!(cache.get(&key).is_none());
+    let after = cache.ticket();
+    cache.insert(after, key.clone(), RowValue::EmptyUpper(after));
+    assert!(cache.get(&key).is_none());
+}
+
+#[test]
+fn negative_rows_share_the_existing_capacity_and_expire() {
+    let cache = UpperRowCache::new(Duration::from_secs(60));
+    let ticket = cache.ticket();
+    for ino in 0..(super::CAPACITY + 1000) {
+        cache.insert(
+            ticket,
+            RowKey::Inode(ino as i64),
+            RowValue::EmptyUpper(ticket),
+        );
+    }
+    assert!(cache.rows.read().len() as u64 <= super::CAPACITY);
+    assert!(cache.budget.used.load(Ordering::Acquire) <= cache.budget.limit);
+    // The ticket is not a license to retain a negative result forever.
+    let cache = UpperRowCache::new(Duration::from_millis(25));
+    let ticket = cache.ticket();
+    cache.insert(ticket, RowKey::Inode(9), RowValue::EmptyUpper(ticket));
+    assert!(cache.get(&RowKey::Inode(9)).is_some());
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(cache.get(&RowKey::Inode(9)).is_none());
+}
+
+#[test]
+fn negative_rows_obey_small_byte_budgets_and_release_charges() {
+    let counters = Arc::new(RowCacheCounters::default());
+    let budget = RowBudget::new(4096, &counters);
+    let cache = UpperRowCache::with_budget(Duration::from_secs(60), counters, budget.clone());
+    let ticket = cache.ticket();
+    for ino in 0..100 {
+        cache.insert(ticket, RowKey::Inode(ino), RowValue::EmptyUpper(ticket));
+        assert!(budget.used.load(Ordering::Acquire) <= 4096);
+    }
+    assert!(cache.get(&RowKey::Inode(99)).is_some());
+    assert!(cache.rows.read().len() < 100);
+    cache.invalidate_all();
+    assert_eq!(budget.used.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn negative_keys_separate_workspaces_leases_layer_versions_and_ranges() {
+    let view = ReadViewKey {
+        workspace: WorkspaceId::new(),
+        epoch: 1,
+        lease: LeaseId::new(),
+        holder: 1,
+        layers: [(LayerId::new(), 2, None), (LayerId::new(), 1, Some(1))],
+    };
+    let cache = UpperRowCache::new(Duration::from_secs(60));
+    let key = RowKey::EmptyExtent(view.clone(), 400, 0, 0, 64);
+    let ticket = cache.ticket();
+    cache.insert(ticket, key.clone(), RowValue::EmptyUpper(ticket));
+    assert!(cache.get(&key).is_some());
+    let mut alternatives = Vec::new();
+    let mut changed = view.clone();
+    changed.workspace = WorkspaceId::new();
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.epoch += 1;
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.lease = LeaseId::new();
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.holder += 1;
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.layers[0].0 = LayerId::new();
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.layers[0].1 += 1;
+    alternatives.push(changed);
+    let mut changed = view.clone();
+    changed.layers[1].2 = Some(2);
+    alternatives.push(changed);
+    for changed in alternatives {
+        assert!(
+            cache
+                .get(&RowKey::EmptyExtent(changed, 400, 0, 0, 64))
+                .is_none()
+        );
+    }
+    for (ino, chunk, start, end) in [
+        (401, 0, 0, 64),
+        (400, 1, 0, 64),
+        (400, 0, 1, 64),
+        (400, 0, 0, 65),
+    ] {
+        assert!(
+            cache
+                .get(&RowKey::EmptyExtent(view.clone(), ino, chunk, start, end))
+                .is_none()
+        );
+    }
+    assert!(cache.get(&RowKey::EmptyDirectory(view, 400)).is_none());
+}
+
 #[tokio::test]
 async fn canceling_the_await_disables_authority_even_with_a_live_lease() {
     use futures::FutureExt;

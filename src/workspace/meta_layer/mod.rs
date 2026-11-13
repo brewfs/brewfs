@@ -132,6 +132,7 @@ pub struct WorkspaceMetaLayer<W> {
     write_queue: std::sync::Mutex<WriteQueue>,
     metrics: Arc<WorkspaceMetrics>,
     row_cache_counters: Arc<RowCacheCounters>,
+    empty_query_cache_enabled: bool,
     lower: WorkspaceLower,
 }
 
@@ -306,6 +307,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             write_queue: std::sync::Mutex::new(WriteQueue::default()),
             metrics: global_workspace_metrics(),
             row_cache_counters: Arc::new(RowCacheCounters::default()),
+            empty_query_cache_enabled: true,
             lower: WorkspaceLower::Native,
         }
     }
@@ -355,6 +357,20 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         stats.set_extension(Arc::new(RowCacheStatsExtension {
             counters: self.row_cache_counters.clone(),
         }))
+    }
+
+    /// Diagnostic switch: disabling this optimization restores backend queries,
+    /// while retaining ordinary row caches and every consistency check.
+    pub fn with_empty_query_cache(mut self, enabled: bool) -> Self {
+        self.empty_query_cache_enabled = enabled;
+        self
+    }
+
+    fn empty_query_cache(&self) -> Option<&row_cache::UpperRowCache> {
+        if !self.empty_query_cache_enabled || self.lease_validity.is_none() {
+            return None;
+        }
+        self.upper_row_cache()
     }
 
     /// Install upper rows and the optional Packed lower together: FsStats accepts
@@ -643,6 +659,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     // This is the real original lower transport/reader drain. Only the clean proof
     // owner defers budget closure until the clean release CAS becomes terminal.
     pub(crate) async fn shutdown_packed_runtime_for_clean_release(&self) -> Result<(), MetaError> {
+        self.store
+            .flush_metadata()
+            .await
+            .map_err(workspace_to_meta)?;
         let lower = self.packed_lower().ok_or_else(|| {
             MetaError::NotSupported("packed original shutdown requires its attached lower".into())
         })?;
@@ -3542,11 +3562,19 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
     }
 
     async fn shutdown_session(&self) -> Result<(), MetaError> {
+        self.store
+            .flush_metadata()
+            .await
+            .map_err(workspace_to_meta)?;
         if let Some(lower) = self.packed_lower() {
             self.shutdown_packed_runtime_for_clean_release().await?;
             lower.budget.close();
         }
         Ok(())
+    }
+
+    async fn flush_metadata(&self) -> Result<(), MetaError> {
+        self.store.flush_metadata().await.map_err(workspace_to_meta)
     }
 
     async fn get_plock(

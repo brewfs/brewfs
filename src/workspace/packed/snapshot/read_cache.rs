@@ -20,6 +20,8 @@ struct Fill<T> {
     _permit: SnapshotOwnedPermit,
 }
 
+type InFlightFills<T> = BTreeMap<(u64, [u8; 32]), Arc<Fill<T>>>;
+
 struct FillGuard<'a, T> {
     cache: &'a RetainedMetadata<T>,
     key: (u64, [u8; 32]),
@@ -63,7 +65,7 @@ pub(super) struct RetainedMetadata<T> {
     capacity: u64,
     budget: Arc<SnapshotMountBudget>,
     state: Mutex<State<T>>,
-    fills: Mutex<BTreeMap<(u64, [u8; 32]), Arc<Fill<T>>>>,
+    fills: Mutex<InFlightFills<T>>,
     fill_changed: tokio::sync::Notify,
 }
 

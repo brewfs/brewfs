@@ -12,6 +12,7 @@ mod tests;
 #[derive(Debug)]
 pub(crate) struct SnapshotSharedFrame {
     pub raw: Vec<u8>,
+    pub authenticated_this_fetch: bool,
     pub coverage: Option<Arc<SharedRawCoverage>>,
     _control: SnapshotOwnedPermit,
 }
@@ -71,6 +72,16 @@ impl<B: ObjectBackend + Clone + 'static> SnapshotDemandCoordinator<B> {
         limits: SnapshotPipelineLimits,
     ) -> PackedResult<Arc<Self>> {
         Self::new_configured(client, budget, limits, VerifyMemo::enabled_from_env()?)
+    }
+
+    /// Retained payload must come from this response's authenticated bytes,
+    /// never from a prior response's identity-only verification evidence.
+    pub(crate) fn new_authenticated(
+        client: ObjectClient<B>,
+        budget: Arc<SnapshotMountBudget>,
+        limits: SnapshotPipelineLimits,
+    ) -> PackedResult<Arc<Self>> {
+        Self::new_configured(client, budget, limits, false)
     }
 
     fn new_configured(
@@ -608,6 +619,7 @@ async fn fetch_batch<B: ObjectBackend + Clone, const MEMO: bool>(
                         SnapshotOwned::new(
                             SnapshotSharedFrame {
                                 raw,
+                                authenticated_this_fetch: needs_verification,
                                 coverage,
                                 _control: control,
                             },

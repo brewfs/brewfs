@@ -9,13 +9,14 @@ use crate::workspace::packed::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[derive(Clone)]
 struct CountingBackend {
     inner: LocalFsBackend,
     gets: Arc<AtomicUsize>,
+    corrupt_payload: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -37,7 +38,13 @@ impl ObjectBackend for CountingBackend {
         bytes: &mut [u8],
     ) -> anyhow::Result<usize> {
         self.gets.fetch_add(1, Ordering::SeqCst);
-        self.inner.get_object_range(key, offset, bytes).await
+        let read = self.inner.get_object_range(key, offset, bytes).await?;
+        // This fixture's external frame is one raw 256 KiB payload. Metadata
+        // responses remain intact, so rejection must come from payload hashing.
+        if read == 256 << 10 && self.corrupt_payload.load(Ordering::SeqCst) {
+            bytes[0] ^= 1;
+        }
+        Ok(read)
     }
     async fn get_object_size_bounded(&self, key: &str) -> anyhow::Result<Option<u64>> {
         self.inner.get_object_size_bounded(key).await
@@ -52,12 +59,23 @@ impl ObjectBackend for CountingBackend {
 
 #[tokio::test]
 async fn repeated_authenticated_inode_read_fetches_only_payload() {
+    assert_repeated_authenticated_inode_read(0, 1).await;
+}
+
+#[tokio::test]
+async fn retained_authenticated_inode_frame_needs_no_second_backend_get() {
+    assert_repeated_authenticated_inode_read(1 << 20, 0).await;
+}
+
+async fn assert_repeated_authenticated_inode_read(retention_bytes: u64, repeat_gets: usize) {
     let objects = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let gets = Arc::new(AtomicUsize::new(0));
+    let corrupt_payload = Arc::new(AtomicBool::new(false));
     let client = ObjectClient::new(CountingBackend {
         inner: LocalFsBackend::new(objects.path()),
         gets: gets.clone(),
+        corrupt_payload: corrupt_payload.clone(),
     });
     let policy = SnapshotBuildPolicy {
         frames: SnapshotFramePolicy::Static256Kib,
@@ -114,13 +132,17 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
     let snapshot = AuthenticatedSnapshot::open(&client, &reference)
         .await
         .unwrap();
-    let reader = SnapshotIndexReader::new(client.clone(), 8 << 20);
+    let reader = SnapshotIndexReader::new(client.clone(), 8 << 20)
+        .with_payload_retention(retention_bytes)
+        .unwrap();
+    let before = gets.load(Ordering::SeqCst);
     let mut output = [0; 4096];
     snapshot
         .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
         .await
         .unwrap();
     assert_eq!(output, [0x5a; 4096]);
+    assert!(gets.load(Ordering::SeqCst) > before);
     let before = gets.load(Ordering::SeqCst);
     snapshot
         .read_inode_range(&client, &reader, 2, 4096, &mut output, 32 << 20)
@@ -129,9 +151,14 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
     assert_eq!(output, [0x5a; 4096]);
     assert_eq!(
         gets.load(Ordering::SeqCst) - before,
-        1,
-        "only the payload is fetched again"
+        repeat_gets,
+        "repeat fetches only the payload when retention is disabled"
     );
+    if retention_bytes > 0 {
+        let mut stats = String::new();
+        reader.cache_stats().render_payload_retention(&mut stats);
+        assert!(stats.contains("brewfs_packed_v3_payload_retention_hits_total 1\n"));
+    }
     let before = gets.load(Ordering::SeqCst);
     reader.budget().invalidate_read_caches();
     snapshot
@@ -144,6 +171,28 @@ async fn repeated_authenticated_inode_read_fetches_only_payload() {
         3,
         "lease fence retires both metadata caches"
     );
+    if retention_bytes > 0 {
+        // An evicted frame is fetched again under the same immutable identity.
+        // A verification memo must not admit a corrupt replacement to retention.
+        corrupt_payload.store(true, Ordering::SeqCst);
+        reader.budget().invalidate_read_caches();
+        assert!(
+            snapshot
+                .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
+                .await
+                .is_err(),
+            "retained frames must authenticate every newly fetched response"
+        );
+        corrupt_payload.store(false, Ordering::SeqCst);
+        snapshot
+            .read_inode_range(&client, &reader, 2, 0, &mut output, 32 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            output, [0x5a; 4096],
+            "a failed refill must not populate the cache"
+        );
+    }
 }
 
 async fn sequential_smallfile_cache_fixture() -> (
@@ -157,6 +206,7 @@ async fn sequential_smallfile_cache_fixture() -> (
     let client = ObjectClient::new(CountingBackend {
         inner: LocalFsBackend::new(objects.path()),
         gets: gets.clone(),
+        corrupt_payload: Arc::new(AtomicBool::new(false)),
     });
     let options = SnapshotProducerOptions {
         snapshot_id: [1; 32],

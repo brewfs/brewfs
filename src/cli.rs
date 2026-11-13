@@ -1807,8 +1807,21 @@ where
     S: BlockStore + Send + Sync + 'static,
 {
     let packed_budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
+    use workspace::stores::local_metadata::{LocalMetadataBackend, LocalMetadataConfig};
+    let metadata_sync = LocalMetadataConfig::from_env(&args.mount_point)?;
+    let metadata_scope = format!(
+        "{:?}|{}|{:?}|{}|{:?}",
+        args.meta_backend,
+        args.workspace_namespace,
+        args.workspace,
+        args.meta_url,
+        args.meta_tikv_pd_endpoints
+    );
     match args.meta_backend {
         MetaBackendKind::Sqlx => {
+            if metadata_sync.is_some() {
+                anyhow::bail!("local metadata sync requires a Redis or TiKV Packed workspace")
+            }
             if !args.meta_url.starts_with("sqlite:") {
                 anyhow::bail!("workspace sqlx catalog requires a SQLite URL")
             }
@@ -1818,6 +1831,9 @@ where
         MetaBackendKind::Redis => {
             let backend =
                 RedisWorkspaceBackend::connect(&args.meta_url, &args.workspace_namespace).await?;
+            let backend =
+                LocalMetadataBackend::new(backend, metadata_sync, metadata_scope.as_bytes())
+                    .await?;
             let catalog = KvWorkspaceStore::new(backend)
                 .with_packed_reader_pin_budget(packed_budget.clone())
                 .with_inode_id_blocks();
@@ -1836,6 +1852,9 @@ where
                 args.meta_tikv_tls.as_ref(),
             )
             .await?;
+            let backend =
+                LocalMetadataBackend::new(backend, metadata_sync, metadata_scope.as_bytes())
+                    .await?;
             let catalog = KvWorkspaceStore::new(backend)
                 .with_packed_reader_pin_budget(packed_budget.clone())
                 .with_inode_id_blocks();
@@ -2029,6 +2048,13 @@ where
                 Err(error) => return Err(error.into()),
             })
             .with_lease_bound_row_cache(lease_validity);
+        let empty_query_cache = match std::env::var("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE") {
+            Ok(value) if value == "0" => false,
+            Ok(value) if value == "1" => true,
+            Err(std::env::VarError::NotPresent) => true,
+            _ => anyhow::bail!("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE must be 0 or 1"),
+        };
+        meta_layer = meta_layer.with_empty_query_cache(empty_query_cache);
         let meta_layer = Arc::new(meta_layer);
         let packed = meta_layer.packed_reader_session().is_some();
         if packed {
@@ -2253,6 +2279,16 @@ where
 }
 
 #[cfg(feature = "workspace")]
+fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u64> {
+    let bytes = value.map(str::parse::<u64>).transpose()?.unwrap_or(8 << 20);
+    anyhow::ensure!(
+        bytes == 0 || (513..=64 << 20).contains(&bytes),
+        "BREWFS_PACKED_RETAINED_PAYLOAD_BYTES must be 0 or 513 bytes through 64 MiB"
+    );
+    Ok(bytes)
+}
+
+#[cfg(feature = "workspace")]
 async fn attach_workspace_packed_lower<B, S, W>(
     meta: WorkspaceMetaLayer<W>,
     binding: workspace::catalog::PackedLowerBinding,
@@ -2322,13 +2358,23 @@ where
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(256 << 20);
-        let lower = Arc::new(PackedReadonlyMeta::from_snapshot_budget(
-            client,
-            snapshot,
-            layout.chunk_size,
-            metadata_bytes,
-            budget,
-        )?);
+        // Retain a small working set by default. The retaining reader hashes
+        // every fetched frame, independently of the verification memo switch.
+        let retained_payload = match std::env::var("BREWFS_PACKED_RETAINED_PAYLOAD_BYTES") {
+            Ok(value) => workspace_packed_payload_cache_bytes(Some(&value))?,
+            Err(std::env::VarError::NotPresent) => workspace_packed_payload_cache_bytes(None)?,
+            Err(error) => return Err(error.into()),
+        };
+        let lower = Arc::new(
+            PackedReadonlyMeta::from_snapshot_budget_with_payload_retention(
+                client,
+                snapshot,
+                layout.chunk_size,
+                metadata_bytes,
+                budget,
+                retained_payload,
+            )?,
+        );
         if cache.packed_cache_enabled {
             lower.enable_pack_cache(
                 cache.packed_cache_bytes,
@@ -3100,6 +3146,40 @@ fn database_type_from_url(url: &str) -> DatabaseType {
 #[cfg(test)]
 mod volume_format_tests {
     use super::*;
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_payload_cache_defaults_to_eight_mib_and_can_be_disabled() {
+        assert_eq!(workspace_packed_payload_cache_bytes(None).unwrap(), 8 << 20);
+        assert_eq!(workspace_packed_payload_cache_bytes(Some("0")).unwrap(), 0);
+        assert_eq!(
+            workspace_packed_payload_cache_bytes(Some("513")).unwrap(),
+            513
+        );
+        assert_eq!(
+            workspace_packed_payload_cache_bytes(Some("67108864")).unwrap(),
+            64 << 20
+        );
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_payload_cache_rejects_invalid_or_unbounded_capacity() {
+        for value in [
+            "",
+            "-1",
+            "1",
+            "512",
+            "67108865",
+            "8MiB",
+            "18446744073709551616",
+        ] {
+            assert!(
+                workspace_packed_payload_cache_bytes(Some(value)).is_err(),
+                "{value}"
+            );
+        }
+    }
 
     #[test]
     fn entity_format_is_explicit_and_mount_fails_closed() {
