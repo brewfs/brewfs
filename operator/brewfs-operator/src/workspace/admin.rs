@@ -4,25 +4,25 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context as _};
 use async_trait::async_trait;
-use brewfs::workspace_overlay::admin as catalog_admin;
-pub use brewfs::workspace_overlay::admin::WorkspaceView;
-use brewfs::workspace_overlay::catalog::{
+use brewfs::workspace::admin as catalog_admin;
+pub use brewfs::workspace::admin::WorkspaceView;
+use brewfs::workspace::catalog::{
     CreateSnapshot, CreateVolumeRoot, CreateWorkspace, WorkspaceStore,
 };
-use brewfs::workspace_overlay::error::WorkspaceError;
-use brewfs::workspace_overlay::ids::{LayerId, LeaseId, SnapshotId, WorkspaceId};
-use brewfs::workspace_overlay::model::{
+use brewfs::workspace::error::WorkspaceError;
+use brewfs::workspace::ids::{LayerId, LeaseId, SnapshotId, WorkspaceId};
+use brewfs::workspace::model::{
     BaseRevision, VolumeHeader, WorkspaceRecord, WORKSPACE_SCHEMA_VERSION,
 };
 #[cfg(test)]
-use brewfs::workspace_overlay::model::{LayerState, WorkspaceState};
-use brewfs::workspace_overlay::stores::kv_store::KvWorkspaceStore;
+use brewfs::workspace::model::{LayerState, WorkspaceState};
+use brewfs::workspace::stores::kv_store::KvWorkspaceStore;
 use uuid::Uuid;
 
 use super::crd::{WorkspaceClusterSpec, WorkspaceRevision};
 
 // This facade bootstraps the native catalog; it does not advertise packed lower support.
-const OPERATOR_VOLUME_FORMAT: &str = "workspace-v1";
+const OPERATOR_VOLUME_FORMAT: &str = "workspace";
 
 #[derive(Clone, Debug)]
 pub struct VolumeIdentity {
@@ -40,7 +40,7 @@ pub struct VolumeView {
     pub root_snapshot_id: SnapshotId,
     pub root_revision: BaseRevision,
     pub packed_binding:
-        Option<brewfs::workspace_overlay::publish::binding::PackedLowerBindingRecord>,
+        Option<brewfs::workspace::publish::binding::PackedLowerBindingRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,13 +70,13 @@ pub trait WorkspaceAdmin: Send + Sync {
     /// Transfer this administrator's owned authenticated scope into a GC owner.
     async fn packed_gc_admin(
         self: Arc<Self>,
-    ) -> anyhow::Result<Arc<dyn brewfs::workspace_overlay::packed_admin::PackedGcAdmin>> {
-        bail!("this workspace administrator has no packed-v3 GC capability")
+    ) -> anyhow::Result<Arc<dyn brewfs::workspace::packed_admin::PackedGcAdmin>> {
+        bail!("this workspace administrator has no packed GC capability")
     }
     async fn packed_binding(
         &self,
         _id: WorkspaceId,
-    ) -> anyhow::Result<Option<brewfs::workspace_overlay::publish::binding::PackedLowerBindingRecord>>
+    ) -> anyhow::Result<Option<brewfs::workspace::publish::binding::PackedLowerBindingRecord>>
     {
         Ok(None)
     }
@@ -84,25 +84,25 @@ pub trait WorkspaceAdmin: Send + Sync {
         &self,
         _request: EnsureWorkspaceRequest,
     ) -> anyhow::Result<WorkspaceView> {
-        bail!("packed-v3 carrier fork is unsupported")
+        bail!("packed carrier fork is unsupported")
     }
     async fn verify_clean_packed_mount(
         &self,
-        _reference: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+        _reference: brewfs::workspace::packed_admin::PackedReleasedMountReference,
     ) -> anyhow::Result<bool> {
         Ok(false)
     }
     async fn clean_released_packed_mount(
         &self,
         _workspace: WorkspaceId,
-    ) -> anyhow::Result<Option<brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference>>
+    ) -> anyhow::Result<Option<brewfs::workspace::packed_admin::PackedReleasedMountReference>>
     {
         Ok(None)
     }
     async fn recovered_packed_mount(
         &self,
         _workspace: WorkspaceId,
-    ) -> anyhow::Result<Option<brewfs::workspace_overlay::packed_admin::PackedRecoveredMountReport>>
+    ) -> anyhow::Result<Option<brewfs::workspace::packed_admin::PackedRecoveredMountReport>>
     {
         Ok(None)
     }
@@ -110,10 +110,10 @@ pub trait WorkspaceAdmin: Send + Sync {
     /// with the actual Redis/TiKV same-snapshot expiry/CAS protocol.
     async fn expired_packed_mount_recovery(
         &self,
-        _original: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+        _original: brewfs::workspace::packed_admin::PackedReleasedMountReference,
     ) -> anyhow::Result<
         Option<(
-            brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+            brewfs::workspace::packed_admin::PackedReleasedMountReference,
             u64,
         )>,
     > {
@@ -122,7 +122,7 @@ pub trait WorkspaceAdmin: Send + Sync {
     /// Facts-only retry hint for an attempt whose lease never acquired authority.
     async fn unstarted_packed_mount_recovery(
         &self,
-        _original: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+        _original: brewfs::workspace::packed_admin::PackedReleasedMountReference,
         _failed_lease: LeaseId,
         _next_lease: LeaseId,
     ) -> anyhow::Result<Option<u64>> {
@@ -131,7 +131,7 @@ pub trait WorkspaceAdmin: Send + Sync {
     /// Cleanup-only original PCR verification, including a consumed source.
     async fn original_packed_mount_for_cleanup(
         &self,
-        _original: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+        _original: brewfs::workspace::packed_admin::PackedReleasedMountReference,
     ) -> anyhow::Result<bool> {
         Ok(false)
     }
@@ -139,15 +139,15 @@ pub trait WorkspaceAdmin: Send + Sync {
     /// does not grant snapshot publication or mutable recovery authority.
     async fn packed_mount_recovery_for_cleanup(
         &self,
-        _original: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
-    ) -> anyhow::Result<Option<brewfs::workspace_overlay::packed_admin::PackedRecoveredMountReport>>
+        _original: brewfs::workspace::packed_admin::PackedReleasedMountReference,
+    ) -> anyhow::Result<Option<brewfs::workspace::packed_admin::PackedRecoveredMountReport>>
     {
         Ok(None)
     }
     async fn clean_published_view(
         &self,
         _workspace: WorkspaceId,
-    ) -> anyhow::Result<Option<brewfs::workspace_overlay::packed_admin::PackedPublishedViewReport>>
+    ) -> anyhow::Result<Option<brewfs::workspace::packed_admin::PackedPublishedViewReport>>
     {
         Ok(None)
     }
@@ -162,18 +162,18 @@ pub trait WorkspaceAdmin: Send + Sync {
         _workspace: WorkspaceId,
         _request: EnsureSnapshotRequest,
     ) -> anyhow::Result<SnapshotView> {
-        bail!("verified packed-v3 source pin is unsupported")
+        bail!("verified packed source pin is unsupported")
     }
     async fn verify_packed_revision(&self, _revision: &BaseRevision) -> anyhow::Result<()> {
-        bail!("packed-v3 carrier inspection is unsupported")
+        bail!("packed carrier inspection is unsupported")
     }
     async fn publish_packed_snapshot(
         &self,
-        _reference: brewfs::workspace_overlay::packed_admin::PackedReleasedMountReference,
+        _reference: brewfs::workspace::packed_admin::PackedReleasedMountReference,
         _request: EnsureSnapshotRequest,
         _ttl_seconds: u32,
     ) -> anyhow::Result<SnapshotView> {
-        bail!("packed-v3 snapshot is unsupported")
+        bail!("packed snapshot is unsupported")
     }
     async fn recover_packed_snapshot(
         &self,
@@ -181,7 +181,7 @@ pub trait WorkspaceAdmin: Send + Sync {
         _request: EnsureSnapshotRequest,
         _ttl_seconds: u32,
     ) -> anyhow::Result<SnapshotView> {
-        bail!("packed-v3 snapshot recovery is unsupported")
+        bail!("packed snapshot recovery is unsupported")
     }
     async fn ensure_volume(&self, identity: VolumeIdentity) -> anyhow::Result<VolumeView>;
     async fn ensure_workspace(
@@ -413,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_volume_bootstrap_preserves_header_root_and_snapshot_on_retry() {
-        use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+        use brewfs::workspace::stores::database::SqliteWorkspaceStore;
 
         let admin = StoreWorkspaceAdmin::new(
             SqliteWorkspaceStore::connect("sqlite::memory:")
@@ -504,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn deletion_finalizer_operations_are_idempotent_after_backend_marker() {
-        use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+        use brewfs::workspace::stores::database::SqliteWorkspaceStore;
 
         let admin = StoreWorkspaceAdmin::new(
             SqliteWorkspaceStore::connect("sqlite::memory:")
@@ -564,7 +564,7 @@ mod tests {
             created_at_ns: 0,
         };
         validate_operator_volume_header(&header, expected_volume_id).unwrap();
-        for volume_format in ["packed-metadata-v3", "workspace-native-v2"] {
+        for volume_format in ["packed-snapshot", "native-workspace"] {
             let unsupported = VolumeHeader {
                 volume_format: volume_format.into(),
                 ..header.clone()

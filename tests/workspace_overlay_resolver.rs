@@ -1,14 +1,14 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use std::ops::Range;
 
-use brewfs::workspace_overlay::digest::{CanonicalLayerDelta, canonical_delta_bytes, delta_digest};
-use brewfs::workspace_overlay::ids::{LayerId, WorkspaceId};
-use brewfs::workspace_overlay::model::{
+use brewfs::workspace::digest::{CanonicalLayerDelta, canonical_delta_bytes, delta_digest};
+use brewfs::workspace::ids::{LayerId, WorkspaceId};
+use brewfs::workspace::model::{
     AclDelta, DataExtentDelta, DentryDelta, ExtentKind, InodeDelta, InodeState, LayerRecord,
     LayerState, ValueOp, XattrDelta,
 };
-use brewfs::workspace_overlay::resolver::{
+use brewfs::workspace::resolver::{
     Resolution, resolve_acl_state, resolve_dentry, resolve_dentry_state, resolve_directory,
     resolve_directory_state, resolve_extent_coverage, resolve_extents, resolve_inode,
     resolve_inode_state, resolve_xattr, resolve_xattr_state, validate_layer_chain,
@@ -167,7 +167,7 @@ fn duplicate_extent_sequence_is_rejected_even_after_newer_full_coverage() {
         ];
         assert!(matches!(
             resolve_extents(&chain(), &rows, 7, 0, 0..16),
-            Err(brewfs::workspace_overlay::error::WorkspaceError::CorruptMetadata(_))
+            Err(brewfs::workspace::error::WorkspaceError::CorruptMetadata(_))
         ));
     }
 }

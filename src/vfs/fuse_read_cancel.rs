@@ -96,7 +96,7 @@ impl ReadRegistry {
     }
 }
 
-#[cfg(all(test, feature = "workspace-overlay"))]
+#[cfg(all(test, feature = "workspace"))]
 #[path = "fuse_read_cancel/client_fence_tests.rs"]
 mod client_fence_tests;
 

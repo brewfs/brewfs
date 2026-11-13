@@ -1649,7 +1649,7 @@ mod tests {
             let client = ObjectClient::new(bounded_head_backend(status, length))
                 .with_read_observer(
                     Arc::clone(&observer),
-                    Engine::PackedV3,
+                    Engine::Packed,
                     Phase::Startup,
                     Origin::Demand,
                 );
@@ -1703,7 +1703,7 @@ mod tests {
         let client = ObjectClient::new(etag_head_backend(200, Some("\"etag-123\"")))
             .with_read_observer(
                 Arc::clone(&observer),
-                Engine::PackedV3,
+                Engine::Packed,
                 Phase::Startup,
                 Origin::Demand,
             );
@@ -1746,7 +1746,7 @@ mod tests {
         let observer = Arc::new(ReadObserver::default());
         let client = ObjectClient::new(etag_head_backend(403, None)).with_read_observer(
             Arc::clone(&observer),
-            Engine::PackedV3,
+            Engine::Packed,
             Phase::Runtime,
             Origin::Demand,
         );

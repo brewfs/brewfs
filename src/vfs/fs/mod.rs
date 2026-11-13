@@ -1,10 +1,10 @@
 //! FUSE/SDK-friendly VFS with path-based metadata ops and handle-based IO.
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod packed_mutation_gate;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 use packed_mutation_gate::PackedMutationGate;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 #[allow(unused_imports)] // Typed factory integration follows this local boundary.
 pub(crate) use packed_mutation_gate::PackedVfsDrainFence;
 
@@ -49,9 +49,7 @@ const FUSE_KERNEL_INVALIDATE_ALL_LEN: i64 = 0;
 #[cfg(test)]
 fn write_diagnostic(stage: &str, ino: i64, fh: u64, offset: u64, len: usize) {
     if len == 57 {
-        eprintln!(
-            "[packed-v3-write-diag] stage={stage} ino={ino} fh={fh} offset={offset} len={len}"
-        );
+        eprintln!("[packed-write-diag] stage={stage} ino={ino} fh={fh} offset={offset} len={len}");
     }
 }
 
@@ -361,7 +359,7 @@ where
     writer: Arc<DataWriter<S, M>>,
     #[cfg(test)]
     truncate_flush_test_hook: TruncateFlushTestHook,
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     packed_mutation_gate: Arc<PackedMutationGate>,
     append_locks: DashMap<i64, Arc<Mutex<()>>>,
     split_write_barriers: DashMap<i64, SplitWriteBarrier>,
@@ -517,7 +515,7 @@ where
         config: Arc<VFSConfig>,
         backend: Arc<Backend<S, M>>,
         fuse_read_cancel: crate::vfs::fuse_read_cancel::ReadRegistry,
-        #[cfg(feature = "workspace-overlay")] packed_mutation_gate: Arc<PackedMutationGate>,
+        #[cfg(feature = "workspace")] packed_mutation_gate: Arc<PackedMutationGate>,
     ) -> Result<Self, VfsError> {
         let stats = Arc::new(crate::vfs::stats::FsStats::new());
         let request_observation = stats.request_observation();
@@ -557,7 +555,7 @@ where
                             };
                             let backend = backend.clone();
                             tasks.push(tokio::spawn(async move {
-                                #[cfg(feature = "workspace-overlay")]
+                                #[cfg(feature = "workspace")]
                                 if let Some(provider) = backend.workspace_read_plan() {
                                     if provider.supports_prepared_unified_read() {
                                         let Ok(len) = usize::try_from(span.len) else {
@@ -643,12 +641,12 @@ where
             config.cache.writeback_mode,
             crate::vfs::cache::config::WriteBackMode::CommitBeforeUpload
         ) {
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             let cache_root = config
                 .workspace_writeback_root
                 .clone()
                 .unwrap_or_else(|| config.cache.cache_root.join("writeback"));
-            #[cfg(not(feature = "workspace-overlay"))]
+            #[cfg(not(feature = "workspace"))]
             let cache_root = config.cache.cache_root.join("writeback");
             let _ = std::fs::create_dir_all(&cache_root);
             let wb = if config.cache.persist_write_cache_after_upload {
@@ -673,7 +671,7 @@ where
                 let wb_clone = wb.clone();
                 let backend_clone = backend.clone();
                 let layout = config.write.layout;
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 if packed_mutation_gate.enabled() {
                     let recovery_owner = backend_clone
                         .meta()
@@ -684,7 +682,7 @@ where
                     let recovery_gate = packed_mutation_gate.clone();
                     // Tokio task-local state does not cross spawn. Capture the
                     // private owner here and explicitly scope the actual I/O driver.
-                    let mounted_recovery_owner = crate::workspace_overlay::stores::kv_store::packed_admin::capture_mounted_recovery_owner();
+                    let mounted_recovery_owner = crate::workspace::stores::kv_store::packed_admin::capture_mounted_recovery_owner();
                     tokio::spawn(async move {
                         let result = driver
                             .run(async move {
@@ -715,7 +713,7 @@ where
                                 .await;
                     });
                 }
-                #[cfg(not(feature = "workspace-overlay"))]
+                #[cfg(not(feature = "workspace"))]
                 tokio::spawn(async move {
                     let _ =
                         Self::recover_dirty_slices(&wb_clone, &backend_clone, layout, false).await;
@@ -725,10 +723,13 @@ where
             // Production's constructor starts the same owned replay. Tests
             // opt in only through a genuinely minted typed recovery owner;
             // ordinary test VFS construction retains its existing behavior.
-            #[cfg(all(test, feature = "workspace-overlay"))]
-            if let Some(owner) = crate::workspace_overlay::stores::kv_store::packed_admin::capture_mounted_recovery_owner() {
-                let recovery_owner = backend.meta().reserve_memory(
-                    crate::meta::layer::MetadataMemoryKind::Request, 4 << 20)
+            #[cfg(all(test, feature = "workspace"))]
+            if let Some(owner) =
+                crate::workspace::stores::kv_store::packed_admin::capture_mounted_recovery_owner()
+            {
+                let recovery_owner = backend
+                    .meta()
+                    .reserve_memory(crate::meta::layer::MetadataMemoryKind::Request, 4 << 20)
                     .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
                 let driver = packed_mutation_gate.admit(recovery_owner)?;
                 packed_mutation_gate.begin_recovery();
@@ -737,12 +738,20 @@ where
                 let recovery_backend = backend.clone();
                 let layout = config.write.layout;
                 tokio::spawn(async move {
-                    let result = driver.run(async move {
-                        let result = owner.scope(Self::recover_dirty_slices(
-                            &cache, &recovery_backend, layout, true)).await;
-                        gate.finish_recovery(result.is_ok());
-                        result
-                    }).await;
+                    let result = driver
+                        .run(async move {
+                            let result = owner
+                                .scope(Self::recover_dirty_slices(
+                                    &cache,
+                                    &recovery_backend,
+                                    layout,
+                                    true,
+                                ))
+                                .await;
+                            gate.finish_recovery(result.is_ok());
+                            result
+                        })
+                        .await;
                     if let Err(error) = result.and_then(|result| result.map_err(VfsError::from)) {
                         tracing::warn!(?error, "typed packed writeback recovery failed");
                     }
@@ -758,7 +767,7 @@ where
         if request_observation.enabled() {
             writer_builder = writer_builder.with_request_observation(request_observation);
         }
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         {
             writer_builder = writer_builder.with_writeback_epoch(config.workspace_writer_epoch);
             writer_builder =
@@ -778,7 +787,7 @@ where
             writer,
             #[cfg(test)]
             truncate_flush_test_hook: TruncateFlushTestHook::new(),
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             packed_mutation_gate,
             append_locks: DashMap::new(),
             split_write_barriers: DashMap::new(),
@@ -809,13 +818,13 @@ where
         use crate::vfs::cache::keys::DirtySliceState;
         use crate::vfs::cache::write_back::WriteBackCache;
 
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let recovery = if packed_publication {
             wb.recover_packed_publication().await
         } else {
             wb.recover().await
         };
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let recovery = {
             let _ = packed_publication;
             wb.recover().await
@@ -838,8 +847,10 @@ where
         );
 
         for record in records {
-            #[cfg(feature = "workspace-overlay")]
-            if let Some(owner) = crate::workspace_overlay::stores::kv_store::packed_admin::capture_mounted_recovery_owner() {
+            #[cfg(feature = "workspace")]
+            if let Some(owner) =
+                crate::workspace::stores::kv_store::packed_admin::capture_mounted_recovery_owner()
+            {
                 // A different mount generation's record is a recovery
                 // obligation, never a disposable orphan of this PVC replay.
                 owner.validate_dirty_epoch(record.key.epoch)?;
@@ -893,9 +904,9 @@ where
         slice_id: u64,
         slice_end: u64,
     ) -> bool {
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let _ = (backend, slice_id, slice_end);
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if let Some(provider) = backend.workspace_read_plan()
             && let Err(error) = provider.record_orphan_slice(slice_id, slice_end).await
         {
@@ -932,7 +943,7 @@ where
             );
         }
 
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let _data_owner = if packed_publication {
             anyhow::ensure!(
                 record.length <= crate::vfs::cache::write_back::MAX_PACKED_RECOVERY_SLICE_BYTES,
@@ -1037,14 +1048,17 @@ where
         {
             // If the inode disappeared or this workspace generation was fenced,
             // the uploaded object can never be attached to this mutation.
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             let workspace_fenced = backend.workspace_read_plan().is_some()
                 && matches!(&e, MetaError::Io(error) if error.raw_os_error() == Some(libc::ESTALE));
-            #[cfg(not(feature = "workspace-overlay"))]
+            #[cfg(not(feature = "workspace"))]
             let workspace_fenced = false;
-            #[cfg(feature = "workspace-overlay")]
-            if workspace_fenced && packed_publication
-                && crate::workspace_overlay::stores::kv_store::packed_admin::capture_mounted_recovery_owner().is_some()
+            #[cfg(feature = "workspace")]
+            if workspace_fenced
+                && packed_publication
+                && crate::workspace::stores::kv_store::packed_admin::capture_mounted_recovery_owner(
+                )
+                .is_some()
             {
                 // Losing this recovery generation cannot authorize deletion
                 // of its pending data, even if the upload already completed.
@@ -1328,7 +1342,7 @@ where
     }
 
     /// Create a workspace VFS with the default cache configuration.
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub fn new_workspace(
         layout: ChunkLayout,
         store: S,
@@ -1340,7 +1354,7 @@ where
         Self::from_workspace_components(VFSConfig::new(layout), Arc::new(store), meta_layer)
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn from_workspace_components(
         config: VFSConfig,
         store: Arc<S>,
@@ -1360,7 +1374,7 @@ where
     }
 
     /// Use a native namespace with a separately bound immutable placement provider.
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn from_readonly_components_with_provider(
         config: VFSConfig,
         store: Arc<S>,
@@ -1415,7 +1429,7 @@ where
         };
         let core = Arc::new(VfsCore::new(layout, backend.clone(), meta_layer, root_ino));
         let config = Arc::new(config);
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let packed_mutation_gate = {
             let enabled = backend
                 .workspace_read_plan()
@@ -1436,7 +1450,7 @@ where
             config,
             backend,
             fuse_read_cancel,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             packed_mutation_gate,
         )?);
 
@@ -1816,17 +1830,17 @@ where
         self.state.fuse_read_cancel.interrupt(unique)
     }
 
-    // Current packed MetadataMemoryGuard holds Arc<V3OwnedPermit>. This charges
+    // Current packed MetadataMemoryGuard holds Arc<SnapshotOwnedPermit>. This charges
     // its requested allocation without changing Roots capacity or generic API.
     // Its final Arc deallocation/allocator padding proof remains an OPEN gate.
     fn client_roots_owner_bytes() -> u64 {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         {
             (2 * std::mem::size_of::<usize>()
-                + std::mem::size_of::<crate::workspace_overlay::packed_v3::wire005::V3OwnedPermit>(
-                )) as u64
+                + std::mem::size_of::<crate::workspace::packed::snapshot::SnapshotOwnedPermit>())
+                as u64
         }
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         {
             0
         }
@@ -1882,7 +1896,7 @@ where
         self.state.fuse_read_cancel.shutdown().await;
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn requires_packed_mutation_drain(&self) -> bool {
         self.state.packed_mutation_gate.enabled()
     }
@@ -2267,7 +2281,7 @@ where
         offset: u64,
         len: usize,
     ) -> Result<bool, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if let Some(provider) = self.core.backend.workspace_read_plan() {
             return provider
                 .range_has_data(ino, offset, len as u64)
@@ -2421,7 +2435,7 @@ where
 
     /// Update atime (access time) for an inode to current time
     pub(crate) async fn update_atime(&self, ino: i64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -2456,7 +2470,7 @@ where
     /// This is called during flush/fsync to handle mmap writes where the kernel
     /// doesn't call the write() callback
     pub(crate) async fn update_mtime_ctime(&self, ino: i64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -2552,7 +2566,7 @@ where
     /// - Returns the inode of the target directory.
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     pub async fn mkdir_p(&self, path: &str) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -2607,7 +2621,7 @@ where
     /// - If the target exists as a non-directory, returns `AlreadyExists`.
     /// - If parent does not exist, returns `NotFound`.
     pub async fn mkdir_err(&self, path: &str) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -2646,7 +2660,7 @@ where
         path: &str,
         create_new: bool,
     ) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -2688,7 +2702,7 @@ where
     /// - If the file already exists, returns its inode instead of creating a new one.
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     pub async fn create_file(&self, path: &str) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -2717,7 +2731,7 @@ where
         parent_ino: i64,
         name: &str,
     ) -> Result<FileAttr, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -2755,7 +2769,7 @@ where
         name: &str,
         existing_dir_ok: bool,
     ) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -2837,7 +2851,7 @@ where
         create_new: bool,
         create_attrs: Option<(u32, u32, u32, u32)>,
     ) -> Result<CreateFileAtResult, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3022,7 +3036,7 @@ where
         gid: u32,
         rdev: u32,
     ) -> Result<CreateEntryResult, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3079,7 +3093,7 @@ where
         gid: u32,
         rdev: u32,
     ) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3127,7 +3141,7 @@ where
         name: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len(), target.len()])?;
             let name = name.to_owned();
@@ -3175,7 +3189,7 @@ where
     /// Remove a regular file or symlink using parent inode and name directly.
     #[tracing::instrument(level = "debug", skip(self), fields(parent_ino, name))]
     pub(crate) async fn unlink_at(&self, parent_ino: i64, name: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3248,7 +3262,7 @@ where
         ino: i64,
         attr: FileAttr,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3299,7 +3313,7 @@ where
     /// Remove an empty directory using parent inode and name directly.
     #[tracing::instrument(level = "debug", skip(self), fields(parent_ino, name))]
     pub(crate) async fn rmdir_at(&self, parent_ino: i64, name: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -3370,7 +3384,7 @@ where
         new_parent_ino: i64,
         new_name: &str,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old_name.len(), new_name.len()])?;
             let old_name = old_name.to_owned();
@@ -3444,7 +3458,7 @@ where
         new_parent_attr: &FileAttr,
         known_dest_ino: Option<Option<i64>>,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old_name.len(), new_name.len()])?;
             let old_name = old_name.to_owned();
@@ -3545,7 +3559,7 @@ where
         new_parent_ino: i64,
         new_name: &str,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old_name.len(), new_name.len()])?;
             let old_name = old_name.to_owned();
@@ -3612,7 +3626,7 @@ where
     /// Create a hard link at `link_path` that references `existing_path`.
     #[tracing::instrument(level = "debug", skip(self), fields(existing_path, link_path))]
     pub async fn link(&self, existing_path: &str, link_path: &str) -> Result<FileAttr, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[existing_path.len(), link_path.len()])?;
             let existing_path = existing_path.to_owned();
@@ -3668,7 +3682,7 @@ where
         link_path: &str,
         target: &str,
     ) -> Result<(i64, FileAttr), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[link_path.len(), target.len()])?;
             let link_path = link_path.to_owned();
@@ -3766,7 +3780,7 @@ where
     /// Remove a regular file or symlink (directories are not supported here).
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     pub async fn unlink(&self, path: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -3791,7 +3805,7 @@ where
     /// Remove an empty directory (root cannot be removed; non-empty dirs error out).
     #[tracing::instrument(level = "trace", skip(self), fields(path))]
     pub async fn rmdir(&self, path: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -3838,7 +3852,7 @@ where
 
     #[tracing::instrument(level = "debug", skip(self), fields(old, new))]
     pub async fn rename(&self, old: &str, new: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old.len(), new.len()])?;
             let old = old.to_owned();
@@ -3875,7 +3889,7 @@ where
         new: &str,
         flags: RenameFlags,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old.len(), new.len()])?;
             let old = old.to_owned();
@@ -3910,7 +3924,7 @@ where
     /// Rename without replacing the destination (RENAME_NOREPLACE).
     /// Returns an error if the destination already exists.
     pub async fn rename_noreplace(&self, old: &str, new: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old.len(), new.len()])?;
             let old = old.to_owned();
@@ -3938,7 +3952,7 @@ where
     /// Atomically exchange the source and destination (RENAME_EXCHANGE).
     /// Both source and destination must exist.
     pub async fn rename_exchange(&self, old: &str, new: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[old.len(), new.len()])?;
             let old = old.to_owned();
@@ -4092,7 +4106,7 @@ where
     /// Shrinking does not eagerly reclaim block data.
     #[tracing::instrument(level = "trace", skip(self), fields(path, size))]
     pub async fn truncate(&self, path: &str, size: u64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();
@@ -4157,7 +4171,7 @@ where
     /// Truncate/extend file size by inode (metadata only; holes are read as zeros).
     /// Shrinking does not eagerly reclaim block data.
     pub async fn truncate_inode(&self, ino: i64, size: u64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -4271,7 +4285,7 @@ where
         length: u64,
         notify_kernel: bool,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -4356,7 +4370,7 @@ where
             .await
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) async fn workspace_hole_fallocate_from_fuse(
         &self,
         fh: u64,
@@ -4365,7 +4379,7 @@ where
         length: u64,
         keep_size: bool,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -4382,7 +4396,7 @@ where
             .await
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[allow(clippy::too_many_arguments)]
     async fn packed_owned_workspace_hole_fallocate_from_fuse(
         &self,
@@ -4486,7 +4500,7 @@ where
         length: u64,
         notify_kernel: bool,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -4694,7 +4708,7 @@ where
         notify_kernel: bool,
         actor: Option<(u32, &[u32])>,
     ) -> Result<FileAttr, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[
                 actor.map_or(0, |(_, groups)| std::mem::size_of_val(groups))
@@ -4978,7 +4992,7 @@ where
     /// Returns `VfsError::NotFound` when the inode does not exist.
     #[tracing::instrument(level = "trace", skip(self), fields(ino, new_mode))]
     pub async fn chmod(&self, ino: i64, new_mode: u32) -> Result<FileAttr, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -5014,7 +5028,7 @@ where
         uid: Option<u32>,
         gid: Option<u32>,
     ) -> Result<FileAttr, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -5059,7 +5073,7 @@ where
         offset: u64,
         len: usize,
     ) -> Result<bytes::Bytes, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let guard = if let Some(provider) = self.core.backend.workspace_read_plan() {
             provider
                 .reserve_read_output(len)
@@ -5067,12 +5081,12 @@ where
         } else {
             None
         };
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let guard: Option<Box<dyn Send + Sync>> = None;
         let data = match self.read_inner(fh, offset, len, true).await {
             Ok(data) => data,
             Err(error) => {
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 if let VfsError::Anyhow(error) = &error {
                     // Preparation maps metadata admission to an IO error;
                     // execution retains the packed error. Both can be wrapped
@@ -5094,7 +5108,7 @@ where
     }
 
     pub(crate) fn prepared_max_read_bytes(&self) -> Option<usize> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if let Some(provider) = self.core.backend.workspace_read_plan() {
             return provider.max_read_bytes();
         }
@@ -5115,13 +5129,13 @@ where
         output_reserved: bool,
     ) -> Result<crate::vfs::io::reader::ReadReply, VfsError> {
         if len == 0 {
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             let fenced = self
                 .core
                 .backend
                 .workspace_read_plan()
                 .is_some_and(|provider| provider.requires_unified_read_request_fence());
-            #[cfg(not(feature = "workspace-overlay"))]
+            #[cfg(not(feature = "workspace"))]
             let fenced = false;
             if !fenced {
                 return Ok(Vec::new().into());
@@ -5140,7 +5154,7 @@ where
         output_reserved: bool,
     ) -> Result<crate::vfs::io::reader::ReadReply, VfsError> {
         let fh = handle.fh;
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let _ = output_reserved;
 
         // With writeback cache enabled, the kernel may issue reads on O_WRONLY
@@ -5171,7 +5185,7 @@ where
             return Ok(data.into());
         }
 
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if let Some(provider) = self.core.backend.workspace_read_plan()
             && provider.requires_unified_read_request_fence()
         {
@@ -5283,7 +5297,7 @@ where
         Ok(data)
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn read_packed_workspace_request(
         &self,
         handle: Arc<FileHandle<S, M>>,
@@ -5303,12 +5317,10 @@ where
                 "mutable provider requires prepared reads"
             );
             if provider.max_read_bytes().is_some_and(|max| len > max) {
-                return Err(
-                    crate::workspace_overlay::packed_v3::PackedWireError::LimitExceeded(
-                        "read exceeds negotiated max_read".into(),
-                    )
-                    .into(),
-                );
+                return Err(crate::workspace::packed::PackedWireError::LimitExceeded(
+                    "read exceeds negotiated max_read".into(),
+                )
+                .into());
             }
             if !output_reserved {
                 output_guard = provider.reserve_read_output(len)?;
@@ -5364,7 +5376,7 @@ where
                             )
                             .await?;
                         let committed =
-                            crate::workspace_overlay::meta_layer::packed_lower::with_request_view(
+                            crate::workspace::meta_layer::packed_lower::with_request_view(
                                 fence.as_ref(),
                                 handle.read_into_unaccounted_locked(
                                     &handle_guard,
@@ -5422,7 +5434,7 @@ where
                 tracing::debug!(ino = handle.ino, offset, len, error = %format!("{error:#}"), "packed read request failed");
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=packed-request inode={} fh={} offset={offset} len={len} error={error:#}",
+                    "[packed-native-kernel-read-diag] stage=packed-request inode={} fh={} offset={offset} len={len} error={error:#}",
                     handle.ino, handle.fh
                 );
                 if let Some(operation) = operation.take() {
@@ -5459,7 +5471,7 @@ where
     ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-entry", 0, fh, offset, data.len());
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[std::mem::size_of_val(data)])?;
             let data = data.to_vec();
@@ -5764,7 +5776,7 @@ where
     ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-inode-entry", ino, 0, offset, data.len());
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[std::mem::size_of_val(data)])?;
             let data = data.to_vec();
@@ -5902,7 +5914,7 @@ where
     ) -> Result<usize, VfsError> {
         #[cfg(test)]
         write_diagnostic("vfs-cache-entry", ino, 0, offset, data.len());
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[std::mem::size_of_val(data)])?;
             let data = data.to_vec();
@@ -5956,7 +5968,7 @@ where
             return Ok(written);
         }
 
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self
             .core
             .backend
@@ -6042,7 +6054,7 @@ where
         dst: PinnedFileHandle<S, M>,
         range: Option<(u64, u64, u64)>,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6122,7 +6134,7 @@ where
         off_out: u64,
         length: u64,
     ) -> Result<usize, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6179,13 +6191,13 @@ where
             return Ok(0);
         }
 
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let packed_provider = self
             .core
             .backend
             .workspace_read_plan()
             .filter(|provider| provider.requires_unified_read_request_fence());
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if packed_provider.is_some() {
             // The tail WRITE must be able to take the source lock before the
             // copy takes both inode locks for its source snapshot and write.
@@ -6255,7 +6267,7 @@ where
 
         // Read the full source snapshot before writing so same-file overlap keeps
         // copy_file_range semantics close to a memmove-style copy.
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let data = if let Some(provider) = packed_provider {
             let held_guard = mutation_guards
                 .iter()
@@ -6292,7 +6304,7 @@ where
                 .await?
                 .into_bytes()
         };
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let data = self
             .read_handle_inner(src.clone(), off_in, len, false)
             .await?
@@ -6322,7 +6334,7 @@ where
         off_out: u64,
         length: u64,
     ) -> Result<usize, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6412,7 +6424,7 @@ where
         append: bool,
         refresh_attr: bool,
     ) -> Result<u64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6523,7 +6535,7 @@ where
 
     /// Release a previously allocated file handle.
     pub async fn close(&self, fh: u64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6666,7 +6678,7 @@ where
     }
 
     pub(crate) async fn flush_dirty_handle_snapshot(&self, fh: u64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6743,7 +6755,7 @@ where
     /// mmap writes via FUSE writeback (write_ino) deposit data in the shared
     /// writer and a subsequent fsync on a read-only handle must commit them.
     async fn flush_and_sync_handle(&self, fh: u64) -> Result<i64, VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6844,7 +6856,7 @@ where
     /// operations such as rename; FUSE flush/release must report a failed
     /// upload instead of silently acknowledging it.
     pub(crate) async fn flush_inode_required(&self, ino: u64) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -6918,7 +6930,7 @@ where
     /// for earlier cached-write requests.  This flushes the current dirty
     /// snapshot without chasing writes that arrive after this fsync started.
     pub(crate) async fn fsync_snapshot(&self, fh: u64, _datasync: bool) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -7203,7 +7215,7 @@ where
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -7320,7 +7332,7 @@ where
         value: &[u8],
         flags: u32,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len(), std::mem::size_of_val(value)])?;
             let name = name.to_owned();
@@ -7363,7 +7375,7 @@ where
 
     /// Remove xattr for a given inode.
     pub async fn remove_xattr_ino(&self, inode: i64, name: &str) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[name.len()])?;
             let name = name.to_owned();
@@ -7392,7 +7404,7 @@ where
         uid: u32,
         groups: &[u32],
     ) -> Result<(), crate::meta::store::MetaError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self
                 .packed_mutation_admit(&[
@@ -7480,7 +7492,7 @@ where
         value: &[u8],
         flags: u32,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[
                 std::mem::size_of_val(name),
@@ -7518,7 +7530,7 @@ where
     }
 
     pub async fn remove_xattr_bytes_ino(&self, inode: i64, name: &[u8]) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[std::mem::size_of_val(name)])?;
             let name = name.to_vec();
@@ -7547,7 +7559,7 @@ where
 
     /// Set ACL rule for a given inode.
     pub async fn set_acl_ino(&self, inode: i64, rule: AclRule) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
             let vfs = self.clone();
@@ -7600,7 +7612,7 @@ where
         range: FileLockRange,
         pid: u32,
     ) -> Result<(), VfsError> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[path.len()])?;
             let path = path.to_owned();

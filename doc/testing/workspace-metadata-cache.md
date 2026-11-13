@@ -14,17 +14,17 @@ supported mutation interface.
 
 | Mutation | Writer paths | Existing notification and protection | Positive-TTL mechanism |
 |---|---|---|---|
-| Another workspace client: create, unlink, rename, link, mkdir, chmod/chown/ACL/xattrs, truncate, data size/timestamps | `src/workspace_overlay/meta_layer/packed_permissions.rs` (`commit_with_written`), `stores/kv_store.rs` (`apply_versioned_mutation`, `apply_packed_versioned_mutation`, legacy `apply_*_mutation`), `stores/database.rs` (same methods) | No remote notification. Transactions authenticate head, lease and holder, and advance the head sequence. Local commits invalidate affected upper rows. | Refresh validates authority and compares both layer records; a changed sequence clears daemon rows. Kernel cache entries expire at the existing checked deadline. |
+| Another workspace client: create, unlink, rename, link, mkdir, chmod/chown/ACL/xattrs, truncate, data size/timestamps | `src/workspace/meta_layer/packed_permissions.rs` (`commit_with_written`), `stores/kv_store.rs` (`apply_versioned_mutation`, `apply_packed_versioned_mutation`, legacy `apply_*_mutation`), `stores/database.rs` (same methods) | No remote notification. Transactions authenticate head, lease and holder, and advance the head sequence. Local commits invalidate affected upper rows. | Refresh validates authority and compares both layer records; a changed sequence clears daemon rows. Kernel cache entries expire at the existing checked deadline. |
 | A second CLI mount / expired lease takeover / explicit lease release | `stores/kv_store.rs` (`acquire_lease`, `release_lease`), `stores/database.rs` (same), `lifecycle/mod.rs` (`WorkspaceMountSession`) | A second independent live writer lease is rejected. No notification on takeover/release. A local heartbeat alone cannot prove remote force-fencing did not occur. | The remote lease/holder check fails after deadline expiry. The old mount fails closed; adopting another holder requires remount. |
 | `workspace init-volume`, `init-packed-volume`, `create`, `fork`, `migrate` | `src/cli.rs` (`run_workspace_command`, `init_packed_volume`), `lifecycle/mod.rs` (`fork_revision_inner`) | New IDs do not edit an existing mounted namespace. Initial packed installation is guarded. Migration checks the catalog format. No mount broadcast. | No file metadata changes in an existing mounted view; workspace and binding identity are revalidated at expiry. Arbitrary incompatible schema edits are outside the supported protocol. |
 | Snapshot creation/deletion through the catalog | `stores/kv_store.rs:3104`, `:3158`; `stores/database.rs:1759`, `:1835` | Changes retention roots, not the contents of an existing mounted view. No mount broadcast. | Reachability/reader pins protect mounted views; GC uses the protection below. |
 | `workspace discard --force` | `src/cli.rs` (`WorkspaceCommand::Discard`), `lifecycle/mod.rs` (`discard`), `stores/kv_store.rs` and `stores/database.rs` (`mark_workspace_deleting`) | Non-force discard refuses a live lease. Force marks the workspace/head deleting and releases/fences the lease. **No notification to the mounted kernel.** | Cached attributes can survive only the remaining checked TTL; the next refresh returns an error. |
 | Packed lower installation/publication or mounted recovery | `stores/kv_store.rs` / `stores/database.rs` (`install_packed_lower_binding`, `publish_packed_lower_binding`); `src/cli/packed_mount_recovery.rs`; `stores/kv_store/packed_admin/packed_mounted_recovery.rs` | Independent binding/head/lease CAS; immutable packed memos alone cannot detect replacement. **No mount invalidation broadcast.** | Refresh authenticates the exact attached binding through `WorkspacePackedBindingAuthority::validate`; changed binding or holder fences the old view. |
 | Packed mount / reader retention renewal | `stores/kv_store/packed_admin/packed_mounted_session.rs` (`renew_owned`), `packed_reader_lifecycle.rs` (`validate`), `lifecycle/mod.rs` (heartbeat) | Renewal extends authority/retention; it does not mutate immutable lower file metadata. Failed renewal revokes local proofs. No kernel broadcast. | Each new cache interval rechecks remote authority and packed reader/binding. Renewal cannot slide a previously granted kernel deadline. |
-| Workspace and packed/native GC | `src/workspace_overlay/gc.rs` (`run_selected_at`), `stores/kv_store.rs` (`delete_layer_metadata`, `finalize_layer_metadata_deletion`), `stores/database.rs` (`delete_layer_metadata`), `stores/kv_store/native_finalization.rs` and packed deletion reservations | Live workspace roots, leases, packed reader pins and durable owners protect reachable metadata/objects. Deletion rechecks roots under CAS. No inode/dentry broadcast. | Live reachable views must survive GC. A discarded/fenced view is rejected by refresh. Metadata TTL does not authorize reads of reclaimed data. |
+| Workspace and packed/native GC | `src/workspace/gc.rs` (`run_selected_at`), `stores/kv_store.rs` (`delete_layer_metadata`, `finalize_layer_metadata_deletion`), `stores/database.rs` (`delete_layer_metadata`), `stores/kv_store/native_finalization.rs` and packed deletion reservations | Live workspace roots, leases, packed reader pins and durable owners protect reachable metadata/objects. Deletion rechecks roots under CAS. No inode/dentry broadcast. | Live reachable views must survive GC. A discarded/fenced view is rejected by refresh. Metadata TTL does not authorize reads of reclaimed data. |
 | S3/WebDAV or SDK mutations through the same workspace VFS | `src/gateway/s3/store.rs` (rename/unlink/xattr), `src/gateway/webdav/fs.rs` (rename/unlink/setattr), ordinary VFS metadata commits | Same transactional generation changes; local upper-row invalidation. No general remote broadcast. | The shared deadline bounds kernel staleness even when no local FUSE namespace request updates the kernel. |
 
-Numbered writer references (all under `src/workspace_overlay/` unless qualified):
+Numbered writer references (all under `src/workspace/` unless qualified):
 
 - Upper commits: `meta_layer/packed_permissions.rs:248`; KV permission,
   versioned, packed, namespace, inode, data, xattr and ACL writers at
@@ -106,7 +106,7 @@ The same **unoptimized dev binary** was used for both arms on a 32-logical-CPU,
 31 GiB host, Linux 6.8.0-36, Redis 7.2 and RustFS `ceddcdd878d2`. This is not the
 8-vCPU campaign host/profile. Binary SHA256:
 `70610b43234c3bacfc9d41175310ffe19cea893f89647eb476bb643b75f647a9`.
-The packed-v3 workspace used no compression, 300 MiB memory and 1 GiB SSD cache,
+The packed workspace used no compression, 300 MiB memory and 1 GiB SSD cache,
 64 MiB chunks and 4 MiB blocks. Off ran before on; neither arm overlapped a
 compiler or test suite. Both mounts unmounted and drained cleanly.
 
@@ -161,7 +161,7 @@ Verification:
 
 | Check | Result |
 |---|---|
-| Workspace build with `workspace-overlay`, `-j 2`, both debug profiles 0 | Pass |
+| Workspace build with `workspace`, `-j 2`, both debug profiles 0 | Pass |
 | Focused `fuse_cache_ttl` tests | 3 passed; mounted test run separately |
 | Packed upper-row expiry and independent binding regression | Pass; external size change replaces a stale daemon row after expiry; revoked binding rejects refill |
 | Completed library executable, run separately after measurements | 2533 passed, 0 failed, 451 ignored; 590.71 s; not the full workspace Cargo gate |
@@ -172,14 +172,14 @@ Verification:
 | `generic/100` | Pass, 221 s |
 | BPF calibration, TTL 0, 10 stat calls | 10 LOOKUP + 20 GETATTR; throughput deliberately not measured during compilation |
 
-xfstests used the project container, a fresh packed-v3 workspace on Redis DB 5,
+xfstests used the project container, a fresh packed workspace on Redis DB 5,
 local-fs objects, and TTL 1000 for every mount/remount. It was correctness-only
 and ran during the test build. The first attempt executed **no tests** because
 the image's Docker VOLUME at `/mnt/brewfs` was already a mount; the successful
 run used `/mnt/metacache`. No result from the failed setup is counted as a pass.
 The performance fixture uses a separate Redis DB 4 / RustFS S3 bucket.
 
-The full `cargo test --workspace --lib --bins --features workspace-overlay`
+The full `cargo test --workspace --lib --bins --features workspace`
 command did not finish: compilation was stopped to preserve the requested
 measurement window. Its completed library executable passed separately with
 2533 passed and 451 ignored; the binary targets and other workspace test targets

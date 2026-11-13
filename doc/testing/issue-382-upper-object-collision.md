@@ -9,10 +9,10 @@ The baseline release binary was rebuilt after a host reboot with:
 ```bash
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 RUSTFLAGS='-C debuginfo=0' \
   CARGO_BUILD_JOBS=2 cargo build --release -j 2 -p brewfs \
-  --bin brewfs --bin packed_v3_snapshot_fixture --features workspace-overlay
+  --bin brewfs --bin packed_snapshot_fixture --features workspace
 ```
 
-TiKV 8.5.0 and RustFS 1.0.4 were accessed over loopback. The packed-v3 source contained four 512 MiB files and two small files. Both workspace mounts exposed all four large files. The failing configuration used two independent metadata namespaces, one S3 bucket, the same packed manifest, and separate local caches:
+TiKV 8.5.0 and RustFS 1.0.4 were accessed over loopback. The packed source contained four 512 MiB files and two small files. Both workspace mounts exposed all four large files. The failing configuration used two independent metadata namespaces, one S3 bucket, the same packed manifest, and separate local caches:
 
 | Setting | A | B |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ TiKV 8.5.0 and RustFS 1.0.4 were accessed over loopback. The packed-v3 source co
 
 The manifest was `issue382/lower/objects/0/6b5f14c7c7e0edba75673fd0290a6ed3babfbe22223db19d1866209a67cfe063`. Its 270 objects occupy 540,097,773 stored bytes. None uses a `chunks-v2` key.
 
-Each namespace was initialized independently with `workspace init-packed-volume --manifest-key <key> --data-config <yaml>`. Mounts used `volume_format: workspace-v1` and the returned workspace ID. An initial attempt to fork the root's native `fork_base` lacked the lower files and was excluded from acceptance.
+Each namespace was initialized independently with `workspace init-packed-volume --manifest-key <key> --data-config <yaml>`. Mounts used `volume_format: workspace` and the returned workspace ID. An initial attempt to fork the root's native `fork_base` lacked the lower files and was excluded from acceptance.
 
 After A successfully wrote, fsynced and read back 41 bytes, B produced these actual kernel syscall results:
 
@@ -87,7 +87,7 @@ The restored-baseline checks finished at 09:17:11 UTC on 2026-10-30. Rust compil
 
 | Check | Result |
 | --- | --- |
-| `cargo test -p brewfs --lib --features workspace-overlay -j 2` | **2569 passed, 0 failed, 451 ignored**; 103.46 seconds running tests |
+| `cargo test -p brewfs --lib --features workspace -j 2` | **2569 passed, 0 failed, 451 ignored**; 103.46 seconds running tests |
 | `cargo test -j 2 --workspace --lib --bins` | Library: **1275 passed, 0 failed, 262 ignored**; binary: **2 passed, 0 failed**; exit 0 |
 | Workspace `check`, `build`, and `clippy` | All exit 0; clippy reports baseline warnings |
 | BrewFS `--no-default-features` checks for `fuse-tokio-runtime` and `fuse-io-uring-runtime` | Both exit 0 |

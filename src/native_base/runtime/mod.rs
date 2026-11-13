@@ -1,8 +1,8 @@
-//! Runtime admission and migration boundaries for `workspace-native-v2`.
+//! Runtime admission and migration boundaries for `native-workspace`.
 //!
 //! The runtime recognizes a native volume only after validating both the
 //! locator header and the compiled capability set. No caller may reinterpret
-//! an unknown native header as `workspace-v1` or `flat-v1`.
+//! an unknown native header as `workspace` or `flat`.
 
 #[cfg(feature = "native-packed-base")]
 pub mod admin;
@@ -12,7 +12,7 @@ mod migration;
 mod object;
 pub mod planner;
 mod sampler;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod workspace;
 
 #[cfg(all(test, feature = "native-packed-base"))]
@@ -41,5 +41,5 @@ pub use migration::{
 };
 pub use object::BackendObjectRepository;
 pub use sampler::{Sample, SampleHint, SampleIssuePlan, SamplerError, plan_sample_issue_order};
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub use workspace::WorkspaceBaseDataSource;

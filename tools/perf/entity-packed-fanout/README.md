@@ -25,10 +25,10 @@ examples so Cargo feature unification does not change its dependency graph:
 
 ```bash
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_BUILD_JOBS=2
-features=fuse-tokio-runtime,workspace-overlay,rustfs-ec-block-size-hint
+features=fuse-tokio-runtime,workspace,rustfs-ec-block-size-hint
 cargo build --locked --release --no-default-features --features "$features" --bin brewfs
 # Save this filesystem binary before building examples.
-cargo build --locked --release --no-default-features --features "$features" --bin packed_v3_snapshot_fixture
+cargo build --locked --release --no-default-features --features "$features" --bin packed_snapshot_fixture
 cargo build --locked --release --no-default-features --features "$features" --example entity_metadata_probe
 ```
 
@@ -39,7 +39,7 @@ the source hashes refer to LF Git-blob bytes.
 ```text
 /opt/entity-packed-tikv-fanout-v1/
   bin/brewfs-baseline
-  bin/packed_v3_snapshot_fixture
+  bin/packed_snapshot_fixture
   bin/entity_metadata_probe
   bin/juicefs                         # measured JuiceFS 1.3.1 build
   harness/                           # files from this directory

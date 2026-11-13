@@ -1,26 +1,28 @@
 //! Real registry transitions and requested-layout Roots owners. This module
 //! does not simulate an adapter close or claim kernel/allocator acceptance.
 use super::*;
-use crate::workspace_overlay::packed_v3::wire005::{V3BudgetPool, V3MountBudget, V3OwnedPermit};
+use crate::workspace::packed::snapshot::{
+    SnapshotBudgetPool, SnapshotMountBudget, SnapshotOwnedPermit,
+};
 use futures_util::FutureExt;
 use std::sync::Barrier;
 
-fn admit_owner(budget: &Arc<V3MountBudget>, requested: u64) -> MetadataMemoryGuard {
+fn admit_owner(budget: &Arc<SnapshotMountBudget>, requested: u64) -> MetadataMemoryGuard {
     // Admit the permit's own Arc requested layout before allocating that Arc.
     let bytes = requested
-        + (2 * std::mem::size_of::<usize>() + std::mem::size_of::<V3OwnedPermit>()) as u64;
-    let permit = budget.admit(&[(V3BudgetPool::Roots, bytes)]).unwrap();
+        + (2 * std::mem::size_of::<usize>() + std::mem::size_of::<SnapshotOwnedPermit>()) as u64;
+    let permit = budget.admit(&[(SnapshotBudgetPool::Roots, bytes)]).unwrap();
     Arc::new(permit)
 }
 
-fn fixture() -> (Arc<V3MountBudget>, ReadRegistry) {
-    let budget = V3MountBudget::defaults();
+fn fixture() -> (Arc<SnapshotMountBudget>, ReadRegistry) {
+    let budget = SnapshotMountBudget::defaults();
     let owner = admit_owner(&budget, ReadRegistry::roots_requested_layout_bytes());
     let registry = ReadRegistry::new_owned(Some(owner));
     (budget, registry)
 }
 
-fn client_owner(budget: &Arc<V3MountBudget>) -> MetadataMemoryGuard {
+fn client_owner(budget: &Arc<SnapshotMountBudget>) -> MetadataMemoryGuard {
     admit_owner(budget, ReadRegistry::client_requested_layout_bytes())
 }
 

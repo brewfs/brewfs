@@ -9,7 +9,11 @@
 // - FileWriter::flush() freezes all slices and waits until commit threads drain the chunks.
 //   While flushing, new writes are blocked via flush_waiting/write_waiting gates.
 
+mod cached_write_watermarks;
+#[cfg(all(test, target_os = "linux"))]
+mod cached_write_watermarks_bench;
 mod packed_publication_drain;
+use cached_write_watermarks::CachedWriteWatermarks;
 use packed_publication_drain::{PackedWriterTasks, spawn_writer_owned};
 
 use super::reader::DataReader;
@@ -22,6 +26,7 @@ use crate::utils::{NumCastExt, UsageGuard};
 use crate::vfs::Inode;
 use crate::vfs::backend::Backend;
 use crate::vfs::cache::config::WriteBackMode;
+use crate::vfs::cache::keys::DirtySliceKey;
 use crate::vfs::cache::page::CacheSlice;
 use crate::vfs::cache::page::WriteAction as PageWriteAction;
 use crate::vfs::cache::write_back::WriteBackCache;
@@ -224,9 +229,9 @@ where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
 {
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     let _ = (shared, desc);
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     if let Some(provider) = shared.backend.workspace_read_plan()
         && let Err(error) = provider
             .record_orphan_slice(desc.slice_id, desc.length)
@@ -396,6 +401,9 @@ pub(crate) struct SliceState {
     /// Commit-before-upload may publish metadata only after staged data covers
     /// the whole sealed slice and this recoverable dirty record is sealed.
     writeback_record_sealed: bool,
+    /// Metadata completed the existing best-effort stage retirement before
+    /// publishing Committed. A late uploader must not repeat that promotion.
+    writeback_cleaned_before_commit: bool,
     data: CacheSlice,
     usage: UsageGuard,
     memory_usage: Option<MemoryUsageGuard>,
@@ -459,6 +467,7 @@ impl SliceState {
             writeback_persisted_bytes: 0,
             writeback_record_sealing: false,
             writeback_record_sealed: false,
+            writeback_cleaned_before_commit: false,
             data: CacheSlice::new(config),
             usage: UsageGuard::new(usage),
             memory_usage: memory_budget
@@ -613,7 +622,7 @@ impl SliceState {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     fn packed_pending_overlay(&self) -> anyhow::Result<bool> {
         if matches!(self.state, SliceStatus::Committed) {
             return Ok(false);
@@ -623,7 +632,7 @@ impl SliceState {
         // uploads can also carry this flag after a successful publication.
         // Neither state can establish an uncommitted local EOF safely.
         if self.meta_write_started {
-            return Err(crate::workspace_overlay::error::WorkspaceError::Busy.into());
+            return Err(crate::workspace::error::WorkspaceError::Busy.into());
         }
         Ok(true)
     }
@@ -1359,12 +1368,12 @@ pub(crate) struct DirtyOverlayPatch {
     pub(crate) data: Vec<u8>,
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 const MAX_PACKED_DIRTY_SNAPSHOT_ROWS: usize = 1024;
 
 /// One canonical local view, independent of slice fragmentation. Scratch bytes
 /// and coverage are charged before allocation and retained through delivery.
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) struct CanonicalDirtyOverlay {
     data: Vec<u8>,
     coverage: Vec<u8>,
@@ -1372,7 +1381,7 @@ pub(crate) struct CanonicalDirtyOverlay {
     _guards: [Option<Box<dyn Send + Sync>>; 2],
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 impl CanonicalDirtyOverlay {
     fn empty(local_eof: Option<u64>) -> Self {
         Self {
@@ -1684,6 +1693,8 @@ struct Shared<B, M> {
     reader: Arc<DataReader<B, M>>,
     /// Local SSD write-back cache for persisting frozen slices before upload.
     write_back: Option<Arc<crate::vfs::cache::write_back::FsWriteBackCache>>,
+    #[cfg(test)]
+    writeback_cleanup_probe: OnceLock<Arc<commit_cleanup_tests::CleanupProbe>>,
     /// Mount/session generation embedded in durable dirty keys. Flat mounts use zero.
     writeback_epoch: u64,
     memory_budget: Option<MemoryBudget>,
@@ -2280,6 +2291,8 @@ where
                 write_waiting: 0,
                 chunks: BTreeMap::default(),
                 cached_write_watermarks: BTreeMap::default(),
+                #[cfg(all(test, target_os = "linux"))]
+                legacy_cached_write_watermarks: None,
                 sparse_fallocate_ranges: BTreeMap::default(),
             }),
             write_notify: Notify::new(),
@@ -2288,6 +2301,8 @@ where
             reader,
             write_back,
             writeback_epoch,
+            #[cfg(test)]
+            writeback_cleanup_probe: OnceLock::new(),
             memory_budget,
             write_order: AtomicU64::new(0),
             write_gen: AtomicU64::new(0),
@@ -2347,7 +2362,10 @@ struct Inner {
     flush_waiting: u16,
     write_waiting: u16,
     chunks: BTreeMap<u64, ChunkState>,
-    cached_write_watermarks: BTreeMap<u64, Vec<CachedWriteRange>>,
+    cached_write_watermarks: BTreeMap<u64, CachedWriteWatermarks>,
+    #[cfg(all(test, target_os = "linux"))]
+    legacy_cached_write_watermarks:
+        Option<BTreeMap<u64, Vec<cached_write_watermarks_bench::LegacyRange>>>,
     sparse_fallocate_ranges: BTreeMap<u64, Vec<(u64, u64)>>,
 }
 
@@ -2449,21 +2467,22 @@ impl Inner {
         }
 
         let end = offset + len as u64;
-        let ranges = self.cached_write_watermarks.entry(chunk_id).or_default();
-        let mut allowed = crate::utils::Intervals::new(offset, end);
-        for range in ranges.iter() {
-            if range.max_unique > creation_unique {
-                allowed.cut(range.start.max(offset), range.end.min(end));
-            }
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(legacy) = &mut self.legacy_cached_write_watermarks {
+            return cached_write_watermarks_bench::legacy_allow_and_record(
+                legacy.entry(chunk_id).or_default(),
+                offset,
+                end,
+                creation_unique,
+            );
         }
-        let allowed = allowed
-            .collect()
+        self.cached_write_watermarks
+            .entry(chunk_id)
+            .or_default()
+            .record_and_allow(offset, end, creation_unique)
             .into_iter()
             .map(|(start, end)| (start, (end - start).as_usize()))
-            .collect();
-
-        record_cached_write_watermark(ranges, offset, end, creation_unique);
-        allowed
+            .collect()
     }
 
     fn record_sparse_fallocate_range(&mut self, chunk_id: u64, start: u64, end: u64) {
@@ -2514,13 +2533,6 @@ impl Inner {
     fn has_chunks(&self) -> bool {
         !self.chunks.is_empty()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CachedWriteRange {
-    start: u64,
-    end: u64,
-    max_unique: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2584,86 +2596,6 @@ fn push_sparse_cached_segment_if_materialized(
             len: buf.len(),
         });
     }
-}
-
-fn record_cached_write_watermark(
-    ranges: &mut Vec<CachedWriteRange>,
-    start: u64,
-    end: u64,
-    unique: u64,
-) {
-    if unique == 0 || start >= end {
-        return;
-    }
-
-    let mut boundaries = vec![start, end];
-    for range in ranges.iter() {
-        if range.end <= start || range.start >= end {
-            continue;
-        }
-        boundaries.push(range.start.max(start));
-        boundaries.push(range.end.min(end));
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
-    let mut next = Vec::with_capacity(ranges.len() + boundaries.len());
-    for range in ranges.iter().copied() {
-        if range.end <= start || range.start >= end {
-            next.push(range);
-            continue;
-        }
-        if range.start < start {
-            next.push(CachedWriteRange {
-                start: range.start,
-                end: start,
-                max_unique: range.max_unique,
-            });
-        }
-        if range.end > end {
-            next.push(CachedWriteRange {
-                start: end,
-                end: range.end,
-                max_unique: range.max_unique,
-            });
-        }
-    }
-
-    for window in boundaries.windows(2) {
-        let seg_start = window[0];
-        let seg_end = window[1];
-        if seg_start >= seg_end {
-            continue;
-        }
-        let mut max_unique = unique;
-        for range in ranges.iter() {
-            if range.start < seg_end && seg_start < range.end {
-                max_unique = max_unique.max(range.max_unique);
-            }
-        }
-        next.push(CachedWriteRange {
-            start: seg_start,
-            end: seg_end,
-            max_unique,
-        });
-    }
-
-    next.sort_by_key(|range| (range.start, range.end));
-    let mut merged: Vec<CachedWriteRange> = Vec::with_capacity(next.len());
-    for range in next {
-        if range.start >= range.end {
-            continue;
-        }
-        if let Some(last) = merged.last_mut()
-            && last.end == range.start
-            && last.max_unique == range.max_unique
-        {
-            last.end = range.end;
-            continue;
-        }
-        merged.push(range);
-    }
-    *ranges = merged;
 }
 
 pub(crate) struct FileWriter<B, M> {
@@ -3506,13 +3438,13 @@ where
         Ok(patches)
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn canonical_dirty_snapshot(
         &self,
         offset: u64,
         len: usize,
     ) -> anyhow::Result<CanonicalDirtyOverlay> {
-        use crate::workspace_overlay::packed_v3::PackedWireError;
+        use crate::workspace::packed::PackedWireError;
 
         let end = offset
             .checked_add(len as u64)
@@ -4233,6 +4165,10 @@ where
         let mut guard = self.shared.inner.lock().await;
         guard.chunks.clear();
         guard.cached_write_watermarks.clear();
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(legacy) = &mut guard.legacy_cached_write_watermarks {
+            legacy.clear();
+        }
         guard.sparse_fallocate_ranges.clear();
 
         if guard.flush_waiting > 0 {
@@ -4748,7 +4684,10 @@ where
     ) {
         let key = {
             let state = slice.lock();
-            if !matches!(state.state, SliceStatus::Committed) || !state.upload_complete() {
+            if !matches!(state.state, SliceStatus::Committed)
+                || !state.upload_complete()
+                || state.writeback_cleaned_before_commit
+            {
                 return;
             }
             let Some(slice_id) = state.slice_id else {
@@ -4762,15 +4701,23 @@ where
             )
         };
 
+        Self::remove_uploaded_writeback_record(shared, &key).await;
+    }
+
+    async fn remove_uploaded_writeback_record(shared: &Arc<Shared<B, M>>, key: &DirtySliceKey) {
+        #[cfg(test)]
+        if let Some(probe) = shared.writeback_cleanup_probe.get() {
+            probe.enter().await;
+        }
         if let Some(wb) = &shared.write_back {
-            if let Err(err) = wb.promote_to_read_cache(&key, key.local_seq).await {
+            if let Err(err) = wb.promote_to_read_cache(key, key.local_seq).await {
                 warn!(
                     slice_id = key.local_seq,
                     error = ?err,
                     "failed to promote writeback stage into persistent read cache"
                 );
             }
-            let _ = wb.remove(&key).await;
+            let _ = wb.remove(key).await;
         }
     }
 
@@ -5080,7 +5027,36 @@ where
                     .reader
                     .invalidate(ino as u64, file_offset, desc.length.as_usize())
                     .await;
-                handle.mark_committed();
+                // Hand off stage retirement under the same lock that publishes
+                // Committed. Otherwise upload can finish and skip cleanup in
+                // the gap between the completion check and publication.
+                let retire_before_commit = {
+                    let mut state = slice.lock();
+                    if state.upload_complete() {
+                        true
+                    } else {
+                        state.state = SliceStatus::Committed;
+                        state.notify.notify_waiters();
+                        false
+                    }
+                };
+                if retire_before_commit {
+                    // Keep Uploaded visible until the retirement attempt ends,
+                    // so successful cleanup precedes flush and writer eviction.
+                    // The upload-side helper sees non-Committed and skips us.
+                    let key = dirty_slice_key(
+                        shared.inode.ino(),
+                        desc.chunk_id,
+                        desc.slice_id,
+                        shared.writeback_epoch,
+                    );
+                    Self::remove_uploaded_writeback_record(shared, &key).await;
+                    let mut state = slice.lock();
+                    state.writeback_cleaned_before_commit = true;
+                    state.state = SliceStatus::Committed;
+                    state.notify.notify_waiters();
+                }
+                shared.flush_notify.notify_waiters();
                 true
             }
             Err(err) => {
@@ -6015,7 +5991,7 @@ where
         self
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn with_writeback_epoch(mut self, epoch: u64) -> Self {
         self.writeback_epoch = epoch;
         self
@@ -6573,7 +6549,7 @@ where
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) async fn canonical_dirty_snapshot_if_exists(
         &self,
         ino: u64,
@@ -6793,6 +6769,10 @@ where
 mod coalesce_tests;
 
 #[cfg(test)]
+#[path = "writer/commit_cleanup_tests.rs"]
+mod commit_cleanup_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chunk::ChunkLayout;
@@ -6854,12 +6834,12 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     mod packed_snapshot_tests {
         use super::*;
         use crate::chunk::read_plan::{ResolvedReadPlan, WorkspaceReadPlanProvider};
-        use crate::workspace_overlay::packed_v3::wire005::{
-            V3BudgetLimits, V3BudgetPool, V3MountBudget,
+        use crate::workspace::packed::snapshot::{
+            SnapshotBudgetLimits, SnapshotBudgetPool, SnapshotMountBudget,
         };
 
         struct SnapshotStore(Arc<AtomicU64>);
@@ -6883,7 +6863,7 @@ mod tests {
             }
         }
 
-        struct SnapshotBudgetProvider(Arc<V3MountBudget>);
+        struct SnapshotBudgetProvider(Arc<SnapshotMountBudget>);
 
         #[async_trait]
         impl WorkspaceReadPlanProvider for SnapshotBudgetProvider {
@@ -6911,10 +6891,10 @@ mod tests {
         }
 
         async fn fixture(
-            limits: V3BudgetLimits,
+            limits: SnapshotBudgetLimits,
         ) -> (
             Arc<FileWriter<SnapshotStore, impl MetaLayer>>,
-            Arc<V3MountBudget>,
+            Arc<SnapshotMountBudget>,
             Arc<AtomicU64>,
         ) {
             let layout = ChunkLayout {
@@ -6926,7 +6906,7 @@ mod tests {
                 .unwrap()
                 .layer();
             let reads = Arc::new(AtomicU64::new(0));
-            let budget = V3MountBudget::new(limits).unwrap();
+            let budget = SnapshotMountBudget::new(limits).unwrap();
             let backend = Arc::new(Backend::new_workspace(
                 Arc::new(SnapshotStore(reads.clone())),
                 meta,
@@ -6960,7 +6940,7 @@ mod tests {
 
         #[tokio::test]
         async fn packed_canonical_committed_bytes_cannot_extend_fresh_eof() {
-            let (writer, budget, reads) = fixture(V3BudgetLimits::default()).await;
+            let (writer, budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
             let cid = chunk_id_for(123, 0).unwrap();
             let mut chunk = ChunkState::new(cid);
             chunk
@@ -6978,7 +6958,7 @@ mod tests {
                 "committed residue must not resurrect truncated bytes"
             );
             assert!(!snapshot.fully_covered(8));
-            assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
             assert_eq!(reads.load(Ordering::SeqCst), 0);
         }
 
@@ -6989,7 +6969,7 @@ mod tests {
                 SliceStatus::Readonly,
                 SliceStatus::Uploaded,
             ] {
-                let (writer, budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut chunk = ChunkState::new(cid);
                 chunk.slices.push_back(Arc::new(ParkingMutex::new(slice(
@@ -7003,7 +6983,7 @@ mod tests {
                     writer.canonical_dirty_snapshot(0, 16).await.is_err(),
                     "ambiguous/published state must not act as uncommitted local EOF"
                 );
-                assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
+                assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
                 assert_eq!(reads.load(Ordering::SeqCst), 0);
             }
         }
@@ -7014,7 +6994,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut chunk = ChunkState::new(cid);
                 for _ in 0..count {
@@ -7048,7 +7028,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let cid = chunk_id_for(123, 0).unwrap();
                 let mut fragmented = SliceState::new(
                     cid,
@@ -7088,7 +7068,7 @@ mod tests {
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS,
                 MAX_PACKED_DIRTY_SNAPSHOT_ROWS + 1,
             ] {
-                let (writer, _budget, reads) = fixture(V3BudgetLimits::default()).await;
+                let (writer, _budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
                 let mut inner = writer.shared.inner.lock().await;
                 for index in 0..count {
                     let cid = chunk_id_for(123, index as u64).unwrap();
@@ -7109,11 +7089,11 @@ mod tests {
 
         #[tokio::test]
         async fn packed_canonical_bitmap_admission_failure_releases_data_before_fetch() {
-            let mut limits = V3BudgetLimits {
+            let mut limits = SnapshotBudgetLimits {
                 max_read_bytes: 16,
-                ..V3BudgetLimits::default()
+                ..SnapshotBudgetLimits::default()
             };
-            limits.bytes[V3BudgetPool::Output as usize] = 16;
+            limits.bytes[SnapshotBudgetPool::Output as usize] = 16;
             let (writer, budget, reads) = fixture(limits).await;
             let cid = chunk_id_for(123, 0).unwrap();
             let mut chunk = ChunkState::new(cid);
@@ -7126,9 +7106,9 @@ mod tests {
             writer.shared.inner.lock().await.chunks.insert(cid, chunk);
             let error = writer.canonical_dirty_snapshot(0, 16).await.err().unwrap();
             assert!(crate::vfs::error::is_read_admission_error(&error));
-            assert_eq!(budget.state().used[V3BudgetPool::Output as usize], 0);
-            assert_eq!(budget.state().used[V3BudgetPool::Control as usize], 0);
-            assert_eq!(budget.state().peak[V3BudgetPool::Output as usize], 16);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Control as usize], 0);
+            assert_eq!(budget.state().peak[SnapshotBudgetPool::Output as usize], 16);
             assert_eq!(reads.load(Ordering::SeqCst), 0);
         }
     }
@@ -9557,6 +9537,64 @@ mod tests {
         let file_reader = reader.open_for_handle(inode, 42);
         let out = file_reader.read(0, page).await.unwrap();
         assert_eq!(out, newer);
+    }
+
+    #[tokio::test]
+    async fn test_cached_watermark_append_work_stays_local_across_flush() {
+        let layout = ChunkLayout {
+            chunk_size: 16 * 1024,
+            block_size: 4 * 1024,
+        };
+        let store = Arc::new(InMemoryBlockStore::new());
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta = meta_handle.layer();
+        let backend = Arc::new(Backend::new(store, meta.clone()));
+        let ino = meta
+            .create_file(1, "cached_watermark_growth".into())
+            .await
+            .unwrap();
+        let inode = Inode::new(ino, 0);
+        let reader = Arc::new(DataReader::new(
+            Arc::new(ReadConfig::new(layout)),
+            backend.clone(),
+        ));
+        let writer = DataWriter::new(
+            test_config_without_auto_flush(layout),
+            backend,
+            reader.clone(),
+            None,
+        );
+        let file = writer.ensure_file(inode.clone());
+        inode.set_size(8192);
+        let mut expected = Vec::new();
+        let mut previous_visits = 0;
+        for batch in 0..2u64 {
+            for i in batch * 64..(batch + 1) * 64 {
+                let bytes = [i as u8; 64];
+                file.write_at_cached(i * 64, &bytes, i + 1).await.unwrap();
+                expected.extend_from_slice(&bytes);
+            }
+            file.flush().await.unwrap();
+            let inner = file.shared.inner.lock().await;
+            let visits: usize = inner
+                .cached_write_watermarks
+                .values()
+                .map(CachedWriteWatermarks::examined_ranges)
+                .sum();
+            assert!(visits - previous_visits <= 3 * 64);
+            previous_visits = visits;
+        }
+        // Flush must retain the ordering history protecting the committed page.
+        file.write_at_cached(4096, &[0xff; 4096], 1).await.unwrap();
+        file.flush().await.unwrap();
+        assert_eq!(
+            reader
+                .open_for_handle(inode, 42)
+                .read(0, 8192)
+                .await
+                .unwrap(),
+            expected
+        );
     }
 
     #[tokio::test]

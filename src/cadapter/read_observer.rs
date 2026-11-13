@@ -15,7 +15,7 @@ pub mod http;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Engine {
-    PackedV3,
+    Packed,
     Native,
 }
 
@@ -356,12 +356,12 @@ impl ReadObserver {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     pub(crate) fn with_mount_budget(
-        budget: &Arc<crate::workspace_overlay::packed_v3::wire005::V3MountBudget>,
-    ) -> crate::workspace_overlay::packed_v3::PackedResult<Self> {
+        budget: &Arc<crate::workspace::packed::snapshot::SnapshotMountBudget>,
+    ) -> crate::workspace::packed::PackedResult<Self> {
         let owner = budget.admit(&[(
-            crate::workspace_overlay::packed_v3::wire005::V3BudgetPool::Roots,
+            crate::workspace::packed::snapshot::SnapshotBudgetPool::Roots,
             Self::MEMORY_BOUND_BYTES,
         )])?;
         Ok(Self {
@@ -1050,7 +1050,7 @@ impl crate::vfs::stats::FsStatsExtension for ReadStatsExtension {
         Some(self.0.start(
             Ledger::LogicalOperation,
             ReadContext {
-                engine: Engine::PackedV3,
+                engine: Engine::Packed,
                 phase: Phase::Runtime,
                 class: ReadClass::StatsSnapshot,
                 origin: Origin::StatsObserver,
@@ -1239,10 +1239,10 @@ impl RawCoverage {
 }
 
 impl Engine {
-    const ALL: [Self; 2] = [Self::PackedV3, Self::Native];
+    const ALL: [Self; 2] = [Self::Packed, Self::Native];
     fn label(self) -> &'static str {
         match self {
-            Self::PackedV3 => "packed_v3",
+            Self::Packed => "packed",
             Self::Native => "native",
         }
     }
@@ -1382,7 +1382,7 @@ mod shared_raw;
 #[cfg(test)]
 mod tests;
 pub(crate) use shared_raw::SharedRawReceipt;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) use shared_raw::{SharedRawCoverage, SharedRawLimit};
 
 impl RawSummary {

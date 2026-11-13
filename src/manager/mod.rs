@@ -1,6 +1,6 @@
 //! Single-instance, durable lifecycle coordinator. Catalogs remain authoritative.
 
-use crate::workspace_overlay::{
+use crate::workspace::{
     admin,
     catalog::{CreateVolumeRoot, CreateWorkspace},
     error::WorkspaceError,
@@ -10,7 +10,7 @@ use crate::workspace_overlay::{
     },
 };
 #[cfg(test)]
-use crate::workspace_overlay::{catalog::WorkspaceStore, stores::database::SqliteWorkspaceStore};
+use crate::workspace::{catalog::WorkspaceStore, stores::database::SqliteWorkspaceStore};
 use sea_orm::sqlx::{
     self, Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
@@ -112,7 +112,7 @@ pub enum VolumeMode {
     Initialize,
 }
 fn format_default() -> String {
-    "workspace-v1".into()
+    "workspace".into()
 }
 fn count_default() -> usize {
     1
@@ -172,7 +172,7 @@ pub struct WorkspaceView {
     pub record: WorkspaceRecord,
     pub base_revision: Revision,
     pub layer_depth: u32,
-    pub leases: Vec<crate::workspace_overlay::model::SnapshotLease>,
+    pub leases: Vec<crate::workspace::model::SnapshotLease>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native: Option<serde_json::Value>,
     pub mount_identity: MountIdentity,
@@ -921,8 +921,8 @@ impl Manager {
         }
         let fingerprint = self.fingerprint(&request.catalog_ref)?;
         let native = match request.volume_format.as_str() {
-            "workspace-v1" => false,
-            "workspace-native-v2" if cfg!(feature = "native-packed-base") => true,
+            "workspace" => false,
+            "native-workspace" if cfg!(feature = "native-packed-base") => true,
             _ => {
                 return Err(ManagerError::new(
                     "unsupported",
@@ -1023,7 +1023,7 @@ impl Manager {
         }
         let binding = self.binding(volume).await?;
         Self::validate_revision_profile(&binding.view, &request.revision)?;
-        let native = binding.view.volume_format == "workspace-native-v2";
+        let native = binding.view.volume_format == "native-workspace";
         let items = (0..request.count)
             .map(|_| {
                 let mut item = OperationItem::new(Some(WorkspaceId::new()), Some(LayerId::new()));
@@ -1118,12 +1118,12 @@ impl Manager {
             .connection(
                 &binding.view.catalog_ref,
                 false,
-                binding.view.volume_format == "workspace-native-v2",
+                binding.view.volume_format == "native-workspace",
             )
             .await?;
         self.validate_binding_header(&store, &binding.view).await?;
         if let Some(raw) = store.raw_backend() {
-            crate::workspace_overlay::stores::manager_guard::ManagerGuard::verify_owner(
+            crate::workspace::stores::manager_guard::ManagerGuard::verify_owner(
                 raw.as_ref(),
                 self.catalog_journal_id(&binding.view.catalog_ref),
             )
@@ -1142,7 +1142,7 @@ impl Manager {
                 "recorded volume binding changed; refusing to redirect an operation",
             ));
         }
-        let native = binding.view.volume_format == "workspace-native-v2";
+        let native = binding.view.volume_format == "native-workspace";
         let store = self.connection(&record.catalog_ref, false, native).await?;
         self.validate_binding_header(&store, &binding.view).await?;
         self.claim_catalog(&record.catalog_ref, native, store, false, true)
@@ -1171,7 +1171,7 @@ impl Manager {
         view: &VolumeView,
     ) -> Result<()> {
         let catalog_header = self.header(connection, view.id).await?;
-        if view.volume_format == "workspace-native-v2" {
+        if view.volume_format == "native-workspace" {
             #[cfg(feature = "native-packed-base")]
             {
                 let header = native::header(connection, &catalog_header).await?;
@@ -1202,7 +1202,7 @@ impl Manager {
         Ok(())
     }
     fn revision_for(view: &VolumeView, catalog_revision: BaseRevision) -> Result<Revision> {
-        if view.volume_format == "workspace-native-v2" {
+        if view.volume_format == "native-workspace" {
             Ok(Revision::Native(NativeCatalogRevision {
                 kind: NativeRevisionKind::Catalog,
                 volume_id: view.id,
@@ -1217,8 +1217,8 @@ impl Manager {
     }
     fn validate_revision_profile(view: &VolumeView, revision: &Revision) -> Result<()> {
         match (view.volume_format.as_str(), revision) {
-            ("workspace-v1", Revision::Workspace(_)) => Ok(()),
-            ("workspace-native-v2", Revision::Native(native))
+            ("workspace", Revision::Workspace(_)) => Ok(()),
+            ("native-workspace", Revision::Native(native))
                 if native.volume_id == view.id
                     && Some(native.storage_namespace_id) == view.storage_namespace_id =>
             {
@@ -1261,7 +1261,7 @@ impl Manager {
         let view = admin::inspect_workspace(connection.store.as_ref(), id)
             .await
             .map_err(catalog_error)?;
-        let native = if binding.view.volume_format == "workspace-native-v2" {
+        let native = if binding.view.volume_format == "native-workspace" {
             if view.record.upper_bucket.is_some() {
                 return Err(ManagerError::new(
                     "unsupported",
@@ -1458,7 +1458,7 @@ impl Manager {
                         .bind(record.operation.id.to_string()).execute(&mut *tx).await.map_err(storage)?;
                 }
                 tx.commit().await.map_err(storage)?;
-                let is_native = request.volume_format == "workspace-native-v2";
+                let is_native = request.volume_format == "native-workspace";
                 let mut connection = self
                     .connection(
                         &record.catalog_ref,
@@ -1569,7 +1569,7 @@ impl Manager {
                         connection
                             .initialize_empty(CreateVolumeRoot {
                                 upper_bucket: None,
-                                volume_format: "workspace-v1".into(),
+                                volume_format: "workspace".into(),
                                 schema_version: WORKSPACE_SCHEMA_VERSION,
                                 volume_id: record.operation.volume_id,
                                 workspace_id: root,
@@ -1716,7 +1716,7 @@ impl Manager {
                 .map_err(catalog_error)?;
                 let item = &record.operation.items[index];
                 #[cfg(feature = "native-packed-base")]
-                if binding.view.volume_format == "workspace-native-v2" {
+                if binding.view.volume_format == "native-workspace" {
                     let header = native::header(
                         &connection,
                         &self.header(&connection, record.operation.volume_id).await?,
@@ -1742,7 +1742,7 @@ impl Manager {
                     .await?
                     .view
                     .volume_format
-                    == "workspace-native-v2"
+                    == "native-workspace"
                 {
                     let header = native::header(
                         &connection,

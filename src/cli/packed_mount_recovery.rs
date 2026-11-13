@@ -1,11 +1,11 @@
-//! Production same-PVC packed-v3 recovery. The command accepts identity hints;
+//! Production same-PVC packed recovery. The command accepts identity hints;
 //! only the private scoped metadata/PVC driver can create recovery authority.
 
 use super::*;
-use crate::workspace_overlay::lifecycle::PackedMountCatalog;
-use crate::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use crate::workspace_overlay::stores::kv_backend::WorkspaceKvBackend;
-use crate::workspace_overlay::stores::kv_store::packed_admin::{
+use crate::workspace::lifecycle::PackedMountCatalog;
+use crate::workspace::packed::snapshot::SnapshotMountBudget;
+use crate::workspace::stores::kv_backend::WorkspaceKvBackend;
+use crate::workspace::stores::kv_store::packed_admin::{
     PackedMountedRecoveryRequest, PackedReleasedMountReference,
 };
 
@@ -28,17 +28,17 @@ pub(super) async fn run(
         && (!matches!(config.meta_backend, MetaBackendKind::TiKv)
             || config.meta_tikv_tls.as_ref() != Some(&tls))
     {
-        anyhow::bail!("packed-v3 recovery TLS paths must match the original mount configuration");
+        anyhow::bail!("packed recovery TLS paths must match the original mount configuration");
     }
     if meta_url_override != DEFAULT_META_URL {
         if !matches!(config.meta_backend, MetaBackendKind::Redis) {
             anyhow::bail!(
-                "packed-v3 recovery metadata URL override requires the original Redis configuration"
+                "packed recovery metadata URL override requires the original Redis configuration"
             );
         }
         config.meta_url = meta_url_override;
     }
-    if config.volume_format != VolumeFormat::WorkspaceV1
+    if config.volume_format != VolumeFormat::Workspace
         || config.workspace != Some(*arguments.workspace.as_uuid())
         || arguments.recovery_generation <= arguments.original_generation
         || arguments.recovery_lease == arguments.original_lease
@@ -46,10 +46,10 @@ pub(super) async fn run(
         || arguments.ttl_seconds == 0
         || arguments.ttl_seconds > 900
     {
-        anyhow::bail!("packed-v3 recovery identities or original mount configuration disagree");
+        anyhow::bail!("packed recovery identities or original mount configuration disagree");
     }
     namespace_flat_volume_cache(&mut config)?;
-    let budget = V3MountBudget::from_env()?;
+    let budget = SnapshotMountBudget::from_env()?;
     match config.meta_backend {
         MetaBackendKind::Redis => {
             let backend =
@@ -82,14 +82,14 @@ pub(super) async fn run(
             Ok(())
         }
         MetaBackendKind::Sqlx | MetaBackendKind::Etcd => {
-            anyhow::bail!("packed-v3 mounted recovery requires Redis or TiKV metadata");
+            anyhow::bail!("packed mounted recovery requires Redis or TiKV metadata");
         }
     }
 }
 
 async fn dispatch<B: WorkspaceKvBackend>(
     catalog: Arc<KvWorkspaceStore<B>>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     config: MountConfig,
     arguments: PackedMountRecoveryArgs,
 ) -> anyhow::Result<()> {
@@ -118,7 +118,7 @@ async fn dispatch<B: WorkspaceKvBackend>(
 
 async fn recover_with_client<B, O>(
     catalog: Arc<KvWorkspaceStore<B>>,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     config: MountConfig,
     arguments: PackedMountRecoveryArgs,
     client: ObjectClient<O>,
@@ -131,15 +131,15 @@ where
     let header = catalog
         .packed_mount_header(arguments.workspace)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("packed-v3 recovery binding is absent"))?;
-    if header.volume_format != "workspace-v1" || header.schema_version != WORKSPACE_SCHEMA_VERSION {
-        anyhow::bail!("packed-v3 recovery volume marker is invalid");
+        .ok_or_else(|| anyhow::anyhow!("packed recovery binding is absent"))?;
+    if header.volume_format != "workspace" || header.schema_version != WORKSPACE_SCHEMA_VERSION {
+        anyhow::bail!("packed recovery volume marker is invalid");
     }
     let layout = ChunkLayout {
         chunk_size: config.chunk_size,
         block_size: config.block_size,
     };
-    let writeback_root = workspace_overlay::cache_scope::writeback_root(
+    let writeback_root = workspace::cache_scope::writeback_root(
         &config.cache.cache_root,
         header.volume_id,
         arguments.workspace,
@@ -154,7 +154,7 @@ where
     let observer = budget.read_observer(client.read_observer())?;
     let client = client.with_read_observer(
         observer,
-        crate::cadapter::read_observer::Engine::PackedV3,
+        crate::cadapter::read_observer::Engine::Packed,
         crate::cadapter::read_observer::Phase::Startup,
         crate::cadapter::read_observer::Origin::Demand,
     );
@@ -165,7 +165,7 @@ where
         .join(arguments.workspace.to_string());
     let upper = Arc::new(create_object_store(upper_client, layout, &block_cache, true).await?);
     let original = PackedReleasedMountReference {
-        guard: workspace_overlay::catalog::HeadGuard {
+        guard: workspace::catalog::HeadGuard {
             workspace_id: arguments.workspace,
             expected_head_layer_id: arguments.head_layer,
             expected_head_epoch: arguments.head_epoch,
@@ -184,7 +184,7 @@ where
                 ttl_ns: arguments
                     .ttl_seconds
                     .checked_mul(1_000_000_000)
-                    .ok_or_else(|| anyhow::anyhow!("packed-v3 recovery TTL overflow"))?,
+                    .ok_or_else(|| anyhow::anyhow!("packed recovery TTL overflow"))?,
             },
             client,
             upper,
@@ -204,7 +204,7 @@ where
     println!(
         "{}",
         serde_json::json!({
-            "format": "packed-v3", "recovery_completed": true,
+            "format": "packed", "recovery_completed": true,
             "original": report(&result.original), "released": report(&result.released),
         })
     );

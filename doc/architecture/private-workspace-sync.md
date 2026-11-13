@@ -1,6 +1,6 @@
 # Private workspace 元数据本地更新与合并提交
 
-实现位于 `src/workspace_overlay/stores/local_metadata.rs`，作用于 Redis/TiKV
+实现位于 `src/workspace/stores/local_metadata.rs`，作用于 Redis/TiKV
 Packed workspace 的应用元数据事务。默认 `remote`，每次等待元数据库确认。
 `local-journal` 先同步本地日志，再返回；后台把合并结果写回同一个元数据库。
 `local-buffered` 先更新内存，按批次落盘并写回元数据库。

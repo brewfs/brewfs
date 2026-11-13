@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and validate a fail-closed manifest for bounded packed-v3 runs."""
+"""Create and validate a fail-closed manifest for bounded packed runs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pathlib
 import re
 from typing import Any
 
-SCHEMA = "packed-v3-run-manifest-v1"
+SCHEMA = "packed-run-manifest-v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -171,7 +171,7 @@ def init_manifest(
     if not run_id or any(character.isspace() for character in run_id):
         raise ArtifactError("run_id must be a non-empty token")
     if wire_version != 5:
-        raise ArtifactError("packed-v3 runs require the current encoding 005")
+        raise ArtifactError("packed runs require the current encoding 005")
     if not fixture_prefix or fixture_prefix.startswith("/") or ".." in fixture_prefix.split("/"):
         raise ArtifactError("fixture prefix is not owned")
     seed = controls.get("scanner_seed")
@@ -278,7 +278,7 @@ def finalize_manifest(artifact: pathlib.Path, *, status: int) -> dict[str, Any]:
     if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
         raise ArtifactError("unsupported run manifest schema")
     if manifest.get("packed_version") != "v3" or manifest.get("wire_version") != 5:
-        raise ArtifactError("run manifest does not identify the current packed-v3 encoding")
+        raise ArtifactError("run manifest does not identify the current packed encoding")
     success = status == 0
     required = [
         "manifest-key.txt",

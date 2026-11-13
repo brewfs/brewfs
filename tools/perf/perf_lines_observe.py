@@ -420,7 +420,7 @@ def capture_mount(argv: list[str]) -> int:
                      "BREWFS_WRITEBACK_UPLOAD_CONCURRENCY", "BREWFS_CACHED_BLOCK_ASSEMBLER"):
         if environment.get(variable) != expected[variable]:
             failures.append({"field": variable, "actual": environment.get(variable), "expected": expected[variable]})
-    expected_ttl = "1000" if config.get("volume_format") == "workspace-v1" else "0"
+    expected_ttl = "1000" if config.get("volume_format") == "workspace" else "0"
     if config.get("fuse.cache_ttl_ms") != expected_ttl:
         failures.append({"field": "fuse.cache_ttl_ms", "actual": config.get("fuse.cache_ttl_ms"), "expected": expected_ttl})
     report = {"pid": args.pid, "argv": (proc / "cmdline").read_text().rstrip("\0").split("\0"),

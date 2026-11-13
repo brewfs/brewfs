@@ -1,11 +1,11 @@
 # Workspace Overlay read cache
 
-Workspace mounts with a Packed-v3 lower enable these caches by default:
+Workspace mounts with a Packed lower enable these caches by default:
 
 | Cache | Default limit | Control |
 |---|---|---|
-| Upper metadata rows, including empty extent/directory results | 65,536 entries shared by the row cache; 60-second TTL | `BREWFS_WORKSPACE_ROW_CACHE_TTL_MS`; `BREWFS_WORKSPACE_EMPTY_QUERY_CACHE=0` disables only empty-result caching |
-| Authenticated wire005 lower payload frames | 8 MiB per mount, filled on demand | `BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES`; `0` disables retention; nonzero capacity must be 513 bytes–64 MiB |
+| Upper metadata rows, including empty extent/directory results | 64 MiB shared by upper and namespace caches; at most 65,536 entries per cache; 60-second TTL | `BREWFS_WORKSPACE_ROW_CACHE_BYTES`, `BREWFS_WORKSPACE_ROW_CACHE_TTL_MS`; `BREWFS_WORKSPACE_EMPTY_QUERY_CACHE=0` disables only empty-result caching |
+| Authenticated lower payload frames | 8 MiB per mount, filled on demand | `BREWFS_PACKED_V3_RETAINED_PAYLOAD_BYTES`; `0` disables retention; nonzero capacity must be 513 bytes–64 MiB |
 
 The 8 MiB default matches the local hot-lower validation and limits additional
 memory per workspace. The charge includes decoded frame bytes and 512 bytes of

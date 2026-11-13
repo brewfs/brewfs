@@ -386,7 +386,7 @@ impl SealReader<'_> {
                                 span.frame_slot, object.object_len
                             )));
                         }
-                        if descriptor.payload_format == PayloadFormat::NativeBlockV1 {
+                        if descriptor.payload_format == PayloadFormat::NativeBlock {
                             // Native frames carry the whole block in one span;
                             // frame_raw_offset is not a raw-domain offset.
                             validate_native_single_span(spans, binding.decoded_len)
@@ -400,7 +400,7 @@ impl SealReader<'_> {
                             )));
                         }
                         let native_inner =
-                            if descriptor.payload_format == PayloadFormat::NativeBlockV1 {
+                            if descriptor.payload_format == PayloadFormat::NativeBlock {
                                 binding.decoded_len as u64
                             } else {
                                 0
@@ -543,7 +543,7 @@ impl SealReader<'_> {
                             continue;
                         }
                         let (raw, format) = &frame_raws[&span.frame_slot];
-                        if *format == PayloadFormat::NativeBlockV1 {
+                        if *format == PayloadFormat::NativeBlock {
                             // The whole frame is the encoded inner block; the
                             // span's length lives in the decoded domain and
                             // must not be compared with frame.raw_len.

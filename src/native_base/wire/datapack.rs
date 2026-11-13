@@ -177,19 +177,19 @@ impl PackFrame {
         })
     }
 
-    /// Build a NativeBlockV1 frame from already-encoded block bytes. The
+    /// Build a NativeBlock frame from already-encoded block bytes. The
     /// outer codec must be None and the payload is the inner encoded bytes
     /// (spec 03 §4.2: `raw` describes the inner encoded block bytes).
     pub fn native_block_v1(encoded: &[u8]) -> WireResult<PackFrame> {
         if encoded.len() as u64 > super::frame::MAX_NATIVE_OUTER_PAYLOAD as u64 {
             return Err(WireError::LimitExceeded(format!(
-                "NativeBlockV1 encoded payload {} exceeds {}",
+                "NativeBlock encoded payload {} exceeds {}",
                 encoded.len(),
                 super::frame::MAX_NATIVE_OUTER_PAYLOAD
             )));
         }
         Ok(PackFrame {
-            payload_format: PayloadFormat::NativeBlockV1,
+            payload_format: PayloadFormat::NativeBlock,
             codec: Codec::None,
             stored: encoded.to_vec(),
             raw_len: encoded.len() as u32,
@@ -384,11 +384,7 @@ mod tests {
                 features::PLAIN_BYTES_FRAMES,
                 "plain magic prefix",
             ),
-            (
-                NATIVE_NONE,
-                features::NATIVE_BLOCK_V1_INNER,
-                "native block v1",
-            ),
+            (NATIVE_NONE, features::NATIVE_BLOCK_INNER, "native block v1"),
         ];
         for (bytes, expected, what) in cases {
             let pack = ScrubbedPack::scrub(bytes).unwrap_or_else(|e| panic!("{what}: {e}"));
@@ -449,15 +445,12 @@ mod tests {
         assert_eq!(pack.frames.len(), 1);
         assert_eq!(
             pack.frames[0].header.payload_format,
-            PayloadFormat::NativeBlockV1
+            PayloadFormat::NativeBlock
         );
         // The inner SF header is payload, never re-interpreted by the pack
         // layer (spec 03 §4.2).
         assert_eq!(pack.frames[0].raw, b"SF\x00\x00hello");
-        assert_eq!(
-            pack.header.required_features,
-            features::NATIVE_BLOCK_V1_INNER
-        );
+        assert_eq!(pack.header.required_features, features::NATIVE_BLOCK_INNER);
 
         let mut b = PackBuilder::new();
         b.push(PackFrame::native_block_v1(b"SF\x00\x00hello").unwrap());

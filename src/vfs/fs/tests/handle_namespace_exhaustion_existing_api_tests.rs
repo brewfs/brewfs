@@ -1,4 +1,4 @@
-//! Direct VFS handle-exhaustion tests with workspace-overlay enabled.
+//! Direct VFS handle-exhaustion tests with workspace enabled.
 //! Rejection snapshots cover namespace, attributes, handles and budget state.
 use super::*;
 use crate::meta::client::{BatchPrefetchConfig, MetaClientMetricsSnapshot};
@@ -6,13 +6,13 @@ use crate::meta::store::{FileAttr, FileType};
 use crate::vfs::Inode;
 use crate::vfs::config::VFSConfig;
 use crate::vfs::error::VfsError;
-use crate::workspace_overlay::packed_v3::wire005::{
-    AuthenticatedV3Snapshot, V3MountBudget, V3ProducerOptions, V3SourceConsistency,
-    V3SourceFileLimits, V3SourceHardlinkPolicy, V3SourceNamespaceInventory,
-    V3SourceNamespaceOptions,
+use crate::workspace::packed::snapshot::{
+    AuthenticatedSnapshot, SnapshotMountBudget, SnapshotProducerOptions, SnapshotSourceConsistency,
+    SnapshotSourceFileLimits, SnapshotSourceHardlinkPolicy, SnapshotSourceNamespaceInventory,
+    SnapshotSourceNamespaceOptions,
 };
-use crate::workspace_overlay::packed_v3::{
-    AccessProfile, PackedCodec, PackedV3BlockStore, PackedV3ReadonlyMeta, SizeClassTable,
+use crate::workspace::packed::{
+    AccessProfile, PackedBlockStore, PackedCodec, PackedReadonlyMeta, SizeClassTable,
 };
 use std::sync::atomic::Ordering;
 
@@ -195,7 +195,7 @@ async fn assert_denied_unchanged<B, M>(
     fs: &VFS<B, M>,
     path: OpenPath,
     attr: &FileAttr,
-    budget: Option<&Arc<V3MountBudget>>,
+    budget: Option<&Arc<SnapshotMountBudget>>,
 ) where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
@@ -242,7 +242,7 @@ async fn exercise_namespace_end<B, M>(
     path: OpenPath,
     successful_attr: FileAttr,
     failed_attr: FileAttr,
-    budget: Option<&Arc<V3MountBudget>>,
+    budget: Option<&Arc<SnapshotMountBudget>>,
 ) where
     B: BlockStore + Send + Sync + 'static,
     M: MetaLayer + Send + Sync + 'static,
@@ -379,22 +379,22 @@ generic_case!(
 );
 
 type PackedFs = VFS<
-    PackedV3BlockStore<crate::cadapter::localfs::LocalFsBackend>,
-    PackedV3ReadonlyMeta<crate::cadapter::localfs::LocalFsBackend>,
+    PackedBlockStore<crate::cadapter::localfs::LocalFsBackend>,
+    PackedReadonlyMeta<crate::cadapter::localfs::LocalFsBackend>,
 >;
 
 struct PackedFixture {
     fs: PackedFs,
     successful_attr: FileAttr,
     failed_attr: FileAttr,
-    budget: Arc<V3MountBudget>,
+    budget: Arc<SnapshotMountBudget>,
     _source: tempfile::TempDir,
     _spool: tempfile::TempDir,
     _objects: tempfile::TempDir,
 }
 
 async fn packed_fixture() -> PackedFixture {
-    // Real v3 metadata and its actual V3MountBudget; no synthetic budget guard.
+    // Real v3 metadata and its actual SnapshotMountBudget; no synthetic budget guard.
     let source = tempfile::tempdir().unwrap();
     let spool = tempfile::tempdir().unwrap();
     let objects = tempfile::tempdir().unwrap();
@@ -403,14 +403,14 @@ async fn packed_fixture() -> PackedFixture {
     let client = crate::cadapter::client::ObjectClient::new(
         crate::cadapter::localfs::LocalFsBackend::new(objects.path()),
     );
-    let inventory = V3SourceNamespaceInventory::capture(
+    let inventory = SnapshotSourceNamespaceInventory::capture(
         source.path(),
         spool.path(),
-        V3SourceNamespaceOptions {
+        SnapshotSourceNamespaceOptions {
             root_inode: 1,
-            consistency: V3SourceConsistency::BestEffortDetected,
-            hardlink_policy: V3SourceHardlinkPolicy::VisibleLinks,
-            file_limits: V3SourceFileLimits::default(),
+            consistency: SnapshotSourceConsistency::BestEffortDetected,
+            hardlink_policy: SnapshotSourceHardlinkPolicy::VisibleLinks,
+            file_limits: SnapshotSourceFileLimits::default(),
         },
     )
     .await
@@ -419,7 +419,7 @@ async fn packed_fixture() -> PackedFixture {
         .build_snapshot(
             client.clone(),
             "fh-exhaustion".into(),
-            V3ProducerOptions {
+            SnapshotProducerOptions {
                 snapshot_id: [41; 32],
                 root_dir_key: [42; 32],
                 root_inode: 1,
@@ -432,13 +432,13 @@ async fn packed_fixture() -> PackedFixture {
         )
         .await
         .unwrap();
-    let snapshot = AuthenticatedV3Snapshot::open(&client, &built.reference)
+    let snapshot = AuthenticatedSnapshot::open(&client, &built.reference)
         .await
         .unwrap();
     let layout = ChunkLayout::default();
-    let budget = V3MountBudget::defaults();
+    let budget = SnapshotMountBudget::defaults();
     let meta = Arc::new(
-        PackedV3ReadonlyMeta::from_v3_budget(
+        PackedReadonlyMeta::from_snapshot_budget(
             client,
             snapshot,
             layout.chunk_size,

@@ -41,18 +41,18 @@ tests require index type errors to precede writes.
 Before acceptance on brewfs, run the full Rust CI gate from `AGENTS.md` and
 `.github/workflows/ci.yml`, including formatting, check/build, runtime feature
 checks, clippy, and the mandatory workspace lib/bin tests. Enable
-`workspace-overlay` to compile and run these tests as well:
+`workspace` to compile and run these tests as well:
 
 ```bash
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
   cargo test --workspace --lib --bins
 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-  cargo test --features workspace-overlay workspace_overlay::entity --lib
+  cargo test --features workspace workspace::entity --lib
 # Use an owned, isolated Redis 7 instance with ACL administration enabled.
 BREWFS_TEST_REDIS_URL=redis://127.0.0.1:6379/ \
   CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
-  cargo test --features workspace-overlay \
-  workspace_overlay::entity::backend::tests::redis_ --lib \
+  cargo test --features workspace \
+  workspace::entity::backend::tests::redis_ --lib \
   -- --ignored --test-threads=1
 # Includes the real Redis namespace/recovery fixtures and RustFS data fixtures.
 ENTITY_DATA_ARTIFACT_ROOT=/absolute/artifact/path \

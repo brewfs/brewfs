@@ -273,7 +273,7 @@ fi
 
 validate_packed_fixture() {
     if [[ -n "${PERF_PACKED_DIRS:-}" || -n "${PERF_PACKED_FIO_FILE_SIZE:-}" ]]; then
-        err "packed-v3 fixture does not support PERF_PACKED_DIRS or PERF_PACKED_FIO_FILE_SIZE; use directory levels/fanout/files-per-leaf"
+        err "packed fixture does not support PERF_PACKED_DIRS or PERF_PACKED_FIO_FILE_SIZE; use directory levels/fanout/files-per-leaf"
         return 1
     fi
     export PERF_PACKED_DIR_LEVELS="${PERF_PACKED_DIR_LEVELS:-1}"
@@ -287,16 +287,16 @@ import sys
 
 values = sys.argv[1:]
 if any(not re.fullmatch(r"[0-9]+", value) for value in values[:4]):
-    raise SystemExit("packed-v3 fixture dimensions and size must be unsigned integers")
+    raise SystemExit("packed fixture dimensions and size must be unsigned integers")
 levels, fanout, per_leaf, size = map(int, values[:4])
 maximum = (1 << 64) - 1
 if levels > 8 or not 0 < fanout <= maximum or not 0 < per_leaf <= maximum or not 0 < size <= 4 * 1024 * 1024:
-    raise SystemExit("packed-v3 requires levels 0..8, nonzero u64 fanout/files-per-leaf and file size 1..4 MiB")
+    raise SystemExit("packed requires levels 0..8, nonzero u64 fanout/files-per-leaf and file size 1..4 MiB")
 count = fanout ** levels * per_leaf
 if count > maximum:
-    raise SystemExit("packed-v3 fixture file count overflows u64")
+    raise SystemExit("packed fixture file count overflows u64")
 if values[4] and (not re.fullmatch(r"[0-9]+", values[4]) or int(values[4]) != count):
-    raise SystemExit(f"packed-v3 fixture count mismatch: expected={count} configured={values[4]}")
+    raise SystemExit(f"packed fixture count mismatch: expected={count} configured={values[4]}")
 print(count)
 PY
 )" || return 1
@@ -305,16 +305,16 @@ PY
 
 PACKED_MODE=false
 case "${BREWFS_VOLUME_FORMAT:-}" in
-    packed-metadata-v3) PACKED_MODE=true ;;
-    packed-*) err "unsupported packed volume format: $BREWFS_VOLUME_FORMAT (only packed-metadata-v3)"; exit 1 ;;
+    packed-snapshot) PACKED_MODE=true ;;
+    packed-*) err "unsupported packed volume format: $BREWFS_VOLUME_FORMAT (only packed-snapshot)"; exit 1 ;;
 esac
-if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" ]]; then
-    # workspace-v1 is a writable overlay and therefore needs the catalog
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace" ]]; then
+    # workspace is a writable overlay and therefore needs the catalog
     # feature in the binary. It shares this runner's Redis and S3 topology;
     # no packed fixture or entity/native adapter is substituted.
-    export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features workspace-overlay}"
+    export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features workspace}"
 fi
-if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]]; then
     export BREWFS_CARGO_BUILD_ARGS="${BREWFS_CARGO_BUILD_ARGS:---features native-packed-base}"
 fi
 if [[ "$PACKED_MODE" == true ]]; then
@@ -322,20 +322,20 @@ if [[ "$PACKED_MODE" == true ]]; then
         PERF_TOOLS_VALUE="packed-tree packed-smallfiles"
     fi
     read -r -a packed_tools <<<"$PERF_TOOLS_VALUE"
-    [[ "${#packed_tools[@]}" -gt 0 ]] || { err "packed-v3 PERF_TOOLS cannot be empty"; exit 1; }
+    [[ "${#packed_tools[@]}" -gt 0 ]] || { err "packed PERF_TOOLS cannot be empty"; exit 1; }
     for tool in "${packed_tools[@]}"; do
         case "$tool" in
             packed-tree|packed-smallfiles) ;;
-            *) err "unsupported packed-v3 tool: $tool; tree/smallfiles are supported, fio/POSIX fixture layout remains OPEN"; exit 1 ;;
+            *) err "unsupported packed tool: $tool; tree/smallfiles are supported, fio/POSIX fixture layout remains OPEN"; exit 1 ;;
         esac
     done
     validate_packed_fixture || exit 1
     if [[ "$STORAGE_BACKEND" == "local-fs" ]]; then
-        err "packed-metadata-v3 requires --s3 or --minio because its fixture is published to object storage"
+        err "packed-snapshot requires --s3 or --minio because its fixture is published to object storage"
         exit 1
     fi
     if [[ "$RUN_BREWFS_BENCH" == true ]]; then
-        err "--brewfs-bench is a Redis metadata benchmark and cannot run in packed-metadata-v3 mode"
+        err "--brewfs-bench is a Redis metadata benchmark and cannot run in packed-snapshot mode"
         exit 1
     fi
     export BREWFS_META_BACKEND="${BREWFS_META_BACKEND:-none}"
@@ -486,7 +486,7 @@ fi
 
 export BREWFS_ARTIFACT_DIR="/artifacts/perf-run-${ts}"
 export BREWFS_S3_BUCKET="${BREWFS_S3_BUCKET:-brewfs-data}"
-if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace" || "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]]; then
     export BREWFS_WORKSPACE_NAMESPACE="${BREWFS_WORKSPACE_NAMESPACE:-brewfs-perf-${ts}}"
 fi
 
@@ -527,7 +527,7 @@ esac
 publish_packed_fixture() {
     local fixture_log="$host_artifact_dir/packed-fixture.log"
     local manifest_output="$host_artifact_dir/packed-manifest-key.txt"
-    local fixture_bin="$PROJECT_DIR/target/release/packed_v3_snapshot_fixture"
+    local fixture_bin="$PROJECT_DIR/target/release/packed_snapshot_fixture"
     if [[ -n "${BREWFS_PACKED_MANIFEST_KEY:-}" ]]; then
         printf '%s\n' "$BREWFS_PACKED_MANIFEST_KEY" >"$manifest_output"
         info "复用 packed manifest key: $BREWFS_PACKED_MANIFEST_KEY"
@@ -537,7 +537,7 @@ publish_packed_fixture() {
     info "构建并发布 packed metadata fixture（无 Redis）"
     cargo build --release \
         --features native-packed-base,frozen-base-metadata \
-        --bin packed_v3_snapshot_fixture
+        --bin packed_snapshot_fixture
     if [[ ! -x "$fixture_bin" ]]; then
         err "fixture binary not found: $fixture_bin"
         return 1
@@ -588,7 +588,7 @@ info "启动依赖服务: ${services[*]}"
 docker compose -f "$COMPOSE_FILE" up -d "${services[@]}"
 docker compose -f "$COMPOSE_FILE" ps >"$host_artifact_dir/compose-services-before-perf.txt" 2>&1 || true
 if [[ "$PACKED_MODE" == true ]] && grep -q 'redis-brewfs-perf' "$host_artifact_dir/compose-services-before-perf.txt"; then
-    err "packed-metadata-v3 unexpectedly started Redis; refusing to run"
+    err "packed-snapshot unexpectedly started Redis; refusing to run"
     exit 1
 fi
 

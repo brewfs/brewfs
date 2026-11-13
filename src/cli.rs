@@ -10,23 +10,25 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::*;
 use crate::console;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod entity_mount;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod mount_store;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod native_reverse_maintenance;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) mod packed_mount_cutoff;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod packed_mount_recovery;
-#[cfg(all(test, feature = "workspace-overlay", target_os = "linux"))]
+#[cfg(all(test, feature = "workspace", target_os = "linux"))]
 mod packed_mount_session_tests;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 mod workspace_bucket;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay;
+#[cfg(feature = "workspace")]
+use crate::workspace;
 
+#[cfg(feature = "workspace")]
+use anyhow::Context as _;
 use bytes::Bytes;
 use clap::Parser;
 #[cfg(not(feature = "profiling"))]
@@ -77,41 +79,41 @@ use crate::native_base::write::store::ControlStore;
 #[cfg(feature = "native-packed-base")]
 use crate::native_base::write::tikv::TiKvControlStore;
 use crate::vfs::fs::VFS;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::catalog::{CreateVolumeRoot, WorkspaceStore};
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::control::WorkspaceControl;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::gc::WorkspaceGc;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::ids::{LayerId, WorkspaceId};
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::lifecycle::{
+#[cfg(feature = "workspace")]
+use crate::workspace::catalog::{CreateVolumeRoot, WorkspaceStore};
+#[cfg(feature = "workspace")]
+use crate::workspace::control::WorkspaceControl;
+#[cfg(feature = "workspace")]
+use crate::workspace::gc::WorkspaceGc;
+#[cfg(feature = "workspace")]
+use crate::workspace::ids::{LayerId, WorkspaceId};
+#[cfg(feature = "workspace")]
+use crate::workspace::lifecycle::{
     DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_LEASE_TTL, WorkspaceLifecycle, WorkspaceMountSession,
 };
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::meta_layer::WorkspaceMetaLayer;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::packed_v3::PackedV3ReadonlyMeta;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::publish::diff::WorkspaceDiff;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::stores::database::SqliteWorkspaceStore;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::stores::kv_store::KvWorkspaceStore;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::stores::redis::RedisWorkspaceBackend;
-#[cfg(feature = "workspace-overlay")]
-use crate::workspace_overlay::stores::tikv::TiKvWorkspaceBackend;
+#[cfg(feature = "workspace")]
+use crate::workspace::meta_layer::WorkspaceMetaLayer;
+#[cfg(feature = "workspace")]
+use crate::workspace::model::WORKSPACE_SCHEMA_VERSION;
+#[cfg(feature = "workspace")]
+use crate::workspace::packed::PackedReadonlyMeta;
+#[cfg(feature = "workspace")]
+use crate::workspace::publish::diff::WorkspaceDiff;
+#[cfg(feature = "workspace")]
+use crate::workspace::stores::database::SqliteWorkspaceStore;
+#[cfg(feature = "workspace")]
+use crate::workspace::stores::kv_store::KvWorkspaceStore;
+#[cfg(feature = "workspace")]
+use crate::workspace::stores::redis::RedisWorkspaceBackend;
+#[cfg(feature = "workspace")]
+use crate::workspace::stores::tikv::TiKvWorkspaceBackend;
 #[cfg(feature = "native-packed-base")]
 use sha2::{Digest, Sha256};
 
 /// Working-set lifetime of the lease-bound upper row/namespace caches. Not a
 /// staleness bound: those caches stop serving as soon as the mount's lease
 /// can no longer be proven held (see `LeaseValidity`).
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 const LEASE_BOUND_ROW_CACHE_TTL: Duration = Duration::from_secs(60);
 
 pub async fn run() -> anyhow::Result<()> {
@@ -134,7 +136,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
         #[cfg(feature = "observability")]
         Command::Stats(args) => crate::observability::stats::run(args).await,
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         Command::Workspace(args) => workspace_cmd(args).await,
         Command::Gc(args) => gc_cmd(args).await,
         Command::Info(args) => info_cmd(args).await,
@@ -391,8 +393,8 @@ fn init_tracing() {
 }
 
 async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
-    #[cfg(feature = "workspace-overlay")]
-    if args.volume_format == VolumeFormat::WorkspaceEntityV1 && args.experimental_entity_mount {
+    #[cfg(feature = "workspace")]
+    if args.volume_format == VolumeFormat::EntityWorkspace && args.experimental_entity_mount {
         return entity_mount::mount(args).await;
     }
     validate_volume_format_support(args.volume_format)?;
@@ -436,18 +438,18 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
             let client = create_localfs_client(&args)?;
             tracing::info!("mount startup localfs client ready");
             #[cfg(feature = "native-packed-base")]
-            if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
+            if args.volume_format == VolumeFormat::NativeWorkspace {
                 return mount_native_with_client(client, layout, &args).await;
             }
-            #[cfg(feature = "workspace-overlay")]
-            if args.volume_format == VolumeFormat::PackedMetadataV3 {
-                return mount_packed_v3_readonly_with_client(client, layout, &args).await;
+            #[cfg(feature = "workspace")]
+            if args.volume_format == VolumeFormat::PackedSnapshot {
+                return mount_packed_readonly_with_client(client, layout, &args).await;
             }
             let store = create_object_store(
                 client,
                 layout,
                 &block_cache,
-                args.volume_format != VolumeFormat::FlatV1,
+                args.volume_format != VolumeFormat::Flat,
             )
             .await?;
             dispatch_mount(layout, store, &args).await
@@ -456,18 +458,18 @@ async fn mount_cmd(mut args: MountConfig) -> anyhow::Result<()> {
             let client = create_s3_client(&args).await?;
             tracing::info!("mount startup s3 client ready");
             #[cfg(feature = "native-packed-base")]
-            if args.volume_format == VolumeFormat::WorkspaceNativeV2 {
+            if args.volume_format == VolumeFormat::NativeWorkspace {
                 return mount_native_with_client(client, layout, &args).await;
             }
-            #[cfg(feature = "workspace-overlay")]
-            if args.volume_format == VolumeFormat::PackedMetadataV3 {
-                return mount_packed_v3_readonly_with_client(client, layout, &args).await;
+            #[cfg(feature = "workspace")]
+            if args.volume_format == VolumeFormat::PackedSnapshot {
+                return mount_packed_readonly_with_client(client, layout, &args).await;
             }
             let store = create_object_store(
                 client,
                 layout,
                 &block_cache,
-                args.volume_format != VolumeFormat::FlatV1,
+                args.volume_format != VolumeFormat::Flat,
             )
             .await?;
             dispatch_mount(layout, store, &args).await
@@ -497,8 +499,8 @@ async fn gateway_s3_cmd(args: S3GatewayArgs) -> anyhow::Result<()> {
         mount_args.mount_point = Some(std::path::PathBuf::from("/brewfs-s3-gateway"));
     }
     let mut cfg = MountConfig::from_sources(mount_args)?;
-    if cfg.volume_format != VolumeFormat::FlatV1 {
-        anyhow::bail!("s3 gateway only supports volume_format=flat-v1");
+    if cfg.volume_format != VolumeFormat::Flat {
+        anyhow::bail!("s3 gateway only supports volume_format=flat");
     }
     validate_volume_format_support(cfg.volume_format)?;
 
@@ -579,7 +581,7 @@ async fn gateway_s3_cmd(args: S3GatewayArgs) -> anyhow::Result<()> {
 }
 
 fn namespace_flat_volume_cache(args: &mut MountConfig) -> anyhow::Result<()> {
-    if args.volume_format != VolumeFormat::FlatV1 {
+    if args.volume_format != VolumeFormat::Flat {
         return Ok(());
     }
 
@@ -596,7 +598,7 @@ fn namespace_flat_volume_cache(args: &mut MountConfig) -> anyhow::Result<()> {
             );
         }
     }
-    args.cache.cache_root = unscoped_root.join("flat-v1").join(&scope);
+    args.cache.cache_root = unscoped_root.join("flat").join(&scope);
     args.cache.volume_scope = Some(scope.clone());
     tracing::info!(
         volume_scope = %scope,
@@ -660,18 +662,8 @@ mod flat_cache_namespace_tests {
             &cache_root,
         );
         assert_ne!(first.cache.cache_root, second.cache.cache_root);
-        assert!(
-            first
-                .cache
-                .cache_root
-                .starts_with(cache_root.join("flat-v1"))
-        );
-        assert!(
-            second
-                .cache
-                .cache_root
-                .starts_with(cache_root.join("flat-v1"))
-        );
+        assert!(first.cache.cache_root.starts_with(cache_root.join("flat")));
+        assert!(second.cache.cache_root.starts_with(cache_root.join("flat")));
 
         std::fs::create_dir_all(&first.data_dir).unwrap();
         std::fs::create_dir_all(&second.data_dir).unwrap();
@@ -788,8 +780,8 @@ async fn gateway_webdav_cmd(args: WebDavGatewayArgs) -> anyhow::Result<()> {
         mount.mount_point = Some(std::path::PathBuf::from("/brewfs-webdav-gateway"));
     }
     let mut cfg = MountConfig::from_sources(mount)?;
-    if cfg.volume_format != VolumeFormat::FlatV1 {
-        anyhow::bail!("webdav gateway only supports volume_format=flat-v1");
+    if cfg.volume_format != VolumeFormat::Flat {
+        anyhow::bail!("webdav gateway only supports volume_format=flat");
     }
     validate_volume_format_support(cfg.volume_format)?;
     namespace_flat_volume_cache(&mut cfg)?;
@@ -858,40 +850,30 @@ async fn gateway_webdav_cmd(args: WebDavGatewayArgs) -> anyhow::Result<()> {
 
 fn validate_volume_format_support(format: VolumeFormat) -> anyhow::Result<()> {
     match format {
-        VolumeFormat::FlatV1 => Ok(()),
-        VolumeFormat::WorkspaceEntityV1 => validate_entity_mount_support(),
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::WorkspaceV1 => Ok(()),
-        #[cfg(not(feature = "workspace-overlay"))]
-        VolumeFormat::WorkspaceV1 => {
-            Err(anyhow::anyhow!("feature not compiled: workspace-overlay"))
-        }
+        VolumeFormat::Flat => Ok(()),
+        VolumeFormat::EntityWorkspace => validate_entity_mount_support(),
+        #[cfg(feature = "workspace")]
+        VolumeFormat::Workspace => Ok(()),
+        #[cfg(not(feature = "workspace"))]
+        VolumeFormat::Workspace => Err(anyhow::anyhow!("feature not compiled: workspace")),
         #[cfg(feature = "native-packed-base")]
-        VolumeFormat::WorkspaceNativeV2 => Ok(()),
+        VolumeFormat::NativeWorkspace => Ok(()),
         #[cfg(not(feature = "native-packed-base"))]
-        VolumeFormat::WorkspaceNativeV2 => {
+        VolumeFormat::NativeWorkspace => {
             Err(anyhow::anyhow!("feature not compiled: native-packed-base"))
         }
-        #[cfg(feature = "native-packed-base")]
-        VolumeFormat::PackedMetadataV1 => Err(anyhow::anyhow!(
-            "packed-metadata-v1 is unsupported; use packed-metadata-v3"
-        )),
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::PackedMetadataV2 => Err(anyhow::anyhow!(
-            "packed-metadata-v2 is unsupported; use packed-metadata-v3"
-        )),
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::PackedMetadataV3 => Ok(()),
+        #[cfg(feature = "workspace")]
+        VolumeFormat::PackedSnapshot => Ok(()),
     }
 }
 
 fn validate_entity_mount_support() -> anyhow::Result<()> {
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     anyhow::bail!(
-        "workspace-entity-v1 requires --experimental-entity-mount for a fresh namespace; production admission and process-crash takeover remain disabled"
+        "entity-workspace requires --experimental-entity-mount for a fresh namespace; production admission and process-crash takeover remain disabled"
     );
-    #[cfg(not(feature = "workspace-overlay"))]
-    anyhow::bail!("feature not compiled: workspace-overlay");
+    #[cfg(not(feature = "workspace"))]
+    anyhow::bail!("feature not compiled: workspace");
 }
 
 async fn dispatch_mount<S>(layout: ChunkLayout, store: S, args: &MountConfig) -> anyhow::Result<()>
@@ -899,42 +881,34 @@ where
     S: BlockStore + Send + Sync + 'static,
 {
     match args.volume_format {
-        VolumeFormat::WorkspaceEntityV1 => validate_entity_mount_support(),
-        VolumeFormat::FlatV1 => {
+        VolumeFormat::EntityWorkspace => validate_entity_mount_support(),
+        VolumeFormat::Flat => {
             let meta_store = create_meta_store(args).await?;
             tracing::info!("mount startup meta store ready");
             mount_with_store(layout, store, meta_store, args).await
         }
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::WorkspaceV1 => mount_workspace_with_store(layout, store, args).await,
-        #[cfg(not(feature = "workspace-overlay"))]
-        VolumeFormat::WorkspaceV1 => {
-            anyhow::bail!("feature not compiled: workspace-overlay")
+        #[cfg(feature = "workspace")]
+        VolumeFormat::Workspace => mount_workspace_with_store(layout, store, args).await,
+        #[cfg(not(feature = "workspace"))]
+        VolumeFormat::Workspace => {
+            anyhow::bail!("feature not compiled: workspace")
         }
         #[cfg(feature = "native-packed-base")]
-        VolumeFormat::WorkspaceNativeV2 => {
+        VolumeFormat::NativeWorkspace => {
             anyhow::bail!("native mount must be dispatched with its object client")
         }
         #[cfg(not(feature = "native-packed-base"))]
-        VolumeFormat::WorkspaceNativeV2 => {
+        VolumeFormat::NativeWorkspace => {
             anyhow::bail!("feature not compiled: native-packed-base")
         }
-        #[cfg(feature = "native-packed-base")]
-        VolumeFormat::PackedMetadataV1 => {
-            anyhow::bail!("packed-metadata-v1 is unsupported; use packed-metadata-v3")
-        }
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::PackedMetadataV2 => {
-            anyhow::bail!("packed-metadata-v2 is unsupported; use packed-metadata-v3")
-        }
-        #[cfg(feature = "workspace-overlay")]
-        VolumeFormat::PackedMetadataV3 => {
-            anyhow::bail!("packed-metadata-v3 must be dispatched with its object client")
+        #[cfg(feature = "workspace")]
+        VolumeFormat::PackedSnapshot => {
+            anyhow::bail!("packed-snapshot must be dispatched with its object client")
         }
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 fn native_placement_arm() -> anyhow::Result<bool> {
     match std::env::var("BREWFS_PACKED_METADATA_ARM").as_deref() {
         Err(std::env::VarError::NotPresent) | Ok("packed") => Ok(false),
@@ -943,17 +917,17 @@ fn native_placement_arm() -> anyhow::Result<bool> {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
-async fn mount_authenticated_packed_v3_readonly_with_client<
+#[cfg(feature = "workspace")]
+async fn mount_authenticated_packed_readonly_with_client<
     B: ObjectBackend + Clone + Send + Sync + 'static,
 >(
     client: ObjectClient<B>,
     layout: ChunkLayout,
     args: &MountConfig,
-    reference: workspace_overlay::packed_v3::wire005::V3ObjectRef,
-    budget: Arc<workspace_overlay::packed_v3::wire005::V3MountBudget>,
+    reference: workspace::packed::snapshot::SnapshotObjectRef,
+    budget: Arc<workspace::packed::snapshot::SnapshotMountBudget>,
 ) -> anyhow::Result<()> {
-    use workspace_overlay::packed_v3::wire005::AuthenticatedV3Snapshot;
+    use workspace::packed::snapshot::AuthenticatedSnapshot;
     if args.cache.read_memory_bytes != 0
         || args.cache.read_ssd_bytes != 0
         || args.cache.prefetch_enabled
@@ -963,11 +937,11 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     }
     let startup = budget.admit(&[
         (
-            workspace_overlay::packed_v3::wire005::V3BudgetPool::Roots,
+            workspace::packed::snapshot::SnapshotBudgetPool::Roots,
             128 << 10,
         ),
         (
-            workspace_overlay::packed_v3::wire005::V3BudgetPool::Stored,
+            workspace::packed::snapshot::SnapshotBudgetPool::Stored,
             reference.object_len * 2,
         ),
     ])?;
@@ -981,12 +955,12 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
         if native_placement_arm()? {
             crate::cadapter::read_observer::Engine::Native
         } else {
-            crate::cadapter::read_observer::Engine::PackedV3
+            crate::cadapter::read_observer::Engine::Packed
         },
         crate::cadapter::read_observer::Phase::Startup,
         crate::cadapter::read_observer::Origin::Demand,
     );
-    let snapshot = AuthenticatedV3Snapshot::open(&client, &reference).await?;
+    let snapshot = AuthenticatedSnapshot::open(&client, &reference).await?;
     drop(startup);
     let metadata_bytes = std::env::var("BREWFS_PACKED_METADATA_CACHE_BYTES")
         .ok()
@@ -1003,7 +977,7 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
         )
         .await;
     }
-    let meta_layer = Arc::new(PackedV3ReadonlyMeta::from_v3_budget(
+    let meta_layer = Arc::new(PackedReadonlyMeta::from_snapshot_budget(
         client,
         snapshot,
         layout.chunk_size,
@@ -1016,7 +990,7 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     let fs = VFS::from_workspace_components(config, store, Arc::clone(&meta_layer))?
         .with_fuse_keep_cache(args.fuse_keep_cache);
     fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
-    meta_layer.install_v3_stats(fs.stats());
+    meta_layer.install_snapshot_stats(fs.stats());
     let concurrency = FuseConcurrencyConfig {
         worker_count: args.fuse_workers,
         max_background: args.fuse_max_background,
@@ -1027,7 +1001,7 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
         mount_vfs_unprivileged(fs, &args.mount_point, concurrency).await?
     };
     println!(
-        "mounted authenticated packed-v3 at {}",
+        "mounted authenticated packed at {}",
         args.mount_point.display()
     );
     tokio::select! {
@@ -1037,8 +1011,8 @@ async fn mount_authenticated_packed_v3_readonly_with_client<
     Ok(())
 }
 
-#[cfg(feature = "workspace-overlay")]
-async fn mount_packed_v3_readonly_with_client<B>(
+#[cfg(feature = "workspace")]
+async fn mount_packed_readonly_with_client<B>(
     client: ObjectClient<B>,
     layout: ChunkLayout,
     args: &MountConfig,
@@ -1049,15 +1023,12 @@ where
     let manifest_key = args
         .packed_manifest_key
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("packed-metadata-v3 manifest key is missing"))?;
-    let budget = workspace_overlay::packed_v3::wire005::V3MountBudget::from_env()?;
+        .ok_or_else(|| anyhow::anyhow!("packed-snapshot manifest key is missing"))?;
+    let budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
     let probe_permit = budget.admit(&[
+        (workspace::packed::snapshot::SnapshotBudgetPool::Stored, 128),
         (
-            workspace_overlay::packed_v3::wire005::V3BudgetPool::Stored,
-            128,
-        ),
-        (
-            workspace_overlay::packed_v3::wire005::V3BudgetPool::Control,
+            workspace::packed::snapshot::SnapshotBudgetPool::Control,
             1024,
         ),
     ])?;
@@ -1069,7 +1040,7 @@ where
         if native_placement_arm()? {
             crate::cadapter::read_observer::Engine::Native
         } else {
-            crate::cadapter::read_observer::Engine::PackedV3
+            crate::cadapter::read_observer::Engine::Packed
         },
         crate::cadapter::read_observer::Phase::Startup,
         crate::cadapter::read_observer::Origin::Demand,
@@ -1107,30 +1078,27 @@ where
         .try_into()
         .map_err(|_| anyhow::anyhow!("wire 005 manifest digest has invalid length"))?;
     let object_len = u64::from_le_bytes(probe[24..32].try_into().unwrap());
-    let reference = workspace_overlay::packed_v3::wire005::V3ObjectRef {
+    let reference = workspace::packed::snapshot::SnapshotObjectRef {
         key: manifest_key.to_owned(),
-        kind: workspace_overlay::packed_v3::wire005::V3ObjectKind::Manifest,
+        kind: workspace::packed::snapshot::SnapshotObjectKind::Manifest,
         object_len,
         digest,
     };
     drop(probe);
     drop(probe_permit);
-    mount_authenticated_packed_v3_readonly_with_client(client, layout, args, reference, budget)
-        .await
+    mount_authenticated_packed_readonly_with_client(client, layout, args, reference, budget).await
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn mount_native_placement_readonly<B: ObjectBackend + Clone + Send + Sync + 'static>(
     client: ObjectClient<B>,
-    snapshot: workspace_overlay::packed_v3::wire005::AuthenticatedV3Snapshot,
+    snapshot: workspace::packed::snapshot::AuthenticatedSnapshot,
     layout: ChunkLayout,
     args: &MountConfig,
-    budget: Arc<workspace_overlay::packed_v3::wire005::V3MountBudget>,
+    budget: Arc<workspace::packed::snapshot::SnapshotMountBudget>,
     metadata_bytes: u64,
 ) -> anyhow::Result<()> {
-    use workspace_overlay::packed_v3::wire005::{
-        NativePackedPlacementProvider, NativePlacementRepository,
-    };
+    use workspace::packed::snapshot::{NativePackedPlacementProvider, NativePlacementRepository};
     if !matches!(args.meta_backend, crate::config::MetaBackendKind::TiKv) {
         anyhow::bail!("native-tikv metadata arm requires --meta-backend tikv");
     }
@@ -1215,7 +1183,7 @@ where
         .with_phase_control(Arc::clone(&phase));
     let store = create_object_store(client.clone(), layout, &args.cache, true).await?;
     let sink: Arc<dyn ObjectSink> = Arc::new(BackendObjectRepository::new(client));
-    let packed_budget = workspace_overlay::packed_v3::wire005::V3MountBudget::from_env()?;
+    let packed_budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
     match args.meta_backend {
         MetaBackendKind::Redis => {
             let control: Arc<dyn ControlStore> = Arc::new(
@@ -1264,9 +1232,7 @@ where
             Ok(())
         }
         MetaBackendKind::Sqlx | MetaBackendKind::Etcd => {
-            anyhow::bail!(
-                "workspace-native-v2 supports only Redis or TiKV control/catalog backends"
-            )
+            anyhow::bail!("native-workspace supports only Redis or TiKV control/catalog backends")
         }
     }
 }
@@ -1293,16 +1259,16 @@ where
     let workspace_id = args
         .workspace
         .map(WorkspaceId::from_uuid)
-        .ok_or_else(|| anyhow::anyhow!("--workspace is required for workspace-native-v2"))?;
+        .ok_or_else(|| anyhow::anyhow!("--workspace is required for native-workspace"))?;
     let workspace_header = workspace_store
         .load_volume_header()
         .await?
         .ok_or_else(|| anyhow::anyhow!("corrupt workspace metadata: volume marker is missing"))?;
-    if workspace_header.volume_format != "workspace-v1"
+    if workspace_header.volume_format != "workspace"
         || workspace_header.schema_version != WORKSPACE_SCHEMA_VERSION
     {
         anyhow::bail!(
-            "native P1 requires a workspace-v1 schema-1 metadata base; found {} schema {}",
+            "native P1 requires a workspace schema-1 metadata base; found {} schema {}",
             workspace_header.volume_format,
             workspace_header.schema_version
         );
@@ -1379,7 +1345,7 @@ where
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
 
-    let writeback_root = crate::workspace_overlay::cache_scope::writeback_root(
+    let writeback_root = crate::workspace::cache_scope::writeback_root(
         &args.cache.cache_root,
         uuid::Uuid::from_bytes(native_header.volume_id),
         workspace_id,
@@ -1788,17 +1754,17 @@ where
     Ok(())
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn connect_workspace_tikv(
     endpoints: Vec<String>,
     namespace: &str,
-    budget: Arc<workspace_overlay::packed_v3::wire005::V3MountBudget>,
+    budget: Arc<workspace::packed::snapshot::SnapshotMountBudget>,
     tls: Option<&crate::config::TiKvTlsFileConfig>,
 ) -> anyhow::Result<TiKvWorkspaceBackend> {
     match tls {
         Some(tls) => {
             tls.validate()?;
-            let security = workspace_overlay::stores::tikv::TiKvTlsConfig::from_paths(
+            let security = workspace::stores::tikv::TiKvTlsConfig::from_paths(
                 tls.ca_path.clone(),
                 tls.cert_path.clone(),
                 tls.key_path.clone(),
@@ -1812,7 +1778,7 @@ async fn connect_workspace_tikv(
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn mount_workspace_with_store<S>(
     layout: ChunkLayout,
     store: S,
@@ -1831,7 +1797,7 @@ where
     mount_workspace_with_store_dispatch(layout, store, args).await
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn mount_workspace_with_store_dispatch<S>(
     layout: ChunkLayout,
     store: S,
@@ -1840,8 +1806,8 @@ async fn mount_workspace_with_store_dispatch<S>(
 where
     S: BlockStore + Send + Sync + 'static,
 {
-    let packed_budget = workspace_overlay::packed_v3::wire005::V3MountBudget::from_env()?;
-    use workspace_overlay::stores::local_metadata::{LocalMetadataBackend, LocalMetadataConfig};
+    let packed_budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
+    use workspace::stores::local_metadata::{LocalMetadataBackend, LocalMetadataConfig};
     let metadata_sync = LocalMetadataConfig::from_env(&args.mount_point)?;
     let metadata_scope = format!(
         "{:?}|{}|{:?}|{}|{:?}",
@@ -1857,7 +1823,7 @@ where
                 anyhow::bail!("local metadata sync requires a Redis or TiKV Packed workspace")
             }
             if !args.meta_url.starts_with("sqlite:") {
-                anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
+                anyhow::bail!("workspace sqlx catalog requires a SQLite URL")
             }
             let catalog = Arc::new(SqliteWorkspaceStore::connect(&args.meta_url).await?);
             mount_workspace_with_catalog(layout, store, args, catalog, packed_budget).await
@@ -1911,25 +1877,25 @@ where
             Ok(())
         }
         MetaBackendKind::Etcd => {
-            anyhow::bail!("workspace-v1 does not support the etcd catalog backend")
+            anyhow::bail!("workspace does not support the etcd catalog backend")
         }
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn mount_workspace_with_catalog<S, W>(
     layout: ChunkLayout,
     store: S,
     args: &MountConfig,
     workspace_store: Arc<W>,
-    packed_budget: Arc<workspace_overlay::packed_v3::wire005::V3MountBudget>,
+    packed_budget: Arc<workspace::packed::snapshot::SnapshotMountBudget>,
 ) -> anyhow::Result<()>
 where
     S: BlockStore + Send + Sync + 'static,
-    W: workspace_overlay::lifecycle::PackedMountCatalog,
+    W: workspace::lifecycle::PackedMountCatalog,
 {
     let workspace_id = args.workspace.map(WorkspaceId::from_uuid).ok_or_else(|| {
-        anyhow::anyhow!("--workspace is required when volume_format is workspace-v1")
+        anyhow::anyhow!("--workspace is required when volume_format is workspace")
     })?;
     let packed_header = workspace_store.packed_mount_header(workspace_id).await?;
     let header = match packed_header {
@@ -1938,9 +1904,9 @@ where
             anyhow::anyhow!("corrupt workspace metadata: volume marker is missing")
         })?,
     };
-    if header.volume_format != "workspace-v1" {
+    if header.volume_format != "workspace" {
         anyhow::bail!(
-            "workspace volume marker mismatch: expected workspace-v1, found {}",
+            "workspace volume marker mismatch: expected workspace, found {}",
             header.volume_format
         )
     }
@@ -2019,7 +1985,7 @@ where
         );
         let view = &mount_view;
         let binding = workspace_store
-            .load_packed_lower_binding(workspace_overlay::catalog::HeadGuard {
+            .load_packed_lower_binding(workspace::catalog::HeadGuard {
                 workspace_id: view.workspace_id,
                 expected_head_layer_id: view.head_layer_id,
                 expected_head_epoch: view.head_epoch,
@@ -2040,6 +2006,7 @@ where
                         block_store.clone(),
                         layout,
                         packed_budget.clone(),
+                        &args.cache,
                     )
                     .await?
                 }
@@ -2051,6 +2018,7 @@ where
                         block_store.clone(),
                         layout,
                         packed_budget.clone(),
+                        &args.cache,
                     )
                     .await?
                 }
@@ -2074,7 +2042,11 @@ where
             .expect("mount session acquired")
             .lease_validity();
         meta_layer = meta_layer
-            .with_upper_row_cache(row_cache_ttl)
+            .with_upper_row_cache_bytes(row_cache_ttl, match std::env::var("BREWFS_WORKSPACE_ROW_CACHE_BYTES") {
+                Ok(value) => value.parse::<u64>().context("BREWFS_WORKSPACE_ROW_CACHE_BYTES must be an unsigned byte count")?,
+                Err(std::env::VarError::NotPresent) => 64 << 20,
+                Err(error) => return Err(error.into()),
+            })
             .with_lease_bound_row_cache(lease_validity);
         let empty_query_cache = match std::env::var("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE") {
             Ok(value) if value == "0" => false,
@@ -2089,11 +2061,11 @@ where
             packed_metadata = Some(meta_layer.clone());
             packed_clean_reference = session.as_ref().and_then(|session| session.packed_mount_reference());
             if packed_clean_reference.is_none() {
-                return Err(anyhow::anyhow!("packed-v3 joint mount authority missing"));
+                return Err(anyhow::anyhow!("packed joint mount authority missing"));
             }
         }
         meta_layer.initialize().await?;
-        let writeback_root = crate::workspace_overlay::cache_scope::writeback_root(
+        let writeback_root = crate::workspace::cache_scope::writeback_root(
             &args.cache.cache_root,
             header.volume_id,
             workspace_id,
@@ -2107,7 +2079,10 @@ where
         let fs = VFS::from_workspace_components(vfs_config, block_store, meta_layer.clone())?
             .with_fuse_keep_cache(args.fuse_keep_cache);
         fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
-        meta_layer.install_row_cache_stats(fs.stats());
+        let stats_installed = meta_layer.install_workspace_stats(fs.stats());
+        if cfg!(any(test, feature = "observability")) && !stats_installed {
+            return Err(anyhow::anyhow!("Shared workspace statistics extension is already installed"));
+        }
         if packed {
             packed_vfs = Some(fs.clone());
         }
@@ -2220,40 +2195,39 @@ where
             "packed renewal shutdown has no terminal witness"
         ))
     };
-    let mut metadata_shutdown_result = if packed_drain_result.is_ok()
-        && renewal_shutdown_result.is_ok()
-    {
-        if !packed_mount_attempted && let Some(metadata) = packed_metadata.as_ref() {
-            metadata
-                .shutdown_packed_runtime_for_clean_release()
-                .await
-                .map(|_| None)
-                .map_err(anyhow::Error::from)
-        } else if let Some(reference) = packed_clean_reference {
-            match (packed_drain_result.as_mut().ok().and_then(Option::take),
+    let mut metadata_shutdown_result =
+        if packed_drain_result.is_ok() && renewal_shutdown_result.is_ok() {
+            if !packed_mount_attempted && let Some(metadata) = packed_metadata.as_ref() {
+                metadata
+                    .shutdown_packed_runtime_for_clean_release()
+                    .await
+                    .map(|_| None)
+                    .map_err(anyhow::Error::from)
+            } else if let Some(reference) = packed_clean_reference {
+                match (packed_drain_result.as_mut().ok().and_then(Option::take),
                    packed_kernel_cutoff.take()) {
                 (Some(drain), Some(cutoff)) => {
-                    workspace_overlay::packed_shutdown::VerifiedCleanPackedShutdown::from_original_shutdown(
+                    workspace::packed_shutdown::VerifiedCleanPackedShutdown::from_original_shutdown(
                         reference, drain, cutoff, &workspace_store).await
                         .map(Some).map_err(anyhow::Error::from)
                 }
                 _ => Err(anyhow::anyhow!("packed original shutdown authority missing")),
             }
-        } else {
-            match packed_metadata.as_ref() {
-                Some(metadata) => metadata
-                    .shutdown_session()
-                    .await
-                    .map(|_| None)
-                    .map_err(anyhow::Error::from),
-                None => Ok(None),
+            } else {
+                match packed_metadata.as_ref() {
+                    Some(metadata) => metadata
+                        .shutdown_session()
+                        .await
+                        .map(|_| None)
+                        .map_err(anyhow::Error::from),
+                    None => Ok(None),
+                }
             }
-        }
-    } else {
-        Err(anyhow::anyhow!(
-            "packed VFS drain failed; lower pin retained"
-        ))
-    };
+        } else {
+            Err(anyhow::anyhow!(
+                "packed VFS drain failed; lower pin retained"
+            ))
+        };
     let release_result = if metadata_shutdown_result.is_ok() {
         match metadata_shutdown_result
             .as_mut()
@@ -2304,7 +2278,7 @@ where
     Ok(())
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u64> {
     let bytes = value.map(str::parse::<u64>).transpose()?.unwrap_or(8 << 20);
     anyhow::ensure!(
@@ -2314,23 +2288,24 @@ fn workspace_packed_payload_cache_bytes(value: Option<&str>) -> anyhow::Result<u
     Ok(bytes)
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn attach_workspace_packed_lower<B, S, W>(
     meta: WorkspaceMetaLayer<W>,
-    binding: workspace_overlay::catalog::PackedLowerBinding,
+    binding: workspace::catalog::PackedLowerBinding,
     client: ObjectClient<B>,
     upper: Arc<S>,
     layout: ChunkLayout,
-    budget: Arc<workspace_overlay::packed_v3::wire005::V3MountBudget>,
+    budget: Arc<workspace::packed::snapshot::SnapshotMountBudget>,
+    cache: &crate::vfs::cache::config::CacheConfig,
 ) -> anyhow::Result<WorkspaceMetaLayer<W>>
 where
     B: ObjectBackend + Clone + Send + Sync + 'static,
     S: BlockStore + Send + Sync + 'static,
     W: WorkspaceStore + 'static,
 {
-    use workspace_overlay::packed_v3::wire005::{AuthenticatedV3Snapshot, V3BudgetPool};
+    use workspace::packed::snapshot::{AuthenticatedSnapshot, SnapshotBudgetPool};
     let view = meta.view_context().await;
-    let reader_guard = workspace_overlay::catalog::HeadGuard {
+    let reader_guard = workspace::catalog::HeadGuard {
         workspace_id: view.workspace_id,
         expected_head_layer_id: view.head_layer_id,
         expected_head_epoch: view.head_epoch,
@@ -2343,18 +2318,16 @@ where
         .open_packed_reader_session(
             reader_guard.clone(),
             budget,
-            workspace_overlay::packed_reader_lifecycle::PackedReaderLeaseOptions {
+            workspace::packed_reader_lifecycle::PackedReaderLeaseOptions {
                 holder_generation: view.holder_generation,
                 ..Default::default()
             },
         )
         .await?;
-    let authority = Arc::new(
-        workspace_overlay::meta_layer::PinnedCatalogPackedBindingAuthority {
-            store: meta.store().clone(),
-            reader: reader.clone(),
-        },
-    );
+    let authority = Arc::new(workspace::meta_layer::PinnedCatalogPackedBindingAuthority {
+        store: meta.store().clone(),
+        reader: reader.clone(),
+    });
     let budget = reader.mount_budget();
     let result = async {
         let _startup_owner = reader.retain_request()?;
@@ -2368,18 +2341,18 @@ where
             .checked_mul(2)
             .ok_or_else(|| anyhow::anyhow!("packed binding manifest allocation overflows"))?;
         let startup = budget.admit(&[
-            (V3BudgetPool::Roots, 128 << 10),
-            (V3BudgetPool::Stored, stored),
+            (SnapshotBudgetPool::Roots, 128 << 10),
+            (SnapshotBudgetPool::Stored, stored),
         ])?;
         let observer =
             Arc::new(crate::cadapter::read_observer::ReadObserver::with_mount_budget(&budget)?);
         let client = client.with_read_observer(
             observer,
-            crate::cadapter::read_observer::Engine::PackedV3,
+            crate::cadapter::read_observer::Engine::Packed,
             crate::cadapter::read_observer::Phase::Startup,
             crate::cadapter::read_observer::Origin::Demand,
         );
-        let snapshot = AuthenticatedV3Snapshot::open(&client, &binding.manifest).await?;
+        let snapshot = AuthenticatedSnapshot::open(&client, &binding.manifest).await?;
         drop(startup);
         let metadata_bytes = std::env::var("BREWFS_PACKED_METADATA_CACHE_BYTES")
             .ok()
@@ -2392,21 +2365,32 @@ where
             Err(std::env::VarError::NotPresent) => workspace_packed_payload_cache_bytes(None)?,
             Err(error) => return Err(error.into()),
         };
-        let lower = Arc::new(PackedV3ReadonlyMeta::from_v3_budget_with_payload_retention(
-            client,
-            snapshot,
-            layout.chunk_size,
-            metadata_bytes,
-            budget,
-            retained_payload,
-        )?);
-        workspace_overlay::meta_layer::WorkspacePackedBindingAuthority::validate(
+        let lower = Arc::new(
+            PackedReadonlyMeta::from_snapshot_budget_with_payload_retention(
+                client,
+                snapshot,
+                layout.chunk_size,
+                metadata_bytes,
+                budget,
+                retained_payload,
+            )?,
+        );
+        if cache.packed_cache_enabled {
+            lower.enable_pack_cache(
+                cache.packed_cache_bytes,
+                cache
+                    .cache_root
+                    .join("packed")
+                    .join(hex::encode(binding.manifest.digest)),
+            )?;
+        }
+        workspace::meta_layer::WorkspacePackedBindingAuthority::validate(
             authority.as_ref(),
             &reader_guard,
             &binding,
         )
         .await?;
-        Ok(meta.with_packed_v3_lower(binding, lower, authority, upper, layout)?)
+        Ok(meta.with_packed_lower(binding, lower, authority, upper, layout)?)
     }
     .await;
     if result.is_err()
@@ -2434,7 +2418,7 @@ async fn shutdown_signal() -> std::io::Result<()> {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
     let WorkspaceArgs {
         meta_backend,
@@ -2485,17 +2469,17 @@ async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
             "native control initialization does not support TiKV TLS; refusing plaintext fallback"
         );
     }
-    let packed_budget = workspace_overlay::packed_v3::wire005::V3MountBudget::from_env()?;
+    let packed_budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
     match meta_backend {
         WorkspaceMetaBackendKind::Sqlx => {
             #[cfg(feature = "native-packed-base")]
             if matches!(&command, WorkspaceCommand::InitNative) {
                 anyhow::bail!(
-                    "workspace-native-v2 initialization requires Redis or TiKV control backend"
+                    "native-workspace initialization requires Redis or TiKV control backend"
                 )
             }
             if !meta_url.starts_with("sqlite:") {
-                anyhow::bail!("workspace-v1 sqlx catalog requires a SQLite URL")
+                anyhow::bail!("workspace sqlx catalog requires a SQLite URL")
             }
             workspace_cmd_with_catalog(
                 command,
@@ -2562,29 +2546,27 @@ async fn workspace_cmd(args: WorkspaceArgs) -> anyhow::Result<()> {
     }
 }
 
-/// Create a workspace-v1 volume whose default workspace's sealed base is an
-/// authenticated packed-v3 lower. The manifest is opened and verified through
+/// Create a workspace volume whose default workspace's sealed base is an
+/// authenticated packed lower. The manifest is opened and verified through
 /// the selected object store before any binding is written; the install lease
 /// is released afterwards so a normal mount can acquire the workspace.
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn init_packed_volume<W>(
     store: Arc<W>,
     manifest_key: &str,
     data_config: &std::path::Path,
     owner: Option<String>,
-) -> anyhow::Result<crate::workspace_overlay::model::WorkspaceRecord>
+) -> anyhow::Result<crate::workspace::model::WorkspaceRecord>
 where
     W: WorkspaceStore + 'static,
 {
-    use crate::workspace_overlay::catalog::{AcquireLease, HeadGuard, ReleaseLease};
-    use crate::workspace_overlay::ids::LeaseId;
-    use crate::workspace_overlay::model::BaseRevision;
-    use crate::workspace_overlay::packed_v3::wire005::{
-        AuthenticatedV3Snapshot, V3IndexReader, V3ObjectKind, V3ObjectRef,
+    use crate::workspace::catalog::{AcquireLease, HeadGuard, ReleaseLease};
+    use crate::workspace::ids::LeaseId;
+    use crate::workspace::model::BaseRevision;
+    use crate::workspace::packed::snapshot::{
+        AuthenticatedSnapshot, SnapshotIndexReader, SnapshotObjectKind, SnapshotObjectRef,
     };
-    use crate::workspace_overlay::publish::binding::{
-        InstallPackedLowerBinding, VerifiedPackedLower,
-    };
+    use crate::workspace::publish::binding::{InstallPackedLowerBinding, VerifiedPackedLower};
 
     if store.load_volume_header().await?.is_some() {
         anyhow::bail!("workspace volume is already initialized")
@@ -2621,16 +2603,16 @@ where
             )
             .await?
             .ok_or_else(|| anyhow::anyhow!("packed manifest object is absent"))?;
-        let reference = V3ObjectRef {
+        let reference = SnapshotObjectRef {
             key: key.to_owned(),
-            kind: V3ObjectKind::Manifest,
+            kind: SnapshotObjectKind::Manifest,
             object_len,
             digest,
         };
-        let snapshot = AuthenticatedV3Snapshot::open(&client, &reference).await?;
+        let snapshot = AuthenticatedSnapshot::open(&client, &reference).await?;
         Ok(VerifiedPackedLower::from_authenticated_snapshot(
             &snapshot,
-            &V3IndexReader::new(client.clone(), 0),
+            &SnapshotIndexReader::new(client.clone(), 0),
         )
         .await?)
     }
@@ -2649,7 +2631,7 @@ where
     let workspace = store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: uuid::Uuid::now_v7(),
             workspace_id,
@@ -2666,7 +2648,7 @@ where
             ttl_ns: 60_000_000_000,
         })
         .await?;
-    let expected_layers: [crate::workspace_overlay::model::LayerRecord; 2] = store
+    let expected_layers: [crate::workspace::model::LayerRecord; 2] = store
         .load_layer_chain(workspace.head_layer_id)
         .await?
         .try_into()
@@ -2709,7 +2691,7 @@ where
     Ok(store.load_workspace(workspace.workspace_id).await?)
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn workspace_cmd_with_catalog<W>(
     command: WorkspaceCommand,
     store: Arc<W>,
@@ -2725,7 +2707,7 @@ where
         }
         WorkspaceCommand::RecoverPackedMount(_) => {
             anyhow::bail!(
-                "packed-v3 mounted recovery requires its concrete Redis/TiKV and original PVC driver"
+                "packed mounted recovery requires its concrete Redis/TiKV and original PVC driver"
             );
         }
         WorkspaceCommand::InitVolume { owner, data_config } => {
@@ -2740,7 +2722,7 @@ where
             let workspace = store
                 .create_volume_root(CreateVolumeRoot {
                     upper_bucket,
-                    volume_format: "workspace-v1".into(),
+                    volume_format: "workspace".into(),
                     schema_version: WORKSPACE_SCHEMA_VERSION,
                     volume_id: uuid::Uuid::now_v7(),
                     workspace_id,
@@ -2867,10 +2849,10 @@ where
     let header = catalog
         .load_volume_header()
         .await?
-        .ok_or_else(|| anyhow::anyhow!("initialize workspace-v1 catalog before native volume"))?;
-    if header.volume_format != "workspace-v1" || header.schema_version != WORKSPACE_SCHEMA_VERSION {
+        .ok_or_else(|| anyhow::anyhow!("initialize workspace catalog before native volume"))?;
+    if header.volume_format != "workspace" || header.schema_version != WORKSPACE_SCHEMA_VERSION {
         anyhow::bail!(
-            "native initialization requires workspace-v1 schema-1 catalog; found {} schema {}",
+            "native initialization requires workspace schema-1 catalog; found {} schema {}",
             header.volume_format,
             header.schema_version
         );
@@ -2889,7 +2871,7 @@ where
     print_json(&native_header)
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 async fn validate_workspace_header<W: WorkspaceStore + ?Sized>(
     store: &Arc<W>,
 ) -> anyhow::Result<()> {
@@ -2897,7 +2879,7 @@ async fn validate_workspace_header<W: WorkspaceStore + ?Sized>(
         .load_volume_header()
         .await?
         .ok_or_else(|| anyhow::anyhow!("corrupt workspace metadata: volume marker is missing"))?;
-    if header.volume_format != "workspace-v1" {
+    if header.volume_format != "workspace" {
         anyhow::bail!("unsupported volume format {}", header.volume_format)
     }
     if header.schema_version != WORKSPACE_SCHEMA_VERSION {
@@ -2909,7 +2891,7 @@ async fn validate_workspace_header<W: WorkspaceStore + ?Sized>(
     Ok(())
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 fn new_workspace_holder_generation() -> u64 {
     let suffix = u64::from_be_bytes(
         uuid::Uuid::now_v7().as_bytes()[8..16]
@@ -2919,7 +2901,7 @@ fn new_workspace_holder_generation() -> u64 {
     (suffix & i64::MAX as u64).max(1)
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -3165,7 +3147,7 @@ fn database_type_from_url(url: &str) -> DatabaseType {
 mod volume_format_tests {
     use super::*;
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_payload_cache_defaults_to_eight_mib_and_can_be_disabled() {
         assert_eq!(workspace_packed_payload_cache_bytes(None).unwrap(), 8 << 20);
@@ -3180,7 +3162,7 @@ mod volume_format_tests {
         );
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_payload_cache_rejects_invalid_or_unbounded_capacity() {
         for value in [
@@ -3203,67 +3185,48 @@ mod volume_format_tests {
     fn entity_format_is_explicit_and_mount_fails_closed() {
         use clap::ValueEnum;
         assert_eq!(
-            VolumeFormat::from_str("workspace-entity-v1", false).unwrap(),
-            VolumeFormat::WorkspaceEntityV1
+            VolumeFormat::from_str("entity-workspace", false).unwrap(),
+            VolumeFormat::EntityWorkspace
         );
-        assert_eq!(VolumeFormat::default(), VolumeFormat::FlatV1);
-        let error = validate_volume_format_support(VolumeFormat::WorkspaceEntityV1)
+        assert_eq!(VolumeFormat::default(), VolumeFormat::Flat);
+        let error = validate_volume_format_support(VolumeFormat::EntityWorkspace)
             .unwrap_err()
             .to_string();
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         assert!(error.contains("--experimental-entity-mount"), "{error}");
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         assert!(error.contains("feature not compiled"), "{error}");
     }
 
     #[test]
     fn flat_format_is_always_supported() {
-        validate_volume_format_support(VolumeFormat::FlatV1).unwrap();
+        validate_volume_format_support(VolumeFormat::Flat).unwrap();
     }
 
     #[cfg(feature = "native-packed-base")]
     #[test]
     fn native_format_requires_its_explicit_feature() {
-        validate_volume_format_support(VolumeFormat::WorkspaceNativeV2).unwrap();
+        validate_volume_format_support(VolumeFormat::NativeWorkspace).unwrap();
     }
 
     #[cfg(not(feature = "native-packed-base"))]
     #[test]
     fn binary_without_native_feature_fails_closed_for_native_format() {
         assert_eq!(
-            validate_volume_format_support(VolumeFormat::WorkspaceNativeV2)
+            validate_volume_format_support(VolumeFormat::NativeWorkspace)
                 .unwrap_err()
                 .to_string(),
             "feature not compiled: native-packed-base"
         );
     }
 
-    #[cfg(feature = "native-packed-base")]
+    #[cfg(feature = "workspace")]
     #[test]
-    fn legacy_packed_v1_format_is_rejected_even_when_compiled() {
-        let error = validate_volume_format_support(VolumeFormat::PackedMetadataV1)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("unsupported") && error.contains("packed-metadata-v3"),
-            "{error}"
-        );
+    fn packed_snapshot_format_is_supported() {
+        validate_volume_format_support(VolumeFormat::PackedSnapshot).unwrap();
     }
 
-    #[cfg(feature = "workspace-overlay")]
-    #[test]
-    fn legacy_packed_v2_format_is_rejected_even_when_compiled() {
-        let error = validate_volume_format_support(VolumeFormat::PackedMetadataV2)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("unsupported") && error.contains("packed-metadata-v3"),
-            "{error}"
-        );
-        validate_volume_format_support(VolumeFormat::PackedMetadataV3).unwrap();
-    }
-
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[derive(Clone)]
     struct ProbeOnlyBackend {
         probe: [u8; 64],
@@ -3271,7 +3234,7 @@ mod volume_format_tests {
         full_reads: Arc<AtomicU64>,
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[async_trait::async_trait]
     impl ObjectBackend for ProbeOnlyBackend {
         async fn put_object(&self, _key: &str, _data: &[u8]) -> anyhow::Result<()> {
@@ -3301,14 +3264,14 @@ mod volume_format_tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     fn packed_probe_config() -> MountConfig {
         let cli = Cli::parse_from([
             "brewfs",
             "mount",
             "/unused-probe-mount",
             "--volume-format",
-            "packed-metadata-v3",
+            "packed-snapshot",
             "--packed-manifest-key",
             "probe/legacy-manifest",
         ]);
@@ -3318,9 +3281,9 @@ mod volume_format_tests {
         MountConfig::from_sources(*args).unwrap()
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
-    async fn packed_v3_mount_rejects_old_and_unknown_magic_before_full_get() {
+    async fn packed_mount_rejects_old_and_unknown_magic_before_full_get() {
         for magic in [b"BRFPM004", b"BRFPM003", b"BRFCA005", b"UNKNOWN!"] {
             let mut probe = [0; 64];
             probe[..8].copy_from_slice(magic);
@@ -3329,7 +3292,7 @@ mod volume_format_tests {
                 range_reads: Arc::new(AtomicU64::new(0)),
                 full_reads: Arc::new(AtomicU64::new(0)),
             };
-            let error = mount_packed_v3_readonly_with_client(
+            let error = mount_packed_readonly_with_client(
                 ObjectClient::new(backend.clone()),
                 ChunkLayout::default(),
                 &packed_probe_config(),
@@ -3347,9 +3310,9 @@ mod volume_format_tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
-    async fn packed_v3_mount_still_requires_the_selected_manifest_digest() {
+    async fn packed_mount_still_requires_the_selected_manifest_digest() {
         let mut probe = [0; 64];
         probe[..8].copy_from_slice(b"BRFPM005");
         let backend = ProbeOnlyBackend {
@@ -3357,7 +3320,7 @@ mod volume_format_tests {
             range_reads: Arc::new(AtomicU64::new(0)),
             full_reads: Arc::new(AtomicU64::new(0)),
         };
-        let error = mount_packed_v3_readonly_with_client(
+        let error = mount_packed_readonly_with_client(
             ObjectClient::new(backend.clone()),
             ChunkLayout::default(),
             &packed_probe_config(),
@@ -3373,7 +3336,7 @@ mod volume_format_tests {
         assert_eq!(backend.full_reads.load(Ordering::Relaxed), 0);
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn workspace_holder_generation_fits_the_sqlite_integer_domain() {
         for _ in 0..256 {
@@ -3382,7 +3345,7 @@ mod volume_format_tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn g08_existing_api_native_selection_attributes_manifest_attempt_to_native() {
         const CHILD: &str = "BREWFS_G08_EXISTING_API_TEST_CHILD";
@@ -3440,28 +3403,33 @@ mod volume_format_tests {
             .unwrap()
             .block_on(async {
                 use crate::cadapter::read_observer::{Engine, Phase, ReadClass, ReadObserver};
-                use workspace_overlay::packed_v3::wire005::{
-                    V3MountBudget, V3ObjectKind, V3ObjectRef, encode_v3_object,
+                use workspace::packed::snapshot::{
+                    SnapshotMountBudget, SnapshotObjectKind, SnapshotObjectRef,
+                    encode_snapshot_object,
                 };
-                let budget = V3MountBudget::defaults();
+                let budget = SnapshotMountBudget::defaults();
                 let observer = Arc::new(ReadObserver::with_mount_budget(&budget).unwrap());
                 let calls = Arc::new(AtomicU64::new(0));
                 let client = ObjectClient::new(RejectManifest(calls.clone())).with_read_observer(
                     observer.clone(),
-                    Engine::PackedV3,
+                    Engine::Packed,
                     Phase::Startup,
                     crate::cadapter::read_observer::Origin::Demand,
                 );
-                let bytes = encode_v3_object(V3ObjectKind::Manifest, &[0; 64], 4096).unwrap();
-                let reference =
-                    V3ObjectRef::from_bytes("g08/manifest".into(), V3ObjectKind::Manifest, &bytes)
-                        .unwrap();
+                let bytes =
+                    encode_snapshot_object(SnapshotObjectKind::Manifest, &[0; 64], 4096).unwrap();
+                let reference = SnapshotObjectRef::from_bytes(
+                    "g08/manifest".into(),
+                    SnapshotObjectKind::Manifest,
+                    &bytes,
+                )
+                .unwrap();
                 let mut config = packed_probe_config();
                 config.cache.read_memory_bytes = 0;
                 config.cache.read_ssd_bytes = 0;
                 config.cache.prefetch_enabled = false;
                 config.cache.range_background_prefetch = false;
-                let error = mount_authenticated_packed_v3_readonly_with_client(
+                let error = mount_authenticated_packed_readonly_with_client(
                     client,
                     ChunkLayout::default(),
                     &config,
@@ -3491,19 +3459,19 @@ mod volume_format_tests {
                     contexts
                         .iter()
                         .all(|context| context.engine == Engine::Native),
-                    "explicit native-tikv arm silently used PackedV3 attribution: {contexts:?}"
+                    "explicit native-tikv arm silently used Packed attribution: {contexts:?}"
                 );
             });
     }
 
-    #[cfg(not(feature = "workspace-overlay"))]
+    #[cfg(not(feature = "workspace"))]
     #[test]
     fn flat_only_binary_fails_closed_for_workspace_format() {
         assert_eq!(
-            validate_volume_format_support(VolumeFormat::WorkspaceV1)
+            validate_volume_format_support(VolumeFormat::Workspace)
                 .unwrap_err()
                 .to_string(),
-            "feature not compiled: workspace-overlay"
+            "feature not compiled: workspace"
         );
     }
 }

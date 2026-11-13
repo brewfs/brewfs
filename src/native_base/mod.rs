@@ -1,4 +1,4 @@
-//! BrewFS native packed base (`workspace-native-v2`).
+//! BrewFS native packed base (`native-workspace`).
 //!
 //! Implementation entry for the 1.2-consolidated native base specification
 //! (DataPack / Data Seal / Frozen Metadata staged delivery, exact published

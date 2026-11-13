@@ -23,8 +23,8 @@ BrewFS 通过 FUSE 提供 Linux 文件系统接口，同时允许元数据与文
 项目使用 Rust 打通从 FUSE、VFS、缓存、writeback、元数据事务到对象存储的完整数据路径。BrewFS 是独立项目：RustFS、MinIO、AWS S3 与 Ceph RGW 是支持的 S3 兼容后端，不是 BrewFS 本身的一部分。
 
 > [!IMPORTANT]
-> BrewFS 仍在积极开发。常规 `flat-v1` volume 是默认模式。面向 Agent 的
-> `workspace-v1` 已经实现，但位于可选的 `workspace-overlay` Cargo feature
+> BrewFS 仍在积极开发。常规 `flat` volume 是默认模式。面向 Agent 的
+> `workspace` 已经实现，但位于可选的 `workspace` Cargo feature
 > 后面，其运维工具仍在继续完善。
 
 ## 为什么选择 BrewFS
@@ -92,7 +92,7 @@ AI 编码 Agent 经常从相同代码基线开始，但需要私有、短生命�
 
 BrewFS Workspace Overlay 提供文件系统原生的处理方式：
 
-1. **不可变 lower**（packed-v3 快照）保存共享 namespace 与对象块，绑定后永不改变。
+1. **不可变 lower**（packed 快照）保存共享 namespace 与对象块，绑定后永不改变。
 2. 每个 Agent 获得一个 **private writable overlay**；挂载期间其 head 不轮转，不存在 seal 步骤。
 3. 从精确 revision 创建或 fork workspace 只写元数据和新的 writable head，不复制未修改的对象数据。
 4. `diff` 与 lease-aware `discard` 让变更的去向显式可控。
@@ -112,7 +112,7 @@ flowchart LR
 该能力默认关闭，不会改变普通 flat volume：
 
 ```bash
-cargo build -p brewfs --release --features workspace-overlay
+cargo build -p brewfs --release --features workspace
 target/release/brewfs workspace --help
 ```
 
@@ -120,7 +120,7 @@ CLI 已提供 `init-volume`、`init-packed-volume`、`create --from`、`fork <re
 `list`、`inspect`、`diff` 与 `discard`。Redis 和 TiKV 是分布式
 catalog 后端；SQLite 用于本地语义验证与开发。每个已挂载 workspace 始终只解析两层：一个私有 writable head 和一个不可变 lower。
 
-当前边界是有意保留的：feature 默认关闭；`workspace-v1` 发生错误时绝不回退到 flat-volume 语义；workspace `statfs` 要等待原子 usage counter；WebDAV gateway 目前只接受 `flat-v1`。构建 operator 或多 Agent 服务前，请先阅读 [Workspace Overlay 架构文档](doc/architecture/workspace-overlay.md)。
+当前边界是有意保留的：feature 默认关闭；`workspace` 发生错误时绝不回退到 flat-volume 语义；workspace `statfs` 要等待原子 usage counter；WebDAV gateway 目前只接受 `flat`。构建 operator 或多 Agent 服务前，请先阅读 [Workspace Overlay 架构文档](doc/architecture/workspace.md)。
 
 <a id="architecture"></a>
 ## 架构
@@ -184,7 +184,7 @@ Result Vault：
 这是一组单一云端配置下的工程结果，不是所有部署场景中的普遍性能承诺。复现细节见[阿里云性能测试指南](docker/compose-xfstests/aliyun/README.md)与[基准测试指南](doc/testing/bench.md)。
 
 **2026-11-02 本地小写聚合对照**使用 `d5e53e1` 源码的 release、Redis/RustFS、
-flat-v1，同一二进制分别关闭/开启聚合。每场景两对预热、三对 20 秒正式测量；
+flat，同一二进制分别关闭/开启聚合。每场景两对预热、三对 20 秒正式测量；
 随机 I/O 为 4 KiB、4 jobs、512 MiB/job、buffered libaio，顺序写为 1 MiB、
 1 job。下表为计入完整 fio wall 与严格 drain 的中位数：
 
@@ -245,7 +245,7 @@ bash compose-xfstests/run_redis_pjdfstest.sh
 
 - [文档索引](doc/README.md)
 - [架构说明](doc/architecture/arch.md)
-- [Workspace Overlay](doc/architecture/workspace-overlay.md)
+- [Workspace Overlay](doc/architecture/workspace.md)
 - [配置说明](doc/operations/configuration.md)
 - [二进制部署](doc/operations/binary-deployment.md)
 - [可观测性](doc/operations/observability.md)

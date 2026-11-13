@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local correctness gate, including code behind workspace-overlay features.
+# Local correctness gate, including code behind workspace features.
 set -euo pipefail
 source_root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 output=${1:?usage: check_hot_overlay.sh ABSOLUTE_NEW_OUTPUT_DIRECTORY}
@@ -8,7 +8,7 @@ mkdir -p -- "$output"
 cd -- "$source_root"
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
-features=fuse-io-uring-runtime,workspace-overlay,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability
+features=fuse-io-uring-runtime,workspace,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability
 exec > >(tee "$output/check.log") 2>&1
 date -u --iso-8601=seconds
 git rev-parse HEAD > "$output/source-commit.txt"

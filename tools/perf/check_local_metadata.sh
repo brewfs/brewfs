@@ -25,7 +25,7 @@ git diff --binary HEAD -- src doc tools Cargo.toml > "$out/source.patch"
 rustc -Vv > "$out/rustc.txt"
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
-features=fuse-io-uring-runtime,workspace-overlay,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability
+features=fuse-io-uring-runtime,workspace,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability
 cargo test --locked --lib --no-default-features --features "$features" local_metadata -- --nocapture
 cargo test --locked --lib --no-default-features --features "$features" local_metadata_real_redis_pairs -- --ignored --nocapture --test-threads=1 | tee "$out/redis-pairs.log"
 cargo test --locked --lib --no-default-features --features "$features" local_metadata_untimed_redis_pairs -- --ignored --nocapture --test-threads=1 | tee "$out/untimed-pairs.log"

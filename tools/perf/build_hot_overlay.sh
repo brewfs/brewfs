@@ -22,10 +22,10 @@ fi
 set -x
 cargo --config profile.release.package.brewfs.opt-level=3 build --locked --release \
   --no-default-features \
-  --features fuse-io-uring-runtime,workspace-overlay,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability \
-  --bin brewfs --bin packed_v3_snapshot_fixture
+  --features fuse-io-uring-runtime,workspace,native-packed-base,frozen-base-metadata,rustfs-ec-block-size-hint,observability \
+  --bin brewfs --bin packed_snapshot_fixture
 set +x
 target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-cp -- "$target/release/brewfs" "$target/release/packed_v3_snapshot_fixture" "$output/"
-(cd -- "$output" && sha256sum brewfs packed_v3_snapshot_fixture source.patch > SHA256SUMS)
+cp -- "$target/release/brewfs" "$target/release/packed_snapshot_fixture" "$output/"
+(cd -- "$output" && sha256sum brewfs packed_snapshot_fixture source.patch > SHA256SUMS)
 date -u --iso-8601=seconds

@@ -1,7 +1,7 @@
 //! Real Manager admission, durable recovery and ownership against disposable
 //! shared services. These are correctness fixtures, never C1/C4 measurements.
 use super::*;
-use crate::workspace_overlay::{
+use crate::workspace::{
     catalog::{AcquireLease, ReleaseLease},
     ids::LeaseId,
     model::LayerState,
@@ -220,7 +220,7 @@ async fn recovery_contract(remote: Remote<'_>, format: &str) {
     let revision = volume.root_revision.clone().unwrap();
     assert_eq!(
         matches!(revision, Revision::Native(_)),
-        format == "workspace-native-v2"
+        format == "native-workspace"
     );
     let request = ForkRequest {
         revision: revision.clone(),
@@ -396,7 +396,7 @@ async fn recovery_contract(remote: Remote<'_>, format: &str) {
     );
     store.shutdown_metadata_backend().await.unwrap();
     #[cfg(feature = "native-packed-base")]
-    let reopened = if format == "workspace-native-v2" {
+    let reopened = if format == "native-workspace" {
         native_progressed_reply_recovery(reopened, dir.path(), volume.id, revision).await
     } else {
         reopened
@@ -573,10 +573,10 @@ async fn ownership_contract(remote: Remote<'_>) {
         configure(target.path(), remote.config(&namespace));
     }
     let manager = Manager::open(dir.path()).await.unwrap();
-    let (operation, volume) = initialized(&manager, "workspace-v1").await;
+    let (operation, volume) = initialized(&manager, "workspace").await;
     let other = Manager::open(other_dir.path()).await.unwrap();
     let registration = other
-        .create_volume("foreign-journal", register(volume.id, "workspace-v1"))
+        .create_volume("foreign-journal", register(volume.id, "workspace"))
         .await
         .unwrap();
     assert_ne!(
@@ -673,7 +673,7 @@ async fn reopen_configuration_contract(remote: Remote<'_>) {
     let dir = tempfile::tempdir().unwrap();
     configure(dir.path(), remote.config(&namespace));
     let manager = Manager::open(dir.path()).await.unwrap();
-    let (operation, volume) = initialized(&manager, "workspace-v1").await;
+    let (operation, volume) = initialized(&manager, "workspace").await;
     let pending = manager
         .submit_fork(
             volume.id,
@@ -757,15 +757,15 @@ async fn reopen_configuration_contract(remote: Remote<'_>) {
 }
 
 async fn manager_contract(remote: Remote<'_>) {
-    foreign_namespace_contract(remote, "workspace-v1").await;
-    recovery_contract(remote, "workspace-v1").await;
+    foreign_namespace_contract(remote, "workspace").await;
+    recovery_contract(remote, "workspace").await;
     ownership_contract(remote).await;
     reopen_configuration_contract(remote).await;
     expired_crash_session_contract(remote).await;
     #[cfg(feature = "native-packed-base")]
     {
-        foreign_namespace_contract(remote, "workspace-native-v2").await;
-        recovery_contract(remote, "workspace-native-v2").await;
+        foreign_namespace_contract(remote, "native-workspace").await;
+        recovery_contract(remote, "native-workspace").await;
     }
 }
 
@@ -774,7 +774,7 @@ async fn expired_crash_session_contract(remote: Remote<'_>) {
     let dir = tempfile::tempdir().unwrap();
     configure(dir.path(), remote.config(&namespace));
     let manager = Manager::open(dir.path()).await.unwrap();
-    let (_, volume) = initialized(&manager, "workspace-v1").await;
+    let (_, volume) = initialized(&manager, "workspace").await;
     let pending = manager
         .submit_fork(
             volume.id,

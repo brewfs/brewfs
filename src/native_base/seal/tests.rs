@@ -956,7 +956,7 @@ fn native_multi_span_placement_rejected_at_read_time() {
     let decoded_len = fx.blocks[3].len() as u32;
 
     // Two contiguous spans over one native frame: valid coverage, invalid
-    // for NativeBlockV1 (exactly one span required). The builder's
+    // for NativeBlock (exactly one span required). The builder's
     // validate() catches it; here we skip validate and prove the reader
     // rejects it too.
     seal.add_packed_block(

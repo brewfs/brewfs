@@ -105,7 +105,7 @@ const DEFAULT_TOTAL_AHEAD_LIMIT: u64 = 256 * 1024 * 1024;
 const MIN_STREAM_READ_BYTES: u64 = 128 * 1024;
 const READ_SESSIONS: usize = 2;
 const MAX_SLICE_READ_RETRIES: u32 = 5;
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) const MAX_WHOLE_READ_ATTEMPTS: usize = 3;
 
 /// Send-able wrapper for one non-overlapping read output span.
@@ -621,7 +621,7 @@ where
 
     pub(crate) async fn read_reply(&self, offset: u64, len: usize) -> anyhow::Result<ReadReply> {
         // Prepared workspace reads retain their request fences and output ownership.
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if self.backend.workspace_read_plan().is_some() {
             return self.read(offset, len).await.map(ReadReply::Owned);
         }
@@ -916,16 +916,16 @@ where
     }
 
     pub(crate) async fn read_at(&self, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let prepared_provider = self
             .backend
             .workspace_read_plan()
             .filter(|provider| provider.supports_prepared_unified_read());
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let mut operation = prepared_provider
             .and_then(|provider| provider.begin_unified_read_operation(len as u64))
             .or_else(|| self.backend.store().begin_read_operation(len as u64));
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let result = {
             let mut attempt = 0;
             loop {
@@ -954,12 +954,12 @@ where
                         .map_or_else(|| self.inode.file_size(), |fence| fence.file_size());
                     let delivery = operation.as_ref().and_then(|guard| guard.delivery_token());
                     let read = self.read_at_unaccounted(offset, len, file_size, delivery);
-                    #[cfg(feature = "workspace-overlay")]
+                    #[cfg(feature = "workspace")]
                     let data = match &fence {
                         // The final ensure_current below re-validates this
                         // view, so chunks inside it skip duplicate fences.
                         Some(fence) => {
-                            crate::workspace_overlay::meta_layer::packed_lower::with_request_view(
+                            crate::workspace::meta_layer::packed_lower::with_request_view(
                                 fence.as_ref(),
                                 read,
                             )
@@ -967,7 +967,7 @@ where
                         }
                         None => read.await,
                     };
-                    #[cfg(not(feature = "workspace-overlay"))]
+                    #[cfg(not(feature = "workspace"))]
                     let data = read.await;
                     if let Err(error) = &data
                         && crate::chunk::read_plan::is_read_request_beyond_view(error)
@@ -999,13 +999,13 @@ where
                 }
             }
         };
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let result = self
             .read_at_unaccounted(offset, len, self.inode.file_size())
             .await;
         match result {
             Ok(data) => {
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 {
                     if let Some(provider) = prepared_provider {
                         provider.record_unified_read_success(data.len() as u64);
@@ -1019,10 +1019,10 @@ where
             Err(error) => {
                 #[cfg(test)]
                 eprintln!(
-                    "[packed-v3-native-kernel-read-diag] stage=reader inode={} offset={offset} len={len} error={error:#}",
+                    "[packed-native-kernel-read-diag] stage=reader inode={} offset={offset} len={len} error={error:#}",
                     self.inode.ino()
                 );
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 if let Some(operation) = operation.take() {
                     let reason = if crate::vfs::error::is_read_admission_error(&error) {
                         crate::cadapter::read_observer::FailureClass::Admission
@@ -1043,7 +1043,7 @@ where
         offset: u64,
         len: usize,
         file_size: u64,
-        #[cfg(feature = "workspace-overlay")] delivery: Option<
+        #[cfg(feature = "workspace")] delivery: Option<
             Arc<crate::cadapter::read_observer::OperationDelivery>,
         >,
     ) -> anyhow::Result<Vec<u8>> {
@@ -1052,7 +1052,7 @@ where
         self.read_at_into_unaccounted(
             offset,
             &mut data,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             delivery,
         )
         .await?;
@@ -1065,7 +1065,7 @@ where
         &self,
         offset: u64,
         data: &mut [u8],
-        #[cfg(feature = "workspace-overlay")] delivery: Option<
+        #[cfg(feature = "workspace")] delivery: Option<
             Arc<crate::cadapter::read_observer::OperationDelivery>,
         >,
     ) -> anyhow::Result<()> {
@@ -1116,7 +1116,7 @@ where
                 };
                 cursor += span_len;
 
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 let delivery = delivery.clone();
                 reads.push(async move {
                     // SAFETY: every ReadSpanBuf points at a disjoint range of
@@ -1126,7 +1126,7 @@ where
                         span.index,
                         span.offset,
                         out,
-                        #[cfg(feature = "workspace-overlay")]
+                        #[cfg(feature = "workspace")]
                         delivery,
                     )
                     .await
@@ -1164,7 +1164,7 @@ where
             index,
             offset,
             out,
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             None,
         )
         .await
@@ -1175,22 +1175,22 @@ where
         index: u64,
         offset: u64,
         out: &mut [u8],
-        #[cfg(feature = "workspace-overlay")] delivery: Option<
+        #[cfg(feature = "workspace")] delivery: Option<
             Arc<crate::cadapter::read_observer::OperationDelivery>,
         >,
     ) -> anyhow::Result<()> {
         let chunk_id = chunk_id_for(self.inode.ino(), index)?;
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         let retry_transport = !self
             .backend
             .workspace_read_plan()
             .is_some_and(|provider| provider.supports_prepared_unified_read());
-        #[cfg(not(feature = "workspace-overlay"))]
+        #[cfg(not(feature = "workspace"))]
         let retry_transport = true;
 
         for attempt in 0..MAX_SLICE_READ_RETRIES {
             let result = async {
-                #[cfg(feature = "workspace-overlay")]
+                #[cfg(feature = "workspace")]
                 if let Some(provider) = self.backend.workspace_read_plan() {
                     if provider.supports_prepared_unified_read() {
                         let prepared = provider
@@ -1399,13 +1399,13 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     struct StaticWorkspacePlan {
         plan: crate::chunk::read_plan::ResolvedReadPlan,
         calls: AtomicUsize,
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[async_trait::async_trait]
     impl crate::chunk::read_plan::WorkspaceReadPlanProvider for StaticWorkspacePlan {
         async fn read_plan(
@@ -1430,7 +1430,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn workspace_reader_executes_read_plan_without_flat_slice_metadata() {
         use crate::chunk::read_plan::{ReadPlanSegment, ResolvedReadPlan};
@@ -1477,13 +1477,13 @@ mod tests {
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     struct PreparedProvider {
         completed: AtomicU64,
         fail_generation: bool,
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[async_trait::async_trait]
     impl crate::chunk::read_plan::WorkspaceReadPlanProvider for PreparedProvider {
         async fn read_plan(
@@ -1587,7 +1587,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn prepared_unified_reader_avoids_slices_and_counts_only_successful_delivery() {
         for fail in [false, true] {
@@ -1627,14 +1627,14 @@ mod tests {
 
     /// Standalone behavior red: add inside reader.rs tests using existing API.
     /// It does not require a new observer module or new trait method to compile.
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     struct CrossSpanProvider {
         completed: std::sync::atomic::AtomicU64,
         fail_second: std::sync::atomic::AtomicBool,
         first_done: Arc<tokio::sync::Notify>,
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[async_trait::async_trait]
     impl crate::chunk::read_plan::WorkspaceReadPlanProvider for CrossSpanProvider {
         async fn read_plan(
@@ -1727,7 +1727,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn complete_read_failure_after_one_successful_span_counts_no_delivery() {
         let provider = Arc::new(CrossSpanProvider {
@@ -1770,7 +1770,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     struct WholeViewProvider {
         version: Arc<AtomicU64>,
         switch_once: Arc<std::sync::atomic::AtomicBool>,
@@ -1781,18 +1781,18 @@ mod tests {
         mode: u8,
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     fn whole_view_read_context() -> crate::cadapter::read_observer::ReadContext {
         use crate::cadapter::read_observer::{Engine, Origin, Phase, ReadClass, ReadContext};
         ReadContext {
-            engine: Engine::PackedV3,
+            engine: Engine::Packed,
             phase: Phase::Runtime,
             class: ReadClass::PackedPayload,
             origin: Origin::Demand,
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[async_trait::async_trait]
     impl crate::chunk::read_plan::WorkspaceReadPlanProvider for WholeViewProvider {
         fn begin_unified_read_operation(
@@ -1913,9 +1913,7 @@ mod tests {
                     if self.version.load(Ordering::SeqCst) != self.expected {
                         match self.mode {
                             2 => {
-                                return Err(
-                                    crate::workspace_overlay::error::WorkspaceError::Fenced.into(),
-                                );
+                                return Err(crate::workspace::error::WorkspaceError::Fenced.into());
                             }
                             3 => anyhow::bail!("injected request fence backend failure"),
                             _ => return Err(ReadViewChanged.into()),
@@ -2022,7 +2020,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     async fn whole_view_fixture(
         mode: u8,
         cached_size: u64,
@@ -2066,7 +2064,7 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn whole_view_request_retries_all_chunks_and_uses_fresh_eof() {
         for cached_size in [0, 16] {
@@ -2081,7 +2079,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn whole_view_request_retry_is_bounded_and_never_reclaims_lost_ownership() {
         for mode in [1, 2, 3, 4, 5, 7] {
@@ -2098,7 +2096,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn whole_view_request_shrink_during_chunk_preparation_retries_fresh_eof() {
         let (reader, provider) = whole_view_fixture(6, 16).await;
@@ -2111,7 +2109,7 @@ mod tests {
         assert_eq!(provider.completed.load(Ordering::SeqCst), 8);
     }
 
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[tokio::test]
     async fn whole_view_request_marks_discarded_attempt_raw_bytes_undelivered() {
         use crate::cadapter::read_observer::Ledger;

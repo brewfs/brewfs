@@ -384,7 +384,7 @@ pub async fn patch_mount_backend_status(
     let active = backend
         .leases
         .iter()
-        .filter(|lease| lease.state == brewfs::workspace_overlay::model::LeaseState::Active)
+        .filter(|lease| lease.state == brewfs::workspace::model::LeaseState::Active)
         .max_by_key(|lease| lease.created_at_ns);
     let namespace = mount
         .namespace()
@@ -528,7 +528,7 @@ async fn apply_workspace_config(
         WorkspaceCacheMode::WriteBack => "commit_before_upload",
     };
     let config = format!(
-        "mount_point: {mount_path}\nvolume_format: workspace-v1\nworkspace: {workspace_id}\nworkspace_namespace: {catalog_namespace}\ndata:\n  backend: s3\n  s3:\n    bucket: {bucket}\n    region: {region}\n    part_size: {part_size}\n    max_concurrency: {max_concurrency}\n    force_path_style: {force_path_style}\n    endpoint: http://{cluster_name}-rustfs:{rustfs_port}\n{meta}layout:\n  chunk_size: {chunk_size}\n  block_size: {block_size}\ncache:\n  cache_root: /var/lib/brewfs/cache\n  writeback_mode: {writeback_mode}\n  writeback_persist_sync: true\n  writeback_require_stage_before_commit: true\n",
+        "mount_point: {mount_path}\nvolume_format: workspace\nworkspace: {workspace_id}\nworkspace_namespace: {catalog_namespace}\ndata:\n  backend: s3\n  s3:\n    bucket: {bucket}\n    region: {region}\n    part_size: {part_size}\n    max_concurrency: {max_concurrency}\n    force_path_style: {force_path_style}\n    endpoint: http://{cluster_name}-rustfs:{rustfs_port}\n{meta}layout:\n  chunk_size: {chunk_size}\n  block_size: {block_size}\ncache:\n  cache_root: /var/lib/brewfs/cache\n  writeback_mode: {writeback_mode}\n  writeback_persist_sync: true\n  writeback_require_stage_before_commit: true\n",
         mount_path = mount.spec.mount_path,
         workspace_id = workspace_id,
         catalog_namespace = catalog_namespace(&cluster.name_any(), namespace, cluster_spec),
@@ -678,12 +678,12 @@ fn build_stateful_set(
     sidecar_env.extend(runtime_metadata_env(cluster)?);
     sidecar_env.extend([
         EnvVar {
-            name: "BREWFS_PACKED_V3_MOUNT_UID".into(),
+            name: "BREWFS_PACKED_MOUNT_UID".into(),
             value: mount.metadata.uid.clone(),
             ..EnvVar::default()
         },
         EnvVar {
-            name: "BREWFS_PACKED_V3_POD_UID".into(),
+            name: "BREWFS_PACKED_POD_UID".into(),
             value_from: Some(EnvVarSource {
                 field_ref: Some(k8s_openapi::api::core::v1::ObjectFieldSelector {
                     field_path: "metadata.uid".into(),

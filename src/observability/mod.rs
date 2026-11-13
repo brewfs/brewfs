@@ -34,9 +34,8 @@ pub(crate) struct Metrics {
     put_count: AtomicU64,
     put_bytes: AtomicU64,
     stats: Mutex<Option<Weak<FsStats>>>,
-    #[cfg(feature = "workspace-overlay")]
-    entity_read_cache:
-        Mutex<Option<Weak<crate::workspace_overlay::entity::payload_cache::PayloadCache>>>,
+    #[cfg(feature = "workspace")]
+    entity_read_cache: Mutex<Option<Weak<crate::workspace::entity::payload_cache::PayloadCache>>>,
     profile: String,
     backend: String,
     start: Instant,
@@ -76,7 +75,7 @@ impl Metrics {
             put_count: AtomicU64::new(0),
             put_bytes: AtomicU64::new(0),
             stats: Mutex::new(None),
-            #[cfg(feature = "workspace-overlay")]
+            #[cfg(feature = "workspace")]
             entity_read_cache: Mutex::new(None),
             profile,
             backend,
@@ -280,7 +279,7 @@ impl Metrics {
                 sample(&mut out, name, "", value);
             }
         }
-        #[cfg(feature = "workspace-overlay")]
+        #[cfg(feature = "workspace")]
         if let Some(cache) = self
             .entity_read_cache
             .lock()
@@ -451,9 +450,9 @@ pub(crate) fn attach(stats: &Arc<FsStats>) {
     }
 }
 
-#[cfg(feature = "workspace-overlay")]
+#[cfg(feature = "workspace")]
 pub(crate) fn attach_entity_read_cache(
-    cache: &Arc<crate::workspace_overlay::entity::payload_cache::PayloadCache>,
+    cache: &Arc<crate::workspace::entity::payload_cache::PayloadCache>,
 ) {
     if let Some(metrics) = ACTIVE.get() {
         *metrics.entity_read_cache.lock() = Some(Arc::downgrade(cache));
@@ -580,10 +579,10 @@ pub async fn start(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    #[cfg(feature = "workspace-overlay")]
+    #[cfg(feature = "workspace")]
     #[test]
     fn entity_payload_cache_metrics_are_separate_from_metadata_hits() {
-        use crate::workspace_overlay::entity::payload_cache::{Key, PayloadCache};
+        use crate::workspace::entity::payload_cache::{Key, PayloadCache};
         let metrics = Metrics::new("entity".into(), "tikv".into());
         let cache = PayloadCache::new(8192);
         *metrics.entity_read_cache.lock() = Some(Arc::downgrade(&cache));

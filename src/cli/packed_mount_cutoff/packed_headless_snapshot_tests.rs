@@ -1,15 +1,15 @@
-//! Actual original mounted chain to the public packed-v3 snapshot consumer.
+//! Actual original mounted chain to the public packed snapshot consumer.
 //! This is a child of packed_original_shutdown_tests, sharing its real fixture.
 //! No source fence, graph completion, ready publisher or carrier is fabricated.
 
 use super::*;
 use crate::chunk::read_plan::{WorkspaceReadPlanProvider, execute_unified_into};
-use crate::workspace_overlay::packed_v3::wire005::{
-    AuthenticatedV3Snapshot, V3BuildPolicy, V3IndexAuditLimits, V3ProducerOptions,
+use crate::workspace::packed::snapshot::{
+    AuthenticatedSnapshot, SnapshotBuildPolicy, SnapshotIndexAuditLimits, SnapshotProducerOptions,
 };
-use crate::workspace_overlay::packed_v3::{AccessProfile, PackedCodec, SizeClassTable};
-use crate::workspace_overlay::publish::binding::PackedLowerBindingRecord;
-use crate::workspace_overlay::stores::kv_store::packed_admin::{
+use crate::workspace::packed::{AccessProfile, PackedCodec, SizeClassTable};
+use crate::workspace::publish::binding::PackedLowerBindingRecord;
+use crate::workspace::stores::kv_store::packed_admin::{
     PackedCleanSourceTicket, PackedHeadlessSnapshotDescription, PackedHeadlessSnapshotRequest,
 };
 use futures_util::StreamExt;
@@ -59,7 +59,7 @@ async fn original_object_bytes(
 }
 
 async fn read_snapshot_file(
-    metadata: &PackedV3ReadonlyMeta<ActualObjects>,
+    metadata: &PackedReadonlyMeta<ActualObjects>,
     name: &str,
     expected: &[u8],
 ) {
@@ -69,7 +69,7 @@ async fn read_snapshot_file(
     let _output = metadata
         .reserve_read_output(expected.len())
         .unwrap()
-        .expect("actual packed-v3 output ownership");
+        .expect("actual packed output ownership");
     let prepared = metadata
         .prepare_unified_read(inode, 0, 0, expected.len() as u64)
         .await
@@ -87,7 +87,7 @@ pub(super) struct OriginalSnapshotFixture {
     pub(super) upper: Arc<ObjectBlockStore<ActualObjects>>,
     pub(super) layout: ChunkLayout,
     pub(super) object_keys: Vec<String>,
-    pub(super) original: AuthenticatedV3Snapshot,
+    pub(super) original: AuthenticatedSnapshot,
     pub(super) expected_lower: Vec<u8>,
 }
 
@@ -100,7 +100,7 @@ pub(super) async fn consume<B, F>(
     released: PackedReleasedMountReference,
 ) where
     B: WorkspaceKvBackend,
-    F: Fn(Arc<V3MountBudget>) -> Connection<B> + Send + Sync + 'static,
+    F: Fn(Arc<SnapshotMountBudget>) -> Connection<B> + Send + Sync + 'static,
 {
     let OriginalSnapshotFixture {
         client,
@@ -128,7 +128,7 @@ pub(super) async fn consume<B, F>(
     let mut request = PackedHeadlessSnapshotRequest::bounded_operator(
         PackedHeadlessSnapshotDescription {
             snapshot_id,
-            snapshot_name: format!("actual-original-packed-v3-{snapshot_id}"),
+            snapshot_name: format!("actual-original-packed-{snapshot_id}"),
             owner_id: None,
         },
         LeaseId::new(),
@@ -137,13 +137,13 @@ pub(super) async fn consume<B, F>(
         300_000_000_000,
         scratch.path().to_path_buf(),
     );
-    request.producer = V3ProducerOptions {
+    request.producer = SnapshotProducerOptions {
         snapshot_id: [41; 32],
         root_dir_key: [43; 32],
         root_inode: 1,
         profile: AccessProfile::RandomSmallFile,
         size_classes: SizeClassTable::default(),
-        build_policy: V3BuildPolicy {
+        build_policy: SnapshotBuildPolicy {
             inline_data: false,
             p90: None,
             ..Default::default()
@@ -151,7 +151,7 @@ pub(super) async fn consume<B, F>(
         metadata_codec: PackedCodec::Raw,
         data_codec: PackedCodec::Raw,
     };
-    request.graph_limits = V3IndexAuditLimits {
+    request.graph_limits = SnapshotIndexAuditLimits {
         max_objects: 4096,
         max_authenticated_bytes: 16 << 20,
         max_requested_bytes: 16 << 20,
@@ -178,7 +178,7 @@ pub(super) async fn consume<B, F>(
     {
         Ok(result) => result,
         Err(failure) => panic!(
-            "actual original-to-packed-v3 publisher failed: {} (committed={})",
+            "actual original-to-packed publisher failed: {} (committed={})",
             failure.error(),
             failure.committed_result().is_some()
         ),
@@ -193,7 +193,7 @@ pub(super) async fn consume<B, F>(
     // Publication cleanup closes its own ledger. Subsequent inspection/read is
     // a fresh operation with a fresh ledger, including actual transport/output.
     bare.shutdown_metadata_backend().await.unwrap();
-    let read_budget = V3MountBudget::defaults();
+    let read_budget = SnapshotMountBudget::defaults();
     let bare = Arc::new(connect(read_budget.clone()).await.unwrap());
     let observer = Arc::new(
         KvWorkspaceStore::from_arc(bare.clone()).with_packed_reader_pin_budget(read_budget.clone()),
@@ -227,7 +227,7 @@ pub(super) async fn consume<B, F>(
     let repeated = observer
         .pin_clean_packed_snapshot(
             released.guard.workspace_id,
-            crate::workspace_overlay::catalog::CreateSnapshot {
+            crate::workspace::catalog::CreateSnapshot {
                 snapshot_id: SnapshotId::new(),
                 name: None,
                 revision: result.packed_carrier_revision.clone(),
@@ -237,9 +237,9 @@ pub(super) async fn consume<B, F>(
         .await
         .unwrap();
     assert_eq!(repeated.revision, result.packed_carrier_revision);
-    let fork_id = crate::workspace_overlay::ids::WorkspaceId::new();
+    let fork_id = crate::workspace::ids::WorkspaceId::new();
     observer
-        .create_workspace_from_packed_carrier(crate::workspace_overlay::catalog::CreateWorkspace {
+        .create_workspace_from_packed_carrier(crate::workspace::catalog::CreateWorkspace {
             upper_bucket: None,
             workspace_id: fork_id,
             head_layer_id: LayerId::new(),
@@ -257,7 +257,7 @@ pub(super) async fn consume<B, F>(
     let first_fork_snapshot = observer
         .pin_clean_packed_snapshot(
             fork_id,
-            crate::workspace_overlay::catalog::CreateSnapshot {
+            crate::workspace::catalog::CreateSnapshot {
                 snapshot_id: SnapshotId::new(),
                 name: None,
                 revision: result.packed_carrier_revision.clone(),
@@ -267,7 +267,7 @@ pub(super) async fn consume<B, F>(
         .await
         .unwrap();
     assert_eq!(first_fork_snapshot.revision, result.packed_carrier_revision);
-    let current_key = format!("packed/v3/current/{}", released.guard.workspace_id).into_bytes();
+    let current_key = format!("packed/current/{}", released.guard.workspace_id).into_bytes();
     let (current_rows, _) = bare
         .get_many_consistent_with_time_bounded(&[current_key], point_limits(1))
         .await
@@ -275,11 +275,11 @@ pub(super) async fn consume<B, F>(
     let current = PackedLowerBindingRecord::decode(current_rows[0].as_ref().unwrap()).unwrap();
     assert_eq!(current, result.binding);
 
-    let authenticated = AuthenticatedV3Snapshot::open(&client, &result.binding.binding.manifest)
+    let authenticated = AuthenticatedSnapshot::open(&client, &result.binding.binding.manifest)
         .await
         .unwrap();
     assert_ne!(authenticated.manifest_reference(), &original_reference);
-    let metadata = PackedV3ReadonlyMeta::from_v3_budget(
+    let metadata = PackedReadonlyMeta::from_snapshot_budget(
         client.clone(),
         authenticated,
         layout.chunk_size,
@@ -301,11 +301,11 @@ pub(super) async fn consume<B, F>(
             "actual publication changed or removed an original object"
         );
     }
-    let reopened_original = AuthenticatedV3Snapshot::open(&client, &original_reference)
+    let reopened_original = AuthenticatedSnapshot::open(&client, &original_reference)
         .await
         .unwrap();
     assert_eq!(reopened_original.manifest_reference(), &original_reference);
-    let original_metadata = PackedV3ReadonlyMeta::from_v3_budget(
+    let original_metadata = PackedReadonlyMeta::from_snapshot_budget(
         client,
         reopened_original,
         layout.chunk_size,
@@ -316,7 +316,7 @@ pub(super) async fn consume<B, F>(
     read_snapshot_file(&original_metadata, "nonzero", &expected_lower).await;
     original_metadata.drain_packed_transport().await.unwrap();
     drop(original_metadata);
-    let subsequent = crate::workspace_overlay::lifecycle::WorkspaceMountSession::acquire_for_mount(
+    let subsequent = crate::workspace::lifecycle::WorkspaceMountSession::acquire_for_mount(
         observer.clone(),
         released.guard.workspace_id,
         released.guard.holder_generation.checked_add(2).unwrap(),
@@ -374,14 +374,14 @@ pub(super) async fn consume<B, F>(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real Linux FUSE, Redis UUID namespace, original shutdown and actual packed-v3 publisher"]
+#[ignore = "real Linux FUSE, Redis UUID namespace, original shutdown and actual packed publisher"]
 async fn real_redis_original_packed_shutdown_to_headless_snapshot_persists_carrier_and_reads_both_sources()
  {
     redis(Case::HeadlessSnapshot).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real Linux FUSE, TiKV UUID namespace, original shutdown and actual packed-v3 publisher"]
+#[ignore = "real Linux FUSE, TiKV UUID namespace, original shutdown and actual packed publisher"]
 async fn real_tikv_original_packed_shutdown_to_headless_snapshot_persists_carrier_and_reads_both_sources()
  {
     tikv(Case::HeadlessSnapshot).await;

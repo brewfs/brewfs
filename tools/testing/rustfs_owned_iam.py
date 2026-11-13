@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Provision and remove owned RustFS runtime/admin identities for one run.
 
-The runtime identity receives the checked-in packed-v3 runtime policy, which
+The runtime identity receives the checked-in packed runtime policy, which
 denies object deletion. The GC admin identity receives object delete rights on
 the same single bucket. Credentials are written to a private 0600 env file and
 are never printed. Every admin API failure is fatal; removal is verified by
@@ -28,7 +28,7 @@ import botocore.config
 import botocore.credentials
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-RUNTIME_POLICY = ROOT / "operator/brewfs-operator/manifests/packed-v3-runtime-object-policy.json"
+RUNTIME_POLICY = ROOT / "operator/brewfs-operator/manifests/packed-runtime-object-policy.json"
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,61}[a-z0-9]$")
 NAME_RE = re.compile(r"^[A-Za-z0-9]{8,64}$")
 

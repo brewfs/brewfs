@@ -21,13 +21,13 @@ DATA_CODEC="${PACKED_LOCAL_DATA_CODEC:-zstd}"
 ACCESS_PROFILE="${PACKED_LOCAL_ACCESS_PROFILE:-random-small-file}"
 P90_TRAINING_TRACE="${PACKED_LOCAL_P90_TRAINING_TRACE:-}"
 BINARY="${PACKED_LOCAL_BINARY:-$ROOT/target/debug/brewfs}"
-# Metadata placement arm. "packed" serves metadata from packed-v3 objects;
+# Metadata placement arm. "packed" serves metadata from packed objects;
 # "native-tikv" imports the same authenticated manifest into an owned TiKV
 # namespace and serves metadata from it. Data, binary, trace, budgets and
 # cleanup are identical; only metadata placement differs.
 ARM="${PACKED_LOCAL_ARM:-packed}"
 TIKV_PD="${PACKED_LOCAL_TIKV_PD:-}"
-FIXTURE="${PACKED_LOCAL_FIXTURE:-$ROOT/target/debug/packed_v3_snapshot_fixture}"
+FIXTURE="${PACKED_LOCAL_FIXTURE:-$ROOT/target/debug/packed_snapshot_fixture}"
 COMPOSE="$ROOT/docker/compose-xfstests/docker-compose.juicefs-perf.yml"
 for value in "$FILES" "$FILE_BYTES" "$METADATA_BYTES" "$WORKERS" "$EPOCHS" "$TIMEOUT_SECONDS" "$SCANNER_SEED"; do
     [[ "$value" =~ ^[0-9]+$ ]] || { printf 'Expected integer control parameter\n' >&2; exit 2; }
@@ -40,7 +40,7 @@ case "$INLINE_DATA" in on|off) ;; *) exit 2 ;; esac
 case "$METADATA_CODEC" in raw|zstd) ;; *) exit 2 ;; esac
 case "$DATA_CODEC" in raw|zstd) ;; *) exit 2 ;; esac
 case "$ACCESS_PROFILE" in random-small-file|sequential-small-file|mixed) ;; *) exit 2 ;; esac
-[[ "$WIRE_VERSION" == 5 ]] || { printf 'Use the current packed-v3 encoding 005\n' >&2; exit 2; }
+[[ "$WIRE_VERSION" == 5 ]] || { printf 'Use the current packed encoding 005\n' >&2; exit 2; }
 case "$COLD_CORPUS" in true|false) ;; *) exit 2 ;; esac
 case "$HARDLINK_CORPUS" in true|false) ;; *) exit 2 ;; esac
 case "$ARM" in
@@ -49,7 +49,7 @@ case "$ARM" in
     *) printf 'PACKED_LOCAL_ARM must be packed or native-tikv\n' >&2; exit 2 ;;
 esac
 METADATA_PREFETCH=off
-[[ -x "$BINARY" && -x "$FIXTURE" && -e /dev/fuse ]] || { printf 'Build brewfs and fixture with workspace-overlay; enable FUSE\n' >&2; exit 2; }
+[[ -x "$BINARY" && -x "$FIXTURE" && -e /dev/fuse ]] || { printf 'Build brewfs and fixture with workspace; enable FUSE\n' >&2; exit 2; }
 sudo -n true
 # This Compose definition has fixed container names. Never stop someone else's run.
 if docker ps -a --format '{{.Names}}' | grep -qx 'rustfs-juicefs-perf'; then
@@ -287,7 +287,7 @@ arm, pd, namespace = sys.argv[3], sys.argv[4], sys.argv[5]
 meta = (f"meta:\n  backend: tikv\n  tikv:\n    pd_endpoints: [\"{pd}\"]\n    namespace: {namespace}\n"
         if arm == "native-tikv" else "")
 (work/'mount.yaml').write_text(f"""mount_point: {work}/mnt
-volume_format: packed-metadata-v3
+volume_format: packed-snapshot
 packed_manifest_key: {key}
 {meta}data:
   backend: s3
@@ -330,7 +330,7 @@ fuse_ttl_ms=0
 direct_io=1
 keep_cache=0
 loopback_proxy=disabled\ncold_corpus=%s\nhardlink_corpus=%s\n' "$FILES" "$FILE_BYTES" "$METADATA_BYTES" "$WORKERS" "$EPOCHS" "$MODE" "$METADATA_PREFETCH" "$WIRE_VERSION" "$FRAME_POLICY" "$INLINE_DATA" "$METADATA_CODEC" "$DATA_CODEC" "$ACCESS_PROFILE" "$COLD_CORPUS" "$HARDLINK_CORPUS" >"$ARTIFACT/profile.env"
-printf 'packed_version=v3\nscanner_seed=%s\nfixture_prefix=%s\nmanifest_schema=packed-v3-run-manifest-v1\n' "$SCANNER_SEED" "$FIXTURE_PREFIX" >>"$ARTIFACT/profile.env"
+printf 'packed_version=v3\nscanner_seed=%s\nfixture_prefix=%s\nmanifest_schema=packed-run-manifest-v1\n' "$SCANNER_SEED" "$FIXTURE_PREFIX" >>"$ARTIFACT/profile.env"
 [[ -n "$P90_TRACE_SHA" ]] && printf 'p90_training_trace_sha256=%s\n' "$P90_TRACE_SHA" >>"$ARTIFACT/profile.env"
 printf 'metadata_arm=%s\n' "$ARM" >>"$ARTIFACT/profile.env"
 if [[ "$ARM" == native-tikv ]]; then

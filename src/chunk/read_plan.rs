@@ -656,10 +656,8 @@ pub trait UnifiedReadRequestFence: Send + Sync {
     /// A frozen workspace request's atomically captured view, which chunk
     /// preparation inside the same request may reuse. None: full per-chunk
     /// capture and fencing (the default for every other provider).
-    #[cfg(feature = "workspace-overlay")]
-    fn request_view(
-        &self,
-    ) -> Option<crate::workspace_overlay::meta_layer::packed_lower::RequestView> {
+    #[cfg(feature = "workspace")]
+    fn request_view(&self) -> Option<crate::workspace::meta_layer::packed_lower::RequestView> {
         None
     }
 }

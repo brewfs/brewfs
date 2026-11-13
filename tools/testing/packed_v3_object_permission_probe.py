@@ -31,7 +31,7 @@ def validate_bucket(bucket):
 
 
 def render_policy(args):
-    source = Path(__file__).resolve().parents[2] / "operator/brewfs-operator/manifests/packed-v3-runtime-object-policy.json"
+    source = Path(__file__).resolve().parents[2] / "operator/brewfs-operator/manifests/packed-runtime-object-policy.json"
     policy = json.loads(source.read_text(encoding="utf-8"))
     for statement in policy["Statement"]:
         statement["Resource"] = [value.replace("__BUCKET__", args.bucket) for value in statement["Resource"]]
@@ -72,9 +72,9 @@ def probe(args):
                             aws_access_key_id=keys[0], aws_secret_access_key=keys[1], config=config)
 
     runtime, admin = client(runtime_keys), client(admin_keys)
-    key = f"packed-v3-permission-probe/{uuid.uuid4().hex}.object"
+    key = f"packed-permission-probe/{uuid.uuid4().hex}.object"
     payload = bytes(range(256))
-    result = {"schema": "packed-v3-object-permission-probe", "metadata_backend": args.metadata_backend,
+    result = {"schema": "packed-object-permission-probe", "metadata_backend": args.metadata_backend,
               "owned_key": key, "payload_bytes": len(payload), "sdk_max_attempts": 1,
               "admin_list_prefix_positive": False, "admin_head_positive": False,
               "admin_absence_verified": False,
@@ -188,7 +188,7 @@ def probe(args):
             result["cleanup_uncertain_do_not_replay_delete"] = True
         runtime.close()
         admin.close()
-    destination = args.out or Path(f"packed-v3-object-permission-{uuid.uuid4().hex}.json")
+    destination = args.out or Path(f"packed-object-permission-{uuid.uuid4().hex}.json")
     with destination.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2, sort_keys=True)
         stream.write("\n")

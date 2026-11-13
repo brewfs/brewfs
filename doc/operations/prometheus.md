@@ -97,7 +97,7 @@ Metadata `op` is a compiled MetaStore method name, and `backend` is one of
 so metadata cache hits do not masquerade as remote metadata requests.
 
 Object `op` is `get` or `put`. `kind` comes from typed read context:
-`packed` for PackedV3 objects, `large` for external payload, and `upper` for
+`packed` for Packed objects, `large` for external payload, and `upper` for
 native/flat/unclassified objects. Counts are client API attempts, not hidden
 HTTP retries by the S3 SDK. HEAD and DELETE are outside these GET/PUT families.
 Transferred bytes are physical object payload bytes, before decompression.
@@ -160,7 +160,7 @@ CPU profiling by SIGUSR1 is not implemented in this change. Existing optional
 Preserve three separate release binaries: the clean baseline, the candidate
 without the feature, and the candidate with `observability`. Use identical
 compiler/profile settings for all three. Run the repository's Rust CI gate
-and both workspace-overlay library test variants before measuring.
+and both workspace library test variants before measuring.
 
 ```sh
 sudo python3 tools/perf/check_feature_observability.py \

@@ -10,7 +10,7 @@ async fn two_catalogs() -> (tempfile::TempDir, Manager, CreateVolumeRoot) {
     let manager = Manager::open(dir.path()).await.unwrap();
     let root = CreateVolumeRoot {
         upper_bucket: None,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
         schema_version: WORKSPACE_SCHEMA_VERSION,
         volume_id: Uuid::new_v4(),
         workspace_id: WorkspaceId::new(),
@@ -35,7 +35,7 @@ fn register_request(catalog_ref: &str, volume: Uuid) -> VolumeRequest {
         owner: None,
         expected_volume_id: Some(volume),
         confirm_empty: false,
-        volume_format: "workspace-v1".into(),
+        volume_format: "workspace".into(),
     }
 }
 

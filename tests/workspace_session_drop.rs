@@ -1,13 +1,13 @@
-#![cfg(feature = "workspace-overlay")]
+#![cfg(feature = "workspace")]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use brewfs::workspace_overlay::catalog::{CreateVolumeRoot, WorkspaceStore};
-use brewfs::workspace_overlay::ids::{LayerId, WorkspaceId};
-use brewfs::workspace_overlay::lifecycle::WorkspaceMountSession;
-use brewfs::workspace_overlay::model::WORKSPACE_SCHEMA_VERSION;
-use brewfs::workspace_overlay::stores::database::SqliteWorkspaceStore;
+use brewfs::workspace::catalog::{CreateVolumeRoot, WorkspaceStore};
+use brewfs::workspace::ids::{LayerId, WorkspaceId};
+use brewfs::workspace::lifecycle::WorkspaceMountSession;
+use brewfs::workspace::model::WORKSPACE_SCHEMA_VERSION;
+use brewfs::workspace::stores::database::SqliteWorkspaceStore;
 use uuid::Uuid;
 
 async fn session() -> (
@@ -24,7 +24,7 @@ async fn session() -> (
     store
         .create_volume_root(CreateVolumeRoot {
             upper_bucket: None,
-            volume_format: "workspace-v1".into(),
+            volume_format: "workspace".into(),
             schema_version: WORKSPACE_SCHEMA_VERSION,
             volume_id: Uuid::new_v4(),
             workspace_id,

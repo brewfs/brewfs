@@ -6,9 +6,9 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context as _};
-use brewfs::workspace_overlay::packed_v3::wire005::V3MountBudget;
-use brewfs::workspace_overlay::stores::redis::RedisWorkspaceBackend;
-use brewfs::workspace_overlay::stores::tikv::{TiKvTlsConfig, TiKvWorkspaceBackend};
+use brewfs::workspace::packed::snapshot::SnapshotMountBudget;
+use brewfs::workspace::stores::redis::RedisWorkspaceBackend;
+use brewfs::workspace::stores::tikv::{TiKvTlsConfig, TiKvWorkspaceBackend};
 use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, Client};
 use sha2::{Digest as _, Sha256};
@@ -146,7 +146,7 @@ impl OperatorMetadataCredentials {
         &self,
         endpoints: Vec<String>,
         namespace: &str,
-        budget: Arc<V3MountBudget>,
+        budget: Arc<SnapshotMountBudget>,
     ) -> anyhow::Result<TiKvWorkspaceBackend> {
         let MetadataRoles::TiKv { runtime, admin } = &self.roles else {
             bail!("TiKV connection requires TiKV metadata credentials");
@@ -350,7 +350,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires redis-server; runs an isolated Unix-socket Redis fixture"]
     async fn recovered_runtime_acl_allows_atomic_metadata_reads() {
-        use brewfs::workspace_overlay::stores::kv_backend::{KvWrite, WorkspaceKvBackend};
+        use brewfs::workspace::stores::kv_backend::{KvWrite, WorkspaceKvBackend};
         use std::process::{Child, Command, Stdio};
         use std::time::{Duration, Instant};
 

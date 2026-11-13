@@ -7,7 +7,7 @@ info() { log "INFO  $*"; }
 ok()   { log "OK    $*"; }
 err()  { log "ERROR $*" >&2; }
 
-if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]]; then
     export BREWFS_WRITEBACK_MODE=upload_before_commit
 fi
 
@@ -25,7 +25,7 @@ log_file="${BREWFS_LOG_FILE:-/artifacts/brewfs.log}"
 xfstests_dir="${XFSTESTS_DIR:-/opt/xfstests-dev}"
 artifact_root="${BREWFS_ARTIFACT_ROOT:-/artifacts}"
 artifact_dir="${BREWFS_ARTIFACT_DIR:-}"
-if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
+if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-snapshot" ]]; then
     perf_tools="${PERF_TOOLS:-packed-tree packed-smallfiles}"
 else
     perf_tools="${PERF_TOOLS:-fio-bigwrite fio-bigread fio-seqread fio-seqwrite fio-randread fio-randwrite fio-randrw dirstress dirperf metaperf looptest}"
@@ -194,16 +194,16 @@ write_config() {
         echo
         if [[ -n "${BREWFS_VOLUME_FORMAT:-}" ]]; then
             echo "volume_format: ${BREWFS_VOLUME_FORMAT}"
-            if [[ "$BREWFS_VOLUME_FORMAT" == "packed-metadata-v3" ]]; then
+            if [[ "$BREWFS_VOLUME_FORMAT" == "packed-snapshot" ]]; then
                 if [[ -z "${BREWFS_PACKED_MANIFEST_KEY:-}" ]]; then
-                    err "BREWFS_PACKED_MANIFEST_KEY 不能为空 (packed-metadata-v3)"
+                    err "BREWFS_PACKED_MANIFEST_KEY 不能为空 (packed-snapshot)"
                     exit 1
                 fi
                 echo "packed_manifest_key: ${BREWFS_PACKED_MANIFEST_KEY}"
-            elif [[ "$BREWFS_VOLUME_FORMAT" == "workspace-native-v2" ]]; then
+            elif [[ "$BREWFS_VOLUME_FORMAT" == "native-workspace" ]]; then
                 echo
                 echo "volume:"
-                echo "  format: workspace-native-v2"
+                echo "  format: native-workspace"
                 echo "  schema_version: 2"
                 echo "  native_control_version: 2"
                 echo "  chunk_size: ${BREWFS_CHUNK_SIZE:-67108864}"
@@ -324,7 +324,7 @@ EOF
         esac
         echo
 
-        if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-metadata-v3" ]]; then
+        if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-snapshot" ]]; then
         case "$meta_backend" in
             sqlite)
                 mkdir -p "$(dirname "$sqlite_path")"
@@ -454,7 +454,7 @@ EOF
         if [[ -n "${BREWFS_FUSE_WORKERS:-}" || -n "${BREWFS_FUSE_MAX_BACKGROUND:-}" ]]; then
             echo
             echo "fuse:"
-            if [[ "${BREWFS_VOLUME_FORMAT:-}" == workspace-v1 ]]; then
+            if [[ "${BREWFS_VOLUME_FORMAT:-}" == workspace ]]; then
                 echo "  cache_ttl_ms: 1000"
             else
                 echo "  cache_ttl_ms: 0"
@@ -671,9 +671,9 @@ prepare_artifacts() {
         touch "$artifact_dir/manifest.invalid"
         return 1
     fi
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-snapshot" ]]; then
         cat >"$artifact_dir/packed-runtime-proof.env" <<EOF
-volume_format=packed-metadata-v3
+volume_format=packed-snapshot
 metadata_store=immutable-object-snapshot
 metadata_client=none
 metadata_config=omitted
@@ -1543,8 +1543,8 @@ run_packed_smallfiles() {
     local scan_mode="${1:-full}"
     local tool=packed-smallfiles
     if [[ "$scan_mode" == tree ]]; then tool=packed-tree; fi
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-metadata-v3" ]]; then
-        err "packed-smallfiles requires BREWFS_VOLUME_FORMAT=packed-metadata-v3"
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" != "packed-snapshot" ]]; then
+        err "packed-smallfiles requires BREWFS_VOLUME_FORMAT=packed-snapshot"
         return 1
     fi
     local root="$mount_dir"
@@ -1640,7 +1640,7 @@ PY
 }
 
 run_packed_posix() {
-    err "packed POSIX fixture layout remains OPEN for packed-v3; use the dedicated SPEC correctness gates"
+    err "packed POSIX fixture layout remains OPEN for packed; use the dedicated SPEC correctness gates"
     return 1
 }
 
@@ -1852,8 +1852,8 @@ prepare_fio_dataset() {
 }
 
 run_fio_custom() {
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
-        err "packed-v3 fio fixture/trace layout remains OPEN"
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-snapshot" ]]; then
+        err "packed fio fixture/trace layout remains OPEN"
         return 1
     fi
     local work_dir="$mount_dir/.perf-fio"
@@ -2047,8 +2047,8 @@ PY
 }
 
 run_fio_profile() {
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
-        err "packed-v3 fio fixture/trace layout remains OPEN"
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-snapshot" ]]; then
+        err "packed fio fixture/trace layout remains OPEN"
         return 1
     fi
     local tool="$1"
@@ -3291,22 +3291,22 @@ run_perf_suite() {
 
 validate_packed_request() {
     case "${BREWFS_VOLUME_FORMAT:-}" in
-        packed-metadata-v3) ;;
-        packed-*) err "unsupported packed volume format: $BREWFS_VOLUME_FORMAT (only packed-metadata-v3)"; return 1 ;;
+        packed-snapshot) ;;
+        packed-*) err "unsupported packed volume format: $BREWFS_VOLUME_FORMAT (only packed-snapshot)"; return 1 ;;
         *) return 0 ;;
     esac
     local -a tools=()
     local tool
     read -r -a tools <<<"$perf_tools"
-    [[ "${#tools[@]}" -gt 0 ]] || { err "packed-v3 PERF_TOOLS cannot be empty"; return 1; }
+    [[ "${#tools[@]}" -gt 0 ]] || { err "packed PERF_TOOLS cannot be empty"; return 1; }
     for tool in "${tools[@]}"; do
         case "$tool" in
             packed-tree|packed-smallfiles) ;;
-            *) err "unsupported packed-v3 tool: $tool; tree/smallfiles are supported, fio/POSIX fixture layout remains OPEN"; return 1 ;;
+            *) err "unsupported packed tool: $tool; tree/smallfiles are supported, fio/POSIX fixture layout remains OPEN"; return 1 ;;
         esac
     done
     if [[ -n "${PERF_PACKED_DIRS:-}" || -n "${PERF_PACKED_FIO_FILE_SIZE:-}" ]]; then
-        err "packed-v3 fixture does not support PERF_PACKED_DIRS or PERF_PACKED_FIO_FILE_SIZE; use directory levels/fanout/files-per-leaf"
+        err "packed fixture does not support PERF_PACKED_DIRS or PERF_PACKED_FIO_FILE_SIZE; use directory levels/fanout/files-per-leaf"
         return 1
     fi
     export PERF_PACKED_DIR_LEVELS="${PERF_PACKED_DIR_LEVELS:-1}"
@@ -3320,16 +3320,16 @@ import sys
 
 values = sys.argv[1:]
 if any(not re.fullmatch(r"[0-9]+", value) for value in values[:4]):
-    raise SystemExit("packed-v3 fixture dimensions and size must be unsigned integers")
+    raise SystemExit("packed fixture dimensions and size must be unsigned integers")
 levels, fanout, per_leaf, size = map(int, values[:4])
 maximum = (1 << 64) - 1
 if levels > 8 or not 0 < fanout <= maximum or not 0 < per_leaf <= maximum or not 0 < size <= 4 * 1024 * 1024:
-    raise SystemExit("packed-v3 requires levels 0..8, nonzero u64 fanout/files-per-leaf and file size 1..4 MiB")
+    raise SystemExit("packed requires levels 0..8, nonzero u64 fanout/files-per-leaf and file size 1..4 MiB")
 count = fanout ** levels * per_leaf
 if count > maximum:
-    raise SystemExit("packed-v3 fixture file count overflows u64")
+    raise SystemExit("packed fixture file count overflows u64")
 if values[4] and (not re.fullmatch(r"[0-9]+", values[4]) or int(values[4]) != count):
-    raise SystemExit(f"packed-v3 fixture count mismatch: expected={count} configured={values[4]}")
+    raise SystemExit(f"packed fixture count mismatch: expected={count} configured={values[4]}")
 print(count)
 PY
 )" || return 1
@@ -3353,7 +3353,7 @@ workspace_cli() {
                 "$@"
             ;;
         *)
-            err "workspace-v1 requires the same Redis/TiKV metadata topology as the mount; backend=$meta_backend"
+            err "workspace requires the same Redis/TiKV metadata topology as the mount; backend=$meta_backend"
             return 1
             ;;
     esac
@@ -3412,7 +3412,7 @@ lower = record.get("fork_base")
 canonical = json.dumps(lower, sort_keys=True, separators=(",", ":")).encode()
 identity = {
     "workspace_id": workspace_id,
-    "volume_format": "workspace-v1",
+    "volume_format": "workspace",
     "lower": lower,
     "lower_manifest_hash": None,
     "lower_manifest_status": "unavailable",
@@ -3429,7 +3429,7 @@ PY
 
 initialize_workspace_volume() {
     case "${BREWFS_VOLUME_FORMAT:-}" in
-        workspace-v1|workspace-native-v2) ;;
+        workspace|native-workspace) ;;
         *) return 0 ;;
     esac
     if [[ -z "${BREWFS_WORKSPACE_NAMESPACE:-}" ]]; then
@@ -3438,7 +3438,7 @@ initialize_workspace_volume() {
     fi
     case "$meta_backend" in
         redis|tikv) ;;
-        *) err "workspace-v1 requires BREWFS_META_BACKEND=redis or tikv"; return 1 ;;
+        *) err "workspace requires BREWFS_META_BACKEND=redis or tikv"; return 1 ;;
     esac
 
     local init_raw="$artifact_dir/workspace-init.raw"
@@ -3495,7 +3495,7 @@ initialize_workspace_volume() {
     }
     workspace_json_body "$inspect_raw" >"$inspect_json"
 
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]]; then
         workspace_cli init-native \
             >"$artifact_dir/native-init.raw" 2>&1 \
             || info "native control header already exists"
@@ -3506,12 +3506,12 @@ initialize_workspace_volume() {
     fi
 
     export BREWFS_WORKSPACE_ID
-    info "workspace-v1 catalog: id=$BREWFS_WORKSPACE_ID namespace=$BREWFS_WORKSPACE_NAMESPACE"
+    info "workspace catalog: id=$BREWFS_WORKSPACE_ID namespace=$BREWFS_WORKSPACE_NAMESPACE"
 }
 
 verify_workspace_lease() {
-    [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" \
-        || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]] || return 0
+    [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace" \
+        || "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]] || return 0
     local raw="$artifact_dir/workspace-inspect-post-mount.raw"
     local json="$artifact_dir/workspace-inspect-post-mount.json"
     workspace_cli inspect "$BREWFS_WORKSPACE_ID" >"$raw" 2>&1
@@ -3550,8 +3550,8 @@ main() {
     info "写入 BrewFS 配置: $config_path"
     write_config
 
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace-v1" \
-        || "${BREWFS_VOLUME_FORMAT:-}" == "workspace-native-v2" ]]; then
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "workspace" \
+        || "${BREWFS_VOLUME_FORMAT:-}" == "native-workspace" ]]; then
         initialize_workspace_volume
         write_config
     fi
@@ -3565,8 +3565,8 @@ main() {
     mount_brewfs
     verify_workspace_lease
 
-    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-metadata-v3" ]]; then
-        info "跳过写入型预检: packed-metadata-v3 是只读挂载"
+    if [[ "${BREWFS_VOLUME_FORMAT:-}" == "packed-snapshot" ]]; then
+        info "跳过写入型预检: packed-snapshot 是只读挂载"
     else
         # Pre-flight sanity check: verify the filesystem can create, write, and read files.
         info "执行挂载点预检: $mount_dir"

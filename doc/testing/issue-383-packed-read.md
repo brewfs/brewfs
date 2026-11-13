@@ -85,11 +85,11 @@ The production TiKV route is:
 
 ```text
 VirtualFileSystem::read_packed_workspace_request
-  -> WorkspaceMetaLayer / PackedV3ReadonlyMeta::prepare_unified_read_observed
-  -> AuthenticatedV3Snapshot::prepare_inode_read_observed
-  -> authenticated GroupMeta / frame directory / V3DemandCoordinator
+  -> WorkspaceMetaLayer / PackedReadonlyMeta::prepare_unified_read_observed
+  -> AuthenticatedSnapshot::prepare_inode_read_observed
+  -> authenticated GroupMeta / frame directory / SnapshotDemandCoordinator
   -> ObjectClient::typed_exact
-  -> V3ReadonlyBackend / ReadonlyTransport
+  -> SnapshotReadonlyBackend / ReadonlyTransport
   -> shared S3Backend / aws_sdk_s3::Client
 ```
 
@@ -106,12 +106,12 @@ investigation come from packet capture, not those absent counters.
 
 The CPU profile (`before-profile/perf.data`, 2805 samples, zero lost) places
 73.26% of self CPU in `sha2::sha256::compress256`; 73.01% of all samples follow
-`V3DemandCoordinator -> fetch_batch -> Sha256::digest(full stored frame)`.
+`SnapshotDemandCoordinator -> fetch_batch -> Sha256::digest(full stored frame)`.
 One 4 KiB logical read authenticates 4 MiB, a 1024-fold payload amplification.
 On this CPU `sha2` 0.10.9 chooses its scalar software fallback. The profile
 accounts for about 22.7 ms hashing CPU per successful logical read.
 The demand registry shares only concurrent in-flight owners;
-`V3FrameLeader::complete` removes the registry entry before publishing the
+`SnapshotFrameLeader::complete` removes the registry entry before publishing the
 result. It is not a retained payload cache. Consequently two fio warmups do
 not turn later packed frame reads into ordinary block-cache hits.
 
@@ -126,11 +126,11 @@ duration. The original exact 16-second result remains unverified.
 ## Candidate and validation status
 
 The single optimization replaces the SHA-256 computation backend only for
-packed wire005 data-frame authentication with the already locked `ring`
+packed snapshot data-frame authentication with the already locked `ring`
 0.17.14 implementation. Direct and coalesced frame reads share one helper;
 both still authenticate every stored byte and compare the first 16 digest
 bytes. Writer and metadata hashing continue using `sha2`. The optional direct
-dependency is enabled by `workspace-overlay`.
+dependency is enabled by `workspace`.
 
 Standalone diagnostic screening on the same 128 x 4 MiB workload measures
 188.32 MiB/s with scalar sha2, 210.35 MiB/s with sha2-asm, and 344.00 MiB/s

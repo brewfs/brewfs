@@ -127,10 +127,10 @@ class Runner:
         if remaining<90:raise RuntimeError('campaign safety deadline reached')
         return min(cap,remaining)
     def fixture(self,name,count,minimum,maximum,wire,codec='raw',profile='random-small-file',posix=False,huge=False):
-        if wire!=5:raise ValueError('only current packed-v3 encoding 005 is supported')
+        if wire!=5:raise ValueError('only current packed encoding 005 is supported')
         folder=self.artifacts/'fixtures'/name;folder.mkdir(parents=True,exist_ok=True)
         manifest=self.work/(name+'.key')
-        argv=[str(ROOT/'packed_v3_snapshot_fixture'),'--bucket',self.args.bucket,'--endpoint','https://oss-cn-hangzhou-internal.aliyuncs.com','--region','cn-hangzhou','--prefix',self.args.prefix+'/fixtures/'+name,'--wire-version',str(wire),'--manifest-output',str(manifest),'--dir-levels',str(0 if huge else 2),'--dirs-per-level','10','--files-per-dir',str(count if huge else count//100),'--small-file-min-size',str(minimum),'--small-file-max-size',str(maximum),'--access-profile',profile]
+        argv=[str(ROOT/'packed_snapshot_fixture'),'--bucket',self.args.bucket,'--endpoint','https://oss-cn-hangzhou-internal.aliyuncs.com','--region','cn-hangzhou','--prefix',self.args.prefix+'/fixtures/'+name,'--wire-version',str(wire),'--manifest-output',str(manifest),'--dir-levels',str(0 if huge else 2),'--dirs-per-level','10','--files-per-dir',str(count if huge else count//100),'--small-file-min-size',str(minimum),'--small-file-max-size',str(maximum),'--access-profile',profile]
         argv+=['--metadata-codec',codec,'--data-codec',codec]
         if posix:argv+=['--cold-corpus','true','--hardlink-corpus','true']
         before=time.monotonic();run(argv,folder/'publish.log',self.remaining(2400),self.env)
@@ -141,7 +141,7 @@ class Runner:
         folder=self.artifacts/'rows'/name;folder.mkdir(parents=True,exist_ok=True)
         env=self.env.copy();env.update(BREWFS_PACKED_METADATA_CACHE_BYTES=str(metadata_bytes),BREWFS_PACKED_METADATA_PREFETCH=warm)
         config=self.work/(name+'.yaml')
-        config.write_text('mount_point: '+str(self.work/'mnt')+'\nvolume_format: packed-metadata-v3\npacked_manifest_key: '+fixture['key']+'\ndata:\n  backend: s3\n  s3:\n    bucket: '+self.args.bucket+'\n    endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com\n    region: cn-hangzhou\n    force_path_style: false\n    disable_payload_checksum: true\nlayout: { chunk_size: 67108864, block_size: 4194304 }\nfuse: { workers: 16, max_background: 512, privileged: true }\ncache:\n  root: '+str(self.work/'cache')+'\n  read_memory_bytes: 0\n  read_ssd_bytes: 0\n  prefetch_enabled: false\n  range_background_prefetch: false\n  compression: none\n')
+        config.write_text('mount_point: '+str(self.work/'mnt')+'\nvolume_format: packed-snapshot\npacked_manifest_key: '+fixture['key']+'\ndata:\n  backend: s3\n  s3:\n    bucket: '+self.args.bucket+'\n    endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com\n    region: cn-hangzhou\n    force_path_style: false\n    disable_payload_checksum: true\nlayout: { chunk_size: 67108864, block_size: 4194304 }\nfuse: { workers: 16, max_background: 512, privileged: true }\ncache:\n  root: '+str(self.work/'cache')+'\n  read_memory_bytes: 0\n  read_ssd_bytes: 0\n  prefetch_enabled: false\n  range_background_prefetch: false\n  compression: none\n')
         record=dict(name=name,fixture=fixture,mode=mode,workers=workers,order=order,metadata_bytes=metadata_bytes,metadata_prefetch=warm,repeat=repeat,status='started')
         write_json(folder/'profile.json',record)
         try:

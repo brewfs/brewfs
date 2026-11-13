@@ -27,13 +27,13 @@ param(
     [ValidateScript({
         $tools = @($_ -split '\s+' | Where-Object { $_ })
         if ($tools.Count -eq 0 -or @($tools | Where-Object { $_ -notin @('packed-tree', 'packed-stat', 'packed-smallfiles', 'packed-gpu-smallfiles') }).Count -ne 0) {
-            throw 'Unsupported packed-v3 tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
+            throw 'Unsupported packed tool; tree/stat/smallfiles are supported, fio/POSIX fixture layout remains OPEN.'
         }
         $true
     })]
     [string]$PerfTools = 'packed-tree packed-smallfiles',
-    [ValidateSet('packed-metadata-v3')]
-    [string]$VolumeFormat = 'packed-metadata-v3',
+    [ValidateSet('packed-snapshot')]
+    [string]$VolumeFormat = 'packed-snapshot',
     [int]$FioRuntimeSeconds = 20,
     [UInt64]$PackedFrameWindowCacheBytes = 0,
     [bool]$PackedFrameWindowPrefetch = $false,

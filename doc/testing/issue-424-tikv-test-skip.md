@@ -154,56 +154,56 @@ explicit missing-configuration guard, either directly or in its shared fixture.
 | 16 | `src/native_base/write/tests_tikv.rs:19` | `$name` | BREWFS_TIKV_PD_ENDPOINTS 入口 guard（宏覆盖 19 个展开用例） |
 | 17 | `src/native_base/write/tests_tikv.rs:60` | `independent_stores_racing_same_head_commit_once` | BREWFS_TIKV_PD_ENDPOINTS 入口 guard |
 | 18 | `src/native_base/write/tikv.rs:252` | `real_tikv_native_deadline_and_owner_are_checked_with_the_write` | tikv_endpoints + 用例入口 guard |
-| 19 | `src/workspace_overlay/entity/backend_tests.rs:9` | `tikv_entity_backend_and_allocator_conformance` | tikv_endpoints + 用例入口 guard |
-| 20 | `src/workspace_overlay/entity/tikv_mount_tests.rs:95` | `tikv_entity_both_lowers_keep_cow_and_writeback_contract` | tikv_endpoints + 用例入口 guard |
-| 21 | `src/workspace_overlay/entity/tikv_tests.rs:263` | `tikv_entity_waiting_mutation_retains_its_ordered_lock_prefix` | tikv_endpoints + 用例入口 guard |
-| 22 | `src/workspace_overlay/entity/tikv_tests.rs:361` | `tikv_entity_allocation_retains_counter_until_object_reservation` | tikv_endpoints + 用例入口 guard |
-| 23 | `src/workspace_overlay/stores/binding_tests.rs:1871` | `public_real_tikv_binding_contract` | tikv_endpoints + 用例入口 guard |
-| 24 | `src/workspace_overlay/stores/binding_tests/real_open_tests.rs:217` | `public_real_tikv_v3_open_contract` | tikv_endpoints + 用例入口 guard |
-| 25 | `src/workspace_overlay/stores/binding_tests/real_publication_tests.rs:143` | `public_real_tikv_g12_same_head_publication_retries_exactly` | 共享 real_tikv_publication_contract guard |
-| 26 | `src/workspace_overlay/stores/binding_tests/real_publication_tests.rs:149` | `public_real_tikv_g12_inode_expansion_reserves_unissued_range_and_retries` | 共享 real_tikv_publication_contract guard |
-| 27 | `src/workspace_overlay/stores/binding_tests/real_publication_tests.rs:155` | `public_real_tikv_g12_inode_expansion_rejects_issued_ids` | 共享 real_tikv_publication_contract guard |
-| 28 | `src/workspace_overlay/stores/clock_cas_tests.rs:68` | `real_tikv_clock_cas_rejects_expired_deadline_without_writes` | tikv_endpoints + 用例入口 guard |
-| 29 | `src/workspace_overlay/stores/g13_real_backend_tests.rs:898` | `g13_real_tikv_destructive_revalidation_contract` | tikv_endpoints + 用例入口 guard |
-| 30 | `src/workspace_overlay/stores/kv_store.rs:8768` | `tikv_backend_passes_distributed_catalog_contract` | tikv_endpoints + 用例入口 guard |
-| 31 | `src/workspace_overlay/stores/kv_store/packed_admin/packed_initial_snapshot_tests.rs:676` | `real_tikv_initial_root_birth_has_complete_native_reverse_authority` | tikv_endpoints + 用例入口 guard |
-| 32 | `src/workspace_overlay/stores/kv_store/packed_admin/packed_initial_snapshot_tests.rs:708` | `real_tikv_initial_composer_snapshot_reopen_carrier_fork_and_actual_root_read` | tikv_endpoints + 用例入口 guard |
-| 33 | `src/workspace_overlay/stores/kv_store/packed_admin_tests.rs:182` | `real_tikv_packed_clean_source_released_without_original_drain_receipt` | 共享 tikv guard |
-| 34 | `src/workspace_overlay/stores/kv_store/packed_admin_tests.rs:194` | `real_tikv_packed_clean_source_expired_without_original_drain_receipt` | 共享 tikv guard |
-| 35 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:364` | `real_tikv_carrier_basis_final_cas_false_has_no_partial_write_or_second_final` | 共享 complete_driver/tests.rs::tikv guard |
-| 36 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:376` | `real_tikv_carrier_basis_counterfactual_native_revision_rejected_before_final` | 共享 complete_driver/tests.rs::tikv guard |
-| 37 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/fork_alias_tests.rs:1384` | `real_tikv_native_carrier_fork_alias_siblings_pins_journals_and_retirement` | 共享 complete_driver/tests.rs::tikv guard |
-| 38 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/history_retirement_tests.rs:389` | `real_tikv_authenticated_history_grace_reader_drain_membership_and_delete` | 共享 complete_driver/tests.rs::tikv guard |
-| 39 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/native_lease_reaper_tests.rs:448` | `real_tikv_authenticated_native_lease_grace_releases_only_lease_hold` | 共享 lease_tikv guard |
-| 40 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/native_lease_reaper_tests.rs:460` | `real_tikv_authenticated_native_lease_prepare_before_pnb_retains_hold` | 共享 lease_tikv guard |
-| 41 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/prepare_tests.rs:545` | `real_tikv_prepare_original_lease_fresh_store_first_pnb_factory` | 共享 tikv guard |
-| 42 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/prepare_tests.rs:555` | `real_tikv_prepare_expired_lease_unique_owner_first_pnb_factory` | 共享 tikv guard |
-| 43 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1451` | `real_tikv_process_death_prepare_then_independent_recovery` | 共享 tikv_case guard |
-| 44 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1461` | `real_tikv_process_death_quiesced_then_independent_recovery` | 共享 tikv_case guard |
-| 45 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1471` | `real_tikv_process_death_pnb_then_independent_recovery` | 共享 tikv_case guard |
-| 46 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1482` | `real_tikv_process_death_prepare_with_persistent_upper_payload` | 共享 tikv_case guard |
-| 47 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1182` | `real_tikv_recovery_expired_lease_new_store_typed_capture_hash_factory` | 共享 tikv_recovery guard |
-| 48 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1192` | `real_tikv_recovery_lost_claim_reply_exact_same_incarnation` | 共享 tikv_recovery guard |
-| 49 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1202` | `real_tikv_recovery_cancel_claim_waiter_keeps_held_actual_cas_owner` | 共享 tikv_recovery guard |
-| 50 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1212` | `real_tikv_recovery_lost_final_reply_confirms_new_lease_open_claim_successors` | 共享 tikv_recovery guard |
-| 51 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1222` | `real_tikv_recovery_cancel_final_waiter_keeps_fresh_source_and_graph` | 共享 tikv_recovery guard |
-| 52 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1232` | `real_tikv_recovery_held_final_rejects_actual_open_owner_expiry` | 共享 tikv_recovery guard |
-| 53 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1083` | `real_tikv_native_factory_atomic_carrier_head_pwb_ppj_registry` | 共享 tikv guard |
-| 54 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1093` | `real_tikv_native_factory_lost_reply_exact_confirmation_without_reissue` | 共享 tikv guard |
-| 55 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1103` | `real_tikv_native_factory_cancelled_waiter_keeps_owned_final_driver` | 共享 tikv guard |
-| 56 | `src/workspace_overlay/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1113` | `real_tikv_native_factory_unknown_before_cannot_resubmit_packet` | 共享 tikv guard |
-| 57 | `src/workspace_overlay/stores/kv_store/packed_journal/registry/initial_bootstrap_tests.rs:979` | `real_tikv_initial_packed_bootstrap_source_staging_unknown_reopen_and_quarantine` | tikv_endpoints + 用例入口 guard |
-| 58 | `src/workspace_overlay/stores/kv_store/packed_journal/registry/initial_history_real_tests.rs:611` | `real_tikv_authenticated_initial_history_final_delete_and_native_gc` | tikv_endpoints + 用例入口 guard |
-| 59 | `src/workspace_overlay/stores/kv_store/packed_journal_tests.rs:1301` | `real_tikv_packed_journal_reopen_staging_and_abort` | tikv_endpoints + 用例入口 guard |
-| 60 | `src/workspace_overlay/stores/kv_store/packed_reader_pins/packed_reader_pin_tests.rs:1316` | `real_tikv_packed_reader_pin_reopen_and_crashed_reader_expiry` | tikv_endpoints + 用例入口 guard |
-| 61 | `src/workspace_overlay/stores/manager_backend_tests.rs:190` | `real_tikv_manager_ownership_and_empty_root_contract` | tikv_endpoints + 用例入口 guard |
-| 62 | `src/workspace_overlay/stores/manager_backend_tests.rs:355` | `real_tikv_manager_bootstrap_rechecks_native_locator_atomically` | tikv_endpoints + 用例入口 guard |
-| 63 | `src/workspace_overlay/stores/tikv.rs:1713` | `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners` | tikv_endpoints + 用例入口 guard |
-| 64 | `src/workspace_overlay/stores/tikv.rs:1893` | `real_tikv_bounded_values_use_hard_cap_for_corrupt_oversized_point_and_scan` | tikv_endpoints + 用例入口 guard |
-| 65 | `src/workspace_overlay/stores/tikv.rs:2033` | `real_tikv_bounded_keyset_pages_complete_large_prefix` | tikv_endpoints + 用例入口 guard |
-| 66 | `src/workspace_overlay/stores/tikv.rs:2051` | `real_tikv_clock_window_fences_reap_and_advances_generation_atomically` | tikv_endpoints + 用例入口 guard |
-| 67 | `src/workspace_overlay/stores/tikv_commit_failure_tests.rs:561` | `real_tikv_commit_failure_does_not_replay_as_mismatch` | tikv_endpoints + 用例入口 guard |
-| 68 | `src/workspace_overlay/stores/tikv_manager_bootstrap_tests.rs:60` | `real_tikv_manager_bootstrap_observes_writer_committed_after_its_start` | tikv_endpoints + 用例入口 guard |
-| 69 | `src/workspace_overlay/stores/tikv_secondary_join_tests.rs:5` | `real_tikv_secondary_join_multikey_cas_allows_immediate_bounded_point_and_scan` | tikv_endpoints + 用例入口 guard |
+| 19 | `src/workspace/entity/backend_tests.rs:9` | `tikv_entity_backend_and_allocator_conformance` | tikv_endpoints + 用例入口 guard |
+| 20 | `src/workspace/entity/tikv_mount_tests.rs:95` | `tikv_entity_both_lowers_keep_cow_and_writeback_contract` | tikv_endpoints + 用例入口 guard |
+| 21 | `src/workspace/entity/tikv_tests.rs:263` | `tikv_entity_waiting_mutation_retains_its_ordered_lock_prefix` | tikv_endpoints + 用例入口 guard |
+| 22 | `src/workspace/entity/tikv_tests.rs:361` | `tikv_entity_allocation_retains_counter_until_object_reservation` | tikv_endpoints + 用例入口 guard |
+| 23 | `src/workspace/stores/binding_tests.rs:1871` | `public_real_tikv_binding_contract` | tikv_endpoints + 用例入口 guard |
+| 24 | `src/workspace/stores/binding_tests/real_open_tests.rs:217` | `public_real_tikv_snapshot_open_contract` | tikv_endpoints + 用例入口 guard |
+| 25 | `src/workspace/stores/binding_tests/real_publication_tests.rs:143` | `public_real_tikv_g12_same_head_publication_retries_exactly` | 共享 real_tikv_publication_contract guard |
+| 26 | `src/workspace/stores/binding_tests/real_publication_tests.rs:149` | `public_real_tikv_g12_inode_expansion_reserves_unissued_range_and_retries` | 共享 real_tikv_publication_contract guard |
+| 27 | `src/workspace/stores/binding_tests/real_publication_tests.rs:155` | `public_real_tikv_g12_inode_expansion_rejects_issued_ids` | 共享 real_tikv_publication_contract guard |
+| 28 | `src/workspace/stores/clock_cas_tests.rs:68` | `real_tikv_clock_cas_rejects_expired_deadline_without_writes` | tikv_endpoints + 用例入口 guard |
+| 29 | `src/workspace/stores/g13_real_backend_tests.rs:898` | `g13_real_tikv_destructive_revalidation_contract` | tikv_endpoints + 用例入口 guard |
+| 30 | `src/workspace/stores/kv_store.rs:8768` | `tikv_backend_passes_distributed_catalog_contract` | tikv_endpoints + 用例入口 guard |
+| 31 | `src/workspace/stores/kv_store/packed_admin/packed_initial_snapshot_tests.rs:676` | `real_tikv_initial_root_birth_has_complete_native_reverse_authority` | tikv_endpoints + 用例入口 guard |
+| 32 | `src/workspace/stores/kv_store/packed_admin/packed_initial_snapshot_tests.rs:708` | `real_tikv_initial_composer_snapshot_reopen_carrier_fork_and_actual_root_read` | tikv_endpoints + 用例入口 guard |
+| 33 | `src/workspace/stores/kv_store/packed_admin_tests.rs:182` | `real_tikv_packed_clean_source_released_without_original_drain_receipt` | 共享 tikv guard |
+| 34 | `src/workspace/stores/kv_store/packed_admin_tests.rs:194` | `real_tikv_packed_clean_source_expired_without_original_drain_receipt` | 共享 tikv guard |
+| 35 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:364` | `real_tikv_carrier_basis_final_cas_false_has_no_partial_write_or_second_final` | 共享 complete_driver/tests.rs::tikv guard |
+| 36 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/carrier_basis_tests.rs:376` | `real_tikv_carrier_basis_counterfactual_native_revision_rejected_before_final` | 共享 complete_driver/tests.rs::tikv guard |
+| 37 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/fork_alias_tests.rs:1384` | `real_tikv_native_carrier_fork_alias_siblings_pins_journals_and_retirement` | 共享 complete_driver/tests.rs::tikv guard |
+| 38 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/history_retirement_tests.rs:389` | `real_tikv_authenticated_history_grace_reader_drain_membership_and_delete` | 共享 complete_driver/tests.rs::tikv guard |
+| 39 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/native_lease_reaper_tests.rs:448` | `real_tikv_authenticated_native_lease_grace_releases_only_lease_hold` | 共享 lease_tikv guard |
+| 40 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/native_lease_reaper_tests.rs:460` | `real_tikv_authenticated_native_lease_prepare_before_pnb_retains_hold` | 共享 lease_tikv guard |
+| 41 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/prepare_tests.rs:545` | `real_tikv_prepare_original_lease_fresh_store_first_pnb_factory` | 共享 tikv guard |
+| 42 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/prepare_tests.rs:555` | `real_tikv_prepare_expired_lease_unique_owner_first_pnb_factory` | 共享 tikv guard |
+| 43 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1451` | `real_tikv_process_death_prepare_then_independent_recovery` | 共享 tikv_case guard |
+| 44 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1461` | `real_tikv_process_death_quiesced_then_independent_recovery` | 共享 tikv_case guard |
+| 45 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1471` | `real_tikv_process_death_pnb_then_independent_recovery` | 共享 tikv_case guard |
+| 46 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/process_restart_tests.rs:1482` | `real_tikv_process_death_prepare_with_persistent_upper_payload` | 共享 tikv_case guard |
+| 47 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1182` | `real_tikv_recovery_expired_lease_new_store_typed_capture_hash_factory` | 共享 tikv_recovery guard |
+| 48 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1192` | `real_tikv_recovery_lost_claim_reply_exact_same_incarnation` | 共享 tikv_recovery guard |
+| 49 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1202` | `real_tikv_recovery_cancel_claim_waiter_keeps_held_actual_cas_owner` | 共享 tikv_recovery guard |
+| 50 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1212` | `real_tikv_recovery_lost_final_reply_confirms_new_lease_open_claim_successors` | 共享 tikv_recovery guard |
+| 51 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1222` | `real_tikv_recovery_cancel_final_waiter_keeps_fresh_source_and_graph` | 共享 tikv_recovery guard |
+| 52 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/recovery_tests.rs:1232` | `real_tikv_recovery_held_final_rejects_actual_open_owner_expiry` | 共享 tikv_recovery guard |
+| 53 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1083` | `real_tikv_native_factory_atomic_carrier_head_pwb_ppj_registry` | 共享 tikv guard |
+| 54 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1093` | `real_tikv_native_factory_lost_reply_exact_confirmation_without_reissue` | 共享 tikv guard |
+| 55 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1103` | `real_tikv_native_factory_cancelled_waiter_keeps_owned_final_driver` | 共享 tikv guard |
+| 56 | `src/workspace/stores/kv_store/packed_journal/native_publication/complete_driver/tests.rs:1113` | `real_tikv_native_factory_unknown_before_cannot_resubmit_packet` | 共享 tikv guard |
+| 57 | `src/workspace/stores/kv_store/packed_journal/registry/initial_bootstrap_tests.rs:979` | `real_tikv_initial_packed_bootstrap_source_staging_unknown_reopen_and_quarantine` | tikv_endpoints + 用例入口 guard |
+| 58 | `src/workspace/stores/kv_store/packed_journal/registry/initial_history_real_tests.rs:611` | `real_tikv_authenticated_initial_history_final_delete_and_native_gc` | tikv_endpoints + 用例入口 guard |
+| 59 | `src/workspace/stores/kv_store/packed_journal_tests.rs:1301` | `real_tikv_packed_journal_reopen_staging_and_abort` | tikv_endpoints + 用例入口 guard |
+| 60 | `src/workspace/stores/kv_store/packed_reader_pins/packed_reader_pin_tests.rs:1316` | `real_tikv_packed_reader_pin_reopen_and_crashed_reader_expiry` | tikv_endpoints + 用例入口 guard |
+| 61 | `src/workspace/stores/manager_backend_tests.rs:190` | `real_tikv_manager_ownership_and_empty_root_contract` | tikv_endpoints + 用例入口 guard |
+| 62 | `src/workspace/stores/manager_backend_tests.rs:355` | `real_tikv_manager_bootstrap_rechecks_native_locator_atomically` | tikv_endpoints + 用例入口 guard |
+| 63 | `src/workspace/stores/tikv.rs:1713` | `real_tikv_bounded_xattr_reads_preserve_64k_value_and_shutdown_owners` | tikv_endpoints + 用例入口 guard |
+| 64 | `src/workspace/stores/tikv.rs:1893` | `real_tikv_bounded_values_use_hard_cap_for_corrupt_oversized_point_and_scan` | tikv_endpoints + 用例入口 guard |
+| 65 | `src/workspace/stores/tikv.rs:2033` | `real_tikv_bounded_keyset_pages_complete_large_prefix` | tikv_endpoints + 用例入口 guard |
+| 66 | `src/workspace/stores/tikv.rs:2051` | `real_tikv_clock_window_fences_reap_and_advances_generation_atomically` | tikv_endpoints + 用例入口 guard |
+| 67 | `src/workspace/stores/tikv_commit_failure_tests.rs:561` | `real_tikv_commit_failure_does_not_replay_as_mismatch` | tikv_endpoints + 用例入口 guard |
+| 68 | `src/workspace/stores/tikv_manager_bootstrap_tests.rs:60` | `real_tikv_manager_bootstrap_observes_writer_committed_after_its_start` | tikv_endpoints + 用例入口 guard |
+| 69 | `src/workspace/stores/tikv_secondary_join_tests.rs:5` | `real_tikv_secondary_join_multikey_cas_allows_immediate_bounded_point_and_scan` | tikv_endpoints + 用例入口 guard |
 | 70 | `tests/compaction_orphan_claim_test.rs:210` | `tikv_compaction_gc_claim_fences_publication` | 保留原环境变量名，入口 guard |
 | 71 | `tests/getlk_owner_regression.rs:204` | `tikv_getlk_ignores_own_lock` | 保留原环境变量名，入口 guard |

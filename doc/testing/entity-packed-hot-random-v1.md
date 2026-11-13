@@ -26,9 +26,9 @@ upper 数据的文件再次覆盖写有多快；同样每次写都 fsync 时，�
 - [entity FUSE](../../src/fuse/entity.rs) 的 `open` / `create` 返回 `FOPEN_DIRECT_IO`。
   [配置解析](../../src/config.rs) 拒绝 entity 挂载的 `fuse.keep_cache=true`。
   仅从应用打开标志中去掉 `O_DIRECT`，不会使这条路径获得内核数据页缓存。
-- [packed lower memo](../../src/workspace_overlay/entity/packed_lower_cache.rs)
+- [packed lower memo](../../src/workspace/entity/packed_lower_cache.rs)
   保存不可变元数据，不保存文件内容。
-  [packed pipeline](../../src/workspace_overlay/packed_v3/wire005/pipeline.rs)
+  [packed pipeline](../../src/workspace/packed/snapshot/pipeline.rs)
   合并在途请求，不保留已完成的数据作为 payload cache。
 - 普通 VFS 的块缓存配置不能直接当作 entity packed 路径的缓存支持。
   旧 JuiceFS 挂载辅助函数在同步模式还会固定 `cache-size=0`；下一轮需验证实际生效值，

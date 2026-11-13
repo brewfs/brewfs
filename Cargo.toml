@@ -16,13 +16,13 @@ name = "brewfs"
 path = "src/main.rs"
 
 [[bin]]
-name = "packed_v3_snapshot_fixture"
-path = "src/bin/packed_v3_snapshot_fixture.rs"
-required-features = ["workspace-overlay"]
+name = "packed_snapshot_fixture"
+path = "src/bin/packed_snapshot_fixture.rs"
+required-features = ["workspace"]
 
 [[example]]
 name = "entity_metadata_probe"
-required-features = ["workspace-overlay"]
+required-features = ["workspace"]
 
 [workspace]
 members = [
@@ -353,8 +353,8 @@ gateway-s3 = ["dep:s3s", "dep:tower"]
 gateway-webdav = ["dep:dav-server", "dep:axum-server", "dep:rustls"]
 hdfs-sdk = []
 rustfs-ec-block-size-hint = []
-workspace-overlay = ["dep:bincode", "dep:blake3", "dep:tempfile", "dep:ring", "dep:lru"]
-native-packed-base = ["workspace-overlay"]
+workspace = ["dep:bincode", "dep:blake3", "dep:tempfile", "dep:ring", "dep:lru"]
+native-packed-base = ["workspace"]
 frozen-base-metadata = ["native-packed-base"]
 profiling = ["dep:tracing-flame", "dep:tracing-chrome", "dep:console-subscriber"]
 jemalloc = ["dep:tikv-jemallocator"]
