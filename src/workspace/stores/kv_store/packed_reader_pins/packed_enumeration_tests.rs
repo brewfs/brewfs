@@ -5,6 +5,88 @@ use crate::workspace::packed::snapshot::SnapshotBudgetPool;
 use futures::{FutureExt, StreamExt};
 
 #[tokio::test]
+async fn packed_rewind_reuses_only_remotely_verified_unchanged_views() {
+    let lease = Arc::new(crate::workspace::lifecycle::LeaseValidity::new(
+        std::time::Instant::now(),
+        std::time::Duration::from_secs(600),
+    ));
+    let f = fixture_with_lease(false, packed().await, Some(lease.clone())).await;
+    let original = f.meta.opendir(1).await.unwrap();
+    let before = f.backend.timed_reads.load(Ordering::SeqCst);
+    assert!(
+        original
+            .page_source
+            .as_ref()
+            .unwrap()
+            .revalidate_for_rewind()
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        f.backend.timed_reads.load(Ordering::SeqCst),
+        before + 1,
+        "reuse still authenticates the live remote lease"
+    );
+    // The same fh must expose a name created after opendir and before rewind.
+    for i in 0..300 {
+        f.meta.create_file(1, format!("new-{i:03}")).await.unwrap();
+    }
+    f.meta.unlink(1, "nonzero").await.unwrap();
+    assert!(
+        !original
+            .page_source
+            .as_ref()
+            .unwrap()
+            .revalidate_for_rewind()
+            .await
+            .unwrap()
+    );
+    let changed = f.meta.opendir(1).await.unwrap();
+    let first = changed.get_entries_page_raw_owned(0, 256).await.unwrap();
+    let second = changed.get_entries_page_raw_owned(256, 256).await.unwrap();
+    assert_eq!(first.entries.len(), 256);
+    assert_eq!(second.entries.len(), 44);
+    assert_eq!(first.entries[0].name, b"new-000");
+    assert_eq!(second.entries[43].name, b"new-299");
+    drop(first);
+    drop(second);
+    f.meta.chmod(1, 0o700).await.unwrap();
+    assert!(
+        !changed
+            .page_source
+            .as_ref()
+            .unwrap()
+            .revalidate_for_rewind()
+            .await
+            .unwrap(),
+        "dot attributes cannot outlive an attribute commit"
+    );
+    let current = f.meta.opendir(1).await.unwrap();
+    // Simulate early remote revocation before the heartbeat learns it.
+    f.store
+        .release_lease(crate::workspace::catalog::ReleaseLease {
+            lease_id: f.guard.lease_id,
+            holder_generation: f.guard.holder_generation,
+        })
+        .await
+        .unwrap();
+    assert!(lease.authoritative());
+    assert!(
+        current
+            .page_source
+            .as_ref()
+            .unwrap()
+            .revalidate_for_rewind()
+            .await
+            .is_err()
+    );
+    drop(original);
+    drop(changed);
+    drop(current);
+    f.reader.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn packed_directory_lease_fence_ignores_attribute_commits_but_not_namespace_changes() {
     use crate::workspace::lifecycle::LeaseValidity;
     let lease = Arc::new(LeaseValidity::new(

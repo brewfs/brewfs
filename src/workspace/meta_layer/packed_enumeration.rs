@@ -229,6 +229,34 @@ impl<W: WorkspaceStore + 'static> DirectoryMerge<'_, W> {
 
 #[async_trait]
 impl<W: WorkspaceStore + 'static> DirectoryPageSource for WorkspaceDirectory<W> {
+    async fn revalidate_for_rewind(&self) -> Result<bool, MetaError> {
+        let Some((namespace, lease)) = &self.view.local_namespace else {
+            return Ok(false);
+        };
+        if !namespace.unchanged() || !lease.authoritative() {
+            return Ok(false);
+        }
+        let _reader = self
+            .view
+            .lower
+            .authority
+            .retain_reader_request()
+            .map_err(workspace_to_meta)?;
+        // Keep the remote check: a lease can be revoked before its local
+        // deadline. Reusing a view must not hide that revocation at rewind.
+        let layers = crate::observe_hot_path!(
+            DirectoryFence,
+            self.view
+                .store
+                .read_fenced_layers(self.view.guard.clone(), self.view.layers[1].clone())
+                .await
+        )
+        .map_err(workspace_to_meta)?;
+        // Include attribute/data commits: DirHandle also carries dot attrs.
+        // A changed view is rebuilt and merged before publishing anything.
+        Ok(layers == self.view.layers && namespace.unchanged() && lease.authoritative())
+    }
+
     async fn read_page_owned(
         &self,
         ino: i64,

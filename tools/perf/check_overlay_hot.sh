@@ -14,7 +14,9 @@ for filter in fenced_layer_capture packed_heartbeat_keeps_file_cache \
   packed_readonly_payload_retention_is_opt_in \
   workspace::stores::kv_store:: \
   workspace::meta_layer::tests::packed_open_preparation_tests:: \
-  workspace::meta_layer::row_cache::tests:: \
+  workspace::meta_layer::row_cache:: \
+  workspace::lifecycle::lease_validity:: \
+  workspace::meta_layer::namespace_epoch:: \
   vfs::io::writer::tests::packed_snapshot_tests:: \
   workspace::stores::local_metadata::tests:: ready_driver; do
   label=${filter//:/_}

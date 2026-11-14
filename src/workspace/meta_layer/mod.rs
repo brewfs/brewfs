@@ -126,6 +126,9 @@ pub struct WorkspaceMetaLayer<W> {
     /// When set, both caches serve rows only while the mount provably holds
     /// its exclusive lease; once that lapses they are cleared and bypassed.
     lease_validity: Option<Arc<super::lifecycle::LeaseValidity>>,
+    lease_row_retention: bool,
+    /// Preserve retired-cache uncertainty even across zero-capacity settings.
+    retired_cache_disabled: bool,
     locks: Mutex<WorkspaceLocks>,
     mutation_gate: Mutex<()>,
     /// Data writes waiting for the next group commit (see `write`).
@@ -302,6 +305,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             namespace_epoch: Arc::new(namespace_epoch::NamespaceEpoch::default()),
             directory_hints: moka::sync::Cache::new(4096),
             lease_validity: None,
+            lease_row_retention: true,
+            retired_cache_disabled: false,
             locks: Mutex::new(WorkspaceLocks::default()),
             mutation_gate: Mutex::new(()),
             write_queue: std::sync::Mutex::new(WriteQueue::default()),
@@ -318,7 +323,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         layer
     }
 
-    /// Serve read-only upper-row lookups from a short-lived cache. Only valid
+    /// Serve read-only upper-row lookups from a bounded cache. Only valid
     /// while this mount holds the exclusive workspace lease and is the sole
     /// writer; every local commit invalidates it. Native overlays additionally
     /// require an explicit local lease proof before serving cached rows.
@@ -329,6 +334,14 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     /// A shared byte limit for upper and namespace rows, including pinned
     /// values retained by in-flight readers. Zero disables both caches.
     pub fn with_upper_row_cache_bytes(mut self, ttl: std::time::Duration, bytes: u64) -> Self {
+        // Prepared reads can outlive a consuming builder. Fence their old
+        // cache before replacing it; a policy change cannot erase uncertainty.
+        let upper_disabled = self.upper_rows.as_ref().is_some_and(|cache| cache.retire());
+        let namespace_disabled = self
+            .namespace_rows
+            .as_ref()
+            .is_some_and(|cache| cache.retire());
+        self.retired_cache_disabled |= upper_disabled || namespace_disabled;
         self.upper_rows = None;
         self.namespace_rows = None;
         self.row_cache_counters.capacity_bytes.store(
@@ -337,16 +350,30 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         );
         if !ttl.is_zero() && bytes != 0 {
             let budget = row_cache::RowBudget::new(bytes, &self.row_cache_counters);
-            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::with_budget(
+            let lease = self
+                .lease_row_retention
+                .then(|| self.lease_validity.clone())
+                .flatten();
+            self.upper_rows = Some(Arc::new(row_cache::UpperRowCache::with_lease_budget(
                 ttl,
                 self.row_cache_counters.clone(),
                 budget.clone(),
+                lease.clone(),
             )));
-            self.namespace_rows = Some(row_cache::UpperRowCache::with_budget(
+            self.namespace_rows = Some(row_cache::UpperRowCache::with_lease_budget(
                 ttl,
                 self.row_cache_counters.clone(),
                 budget,
+                lease,
             ));
+            self.upper_rows
+                .as_ref()
+                .unwrap()
+                .inherit_disabled(self.retired_cache_disabled);
+            self.namespace_rows
+                .as_ref()
+                .unwrap()
+                .inherit_disabled(self.retired_cache_disabled);
         }
         self
     }
@@ -431,13 +458,30 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
     }
 
     /// Tie the row caches to this mount's lease: they serve rows only while
-    /// `validity` proves the exclusive lease is held. With this set, the TTL
-    /// is only a memory/working-set bound, not the staleness bound.
+    /// `validity` proves the exclusive lease is held. By default a live lease
+    /// replaces insertion-age expiration; key/view invalidations, uncertain
+    /// commit disabling and the byte limit still apply. TTL policy is optional.
     pub fn with_lease_bound_row_cache(
         mut self,
         validity: Arc<super::lifecycle::LeaseValidity>,
     ) -> Self {
         self.lease_validity = Some(validity);
+        self.namespace_epoch.invalidate();
+        self.rebuild_row_cache_policy()
+    }
+
+    /// False keeps the previous insertion-age TTL as an additional eviction
+    /// rule. Both policies require the same lease proof and invalidations.
+    pub fn with_lease_row_retention(mut self, enabled: bool) -> Self {
+        self.lease_row_retention = enabled;
+        self.rebuild_row_cache_policy()
+    }
+
+    fn rebuild_row_cache_policy(self) -> Self {
+        if let Some(cache) = &self.upper_rows {
+            let (ttl, bytes) = cache.configuration();
+            return self.with_upper_row_cache_bytes(ttl, bytes);
+        }
         self
     }
 

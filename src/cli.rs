@@ -2040,8 +2040,8 @@ where
         // This mount holds the exclusive workspace lease, so it is the only
         // upper writer. The caches are bound to that lease: they serve rows
         // only while a renewal proves it is held and are cleared once it
-        // lapses or fails, so the TTL here is a working-set bound, not the
-        // staleness bound.
+        // lapses or fails. Lease retention is the default; the optional TTL
+        // policy adds insertion-age eviction for controlled comparisons.
         let row_cache_ttl = std::env::var("BREWFS_WORKSPACE_ROW_CACHE_TTL_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -2058,6 +2058,13 @@ where
                 Err(error) => return Err(error.into()),
             })
             .with_lease_bound_row_cache(lease_validity);
+        let lease_row_retention = match std::env::var("BREWFS_WORKSPACE_ROW_CACHE_POLICY") {
+            Ok(value) if value == "ttl" => false,
+            Ok(value) if value == "lease" => true,
+            Err(std::env::VarError::NotPresent) => true,
+            _ => anyhow::bail!("BREWFS_WORKSPACE_ROW_CACHE_POLICY must be lease or ttl"),
+        };
+        meta_layer = meta_layer.with_lease_row_retention(lease_row_retention);
         let empty_query_cache = match std::env::var("BREWFS_WORKSPACE_EMPTY_QUERY_CACHE") {
             Ok(value) if value == "0" => false,
             Ok(value) if value == "1" => true,

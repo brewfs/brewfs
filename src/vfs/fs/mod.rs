@@ -7113,14 +7113,22 @@ where
     /// Used for rewinddir(3): files created after opendir(3) must become
     /// visible after rewinddir(3) + readdir(3).
     pub async fn refresh_dir_handle(&self, fh: u64) -> Result<(), VfsError> {
+        let handle = self
+            .dir_handle(fh)
+            .ok_or(VfsError::StaleNetworkFileHandle)?;
+        if let Some(source) = &handle.page_source
+            && source
+                .revalidate_for_rewind()
+                .await
+                .map_err(|error| VfsError::from_meta(PathHint::none(), error))?
+        {
+            return Ok(());
+        }
         let memory_guard = self
             .meta_layer()
             .reserve_memory(crate::meta::layer::MetadataMemoryKind::Handle, 8192)
             .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
-        let ino = self
-            .dir_handle(fh)
-            .ok_or(VfsError::StaleNetworkFileHandle)?
-            .ino;
+        let ino = handle.ino;
         let fresh = self
             .meta_opendir(ino)
             .await?

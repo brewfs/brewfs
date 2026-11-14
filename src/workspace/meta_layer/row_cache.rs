@@ -1,12 +1,13 @@
-//! Short-lived cache of writable-layer (upper) rows for read-only paths.
+//! Bounded cache of writable-layer (upper) rows for read-only paths.
 //!
 //! Opt-in per mount (`WorkspaceMetaLayer::with_upper_row_cache`). The
 //! workspace lease is exclusive, so while it is held the mounted layer is
 //! the only writer of upper rows; every local commit invalidates the keys of
 //! the rows it writes, every view change invalidates the whole cache, and a
 //! generation counter keeps a read that raced any invalidation from leaving
-//! pre-commit rows behind. Under a proven lease TTL bounds reuse, while a byte
-//! budget bounds retention. Canceled or uncertain commits permanently disable cached
+//! pre-commit rows behind. With a bound lease, retention is event-driven;
+//! otherwise insertion-age TTL also bounds reuse. A byte budget bounds retained
+//! values in both policies. Canceled or uncertain commits permanently disable cached
 //! authority. Conditional mutations still authenticate their committed view.
 
 use std::ops::{Deref, DerefMut};
@@ -375,6 +376,7 @@ impl LeaseLocalFence {
 pub(super) struct UpperRowCache {
     rows: Arc<RwLock<Rows>>,
     ttl: Duration,
+    lease: Option<Arc<crate::workspace::lifecycle::LeaseValidity>>,
     budget: Arc<RowBudget>,
     generation: AtomicU64,
     /// A canceled/uncertain backend write can still complete after the caller
@@ -486,6 +488,24 @@ impl Drop for CacheCommitGuard<'_> {
 pub(super) struct RowTicket(u64);
 
 impl UpperRowCache {
+    /// Fence owners of this cache before a consuming builder replaces it.
+    /// Preserve pre-existing uncertainty in the replacement as well.
+    pub(super) fn retire(&self) -> bool {
+        let disabled = self.disabled.swap(true, Ordering::AcqRel);
+        self.invalidate_all();
+        disabled
+    }
+
+    pub(super) fn inherit_disabled(&self, disabled: bool) {
+        if disabled {
+            self.disable();
+        }
+    }
+
+    pub(super) fn configuration(&self) -> (Duration, u64) {
+        (self.ttl, self.budget.limit)
+    }
+
     pub(super) fn new(ttl: Duration) -> Self {
         Self::new_with_counters(ttl, Arc::new(RowCacheCounters::default()))
     }
@@ -500,11 +520,21 @@ impl UpperRowCache {
         counters: Arc<RowCacheCounters>,
         budget: Arc<RowBudget>,
     ) -> Self {
+        Self::with_lease_budget(ttl, counters, budget, None)
+    }
+
+    pub(super) fn with_lease_budget(
+        ttl: Duration,
+        counters: Arc<RowCacheCounters>,
+        budget: Arc<RowBudget>,
+        lease: Option<Arc<crate::workspace::lifecycle::LeaseValidity>>,
+    ) -> Self {
         let rows = Arc::new(RwLock::new(Rows::new()));
         budget.register(&rows);
         Self {
             rows,
             ttl,
+            lease,
             budget,
             generation: AtomicU64::new(0),
             disabled: AtomicBool::new(false),
@@ -529,7 +559,7 @@ impl UpperRowCache {
     }
 
     pub(super) fn get(&self, key: &RowKey) -> Option<RowValue> {
-        if self.disabled.load(Ordering::Acquire) {
+        if !self.authoritative() {
             self.counters.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -552,7 +582,7 @@ impl UpperRowCache {
         if expired {
             self.remove_expired(key);
         }
-        if self.disabled.load(Ordering::Acquire) {
+        if !self.authoritative() {
             self.counters.misses.fetch_add(1, Ordering::Relaxed);
             None
         } else {
@@ -566,9 +596,22 @@ impl UpperRowCache {
     }
 
     fn entry_expired(&self, entry: &Entry) -> bool {
-        entry.inserted.elapsed() >= self.ttl
+        (self.lease.is_none() && entry.inserted.elapsed() >= self.ttl)
             || matches!(&entry.value, RowValue::EmptyUpper(ticket)
                 if ticket.0 != self.generation.load(Ordering::SeqCst))
+    }
+
+    fn authoritative(&self) -> bool {
+        if self
+            .lease
+            .as_ref()
+            .is_some_and(|lease| !lease.authoritative())
+        {
+            // An observed deadline lapse must not be repaired by a later
+            // heartbeat: rows from the unproven interval stay bypassed.
+            self.disable();
+        }
+        !self.disabled.load(Ordering::Acquire)
     }
 
     fn remove_expired(&self, key: &RowKey) {
@@ -585,9 +628,7 @@ impl UpperRowCache {
     }
 
     pub(super) fn insert(&self, ticket: RowTicket, key: RowKey, value: RowValue) {
-        if self.disabled.load(Ordering::Acquire)
-            || self.generation.load(Ordering::SeqCst) != ticket.0
-        {
+        if !self.authoritative() || self.generation.load(Ordering::SeqCst) != ticket.0 {
             return;
         }
         let key_bytes = match &key {

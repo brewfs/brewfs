@@ -1297,11 +1297,8 @@ where
         // Rewinddir: offset ≤ 0 means restart from the beginning.
         // Replace the cached handle with a fresh snapshot from the meta
         // layer so that entries created after opendir(3) are visible.
-        if fh != 0
-            && offset == 0
-            && let Err(err) = self.refresh_dir_handle(fh).await
-        {
-            warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
+        if fh != 0 && offset == 0 {
+            self.refresh_dir_handle(fh).await.map_err(Errno::from)?;
         }
 
         // Try to use handle first. FUSE directory offsets identify the next
@@ -1437,7 +1434,7 @@ where
 
         // Rewinddir: same logic as readdir().
         if fh != 0 && offset == 0 {
-            let _ = self.refresh_dir_handle(fh).await;
+            self.refresh_dir_handle(fh).await.map_err(Errno::from)?;
         }
 
         // Try to use handle first with the same offset mapping as readdir().
