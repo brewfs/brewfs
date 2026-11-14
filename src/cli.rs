@@ -271,7 +271,11 @@ fn init_tracing() {
     let console_layer = std::env::var_os("TOKIO_CONSOLE").map(|_| console_subscriber::spawn());
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().pretty())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .pretty()
+                .with_writer(std::io::stderr),
+        )
         .with(env_filter)
         .with(flame_layer)
         .with(chrome_layer)
@@ -342,6 +346,7 @@ fn init_tracing() {
                 tracing_subscriber::fmt::layer()
                     .pretty()
                     .with_span_events(FmtSpan::CLOSE)
+                    .with_writer(std::io::stderr)
                     .with_filter(main_filter),
             ));
         }
@@ -384,7 +389,8 @@ fn init_tracing() {
                 .with(
                     tracing_subscriber::fmt::layer()
                         .pretty()
-                        .with_span_events(FmtSpan::CLOSE),
+                        .with_span_events(FmtSpan::CLOSE)
+                        .with_writer(std::io::stderr),
                 )
                 .with(env_filter)
                 .init();
@@ -1960,7 +1966,10 @@ where
         let cancel = gc_cancel.clone();
         let gc = WorkspaceGc::new(
             workspace_store.clone(),
-            block_store.clone(),
+            Arc::new(workspace::gc::CatalogGcBlocks::new(
+                workspace_store.clone(),
+                block_store.clone(),
+            )),
             layout,
             DEFAULT_LEASE_TTL.saturating_mul(2),
             DEFAULT_LEASE_TTL.saturating_mul(2),
@@ -2832,6 +2841,35 @@ where
                 .diff(&base, record.head_layer_id)
                 .await?;
             print_json(&changes)?;
+        }
+        WorkspaceCommand::Merge {
+            child,
+            target,
+            operation,
+        } => {
+            let request = crate::workspace::publish::merge::MergeRequest {
+                operation,
+                child,
+                target,
+            };
+            let outcome: anyhow::Result<_> = async {
+                validate_workspace_header(&store).await?;
+                Ok(store.merge_native(request.clone()).await?)
+            }
+            .await;
+            let result = match outcome {
+                Ok(result) => result,
+                Err(error) => {
+                    print_json(&serde_json::json!({
+                        "request": request, "committed": false, "error": error.to_string(),
+                    }))?;
+                    anyhow::bail!("workspace merge failed");
+                }
+            };
+            print_json(&result)?;
+            if !result.committed {
+                anyhow::bail!("workspace merge has conflicts");
+            }
         }
         WorkspaceCommand::Discard { workspace, force } => {
             validate_workspace_header(&store).await?;

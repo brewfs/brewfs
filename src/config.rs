@@ -576,6 +576,14 @@ pub enum WorkspaceCommand {
         #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
         chunk_size: u64,
     },
+    /// Merge an unmounted Native Overlay child into an unmounted target.
+    Merge {
+        child: crate::workspace::ids::WorkspaceId,
+        target: crate::workspace::ids::WorkspaceId,
+        /// Persist this ID and reuse it after an interrupted invocation.
+        #[arg(long)]
+        operation: uuid::Uuid,
+    },
     /// Mark a workspace for lease-aware garbage collection.
     Discard {
         workspace: crate::workspace::ids::WorkspaceId,

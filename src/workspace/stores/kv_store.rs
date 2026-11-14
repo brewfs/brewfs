@@ -33,6 +33,8 @@ mod extent_ownership;
 mod extent_reads;
 use extent_ownership::{EXTENT_OWNER_PREFIX, decode_extent_reference, extent_owner_layer_prefix};
 mod native_finalization;
+mod native_gc_bounds;
+mod native_merge;
 mod native_read_conflict;
 mod native_reverse;
 mod native_slice_deletion;
@@ -2385,6 +2387,19 @@ impl<B> WorkspaceStore for KvWorkspaceStore<B>
 where
     B: WorkspaceKvBackend,
 {
+    async fn retain_gc_slice_bound(&self, slice: u64, end: u64) -> Result<(), WorkspaceError> {
+        self.retain_native_gc_bound(slice, end).await
+    }
+
+    async fn read_gc_slice_bound(&self, slice: u64, observed: u64) -> Result<u64, WorkspaceError> {
+        self.read_native_gc_bound(slice, observed).await
+    }
+    async fn merge_native(
+        &self,
+        request: crate::workspace::publish::merge::MergeRequest,
+    ) -> Result<crate::workspace::publish::merge::MergeResult, WorkspaceError> {
+        self.merge_native_offline(request).await
+    }
     fn supports_packed_workspace_mount(&self) -> bool {
         self.backend.supports_consistent_reads() && self.packed_reader_pin_budget.get().is_some()
     }
@@ -6053,6 +6068,7 @@ pub(crate) use tests::packed_adapter_test_store;
 
 #[cfg(test)]
 mod tests {
+    include!("kv_store/native_merge_tests.rs");
     #[tokio::test]
     async fn bucket_allocators_reserve_independent_ranges_and_survive_reopen() {
         let backend = MemoryBackend::default();

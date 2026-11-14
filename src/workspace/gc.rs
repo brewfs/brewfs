@@ -10,6 +10,9 @@ use super::catalog::{DeleteLayerMetadata, WorkspaceStore};
 use super::error::WorkspaceError;
 use super::ids::LayerId;
 
+mod catalog_blocks;
+pub use catalog_blocks::CatalogGcBlocks;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GcReport {
     pub reachable_layers: usize,

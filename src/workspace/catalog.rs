@@ -479,6 +479,29 @@ pub struct MutationResult {
 
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
+    async fn retain_gc_slice_bound(&self, _slice: u64, _end: u64) -> Result<(), WorkspaceError> {
+        Err(WorkspaceError::UnsupportedCapability(
+            "catalog GC slice bounds",
+        ))
+    }
+
+    async fn read_gc_slice_bound(
+        &self,
+        _slice: u64,
+        _observed: u64,
+    ) -> Result<u64, WorkspaceError> {
+        Err(WorkspaceError::UnsupportedCapability(
+            "catalog GC slice bounds",
+        ))
+    }
+    async fn merge_native(
+        &self,
+        _request: super::publish::merge::MergeRequest,
+    ) -> Result<super::publish::merge::MergeResult, WorkspaceError> {
+        Err(WorkspaceError::UnsupportedCapability(
+            "native workspace merge",
+        ))
+    }
     async fn flush_metadata(&self) -> Result<(), WorkspaceError> {
         Ok(())
     }

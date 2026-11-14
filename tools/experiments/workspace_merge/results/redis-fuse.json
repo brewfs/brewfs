@@ -1,0 +1,66 @@
+[
+  {
+    "case": "unchanged",
+    "result": {
+      "request": {
+        "operation": "8c027f34-34a4-4344-bf81-9a493c05badd",
+        "child": "01a1db6b-bf94-76f3-a06a-2f59eb33e303",
+        "target": "01a1db6b-1324-7ea0-9010-27b277a71c10"
+      },
+      "committed": true,
+      "target_head": "01a1db6b-1324-7ea0-9010-27ef5bda6f2c",
+      "target_sequence": 22,
+      "scanned_records": 21,
+      "applied_records": 21,
+      "conflicts": []
+    }
+  },
+  {
+    "case": "disjoint",
+    "result": {
+      "request": {
+        "operation": "62057287-6c9d-4857-a937-6aca135a89af",
+        "child": "01a1db6c-aee7-73f2-90d0-9654b4cfea00",
+        "target": "01a1db6b-132d-72e0-a4e0-d3a4a83edaae"
+      },
+      "committed": true,
+      "target_head": "01a1db6b-132d-72e0-a4e0-d3de8cdcc426",
+      "target_sequence": 27,
+      "scanned_records": 25,
+      "applied_records": 21,
+      "conflicts": []
+    }
+  },
+  {
+    "case": "conflict",
+    "result": {
+      "request": {
+        "operation": "1c864427-8f62-463d-9637-bbc3ef161e3e",
+        "child": "01a1db6d-9f88-7223-9ec8-2e312808571d",
+        "target": "01a1db6b-1330-7ed1-8622-63ecd0cab3d6"
+      },
+      "committed": false,
+      "target_head": "01a1db6b-1330-7ed1-8622-641c1b5f5210",
+      "target_sequence": 5,
+      "scanned_records": 23,
+      "applied_records": 0,
+      "conflicts": [
+        {
+          "ino": 10,
+          "name": null,
+          "reason": "file data overlaps another inode change"
+        },
+        {
+          "ino": 10,
+          "name": null,
+          "reason": "file data overlaps another inode change"
+        },
+        {
+          "ino": 10,
+          "name": null,
+          "reason": "both workspaces changed this inode"
+        }
+      ]
+    }
+  }
+]
