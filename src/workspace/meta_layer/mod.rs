@@ -1067,7 +1067,10 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             return Ok(snapshot);
         }
         let ticket = cache.map(row_cache::UpperRowCache::ticket);
-        let snapshot = row_cache::Retained::new(self.permission_snapshot(vec![ino], None).await?);
+        let snapshot = row_cache::Retained::new(crate::observe_hot_path!(
+            PermissionMiss,
+            self.permission_snapshot(vec![ino], None).await
+        )?);
         if let (Some(cache), Some(ticket)) = (cache, ticket) {
             cache.insert(
                 ticket,
@@ -2440,7 +2443,8 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
         _write: bool,
         _append: bool,
     ) -> Result<(), MetaError> {
-        let _mutation_guard = self.mutation_gate.lock().await;
+        let _mutation_guard =
+            crate::observe_hot_path!(PermissionGate, self.mutation_gate.lock().await);
         let actor = crate::meta::layer::namespace_actor();
         let created = actor.is_some() && crate::meta::layer::take_created_inode_open_authority(ino);
         // A frozen-base read-only open changes no state, so it does not pay
@@ -2466,7 +2470,10 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                         row_cache::Retained::new(self.permission_snapshot(vec![ino], None).await?)
                     }
                     // Decision only (no commit): the lease-bound cache.
-                    None => self.cached_permission_snapshot(ino).await?,
+                    None => crate::observe_hot_path!(
+                        PermissionSnapshot,
+                        self.cached_permission_snapshot(ino).await
+                    )?,
                 };
                 Ok::<_, MetaError>((version, snapshot))
             }
@@ -2484,8 +2491,10 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                 tokio::task::yield_now().await;
                 continue;
             }
-            let layers = snapshot.layers.clone();
-            let (inode, access, _, control) = Self::decode_permission_inode(&snapshot, ino)?;
+            let (inode, access, _, control) = crate::observe_hot_path!(
+                PermissionDecode,
+                Self::decode_permission_inode(&snapshot, ino)
+            )?;
             if let Some(actor) = &actor
                 && !created
             {
@@ -2508,7 +2517,7 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                 match self
                     .commit_versioned_mutation(VersionedMutation::empty(
                         self.guard().await,
-                        layers,
+                        snapshot.layers.clone(),
                         self.chunk_size,
                     ))
                     .await

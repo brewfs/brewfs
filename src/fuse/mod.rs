@@ -2817,17 +2817,18 @@ where
             {
                 let groups = crate::meta::layer::namespace_actor()
                     .map_or_else(Vec::new, |actor| actor.groups);
-                self.set_attr_from_fuse_as(
+                // O_TRUNC is a write path. Box it only when selected so a
+                // hot O_RDONLY open does not copy its large writeback future.
+                Box::pin(self.set_attr_from_fuse_as(
                     ino as i64,
                     &request,
                     SetAttrFlags::empty(),
                     req.uid,
                     &groups,
-                )
+                ))
                 .await
             } else {
-                self.set_attr_from_fuse(ino as i64, &request, SetAttrFlags::empty())
-                    .await
+                Box::pin(self.set_attr_from_fuse(ino as i64, &request, SetAttrFlags::empty())).await
             }
             .map_err(Into::<Errno>::into)?;
         }

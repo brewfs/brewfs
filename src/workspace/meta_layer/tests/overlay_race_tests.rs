@@ -4,6 +4,78 @@ use asyncfuse::raw::{Filesystem, Request};
 use std::ffi::OsStr;
 
 #[tokio::test]
+async fn clean_readonly_flush_finishes_inline_but_still_rejects_retired_handle() {
+    use futures_util::FutureExt;
+    let f = fixture_with_cache(64 << 20).await;
+    let meta = Arc::new(f.meta);
+    let vfs = crate::vfs::fs::VFS::from_workspace_components(
+        crate::vfs::config::VFSConfig::new(ChunkLayout {
+            chunk_size: 4096,
+            block_size: 4096,
+        }),
+        Arc::new(crate::chunk::store::InMemoryBlockStore::new()),
+        meta.clone(),
+    )
+    .unwrap();
+    let ino = meta
+        .create_file(meta.root_ino(), "flush-readonly".into())
+        .await
+        .unwrap();
+    let fh = vfs.open_fresh_ino(ino, true, false, false).await.unwrap();
+    let flush = vfs.flush_dirty_handle_snapshot(fh).now_or_never();
+    // On the old path the owned task is already detached when this is None;
+    // closing still waits for the real registry/metadata cleanup.
+    vfs.close(fh).await.unwrap();
+    assert!(vfs.flush_dirty_handle_snapshot(fh).await.is_err());
+    f.authority.close_renewals_and_drain().await.unwrap();
+    meta.shutdown_session().await.unwrap();
+    flush
+        .expect("a clean read-only FLUSH must not need a scheduler round trip")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn hot_handle_futures_do_not_embed_large_writeback_state() {
+    let f = fixture_with_cache(64 << 20).await;
+    let meta = Arc::new(f.meta);
+    let vfs = crate::vfs::fs::VFS::from_workspace_components(
+        crate::vfs::config::VFSConfig::new(ChunkLayout {
+            chunk_size: 4096,
+            block_size: 4096,
+        }),
+        Arc::new(crate::chunk::store::InMemoryBlockStore::new()),
+        meta.clone(),
+    )
+    .unwrap();
+    // Measuring a future does not execute it. Bound the request state copied
+    // by the executor even when a read-only request never takes its write arm.
+    let sizes = [
+        (
+            "fuse_open",
+            std::mem::size_of_val(&Filesystem::open(&vfs, Request::default(), 1, 0)),
+        ),
+        (
+            "vfs_open",
+            std::mem::size_of_val(&vfs.open_fresh_ino(1, true, false, false)),
+        ),
+        ("vfs_close", std::mem::size_of_val(&vfs.close(1))),
+        (
+            "vfs_flush",
+            std::mem::size_of_val(&vfs.flush_dirty_handle_snapshot(1)),
+        ),
+    ];
+    eprintln!("hot handle future bytes: {sizes:?}");
+    f.authority.close_renewals_and_drain().await.unwrap();
+    meta.shutdown_session().await.unwrap();
+    for (name, bytes) in sizes {
+        assert!(
+            bytes <= 4 * 1024,
+            "{name} embeds {bytes} bytes of request state"
+        );
+    }
+}
+
+#[tokio::test]
 #[cfg(target_os = "linux")]
 async fn replaced_lookup_open_requests_path_revalidation_without_resurrecting_inode() {
     let f = fixture_with_cache(64 << 20).await;

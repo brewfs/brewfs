@@ -5342,10 +5342,13 @@ where
             let inode = self.ensure_inode_registered(handle.ino).await?;
             handle.ensure_reader_with(|| self.state.reader.open_for_handle(inode, handle.fh));
 
-            let mut attempt = 0;
-            // This deadline starts only if a local publication is encountered;
-            // ordinary hot reads do not pay for a timer or an extra clock read.
-            let mut publication_deadline = None;
+            let mut attempt = 0u32;
+            // A busy writer may advance the view more than three times in one
+            // read. Bound elapsed retry time, not the number of valid conflicts.
+            // Share the deadline with local publication waits so alternating
+            // conflict kinds cannot keep a request alive indefinitely. Stable
+            // hot reads still allocate no timer and perform no clock read here.
+            let mut retry_deadline = None;
             loop {
                 let result = async {
                     let fence = provider
@@ -5418,7 +5421,7 @@ where
                         let pending = error
                             .downcast_ref::<crate::vfs::io::writer::PendingMetadataPublication>()
                             .expect("matched pending publication");
-                        let deadline = *publication_deadline.get_or_insert_with(|| {
+                        let deadline = *retry_deadline.get_or_insert_with(|| {
                             tokio::time::Instant::now() + Duration::from_secs(10)
                         });
                         // canonical_dirty_snapshot has released all writer
@@ -5433,10 +5436,30 @@ where
                             operation.restart_delivery_attempt();
                         }
                     }
-                    Err(error)
-                        if attempt < 2 && crate::chunk::read_plan::is_read_view_changed(&error) =>
-                    {
-                        attempt += 1;
+                    Err(error) if crate::chunk::read_plan::is_read_view_changed(&error) => {
+                        let now = tokio::time::Instant::now();
+                        let deadline =
+                            *retry_deadline.get_or_insert_with(|| now + Duration::from_secs(10));
+                        if now >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "waiting for a stable Workspace read view",
+                            )
+                            .into());
+                        }
+                        // Give an active publisher time to finish instead of
+                        // immediately burning three attempts on the same churn.
+                        // Every retry starts above with a new authoritative
+                        // fence, private output and final validation. Fenced,
+                        // corrupt and transport errors never enter this arm.
+                        if attempt < 2 {
+                            tokio::task::yield_now().await;
+                        } else {
+                            let delay =
+                                Duration::from_millis((1u64 << (attempt - 2).min(5)).min(20));
+                            tokio::time::sleep_until(deadline.min(now + delay)).await;
+                        }
+                        attempt = attempt.saturating_add(1);
                         if let Some(operation) = operation.as_mut() {
                             operation.restart_delivery_attempt();
                         }
@@ -6487,17 +6510,22 @@ where
         // Exhaustion must fail before admission, fresh stat, record_open, or
         // inode mutation. A later failed admission/stat/open consumes a gap.
         let fh = self.state.handles.next_handle()?;
-        let memory_guard = self
-            .meta_layer()
-            .reserve_memory(crate::meta::layer::MetadataMemoryKind::Handle, 16384)
-            .map_err(|error| VfsError::from_meta(PathHint::none(), error))?;
+        let memory_guard = crate::observe_hot_path!(
+            OpenAdmission,
+            self.meta_layer()
+                .reserve_memory(crate::meta::layer::MetadataMemoryKind::Handle, 16384)
+                .map_err(|error| VfsError::from_meta(PathHint::none(), error))?
+        );
         let fresh_ino = attr.is_none();
 
         // Cached callers retain their attr path; only a requested refresh or
         // an attr-less fresh-ino open performs the original fresh stat.
         let mut latest_attr = match attr {
             Some(attr) if !refresh_attr => attr,
-            _ => match self.meta_stat_for_open(ino, read, write, append).await {
+            _ => match crate::observe_hot_path!(
+                OpenStat,
+                self.meta_stat_for_open(ino, read, write, append).await
+            ) {
                 Ok(Some(fresh)) => fresh,
                 Ok(None) => {
                     return Err(VfsError::NotFound {
@@ -6527,26 +6555,31 @@ where
         // Admission has already succeeded, and the later allocation is now
         // infallible with this pre-reserved fh. No failed admission leaks an
         // unmatched metadata open, and metadata rejection leaves no inode.
-        self.meta_record_open(ino, latest_attr.clone(), read, write, append)
-            .await?;
+        crate::observe_hot_path!(
+            OpenRecord,
+            self.meta_record_open(ino, latest_attr.clone(), read, write, append)
+                .await
+        )?;
 
-        let guard = self
-            .lock_inode(ino)
-            .or_insert_with(|| Inode::new(ino, latest_attr.size));
-        if latest_attr.size > guard.file_size() {
-            guard.extend_size(latest_attr.size);
-        } else if guard.file_size() > latest_attr.size {
-            latest_attr.size = guard.file_size();
-        }
+        crate::observe_hot_path!(OpenHandle, {
+            let guard = self
+                .lock_inode(ino)
+                .or_insert_with(|| Inode::new(ino, latest_attr.size));
+            if latest_attr.size > guard.file_size() {
+                guard.extend_size(latest_attr.size);
+            } else if guard.file_size() > latest_attr.size {
+                latest_attr.size = guard.file_size();
+            }
 
-        let handle = self.state.handles.allocate(
-            fh,
-            ino,
-            latest_attr,
-            HandleFlags::new(read, write, append),
-            memory_guard,
-        );
-        Ok(handle.fh)
+            let handle = self.state.handles.allocate(
+                fh,
+                ino,
+                latest_attr,
+                HandleFlags::new(read, write, append),
+                memory_guard,
+            );
+            Ok(handle.fh)
+        })
     }
 
     /// Allocate a file handle and return a guard that auto-closes on drop.
@@ -6610,44 +6643,47 @@ where
         };
         // A consuming FileGuard cannot retry a failed close. Save the I/O
         // result and retire the handle even when flush or timestamps fail.
-        let flush_result: Result<(), VfsError> = async {
-            if !handle.flags.write {
-                return Ok(());
-            }
-            let dirty_state = self.state.handles.take_write_dirty(fh);
-            let flushed_pending = if dirty_state.dirty {
-                #[cfg(feature = "native-packed-base")]
-                {
-                    if let Some(runtime) = self.native_runtime() {
-                        runtime.fsync(handle.ino as u64).await.map_err(|error| {
-                            VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
-                        })?;
-                        false
-                    } else {
+        // Do not embed the large writeback future in every read-only close.
+        // The writer branch keeps the same barrier, dirty state and errors.
+        let flush_result: Result<(), VfsError> = if handle.flags.write {
+            Box::pin(async {
+                let dirty_state = self.state.handles.take_write_dirty(fh);
+                let flushed_pending = if dirty_state.dirty {
+                    #[cfg(feature = "native-packed-base")]
+                    {
+                        if let Some(runtime) = self.native_runtime() {
+                            runtime.fsync(handle.ino as u64).await.map_err(|error| {
+                                VfsError::Anyhow(anyhow::anyhow!(error.to_string()))
+                            })?;
+                            false
+                        } else {
+                            self.state
+                                .writer
+                                .flush_for_close(handle.ino as u64)
+                                .await
+                                .map_err(VfsError::from)?
+                        }
+                    }
+                    #[cfg(not(feature = "native-packed-base"))]
+                    {
                         self.state
                             .writer
                             .flush_for_close(handle.ino as u64)
                             .await
                             .map_err(VfsError::from)?
                     }
+                } else {
+                    false
+                };
+                if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending) {
+                    self.update_mtime_ctime(handle.ino).await?;
                 }
-                #[cfg(not(feature = "native-packed-base"))]
-                {
-                    self.state
-                        .writer
-                        .flush_for_close(handle.ino as u64)
-                        .await
-                        .map_err(VfsError::from)?
-                }
-            } else {
-                false
-            };
-            if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending) {
-                self.update_mtime_ctime(handle.ino).await?;
-            }
+                Ok(())
+            })
+            .await
+        } else {
             Ok(())
-        }
-        .await;
+        };
 
         // Prevent us from TOC-TOU (time of check to time of use) error.
         // If we release the handle and remove the inode directly, there is
@@ -6717,10 +6753,18 @@ where
         #[cfg(feature = "workspace")]
         if self.packed_mutation_needs_driver() {
             let driver = self.packed_mutation_admit(&[])?;
+            let read_only = self
+                .file_handle(fh)
+                .is_some_and(|handle| !handle.flags.write && !handle.flags.append);
             let vfs = self.clone();
-            return driver
-                .run(async move { vfs.packed_owned_flush_dirty_handle_snapshot(fh).await })
-                .await?;
+            let operation = async move { vfs.packed_owned_flush_dirty_handle_snapshot(fh).await };
+            // Scheduling only: still check the real dirty state, including
+            // a read-only handle dirtied by inode-level/writeback writes.
+            return if read_only {
+                driver.run_ready(operation).await?
+            } else {
+                driver.run(operation).await?
+            };
         }
         self.packed_owned_flush_dirty_handle_snapshot(fh).await
     }
@@ -6731,8 +6775,7 @@ where
 
         #[cfg(feature = "native-packed-base")]
         if let Some(runtime) = self.native_runtime() {
-            runtime
-                .fsync(handle.ino as u64)
+            Box::pin(runtime.fsync(handle.ino as u64))
                 .await
                 .map_err(|error| VfsError::Anyhow(anyhow::anyhow!(error.to_string())))?;
             return Ok(());
@@ -6750,27 +6793,24 @@ where
             return Ok(());
         }
 
-        let flushed_pending = match self
-            .state
-            .writer
-            .flush_required_snapshot(handle.ino as u64)
-            .await
-        {
-            Ok(flushed_pending) => flushed_pending,
-            Err(error) => {
-                tracing::warn!(
-                    fh,
-                    ino = handle.ino,
-                    error = %error,
-                    error_debug = ?error,
-                    "vfs.flush_dirty_snapshot_failed"
-                );
-                return Err(VfsError::from(error));
-            }
-        };
+        // Clean FLUSH must not carry the large, unused writer state machine.
+        let flushed_pending =
+            match Box::pin(self.state.writer.flush_required_snapshot(handle.ino as u64)).await {
+                Ok(flushed_pending) => flushed_pending,
+                Err(error) => {
+                    tracing::warn!(
+                        fh,
+                        ino = handle.ino,
+                        error = %error,
+                        error_debug = ?error,
+                        "vfs.flush_dirty_snapshot_failed"
+                    );
+                    return Err(VfsError::from(error));
+                }
+            };
 
         if Self::flush_needs_mtime_ctime_update(dirty_state, flushed_pending)
-            && let Err(err) = self.update_mtime_ctime(handle.ino).await
+            && let Err(err) = Box::pin(self.update_mtime_ctime(handle.ino)).await
         {
             tracing::warn!(
                 fh,

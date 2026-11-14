@@ -394,10 +394,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             .budget
             .admit(&[(SnapshotBudgetPool::Metadata, 32 << 10)])
             .map_err(packed_lower::budget_to_meta)?;
-        let (guard, layers, reader) = self
-            .packed_enumeration_fence()
-            .await?
-            .ok_or_else(|| MetaError::Internal("packed directory missing fence".into()))?;
+        let (guard, layers, reader) =
+            crate::observe_hot_path!(DirectoryFence, self.packed_enumeration_fence().await)?
+                .ok_or_else(|| MetaError::Internal("packed directory missing fence".into()))?;
         let attr = self.stat(ino).await?.ok_or(MetaError::NotFound(ino))?;
         if attr.kind != FileType::Dir {
             return Err(MetaError::NotDirectory(ino));
@@ -425,11 +424,13 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 self.row_cache_counters
                     .directory_queries
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let page = self
-                    .store
-                    .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
-                    .await
-                    .map_err(workspace_to_meta)?;
+                let page = crate::observe_hot_path!(
+                    DirectoryQuery,
+                    self.store
+                        .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
+                        .await
+                )
+                .map_err(workspace_to_meta)?;
                 native_empty &= page.rows.is_empty();
             }
         }

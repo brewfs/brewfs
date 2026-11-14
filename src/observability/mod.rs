@@ -2,6 +2,7 @@
 //! This entire module is absent unless `observability` is compiled in.
 pub(crate) mod fuse;
 mod histogram;
+pub(crate) mod hot_path;
 mod operations;
 pub mod stats;
 
@@ -25,6 +26,7 @@ use std::{
 static ACTIVE: OnceLock<Arc<Metrics>> = OnceLock::new();
 
 pub(crate) struct Metrics {
+    hot_path: hot_path::Profile,
     fuse: Vec<Histogram>,
     errors: Mutex<BTreeMap<(usize, i32), u64>>,
     metadata: Vec<Vec<Histogram>>,
@@ -53,6 +55,9 @@ impl Metrics {
     }
     fn new(profile: String, backend: String) -> Self {
         Self {
+            hot_path: hot_path::Profile::new(
+                std::env::var("BREWFS_HOT_PATH_PROFILE").is_ok_and(|v| v == "1"),
+            ),
             fuse: FUSE_OPS
                 .iter()
                 .map(|op| {
@@ -85,6 +90,7 @@ impl Metrics {
 
     fn render(&self) -> String {
         let mut out = String::with_capacity(48 * 1024);
+        self.hot_path.render(&mut out);
         descriptor(
             &mut out,
             "brewfs_fuse_op_total",

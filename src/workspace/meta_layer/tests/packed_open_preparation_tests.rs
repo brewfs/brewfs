@@ -41,6 +41,9 @@ mod renewal_mutation_tests;
 #[path = "overlay_race_tests.rs"]
 mod overlay_race_tests;
 
+#[path = "read_retry_tests.rs"]
+mod read_retry_tests;
+
 const IDLE: u8 = 0;
 const RENEW_ONCE: u8 = 1;
 const ALWAYS_BUSY: u8 = 2;
@@ -243,6 +246,13 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for ValidationBackend<B> {
     }
     async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<KvEntry>, WorkspaceError> {
         self.inner.scan_prefix(prefix).await
+    }
+    async fn scan_prefix_bounded(
+        &self,
+        prefix: &[u8],
+        max_records: usize,
+    ) -> Result<Vec<KvEntry>, WorkspaceError> {
+        self.inner.scan_prefix_bounded(prefix, max_records).await
     }
     async fn scan_prefix_with_byte_limits(
         &self,
