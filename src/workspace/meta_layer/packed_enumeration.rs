@@ -229,6 +229,34 @@ impl<W: WorkspaceStore + 'static> DirectoryMerge<'_, W> {
 
 #[async_trait]
 impl<W: WorkspaceStore + 'static> DirectoryPageSource for WorkspaceDirectory<W> {
+    async fn revalidate_for_rewind(&self) -> Result<bool, MetaError> {
+        let Some((namespace, lease)) = &self.view.local_namespace else {
+            return Ok(false);
+        };
+        if !namespace.unchanged() || !lease.authoritative() {
+            return Ok(false);
+        }
+        let _reader = self
+            .view
+            .lower
+            .authority
+            .retain_reader_request()
+            .map_err(workspace_to_meta)?;
+        // Keep the remote check: a lease can be revoked before its local
+        // deadline. Reusing a view must not hide that revocation at rewind.
+        let layers = crate::observe_hot_path!(
+            DirectoryFence,
+            self.view
+                .store
+                .read_fenced_layers(self.view.guard.clone(), self.view.layers[1].clone())
+                .await
+        )
+        .map_err(workspace_to_meta)?;
+        // Include attribute/data commits: DirHandle also carries dot attrs.
+        // A changed view is rebuilt and merged before publishing anything.
+        Ok(layers == self.view.layers && namespace.unchanged() && lease.authoritative())
+    }
+
     async fn read_page_owned(
         &self,
         ino: i64,
@@ -394,10 +422,9 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             .budget
             .admit(&[(SnapshotBudgetPool::Metadata, 32 << 10)])
             .map_err(packed_lower::budget_to_meta)?;
-        let (guard, layers, reader) = self
-            .packed_enumeration_fence()
-            .await?
-            .ok_or_else(|| MetaError::Internal("packed directory missing fence".into()))?;
+        let (guard, layers, reader) =
+            crate::observe_hot_path!(DirectoryFence, self.packed_enumeration_fence().await)?
+                .ok_or_else(|| MetaError::Internal("packed directory missing fence".into()))?;
         let attr = self.stat(ino).await?.ok_or(MetaError::NotFound(ino))?;
         if attr.kind != FileType::Dir {
             return Err(MetaError::NotDirectory(ino));
@@ -425,11 +452,13 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
                 self.row_cache_counters
                     .directory_queries
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let page = self
-                    .store
-                    .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
-                    .await
-                    .map_err(workspace_to_meta)?;
+                let page = crate::observe_hot_path!(
+                    DirectoryQuery,
+                    self.store
+                        .get_dentry_delta_page(layer.layer_id, ino, None, lower.budget.clone())
+                        .await
+                )
+                .map_err(workspace_to_meta)?;
                 native_empty &= page.rows.is_empty();
             }
         }

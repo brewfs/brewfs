@@ -790,6 +790,19 @@ where
                 );
             })?;
         let result = self.open_client_untracked(req, ino, flags).await;
+        // Linux may send OPEN for the nodeid returned by LOOKUP just before
+        // another client atomically replaced that name. ENOENT here describes
+        // the obsolete inode, not the pathname. ESTALE makes namei retry with
+        // LOOKUP_REVAL, so FUSE resolves the name and checks permissions again.
+        // Do not resurrect the removed inode from a cached attribute snapshot.
+        #[cfg(target_os = "linux")]
+        let result = result.map_err(|error| {
+            if error == Errno::from(libc::ENOENT) {
+                Errno::from(libc::ESTALE)
+            } else {
+                error
+            }
+        });
         if let Err(error) = &result {
             debug!(ino, error = ?error, "fuse.open failed");
         }
@@ -1284,11 +1297,8 @@ where
         // Rewinddir: offset ≤ 0 means restart from the beginning.
         // Replace the cached handle with a fresh snapshot from the meta
         // layer so that entries created after opendir(3) are visible.
-        if fh != 0
-            && offset == 0
-            && let Err(err) = self.refresh_dir_handle(fh).await
-        {
-            warn!(ino, fh, error = %err, "fuse.readdir handle refresh failed");
+        if fh != 0 && offset == 0 {
+            self.refresh_dir_handle(fh).await.map_err(Errno::from)?;
         }
 
         // Try to use handle first. FUSE directory offsets identify the next
@@ -1424,7 +1434,7 @@ where
 
         // Rewinddir: same logic as readdir().
         if fh != 0 && offset == 0 {
-            let _ = self.refresh_dir_handle(fh).await;
+            self.refresh_dir_handle(fh).await.map_err(Errno::from)?;
         }
 
         // Try to use handle first with the same offset mapping as readdir().
@@ -2804,17 +2814,18 @@ where
             {
                 let groups = crate::meta::layer::namespace_actor()
                     .map_or_else(Vec::new, |actor| actor.groups);
-                self.set_attr_from_fuse_as(
+                // O_TRUNC is a write path. Box it only when selected so a
+                // hot O_RDONLY open does not copy its large writeback future.
+                Box::pin(self.set_attr_from_fuse_as(
                     ino as i64,
                     &request,
                     SetAttrFlags::empty(),
                     req.uid,
                     &groups,
-                )
+                ))
                 .await
             } else {
-                self.set_attr_from_fuse(ino as i64, &request, SetAttrFlags::empty())
-                    .await
+                Box::pin(self.set_attr_from_fuse(ino as i64, &request, SetAttrFlags::empty())).await
             }
             .map_err(Into::<Errno>::into)?;
         }

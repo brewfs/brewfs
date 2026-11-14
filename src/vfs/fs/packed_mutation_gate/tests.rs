@@ -5,6 +5,101 @@ use crate::meta::factory::create_meta_store_from_url;
 use crate::vfs::config::VFSConfig;
 use tokio::time::timeout;
 
+#[tokio::test]
+async fn ready_driver_finishes_in_caller_poll_with_scoped_authority() {
+    use crate::meta::layer::{NamespaceActor, scope_open_actor};
+    use futures_util::FutureExt;
+    let gate = PackedMutationGate::new(true, None);
+    let inside = gate.clone();
+    let driver = gate.admit(None).unwrap();
+    let actor = NamespaceActor {
+        uid: 123,
+        gid: 456,
+        groups: vec![456, 789],
+    };
+    let result = scope_open_actor(
+        Some(actor),
+        4,
+        driver.run_ready(async move {
+            assert!(
+                !inside.requires_driver(),
+                "nested operation must retain its owner"
+            );
+            assert_eq!(crate::meta::layer::namespace_actor().unwrap().uid, 123);
+            assert_eq!(crate::meta::layer::open_access_mask(), Some(4));
+            42
+        }),
+    )
+    .now_or_never()
+    .expect("a ready open must not schedule a detached task");
+    assert_eq!(result.unwrap(), 42);
+    assert!(
+        gate.requires_driver(),
+        "task-local authority must not escape"
+    );
+    assert!(crate::meta::layer::namespace_actor().is_none());
+    assert!(gate.start_close().unwrap());
+    gate.wait_drivers().await.unwrap();
+}
+
+#[tokio::test]
+async fn pending_ready_driver_survives_cancellation_and_holds_drain() {
+    use crate::meta::layer::{NamespaceActor, scope_open_actor};
+    let gate = PackedMutationGate::new(true, None);
+    let inside = gate.clone();
+    let driver = gate.admit(None).unwrap();
+    let (entered, reached) = oneshot::channel();
+    let (release, wait) = oneshot::channel();
+    let (done, completed) = oneshot::channel();
+    let actor = NamespaceActor {
+        uid: 123,
+        gid: 456,
+        groups: vec![456],
+    };
+    let caller = tokio::spawn(scope_open_actor(
+        Some(actor),
+        4,
+        driver.run_ready(async move {
+            entered.send(()).unwrap();
+            wait.await.unwrap();
+            assert!(!inside.requires_driver());
+            assert_eq!(crate::meta::layer::namespace_actor().unwrap().uid, 123);
+            assert_eq!(crate::meta::layer::open_access_mask(), Some(4));
+            done.send(()).unwrap();
+        }),
+    ));
+    reached.await.unwrap();
+    caller.abort();
+    let _ = caller.await;
+    gate.start_close().unwrap();
+    assert!(
+        timeout(Duration::from_millis(20), gate.wait_drivers())
+            .await
+            .is_err()
+    );
+    release.send(()).unwrap();
+    completed.await.unwrap();
+    timeout(Duration::from_secs(2), gate.wait_drivers())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ready_driver_panic_poison_matches_detached_driver() {
+    let gate = PackedMutationGate::new(true, None);
+    assert!(
+        gate.admit(None)
+            .unwrap()
+            .run_ready::<_, ()>(async {
+                panic!("injected ready driver panic");
+            })
+            .await
+            .is_err()
+    );
+    assert!(gate.start_close().is_err());
+}
+
 struct LocalProvider;
 #[async_trait::async_trait]
 impl WorkspaceReadPlanProvider for LocalProvider {

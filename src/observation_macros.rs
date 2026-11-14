@@ -1,5 +1,15 @@
 //! With the feature absent the body is the entire expansion: labels and timer
 //! expressions are not evaluated and no extra async future is constructed.
+/// Profile a fixed hot-path stage only when explicitly enabled at mount start.
+#[macro_export]
+macro_rules! observe_hot_path {
+    ($stage:ident, $body:expr) => {{
+        #[cfg(feature = "observability")]
+        let _timer =
+            $crate::observability::hot_path::timer($crate::observability::hot_path::Stage::$stage);
+        $body
+    }};
+}
 #[cfg(not(feature = "observability"))]
 #[macro_export]
 macro_rules! observe_fuse {

@@ -594,6 +594,19 @@ pub trait WorkspaceStore: Send + Sync {
         false
     }
 
+    /// Capture a fresh head together with the existing head/lease/base checks.
+    /// Stores may fuse these reads; the fallback preserves the original fence.
+    async fn read_fenced_layers(
+        &self,
+        guard: HeadGuard,
+        base: LayerRecord,
+    ) -> Result<[LayerRecord; 2], WorkspaceError> {
+        let head = self.load_layer(guard.expected_head_layer_id).await?;
+        let layers = [head, base];
+        self.validate_read_fence(guard, layers.clone()).await?;
+        Ok(layers)
+    }
+
     /// Take the head record this store last committed for `head`, if any.
     /// A hint: a stale record only makes the next conditional mutation fail
     /// with Busy, after which the caller re-reads the head.

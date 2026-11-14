@@ -60,6 +60,36 @@ const TRUNCATE_FLUSH_DEADLINE: Duration = Duration::from_secs(10);
 /// Shorter deadline for close-triggered flushes.  FUSE already calls flush()
 /// before close(), so close() only needs to drain residual in-flight work.
 const CLOSE_FLUSH_DEADLINE: Duration = Duration::from_secs(5);
+
+/// A local publication is running, not a failed metadata operation. A reader
+/// must wait and capture a new authoritative view before returning any bytes.
+#[cfg(feature = "workspace")]
+#[derive(Debug, thiserror::Error)]
+#[error("local metadata publication is in flight")]
+pub(crate) struct PendingMetadataPublication {
+    changed: Arc<Notify>,
+}
+
+#[cfg(feature = "workspace")]
+impl PendingMetadataPublication {
+    pub(crate) async fn wait_for_progress(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<()> {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "waiting for local metadata publication",
+            )
+            .into());
+        }
+        // Completion may precede waiter registration. The bounded recheck also
+        // covers a claim relinquished to another commit worker without notify.
+        let wake = deadline.min(tokio::time::Instant::now() + Duration::from_millis(20));
+        let _ = tokio::time::timeout_at(wake, self.changed.notified()).await;
+        Ok(())
+    }
+}
 /// Maximum time commit_chunk will wait for a single slice's upload before
 /// marking it failed.  Prevents indefinite hangs on stalled S3 connections.
 const COMMIT_UPLOAD_MAX_WAIT: Duration = Duration::from_secs(180);
@@ -632,6 +662,12 @@ impl SliceState {
         // uploads can also carry this flag after a successful publication.
         // Neither state can establish an uncommitted local EOF safely.
         if self.meta_write_started {
+            if !matches!(self.state, SliceStatus::Failed) && self.err.is_none() {
+                return Err(PendingMetadataPublication {
+                    changed: self.notify.clone(),
+                }
+                .into());
+            }
             return Err(crate::workspace::error::WorkspaceError::Busy.into());
         }
         Ok(true)
@@ -6901,10 +6937,25 @@ mod tests {
                 chunk_size: 8192,
                 block_size: 4096,
             };
-            let meta = create_meta_store_from_url("sqlite::memory:")
-                .await
-                .unwrap()
-                .layer();
+            // These tests exercise writer snapshots, not SQL. Keep the actual
+            // Workspace metadata type without constructing a SQLite backend.
+            let store = Arc::new(crate::workspace::stores::kv_store::KvWorkspaceStore::new(
+                crate::workspace::stores::binding_tests::packed_open_preparation_test_backend(),
+            ));
+            let meta = Arc::new(crate::workspace::meta_layer::WorkspaceMetaLayer::new(
+                store,
+                crate::workspace::model::ViewContext {
+                    workspace_id: crate::workspace::ids::WorkspaceId::from_uuid(
+                        uuid::Uuid::from_u128(1),
+                    ),
+                    head_layer_id: crate::workspace::ids::LayerId::from_uuid(
+                        uuid::Uuid::from_u128(2),
+                    ),
+                    head_epoch: 1,
+                    lease_id: crate::workspace::ids::LeaseId::from_uuid(uuid::Uuid::from_u128(3)),
+                    holder_generation: 1,
+                },
+            ));
             let reads = Arc::new(AtomicU64::new(0));
             let budget = SnapshotMountBudget::new(limits).unwrap();
             let backend = Arc::new(Backend::new_workspace(
@@ -6936,6 +6987,59 @@ mod tests {
             slice.state = status;
             slice.meta_write_started = published;
             slice
+        }
+
+        #[tokio::test]
+        async fn pending_publication_is_distinct_from_terminal_failure_and_never_supplies_eof() {
+            let (writer, budget, reads) = fixture(SnapshotBudgetLimits::default()).await;
+            let cid = chunk_id_for(123, 0).unwrap();
+            let mut state = slice(
+                writer.shared.config.clone(),
+                cid,
+                SliceStatus::Uploaded,
+                true,
+            );
+            assert!(
+                state
+                    .packed_pending_overlay()
+                    .unwrap_err()
+                    .is::<PendingMetadataPublication>(),
+                "an active commit must wait, not become generic Busy/EIO"
+            );
+            state.state = SliceStatus::Failed;
+            let failed = state.packed_pending_overlay().unwrap_err();
+            assert!(
+                !failed.is::<PendingMetadataPublication>(),
+                "terminal failure must not retry as active publication"
+            );
+            state.state = SliceStatus::Committed;
+            assert!(!state.packed_pending_overlay().unwrap());
+            assert_eq!(budget.state().used[SnapshotBudgetPool::Output as usize], 0);
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn publication_wait_is_bounded_even_when_notification_precedes_registration() {
+            let pending = PendingMetadataPublication {
+                changed: Arc::new(Notify::new()),
+            };
+            pending.changed.notify_waiters();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            timeout(
+                Duration::from_millis(200),
+                pending.wait_for_progress(deadline),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let error = pending
+                .wait_for_progress(tokio::time::Instant::now())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::TimedOut
+            );
         }
 
         #[tokio::test]

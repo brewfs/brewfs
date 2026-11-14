@@ -38,6 +38,13 @@ const WRITE_DIRTY_NEEDS_TIMESTAMP: u8 = 0b0000_0010;
 /// metadata backends while packed metadata uses the bounded path.
 #[async_trait]
 pub trait DirectoryPageSource: Send + Sync {
+    /// Reuse a directory view only after authoritative revalidation. The
+    /// default rebuilds; callers must propagate errors rather than fall back
+    /// to an old handle after a failed lease or backend check.
+    async fn revalidate_for_rewind(&self) -> Result<bool, MetaError> {
+        Ok(false)
+    }
+
     async fn read_page_owned(
         &self,
         ino: i64,

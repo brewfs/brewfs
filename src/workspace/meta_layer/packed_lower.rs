@@ -1082,20 +1082,22 @@ pub(super) async fn prepare<W: WorkspaceStore + 'static>(
         meta.row_cache_counters
             .extent_queries
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let rows = meta
-            .store
-            .get_extent_deltas_bounded(
-                ExtentQuery {
-                    layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
-                    ino,
-                    chunk_index,
-                    range_start: offset,
-                    range_end: end,
-                },
-                MAX_UPPER_EXTENT_ROWS,
-            )
-            .await
-            .map_err(read_workspace_to_meta)?;
+        let rows = crate::observe_hot_path!(
+            ExtentQuery,
+            meta.store
+                .get_extent_deltas_bounded(
+                    ExtentQuery {
+                        layer_ids: layers.iter().map(|layer| layer.layer_id).collect(),
+                        ino,
+                        chunk_index,
+                        range_start: offset,
+                        range_end: end,
+                    },
+                    MAX_UPPER_EXTENT_ROWS,
+                )
+                .await
+        )
+        .map_err(read_workspace_to_meta)?;
         if rows.is_empty()
             && let (Some(cache), Some(ticket)) = (cache, ticket)
         {

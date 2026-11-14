@@ -2456,6 +2456,36 @@ where
         Ok(())
     }
 
+    async fn read_fenced_layers(
+        &self,
+        guard: HeadGuard,
+        base: LayerRecord,
+    ) -> Result<[LayerRecord; 2], WorkspaceError> {
+        // The server time, writer authority and both layer records belong to
+        // one snapshot. No intermediate head is published or cached.
+        let keys = vec![
+            hot_workspace_key(guard.workspace_id),
+            hot_layer_key(guard.expected_head_layer_id),
+            hot_lease_key(guard.workspace_id, guard.lease_id),
+            hot_layer_key(base.layer_id),
+        ];
+        let (values, now) = self.backend.get_many_consistent_with_time(&keys).await?;
+        if values.len() != keys.len() {
+            return Err(WorkspaceError::Backend(
+                "short KV layer-fence snapshot".into(),
+            ));
+        }
+        let workspace: WorkspaceRecord = decode_required(&values[0])?;
+        let head: LayerRecord = decode_required(&values[1])?;
+        let lease: SnapshotLease = decode_required(&values[2])?;
+        checked_hot_guard(&workspace, &head, &lease, &guard, now)?;
+        let observed_base: LayerRecord = decode_required(&values[3])?;
+        if observed_base != base {
+            return Err(WorkspaceError::Busy);
+        }
+        Ok([head, observed_base])
+    }
+
     fn supports_fused_read_fence(&self) -> bool {
         self.backend.supports_consistent_reads()
     }
@@ -6194,6 +6224,7 @@ mod tests {
         advance_on_cas_ns: Arc<AtomicI64>,
         mutate_on_cas: Arc<Mutex<Vec<KvWrite>>>,
         timed_reads_until_mutation: Arc<AtomicU64>,
+        timed_read_calls: Arc<AtomicU64>,
         mutate_on_timed_read: Arc<Mutex<Vec<KvWrite>>>,
         mutate_on_bounded_read_key: Arc<Mutex<Option<Vec<u8>>>>,
         mutate_after_extent_page: Arc<Mutex<Vec<KvWrite>>>,
@@ -6352,6 +6383,7 @@ mod tests {
             &self,
             keys: &[Vec<u8>],
         ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+            self.timed_read_calls.fetch_add(1, Ordering::SeqCst);
             let mut records = self.records.lock().await;
             let remaining = self.timed_reads_until_mutation.load(Ordering::SeqCst);
             if remaining > 0
@@ -6389,6 +6421,7 @@ mod tests {
             keys: &[Vec<u8>],
             limits: super::super::kv_backend::KvReadLimits,
         ) -> Result<(Vec<Option<Vec<u8>>>, i64), WorkspaceError> {
+            self.timed_read_calls.fetch_add(1, Ordering::SeqCst);
             limits.validate_keys(keys)?;
             self.bounded_read_keys.lock().await.push(keys.to_vec());
             if self
@@ -7614,6 +7647,74 @@ mod tests {
         };
         let error = store.validate_read_fence(guard, stale).await.unwrap_err();
         assert!(matches!(error, WorkspaceError::Busy));
+    }
+
+    #[tokio::test]
+    async fn fenced_layer_capture_uses_one_snapshot_and_keeps_authority_checks() {
+        let (store, workspace, lease, guard) = initialized().await;
+        let chain = store
+            .load_layer_chain(workspace.head_layer_id)
+            .await
+            .unwrap();
+        let before = store.backend.timed_read_calls.load(Ordering::SeqCst);
+        let actual = store
+            .read_fenced_layers(guard.clone(), chain[1].clone())
+            .await
+            .unwrap();
+        assert_eq!(actual, [chain[0].clone(), chain[1].clone()]);
+        assert_eq!(
+            store.backend.timed_read_calls.load(Ordering::SeqCst) - before,
+            1,
+            "directory head capture and validation must share one snapshot"
+        );
+        let mut stale_base = chain[1].clone();
+        stale_base.next_sequence += 1;
+        assert!(matches!(
+            store.read_fenced_layers(guard.clone(), stale_base).await,
+            Err(WorkspaceError::Busy)
+        ));
+        let mut stale_writer = guard.clone();
+        stale_writer.holder_generation += 1;
+        assert!(matches!(
+            store
+                .read_fenced_layers(stale_writer, chain[1].clone())
+                .await,
+            Err(WorkspaceError::Fenced)
+        ));
+        store
+            .backend
+            .clock
+            .store(lease.expires_at_ns, Ordering::SeqCst);
+        assert!(matches!(
+            store.read_fenced_layers(guard, chain[1].clone()).await,
+            Err(WorkspaceError::Fenced)
+        ));
+    }
+
+    #[tokio::test]
+    async fn fenced_layer_capture_returns_the_concurrent_complete_head() {
+        let (store, workspace, _lease, guard) = initialized().await;
+        let chain = store
+            .load_layer_chain(workspace.head_layer_id)
+            .await
+            .unwrap();
+        let mut next = chain[0].clone();
+        next.next_sequence += 1;
+        store
+            .backend
+            .mutate_on_timed_read
+            .lock()
+            .await
+            .push(put(hot_layer_key(next.layer_id), &next).unwrap());
+        store
+            .backend
+            .timed_reads_until_mutation
+            .store(1, Ordering::SeqCst);
+        let actual = store
+            .read_fenced_layers(guard, chain[1].clone())
+            .await
+            .unwrap();
+        assert_eq!(actual, [next, chain[1].clone()]);
     }
 
     #[tokio::test]

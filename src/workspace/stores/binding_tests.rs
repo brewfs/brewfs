@@ -2116,6 +2116,31 @@ impl WorkspaceKvBackend for ClockBackend {
             })
             .collect())
     }
+    async fn scan_prefix_bounded(
+        &self,
+        prefix: &[u8],
+        max_records: usize,
+    ) -> Result<Vec<KvEntry>, WorkspaceError> {
+        if max_records == 0 {
+            return Err(WorkspaceError::InvalidReadPlan(
+                "bounded prefix scan requires a positive row limit".into(),
+            ));
+        }
+        // Apply the row limit before cloning; extent callers request their
+        // own sentinel. This API is not the separately capped keyset page.
+        Ok(self
+            .records
+            .lock()
+            .await
+            .range(prefix.to_vec()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .take(max_records)
+            .map(|(key, value)| KvEntry {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect())
+    }
     async fn compare_and_swap(
         &self,
         checks: &[KvCheck],

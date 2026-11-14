@@ -171,6 +171,36 @@ impl Drop for DrainCompletionOwner {
 }
 
 impl MutationDriver {
+    /// Hot read-only handle operations usually complete without yielding. Poll
+    /// once with the same authority/owner as a detached driver. If it waits,
+    /// move that *same* future to a task before yielding to the caller, so a
+    /// cancelled reply still cannot cancel a half-completed open/close.
+    pub(super) async fn run_ready<F, T>(self, future: F) -> Result<T, VfsError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        use futures_util::FutureExt;
+        let gate = self.gate.clone();
+        let request = crate::meta::layer::capture_request_scope();
+        let owned = MUTATION_OWNER.scope(gate, async move {
+            let mut owner = self;
+            let result = request.scope(future).await;
+            owner.terminal = true;
+            result
+        });
+        // Match run(): a panic poisons the owner and returns an error instead
+        // of unwinding the FUSE caller, including a panic in the first poll.
+        let mut owned = Box::pin(std::panic::AssertUnwindSafe(owned).catch_unwind());
+        if let Some(result) = owned.as_mut().now_or_never() {
+            return result.map_err(|_| VfsError::Other);
+        }
+        tokio::spawn(owned)
+            .await
+            .map_err(|_| VfsError::Other)?
+            .map_err(|_| VfsError::Other)
+    }
+
     pub(super) async fn run<F, T>(self, future: F) -> Result<T, VfsError>
     where
         F: Future<Output = T> + Send + 'static,
