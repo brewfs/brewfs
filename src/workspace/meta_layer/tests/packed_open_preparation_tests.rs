@@ -38,6 +38,9 @@ mod namespace_permission_tests;
 #[path = "renewal_mutation_tests.rs"]
 mod renewal_mutation_tests;
 
+#[path = "overlay_race_tests.rs"]
+mod overlay_race_tests;
+
 const IDLE: u8 = 0;
 const RENEW_ONCE: u8 = 1;
 const ALWAYS_BUSY: u8 = 2;

@@ -790,6 +790,19 @@ where
                 );
             })?;
         let result = self.open_client_untracked(req, ino, flags).await;
+        // Linux may send OPEN for the nodeid returned by LOOKUP just before
+        // another client atomically replaced that name. ENOENT here describes
+        // the obsolete inode, not the pathname. ESTALE makes namei retry with
+        // LOOKUP_REVAL, so FUSE resolves the name and checks permissions again.
+        // Do not resurrect the removed inode from a cached attribute snapshot.
+        #[cfg(target_os = "linux")]
+        let result = result.map_err(|error| {
+            if error == Errno::from(libc::ENOENT) {
+                Errno::from(libc::ESTALE)
+            } else {
+                error
+            }
+        });
         if let Err(error) = &result {
             debug!(ino, error = ?error, "fuse.open failed");
         }

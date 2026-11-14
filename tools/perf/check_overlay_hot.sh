@@ -15,6 +15,7 @@ for filter in fenced_layer_capture packed_heartbeat_keeps_file_cache \
   workspace::stores::kv_store:: \
   workspace::meta_layer::tests::packed_open_preparation_tests:: \
   workspace::meta_layer::row_cache::tests:: \
+  vfs::io::writer::tests::packed_snapshot_tests:: \
   workspace::stores::local_metadata::tests:: ready_driver; do
   label=${filter//:/_}
   cargo test --locked --lib --no-default-features --features "$features" "$filter" \

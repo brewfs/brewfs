@@ -5342,7 +5342,11 @@ where
             let inode = self.ensure_inode_registered(handle.ino).await?;
             handle.ensure_reader_with(|| self.state.reader.open_for_handle(inode, handle.fh));
 
-            for attempt in 0..3 {
+            let mut attempt = 0;
+            // This deadline starts only if a local publication is encountered;
+            // ordinary hot reads do not pay for a timer or an extra clock read.
+            let mut publication_deadline = None;
+            loop {
                 let result = async {
                     let fence = provider
                         .begin_unified_read_request(handle.ino)
@@ -5409,8 +5413,30 @@ where
                 .await;
                 match result {
                     Err(error)
+                        if error.is::<crate::vfs::io::writer::PendingMetadataPublication>() =>
+                    {
+                        let pending = error
+                            .downcast_ref::<crate::vfs::io::writer::PendingMetadataPublication>()
+                            .expect("matched pending publication");
+                        let deadline = *publication_deadline.get_or_insert_with(|| {
+                            tokio::time::Instant::now() + Duration::from_secs(10)
+                        });
+                        // canonical_dirty_snapshot has released all writer
+                        // locks. Let the publisher finish, then acquire a fresh
+                        // fence and snapshot; no bytes from this attempt escape.
+                        tracing::debug!(
+                            ino = handle.ino,
+                            "packed read waiting for local metadata publication"
+                        );
+                        pending.wait_for_progress(deadline).await?;
+                        if let Some(operation) = operation.as_mut() {
+                            operation.restart_delivery_attempt();
+                        }
+                    }
+                    Err(error)
                         if attempt < 2 && crate::chunk::read_plan::is_read_view_changed(&error) =>
                     {
+                        attempt += 1;
                         if let Some(operation) = operation.as_mut() {
                             operation.restart_delivery_attempt();
                         }
@@ -5418,7 +5444,6 @@ where
                     result => return result,
                 }
             }
-            unreachable!("whole packed read retry loop always returns")
         }
         .await;
 
