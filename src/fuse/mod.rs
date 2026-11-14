@@ -3916,6 +3916,13 @@ where
             fallback_attr.nlink = 0;
             fallback_attr
         } else {
+            // Linux can revalidate this nodeid before OPEN (notably with
+            // default_permissions). The inode may have been replaced since
+            // LOOKUP: ESTALE asks namei to resolve and authorize the name
+            // again. Backend errors above and live handles remain unchanged.
+            #[cfg(target_os = "linux")]
+            return Err(libc::ESTALE.into());
+            #[cfg(not(target_os = "linux"))]
             return Err(libc::ENOENT.into());
         };
 

@@ -2653,18 +2653,35 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
     ) -> Result<Option<(i64, FileAttr)>, MetaError> {
         validate_name_bytes(name)?;
         let fence = self.packed_metadata_fence().await?;
-        let result = match self.resolve_dentry_entry(parent, name).await? {
-            Some(entry) => {
-                let attr = self
-                    .stat(entry.ino)
-                    .await?
-                    .ok_or(MetaError::NotFound(entry.ino))?;
-                Some((entry.ino, attr))
+        let mut entry = self.resolve_dentry_entry(parent, name).await?;
+        // The name can be replaced between resolving its dentry and reading
+        // the inode. Retry only genuine absence, never a backend error. Reuse
+        // the revalidated dentry so the usual successful path adds no reads.
+        for _ in 0..8 {
+            let Some(current) = entry else {
+                self.validate_packed_metadata_fence(fence).await?;
+                return Ok(None);
+            };
+            if let Some(attr) = self.stat(current.ino).await? {
+                self.validate_packed_metadata_fence(fence).await?;
+                return Ok(Some((current.ino, attr)));
             }
-            None => None,
-        };
+            entry = self.resolve_dentry_entry(parent, name).await?;
+            if entry.as_ref().is_some_and(|next| next.ino == current.ino) {
+                // An unchanged dentry with no inode is inconsistent metadata,
+                // not evidence of replacement or of an absent pathname.
+                return Err(MetaError::NotFound(current.ino));
+            }
+        }
         self.validate_packed_metadata_fence(fence).await?;
-        Ok(result)
+        if entry.is_none() {
+            return Ok(None);
+        }
+        // Bound work under continuous replacement. Linux may revalidate the
+        // pathname; reporting ENOENT here would invent a missing name.
+        Err(MetaError::Io(std::io::Error::from_raw_os_error(
+            libc::ESTALE,
+        )))
     }
 
     async fn lookup_path(&self, path: &str) -> Result<Option<(i64, FileType)>, MetaError> {

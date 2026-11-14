@@ -44,6 +44,9 @@ mod overlay_race_tests;
 #[path = "read_retry_tests.rs"]
 mod read_retry_tests;
 
+#[path = "enoent_f24_tests.rs"]
+mod enoent_f24_tests;
+
 const IDLE: u8 = 0;
 const RENEW_ONCE: u8 = 1;
 const ALWAYS_BUSY: u8 = 2;
@@ -69,6 +72,7 @@ const BACKEND_MESSAGE: &str = "record_open preparation injected backend response
 
 struct ValidationControl {
     metadata_transactions: AtomicUsize,
+    enoent_f24: enoent_f24_tests::Control,
     group_commit: group_commit_tests::Control,
     renewal_mutation: renewal_mutation_tests::Control,
     mode: AtomicU8,
@@ -89,6 +93,7 @@ impl ValidationControl {
     fn new() -> Self {
         Self {
             metadata_transactions: AtomicUsize::new(0),
+            enoent_f24: enoent_f24_tests::Control::default(),
             group_commit: group_commit_tests::Control::new(),
             renewal_mutation: renewal_mutation_tests::Control::default(),
             mode: AtomicU8::new(IDLE),
@@ -187,7 +192,15 @@ impl<B: WorkspaceKvBackend> WorkspaceKvBackend for ValidationBackend<B> {
         self.inner.supports_consistent_reads()
     }
     async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, WorkspaceError> {
-        self.inner.get(key).await
+        if let Some(result) = self.control.enoent_f24.read_override(key) {
+            return result;
+        }
+        let result = self.inner.get(key).await;
+        self.control
+            .enoent_f24
+            .after_read(key, matches!(&result, Ok(Some(_))))
+            .await;
+        result
     }
     async fn get_many_consistent(
         &self,
