@@ -1053,9 +1053,10 @@ impl RequestObservation {
     }
 }
 
-/// Full GET, HEAD and retained-payload counters beyond the original bound.
+/// Full GET, HEAD, retained-payload and whole-object cache counters beyond the
+/// original bound. Shared by rendering and mount Output admission.
 #[cfg(feature = "workspace")]
-pub(crate) const PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES: usize = 1280;
+pub(crate) const PACKED_RUNTIME_STATS_EXTRA_RENDER_MAX_BYTES: usize = 1280 + 512;
 /// Shared by row rendering and Packed startup admission for a combined snapshot.
 #[cfg(feature = "workspace")]
 pub(crate) const WORKSPACE_ROW_STATS_RENDER_MAX_BYTES: usize = 1024;

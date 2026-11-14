@@ -25,6 +25,29 @@ impl std::ops::Deref for MutationVersion {
 }
 
 impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
+    /// Native open copies one inode back: its policy and commit version must
+    /// come from the same atomic target snapshot, not a separate root read.
+    /// The caller awaits this inside its retry body so a backend Busy result
+    /// retains the target permission read's existing retry behavior.
+    pub(super) async fn retain_native_open_mutation(
+        &self,
+        ino: i64,
+    ) -> Result<(MutationVersion, PermissionInode), MetaError> {
+        if self.packed_lower().is_some() {
+            return Err(workspace_to_meta(WorkspaceError::Fenced));
+        }
+        let snapshot = self.permission_snapshot(vec![ino], None).await?;
+        let permission = Self::decode_permission_inode(&snapshot, ino)?;
+        Ok((
+            MutationVersion {
+                layers: snapshot.layers,
+                _permit: None,
+                _reader: None,
+            },
+            permission,
+        ))
+    }
+
     pub(super) async fn retain_mutation_version(&self) -> Result<MutationVersion, MetaError> {
         if let Some(lower) = self.packed_lower() {
             if !self.store.supports_packed_permissions() {

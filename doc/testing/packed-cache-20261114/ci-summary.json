@@ -1,0 +1,2357 @@
+{
+  "schema": "packed-cache-ci-summary",
+  "execution": "server-local",
+  "arms": {
+    "P0": {
+      "passed": true,
+      "commands_completed": 54,
+      "checks": {
+        "focused": true,
+        "regressions": true,
+        "feature_libtest": true,
+        "feature_clippy": true,
+        "default_ci": true,
+        "release": true
+      },
+      "tests": {
+        "test-workspace-runtime-features": {
+          "passed": 2939,
+          "failed": 0,
+          "ignored": 487
+        },
+        "ci-test-workspace-workflow": {
+          "passed": 1362,
+          "failed": 0,
+          "ignored": 266
+        },
+        "ci-test-workspace": {
+          "passed": 1364,
+          "failed": 0,
+          "ignored": 266
+        }
+      },
+      "source_commit": "fa630c33ed9691f66b09742ae695aecb0d666a0e",
+      "source_manifest_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/source-main-001/control/source-manifest.json",
+      "binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/brewfs",
+      "binary_bytes": 320411176,
+      "runtime_profile": {
+        "release_upstream_defaults": true,
+        "default_features": true,
+        "features": [
+          "workspace",
+          "observability",
+          "rustfs-ec-block-size-hint"
+        ],
+        "rustflags": "-C target-cpu=x86-64",
+        "jobs": 24,
+        "strip_debug": true
+      },
+      "finished_utc": "2026-11-14T10:30:41.672126+00:00",
+      "locks_released_utc": "2026-11-14T10:30:41.672166+00:00",
+      "commands": {
+        "rustc-version": {
+          "command": [
+            "rustc",
+            "-Vv"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/rustc-version.log",
+          "log_bytes": 196
+        },
+        "cargo-version": {
+          "command": [
+            "cargo",
+            "-V"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/cargo-version.log",
+          "log_bytes": 36
+        },
+        "pre-diff": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/pre-diff.log",
+          "log_bytes": 0
+        },
+        "runtime-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "8",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-compile.log",
+          "log_bytes": 648276
+        },
+        "runtime-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-list-1.log",
+          "log_bytes": 104
+        },
+        "runtime-list-2": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-list-2.log",
+          "log_bytes": 359874
+        },
+        "runtime-list-3": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-3",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-list-3.log",
+          "log_bytes": 1370
+        },
+        "runtime-list-4": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-4",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-list-4.log",
+          "log_bytes": 0
+        },
+        "new-01": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::prefix_reads_before_eof_and_followers_share_one_download",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-01.log",
+          "log_bytes": 232
+        },
+        "new-02": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::tail_failure_wakes_waiter_without_returning_partial_tail",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-02.log",
+          "log_bytes": 232
+        },
+        "new-03": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::failed_download_retries_without_releasing_a_pinned_disk_reservation",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-03.log",
+          "log_bytes": 243
+        },
+        "new-04": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::object_larger_than_budget_uses_range_without_starting_download",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-04.log",
+          "log_bytes": 238
+        },
+        "new-05": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::malformed_full_bodies_count_received_bytes_before_length_rejection",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-05.log",
+          "log_bytes": 242
+        },
+        "new-06": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::completed_download_is_reused_after_remount_without_get",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-06.log",
+          "log_bytes": 230
+        },
+        "new-07": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests::stream_pins_object_until_last_chunk_and_counts_one_request",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3408
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/new-07.log",
+          "log_bytes": 234
+        },
+        "regression-pack-cache": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 7,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3402
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-pack-cache.log",
+          "log_bytes": 962
+        },
+        "regression-readonly": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::readonly::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 12,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3397
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-readonly.log",
+          "log_bytes": 1464
+        },
+        "regression-budget": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::packed::snapshot::budget::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 13,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3396
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-budget.log",
+          "log_bytes": 1699
+        },
+        "regression-row-cache": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::meta_layer::row_cache::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 13,
+              "failed": 0,
+              "ignored": 1,
+              "measured": 0,
+              "filtered_out": 3395
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-row-cache.log",
+          "log_bytes": 1714
+        },
+        "regression-row-cache-cancellation": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::meta_layer::row_cache::cancellation_tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 11,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3398
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-row-cache-cancellation.log",
+          "log_bytes": 1522
+        },
+        "regression-packed-open-preparation": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::meta_layer::tests::packed_open_preparation_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 33,
+              "failed": 0,
+              "ignored": 1,
+              "measured": 0,
+              "filtered_out": 3375
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-packed-open-preparation.log",
+          "log_bytes": 5260
+        },
+        "regression-packed-lower": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::meta_layer::tests::packed_lower_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 31,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3378
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-packed-lower.log",
+          "log_bytes": 4140
+        },
+        "regression-packed-merged-permissions": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-test-2",
+            "workspace::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::native_effective_export_tests::packed_merged_permission_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 7,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3402
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/regression-packed-merged-permissions.log",
+          "log_bytes": 1708
+        },
+        "test-workspace-runtime-features": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "8",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 2922,
+              "failed": 0,
+              "ignored": 487,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 2,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 15,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 0,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/test-workspace-runtime-features.log",
+          "log_bytes": 1053243
+        },
+        "clippy-runtime-features": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/clippy-runtime-features.log",
+          "log_bytes": 7776
+        },
+        "ci-fmt": {
+          "command": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-fmt.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_perf_in_container.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_perf_in_container.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-run_perf_in_container.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_redis_perf.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_redis_perf.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-run_redis_perf.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_juicefs_perf_in_container.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_juicefs_perf_in_container.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-run_juicefs_perf_in_container.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_juicefs_perf.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_juicefs_perf.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-run_juicefs_perf.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_perf_report_delta.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_perf_report_delta.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-test_perf_report_delta.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_juicefs_direct_matrix.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_juicefs_direct_matrix.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-test_juicefs_direct_matrix.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_juicefs_perf_report.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_juicefs_perf_report.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-shell-test_juicefs_perf_report.sh.log",
+          "log_bytes": 0
+        },
+        "ci-check-workspace": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-check-workspace.log",
+          "log_bytes": 7776
+        },
+        "ci-build-workspace": {
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-build-workspace.log",
+          "log_bytes": 7776
+        },
+        "ci-metadata": {
+          "command": [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-metadata.log",
+          "log_bytes": 30191
+        },
+        "ci-brewfs-fuse-tokio-runtime": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "-p",
+            "brewfs",
+            "--no-default-features",
+            "--features",
+            "fuse-tokio-runtime"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-brewfs-fuse-tokio-runtime.log",
+          "log_bytes": 7935
+        },
+        "ci-brewfs-fuse-io-uring-runtime": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "-p",
+            "brewfs",
+            "--no-default-features",
+            "--features",
+            "fuse-io-uring-runtime"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-brewfs-fuse-io-uring-runtime.log",
+          "log_bytes": 7558
+        },
+        "ci-test-workspace-workflow-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-workflow-compile.log",
+          "log_bytes": 636806
+        },
+        "ci-test-workspace-workflow-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-workflow-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-workflow-list-1.log",
+          "log_bytes": 132416
+        },
+        "ci-test-workspace-workflow": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1362,
+              "failed": 0,
+              "ignored": 266,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-workflow.log",
+          "log_bytes": 785880
+        },
+        "ci-test-workspace-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-compile.log",
+          "log_bytes": 642951
+        },
+        "ci-test-workspace-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-list-1.log",
+          "log_bytes": 104
+        },
+        "ci-test-workspace-list-2": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-test-2",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-list-2.log",
+          "log_bytes": 132416
+        },
+        "ci-test-workspace-list-3": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-test-3",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace-list-3.log",
+          "log_bytes": 0
+        },
+        "ci-test-workspace": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1362,
+              "failed": 0,
+              "ignored": 266,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 2,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 0,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-test-workspace.log",
+          "log_bytes": 792593
+        },
+        "ci-clippy-workspace": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-clippy-workspace.log",
+          "log_bytes": 7449
+        },
+        "ci-clippy-agents": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-clippy-agents.log",
+          "log_bytes": 7555
+        },
+        "ci-diff": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/ci-diff.log",
+          "log_bytes": 0
+        },
+        "runtime-build": {
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--release",
+            "--jobs",
+            "24",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--bin",
+            "brewfs",
+            "--bin",
+            "packed_snapshot_fixture",
+            "--message-format=json-render-diagnostics"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/runtime-build.log",
+          "log_bytes": 535536
+        },
+        "strip-packed_snapshot_fixture": {
+          "command": [
+            "objcopy",
+            "--strip-debug",
+            "/srv/ax-idcai-20261113/targets/brewfs/release/packed_snapshot_fixture",
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/packed_snapshot_fixture"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/strip-packed_snapshot_fixture.log",
+          "log_bytes": 0
+        },
+        "help-packed_snapshot_fixture": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/packed_snapshot_fixture",
+            "--help"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/help-packed_snapshot_fixture.log",
+          "log_bytes": 3833
+        },
+        "strip-brewfs": {
+          "command": [
+            "objcopy",
+            "--strip-debug",
+            "/srv/ax-idcai-20261113/targets/brewfs/release/brewfs",
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/brewfs"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/strip-brewfs.log",
+          "log_bytes": 0
+        },
+        "help-brewfs": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/brewfs",
+            "--help"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/help-brewfs.log",
+          "log_bytes": 1121
+        }
+      }
+    },
+    "P1": {
+      "passed": true,
+      "commands_completed": 67,
+      "checks": {
+        "focused": true,
+        "regressions": true,
+        "feature_libtest": true,
+        "feature_clippy": true,
+        "default_ci": true,
+        "release": true
+      },
+      "tests": {
+        "test-workspace-runtime-features": {
+          "passed": 2963,
+          "failed": 0,
+          "ignored": 487
+        },
+        "ci-test-workspace-workflow": {
+          "passed": 1362,
+          "failed": 0,
+          "ignored": 266
+        },
+        "ci-test-workspace": {
+          "passed": 1364,
+          "failed": 0,
+          "ignored": 266
+        }
+      },
+      "source_commit": "fa630c33ed9691f66b09742ae695aecb0d666a0e",
+      "source_manifest_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/source-main-003/candidate/source-manifest.json",
+      "binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/brewfs",
+      "binary_bytes": 320626824,
+      "runtime_profile": {
+        "release_upstream_defaults": true,
+        "default_features": true,
+        "features": [
+          "workspace",
+          "observability",
+          "rustfs-ec-block-size-hint"
+        ],
+        "rustflags": "-C target-cpu=x86-64",
+        "jobs": 24,
+        "strip_debug": true
+      },
+      "finished_utc": "2026-11-14T13:15:33.670677+00:00",
+      "locks_released_utc": "2026-11-14T13:15:33.670714+00:00",
+      "commands": {
+        "rustc-version": {
+          "command": [
+            "rustc",
+            "-Vv"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/rustc-version.log",
+          "log_bytes": 196
+        },
+        "cargo-version": {
+          "command": [
+            "cargo",
+            "-V"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/cargo-version.log",
+          "log_bytes": 36
+        },
+        "pre-diff": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/pre-diff.log",
+          "log_bytes": 0
+        },
+        "clean-brewfs": {
+          "command": [
+            "cargo",
+            "clean",
+            "--locked",
+            "--offline",
+            "--package",
+            "brewfs"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/clean-brewfs.log",
+          "log_bytes": 37
+        },
+        "clippy-runtime-features": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/clippy-runtime-features.log",
+          "log_bytes": 7796
+        },
+        "runtime-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "8",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-compile.log",
+          "log_bytes": 648421
+        },
+        "runtime-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-list-1.log",
+          "log_bytes": 104
+        },
+        "runtime-list-2": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-list-2.log",
+          "log_bytes": 362887
+        },
+        "runtime-list-3": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-3",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-list-3.log",
+          "log_bytes": 1370
+        },
+        "runtime-list-4": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-4",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-list-4.log",
+          "log_bytes": 0
+        },
+        "new-01": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::cached_object_admission_does_not_wait_for_another_objects_head",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-01.log",
+          "log_bytes": 250
+        },
+        "new-02": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::independent_object_heads_can_overlap_without_increasing_download_slots",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-02.log",
+          "log_bytes": 258
+        },
+        "new-03": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::same_key_followers_share_one_head_and_full_download",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-03.log",
+          "log_bytes": 239
+        },
+        "new-04": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::cancelled_head_retains_key_and_slot_until_real_driver_ends",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-04.log",
+          "log_bytes": 246
+        },
+        "new-05": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::cancelling_one_follower_does_not_cancel_shared_admission",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-05.log",
+          "log_bytes": 244
+        },
+        "new-06": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::head_failure_releases_same_key_for_followers_retry",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-06.log",
+          "log_bytes": 238
+        },
+        "new-07": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::pending_heads_are_plan_budgeted_before_network_admission",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-07.log",
+          "log_bytes": 244
+        },
+        "new-08": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::cache_and_transport_drain_join_abandoned_head_without_new_download",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-08.log",
+          "log_bytes": 254
+        },
+        "new-09": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::drain_wakes_pending_followers_and_budget_close_prevents_publication",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-09.log",
+          "log_bytes": 255
+        },
+        "new-10": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::cold_fanout_limits_actual_head_owners_through_registry_publication",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-10.log",
+          "log_bytes": 254
+        },
+        "new-11": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::drain_retires_queued_heads_without_starting_them",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-11.log",
+          "log_bytes": 236
+        },
+        "new-12": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::completed_heads_release_plans_before_the_next_prepared_cache_hit",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-12.log",
+          "log_bytes": 252
+        },
+        "new-13": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::full_control_budget_still_allows_disk_turnover_after_head",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-13.log",
+          "log_bytes": 245
+        },
+        "new-14": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::small_plans_budget_selects_range_before_admitting_pending_state",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-14.log",
+          "log_bytes": 251
+        },
+        "new-15": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::small_plans_fanout_preserves_driver_progress_and_range_fallback",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-15.log",
+          "log_bytes": 251
+        },
+        "new-16": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::head_errors_preserve_budget_and_boundary_categories",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-16.log",
+          "log_bytes": 239
+        },
+        "new-17": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::headroom_admission_checks_exact_capacity_overflow_and_close",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-17.log",
+          "log_bytes": 247
+        },
+        "new-18": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::concurrency_tests::concurrent_headroom_admission_does_not_overbook_the_same_free_bytes",
+            "--exact",
+            "--test-threads=1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3432
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/new-18.log",
+          "log_bytes": 255
+        },
+        "regression-pack-cache": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 7,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3426
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-pack-cache.log",
+          "log_bytes": 962
+        },
+        "regression-p0-budget": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::pack_cache::budget_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 6,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3427
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-p0-budget.log",
+          "log_bytes": 885
+        },
+        "regression-readonly": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::readonly::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 12,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3421
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-readonly.log",
+          "log_bytes": 1464
+        },
+        "regression-budget": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::packed::snapshot::budget::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 13,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3420
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-budget.log",
+          "log_bytes": 1699
+        },
+        "regression-row-cache": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::meta_layer::row_cache::tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 13,
+              "failed": 0,
+              "ignored": 1,
+              "measured": 0,
+              "filtered_out": 3419
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-row-cache.log",
+          "log_bytes": 1714
+        },
+        "regression-row-cache-cancellation": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::meta_layer::row_cache::cancellation_tests",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 11,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3422
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-row-cache-cancellation.log",
+          "log_bytes": 1522
+        },
+        "regression-packed-open-preparation": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::meta_layer::tests::packed_open_preparation_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 33,
+              "failed": 0,
+              "ignored": 1,
+              "measured": 0,
+              "filtered_out": 3399
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-packed-open-preparation.log",
+          "log_bytes": 5260
+        },
+        "regression-packed-lower": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::meta_layer::tests::packed_lower_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 31,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3402
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-packed-lower.log",
+          "log_bytes": 4140
+        },
+        "regression-packed-merged-permissions": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-test-2",
+            "workspace::stores::kv_store::packed_reader_pins::packed_reader_pin_tests::native_effective_export_tests::packed_merged_permission_tests::",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 7,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 3426
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/regression-packed-merged-permissions.log",
+          "log_bytes": 1708
+        },
+        "test-workspace-runtime-features": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "8",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 2946,
+              "failed": 0,
+              "ignored": 487,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 2,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 15,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 0,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/test-workspace-runtime-features.log",
+          "log_bytes": 1056432
+        },
+        "ci-fmt": {
+          "command": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-fmt.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_perf_in_container.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_perf_in_container.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-run_perf_in_container.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_redis_perf.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_redis_perf.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-run_redis_perf.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_juicefs_perf_in_container.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_juicefs_perf_in_container.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-run_juicefs_perf_in_container.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-run_juicefs_perf.sh": {
+          "command": [
+            "bash",
+            "-n",
+            "docker/compose-xfstests/run_juicefs_perf.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-run_juicefs_perf.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_perf_report_delta.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_perf_report_delta.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-test_perf_report_delta.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_juicefs_direct_matrix.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_juicefs_direct_matrix.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-test_juicefs_direct_matrix.sh.log",
+          "log_bytes": 0
+        },
+        "ci-shell-test_juicefs_perf_report.sh": {
+          "command": [
+            "bash",
+            "docker/compose-xfstests/test_juicefs_perf_report.sh"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-shell-test_juicefs_perf_report.sh.log",
+          "log_bytes": 0
+        },
+        "ci-check-workspace": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-check-workspace.log",
+          "log_bytes": 7796
+        },
+        "ci-build-workspace": {
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-build-workspace.log",
+          "log_bytes": 7796
+        },
+        "ci-metadata": {
+          "command": [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-metadata.log",
+          "log_bytes": 30436
+        },
+        "ci-brewfs-fuse-tokio-runtime": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "-p",
+            "brewfs",
+            "--no-default-features",
+            "--features",
+            "fuse-tokio-runtime"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-brewfs-fuse-tokio-runtime.log",
+          "log_bytes": 7950
+        },
+        "ci-brewfs-fuse-io-uring-runtime": {
+          "command": [
+            "cargo",
+            "check",
+            "--locked",
+            "--offline",
+            "-p",
+            "brewfs",
+            "--no-default-features",
+            "--features",
+            "fuse-io-uring-runtime"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-brewfs-fuse-io-uring-runtime.log",
+          "log_bytes": 7568
+        },
+        "ci-test-workspace-workflow-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-workflow-compile.log",
+          "log_bytes": 636876
+        },
+        "ci-test-workspace-workflow-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-workflow-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-workflow-list-1.log",
+          "log_bytes": 132416
+        },
+        "ci-test-workspace-workflow": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1362,
+              "failed": 0,
+              "ignored": 266,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-workflow.log",
+          "log_bytes": 785945
+        },
+        "ci-test-workspace-compile": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--message-format=json-render-diagnostics",
+            "--no-run"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-compile.log",
+          "log_bytes": 643066
+        },
+        "ci-test-workspace-list-1": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-test-1",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-list-1.log",
+          "log_bytes": 104
+        },
+        "ci-test-workspace-list-2": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-test-2",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-list-2.log",
+          "log_bytes": 132416
+        },
+        "ci-test-workspace-list-3": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-test-3",
+            "--list",
+            "--format",
+            "terse"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace-list-3.log",
+          "log_bytes": 0
+        },
+        "ci-test-workspace": {
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--offline",
+            "--jobs",
+            "4",
+            "--workspace",
+            "--lib",
+            "--bins",
+            "--message-format=json-render-diagnostics",
+            "--",
+            "--test-threads=4"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "counts": [
+            {
+              "status": "ok",
+              "passed": 1362,
+              "failed": 0,
+              "ignored": 266,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 2,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            },
+            {
+              "status": "ok",
+              "passed": 0,
+              "failed": 0,
+              "ignored": 0,
+              "measured": 0,
+              "filtered_out": 0
+            }
+          ],
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-test-workspace.log",
+          "log_bytes": 792703
+        },
+        "ci-clippy-workspace": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-clippy-workspace.log",
+          "log_bytes": 7454
+        },
+        "ci-clippy-agents": {
+          "command": [
+            "cargo",
+            "clippy",
+            "--locked",
+            "--offline",
+            "--workspace"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-clippy-agents.log",
+          "log_bytes": 7565
+        },
+        "ci-diff": {
+          "command": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/ci-diff.log",
+          "log_bytes": 0
+        },
+        "runtime-build": {
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--offline",
+            "--release",
+            "--jobs",
+            "24",
+            "--features",
+            "workspace,observability,rustfs-ec-block-size-hint",
+            "--bin",
+            "brewfs",
+            "--bin",
+            "packed_snapshot_fixture",
+            "--message-format=json-render-diagnostics"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/runtime-build.log",
+          "log_bytes": 535646
+        },
+        "strip-packed_snapshot_fixture": {
+          "command": [
+            "objcopy",
+            "--strip-debug",
+            "/srv/ax-idcai-20261113/targets/brewfs/release/packed_snapshot_fixture",
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/packed_snapshot_fixture"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/strip-packed_snapshot_fixture.log",
+          "log_bytes": 0
+        },
+        "help-packed_snapshot_fixture": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/packed_snapshot_fixture",
+            "--help"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/help-packed_snapshot_fixture.log",
+          "log_bytes": 3833
+        },
+        "strip-brewfs": {
+          "command": [
+            "objcopy",
+            "--strip-debug",
+            "/srv/ax-idcai-20261113/targets/brewfs/release/brewfs",
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/brewfs"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/strip-brewfs.log",
+          "log_bytes": 0
+        },
+        "help-brewfs": {
+          "command": [
+            "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/brewfs",
+            "--help"
+          ],
+          "completed": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "log": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/help-brewfs.log",
+          "log_bytes": 1121
+        }
+      }
+    }
+  },
+  "candidate_source_comparison": {
+    "files": 2028,
+    "different_files": 0,
+    "method": "Direct archive-to-working-tree byte comparison before adding the report"
+  }
+}

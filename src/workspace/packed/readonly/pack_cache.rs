@@ -13,9 +13,13 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Notify;
+
+// Four HEADs and four body drivers, each with transport's maximum 4096-byte
+// key. Pending admissions leave this space free for their downstream drivers.
+const DRIVER_HEADROOM: u64 = 8 * (4096 + 2 * 4096);
 
 #[derive(Default)]
 struct Progress {
@@ -25,12 +29,77 @@ struct Progress {
 }
 struct Entry {
     file: PathBuf,
-    _temporary: Option<tempfile::NamedTempFile>,
+    _temporary: Option<tempfile::TempPath>,
     persisted: Option<PathBuf>,
     progress: Mutex<Progress>,
     changed: Notify,
     size: u64,
     _owner: SnapshotOwnedPermit,
+    _occupancy: EntryOccupancy,
+}
+
+// The table is weak: only real callers and transport drivers retain Plans.
+// Completed HEADs leave no task header or cached error holding temporary Plans.
+struct Pending {
+    cache: Weak<PackCache>,
+    cache_key: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    _owner: SnapshotOwnedPermit,
+}
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let Some(cache) = self.cache.upgrade() else {
+            return;
+        };
+        let mut pending = cache.pending.lock().unwrap();
+        if pending
+            .get(&self.cache_key)
+            .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
+        {
+            pending.remove(&self.cache_key);
+            // Retire bucket storage before this real owner releases Plans.
+            if pending.capacity() > pending.len().saturating_mul(4) {
+                pending.shrink_to_fit();
+            }
+        }
+    }
+}
+
+enum Lookup {
+    Hit(Arc<Entry>),
+    Miss,
+    Fallback,
+}
+
+// These gauges follow actual Entry ownership, including a reader that outlives
+// registry drain. They observe accounting; admission still uses the real
+// disk reservation and SnapshotOwnedPermit below.
+#[derive(Default)]
+pub(super) struct CacheOccupancy {
+    pub live_entries: AtomicU64,
+    pub live_reserved_bytes: AtomicU64,
+}
+impl CacheOccupancy {
+    fn retain(self: &Arc<Self>, bytes: u64) -> EntryOccupancy {
+        self.live_entries.fetch_add(1, Ordering::Relaxed);
+        self.live_reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
+        EntryOccupancy {
+            counters: self.clone(),
+            bytes,
+        }
+    }
+}
+struct EntryOccupancy {
+    counters: Arc<CacheOccupancy>,
+    bytes: u64,
+}
+impl Drop for EntryOccupancy {
+    fn drop(&mut self) {
+        self.counters.live_entries.fetch_sub(1, Ordering::Relaxed);
+        self.counters
+            .live_reserved_bytes
+            .fetch_sub(self.bytes, Ordering::Relaxed);
+    }
 }
 #[derive(Default)]
 struct Registry {
@@ -38,8 +107,21 @@ struct Registry {
     reserved: u64,
     closed: bool,
 }
+impl Registry {
+    fn shrink_after_retirement(&mut self) {
+        // HashMap buckets must not retain a large high-water allocation after
+        // most Entry permits retire. Check per removal, but rebuild only at
+        // a sparse threshold, while the removed entry still owns its permit.
+        if self.entries.capacity() > self.entries.len().saturating_mul(4) {
+            self.entries.shrink_to_fit();
+        }
+    }
+}
 pub(super) struct PackCache {
     registry: tokio::sync::Mutex<Registry>,
+    // Lock order: registry -> pending/workers. Pending::drop takes only pending.
+    pending: Mutex<HashMap<String, Weak<Pending>>>,
+    closed: Notify,
     capacity: u64,
     directory: Option<PathBuf>,
     _lock: Option<std::fs::File>,
@@ -49,10 +131,13 @@ pub(super) struct PackCache {
     pub local_bytes: AtomicU64,
     pub misses: AtomicU64,
     pub downloaded: AtomicU64,
+    pub occupancy: Arc<CacheOccupancy>,
+    pub evictions: AtomicU64,
     budget: Arc<SnapshotMountBudget>,
     transport: Arc<ReadonlyTransport>,
     io: Arc<BackendIoCounters>,
     slots: Arc<tokio::sync::Semaphore>,
+    head_slots: Arc<tokio::sync::Semaphore>,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 impl PackCache {
@@ -64,6 +149,8 @@ impl PackCache {
     ) -> Arc<Self> {
         Arc::new(Self {
             registry: Default::default(),
+            pending: Default::default(),
+            closed: Notify::new(),
             capacity,
             directory: None,
             _lock: None,
@@ -71,12 +158,15 @@ impl PackCache {
             transport,
             io,
             slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            head_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             hits: AtomicU64::new(0),
             ready_hits: AtomicU64::new(0),
             inflight_hits: AtomicU64::new(0),
             local_bytes: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             downloaded: AtomicU64::new(0),
+            occupancy: Default::default(),
+            evictions: AtomicU64::new(0),
             workers: Default::default(),
         })
     }
@@ -122,11 +212,9 @@ impl PackCache {
             let owner = inner
                 .budget
                 .admit(&[(SnapshotBudgetPool::Control, 4096 + 64)]);
-            if registry.reserved.saturating_add(size) > capacity
-                || registry.entries.len() >= 1024
-                || owner.is_err()
-            {
+            if registry.reserved.saturating_add(size) > capacity || owner.is_err() {
                 std::fs::remove_file(row.path())?;
+                inner.evictions.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
             registry.reserved += size;
@@ -138,6 +226,7 @@ impl PackCache {
                     persisted: Some(row.path()),
                     size,
                     _owner: owner.unwrap(),
+                    _occupancy: inner.occupancy.retain(size),
                     changed: Notify::new(),
                     progress: Mutex::new(Progress {
                         available: size,
@@ -161,204 +250,294 @@ impl PackCache {
     ) -> Result<Option<Arc<Entry>>> {
         ensure!(!self.budget.state().closed, "pack cache budget closed");
         let cache_key = hex::encode(Sha256::digest(key.as_bytes()));
-        let entry = {
+        let pending = {
             let mut registry = self.registry.lock().await;
             ensure!(!registry.closed, "pack cache closed");
-            if let Some(entry) = registry.entries.get(&cache_key)
-                && entry.progress.lock().unwrap().error.is_some()
-            {
-                // A body error is terminal for its existing readers, not for
-                // the immutable object. Keep the partial file charged while
-                // any old reader or worker still owns it; new requests can
-                // use the ordinary range path until that ownership ends.
-                if Arc::strong_count(entry) > 1 {
-                    self.misses.fetch_add(1, Ordering::Relaxed);
-                    drop(registry);
-                    return Ok(None);
-                }
-                let failed = registry.entries.remove(&cache_key).unwrap();
-                let size = failed.size;
-                drop(failed);
-                registry.reserved -= size;
+            match self.lookup(&mut registry, &cache_key, offset, length) {
+                Lookup::Hit(entry) => return Ok(Some(entry)),
+                Lookup::Fallback => return Ok(None),
+                Lookup::Miss => {}
             }
-            if let Some(entry) = registry.entries.get(&cache_key) {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                if offset
-                    .checked_add(length as u64)
-                    .is_some_and(|end| entry.progress.lock().unwrap().available >= end)
-                {
-                    self.ready_hits.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.inflight_hits.fetch_add(1, Ordering::Relaxed);
-                }
-                entry.clone()
+            let mut table = self.pending.lock().unwrap();
+            if let Some(existing) = table.get(&cache_key).and_then(Weak::upgrade) {
+                existing
             } else {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                let head_client = match &observation {
-                    Some((context, observer)) => client.clone().with_read_observer(
-                        observer.clone(),
-                        context.engine,
-                        context.phase,
-                        context.origin,
-                    ),
-                    None => client.clone(),
-                };
-                let head_context = observation.as_ref().map(|(context, _)| *context);
-                let head_key = key.to_owned();
-                let io = self.io.clone();
-                let head = self
-                    .transport
-                    .run(&self.budget, key.len(), 0, || async move {
-                        io.head_started();
-                        let result = match head_context {
-                            Some(context) => {
-                                head_client
-                                    .typed_object_size(context.class, &head_key)
-                                    .await
-                            }
-                            None => head_client.get_object_size(&head_key).await,
-                        }
-                        .and_then(|size| size.ok_or_else(|| anyhow::anyhow!("missing pack")));
-                        io.finish_open(result)
-                    })
-                    .await?;
-                let size = head.value;
-                if size > self.capacity {
-                    drop(registry);
-                    return Ok(None);
-                }
-                while registry.reserved + size > self.capacity || registry.entries.len() >= 1024 {
-                    let victim = registry
-                        .entries
-                        .iter()
-                        .find(|(_, entry)| {
-                            Arc::strong_count(entry) == 1 && entry.progress.lock().unwrap().done
-                        })
-                        .map(|(key, _)| key.clone());
-                    let Some(victim) = victim else {
-                        drop(registry);
-                        return Ok(None);
-                    };
-                    let removed = registry.entries.remove(&victim).unwrap();
-                    registry.reserved -= removed.size;
-                    if let Some(path) = &removed.persisted
-                        && path.exists()
-                    {
-                        std::fs::remove_file(path)?;
-                    }
-                }
-                let Ok(slot) = self.slots.clone().try_acquire_owned() else {
-                    drop(registry);
+                let Ok(owner) = self.budget.admit_with_headroom(
+                    SnapshotBudgetPool::Plans,
+                    4096 + key.len() as u64,
+                    DRIVER_HEADROOM,
+                ) else {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
                     return Ok(None);
                 };
-                let Ok(buffer) = self.budget.admit(&[(SnapshotBudgetPool::Stored, 1 << 20)]) else {
-                    drop(registry);
-                    return Ok(None);
-                };
-                let Ok(owner) = self
-                    .budget
-                    .admit(&[(SnapshotBudgetPool::Control, 4096 + key.len() as u64)])
-                else {
-                    drop(registry);
-                    return Ok(None);
-                };
-                let temporary = match &self.directory {
-                    Some(directory) => tempfile::Builder::new()
-                        .prefix(".partial-")
-                        .tempfile_in(directory)?,
-                    None => tempfile::NamedTempFile::new()?,
-                };
-                let entry = Arc::new(Entry {
-                    file: temporary.path().to_owned(),
-                    _temporary: Some(temporary),
-                    persisted: self
-                        .directory
-                        .as_ref()
-                        .map(|directory| directory.join(format!("{cache_key}.pack"))),
+                let pending = Arc::new(Pending {
+                    cache: Arc::downgrade(self),
+                    cache_key: cache_key.clone(),
+                    lock: Arc::new(tokio::sync::Mutex::new(())),
                     _owner: owner,
-                    progress: Default::default(),
-                    changed: Notify::new(),
-                    size,
                 });
-                registry.reserved += size;
-                registry.entries.insert(cache_key, entry.clone());
-                let cache = self.clone();
-                let task_entry = entry.clone();
-                let (client, context) = match observation {
-                    Some((context, observer)) => (
-                        client.clone().with_read_observer(
-                            observer,
-                            context.engine,
-                            context.phase,
-                            context.origin,
-                        ),
-                        Some(context),
-                    ),
-                    None => (client.clone(), None),
-                };
-                let key = key.to_owned();
-                let worker = tokio::spawn(async move {
-                    let result: Result<()> = async {
-                        let _slot = slot;
-                        let _buffer = buffer;
-                        let key_len = key.len();
-                        let io = cache.io.clone();
-                        let mut stream = cache
-                            .transport
-                            .open_body(&cache.budget, key_len, || async move {
-                                io.full_started(size);
-                                let result = client
-                                    .backend_object_stream(&key, Some(size), context)
-                                    .await
-                                    .and_then(|stream| {
-                                        stream.ok_or_else(|| anyhow::anyhow!("missing pack body"))
-                                    });
-                                io.observe_stream(result)
-                            })
-                            .await?;
-                        let mut file = tokio::fs::OpenOptions::new()
-                            .write(true)
-                            .open(&task_entry.file)
-                            .await?;
-                        let mut written = 0u64;
-                        while let Some(chunk) = stream.next().await {
-                            let chunk = chunk?;
-                            if written + chunk.len() as u64 > size {
-                                cache.io.failures.fetch_add(1, Ordering::Relaxed);
-                                anyhow::bail!("pack body overflow");
-                            }
-                            file.write_all(&chunk).await?;
-                            file.flush().await?;
-                            written += chunk.len() as u64;
-                            cache
-                                .downloaded
-                                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-                            task_entry.progress.lock().unwrap().available = written;
-                            task_entry.changed.notify_waiters();
-                        }
-                        if written != size {
-                            cache.io.failures.fetch_add(1, Ordering::Relaxed);
-                            anyhow::bail!("short pack body");
-                        }
-                        if let Some(path) = &task_entry.persisted {
-                            file.sync_data().await?;
-                            tokio::fs::hard_link(&task_entry.file, path).await?;
-                        }
-                        Ok(())
-                    }
-                    .await;
-                    let mut progress = task_entry.progress.lock().unwrap();
-                    progress.error = result.err().map(|error| error.to_string());
-                    progress.done = true;
-                    drop(progress);
-                    task_entry.changed.notify_waiters();
-                });
-                let mut workers = self.workers.lock().unwrap();
-                workers.retain(|worker| !worker.is_finished());
-                workers.push(worker);
-                entry
+                table.insert(cache_key.clone(), Arc::downgrade(&pending));
+                pending
             }
         };
+
+        let closed = self.closed.notified();
+        tokio::pin!(closed);
+        closed.as_mut().enable();
+        ensure!(!self.head_slots.is_closed(), "pack cache closed");
+        let guard = tokio::select! {
+            guard = pending.lock.clone().lock_owned() => guard,
+            () = closed => anyhow::bail!("pack cache closed"),
+            () = self.budget.wait_closed() => anyhow::bail!("pack cache budget closed"),
+        };
+        {
+            let mut registry = self.registry.lock().await;
+            ensure!(!registry.closed, "pack cache closed");
+            // The previous owner may have published while this caller waited
+            // for the same key. Hits need no new HEAD or download worker.
+            match self.lookup(&mut registry, &cache_key, offset, length) {
+                Lookup::Hit(entry) => return Ok(Some(entry)),
+                Lookup::Fallback => return Ok(None),
+                Lookup::Miss => {}
+            }
+        }
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        let slot = tokio::select! {
+            slot = self.head_slots.clone().acquire_owned() => slot?,
+            () = self.budget.wait_closed() => anyhow::bail!("pack cache budget closed"),
+        };
+        let head_client = match &observation {
+            Some((context, observer)) => client.clone().with_read_observer(
+                observer.clone(),
+                context.engine,
+                context.phase,
+                context.origin,
+            ),
+            None => client.clone(),
+        };
+        let head_context = observation.as_ref().map(|(context, _)| *context);
+        let head_key = key.to_owned();
+        let io = self.io.clone();
+        // Form the ownership bundle before run: admission failure or dropping
+        // an unpolled factory must release the same complete set of owners.
+        let guards = (guard, slot, pending);
+        let head = self
+            .transport
+            .run(&self.budget, key.len(), 0, || async move {
+                // The real detached transport driver owns these guards after
+                // caller cancellation. Successful results retain them through
+                // registry publication, preventing a second HEAD in that gap.
+                io.head_started();
+                let result = match head_context {
+                    Some(context) => {
+                        head_client
+                            .typed_object_size(context.class, &head_key)
+                            .await
+                    }
+                    None => head_client.get_object_size(&head_key).await,
+                }
+                .and_then(|size| size.ok_or_else(|| anyhow::anyhow!("missing pack")));
+                io.finish_open(result).map(|size| (size, guards))
+            })
+            .await?;
+        let result = self
+            .prepare_body(client, key, &cache_key, head.value.0, observation)
+            .await;
+        drop(head);
+        result
+    }
+
+    fn lookup(
+        &self,
+        registry: &mut Registry,
+        cache_key: &str,
+        offset: u64,
+        length: usize,
+    ) -> Lookup {
+        if let Some(entry) = registry.entries.get(cache_key)
+            && entry.progress.lock().unwrap().error.is_some()
+        {
+            // A failed partial file stays charged while a reader/worker pins
+            // it. Once unpinned, retire it before admitting a replacement.
+            if Arc::strong_count(entry) > 1 {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return Lookup::Fallback;
+            }
+            let failed = registry.entries.remove(cache_key).unwrap();
+            registry.reserved -= failed.size;
+            registry.shrink_after_retirement();
+            drop(failed);
+        }
+        if let Some(entry) = registry.entries.get(cache_key) {
+            self.record_hit(entry, offset, length);
+            Lookup::Hit(entry.clone())
+        } else {
+            Lookup::Miss
+        }
+    }
+
+    fn record_hit(&self, entry: &Entry, offset: u64, length: usize) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        if offset
+            .checked_add(length as u64)
+            .is_some_and(|end| entry.progress.lock().unwrap().available >= end)
+        {
+            self.ready_hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.inflight_hits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    async fn prepare_body<B: ObjectBackend + Clone + 'static>(
+        self: &Arc<Self>,
+        client: &ObjectClient<B>,
+        key: &str,
+        cache_key: &str,
+        size: u64,
+        observation: Observation,
+    ) -> Result<Option<Arc<Entry>>> {
+        let mut registry = self.registry.lock().await;
+        ensure!(!registry.closed, "pack cache closed");
+        ensure!(!self.budget.state().closed, "pack cache budget closed");
+        if size > self.capacity {
+            drop(registry);
+            return Ok(None);
+        }
+        while registry.reserved + size > self.capacity {
+            let victim = registry
+                .entries
+                .iter()
+                .find(|(_, entry)| {
+                    Arc::strong_count(entry) == 1 && entry.progress.lock().unwrap().done
+                })
+                .map(|(key, _)| key.clone());
+            let Some(victim) = victim else {
+                drop(registry);
+                return Ok(None);
+            };
+            let removed = registry.entries.remove(&victim).unwrap();
+            registry.reserved -= removed.size;
+            registry.shrink_after_retirement();
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+            if let Some(path) = &removed.persisted
+                && path.exists()
+            {
+                std::fs::remove_file(path)?;
+            }
+        }
+        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
+            drop(registry);
+            return Ok(None);
+        };
+        let Ok(buffer) = self.budget.admit(&[(SnapshotBudgetPool::Stored, 1 << 20)]) else {
+            drop(registry);
+            return Ok(None);
+        };
+        let Ok(owner) = self
+            .budget
+            .admit(&[(SnapshotBudgetPool::Control, 4096 + key.len() as u64)])
+        else {
+            drop(registry);
+            return Ok(None);
+        };
+        // The download worker opens the path itself. Retain automatic
+        // path cleanup, without retaining one unused FD per entry.
+        let temporary = match &self.directory {
+            Some(directory) => tempfile::Builder::new()
+                .prefix(".partial-")
+                .tempfile_in(directory)?,
+            None => tempfile::NamedTempFile::new()?,
+        }
+        .into_temp_path();
+        let entry = Arc::new(Entry {
+            file: temporary.to_path_buf(),
+            _temporary: Some(temporary),
+            persisted: self
+                .directory
+                .as_ref()
+                .map(|directory| directory.join(format!("{cache_key}.pack"))),
+            _owner: owner,
+            _occupancy: self.occupancy.retain(size),
+            progress: Default::default(),
+            changed: Notify::new(),
+            size,
+        });
+        registry.reserved += size;
+        registry.entries.insert(cache_key.to_owned(), entry.clone());
+        let cache = self.clone();
+        let task_entry = entry.clone();
+        let (client, context) = match observation {
+            Some((context, observer)) => (
+                client.clone().with_read_observer(
+                    observer,
+                    context.engine,
+                    context.phase,
+                    context.origin,
+                ),
+                Some(context),
+            ),
+            None => (client.clone(), None),
+        };
+        let key = key.to_owned();
+        let worker = tokio::spawn(async move {
+            let result: Result<()> = async {
+                let _slot = slot;
+                let _buffer = buffer;
+                let key_len = key.len();
+                let io = cache.io.clone();
+                let mut stream = cache
+                    .transport
+                    .open_body(&cache.budget, key_len, || async move {
+                        io.full_started(size);
+                        let result = client
+                            .backend_object_stream(&key, Some(size), context)
+                            .await
+                            .and_then(|stream| {
+                                stream.ok_or_else(|| anyhow::anyhow!("missing pack body"))
+                            });
+                        io.observe_stream(result)
+                    })
+                    .await?;
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&task_entry.file)
+                    .await?;
+                let mut written = 0u64;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    if written + chunk.len() as u64 > size {
+                        cache.io.failures.fetch_add(1, Ordering::Relaxed);
+                        anyhow::bail!("pack body overflow");
+                    }
+                    file.write_all(&chunk).await?;
+                    file.flush().await?;
+                    written += chunk.len() as u64;
+                    cache
+                        .downloaded
+                        .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    task_entry.progress.lock().unwrap().available = written;
+                    task_entry.changed.notify_waiters();
+                }
+                if written != size {
+                    cache.io.failures.fetch_add(1, Ordering::Relaxed);
+                    anyhow::bail!("short pack body");
+                }
+                if let Some(path) = &task_entry.persisted {
+                    file.sync_data().await?;
+                    tokio::fs::hard_link(&task_entry.file, path).await?;
+                }
+                Ok(())
+            }
+            .await;
+            let mut progress = task_entry.progress.lock().unwrap();
+            progress.error = result.err().map(|error| error.to_string());
+            progress.done = true;
+            drop(progress);
+            task_entry.changed.notify_waiters();
+        });
+        let mut workers = self.workers.lock().unwrap();
+        workers.retain(|worker| !worker.is_finished());
+        workers.push(worker);
         Ok(Some(entry))
     }
     pub async fn read<B: ObjectBackend + Clone + 'static>(
@@ -485,12 +664,33 @@ impl PackCache {
         Ok(output.value.clone())
     }
     pub async fn drain(&self) -> Result<()> {
-        self.registry.lock().await.closed = true;
-        let workers = std::mem::take(&mut *self.workers.lock().unwrap());
-        for worker in workers {
-            worker.await?;
+        let workers = {
+            let mut registry = self.registry.lock().await;
+            registry.closed = true;
+            self.head_slots.close();
+            // A HEAD result cannot publish a body worker after closure. Real
+            // detached HEADs are drained by the enclosing readonly transport.
+            self.closed.notify_waiters();
+            std::mem::take(&mut *self.workers.lock().unwrap())
+        };
+        let mut workers = workers;
+        let mut failure = None;
+        while let Some(worker) = workers.pop() {
+            if workers.capacity() > workers.len().saturating_mul(4) {
+                workers.shrink_to_fit();
+            }
+            if let Err(error) = worker.await {
+                failure.get_or_insert(error);
+            }
         }
-        self.registry.lock().await.entries.clear();
+        let mut registry = self.registry.lock().await;
+        // Retire the registry allocation too; response-owned entries retain
+        // their own permits and occupancy until their last reader exits.
+        registry.entries = HashMap::new();
+        registry.reserved = 0;
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
         Ok(())
     }
 }
@@ -502,6 +702,14 @@ impl std::fmt::Debug for PackCache {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+#[path = "pack_cache_budget_tests.rs"]
+mod budget_tests;
+
+#[cfg(test)]
+#[path = "pack_cache_concurrency_tests.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 mod tests {
@@ -580,6 +788,11 @@ mod tests {
                 .unwrap();
         assert_eq!(first, (0..64u8).collect::<Vec<_>>());
         assert_eq!(cache.downloaded.load(Ordering::Relaxed), 64);
+        assert_eq!(cache.occupancy.live_entries.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            cache.occupancy.live_reserved_bytes.load(Ordering::Relaxed),
+            128
+        );
         assert_eq!(
             cache.read(&client, "pack", 8, 8).await.unwrap(),
             (8..16u8).collect::<Vec<_>>()
@@ -591,6 +804,11 @@ mod tests {
         );
         assert_eq!(backend.gets.load(Ordering::Relaxed), 1);
         cache.drain().await.unwrap();
+        assert_eq!(cache.occupancy.live_entries.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            cache.occupancy.live_reserved_bytes.load(Ordering::Relaxed),
+            0
+        );
         assert!(cache.read(&client, "pack", 0, 1).await.is_err());
     }
     #[tokio::test]
@@ -653,6 +871,11 @@ mod tests {
         assert_eq!(backend.gets.load(Ordering::Relaxed), 1);
         assert_eq!(cache.registry.lock().await.reserved, 128);
         assert!(failed_file.exists(), "a pinned file remains charged");
+        assert_eq!(cache.occupancy.live_entries.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            cache.occupancy.live_reserved_bytes.load(Ordering::Relaxed),
+            128
+        );
         assert_eq!(cache.io.full_gets.load(Ordering::Relaxed), 1);
         assert_eq!(cache.io.range_gets.load(Ordering::Relaxed), 1);
         assert_eq!(cache.io.received_bytes.load(Ordering::Relaxed), 128);
@@ -681,6 +904,11 @@ mod tests {
             (64..128u8).collect::<Vec<_>>()
         );
         cache.drain().await.unwrap();
+        assert_eq!(cache.occupancy.live_entries.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            cache.occupancy.live_reserved_bytes.load(Ordering::Relaxed),
+            0
+        );
     }
     #[tokio::test]
     async fn object_larger_than_budget_uses_range_without_starting_download() {

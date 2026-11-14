@@ -295,6 +295,29 @@ impl crate::vfs::stats::FsStatsExtension for SnapshotStatsExtension {
                 counter.load(Ordering::Relaxed)
             );
         }
+        if let Some(cache) = self.metrics.pack_cache.get() {
+            // Entry gauges include any response still owning a local file
+            // after registry retirement. Evictions count configured-capacity
+            // or Control-bound startup discards and unpinned capacity victims,
+            // not failed fills.
+            for (name, counter) in [
+                ("cache_live_entries", &cache.occupancy.live_entries),
+                (
+                    "cache_live_reserved_bytes",
+                    &cache.occupancy.live_reserved_bytes,
+                ),
+                ("cache_evictions_total", &cache.evictions),
+                ("cache_hits_total", &cache.hits),
+                ("cache_misses_total", &cache.misses),
+                ("cache_downloaded_bytes_total", &cache.downloaded),
+            ] {
+                let _ = writeln!(
+                    output,
+                    "brewfs_packed_{name} {}",
+                    counter.load(Ordering::Relaxed)
+                );
+            }
+        }
         self.budget.render_into(output);
         self.index.render_into(output);
         self.index.render_payload_retention(output);
@@ -930,6 +953,9 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
                 inflight_hits = cache.inflight_hits.load(Ordering::Relaxed),
                 local_bytes = cache.local_bytes.load(Ordering::Relaxed),
                 downloaded = cache.downloaded.load(Ordering::Relaxed),
+                live_entries = cache.occupancy.live_entries.load(Ordering::Relaxed),
+                live_reserved_bytes = cache.occupancy.live_reserved_bytes.load(Ordering::Relaxed),
+                evictions = cache.evictions.load(Ordering::Relaxed),
                 "packed whole object cache drained"
             );
         }
@@ -940,7 +966,20 @@ impl<B: ObjectBackend + Clone + 'static> PackedReadonlyMeta<B> {
             .transport
             .drain()
             .await
-            .map_err(MetaError::Anyhow)
+            .map_err(MetaError::Anyhow)?;
+        let io = &self.context.metrics.io;
+        tracing::info!(
+            event = "packed_backend_transport_drained",
+            manifest_digest = %hex::encode(self.manifest_reference().digest),
+            heads = io.heads.load(Ordering::Relaxed),
+            full_gets = io.full_gets.load(Ordering::Relaxed),
+            range_gets = io.range_gets.load(Ordering::Relaxed),
+            requested_bytes = io.requested_bytes.load(Ordering::Relaxed),
+            received_bytes = io.received_bytes.load(Ordering::Relaxed),
+            failures = io.failures.load(Ordering::Relaxed),
+            "packed backend transport drained"
+        );
+        Ok(())
     }
 
     pub fn chunk_size(&self) -> u64 {

@@ -1,0 +1,29 @@
+{
+  "schema": "c3-p1-final-acceptance-v1",
+  "accepted_optimization": true,
+  "files": 10000,
+  "p0_binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/brewfs",
+  "p1_binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/brewfs",
+  "profile": {
+    "path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/tooling-main-004/perf-main-preparation-002/frozen/main-cache-profile.json",
+    "bytes": 2769
+  },
+  "comparison": {
+    "path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/campaign-main-10000-001/comparison.json",
+    "bytes": 97171
+  },
+  "complete_ci": true,
+  "functional_and_reopen": true,
+  "representative_wall_and_drain_benefit": true,
+  "no_material_regressions": true,
+  "counter_and_tail_scope_reviewed": true,
+  "primary_metric": "initial mount_start through normal process exit",
+  "median_paired_ratio": 0.34600113871861454,
+  "faster_pairs": 6,
+  "total_pairs": 6,
+  "source_head": "fa630c33ed9691f66b09742ae695aecb0d666a0e",
+  "final_backend_scope": "Packed runtime metadata+payload, excluding startup/probe/SDK retries/upper",
+  "physical_backend_cold": false,
+  "measured_inputs": "Qualified binary pair, shared lower, cache budgets and fixed paired order unchanged",
+  "service_scheduling": "Parallel preparation and closure outside measured mount intervals for all pairs"
+}

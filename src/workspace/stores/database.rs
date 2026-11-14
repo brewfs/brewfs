@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use sea_orm::sqlx::sqlite::{
@@ -328,7 +328,15 @@ pub enum StoreFailpoint {
     Disabled = 0,
     BeforeCommit = 1,
     AfterPublicationCommit = 2,
+    PermissionReadBusyOnce = 3,
+    PermissionReadAlwaysBusy = 4,
+    PermissionReadBackendError = 5,
+    VersionedMutationAlwaysBusy = 6,
+    VersionedMutationBackendError = 7,
 }
+
+#[cfg(test)]
+type VersionedMutationBarrier = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 
 pub struct SqliteWorkspaceStore {
     pool: SqlitePool,
@@ -339,6 +347,16 @@ pub struct SqliteWorkspaceStore {
     sidecar_clock_ns: AtomicI64,
     #[cfg(test)]
     sidecar_commit_clock_ns: AtomicI64,
+    #[cfg(test)]
+    permission_snapshot_reads: AtomicUsize,
+    #[cfg(test)]
+    root_permission_snapshot_reads: AtomicUsize,
+    #[cfg(test)]
+    versioned_mutation_barrier: std::sync::Mutex<Option<VersionedMutationBarrier>>,
+    #[cfg(test)]
+    versioned_mutation_attempts: AtomicUsize,
+    #[cfg(test)]
+    versioned_mutation_commits: AtomicUsize,
 }
 
 impl SqliteWorkspaceStore {
@@ -662,6 +680,16 @@ impl SqliteWorkspaceStore {
             sidecar_clock_ns: AtomicI64::new(-1),
             #[cfg(test)]
             sidecar_commit_clock_ns: AtomicI64::new(-1),
+            #[cfg(test)]
+            permission_snapshot_reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            root_permission_snapshot_reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            versioned_mutation_barrier: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            versioned_mutation_attempts: AtomicUsize::new(0),
+            #[cfg(test)]
+            versioned_mutation_commits: AtomicUsize::new(0),
         })
     }
 
@@ -1309,6 +1337,41 @@ impl SqliteWorkspaceStore {
     #[cfg(test)]
     pub fn set_failpoint(&self, failpoint: StoreFailpoint) {
         self.failpoint.store(failpoint as u8, Ordering::SeqCst);
+    }
+
+    /// Actual bounded permission queries through this independent store.
+    /// Test-only counters neither cache rows nor alter transaction scheduling.
+    #[cfg(test)]
+    pub(crate) fn permission_snapshot_read_counts(&self) -> (usize, usize) {
+        (
+            self.permission_snapshot_reads.load(Ordering::Relaxed),
+            self.root_permission_snapshot_reads.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Pause one fully prepared mutation before taking any SQLite write lock.
+    /// The other connection can commit a real competing transaction meanwhile.
+    #[cfg(test)]
+    pub(crate) fn hold_next_versioned_mutation(&self) -> VersionedMutationBarrier {
+        let barrier = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let old = self
+            .versioned_mutation_barrier
+            .lock()
+            .unwrap()
+            .replace(barrier.clone());
+        assert!(old.is_none(), "one pending versioned mutation barrier");
+        barrier
+    }
+
+    #[cfg(test)]
+    pub(crate) fn versioned_mutation_counts(&self) -> (usize, usize) {
+        (
+            self.versioned_mutation_attempts.load(Ordering::Relaxed),
+            self.versioned_mutation_commits.load(Ordering::Relaxed),
+        )
     }
 
     #[cfg(test)]
@@ -2696,6 +2759,36 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         }
         // One SQLite snapshot spans every row, including absent ACL/dentry
         // rows. Independent readers cannot combine mode and ACL commits.
+        #[cfg(test)]
+        {
+            self.permission_snapshot_reads
+                .fetch_add(1, Ordering::Relaxed);
+            if request.inodes.contains(&1) {
+                self.root_permission_snapshot_reads
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            if self
+                .failpoint
+                .compare_exchange(
+                    StoreFailpoint::PermissionReadBusyOnce as u8,
+                    StoreFailpoint::Disabled as u8,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+                || self.failpoint.load(Ordering::SeqCst)
+                    == StoreFailpoint::PermissionReadAlwaysBusy as u8
+            {
+                return Err(WorkspaceError::Busy);
+            }
+            if self.failpoint.load(Ordering::SeqCst)
+                == StoreFailpoint::PermissionReadBackendError as u8
+            {
+                return Err(WorkspaceError::Backend(
+                    "injected permission snapshot backend error".into(),
+                ));
+            }
+        }
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let head = permission_layer_tx(&mut tx, request.layer_ids[0]).await?;
         let base = permission_layer_tx(&mut tx, request.layer_ids[1]).await?;
@@ -2784,6 +2877,27 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         request: VersionedMutation,
     ) -> Result<MutationResult, WorkspaceError> {
         let count = request.validate()?;
+        #[cfg(test)]
+        {
+            self.versioned_mutation_attempts
+                .fetch_add(1, Ordering::Relaxed);
+            let barrier = self.versioned_mutation_barrier.lock().unwrap().take();
+            if let Some((entered, resume)) = barrier {
+                entered.notify_one();
+                resume.notified().await;
+            }
+            match self.failpoint.load(Ordering::SeqCst) {
+                value if value == StoreFailpoint::VersionedMutationAlwaysBusy as u8 => {
+                    return Err(WorkspaceError::Busy);
+                }
+                value if value == StoreFailpoint::VersionedMutationBackendError as u8 => {
+                    return Err(WorkspaceError::Backend(
+                        "injected versioned mutation backend error".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         let _local_gate = self.write_gate.lock().await;
         let mut tx = self.begin_write().await?;
         Self::checked_guard(&mut tx, &request.guard).await?;
@@ -2795,6 +2909,9 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         }
         let Some((first, last)) = Self::allocate_sequences(&mut tx, head, count).await? else {
             tx.commit().await.map_err(backend)?;
+            #[cfg(test)]
+            self.versioned_mutation_commits
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(MutationResult {
                 first_sequence: None,
                 last_sequence: None,
@@ -2848,6 +2965,9 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             ));
         }
         tx.commit().await.map_err(backend)?;
+        #[cfg(test)]
+        self.versioned_mutation_commits
+            .fetch_add(1, Ordering::Relaxed);
         Ok(MutationResult {
             first_sequence: Some(first),
             last_sequence: Some(last),
