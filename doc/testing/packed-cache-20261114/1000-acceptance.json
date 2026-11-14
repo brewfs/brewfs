@@ -1,0 +1,24 @@
+{
+  "schema": "c3-p1-small-acceptance-v1",
+  "accepted_for_10000": true,
+  "files": 1000,
+  "p0_binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p0-ci-001/brewfs",
+  "p1_binary_path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/main-p1-ci-003/brewfs",
+  "profile": {
+    "path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/tooling-main-004/perf-main-preparation-002/frozen/main-cache-profile.json",
+    "bytes": 2769
+  },
+  "comparison": {
+    "path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/campaign-main-1000-001/comparison.json",
+    "bytes": 96646
+  },
+  "complete_ci": true,
+  "functional_and_reopen": true,
+  "representative_wall_and_drain_benefit": true,
+  "no_material_regressions": true,
+  "counter_and_tail_scope_reviewed": true,
+  "primary_metric": "initial mount_start through normal process exit",
+  "median_paired_ratio": 0.5610538775759262,
+  "measured_inputs": "Qualified binaries, shared lower, cache budgets and fixed paired order unchanged",
+  "service_scheduling": "Pairs 1-4 sequential service stages; pairs 5-6 parallel preparation and closure outside measured mount intervals"
+}

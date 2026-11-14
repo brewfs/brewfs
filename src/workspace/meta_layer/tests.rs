@@ -27,6 +27,12 @@ mod kernel_cache_tests;
 #[path = "tests/packed_open_preparation_tests.rs"]
 mod packed_open_preparation_tests;
 
+#[path = "tests/native_open_snapshot_tests.rs"]
+mod native_open_snapshot_tests;
+
+#[path = "tests/native_mutation_retry_tests.rs"]
+mod native_mutation_retry_tests;
+
 async fn test_meta() -> WorkspaceMetaLayer<SqliteWorkspaceStore> {
     let store = Arc::new(
         SqliteWorkspaceStore::connect("sqlite::memory:")

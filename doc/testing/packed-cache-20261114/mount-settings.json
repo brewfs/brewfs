@@ -1,0 +1,48 @@
+{
+  "client_memory_max_bytes": 34359738368,
+  "client_swap_max_bytes": 0,
+  "client_disk_cache_total_bytes": 68719476736,
+  "cache": {
+    "read_memory_bytes": 8589934592,
+    "write_memory_bytes": 2147483648,
+    "memory_budget_bytes": 2147483648,
+    "read_ssd_bytes": 34359738368,
+    "write_ssd_bytes": 17179869184,
+    "packed_cache_bytes": 17179869184,
+    "packed_cache": "on",
+    "writeback_mode": "upload_before_commit"
+  },
+  "mount_environment": {
+    "BREWFS_PACKED_METADATA_CACHE_BYTES": "1073741824",
+    "BREWFS_PACKED_ROOTS_BUDGET_BYTES": "67108864",
+    "BREWFS_PACKED_METADATA_OWNED_BUDGET_BYTES": "2147483648",
+    "BREWFS_PACKED_PLANS_BUDGET_BYTES": "268435456",
+    "BREWFS_PACKED_CONTROL_BUDGET_BYTES": "67108864",
+    "BREWFS_PACKED_STORED_BUDGET_BYTES": "268435456",
+    "BREWFS_PACKED_RAW_BUDGET_BYTES": "536870912",
+    "BREWFS_PACKED_DECODE_WORKSPACE_BUDGET_BYTES": "134217728",
+    "BREWFS_PACKED_OUTPUT_BUDGET_BYTES": "536870912",
+    "BREWFS_PACKED_CACHE": "on",
+    "BREWFS_PACKED_CACHE_BYTES": "17179869184",
+    "BREWFS_PACKED_RETAINED_PAYLOAD_BYTES": "8388608",
+    "BREWFS_WORKSPACE_ROW_CACHE_BYTES": "67108864",
+    "BREWFS_WORKSPACE_ROW_CACHE_POLICY": "lease",
+    "BREWFS_WORKSPACE_ROW_CACHE_TTL_MS": "60000",
+    "BREWFS_WORKSPACE_EMPTY_QUERY_CACHE": "1",
+    "BREWFS_METADATA_SYNC": "remote",
+    "BREWFS_PACKED_VERIFY_MEMO": "1"
+  },
+  "backend": {
+    "rustfs_memory_max_bytes_per_node": 25769803776,
+    "redis_memory_max_bytes": 68719476736,
+    "redis_maxmemory_bytes": 51539607552,
+    "redis_eviction": "noeviction"
+  },
+  "metadata_encoding": "raw",
+  "data_encoding": "raw",
+  "inline_data": "off",
+  "chunk_size": 67108864,
+  "block_size": 4194304,
+  "file_bytes": 4096,
+  "seed": 9173
+}

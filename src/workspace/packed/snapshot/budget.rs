@@ -320,15 +320,39 @@ impl SnapshotMountBudget {
         self: &Arc<Self>,
         charges: &[(SnapshotBudgetPool, u64)],
     ) -> PackedResult<SnapshotOwnedPermit> {
+        self.admit_preserving_headroom(charges, None)
+    }
+    /// Nonblocking admission that leaves space for an arena's downstream work.
+    /// Check and charge share one state lock. The headroom is not reserved
+    /// against unrelated consumers; it limits this class of arena admissions.
+    pub(crate) fn admit_with_headroom(
+        self: &Arc<Self>,
+        pool: SnapshotBudgetPool,
+        bytes: u64,
+        headroom: u64,
+    ) -> PackedResult<SnapshotOwnedPermit> {
+        self.admit_preserving_headroom(&[(pool, bytes)], Some((pool, headroom)))
+    }
+    fn admit_preserving_headroom(
+        self: &Arc<Self>,
+        charges: &[(SnapshotBudgetPool, u64)],
+        headroom: Option<(SnapshotBudgetPool, u64)>,
+    ) -> PackedResult<SnapshotOwnedPermit> {
         let mut totals = [0u64; 8];
         for (pool, bytes) in charges {
             totals[*pool as usize] = totals[*pool as usize]
                 .checked_add(*bytes)
                 .ok_or_else(|| PackedWireError::LimitExceeded("mount admission overflow".into()))?;
         }
+        let mut required = totals;
+        if let Some((pool, bytes)) = headroom {
+            required[pool as usize] = required[pool as usize]
+                .checked_add(bytes)
+                .ok_or_else(|| PackedWireError::LimitExceeded("mount admission overflow".into()))?;
+        }
         let mut state = self.state.lock().unwrap();
         if state.closed
-            || totals.iter().enumerate().any(|(i, bytes)| {
+            || required.iter().enumerate().any(|(i, bytes)| {
                 state.used[i]
                     .checked_add(*bytes)
                     .is_none_or(|n| n > self.limits.bytes[i])
@@ -338,7 +362,7 @@ impl SnapshotMountBudget {
             return Err(PackedWireError::LimitExceeded(if state.closed {
                 "mount budget closed".into()
             } else {
-                let (index, bytes) = totals
+                let (index, bytes) = required
                     .iter()
                     .enumerate()
                     .find(|(i, bytes)| {

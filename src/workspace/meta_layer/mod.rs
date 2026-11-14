@@ -48,6 +48,7 @@ use super::resolver::{
 
 mod kernel_cache;
 mod namespace_epoch;
+mod native_mutation_retry;
 mod packed_enumeration;
 pub mod packed_lower;
 mod packed_paths;
@@ -131,6 +132,10 @@ pub struct WorkspaceMetaLayer<W> {
     retired_cache_disabled: bool,
     locks: Mutex<WorkspaceLocks>,
     mutation_gate: Mutex<()>,
+    #[cfg(test)]
+    native_retry_events: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<native_mutation_retry::NativeRetryEvent>>,
+    >,
     /// Data writes waiting for the next group commit (see `write`).
     write_queue: std::sync::Mutex<WriteQueue>,
     metrics: Arc<WorkspaceMetrics>,
@@ -309,6 +314,8 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             retired_cache_disabled: false,
             locks: Mutex::new(WorkspaceLocks::default()),
             mutation_gate: Mutex::new(()),
+            #[cfg(test)]
+            native_retry_events: std::sync::Mutex::new(None),
             write_queue: std::sync::Mutex::new(WriteQueue::default()),
             metrics: global_workspace_metrics(),
             row_cache_counters: Arc::new(RowCacheCounters::default()),
@@ -1727,7 +1734,7 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
         actor: Option<(u32, &[u32])>,
     ) -> Result<FileAttr, MetaError> {
         let _mutation_guard = self.mutation_gate.lock().await;
-        for _ in 0..64 {
+        for attempt in 0..64 {
             let expected_layers = self.mutation_version().await?;
             let result = async {
                 let (mut inode, access, _, control) =
@@ -1894,7 +1901,11 @@ impl<W: WorkspaceStore + 'static> WorkspaceMetaLayer<W> {
             .await;
             match result {
                 Err(MetaError::Io(ref error)) if error.raw_os_error() == Some(libc::EBUSY) => {
-                    tokio::task::yield_now().await;
+                    if self.packed_lower().is_none() {
+                        self.wait_native_mutation_retry(attempt).await;
+                    } else {
+                        tokio::task::yield_now().await;
+                    }
                 }
                 other => return other,
             }
@@ -3452,11 +3463,24 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
 
     async fn open(&self, ino: i64, flags: OpenFlags) -> Result<FileAttr, MetaError> {
         let _mutation_guard = self.mutation_gate.lock().await;
-        for _ in 0..64 {
-            let expected_layers = self.mutation_version().await?;
+        for attempt in 0..64 {
+            let packed_version = if self.packed_lower().is_some() {
+                Some(self.mutation_version().await?)
+            } else {
+                None
+            };
             let result = async {
-                let (mut inode, access, _, control) =
-                    self.permission_inode(&expected_layers, ino).await?;
+                let native_version;
+                let (expected_layers, (mut inode, access, _, control)) = match packed_version
+                    .as_ref()
+                {
+                    Some(version) => (version, self.permission_inode(version, ino).await?),
+                    None => {
+                        let (version, permission) = self.retain_native_open_mutation(ino).await?;
+                        native_version = version;
+                        (&native_version, permission)
+                    }
+                };
                 if let Some(actor) = crate::meta::layer::namespace_actor() {
                     let bits = flags.bits() & OpenFlags::RDWR.bits();
                     let requested = crate::meta::layer::open_access_mask().unwrap_or(
@@ -3504,20 +3528,24 @@ impl<W: WorkspaceStore + 'static> MetaLayer for WorkspaceMetaLayer<W> {
                     inode.atime_ns = now_ns()?;
                     let extents = self.hole_extents(inode.layer_id, ino, 0, old_size)?;
                     let inode = self
-                        .mutate_data(&expected_layers, inode, extents, Vec::new())
+                        .mutate_data(expected_layers, inode, extents, Vec::new())
                         .await?;
                     return file_attr(&inode);
                 }
                 inode.atime_ns = now_ns()?;
                 let inode = self
-                    .mutate_inode(&expected_layers, inode, Vec::new())
+                    .mutate_inode(expected_layers, inode, Vec::new())
                     .await?;
                 file_attr(&inode)
             }
             .await;
             match result {
                 Err(MetaError::Io(ref error)) if error.raw_os_error() == Some(libc::EBUSY) => {
-                    tokio::task::yield_now().await;
+                    if self.packed_lower().is_none() {
+                        self.wait_native_mutation_retry(attempt).await;
+                    } else {
+                        tokio::task::yield_now().await;
+                    }
                 }
                 other => return other,
             }

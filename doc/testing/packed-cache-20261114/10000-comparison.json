@@ -1,0 +1,2712 @@
+{
+  "schema": "c3-p1-comparison-v1",
+  "plan": {
+    "path": "/srv/ax-idcai-20261113/diagnostics/c3-packed-p1-20261114/campaign-main-10000-001/perf-plan.json",
+    "bytes": 1553579
+  },
+  "files": 10000,
+  "case": "lifecycle",
+  "functional_and_reopen": true,
+  "slots": [
+    {
+      "slot": 0,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-90c57b5af5e6/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 56.069926037,
+      "measurement_through_exit_seconds": 56.308136255,
+      "lifecycle_wall_seconds": 56.513001721,
+      "drain_seconds": 0.20312737,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8348,
+        "brewfs_packed_runtime_backend_full_gets_total": 8347,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 339801632,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 339801632,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8348,
+        "brewfs_packed_runtime_backend_full_gets_total": 8347,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 339801632,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 339801632,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 7020,
+        "misses": 8348,
+        "hit_rate": 0.45679333680374806,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 7020,
+        "misses": 8348,
+        "hit_rate": 0.45679333680374806,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5092,
+        "misses": 13340,
+        "evictions": 13080,
+        "hit_rate": 0.2762586805555556,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8354816,
+          "brewfs_packed_v3_payload_retention_entries": 206,
+          "brewfs_packed_v3_payload_retention_hits_total": 5092,
+          "brewfs_packed_v3_payload_retention_misses_total": 13340,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13080
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 339801632,
+          "received_bytes": 339801632,
+          "requested_per_logical_read_byte": 4.1020264444471914,
+          "received_per_logical_read_byte": 4.1020264444471914
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 339801632,
+          "received_bytes": 339801632,
+          "requested_per_logical_read_byte": 4.1020264444471914,
+          "received_per_logical_read_byte": 4.1020264444471914
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-90c57b5af5e6/trial/brewfs/run/result.json",
+        "bytes": 1963
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 56.062257093,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.412981989,
+            "io_p50_ns": 21660024,
+            "io_p95_ns": 77710050,
+            "io_p99_ns": 91193657,
+            "application_p99_ns": 91228091
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.402097352,
+            "io_p50_ns": 18725417,
+            "io_p95_ns": 46014458,
+            "io_p99_ns": 62389864,
+            "application_p99_ns": 62393029
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 17.083328226,
+            "io_p50_ns": 14017027,
+            "io_p95_ns": 43037633,
+            "io_p99_ns": 59377132,
+            "application_p99_ns": 59380377
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.249179703,
+            "io_p50_ns": 37802185,
+            "io_p95_ns": 47931737,
+            "io_p99_ns": 70379764,
+            "application_p99_ns": 70383671
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.258135792,
+            "io_p50_ns": 3623536,
+            "io_p95_ns": 6000778,
+            "io_p99_ns": 6350618,
+            "application_p99_ns": 6354344
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.4249522190000001,
+            "io_p50_ns": 43338191,
+            "io_p95_ns": 53619685,
+            "io_p99_ns": 57454784,
+            "application_p99_ns": 57458280
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.245119242,
+            "io_p50_ns": 3560950,
+            "io_p95_ns": 5595145,
+            "io_p99_ns": 6303460,
+            "application_p99_ns": 6305664
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.978653126,
+            "io_p50_ns": 8119381,
+            "io_p95_ns": 43113103,
+            "io_p99_ns": 50603116,
+            "application_p99_ns": 50605661
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 18.420087738,
+      "full_reopen_check_seconds": 17.872642672
+    },
+    {
+      "slot": 1,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-6307fc7b1370/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 19.142725249,
+      "measurement_through_exit_seconds": 19.381419771,
+      "lifecycle_wall_seconds": 19.593782729,
+      "drain_seconds": 0.205923057,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2262,
+        "brewfs_packed_runtime_backend_full_gets_total": 1904,
+        "brewfs_packed_runtime_backend_range_gets_total": 358,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56188160,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56188160,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2262,
+        "brewfs_packed_runtime_backend_full_gets_total": 1904,
+        "brewfs_packed_runtime_backend_range_gets_total": 358,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56188160,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56188160,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13176,
+        "misses": 2262,
+        "hit_rate": 0.8534784298484259,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13176,
+        "misses": 2262,
+        "hit_rate": 0.8534784298484259,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5041,
+        "misses": 13391,
+        "evictions": 13149,
+        "hit_rate": 0.2734917534722222,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8388096,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5041,
+          "brewfs_packed_v3_payload_retention_misses_total": 13391,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13149
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56188160,
+          "received_bytes": 56188160,
+          "requested_per_logical_read_byte": 0.6782937351661392,
+          "received_per_logical_read_byte": 0.6782937351661392
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56188160,
+          "received_bytes": 56188160,
+          "requested_per_logical_read_byte": 0.6782937351661392,
+          "received_per_logical_read_byte": 0.6782937351661392
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-6307fc7b1370/trial/brewfs/run/result.json",
+        "bytes": 1943
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 19.135292306,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.292389997,
+            "io_p50_ns": 5608958,
+            "io_p95_ns": 30623409,
+            "io_p99_ns": 44096852,
+            "application_p99_ns": 44099877
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.056503302,
+            "io_p50_ns": 3802637,
+            "io_p95_ns": 7152232,
+            "io_p99_ns": 8931655,
+            "application_p99_ns": 8934390
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.51368305,
+            "io_p50_ns": 3211149,
+            "io_p95_ns": 5213334,
+            "io_p99_ns": 6047603,
+            "application_p99_ns": 6050078
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.287804736,
+            "io_p50_ns": 37008738,
+            "io_p95_ns": 53622429,
+            "io_p99_ns": 73846519,
+            "application_p99_ns": 73850055
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.254420205,
+            "io_p50_ns": 3693995,
+            "io_p95_ns": 5757274,
+            "io_p99_ns": 6434411,
+            "application_p99_ns": 6437376
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.504291085,
+            "io_p50_ns": 44575350,
+            "io_p95_ns": 60564181,
+            "io_p99_ns": 64797897,
+            "application_p99_ns": 64800913
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.24964336,
+            "io_p50_ns": 3534689,
+            "io_p95_ns": 5858211,
+            "io_p99_ns": 6359191,
+            "application_p99_ns": 6361645
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.968400836,
+            "io_p50_ns": 8331641,
+            "io_p95_ns": 43054497,
+            "io_p99_ns": 48055889,
+            "application_p99_ns": 48058513
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 11.953397924,
+      "full_reopen_check_seconds": 12.115458274
+    },
+    {
+      "slot": 2,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-a68a4dc2ccc2/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 18.963462997,
+      "measurement_through_exit_seconds": 19.201921562,
+      "lifecycle_wall_seconds": 19.408077542,
+      "drain_seconds": 0.205249227,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2257,
+        "brewfs_packed_runtime_backend_full_gets_total": 1895,
+        "brewfs_packed_runtime_backend_range_gets_total": 362,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56217044,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56217044,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2257,
+        "brewfs_packed_runtime_backend_full_gets_total": 1895,
+        "brewfs_packed_runtime_backend_range_gets_total": 362,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56217044,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56217044,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13165,
+        "misses": 2257,
+        "hit_rate": 0.853650628971599,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13165,
+        "misses": 2257,
+        "hit_rate": 0.853650628971599,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5054,
+        "misses": 13378,
+        "evictions": 13133,
+        "hit_rate": 0.2741970486111111,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8388096,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5054,
+          "brewfs_packed_v3_payload_retention_misses_total": 13378,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13133
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56217044,
+          "received_bytes": 56217044,
+          "requested_per_logical_read_byte": 0.6786424178111402,
+          "received_per_logical_read_byte": 0.6786424178111402
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56217044,
+          "received_bytes": 56217044,
+          "requested_per_logical_read_byte": 0.6786424178111402,
+          "received_per_logical_read_byte": 0.6786424178111402
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-a68a4dc2ccc2/trial/brewfs/run/result.json",
+        "bytes": 1950
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 18.955807081,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.168915372,
+            "io_p50_ns": 5621832,
+            "io_p95_ns": 30176880,
+            "io_p99_ns": 42222964,
+            "application_p99_ns": 42225909
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.060655719,
+            "io_p50_ns": 3810932,
+            "io_p95_ns": 6873305,
+            "io_p99_ns": 8335338,
+            "application_p99_ns": 8338163
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.48699252,
+            "io_p50_ns": 3174101,
+            "io_p95_ns": 5231308,
+            "io_p99_ns": 6092506,
+            "application_p99_ns": 6094971
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.281807666,
+            "io_p50_ns": 38184680,
+            "io_p95_ns": 51745195,
+            "io_p99_ns": 70247730,
+            "application_p99_ns": 70251538
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.256128595,
+            "io_p50_ns": 3664551,
+            "io_p95_ns": 5726837,
+            "io_p99_ns": 6255108,
+            "application_p99_ns": 6258143
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.4403107450000001,
+            "io_p50_ns": 43239380,
+            "io_p95_ns": 57271350,
+            "io_p99_ns": 62824626,
+            "application_p99_ns": 62828292
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.256100903,
+            "io_p50_ns": 3760068,
+            "io_p95_ns": 5770127,
+            "io_p99_ns": 6415997,
+            "application_p99_ns": 6419212
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.99661817,
+            "io_p50_ns": 8491227,
+            "io_p95_ns": 43438140,
+            "io_p99_ns": 49659785,
+            "application_p99_ns": 49662621
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 11.900601318,
+      "full_reopen_check_seconds": 11.958543423
+    },
+    {
+      "slot": 3,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-1e462e767ffe/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 56.161182223,
+      "measurement_through_exit_seconds": 56.400240169,
+      "lifecycle_wall_seconds": 56.609547487,
+      "drain_seconds": 0.203784218,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8381,
+        "brewfs_packed_runtime_backend_full_gets_total": 8381,
+        "brewfs_packed_runtime_backend_range_gets_total": 0,
+        "brewfs_packed_runtime_backend_received_bytes_total": 340596116,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 340596116,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8381,
+        "brewfs_packed_runtime_backend_full_gets_total": 8381,
+        "brewfs_packed_runtime_backend_range_gets_total": 0,
+        "brewfs_packed_runtime_backend_received_bytes_total": 340596116,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 340596116,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 7029,
+        "misses": 8381,
+        "hit_rate": 0.4561323815704088,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 7029,
+        "misses": 8381,
+        "hit_rate": 0.4561323815704088,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5045,
+        "misses": 13386,
+        "evictions": 13121,
+        "hit_rate": 0.27372361781780696,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8379904,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5045,
+          "brewfs_packed_v3_payload_retention_misses_total": 13386,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13121
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 340596116,
+          "received_bytes": 340596116,
+          "requested_per_logical_read_byte": 4.1116173176825805,
+          "received_per_logical_read_byte": 4.1116173176825805
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 340596116,
+          "received_bytes": 340596116,
+          "requested_per_logical_read_byte": 4.1116173176825805,
+          "received_per_logical_read_byte": 4.1116173176825805
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-1e462e767ffe/trial/brewfs/run/result.json",
+        "bytes": 1955
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 56.153875764,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.426557947,
+            "io_p50_ns": 21656950,
+            "io_p95_ns": 78589541,
+            "io_p99_ns": 91630581,
+            "application_p99_ns": 91633587
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.334220302,
+            "io_p50_ns": 18616998,
+            "io_p95_ns": 46047562,
+            "io_p99_ns": 61004908,
+            "application_p99_ns": 61024225
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 17.100380413,
+            "io_p50_ns": 14073647,
+            "io_p95_ns": 42273788,
+            "io_p99_ns": 57568401,
+            "application_p99_ns": 57571517
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.28699908,
+            "io_p50_ns": 38598759,
+            "io_p95_ns": 50273033,
+            "io_p99_ns": 77955905,
+            "application_p99_ns": 77960153
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.268306123,
+            "io_p50_ns": 3824547,
+            "io_p95_ns": 5991388,
+            "io_p99_ns": 7879803,
+            "application_p99_ns": 7882778
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.462435102,
+            "io_p50_ns": 43992168,
+            "io_p95_ns": 53978549,
+            "io_p99_ns": 57250922,
+            "application_p99_ns": 57254589
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.250658374,
+            "io_p50_ns": 3614367,
+            "io_p95_ns": 5632974,
+            "io_p99_ns": 6085232,
+            "application_p99_ns": 6087546
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 2.017030359,
+            "io_p50_ns": 8549655,
+            "io_p95_ns": 44164037,
+            "io_p99_ns": 49742819,
+            "application_p99_ns": 49745353
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 18.186138585,
+      "full_reopen_check_seconds": 18.308994262
+    },
+    {
+      "slot": 4,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-99cf965e19db/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 55.703807219,
+      "measurement_through_exit_seconds": 55.942731678,
+      "lifecycle_wall_seconds": 56.133941181,
+      "drain_seconds": 0.202996897,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8228,
+        "brewfs_packed_runtime_backend_full_gets_total": 8228,
+        "brewfs_packed_runtime_backend_range_gets_total": 0,
+        "brewfs_packed_runtime_backend_received_bytes_total": 334286072,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 334286072,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8228,
+        "brewfs_packed_runtime_backend_full_gets_total": 8228,
+        "brewfs_packed_runtime_backend_range_gets_total": 0,
+        "brewfs_packed_runtime_backend_received_bytes_total": 334286072,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 334286072,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 7175,
+        "misses": 8228,
+        "hit_rate": 0.4658183470752451,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 7175,
+        "misses": 8228,
+        "hit_rate": 0.4658183470752451,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5061,
+        "misses": 13371,
+        "evictions": 13114,
+        "hit_rate": 0.2745768229166667,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8388096,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5061,
+          "brewfs_packed_v3_payload_retention_misses_total": 13371,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13114
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 334286072,
+          "received_bytes": 334286072,
+          "requested_per_logical_read_byte": 4.035443559477601,
+          "received_per_logical_read_byte": 4.035443559477601
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 334286072,
+          "received_bytes": 334286072,
+          "requested_per_logical_read_byte": 4.035443559477601,
+          "received_per_logical_read_byte": 4.035443559477601
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-99cf965e19db/trial/brewfs/run/result.json",
+        "bytes": 1956
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 55.696267377,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.669545496,
+            "io_p50_ns": 21640870,
+            "io_p95_ns": 79703779,
+            "io_p99_ns": 96255945,
+            "application_p99_ns": 96258961
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.306554672,
+            "io_p50_ns": 18635042,
+            "io_p95_ns": 46258103,
+            "io_p99_ns": 63088555,
+            "application_p99_ns": 63092012
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 16.559727479,
+            "io_p50_ns": 13555916,
+            "io_p95_ns": 42015559,
+            "io_p99_ns": 55306544,
+            "application_p99_ns": 55309550
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.238913306,
+            "io_p50_ns": 37554661,
+            "io_p95_ns": 48992166,
+            "io_p99_ns": 74933155,
+            "application_p99_ns": 74937073
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.259814706,
+            "io_p50_ns": 3705376,
+            "io_p95_ns": 5995045,
+            "io_p99_ns": 6424632,
+            "application_p99_ns": 6427608
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.447709325,
+            "io_p50_ns": 44371201,
+            "io_p95_ns": 53981345,
+            "io_p99_ns": 59442880,
+            "application_p99_ns": 59446737
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.246892405,
+            "io_p50_ns": 3509823,
+            "io_p95_ns": 5486802,
+            "io_p99_ns": 6029889,
+            "application_p99_ns": 6032916
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.959138989,
+            "io_p50_ns": 8471661,
+            "io_p95_ns": 42217765,
+            "io_p99_ns": 49812238,
+            "application_p99_ns": 49814121
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 18.146997029,
+      "full_reopen_check_seconds": 17.70612999
+    },
+    {
+      "slot": 5,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-6b2b54485e79/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 19.298315833,
+      "measurement_through_exit_seconds": 19.533006655,
+      "lifecycle_wall_seconds": 19.729626468,
+      "drain_seconds": 0.202085415,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2254,
+        "brewfs_packed_runtime_backend_full_gets_total": 1895,
+        "brewfs_packed_runtime_backend_range_gets_total": 359,
+        "brewfs_packed_runtime_backend_received_bytes_total": 55852184,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 55852184,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2254,
+        "brewfs_packed_runtime_backend_full_gets_total": 1895,
+        "brewfs_packed_runtime_backend_range_gets_total": 359,
+        "brewfs_packed_runtime_backend_received_bytes_total": 55852184,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 55852184,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13151,
+        "misses": 2254,
+        "hit_rate": 0.8536838688737423,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13151,
+        "misses": 2254,
+        "hit_rate": 0.8536838688737423,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5068,
+        "misses": 13362,
+        "evictions": 13117,
+        "hit_rate": 0.2749864351600651,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8358912,
+          "brewfs_packed_v3_payload_retention_entries": 206,
+          "brewfs_packed_v3_payload_retention_hits_total": 5068,
+          "brewfs_packed_v3_payload_retention_misses_total": 13362,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13117
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 55852184,
+          "received_bytes": 55852184,
+          "requested_per_logical_read_byte": 0.6742378910885581,
+          "received_per_logical_read_byte": 0.6742378910885581
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 55852184,
+          "received_bytes": 55852184,
+          "requested_per_logical_read_byte": 0.6742378910885581,
+          "received_per_logical_read_byte": 0.6742378910885581
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-6b2b54485e79/trial/brewfs/run/result.json",
+        "bytes": 1952
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 19.290456328,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.368884631,
+            "io_p50_ns": 5623666,
+            "io_p95_ns": 31237388,
+            "io_p99_ns": 44598803,
+            "application_p99_ns": 44601628
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.053922162,
+            "io_p50_ns": 3806033,
+            "io_p95_ns": 7221501,
+            "io_p99_ns": 9224668,
+            "application_p99_ns": 9227704
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.519349154,
+            "io_p50_ns": 3215547,
+            "io_p95_ns": 5161859,
+            "io_p99_ns": 6011055,
+            "application_p99_ns": 6013590
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.3498800499999999,
+            "io_p50_ns": 38197103,
+            "io_p95_ns": 64078712,
+            "io_p99_ns": 73823446,
+            "application_p99_ns": 73826592
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.253863492,
+            "io_p50_ns": 3636288,
+            "io_p95_ns": 5771550,
+            "io_p99_ns": 6278140,
+            "application_p99_ns": 6281196
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.443170943,
+            "io_p50_ns": 44451570,
+            "io_p95_ns": 53037654,
+            "io_p99_ns": 58393272,
+            "application_p99_ns": 58396849
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.257028184,
+            "io_p50_ns": 3687002,
+            "io_p95_ns": 5721448,
+            "io_p99_ns": 6266629,
+            "application_p99_ns": 6268974
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 2.036476126,
+            "io_p50_ns": 8757201,
+            "io_p95_ns": 45543135,
+            "io_p99_ns": 50457685,
+            "application_p99_ns": 50460331
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 11.921248644,
+      "full_reopen_check_seconds": 11.962440314
+    },
+    {
+      "slot": 6,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-d5e0b4e9d5b5/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 19.009173401,
+      "measurement_through_exit_seconds": 19.245156785,
+      "lifecycle_wall_seconds": 19.443055906,
+      "drain_seconds": 0.202056814,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2260,
+        "brewfs_packed_runtime_backend_full_gets_total": 1894,
+        "brewfs_packed_runtime_backend_range_gets_total": 366,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56204880,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56204880,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2260,
+        "brewfs_packed_runtime_backend_full_gets_total": 1894,
+        "brewfs_packed_runtime_backend_range_gets_total": 366,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56204880,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56204880,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13109,
+        "misses": 2260,
+        "hit_rate": 0.8529507450061813,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13109,
+        "misses": 2260,
+        "hit_rate": 0.8529507450061813,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5111,
+        "misses": 13318,
+        "evictions": 13080,
+        "hit_rate": 0.2773346356286288,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8388096,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5111,
+          "brewfs_packed_v3_payload_retention_misses_total": 13318,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13080
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56204880,
+          "received_bytes": 56204880,
+          "requested_per_logical_read_byte": 0.6784955761100673,
+          "received_per_logical_read_byte": 0.6784955761100673
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56204880,
+          "received_bytes": 56204880,
+          "requested_per_logical_read_byte": 0.6784955761100673,
+          "received_per_logical_read_byte": 0.6784955761100673
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-d5e0b4e9d5b5/trial/brewfs/run/result.json",
+        "bytes": 1945
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 19.001360897,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.354002868,
+            "io_p50_ns": 5638270,
+            "io_p95_ns": 31265584,
+            "io_p99_ns": 44172368,
+            "application_p99_ns": 44175404
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.040386526,
+            "io_p50_ns": 3703090,
+            "io_p95_ns": 6957878,
+            "io_p99_ns": 8671618,
+            "application_p99_ns": 8674463
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.437355463,
+            "io_p50_ns": 3119607,
+            "io_p95_ns": 5244750,
+            "io_p99_ns": 6105677,
+            "application_p99_ns": 6108192
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.254569637,
+            "io_p50_ns": 37600366,
+            "io_p95_ns": 50594903,
+            "io_p99_ns": 69653320,
+            "application_p99_ns": 69657318
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.253077647,
+            "io_p50_ns": 3621549,
+            "io_p95_ns": 5761178,
+            "io_p99_ns": 6246960,
+            "application_p99_ns": 6250085
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.434236063,
+            "io_p50_ns": 43867844,
+            "io_p95_ns": 55483402,
+            "io_p99_ns": 60428697,
+            "application_p99_ns": 60431952
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.262723983,
+            "io_p50_ns": 3624825,
+            "io_p95_ns": 6162222,
+            "io_p99_ns": 6756805,
+            "application_p99_ns": 6759971
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.957144008,
+            "io_p50_ns": 8373224,
+            "io_p95_ns": 42573582,
+            "io_p99_ns": 47826086,
+            "application_p99_ns": 47828512
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 11.960828549,
+      "full_reopen_check_seconds": 12.054417174
+    },
+    {
+      "slot": 7,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-d7319801b2b5/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 55.545408,
+      "measurement_through_exit_seconds": 55.785950613,
+      "lifecycle_wall_seconds": 55.984038624,
+      "drain_seconds": 0.204804522,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8105,
+        "brewfs_packed_runtime_backend_full_gets_total": 8104,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 328841468,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 328841468,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8105,
+        "brewfs_packed_runtime_backend_full_gets_total": 8104,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 328841468,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 328841468,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 7220,
+        "misses": 8105,
+        "hit_rate": 0.4711256117455139,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 7220,
+        "misses": 8105,
+        "hit_rate": 0.4711256117455139,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5141,
+        "misses": 13291,
+        "evictions": 13036,
+        "hit_rate": 0.2789171006944444,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8367616,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5141,
+          "brewfs_packed_v3_payload_retention_misses_total": 13291,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13036
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 328841468,
+          "received_bytes": 328841468,
+          "requested_per_logical_read_byte": 3.9697172430497183,
+          "received_per_logical_read_byte": 3.9697172430497183
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 328841468,
+          "received_bytes": 328841468,
+          "requested_per_logical_read_byte": 3.9697172430497183,
+          "received_per_logical_read_byte": 3.9697172430497183
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-d7319801b2b5/trial/brewfs/run/result.json",
+        "bytes": 1962
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 55.537096581,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.229039169,
+            "io_p50_ns": 21007262,
+            "io_p95_ns": 78092327,
+            "io_p99_ns": 91031300,
+            "application_p99_ns": 91034316
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.162067034,
+            "io_p50_ns": 17974616,
+            "io_p95_ns": 44804110,
+            "io_p99_ns": 61442848,
+            "application_p99_ns": 61445853
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 16.898554999,
+            "io_p50_ns": 13123126,
+            "io_p95_ns": 41712856,
+            "io_p99_ns": 56970691,
+            "application_p99_ns": 56973688
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.27909653,
+            "io_p50_ns": 38019323,
+            "io_p95_ns": 53003792,
+            "io_p99_ns": 79799363,
+            "application_p99_ns": 79803240
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.263710373,
+            "io_p50_ns": 3836577,
+            "io_p95_ns": 6214468,
+            "io_p99_ns": 6643064,
+            "application_p99_ns": 6646049
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.4536288499999999,
+            "io_p50_ns": 44214717,
+            "io_p95_ns": 55946171,
+            "io_p99_ns": 59994722,
+            "application_p99_ns": 59997878
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.250032759,
+            "io_p50_ns": 3533406,
+            "io_p95_ns": 5842659,
+            "io_p99_ns": 6526959,
+            "application_p99_ns": 6529954
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.992700211,
+            "io_p50_ns": 8368015,
+            "io_p95_ns": 44017020,
+            "io_p99_ns": 47860241,
+            "application_p99_ns": 47862805
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 18.392478063,
+      "full_reopen_check_seconds": 17.374137476
+    },
+    {
+      "slot": 8,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-8ffd5fe5bf77/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 55.985967272,
+      "measurement_through_exit_seconds": 56.177836146,
+      "lifecycle_wall_seconds": 56.376941404,
+      "drain_seconds": 0.156971032,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8279,
+        "brewfs_packed_runtime_backend_full_gets_total": 8278,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 336301220,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 336301220,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8279,
+        "brewfs_packed_runtime_backend_full_gets_total": 8278,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 336301220,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 336301220,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 7114,
+        "misses": 8279,
+        "hit_rate": 0.46215812382251675,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 7114,
+        "misses": 8279,
+        "hit_rate": 0.46215812382251675,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5061,
+        "misses": 13371,
+        "evictions": 13104,
+        "hit_rate": 0.2745768229166667,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8379904,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5061,
+          "brewfs_packed_v3_payload_retention_misses_total": 13371,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13104
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 336301220,
+          "received_bytes": 336301220,
+          "requested_per_logical_read_byte": 4.05977007708972,
+          "received_per_logical_read_byte": 4.05977007708972
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 336301220,
+          "received_bytes": 336301220,
+          "requested_per_logical_read_byte": 4.05977007708972,
+          "received_per_logical_read_byte": 4.05977007708972
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-8ffd5fe5bf77/trial/brewfs/run/result.json",
+        "bytes": 1954
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 55.978614381,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.84441003,
+            "io_p50_ns": 21845217,
+            "io_p95_ns": 79594112,
+            "io_p99_ns": 93639549,
+            "application_p99_ns": 93643526
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.334513705,
+            "io_p50_ns": 18551798,
+            "io_p95_ns": 47074242,
+            "io_p99_ns": 63832701,
+            "application_p99_ns": 63836609
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 16.545706357,
+            "io_p50_ns": 13339898,
+            "io_p95_ns": 41399694,
+            "io_p99_ns": 57566266,
+            "application_p99_ns": 57568911
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.292059518,
+            "io_p50_ns": 37745936,
+            "io_p95_ns": 55665700,
+            "io_p99_ns": 74667543,
+            "application_p99_ns": 74671370
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.272127118,
+            "io_p50_ns": 3712678,
+            "io_p95_ns": 6237792,
+            "io_p99_ns": 6725397,
+            "application_p99_ns": 6729294
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.46181093,
+            "io_p50_ns": 44030585,
+            "io_p95_ns": 55771006,
+            "io_p99_ns": 59131951,
+            "application_p99_ns": 59135207
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.241319834,
+            "io_p50_ns": 3304050,
+            "io_p95_ns": 5787767,
+            "io_p99_ns": 6456538,
+            "application_p99_ns": 6459684
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.979041231,
+            "io_p50_ns": 8425801,
+            "io_p95_ns": 43451000,
+            "io_p99_ns": 47906907,
+            "application_p99_ns": 47909481
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 19.004188293,
+      "full_reopen_check_seconds": 17.484131165
+    },
+    {
+      "slot": 9,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-9e3265d8e12d/closed-slot.json",
+        "bytes": 971
+      },
+      "application_wall_seconds": 19.028226288,
+      "measurement_through_exit_seconds": 19.268095471,
+      "lifecycle_wall_seconds": 19.466362975,
+      "drain_seconds": 0.206158663,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2242,
+        "brewfs_packed_runtime_backend_full_gets_total": 1909,
+        "brewfs_packed_runtime_backend_range_gets_total": 333,
+        "brewfs_packed_runtime_backend_received_bytes_total": 55967888,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 55967888,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2242,
+        "brewfs_packed_runtime_backend_full_gets_total": 1909,
+        "brewfs_packed_runtime_backend_range_gets_total": 333,
+        "brewfs_packed_runtime_backend_received_bytes_total": 55967888,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 55967888,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13185,
+        "misses": 2242,
+        "hit_rate": 0.8546703830945744,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13185,
+        "misses": 2242,
+        "hit_rate": 0.8546703830945744,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5060,
+        "misses": 13369,
+        "evictions": 13139,
+        "hit_rate": 0.27456725812578003,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8350720,
+          "brewfs_packed_v3_payload_retention_entries": 206,
+          "brewfs_packed_v3_payload_retention_hits_total": 5060,
+          "brewfs_packed_v3_payload_retention_misses_total": 13369,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13139
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 55967888,
+          "received_bytes": 55967888,
+          "requested_per_logical_read_byte": 0.6756346497354628,
+          "received_per_logical_read_byte": 0.6756346497354628
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 55967888,
+          "received_bytes": 55967888,
+          "requested_per_logical_read_byte": 0.6756346497354628,
+          "received_per_logical_read_byte": 0.6756346497354628
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-9e3265d8e12d/trial/brewfs/run/result.json",
+        "bytes": 1945
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 19.019732049,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.178559267,
+            "io_p50_ns": 5607604,
+            "io_p95_ns": 30697891,
+            "io_p99_ns": 44090667,
+            "application_p99_ns": 44093822
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.038980438,
+            "io_p50_ns": 3664518,
+            "io_p95_ns": 6940366,
+            "io_p99_ns": 8680895,
+            "application_p99_ns": 8683510
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.468712326,
+            "io_p50_ns": 3182284,
+            "io_p95_ns": 5039860,
+            "io_p99_ns": 5855052,
+            "application_p99_ns": 5857507
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.291510169,
+            "io_p50_ns": 38107187,
+            "io_p95_ns": 55147228,
+            "io_p99_ns": 72777176,
+            "application_p99_ns": 72782335
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.255800479,
+            "io_p50_ns": 3725631,
+            "io_p95_ns": 5618293,
+            "io_p99_ns": 6267438,
+            "application_p99_ns": 6271375
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.474833028,
+            "io_p50_ns": 44895319,
+            "io_p95_ns": 53768481,
+            "io_p99_ns": 60552376,
+            "application_p99_ns": 60555302
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.262761573,
+            "io_p50_ns": 3748885,
+            "io_p95_ns": 5894425,
+            "io_p99_ns": 7015014,
+            "application_p99_ns": 7018490
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 2.040583182,
+            "io_p50_ns": 8551785,
+            "io_p95_ns": 46014175,
+            "io_p99_ns": 49958652,
+            "application_p99_ns": 49961228
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 12.034629986,
+      "full_reopen_check_seconds": 12.19686898
+    },
+    {
+      "slot": 10,
+      "arm": "P1",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-39200cdae144/closed-slot.json",
+        "bytes": 972
+      },
+      "application_wall_seconds": 19.017176648,
+      "measurement_through_exit_seconds": 19.255400269,
+      "lifecycle_wall_seconds": 19.459400859,
+      "drain_seconds": 0.205001347,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2255,
+        "brewfs_packed_runtime_backend_full_gets_total": 1894,
+        "brewfs_packed_runtime_backend_range_gets_total": 361,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56207776,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56207776,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 2255,
+        "brewfs_packed_runtime_backend_full_gets_total": 1894,
+        "brewfs_packed_runtime_backend_range_gets_total": 361,
+        "brewfs_packed_runtime_backend_received_bytes_total": 56207776,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 56207776,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 13162,
+        "misses": 2255,
+        "hit_rate": 0.853732892261789,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 13162,
+        "misses": 2255,
+        "hit_rate": 0.853732892261789,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5055,
+        "misses": 13376,
+        "evictions": 13128,
+        "hit_rate": 0.27426618197601865,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8379904,
+          "brewfs_packed_v3_payload_retention_entries": 207,
+          "brewfs_packed_v3_payload_retention_hits_total": 5055,
+          "brewfs_packed_v3_payload_retention_misses_total": 13376,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13128
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56207776,
+          "received_bytes": 56207776,
+          "requested_per_logical_read_byte": 0.678530536120451,
+          "received_per_logical_read_byte": 0.678530536120451
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 56207776,
+          "received_bytes": 56207776,
+          "requested_per_logical_read_byte": 0.678530536120451,
+          "received_per_logical_read_byte": 0.678530536120451
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-39200cdae144/trial/brewfs/run/result.json",
+        "bytes": 1944
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 19.009507621,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 9.185095353,
+            "io_p50_ns": 5668776,
+            "io_p95_ns": 30324738,
+            "io_p99_ns": 42967453,
+            "application_p99_ns": 42970438
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 1.042577831,
+            "io_p50_ns": 3719881,
+            "io_p95_ns": 6963939,
+            "io_p99_ns": 8547377,
+            "application_p99_ns": 8550022
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 3.494480141,
+            "io_p50_ns": 3170091,
+            "io_p95_ns": 5145005,
+            "io_p99_ns": 5992998,
+            "application_p99_ns": 5995493
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.29203912,
+            "io_p50_ns": 37822017,
+            "io_p95_ns": 51702599,
+            "io_p99_ns": 68737411,
+            "application_p99_ns": 68741299
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.254462657,
+            "io_p50_ns": 3604617,
+            "io_p95_ns": 5682863,
+            "io_p99_ns": 6281073,
+            "application_p99_ns": 6284449
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.414585617,
+            "io_p50_ns": 43298758,
+            "io_p95_ns": 51290694,
+            "io_p99_ns": 54493015,
+            "application_p99_ns": 54496501
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.256414828,
+            "io_p50_ns": 3718478,
+            "io_p95_ns": 5890458,
+            "io_p99_ns": 6464263,
+            "application_p99_ns": 6467098
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 2.061832404,
+            "io_p50_ns": 8611035,
+            "io_p95_ns": 46427562,
+            "io_p99_ns": 50027321,
+            "application_p99_ns": 50029885
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 11.850593573,
+      "full_reopen_check_seconds": 12.099844671
+    },
+    {
+      "slot": 11,
+      "arm": "P0",
+      "receipt": {
+        "path": "/srv/ax-idcai-20261113/campaign-100k-001/ax-four-06e1b2df8b1e/closed-slot.json",
+        "bytes": 972
+      },
+      "application_wall_seconds": 56.340702964,
+      "measurement_through_exit_seconds": 56.581070058,
+      "lifecycle_wall_seconds": 56.798083834,
+      "drain_seconds": 0.205240798,
+      "operation_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8376,
+        "brewfs_packed_runtime_backend_full_gets_total": 8375,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 340838976,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 340838976,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "through_terminal_backend_delta": {
+        "brewfs_packed_runtime_backend_heads_total": 8376,
+        "brewfs_packed_runtime_backend_full_gets_total": 8375,
+        "brewfs_packed_runtime_backend_range_gets_total": 1,
+        "brewfs_packed_runtime_backend_received_bytes_total": 340838976,
+        "brewfs_packed_runtime_backend_requested_bytes_total": 340838976,
+        "brewfs_packed_runtime_backend_failures_total": 0
+      },
+      "cache_download_tail_bytes": 0,
+      "operation_cache": {
+        "hits": 6928,
+        "misses": 8376,
+        "hit_rate": 0.45269210663878723,
+        "scope": "Whole-object cache lookup calls for Packed metadata+payload; excludes earlier retained-payload hits; not file or FUSE-operation hit rate"
+      },
+      "cache_through_terminal": {
+        "hits": 6928,
+        "misses": 8376,
+        "hit_rate": 0.45269210663878723,
+        "scope": "operation-before through same mount cache.drain"
+      },
+      "operation_retained_payload": {
+        "hits": 5153,
+        "misses": 13277,
+        "evictions": 13016,
+        "hit_rate": 0.2795984807379273,
+        "before": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 0,
+          "brewfs_packed_v3_payload_retention_entries": 0,
+          "brewfs_packed_v3_payload_retention_hits_total": 0,
+          "brewfs_packed_v3_payload_retention_misses_total": 0,
+          "brewfs_packed_v3_payload_retention_evictions_total": 0
+        },
+        "after": {
+          "brewfs_packed_v3_payload_retention_capacity_bytes": 8388608,
+          "brewfs_packed_v3_payload_retention_resident_charge_bytes": 8371200,
+          "brewfs_packed_v3_payload_retention_entries": 206,
+          "brewfs_packed_v3_payload_retention_hits_total": 5153,
+          "brewfs_packed_v3_payload_retention_misses_total": 13277,
+          "brewfs_packed_v3_payload_retention_evictions_total": 13016
+        },
+        "scope": "Demand retained decoded frame lookup calls during operation; independent of whole-object cache lookups",
+        "terminal_available": false,
+        "tail": null
+      },
+      "cache_tail": {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": null,
+        "scope": "operation-after through same mount cache.drain"
+      },
+      "logical_read_bytes": 82837504,
+      "read_amplification": {
+        "operation": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 340838976,
+          "received_bytes": 340838976,
+          "requested_per_logical_read_byte": 4.114549081536788,
+          "received_per_logical_read_byte": 4.114549081536788
+        },
+        "through_terminal": {
+          "logical_read_bytes": 82837504,
+          "requested_bytes": 340838976,
+          "received_bytes": 340838976,
+          "requested_per_logical_read_byte": 4.114549081536788,
+          "received_per_logical_read_byte": 4.114549081536788
+        }
+      },
+      "read_amplification_scope": "Packed runtime metadata+payload backend bytes / total actual application read bytes; lifecycle includes upper reads, therefore not pure lower read amplification; excludes initial manifest/probe/SDK retries/upper transport",
+      "workload_result": {
+        "path": "/srv/ax-idcai-20261113/diagnostics/c3-p1-perf/ax-four-06e1b2df8b1e/trial/brewfs/run/result.json",
+        "bytes": 1956
+      },
+      "work": {
+        "completed": true,
+        "passed": true,
+        "files": 10000,
+        "seed": 9173,
+        "workspace": 1,
+        "workers": 8,
+        "hot_files": 1024,
+        "cow_files": 256,
+        "read_ops": 8192,
+        "write_ops": 256,
+        "mixed_ops": 1024,
+        "verified_reads": 20224,
+        "writes": 768,
+        "actual_read_bytes": 82837504,
+        "actual_write_bytes": 3145728,
+        "wall_seconds": 56.332816266,
+        "phases": [
+          {
+            "phase": "cold-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 28.764624438,
+            "io_p50_ns": 21787544,
+            "io_p95_ns": 77792056,
+            "io_p99_ns": 92082964,
+            "application_p99_ns": 92085979
+          },
+          {
+            "phase": "lower-prewarm",
+            "reads": 2048,
+            "writes": 0,
+            "read_bytes": 8388608,
+            "write_bytes": 0,
+            "wall_seconds": 5.345296881,
+            "io_p50_ns": 18536653,
+            "io_p95_ns": 46993457,
+            "io_p99_ns": 62100720,
+            "application_p99_ns": 62103815
+          },
+          {
+            "phase": "hot-read",
+            "reads": 8192,
+            "writes": 0,
+            "read_bytes": 33554432,
+            "write_bytes": 0,
+            "wall_seconds": 16.968271405,
+            "io_p50_ns": 13675677,
+            "io_p95_ns": 41265724,
+            "io_p99_ns": 55384352,
+            "application_p99_ns": 55385945
+          },
+          {
+            "phase": "cow",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.283933484,
+            "io_p50_ns": 38134535,
+            "io_p95_ns": 58361955,
+            "io_p99_ns": 81080305,
+            "application_p99_ns": 81084833
+          },
+          {
+            "phase": "upper-prewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.260498776,
+            "io_p50_ns": 3716133,
+            "io_p95_ns": 5852025,
+            "io_p99_ns": 6757825,
+            "application_p99_ns": 6760891
+          },
+          {
+            "phase": "hot-write",
+            "reads": 0,
+            "writes": 256,
+            "read_bytes": 0,
+            "write_bytes": 1048576,
+            "wall_seconds": 1.448861527,
+            "io_p50_ns": 44627589,
+            "io_p95_ns": 54657654,
+            "io_p99_ns": 58531670,
+            "application_p99_ns": 58534705
+          },
+          {
+            "phase": "upper-rewarm",
+            "reads": 512,
+            "writes": 0,
+            "read_bytes": 2097152,
+            "write_bytes": 0,
+            "wall_seconds": 0.240466459,
+            "io_p50_ns": 3304610,
+            "io_p95_ns": 5838991,
+            "io_p99_ns": 6545821,
+            "application_p99_ns": 6549028
+          },
+          {
+            "phase": "mixed",
+            "reads": 768,
+            "writes": 256,
+            "read_bytes": 3145728,
+            "write_bytes": 1048576,
+            "wall_seconds": 2.012359583,
+            "io_p50_ns": 8331233,
+            "io_p95_ns": 44628932,
+            "io_p99_ns": 53565989,
+            "application_p99_ns": 53568574
+          }
+        ],
+        "remote_durability_verified": false
+      },
+      "full_qualification_seconds": 17.851763765,
+      "full_reopen_check_seconds": 17.290845625
+    }
+  ],
+  "pairs": [
+    {
+      "slots": [
+        0,
+        1
+      ],
+      "order": [
+        "P0",
+        "P1"
+      ],
+      "p0_seconds": 56.513001721,
+      "p1_seconds": 19.593782729,
+      "p1_over_p0": 0.34671282947830095
+    },
+    {
+      "slots": [
+        2,
+        3
+      ],
+      "order": [
+        "P1",
+        "P0"
+      ],
+      "p0_seconds": 56.609547487,
+      "p1_seconds": 19.408077542,
+      "p1_over_p0": 0.34284106486555
+    },
+    {
+      "slots": [
+        4,
+        5
+      ],
+      "order": [
+        "P0",
+        "P1"
+      ],
+      "p0_seconds": 56.133941181,
+      "p1_seconds": 19.729626468,
+      "p1_over_p0": 0.3514741002129743
+    },
+    {
+      "slots": [
+        6,
+        7
+      ],
+      "order": [
+        "P1",
+        "P0"
+      ],
+      "p0_seconds": 55.984038624,
+      "p1_seconds": 19.443055906,
+      "p1_over_p0": 0.34729641490467406
+    },
+    {
+      "slots": [
+        8,
+        9
+      ],
+      "order": [
+        "P0",
+        "P1"
+      ],
+      "p0_seconds": 56.376941404,
+      "p1_seconds": 19.466362975,
+      "p1_over_p0": 0.34528944795892813
+    },
+    {
+      "slots": [
+        10,
+        11
+      ],
+      "order": [
+        "P1",
+        "P0"
+      ],
+      "p0_seconds": 56.798083834,
+      "p1_seconds": 19.459400859,
+      "p1_over_p0": 0.34260664348946523
+    }
+  ],
+  "median_paired_ratio": 0.34600113871861454,
+  "primary_metric": "initial mount_start through normal process exit",
+  "numerical_wall_gate": true,
+  "acceptance_policy": {
+    "primary_case": "lifecycle",
+    "primary_metric": "initial mount_start through normal process exit",
+    "preregistration_utc": "2026-11-14T07:46:07Z",
+    "required_pairs": 6,
+    "required_faster_pairs": 6,
+    "minimum_median_relative_improvement": 0.03,
+    "write_phase_median_wall_regression_max": 0.05,
+    "write_phase_median_p99_regression_max": 0.05,
+    "correctness_or_close_failures_allowed": 0,
+    "no_post_result_parameter_changes": true
+  },
+  "write_phase_metrics": {
+    "cow": {
+      "median_wall": {
+        "P0": 1.2815150069999999,
+        "P1": 1.2896574525
+      },
+      "median_io_p99_ns": {
+        "P0": 76444530.0,
+        "P1": 71512453.0
+      },
+      "median_wall_ratio": 1.0063537652353065,
+      "median_p99_ratio": 0.9354816230801603
+    },
+    "hot-write": {
+      "median_wall": {
+        "P0": 1.4512451885,
+        "P1": 1.441740844
+      },
+      "median_io_p99_ns": {
+        "P0": 58831810.5,
+        "P1": 60490536.5
+      },
+      "median_wall_ratio": 0.99345090369614,
+      "median_p99_ratio": 1.0281943728384833
+    },
+    "mixed": {
+      "median_wall": {
+        "P0": 1.985870721,
+        "P1": 2.016547148
+      },
+      "median_io_p99_ns": {
+        "P0": 49777528.5,
+        "P1": 49809218.5
+      },
+      "median_wall_ratio": 1.0154473434124416,
+      "median_p99_ratio": 1.0006366326524228
+    }
+  },
+  "numerical_write_gate": true,
+  "write_side_regression_review_required": true,
+  "min_paired_ratio": 0.34260664348946523,
+  "max_paired_ratio": 0.3514741002129743,
+  "accepted_optimization": false,
+  "accepted_for_10000": false,
+  "interpretation": "Complete Packed candidate versus qualified main control; manual predeclared benefit/regression review still required; not isolated HEAD benefit",
+  "source_head": "fa630c33ed9691f66b09742ae695aecb0d666a0e",
+  "tools_revision": "8a215a65cad19d34fd3fd7f04029f97d09617364",
+  "final_backend_scope": "Packed runtime metadata+payload, excluding startup/probe/SDK retries/upper",
+  "physical_backend_cold": false
+}
