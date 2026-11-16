@@ -1718,29 +1718,9 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
         let prefetch_sequential =
             can_try_object_ranges && self.range_read_continues_stream(key, offset, len);
 
-        if can_try_object_ranges
-            && let Some(block_data) = self.read_flight.try_piggyback(&key).await
-        {
-            tracing::Span::current().record("strategy", "piggyback_full");
-            self.client
-                .read_event(ReadClass::NativePayload, ReadEvent::SharedResultAfterMiss);
-            self.object_metrics.record_read_piggyback_full();
-            let block_data = block_data
-                .map_err(|e| anyhow::anyhow!("SingleFlight piggyback read failed: {e}"))?;
-
-            let offset_usize = offset as usize;
-            let end = offset_usize + len;
-            let mut copy_len = 0;
-            if offset_usize < block_data.len() {
-                let copy_end = end.min(block_data.len());
-                copy_len = copy_end - offset_usize;
-                buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
-            }
-            tracing::Span::current().record("read_len", copy_len);
-            return require_complete_read(key, offset, len, copy_len);
-        }
-
-        // Serve fully cached pages before resolving the remote object layout.
+        // Serve fully cached pages before joining a full-object download or
+        // resolving the remote object layout. Committed block keys are
+        // immutable, so an in-flight download cannot supersede cached pages.
         // The format cache has an independent eviction policy, so a page-cache
         // hit must not become a network dependency when its format entry ages
         // out.
@@ -1786,6 +1766,28 @@ impl<B: ObjectBackend + Send + Sync + 'static> BlockStore for ObjectBlockStore<B
                 self.object_metrics.record_read_page_cache_hit();
                 return require_complete_read(key, offset, len, total_read);
             }
+        }
+
+        if can_try_object_ranges
+            && let Some(block_data) = self.read_flight.try_piggyback(&key).await
+        {
+            tracing::Span::current().record("strategy", "piggyback_full");
+            self.client
+                .read_event(ReadClass::NativePayload, ReadEvent::SharedResultAfterMiss);
+            self.object_metrics.record_read_piggyback_full();
+            let block_data = block_data
+                .map_err(|e| anyhow::anyhow!("SingleFlight piggyback read failed: {e}"))?;
+
+            let offset_usize = offset as usize;
+            let end = offset_usize + len;
+            let mut copy_len = 0;
+            if offset_usize < block_data.len() {
+                let copy_end = end.min(block_data.len());
+                copy_len = copy_end - offset_usize;
+                buf[..copy_len].copy_from_slice(&block_data.as_ref()[offset_usize..copy_end]);
+            }
+            tracing::Span::current().record("read_len", copy_len);
+            return require_complete_read(key, offset, len, copy_len);
         }
 
         // Only small reads need a layout decision before joining the full-read
@@ -4263,7 +4265,7 @@ mod tests {
         };
         use tokio::{
             sync::Notify,
-            time::{Duration, sleep},
+            time::{Duration, sleep, timeout},
         };
 
         #[derive(Clone)]
@@ -4361,35 +4363,83 @@ mod tests {
             .await?,
         );
 
+        let page_size = store.page_cache.page_size();
+        let cached_page = Bytes::from((0..page_size).map(|i| (i % 251) as u8).collect::<Vec<_>>());
+        store
+            .page_cache
+            .insert((77, 0, 0), cached_page.clone())
+            .await;
+        let metrics = store.object_metrics.clone();
+        let before_cached_read = metrics.snapshot();
+
         let large_store = store.clone();
-        let large_read = tokio::spawn(async move {
+        let mut large_read = tokio::spawn(async move {
             let mut buf = vec![0u8; 2 * 1024 * 1024];
             large_store.read_range((77, 0), 0, &mut buf).await?;
             anyhow::Ok(buf)
         });
 
-        backend.full_read_started.notified().await;
+        let get_started_before_timeout =
+            timeout(Duration::from_secs(1), backend.full_read_started.notified())
+                .await
+                .is_ok();
+        if !get_started_before_timeout {
+            backend.release_full_read.notify_one();
+            let _ = timeout(Duration::from_secs(1), &mut large_read).await;
+            assert!(get_started_before_timeout, "full-object GET did not start");
+        }
+
+        let cached_store = store.clone();
+        let mut cached_read = tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            cached_store.read_range((77, 0), 1024, &mut buf).await?;
+            anyhow::Ok(buf)
+        });
+        let cached_read_before_release = timeout(Duration::from_secs(1), &mut cached_read).await;
+        let cached_read_completed_before_release = cached_read_before_release.is_ok();
+        let metrics_after_cached_read = metrics.snapshot();
 
         let small_store = store.clone();
         let small_read = tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
-            small_store.read_range((77, 0), 1024, &mut buf).await?;
+            small_store
+                .read_range((77, 0), page_size as u64 + 1024, &mut buf)
+                .await?;
             anyhow::Ok(buf)
         });
 
         sleep(Duration::from_millis(20)).await;
-        backend.release_full_read.notify_waiters();
+        backend.release_full_read.notify_one();
 
         let large_buf = large_read.await??;
         let small_buf = small_read.await??;
+        let cached_buf = match cached_read_before_release {
+            Ok(result) => result??,
+            Err(_) => timeout(Duration::from_secs(1), &mut cached_read)
+                .await
+                .expect("cached page read did not finish after GET release")??,
+        };
 
+        assert!(
+            cached_read_completed_before_release,
+            "a cached page read waited for the in-flight full-object GET"
+        );
+        assert_eq!(cached_buf, cached_page[1024..1024 + 4096]);
+        assert_eq!(
+            metrics_after_cached_read.read_page_cache_hits,
+            before_cached_read.read_page_cache_hits + 1
+        );
+        assert_eq!(
+            metrics_after_cached_read.read_piggyback_full, before_cached_read.read_piggyback_full,
+            "a cached page hit must not be counted as a full-read piggyback"
+        );
         assert_eq!(
             large_buf[..4096],
             (0..4096).map(|i| (i % 251) as u8).collect::<Vec<_>>()
         );
         assert_eq!(
             small_buf,
-            (1024..1024 + 4096)
+            (page_size + 1024..page_size + 1024 + 4096)
                 .map(|i| (i % 251) as u8)
                 .collect::<Vec<_>>()
         );
@@ -4398,6 +4448,175 @@ mod tests {
             *backend.get_object_range_calls.lock().unwrap(),
             1,
             "the full read should issue one shared layout probe; the small read should piggyback without another range GET"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn overlapping_fresh_slice_write_does_not_return_old_slice_page() -> anyhow::Result<()> {
+        let objects = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let store = local_object_store(objects.path(), cache.path(), 4 * 1024 * 1024).await;
+
+        let old_key = (813, 0);
+        let new_key = (814, 0);
+        let page_size = store.page_cache.page_size();
+        let old_page = vec![0x31; page_size];
+        let replacement_page = vec![0xc4; page_size];
+
+        store.write_fresh_range(old_key, 0, &old_page).await?;
+        store
+            .page_cache
+            .insert((old_key.0, old_key.1, 0), Bytes::copy_from_slice(&old_page))
+            .await;
+
+        // The replacement covers the same byte range but belongs to a fresh
+        // COW slice, so it must not be served from the old slice's page key.
+        store
+            .write_fresh_range(new_key, 0, &replacement_page)
+            .await?;
+
+        let mut output = vec![0; 4096];
+        store.read_range(new_key, 1024, &mut output).await?;
+        assert_eq!(output, replacement_page[1024..1024 + 4096]);
+        assert_eq!(
+            store
+                .page_cache
+                .get(&(old_key.0, old_key.1, 0))
+                .await
+                .unwrap(),
+            Bytes::copy_from_slice(&old_page),
+            "the immutable old-slice page remains associated with its original key"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic timing comparison for cached reads during a full-read flight"]
+    async fn diagnostic_cached_page_latency_during_full_read_flight() -> anyhow::Result<()> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        use tokio::{
+            sync::Notify,
+            time::{Duration, Instant, sleep, timeout},
+        };
+
+        const ITERATIONS: usize = 30;
+        const FLIGHT_BYTES: usize = 4 * 1024 * 1024;
+        const RELEASE_DELAY: Duration = Duration::from_millis(100);
+
+        let objects = tempfile::tempdir()?;
+        let cache = tempfile::tempdir()?;
+        let store = Arc::new(
+            local_object_store(objects.path(), cache.path(), FLIGHT_BYTES)
+                .await
+                .with_read_fetch_policy(ReadFetchPolicy::Sparse),
+        );
+        let metrics = store.object_metrics.clone();
+        let before = metrics.snapshot();
+        let simulated_get_ops = Arc::new(AtomicU64::new(0));
+        let simulated_get_bytes = Arc::new(AtomicU64::new(0));
+        let mut latencies_us = Vec::with_capacity(ITERATIONS);
+
+        for iteration in 0..ITERATIONS {
+            let key = (900 + iteration as u64, 0);
+            let page_size = store.page_cache.page_size();
+            let cached_page = Bytes::from(vec![iteration as u8; page_size]);
+            store
+                .page_cache
+                .insert((key.0, key.1, 0), cached_page.clone())
+                .await;
+
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let started_wait = started.notified();
+            tokio::pin!(started_wait);
+
+            let flight = store.read_flight.clone();
+            let flight_started = started.clone();
+            let flight_release = release.clone();
+            let get_ops = simulated_get_ops.clone();
+            let get_bytes = simulated_get_bytes.clone();
+            let payload = Bytes::from(vec![iteration as u8; FLIGHT_BYTES]);
+            let mut full_read = tokio::spawn(async move {
+                flight
+                    .execute(key, || async move {
+                        get_ops.fetch_add(1, Ordering::Relaxed);
+                        get_bytes.fetch_add(FLIGHT_BYTES as u64, Ordering::Relaxed);
+                        flight_started.notify_one();
+                        flight_release.notified().await;
+                        Ok::<_, anyhow::Error>(payload)
+                    })
+                    .await
+            });
+
+            let flight_started_before_timeout = timeout(Duration::from_secs(1), &mut started_wait)
+                .await
+                .is_ok();
+            if !flight_started_before_timeout {
+                release.notify_one();
+                let _ = timeout(Duration::from_secs(1), &mut full_read).await;
+                anyhow::bail!("diagnostic full-read flight failed to start");
+            }
+
+            let delayed_release = release.clone();
+            let mut release_task = tokio::spawn(async move {
+                sleep(RELEASE_DELAY).await;
+                delayed_release.notify_one();
+            });
+            let mut output = vec![0; 4096];
+            let started_at = Instant::now();
+            let read_result = timeout(
+                Duration::from_secs(1),
+                store.read_range(key, 1024, &mut output),
+            )
+            .await;
+            latencies_us.push(started_at.elapsed().as_micros() as u64);
+
+            // Keep the flight cleanup deterministic even if the read times out.
+            if read_result.is_err() {
+                release.notify_one();
+            }
+            let output_result = match read_result {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("diagnostic cached-page read timed out")),
+            };
+            let flight_result = timeout(Duration::from_secs(1), &mut full_read).await;
+            let release_result = timeout(Duration::from_secs(1), &mut release_task).await;
+
+            anyhow::ensure!(
+                flight_result.is_ok(),
+                "diagnostic full-read flight did not finish"
+            );
+            anyhow::ensure!(
+                flight_result.as_ref().is_ok_and(|result| result.is_ok()),
+                "diagnostic full-read flight failed"
+            );
+            anyhow::ensure!(
+                release_result.is_ok(),
+                "diagnostic release task did not finish"
+            );
+            assert_eq!(output, cached_page[1024..1024 + 4096]);
+            output_result?;
+            release_result??;
+        }
+
+        latencies_us.sort_unstable();
+        let median_us = (latencies_us[14] + latencies_us[15]) / 2;
+        let p99_us = latencies_us[ITERATIONS - 1];
+        let after = metrics.snapshot();
+        println!(
+            "READ_CACHE_BEFORE_FLIGHT_DIAGNOSTIC={{\"iterations\":{ITERATIONS},\"release_delay_ms\":{},\"simulated_get_ops\":{},\"simulated_get_bytes\":{},\"median_us\":{median_us},\"p99_us\":{p99_us},\"page_cache_hits\":{},\"full_read_piggybacks\":{},\"sorted_latencies_us\":{:?}}}",
+            RELEASE_DELAY.as_millis(),
+            simulated_get_ops.load(Ordering::Relaxed),
+            simulated_get_bytes.load(Ordering::Relaxed),
+            after.read_page_cache_hits - before.read_page_cache_hits,
+            after.read_piggyback_full - before.read_piggyback_full,
+            latencies_us,
         );
 
         Ok(())
