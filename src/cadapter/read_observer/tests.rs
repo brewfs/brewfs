@@ -1,7 +1,47 @@
-//! Isolated tests for the common observer candidate; not run or type-checked.
+//! Tests for observed object reads and response validation.
 use super::*;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
+
+#[tokio::test]
+async fn response_buffer_accepts_chunked_known_and_unknown_lengths() {
+    for expected in [None, Some(8)] {
+        let body: ObjectByteStream = Box::pin(stream::iter([
+            Ok(Bytes::from_static(b"abc")),
+            Ok(Bytes::from_static(b"defgh")),
+        ]));
+        let bytes = collect_verified(body, None, expected, 8, Ok).await.unwrap();
+        assert_eq!(bytes, b"abcdefgh");
+    }
+}
+
+#[tokio::test]
+async fn response_buffer_preserves_short_and_excess_errors() {
+    for (expected, limit, body_bytes, short) in [
+        (Some(8), 8, &b"abc"[..], true),
+        (Some(3), 8, &b"abcd"[..], false),
+        (None, 3, &b"abcd"[..], false),
+    ] {
+        let body: ObjectByteStream =
+            Box::pin(stream::iter([Ok(Bytes::copy_from_slice(body_bytes))]));
+        let error = collect_verified(body, None, expected, limit, Ok)
+            .await
+            .unwrap_err();
+        let boundary = error.downcast_ref::<ReadBoundaryError>().unwrap();
+        if short {
+            assert!(matches!(boundary, ReadBoundaryError::Short { .. }));
+        } else {
+            assert!(matches!(boundary, ReadBoundaryError::Excess));
+        }
+    }
+}
+
+#[tokio::test]
+async fn response_buffer_accepts_empty_body_with_zero_limit() {
+    let body: ObjectByteStream = Box::pin(stream::empty());
+    let bytes = collect_verified(body, None, Some(0), 0, Ok).await.unwrap();
+    assert!(bytes.is_empty());
+}
 
 #[derive(Clone)]
 enum Response {
