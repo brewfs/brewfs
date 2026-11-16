@@ -594,16 +594,12 @@ where
                                     else {
                                         return;
                                     };
-                                    let Ok(len) = usize::try_from(span.len) else {
-                                        return;
-                                    };
-                                    let mut output = vec![0; len];
-                                    let _ = crate::chunk::read_plan::execute_into(
+                                    let _ = crate::chunk::read_plan::warm_resolved(
                                         backend.store(),
                                         layout,
                                         span.offset,
+                                        span.len,
                                         &plan,
-                                        &mut output,
                                     )
                                     .await;
                                     return;
