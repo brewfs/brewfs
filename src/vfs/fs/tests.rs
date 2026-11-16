@@ -59,6 +59,10 @@ fn test_file_attr(ino: i64) -> super::FileAttr {
 }
 
 #[cfg(feature = "workspace")]
+#[path = "tests/native_prefetch_tests.rs"]
+mod native_prefetch_tests;
+
+#[cfg(feature = "workspace")]
 mod packed_request_tests {
     use super::*;
     use crate::chunk::read_plan::{

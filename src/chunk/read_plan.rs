@@ -46,6 +46,45 @@ pub struct ResolvedReadPlan {
 }
 
 impl ResolvedReadPlan {
+    fn validate(&self, requested_offset: u64, requested_len: u64) -> Result<(), ReadPlanError> {
+        let requested_end = requested_offset
+            .checked_add(requested_len)
+            .ok_or_else(|| ReadPlanError::Invalid("requested range overflows".into()))?;
+        let mut previous_end = requested_offset;
+        for segment in &self.segments {
+            let start = segment.logical_offset();
+            let length = segment.length();
+            if length == 0 {
+                return Err(ReadPlanError::Invalid("zero-length segment".into()));
+            }
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| ReadPlanError::Invalid("segment range overflows".into()))?;
+            if start < requested_offset || end > requested_end {
+                return Err(ReadPlanError::Invalid(
+                    "segment lies outside the requested range".into(),
+                ));
+            }
+            if start < previous_end {
+                return Err(ReadPlanError::Invalid(
+                    "segments overlap or are not sorted".into(),
+                ));
+            }
+            previous_end = end;
+            if let ReadPlanSegment::Data {
+                slice_offset,
+                length,
+                ..
+            } = segment
+            {
+                slice_offset
+                    .checked_add(*length)
+                    .ok_or_else(|| ReadPlanError::Invalid("slice range overflows".into()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Adapt an existing v2/workspace plan into the generation-fenced plan
     /// used by packed v3.  The physical slice remains a legacy source until
     /// its provider is migrated to emit an upper block directly.
@@ -812,6 +851,41 @@ impl SendBuf {
     }
 }
 
+/// Populate block caches for a resolved plan without creating a delivery buffer.
+pub async fn warm_resolved<B: BlockStore + Sync>(
+    store: &B,
+    layout: ChunkLayout,
+    requested_offset: u64,
+    requested_len: u64,
+    plan: &ResolvedReadPlan,
+) -> Result<(), ReadPlanError> {
+    plan.validate(requested_offset, requested_len)?;
+    let mut futures = FuturesUnordered::new();
+    for segment in &plan.segments {
+        let ReadPlanSegment::Data {
+            length,
+            slice_id,
+            slice_offset,
+            ..
+        } = segment
+        else {
+            continue;
+        };
+        for block in block_span_iter_slice(SliceOffset::from(*slice_offset), *length, layout) {
+            let index = u32::try_from(block.index)
+                .map_err(|_| ReadPlanError::Invalid("block index exceeds u32".into()))?;
+            let key = (*slice_id, index);
+            let len = usize::try_from(block.len)
+                .map_err(|_| ReadPlanError::Invalid("block length exceeds usize".into()))?;
+            futures.push(async move { store.warm_range(key, block.offset, len).await });
+        }
+    }
+    while let Some(result) = futures.next().await {
+        result?;
+    }
+    Ok(())
+}
+
 pub async fn execute_into<B: BlockStore + Sync>(
     store: &B,
     layout: ChunkLayout,
@@ -821,42 +895,7 @@ pub async fn execute_into<B: BlockStore + Sync>(
 ) -> Result<(), ReadPlanError> {
     let requested_len = u64::try_from(output.len())
         .map_err(|_| ReadPlanError::Invalid("output length exceeds u64".into()))?;
-    let requested_end = requested_offset
-        .checked_add(requested_len)
-        .ok_or_else(|| ReadPlanError::Invalid("requested range overflows".into()))?;
-
-    let mut previous_end = requested_offset;
-    for segment in &plan.segments {
-        let start = segment.logical_offset();
-        let length = segment.length();
-        if length == 0 {
-            return Err(ReadPlanError::Invalid("zero-length segment".into()));
-        }
-        let end = start
-            .checked_add(length)
-            .ok_or_else(|| ReadPlanError::Invalid("segment range overflows".into()))?;
-        if start < requested_offset || end > requested_end {
-            return Err(ReadPlanError::Invalid(
-                "segment lies outside the requested range".into(),
-            ));
-        }
-        if start < previous_end {
-            return Err(ReadPlanError::Invalid(
-                "segments overlap or are not sorted".into(),
-            ));
-        }
-        previous_end = end;
-        if let ReadPlanSegment::Data {
-            slice_offset,
-            length,
-            ..
-        } = segment
-        {
-            slice_offset
-                .checked_add(*length)
-                .ok_or_else(|| ReadPlanError::Invalid("slice range overflows".into()))?;
-        }
-    }
+    plan.validate(requested_offset, requested_len)?;
 
     output.fill(0);
     let mut futures = FuturesUnordered::new();
@@ -910,6 +949,10 @@ pub async fn execute_into<B: BlockStore + Sync>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "read_plan/native_prefetch_tests.rs"]
+mod native_prefetch_tests;
 
 #[cfg(test)]
 mod tests {
