@@ -577,10 +577,20 @@ pub trait UnifiedReadSourceFetcher: Send + Sync {
     }
 }
 
-/// Execute a unified plan into the caller's buffer.  Sources are dispatched
-/// through one trait, while the fetcher remains free to coalesce packed
-/// ranges internally.  The output is zero-filled first, so sparse gaps need
-/// no explicit segment.
+fn zero_uncovered_ranges(
+    output: &mut [u8],
+    data_ranges: impl IntoIterator<Item = std::ops::Range<usize>>,
+) {
+    let mut cursor = 0;
+    for range in data_ranges {
+        output[cursor..range.start].fill(0);
+        cursor = range.end;
+    }
+    output[cursor..].fill(0);
+}
+
+/// Execute a unified plan into the caller's buffer, clearing sparse gaps
+/// before dispatching data reads through the source fetcher.
 pub async fn execute_unified_into<F: UnifiedReadSourceFetcher + ?Sized>(
     fetcher: &F,
     requested_offset: u64,
@@ -594,7 +604,17 @@ pub async fn execute_unified_into<F: UnifiedReadSourceFetcher + ?Sized>(
         .ensure_generation(plan.generation)
         .await
         .map_err(ReadPlanError::from_source)?;
-    output.fill(0);
+    // Validation bounds every segment by the usize-sized output range.
+    zero_uncovered_ranges(
+        output,
+        plan.segments
+            .iter()
+            .filter(|segment| !matches!(&segment.source, ReadSource::Hole))
+            .map(|segment| {
+                let start = (segment.logical_offset - requested_offset) as usize;
+                start..start + segment.length as usize
+            }),
+    );
     for segment in &plan.segments {
         if matches!(&segment.source, ReadSource::Hole) {
             continue;
@@ -858,7 +878,20 @@ pub async fn execute_into<B: BlockStore + Sync>(
         }
     }
 
-    output.fill(0);
+    zero_uncovered_ranges(
+        output,
+        plan.segments.iter().filter_map(|segment| match segment {
+            ReadPlanSegment::Data {
+                logical_offset,
+                length,
+                ..
+            } => {
+                let start = (*logical_offset - requested_offset) as usize;
+                Some(start..start + *length as usize)
+            }
+            ReadPlanSegment::Zero { .. } => None,
+        }),
+    );
     let mut futures = FuturesUnordered::new();
     for segment in &plan.segments {
         let ReadPlanSegment::Data {
@@ -1458,6 +1491,42 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn unified_executor_zeroes_prefix_explicit_hole_gaps_and_suffix() {
+        let plan = UnifiedReadPlan {
+            generation: ReadGeneration::readonly([5; 32]),
+            logical_size: 15,
+            segments: vec![
+                LogicalSegment {
+                    logical_offset: 6,
+                    length: 2,
+                    source: ReadSource::UpperBlock {
+                        key: (1, 0),
+                        block_offset: 0,
+                    },
+                },
+                LogicalSegment {
+                    logical_offset: 8,
+                    length: 2,
+                    source: ReadSource::Hole,
+                },
+                LogicalSegment {
+                    logical_offset: 11,
+                    length: 2,
+                    source: ReadSource::LegacySlice {
+                        slice_id: 2,
+                        slice_offset: 0,
+                    },
+                },
+            ],
+        };
+        let mut output = [0xff; 10];
+        execute_unified_into(&UnifiedTestFetcher, 5, &plan, &mut output)
+            .await
+            .unwrap();
+        assert_eq!(&output, b"\0UU\0\0\0LL\0\0");
     }
 
     #[tokio::test]
