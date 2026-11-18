@@ -938,7 +938,19 @@ async fn collect_verified<T, Verify>(
 where
     Verify: FnOnce(Vec<u8>) -> std::result::Result<T, (FailureClass, anyhow::Error)>,
 {
+    // Reserve bounded response storage before polling concurrent body streams.
+    // Growth of large allocations can otherwise repeatedly remap their pages.
+    let initial_capacity = expected.unwrap_or(limit).min(limit).min(8 * 1024 * 1024);
     let mut bytes = Vec::new();
+    if bytes
+        .try_reserve_exact(usize::try_from(initial_capacity)?)
+        .is_err()
+    {
+        if let Some(fetch) = fetch.take() {
+            fetch.fail(FailureClass::Admission);
+        }
+        return Err(ReadBoundaryError::Admission.into());
+    }
     while let Some(chunk) = body.next().await {
         let chunk = match chunk {
             Ok(chunk) => chunk,
