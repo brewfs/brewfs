@@ -2,10 +2,18 @@
 
 The full configuration reference is [Configuration](doc/operations/configuration.md).
 
-`brewfs mount --fuse-cache-ttl-ms <MILLIS>` opts workspace LOOKUP and GETATTR
-replies into bounded kernel metadata caching. The default remains **0**;
-omitting the option preserves the existing reply TTLs and permission behavior.
-CLI overrides YAML, including an explicit CLI `0` overriding YAML `1000`:
+A `packed-snapshot` mount pins one immutable manifest. By default the kernel
+retains file data pages across opens and caches directory entries and inode
+attributes for one hour. A `workspace` mount uses a 1000 ms metadata TTL.
+Set `--fuse-cache-ttl-ms` and `--fuse-keep-cache` to override the mount
+defaults. The CLI takes precedence over YAML, including an explicit TTL of zero.
+The local whole-object Pack cache is enabled for packed snapshots and workspace
+Pack lowers. Its default capacity is 256 MiB. Use `--packed-cache` and
+`--packed-cache-bytes` to configure it separately from the kernel caches.
+The immutable reader uses this cache for Pack objects. Its general-purpose VFS
+read caches and prefetch are disabled by default.
+Each packed snapshot mount permits up to 16 MiB for index and request control
+records. Set `BREWFS_PACKED_CONTROL_BUDGET_BYTES` to override this limit.
 
 ```yaml
 fuse:
@@ -31,9 +39,10 @@ be remounted. It does not silently adopt another writer's view.
 Only workspace layers implementing the validation contract can grant positive
 writable-ACL TTLs. Other writable-ACL implementations return zero. Mutation
 replies, READDIRPLUS, and virtual `.stats` retain zero TTL on writable workspaces.
-Backends without writable POSIX ACL support retain their legacy
-`BREWFS_CACHE_TTL_MS` policy. Values are unsigned 64-bit milliseconds; a deadline
-that cannot be represented disables caching.
+Pinned packed snapshots use the mount's configured TTL directly. Other backends
+without writable POSIX ACL support use the legacy `BREWFS_CACHE_TTL_MS` policy.
+TTL values are unsigned 64-bit milliseconds. An unrepresentable validation
+deadline disables caching on a writable workspace.
 The requested value is the maximum checked interval: `3600000`, for example,
 allows up to one hour of metadata and permission staleness plus reply delivery
 delay. There is no implicit one-second cap; use `1000` for the one-second policy.
@@ -52,6 +61,6 @@ held by the request whose reply shares the notification queue.
 Raw database/object edits that bypass catalog transactions and generation
 increments are outside the supported protocol. Data/page-cache coherence,
 shared dirty writeback across clients using copied lease credentials, and
-immediate permission revocation need additional protocols. The option remains
-opt-in. See the [writer inventory and validation report](doc/testing/workspace-metadata-cache.md)
+immediate permission revocation need additional protocols.
+See the [writer inventory and validation report](doc/testing/workspace-metadata-cache.md)
 and the [historical TTL-only experiment](doc/testing/fuse-cache-ttl.md).

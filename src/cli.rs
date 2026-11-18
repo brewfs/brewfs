@@ -939,7 +939,7 @@ async fn mount_authenticated_packed_readonly_with_client<
         || args.cache.prefetch_enabled
         || args.cache.range_background_prefetch
     {
-        anyhow::bail!("wire 005 currently requires explicit zero payload-cache/prefetch budgets");
+        anyhow::bail!("wire 005 requires the generic read caches and prefetch to be disabled");
     }
     let startup = budget.admit(&[
         (
@@ -1000,12 +1000,23 @@ async fn mount_authenticated_packed_readonly_with_client<
             retained_payload,
         )?,
     );
+    if args.cache.packed_cache_enabled {
+        meta_layer.enable_pack_cache(
+            args.cache.packed_cache_bytes,
+            args.cache
+                .cache_root
+                .join("packed")
+                .join(hex::encode(reference.digest)),
+        )?;
+    }
     let store = Arc::new(meta_layer.block_store(layout.block_size)?);
     meta_layer.initialize().await?;
     let config = crate::vfs::config::VFSConfig::new_with_cache_config(layout, args.cache.clone());
     let fs = VFS::from_workspace_components(config, store, Arc::clone(&meta_layer))?
-        .with_fuse_keep_cache(args.fuse_keep_cache);
-    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
+        .with_packed_snapshot_cache(
+            args.fuse_keep_cache,
+            Duration::from_millis(args.fuse_cache_ttl_ms),
+        );
     meta_layer.install_snapshot_stats(fs.stats());
     let concurrency = FuseConcurrencyConfig {
         worker_count: args.fuse_workers,
@@ -1040,7 +1051,7 @@ where
         .packed_manifest_key
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("packed-snapshot manifest key is missing"))?;
-    let budget = workspace::packed::snapshot::SnapshotMountBudget::from_env()?;
+    let budget = workspace::packed::snapshot::SnapshotMountBudget::for_packed_snapshot_from_env()?;
     let probe_permit = budget.admit(&[
         (workspace::packed::snapshot::SnapshotBudgetPool::Stored, 128),
         (
@@ -1156,8 +1167,10 @@ async fn mount_native_placement_readonly<B: ObjectBackend + Clone + Send + Sync 
     let provider: Arc<dyn crate::chunk::read_plan::WorkspaceReadPlanProvider> = metadata.clone();
     let fs =
         VFS::from_readonly_components_with_provider(config, store, metadata.clone(), provider)?
-            .with_fuse_keep_cache(args.fuse_keep_cache);
-    fs.set_fuse_cache_ttl(Duration::from_millis(args.fuse_cache_ttl_ms));
+            .with_packed_snapshot_cache(
+                args.fuse_keep_cache,
+                Duration::from_millis(args.fuse_cache_ttl_ms),
+            );
     metadata.install_stats(fs.stats());
     metadata.start_runtime();
     let concurrency = FuseConcurrencyConfig {

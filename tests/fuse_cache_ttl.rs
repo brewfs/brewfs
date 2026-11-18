@@ -28,6 +28,7 @@ fn cache_ttl_test_process(test_name: &str, env_ttl: Option<&str>) -> bool {
     child
         .args(["--exact", test_name, "--nocapture"])
         .env(CHILD_TEST, test_name)
+        .env_remove("BREWFS_FUSE_KEEP_CACHE")
         .env_remove("BREWFS_CACHE_TTL_MS");
     if let Some(ttl) = env_ttl {
         child.env("BREWFS_CACHE_TTL_MS", ttl);
@@ -44,7 +45,9 @@ fn ttl_mount_config(volume_format: &str, extra_args: &[&str]) -> MountConfig {
         "--volume-format",
         volume_format,
     ];
-    if volume_format != "flat" {
+    if volume_format == "packed-snapshot" {
+        args.extend(["--packed-manifest-key", "snapshots/manifest"]);
+    } else if volume_format != "flat" {
         args.extend(["--workspace", "00000000-0000-0000-0000-000000000100"]);
     }
     args.extend_from_slice(extra_args);
@@ -60,6 +63,10 @@ fn workspace_cache_ttl_environment_zero() {
         return;
     }
     assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 0);
+    assert_eq!(
+        ttl_mount_config("packed-snapshot", &[]).fuse_cache_ttl_ms,
+        0
+    );
 }
 
 #[test]
@@ -82,10 +89,19 @@ fn workspace_cache_ttl_cli_overrides_environment() {
 }
 
 #[test]
-fn cache_ttl_unconfigured_defaults_are_unchanged() {
-    if !cache_ttl_test_process("cache_ttl_unconfigured_defaults_are_unchanged", None) {
+fn cache_defaults_follow_the_volume_format() {
+    if !cache_ttl_test_process("cache_defaults_follow_the_volume_format", None) {
         return;
     }
+    let packed = ttl_mount_config("packed-snapshot", &[]);
+    assert_eq!(packed.fuse_cache_ttl_ms, 3_600_000);
+    assert_eq!(packed.fuse_keep_cache, Some(true));
+    assert!(packed.cache.packed_cache_enabled);
+    assert_eq!(packed.cache.read_memory_bytes, 0);
+    assert_eq!(packed.cache.read_ssd_bytes, 0);
+    assert!(!packed.cache.prefetch_enabled);
+    assert!(!packed.cache.range_background_prefetch);
+    assert_eq!(ttl_mount_config("workspace", &[]).fuse_keep_cache, None);
     assert_eq!(ttl_mount_config("workspace", &[]).fuse_cache_ttl_ms, 1_000);
     assert_eq!(ttl_mount_config("flat", &[]).fuse_cache_ttl_ms, 0);
     assert_eq!(
@@ -102,7 +118,7 @@ fn cache_ttl_explicit_yaml_overrides_environment() {
     let file = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(file.path(), "fuse:\n  cache_ttl_ms: 200\n").unwrap();
     let path = file.path().to_str().unwrap();
-    for format in ["workspace", "flat"] {
+    for format in ["workspace", "flat", "packed-snapshot"] {
         assert_eq!(
             ttl_mount_config(format, &["--config", path]).fuse_cache_ttl_ms,
             200
