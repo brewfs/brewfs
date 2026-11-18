@@ -149,6 +149,17 @@ impl SnapshotMountBudget {
         Ok(observer)
     }
     pub fn from_env() -> PackedResult<Arc<Self>> {
+        Self::from_env_with_defaults(SnapshotBudgetLimits::default())
+    }
+
+    pub(crate) fn for_packed_snapshot_from_env() -> PackedResult<Arc<Self>> {
+        let mut limits = SnapshotBudgetLimits::default();
+        // Cached index pages and in-flight namespace operations share control records.
+        limits.bytes[SnapshotBudgetPool::Control as usize] = 16 << 20;
+        Self::from_env_with_defaults(limits)
+    }
+
+    fn from_env_with_defaults(mut limits: SnapshotBudgetLimits) -> PackedResult<Arc<Self>> {
         if let Some((name, _)) = std::env::vars_os()
             .find(|(name, _)| name.to_string_lossy().starts_with("BREWFS_PACKED_V3_"))
         {
@@ -158,7 +169,6 @@ impl SnapshotMountBudget {
             )));
         }
         super::pipeline::log_verify_memo_configuration()?;
-        let mut limits = SnapshotBudgetLimits::default();
         for pool in SnapshotBudgetPool::ALL {
             let key = format!(
                 "BREWFS_PACKED_{}_BUDGET_BYTES",

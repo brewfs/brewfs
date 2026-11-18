@@ -211,7 +211,7 @@ brewfs console [OPTIONS]
 | `--block-size <BYTES>` | block 大小，默认 4 MiB。 |
 | `--fuse-workers <N>` | FUSE worker 数；默认 `clamp(2 × available_parallelism, 1, 64)`，CPU 探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `--fuse-max-background <N>` | FUSE 最大 in-flight 请求数，默认 512。 |
-| `--fuse-keep-cache <true|false>` | 跨 open 保留内核数据页；默认 `false`，适合所有数据写入均经过本挂载的工作负载。 |
+| `--fuse-keep-cache <true|false>` | 跨文件打开保留内核数据页。不可变的 `packed-snapshot` 挂载默认开启。 |
 | `--privileged` | 直接打开 `/dev/fuse`，适合 systemd/root/container。 |
 
 `console` 子命令：
@@ -386,8 +386,8 @@ meta:
 |---|---:|---|
 | `fuse.workers` | `clamp(2 × available_parallelism, 1, 64)` | 根据 CPU affinity / cgroup quota 可用并行度计算，探测失败时为 `1`；显式 `0` 或 `1` 使用低开销 session dispatch。 |
 | `fuse.max_background` | `512` | asyncfuse worker 模式下最大 queued/running 请求数。 |
-| `fuse.cache_ttl_ms` | `0` | 显式放宽可写 POSIX ACL 挂载的内核权限/属性/目录项缓存 TTL；CLI `--fuse-cache-ttl-ms` 优先，含显式 `0`。详见 [CONFIG.md](../../CONFIG.md) 中的性能和权限陈旧窗口。 |
-| `fuse.keep_cache` | `false` | 为普通文件 open/create reply 设置 `FOPEN_KEEP_CACHE`，保留跨 open 的内核数据页。 |
+| `fuse.cache_ttl_ms` | `packed-snapshot` 为 `3600000`，`workspace` 为 `1000`，其他格式为 `0` | 设置目录项和属性的内核缓存有效期，单位为毫秒。命令行可以覆盖此值。详见 [CONFIG.md](../../CONFIG.md)。 |
+| `fuse.keep_cache` | `packed-snapshot` 为 `true`，其他格式为 `false` | 为普通文件设置 `FOPEN_KEEP_CACHE`，在再次打开文件时复用内核数据页。 |
 | `fuse.privileged` | `false` | 直接使用 `/dev/fuse`，通常用于 root/systemd/container。 |
 
 优先级为 `--fuse-workers` > YAML `fuse.workers` > 自动计算的默认值。perf runner 和 installer 将 `BREWFS_FUSE_WORKERS` 写入 YAML；挂载程序不直接读取这个环境变量。显式配置的 worker 数不受默认值的 `64` 上限限制。

@@ -1142,6 +1142,7 @@ where
     state: Arc<VfsState<S, M>>,
     /// Mount-local override; None preserves the legacy environment setting.
     fuse_keep_cache: Option<bool>,
+    pub(crate) packed_snapshot_cache_ttl: Option<Duration>,
     /// Background tasks (compaction and gc) - only present when enabled
     #[allow(dead_code)]
     background_tasks: Option<VfsBackgroundTasks>,
@@ -1178,6 +1179,7 @@ where
             core: Arc::clone(&self.core),
             state: Arc::clone(&self.state),
             fuse_keep_cache: self.fuse_keep_cache,
+            packed_snapshot_cache_ttl: self.packed_snapshot_cache_ttl,
             // Note: background tasks are not cloned as they should be unique per VFS instance
             background_tasks: None,
         }
@@ -1709,6 +1711,7 @@ where
             core,
             state,
             fuse_keep_cache: None,
+            packed_snapshot_cache_ttl: None,
             background_tasks,
         })
     }
@@ -1718,6 +1721,17 @@ where
     /// apply only to this mount and are inherited by its session clones.
     pub(crate) fn with_fuse_keep_cache(mut self, keep_cache: Option<bool>) -> Self {
         self.fuse_keep_cache = keep_cache;
+        self
+    }
+
+    #[cfg(any(feature = "workspace", test))]
+    pub(crate) fn with_packed_snapshot_cache(
+        mut self,
+        keep_cache: Option<bool>,
+        ttl: Duration,
+    ) -> Self {
+        self.fuse_keep_cache = keep_cache;
+        self.packed_snapshot_cache_ttl = Some(ttl);
         self
     }
 

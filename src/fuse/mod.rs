@@ -3841,7 +3841,6 @@ where
             return Err(libc::ENOENT.into());
         };
         let attr = vfs_to_fuse_attr(&vattr, &req, self.blocks_for_attr(&vattr));
-        // Keep generation at 0 and set TTL to 1s (tunable)
         Ok(ReplyEntry {
             ttl: self.permission_cache_ttl(),
             attr,
@@ -3963,6 +3962,9 @@ where
     }
 
     fn permission_cache_ttl(&self) -> Duration {
+        if let Some(ttl) = self.packed_snapshot_cache_ttl {
+            return ttl;
+        }
         if self.meta_layer().posix_acl_capability()
             == crate::meta::layer::PosixAclCapability::ReadWrite
         {
@@ -4998,6 +5000,24 @@ mod fuse_init_tests {
         let before = fs.permission_cache_ttl();
         fs.set_fuse_cache_ttl(Duration::from_millis(7));
         assert_eq!(fs.permission_cache_ttl(), before);
+    }
+
+    #[tokio::test]
+    async fn packed_snapshot_lookup_and_getattr_return_the_mount_ttl() {
+        let fs = new_fuse_test_vfs().await;
+        fs.create_file("/packed-file").await.unwrap();
+        for ttl in [Duration::ZERO, Duration::from_secs(3600)] {
+            let mount = fs.clone().with_packed_snapshot_cache(Some(true), ttl);
+            let entry =
+                Filesystem::lookup(&mount, Request::default(), 1, OsStr::new("packed-file"))
+                    .await
+                    .unwrap();
+            assert_eq!(entry.ttl, ttl);
+            let attr = Filesystem::getattr(&mount, Request::default(), entry.attr.ino, None, 0)
+                .await
+                .unwrap();
+            assert_eq!(attr.ttl, ttl);
+        }
     }
 
     #[tokio::test]

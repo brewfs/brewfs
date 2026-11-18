@@ -385,16 +385,14 @@ pub struct MountArgs {
     #[arg(long)]
     pub fuse_max_background: Option<usize>,
 
-    /// Kernel attr/entry cache TTL for writable POSIX ACL mounts.
-    /// CLI and YAML override BREWFS_CACHE_TTL_MS, then the volume default applies:
-    /// workspace uses 1000 ms; other formats use 0. Positive TTL permits bounded
-    /// staleness (<= TTL), without immediate cross-client visibility. Use 0 for
-    /// strict kernel metadata caching. Other backends retain their legacy TTL policy.
+    /// Kernel attribute and directory entry cache TTL in milliseconds.
+    /// Packed snapshots default to 3600000 and writable workspaces to 1000.
+    /// An explicit CLI or YAML value overrides BREWFS_CACHE_TTL_MS.
     #[arg(long, value_name = "MILLIS")]
     pub fuse_cache_ttl_ms: Option<u64>,
-    /// Retain kernel data pages across opens on regular VFS mounts (default: false).
-    /// Enable only when file contents change through this mount: external changes
-    /// with unchanged size/mtime may remain cached. Does not change permission caching.
+    /// Retain kernel data pages across opens. Enabled by default for immutable
+    /// packed snapshots. On writable mounts, external changes with unchanged
+    /// size and mtime may remain cached when this option is enabled.
     #[arg(long, value_name = "BOOL")]
     pub fuse_keep_cache: Option<bool>,
 
@@ -1371,13 +1369,16 @@ impl MountConfig {
             anyhow::bail!("native volume controls require volume.format=native-workspace");
         }
         let explicit_read_fetch_policy = args.read_fetch_policy.or(cache_cfg.read_fetch_policy);
-        let mut cache = cache_cfg.into_cache_config()?;
+        #[cfg(feature = "workspace")]
+        let packed_snapshot = volume_format == VolumeFormat::PackedSnapshot;
+        #[cfg(not(feature = "workspace"))]
+        let packed_snapshot = false;
+        let mut cache = cache_cfg.into_cache_config(packed_snapshot)?;
         if (args.packed_cache.is_some() || args.packed_cache_bytes.is_some())
             && volume_format != VolumeFormat::Workspace
+            && !packed_snapshot
         {
-            anyhow::bail!(
-                "--packed-cache and --packed-cache-bytes require --volume-format workspace"
-            );
+            anyhow::bail!("packed cache options require a workspace or packed-snapshot mount");
         }
         if let Some(mode) = args.packed_cache {
             cache.packed_cache_enabled = mode == PackedCacheMode::On;
@@ -1508,13 +1509,12 @@ impl MountConfig {
             }
         }
 
-        // Explicit CLI/YAML settings win over the environment. Keep the existing
-        // format defaults: workspace permits bounded staleness for one second;
-        // other formats use zero here and retain their existing reply policies.
         let default_fuse_cache_ttl_ms = std::env::var("BREWFS_CACHE_TTL_MS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(if volume_format == VolumeFormat::Workspace {
+            .unwrap_or(if packed_snapshot {
+                3_600_000
+            } else if volume_format == VolumeFormat::Workspace {
                 1_000
             } else {
                 0
@@ -1599,7 +1599,11 @@ impl MountConfig {
                 .fuse_cache_ttl_ms
                 .or(fuse_cfg.cache_ttl_ms)
                 .unwrap_or(default_fuse_cache_ttl_ms),
-            fuse_keep_cache: args.fuse_keep_cache.or(fuse_cfg.keep_cache),
+            // The FUSE adapter reads an explicit environment setting when this is None.
+            fuse_keep_cache: args.fuse_keep_cache.or(fuse_cfg.keep_cache).or_else(|| {
+                (packed_snapshot && std::env::var_os("BREWFS_FUSE_KEEP_CACHE").is_none())
+                    .then_some(true)
+            }),
             privileged: args.privileged || fuse_cfg.privileged.unwrap_or(false),
             cache,
             compact,
@@ -1760,8 +1764,15 @@ fn scrubbed_url_identity(raw: &str) -> String {
 }
 
 impl CacheFileConfig {
-    fn into_cache_config(self) -> anyhow::Result<VfsCacheConfig> {
+    fn into_cache_config(self, packed_snapshot: bool) -> anyhow::Result<VfsCacheConfig> {
         let mut cache = VfsCacheConfig::default();
+        if packed_snapshot {
+            // The immutable reader serves payloads through its own Pack object cache.
+            cache.read_memory_bytes = 0;
+            cache.read_ssd_bytes = 0;
+            cache.prefetch_enabled = false;
+            cache.range_background_prefetch = false;
+        }
         if let Some(mode) = self.packed_cache {
             cache.packed_cache_enabled = mode == PackedCacheMode::On;
         }
@@ -3037,13 +3048,21 @@ mod tests {
         let yaml = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
             yaml.path(),
-            "mount_point: /mnt/packed\nvolume:\n  format: packed-snapshot\npacked_manifest_key: snapshots/manifest\n",
+            "mount_point: /mnt/packed\nvolume:\n  format: packed-snapshot\npacked_manifest_key: snapshots/manifest\nfuse:\n  cache_ttl_ms: 0\n  keep_cache: false\n",
         )
         .unwrap();
         let config =
             MountConfig::from_sources(empty_mount_args(Some(yaml.path().to_owned()), None))
                 .unwrap();
         assert_eq!(config.volume_format, VolumeFormat::PackedSnapshot);
+        assert_eq!(config.fuse_cache_ttl_ms, 0);
+        assert_eq!(config.fuse_keep_cache, Some(false));
+        let mut args = empty_mount_args(Some(yaml.path().to_owned()), None);
+        args.packed_cache = Some(PackedCacheMode::Off);
+        args.packed_cache_bytes = Some(4096);
+        let explicit = MountConfig::from_sources(args).unwrap();
+        assert!(!explicit.cache.packed_cache_enabled);
+        assert_eq!(explicit.cache.packed_cache_bytes, 4096);
         assert_eq!(
             config.packed_manifest_key.as_deref(),
             Some("snapshots/manifest")
